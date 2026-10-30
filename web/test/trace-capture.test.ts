@@ -282,3 +282,143 @@ bothEngines('retention: a capture deletes only its own tenant\'s expired rows; t
   assert.deepEqual((await listTraces(db, 'tenant-A')).map(r => r.job_id), ['new-a'])
   assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_RETENTION_DAYS: 'nonsense' }, NOW * 1000), 0) // invalid: the default, never "keep forever"
 })
+
+// ---- Credential redaction as a CLASS (PR #463 review): credential-NAMED fields wherever they sit (nested objects, arrays,
+// JSON in a string, URL query parameters, object keys, `k: v` / `k=v` in prose and errors) and known token FAMILIES.
+// Every value below is an invented alphabetic marker: not one is a credential, key, cookie or real token.
+const CRED = {
+  url_refresh: 'syntheticurlrefreshtokenmarker', body_secret: 'syntheticrequestbodysecretmarker',
+  refresh: 'syntheticrefreshtokenmarker', access: 'syntheticaccesstokenmarker', client_secret: 'syntheticclientsecretmarker', api_key: 'syntheticapikeymarker',
+  apiKey: 'syntheticcamelapikeymarker', password: 'syntheticpasswordmarker', authz: 'syntheticauthorizationmarker', cookie: 'syntheticcookiemarker',
+  set_cookie: 'syntheticsetcookiemarker', private_key: 'syntheticprivatekeymarker', nested: 'syntheticnestedsessionmarker', in_array: 'syntheticarraycredentialmarker',
+  in_json_string: 'syntheticjsoninstringmarker', in_key: 'syntheticobjectkeycredentialmarker', prompt: 'syntheticpromptcredentialmarker', prompt2: 'syntheticpromptsecondmarker',
+  reply: 'syntheticmodelreplykeymarker', error: 'syntheticerrorcredentialmarker', lead: 'syntheticleadexcerptmarker',
+  // families (shape only; the characters are invented)
+  pat: 'github_pat_syntheticfinegrainedmarkervalue', sk_ant: 'sk-ant-syntheticanthropicmarker', sk: 'sk-syntheticopenaimarkervaluexyz', sk_live: 'sk_live_syntheticstripemarker',
+  bearer: 'syntheticbearermarkervalue', jwt: 'eyJsyntheticheader.eyJsyntheticpayload.syntheticsignaturepart', ghp: 'ghp_syntheticgithubclassicmarker', gho: 'gho_syntheticgithuboauthmarker',
+  slack: 'xoxb-synthetic-slack-marker', aws: 'AKIASYNTHETICMARKERA',
+}
+const ORDINARY = ['Querix', 'raised a 3m GBP seed round', '2026-10-10', 'page=2', 'q=london+saas', '\\"max_tokens\\":300', '\\"input_tokens\\":12', '\\"expires_in\\":3600', 'keywords', 'press office', 'london']
+const RESPONSE = {
+  company: 'Querix', excerpt: 'Querix, a London B2B SaaS startup, raised a 3m GBP seed round', event_date: '2026-10-10', page: 2, max_tokens: 300,
+  usage: { input_tokens: 12, output_tokens: 3 }, keywords: ['london', 'saas'], author: 'press office',
+  refresh_token: CRED.refresh, access_token: CRED.access, client_secret: CRED.client_secret, api_key: CRED.api_key, apiKey: CRED.apiKey, password: CRED.password,
+  authorization: `Bearer ${CRED.authz}`, cookie: `sid=${CRED.cookie}; Path=/`, 'set-cookie': `sid=${CRED.set_cookie}; HttpOnly`,
+  private_key: `-----BEGIN PRIVATE KEY-----\n${CRED.private_key}\n-----END PRIVATE KEY-----`,
+  auth: { session: { id: CRED.nested, expires_in: 3600 } },                    // nested under a credential-named key
+  credentials: [{ user: 'bob', token: CRED.in_array }],                         // inside an array
+  payload: JSON.stringify({ clientSecret: CRED.in_json_string, company: 'Querix' }), // JSON carried in a string
+  [`https://x.example/u?token=${CRED.in_key}`]: 1,                              // an object KEY carrying a credential
+  notes: `use ${CRED.pat} or ${CRED.sk_ant} or ${CRED.sk} or ${CRED.sk_live} or Bearer ${CRED.bearer} or ${CRED.jwt} or ${CRED.ghp} or ${CRED.gho} or ${CRED.slack} or ${CRED.aws}`,
+}
+const noCredential = (json: string, where: string) => { for (const [k, v] of Object.entries(CRED)) assert.ok(!json.includes(v), `${where}: ${k} survives`) }
+
+bothEngines('credential redaction: no credential-named field or known token family survives in any persisted field (URL, bodies, prompt, reply, error, keys, leads); ordinary output and replay survive', async ({ db }) => {
+  await db.run("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, attempts) VALUES ('job-red', 'tenant-R', 'running', 'b', 'i', 'l', 1)")
+  await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, evidence_excerpt, event_date, confidence) VALUES ('L1', 'job-red', 'Dana Synthetic', 'Querix', 'raised a seed round', ?, ?, '2026-10-10', 80)",
+    [`https://news.example/q?api_key=${CRED.lead}`, `Querix raised a 3m GBP seed round (token=${CRED.lead})`])
+  const inner = (async (input: RequestInfo | URL) => {
+    if (String(input).includes('/fail')) throw new Error(`refresh_token=${CRED.error} ${CRED.pat} Authorization: Bearer ${CRED.bearer}`)
+    return new Response(JSON.stringify(RESPONSE), { status: 200 })
+  }) as typeof fetch
+  const c = beginScanTrace({ id: 'job-red', user_id: 'tenant-R', attempts: 1, query: `find london saas; refresh_token=${CRED.prompt}`, icp: JSON.stringify({ who: ['Founder'], api_key: CRED.in_json_string }) }, { fetchImpl: inner }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, finishMs: 10_000 })!
+  const url = `https://api.synthetic.example/v1/items?refresh_token=${CRED.url_refresh}&page=2&q=london+saas`
+  const res = await c.deps.fetchImpl!(url, { method: 'POST', body: JSON.stringify({ q: 'london saas', client_secret: CRED.body_secret }) })
+  assert.equal((await res.json() as { refresh_token: string }).refresh_token, CRED.refresh)      // the run itself sees the real answer
+  await assert.rejects(c.deps.fetchImpl!('https://api.synthetic.example/v1/fail'), /refresh_token/)
+  const stub = { complete: async () => JSON.stringify([{ name: 'Dana Synthetic', company: 'Querix', api_key: CRED.reply, excerpt: 'raised a 3m GBP seed round' }]) }
+  const p = c.recorder.providers({ anthropic: stub as never }).anthropic as { complete: (k: string, p: string, f?: unknown, m?: number) => Promise<string> }
+  await p.complete('sk-ant-syntheticproviderkey', `Write up to 6 web search queries. refresh_token=${CRED.prompt} client_secret: ${CRED.prompt2} max_tokens: 5`, undefined, 300)
+  const id = (await c.finish('done'))!
+  const row = (await db.get<{ trace: string }>('SELECT trace FROM scan_traces WHERE tenant_id = ? AND id = ?', ['tenant-R', id]))!
+  noCredential(row.trace, 'stored row')
+  const t = (await getTrace(db, 'tenant-R', id))!
+  assert.equal(t.redacted, true); assert.equal(t.capture?.complete, true); assert.equal(t.spans.length, 3)
+  for (const s of ORDINARY) assert.ok(row.trace.includes(s), `ordinary content lost: ${s}`)
+  // field by field: the URL keeps its ordinary parameters, the bodies keep their shape, the error keeps its words
+  const http = t.spans[0].input as { url: string; body: string }
+  assert.equal(http.url, 'https://api.synthetic.example/v1/items?refresh_token=[secret]&page=2&q=london+saas')
+  assert.deepEqual(JSON.parse(http.body), { q: 'london saas', client_secret: '[secret]' })
+  const out = JSON.parse((t.spans[0].output as { body: string }).body) as Record<string, unknown>
+  assert.deepEqual([out.company, out.page, out.max_tokens, out.usage, out.keywords, out.auth, out.credentials], ['Querix', 2, 300, { input_tokens: 12, output_tokens: 3 }, ['london', 'saas'], { session: { id: '[secret]', expires_in: 3600 } }, [{ user: '[secret]', token: '[secret]' }]])
+  for (const k of ['refresh_token', 'access_token', 'client_secret', 'api_key', 'apiKey', 'password', 'authorization', 'cookie', 'set-cookie', 'private_key']) assert.equal(out[k], '[secret]', k)
+  assert.deepEqual(JSON.parse(out.payload as string), { clientSecret: '[secret]', company: 'Querix' })
+  assert.ok(Object.keys(out).includes('https://x.example/u?token=[secret]'), Object.keys(out).join(','))
+  assert.equal(t.spans[1].error, 'refresh_token=[secret] [secret] Authorization: Bearer [secret]')
+  assert.equal((t.spans[2].input as { prompt: string }).prompt, 'Write up to 6 web search queries. refresh_token=[secret] client_secret: [secret] max_tokens: 5')
+  const reply = JSON.parse((t.spans[2].output as { text: string }).text) as { name: string }[]
+  assert.match(reply[0].name, /^Person-[0-9a-f]{6}$/)                                               // the extracted person name, as before
+  assert.deepEqual(reply, [{ name: reply[0].name, company: 'Querix', api_key: '[secret]', excerpt: 'raised a 3m GBP seed round' }])
+  assert.deepEqual(t.input, { request: 'find london saas; refresh_token=[secret]', icp: { who: ['Founder'], api_key: '[secret]' }, as_of: t.input.as_of })
+  assert.deepEqual(t.output?.leads.map(l => [l.company, l.source_url, l.excerpt, l.event_date, l.confidence]), [['Querix', 'https://news.example/q?api_key=[secret]', 'Querix raised a 3m GBP seed round (token=[secret])', '2026-10-10', 80]])
+  // replay semantics: the stored trace is still a complete, redacted World that answers the (redacted) URL with the (redacted) body
+  const w = validateWorld(worldFromTrace(t))
+  assert.equal(w.origin, 'recorded'); assert.equal(w.redacted, true)
+  assert.equal(JSON.parse(w.http[http.url]!.body as string).company, 'Querix')
+  assert.equal(w.http['https://api.synthetic.example/v1/fail'], null)
+  assert.match(w.model.search_queries[0].text, /Querix/)
+  // the existing cut controls still hold on a cut body carrying a credential: the credential is gone AND replay is refused
+  const big = beginScanTrace({ id: 'job-cut', user_id: 'tenant-R', attempts: 1, query: 'q' }, { fetchImpl: (async () => new Response(`refresh_token=${CRED.refresh} ${'y'.repeat(200_010)}`)) as typeof fetch }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, settleMs: 2_000, finishMs: 10_000 })!
+  void (await big.deps.fetchImpl!('https://synthetic.example/big')).body?.cancel().catch(() => {})
+  const cut = (await getTrace(db, 'tenant-R', (await big.finish('done'))!))!
+  noCredential(JSON.stringify(cut), 'cut trace')
+  assert.deepEqual([cut.capture?.complete, cut.capture?.bodies_truncated], [false, 1])
+  assert.throws(() => worldFromTrace(cut), WorldError)
+})
+
+// Every key form the structural rule must recognise, with the ordinary keys it must leave alone. Values are all strings:
+// a credential travels as a string; numbers and booleans (counts, limits, flags) are never redacted.
+const CREDENTIAL_KEYS = ['refresh_token', 'refreshToken', 'REFRESH-TOKEN', 'Refresh.Token', 'refresh token', 'access_token', 'id_token', 'token', 'TOKEN', 'tokens',
+  'api_key', 'apiKey', 'ApiKey', 'x-api-key', 'X-API-KEY', 'apikey', 'key', 'keys', 'private_key', 'privateKey', 'secret_key', 'secretkey', 'signing_key', 'access_key_id', 'accesskey',
+  'secret', 'client_secret', 'clientSecret', 'clientsecret', 'webhook_secret', 'password', 'passwd', 'pwd', 'pass', 'passphrase', 'user_password', 'db.password',
+  'credential', 'credentials', 'creds', 'auth', 'authorization', 'Authorization', 'authentication', 'auth_header', 'oauth', 'oauth_token', 'basic_auth',
+  'cookie', 'cookies', 'set-cookie', 'Set-Cookie', 'session', 'session_id', 'sessionId', 'sessionid', 'session_token', 'signature', 'sig', 'jwt', 'bearer', 'pat', 'otp', 'totp', 'csrf', 'csrf_token', 'xsrf']
+const ORDINARY_KEYS = ['company', 'name', 'excerpt', 'event_date', 'source_url', 'keyword', 'keywords', 'keynote', 'monkey', 'turkey', 'author', 'authors', 'authority', 'passport', 'passenger',
+  'compass', 'sessions', 'tokenomics', 'tokenizer', 'secretary', 'title', 'status', 'page', 'q', 'url', 'method', 'stage', 'prompt', 'text', 'results', 'snippet', 'date', 'published']
+
+test('credential-named keys: redacted at any nesting, in arrays, in JSON-in-string and as URL/text parameters, case- and separator-insensitive; ordinary keys and numbers are kept', () => {
+  const V = 'syntheticcredentialvaluemarker', O = 'ordinary value kept'
+  const obj = Object.fromEntries(CREDENTIAL_KEYS.map((k, i) => [k, `${V}${i}`]))
+  const ord = Object.fromEntries(ORDINARY_KEYS.map((k, i) => [k, `${O} ${i}`]))
+  const t = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'http', name: 'http', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/' },
+    output: { top: obj, ord, deep: { a: [{ b: { c: obj } }] }, as_json: JSON.stringify({ inner: obj, ord }), twice: JSON.stringify({ s: JSON.stringify({ x: [obj] }) }),
+      counts: { max_tokens: 300, input_tokens: 12, tokens: 5, key: 7, session: true, password: null },
+      under_credential: { credentials: { username: `${V}user`, nested: { deeper: `${V}deep` }, n: 1 } } } }] }), Buffer.alloc(16, 2))
+  const j = JSON.stringify(t)
+  assert.ok(!j.includes(V), j.slice(j.indexOf(V) - 80, j.indexOf(V) + 60))
+  for (let i = 0; i < ORDINARY_KEYS.length; i++) assert.ok(j.includes(`${O} ${i}`), ORDINARY_KEYS[i])
+  const o = t.spans[0].output as Record<string, unknown>
+  for (const k of CREDENTIAL_KEYS) assert.equal((o.top as Record<string, unknown>)[k], '[secret]', k)
+  assert.deepEqual(o.counts, { max_tokens: 300, input_tokens: 12, tokens: 5, key: 7, session: true, password: null })
+  assert.deepEqual(o.under_credential, { credentials: { username: '[secret]', nested: { deeper: '[secret]' }, n: 1 } })
+  assert.deepEqual(JSON.parse(o.as_json as string).ord, ord)
+  assert.deepEqual(JSON.parse(JSON.parse(o.twice as string).s), { x: [Object.fromEntries(CREDENTIAL_KEYS.map(k => [k, '[secret]']))] })
+  // the same names as URL query parameters, `k: v`, `k=v`, quoted JSON-ish fragments and header lines in prose
+  const text = CREDENTIAL_KEYS.filter(k => !/[ .]/.test(k)).flatMap((k, i) => [`https://h.example/p?${k}=${V}u${i}&page=${i}`, `${k}: ${V}c${i}`, `${k}=${V}e${i}`, `"${k}": "${V}q${i}"`, `${k}: Bearer ${V}b${i}`]).join('\n')
+  const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/' }, output: { text, keep: 'design: tidy; tokens: 5; max_tokens=300; page=2; Updated 2026-10-10 12:30; the keynote: London' } }] }), Buffer.alloc(16, 2))
+  const rt = (r.spans[0].output as { text: string; keep: string }).text
+  assert.ok(!rt.includes(V), rt.slice(rt.indexOf(V) - 80, rt.indexOf(V) + 40))
+  for (let i = 0; i < 5; i++) assert.ok(rt.includes(`&page=${i}\n`), `page=${i}`)
+  assert.ok(rt.includes('Bearer [secret]') && !rt.includes('[secret] [secret]'), rt.match(/.*Bearer.*/)?.[0])
+  assert.equal((r.spans[0].output as { keep: string }).keep, 'design: tidy; tokens: 5; max_tokens=300; page=2; Updated 2026-10-10 12:30; the keynote: London')
+})
+
+test('credential families: known prefixes (github_pat_, ghp_/gho_, sk-ant-, sk-, sk_live_, xox, AKIA, JWT, Bearer/Basic, PEM blocks, cookie headers) are gone from text, keys and errors', () => {
+  const fam = {
+    pat: CRED.pat, ghp: CRED.ghp, gho: CRED.gho, ghs: 'ghs_syntheticgithubservermarker', ghu: 'ghu_syntheticgithubusermarker', sk_ant: CRED.sk_ant, sk: CRED.sk, sk_proj: 'sk-proj-syntheticprojectmarkervalue',
+    sk_live: CRED.sk_live, pk_test: 'pk_test_syntheticstripepublishable', rk_live: 'rk_live_syntheticrestricted', slack_bot: CRED.slack, slack_app: 'xapp-1-synthetic-app-marker-value', aws: CRED.aws,
+    jwt: CRED.jwt, bearer: `Bearer ${CRED.bearer}`, basic: 'Basic c3ludGhldGljOmJhc2ljbWFya2Vy', glpat: 'glpat-syntheticgitlabmarkervalue', npm: 'npm_syntheticnpmtokenmarkervalue', google: 'AIzaSyntheticGoogleApiKeyMarkerValue000',
+    pem: `-----BEGIN RSA PRIVATE KEY-----\nsyntheticpemblockmarker\n-----END RSA PRIVATE KEY-----`, cookie_header: 'Set-Cookie: sid=syntheticcookieheadermarker; Path=/; HttpOnly', cookie_line: 'Cookie: a=syntheticcookielinemarker; b=two',
+  }
+  const markers = ['syntheticfinegrained', 'syntheticgithub', 'syntheticanthropic', 'syntheticopenai', 'syntheticproject', 'syntheticstripe', 'syntheticrestricted', 'synthetic-slack', 'synthetic-app', 'SYNTHETICMARKERA', 'syntheticpayload', 'syntheticbearer', 'c3ludGhldGlj', 'syntheticgitlab', 'syntheticnpm', 'SyntheticGoogle', 'syntheticpemblock', 'syntheticcookie']
+  const prose = Object.values(fam).map((v, i) => `item ${i}: ${v}; next`).join('\n')
+  const t = redactTrace(synth({ agent: { commit: null, label: `run ${fam.pat}` }, spans: [{ id: 's0', seq: 0, kind: 'http', name: 'http', start_ms: 0, duration_ms: 1, input: { url: `https://x.example/?x=${fam.ghp}`, prompt: prose }, output: { [fam.pat]: 1, [fam.jwt]: 2, body: JSON.stringify(fam) }, error: `denied for ${fam.pat} and ${fam.basic}` }] }), Buffer.alloc(16, 3))
+  const j = JSON.stringify(t)
+  for (const m of markers) assert.ok(!j.includes(m), `${m}: ${j.slice(Math.max(0, j.indexOf(m) - 60), j.indexOf(m) + 40)}`)
+  for (const m of ['item 0: [secret]; next', 'item 15: Bearer [secret]; next', 'item 16: Basic [secret]; next', 'Set-Cookie: [secret]', 'Cookie: [secret]']) assert.ok(j.includes(m), m)
+  assert.equal(t.spans[0].error, 'denied for [secret] and Basic [secret]')
+  assert.deepEqual(Object.keys(t.spans[0].output as object), ['[secret]', 'body'])    // two credential keys collapse into one
+  // ordinary text that merely resembles a family is kept
+  const keep = 'Basic plan from 2026-10-10; skills: 12; the ghost_writer; token sale; secretary of state; AKIA is not here'
+  assert.equal((redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: {}, output: { text: keep } }] }), Buffer.alloc(16, 3)).spans[0].output as { text: string }).text, keep)
+})
