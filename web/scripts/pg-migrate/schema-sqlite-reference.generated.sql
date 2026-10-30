@@ -688,6 +688,13 @@ CREATE TABLE tenant_plans (
       stripe_subscription_id TEXT
     , stripe_event_at INTEGER, stripe_reconcile_at INTEGER, subscription_status TEXT);
 
+CREATE TABLE tenant_spend_pools (
+    tenant_id TEXT NOT NULL, period TEXT NOT NULL CHECK (length(period) <= 12),
+    reserved_usd REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0), reported_usd REAL NOT NULL DEFAULT 0 CHECK (reported_usd >= 0),
+    calls INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, period)
+  );
+
 CREATE TABLE tinyfish_usage (day TEXT NOT NULL, tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('search','fetch')), n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, tenant_id, kind));
 
 CREATE TABLE trial_budget_lock (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0);
