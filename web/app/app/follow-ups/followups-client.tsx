@@ -5,7 +5,7 @@ import { followupAsk } from '@/lib/outreach/followups'
 
 interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; scheduled_at: number | null; next_due_at: number | null; hold: string | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }
-interface Overview { enabled: boolean; account: string | null; hold: string | null; threads: Thread[]; sent: Sent[] }
+interface Overview { enabled: boolean; account: string | null; hold: string | null; threads: Thread[]; sent: Sent[]; next_cursor?: string | null; sent_next_cursor?: string | null; counts?: { threads: number; active: number; stopped: number } }
 // Why nothing will be sent (lib/outreach/followups.ts accountHold/threadHold): the runner's own checks, read-only.
 const HOLD: Record<string, string> = {
   not_available: 'automatic sending is not available on this server',
@@ -79,6 +79,20 @@ export default function FollowupsClient() {
     }).catch(() => setError('Could not load follow-ups'))
   }, [])
 
+  // The server pages threads and sent follow-ups (#369); "Load more" appends the next page of either.
+  const [more, setMore] = useState<null | 'threads' | 'sent'>(null)
+  const loadMore = async (which: 'threads' | 'sent') => {
+    if (!data || more) return
+    const c = which === 'threads' ? data.next_cursor : data.sent_next_cursor
+    if (!c) return
+    setMore(which)
+    try {
+      const r = await fetch(`/api/outreach/followups?${which === 'threads' ? 'cursor' : 'sent_cursor'}=${encodeURIComponent(c)}`)
+      if (!r.ok) { setError('Could not load more follow-ups. Reload the page.'); return }
+      const next = await r.json() as Overview
+      setData(d => d && (which === 'threads' ? { ...d, threads: [...d.threads, ...next.threads], next_cursor: next.next_cursor } : { ...d, sent: [...d.sent, ...next.sent], sent_next_cursor: next.sent_next_cursor }))
+    } catch { setError('Could not load more follow-ups. Reload the page.') } finally { setMore(null) }
+  }
   const active = (data?.threads ?? []).filter(t => !t.stopped)
   const stopped = (data?.threads ?? []).filter(t => t.stopped)
   return (
@@ -105,7 +119,7 @@ export default function FollowupsClient() {
       )}
       {data && (
         <>
-          <h2 className="text-sm font-semibold mb-2">Active sequences</h2>
+          <h2 className="text-sm font-semibold mb-2">Active sequences{data.counts ? ` (${data.counts.active})` : ''}</h2>
           <div className="card divide-y divide-black/5 mb-8">
             {active.length === 0 ? (
               <p className="p-6 text-center text-[#777] text-sm">No active sequences. A sequence starts when someone replies with interest to an outreach email.</p>
@@ -123,6 +137,9 @@ export default function FollowupsClient() {
               </div>
             ))}
           </div>
+          {data.next_cursor && (
+            <button onClick={() => void loadMore('threads')} disabled={more !== null} data-testid="more-threads" className="mb-8 -mt-6 font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-50">{more === 'threads' ? 'Loading…' : 'Load more threads'}</button>
+          )}
           {(warm.length > 0 || reopens.length > 0) && (
             <>
               <h2 className="text-sm font-semibold mb-2">Warm again</h2>
@@ -159,11 +176,14 @@ export default function FollowupsClient() {
                   </div>
                 ))}
               </div>
+              {data.sent_next_cursor && (
+                <button onClick={() => void loadMore('sent')} disabled={more !== null} data-testid="more-sent" className="mb-8 -mt-6 font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white disabled:opacity-50">{more === 'sent' ? 'Loading…' : 'Load more sent follow-ups'}</button>
+              )}
             </>
           )}
           {stopped.length > 0 && (
             <>
-              <h2 className="text-sm font-semibold mb-2">Stopped</h2>
+              <h2 className="text-sm font-semibold mb-2">Stopped{data.counts ? ` (${data.counts.stopped})` : ''}</h2>
               <div className="card divide-y divide-black/5">
                 {stopped.map(t => (
                   <div key={t.thread_id} data-testid="stopped-row" className={ROW}>

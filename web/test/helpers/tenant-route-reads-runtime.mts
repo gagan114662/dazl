@@ -104,7 +104,7 @@ test('all 12 read routes: A and B each get their own content, never the other te
     { name: 'GET /api/campaigns/[id]', call: t => campaignGET(get(`/api/campaigns/${j(t)}`), { params: Promise.resolve({ id: j(t) }) }), own: { A: [MA.q, MA.co, MA.subj], B: [MB.q, MB.co, MB.subj] }, id: h => campaignGET(get(`/api/campaigns/${h}`), { params: Promise.resolve({ id: h }) }) },
     { name: 'GET /api/outreach', call: () => outreachGET(), own: { A: [MA.subj], B: [MB.subj] } },
     { name: 'GET /api/outreach/inbox thread', call: t => inboxGET(get(`/api/outreach/inbox?thread_id=${t === 'A' ? MA.thread : MB.thread}`)), own: { A: [MA.thread], B: [MB.thread] } },
-    { name: 'GET /api/outreach/followups', call: () => followupsGET(), own: { A: [MA.co, MA.thread], B: [MB.co, MB.thread] } },
+    { name: 'GET /api/outreach/followups', call: () => followupsGET(get('/api/outreach/followups')), own: { A: [MA.co, MA.thread], B: [MB.co, MB.thread] } },
     { name: 'GET /api/settings/llm-key', call: () => keyGET(), own: { A: ['Q9ZK'], B: ['W4XJ'] } },
     { name: 'GET /api/settings/memory', call: () => memoryGET(), own: { A: [MA.mem], B: [MB.mem] } },
     { name: 'GET /api/outreach/conversion', call: () => conversionGET(), own: { A: [MA.sig], B: [MB.sig] } },

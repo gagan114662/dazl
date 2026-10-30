@@ -1,5 +1,6 @@
 // Runs /api/outreach/followups and /api/replies/thread-metrics on a fresh Postgres schema with two tenants (see
 // test/pg-outreach-reads.test.ts). Read-only routes; stubbed: no network call is allowed.
+import { NextRequest } from 'next/server'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setUser } from './tenant-route-db.ts'
@@ -42,7 +43,7 @@ test('follow-ups and thread metrics on Postgres, two tenants', async () => {
     const seen: Record<string, { f: { enabled: boolean; account: string | null; threads: { thread_id: string; company: string }[]; sent: { thread_id: string; company: string }[] }; m: { rows: { query: string; total: number; buyer_yes: number; not_buyer: number; ungraded: number }[] } }> = {}
     for (const [t, tag] of [[A, 'a'], [B, 'b']]) {
       setUser({ id: t, business_name: tag })
-      seen[tag] = { f: await (await followups.GET()).json(), m: await (await metrics.GET()).json() }
+      seen[tag] = { f: await (await followups.GET(new NextRequest('http://localhost/api/outreach/followups'))).json(), m: await (await metrics.GET()).json() }
     }
     const a = seen.a, b = seen.b
     assert.deepEqual([a.f.enabled, a.f.account], [true, 'a@mail.example'])

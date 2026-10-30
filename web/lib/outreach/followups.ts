@@ -159,8 +159,34 @@ export interface FollowupOverview {
   enabled: boolean
   account: string | null
   hold: FollowupHold | null
+  // One page of threads (newest activity first) and one page of sent follow-ups (newest first), each with its own cursor
+  // (null: nothing more). counts are over every thread the filters match, independent of the page (#369).
   threads: FollowupThreadView[]
+  next_cursor: string | null
+  counts: { threads: number; active: number; stopped: number }
   sent: { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }[]
+  sent_next_cursor: string | null
+}
+// Filters and cursors for the follow-ups page, read on the server. jobId: threads whose lead is in that play (of this
+// tenant). status: 'active' (not stopped) or 'stopped'. Cursors are opaque to the client; a malformed one is refused.
+export interface FollowupQuery { jobId?: string | null; status?: 'all' | 'active' | 'stopped'; cursor?: string | null; sentCursor?: string | null; limit?: number }
+export const FOLLOWUP_PAGE_MAX = 100
+export class FollowupQueryError extends Error {
+  code: 'bad_cursor' | 'bad_status'
+  constructor(code: 'bad_cursor' | 'bad_status') { super(code); this.code = code }
+}
+const enc = (v: (string | number)[]) => Buffer.from(JSON.stringify(v)).toString('base64url')
+function dec(c: string, shape: ('n' | 's')[]): (string | number)[] {
+  let v: unknown
+  try { v = JSON.parse(Buffer.from(c, 'base64url').toString('utf8')) } catch { throw new FollowupQueryError('bad_cursor') }
+  if (!Array.isArray(v) || v.length !== shape.length || !shape.every((k, i) => k === 'n' ? Number.isSafeInteger(v[i]) : typeof v[i] === 'string' && (v[i] as string).length <= 200)) throw new FollowupQueryError('bad_cursor')
+  return v as (string | number)[]
+}
+export function parseFollowupQuery(sp: URLSearchParams): FollowupQuery {
+  const status = (sp.get('status') ?? 'all') as FollowupQuery['status']
+  if (!['all', 'active', 'stopped'].includes(status!)) throw new FollowupQueryError('bad_status')
+  const limit = Number(sp.get('limit') ?? 50)
+  return { jobId: sp.get('job_id') || null, status, cursor: sp.get('cursor') || null, sentCursor: sp.get('sent_cursor') || null, limit: Number.isFinite(limit) ? limit : 50 }
 }
 
 // The follow-ups page, on the Db layer (SQLite or Postgres). Read-only and tenant-scoped: every row is the tenant's own
@@ -209,15 +235,28 @@ async function threadHold(db: Db, tenantId: string, t: { lead_id: string; to_ema
   return null
 }
 
-export async function followupOverview(db: Db, tenantId: string, opts: { flags?: Record<string, string | undefined>; now?: number } = {}): Promise<FollowupOverview> {
+export async function followupOverview(db: Db, tenantId: string, opts: { flags?: Record<string, string | undefined>; now?: number } & FollowupQuery = {}): Promise<FollowupOverview> {
   const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const limit = Math.max(1, Math.min(FOLLOWUP_PAGE_MAX, Math.floor(opts.limit ?? 50)))
+  // Filters shared by the page, the counts and the sent list: the tenant's threads, optionally of one play (through the
+  // tenant's own lead) and by stopped state.
+  const where: string[] = ['t.tenant_id = ?'], args: Param[] = [tenantId]
+  if (opts.jobId) { where.push(`l.scan_job_id = ? AND ${OWN_LEAD}`); args.push(opts.jobId) }
+  if (opts.status === 'active') where.push('t.stopped IS NULL')
+  if (opts.status === 'stopped') where.push('t.stopped IS NOT NULL')
+  const page: string[] = [], pageArgs: Param[] = []
+  if (opts.cursor) { const [at, id] = dec(opts.cursor, ['n', 's']); page.push('(t.last_activity_at < ? OR (t.last_activity_at = ? AND t.thread_id > ?))'); pageArgs.push(at, at, id) }
+  const sentPage: string[] = [], sentArgs: Param[] = []
+  if (opts.sentCursor) { const [at, id, step] = dec(opts.sentCursor, ['n', 's', 'n']); sentPage.push('(m.created_at < ? OR (m.created_at = ? AND (m.thread_id > ? OR (m.thread_id = ? AND m.step < ?))))'); sentArgs.push(at, at, id, id, step) }
   const hold = await accountHold(db, tenantId, opts.flags ?? process.env, now)
   const capFull = hold ? false : await capReached(db, tenantId, now)
   const rows = await db.all<{ thread_id: string; lead_id: string; to_email: string; last_activity_at: number; last_lead_reply_at: number | null; last_followup_at: number | null; followups_sent: number; stopped: string | null; company: string; name: string }>(
     `SELECT t.thread_id, t.lead_id, t.to_email, t.last_activity_at, t.last_lead_reply_at, t.last_followup_at, t.followups_sent, t.stopped,
             COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
      FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD}
-     WHERE t.tenant_id = ? ORDER BY t.last_activity_at DESC, t.thread_id LIMIT 100`, [tenantId])
+     WHERE ${[...where, ...page].join(' AND ')} ORDER BY t.last_activity_at DESC, t.thread_id LIMIT ?`, [...args, ...pageArgs, limit + 1])
+  const more = rows.length > limit
+  rows.splice(limit)
   const threads: FollowupThreadView[] = []
   for (const r of rows) {
     // By the gap schedule the next follow-up is due GAPS_DAYS[sent] days after the last activity; nothing is scheduled
@@ -235,10 +274,18 @@ export async function followupOverview(db: Db, tenantId: string, opts: { flags?:
     `SELECT m.thread_id, m.step, m.status, m.created_at, t.to_email, COALESCE(l.company, '') AS company
      FROM followup_messages m JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
      LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD}
-     WHERE m.tenant_id = ? ORDER BY m.created_at DESC, m.thread_id, m.step DESC LIMIT 100`, [tenantId])
+     WHERE m.tenant_id = ? AND ${[...where, ...sentPage].join(' AND ')} ORDER BY m.created_at DESC, m.thread_id, m.step DESC LIMIT ?`, [tenantId, ...args, ...sentArgs, limit + 1])
+  const sentMore = sent.length > limit
+  sent.splice(limit)
+  const c = await db.get<{ threads: number; stopped: number | null }>(`SELECT COUNT(*) AS threads, SUM(CASE WHEN t.stopped IS NOT NULL THEN 1 ELSE 0 END) AS stopped
+     FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id AND ${OWN_LEAD} WHERE ${where.join(' AND ')}`, args)
+  const counts = { threads: Number(c?.threads ?? 0), stopped: Number(c?.stopped ?? 0), active: Number(c?.threads ?? 0) - Number(c?.stopped ?? 0) }
+  const lastT = rows[rows.length - 1], lastS = sent[sent.length - 1]
   const acct = await readGmailStatus(db, tenantId)
   const enabled = Number((await db.get<{ f: number }>(FOLLOWUPS_ENABLED_SQL, [tenantId]))?.f) === 1
-  return { enabled, account: acct?.status === 'active' ? acct.email : null, hold, threads, sent }
+  return { enabled, account: acct?.status === 'active' ? acct.email : null, hold, threads, sent, counts,
+    next_cursor: more && lastT ? enc([Number(lastT.last_activity_at), lastT.thread_id]) : null,
+    sent_next_cursor: sentMore && lastS ? enc([Number(lastS.created_at), lastS.thread_id, Number(lastS.step)]) : null }
 }
 
 // What the follow-ups page should ask for when automatic follow-ups are not running.
