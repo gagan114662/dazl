@@ -166,6 +166,11 @@ const STILL_A_CHOICE: [string, string][] = [
   ['a service in a report item', `Include customer support contacts. We sell ${P}.`],
   ['a service in a report item', `Show training contacts. We sell ${P}.`],
   ['a service in a report item', `Show the onboarding contact. We sell ${P}.`],
+  ['a service in a report item', `Show support contacts. We sell ${P}.`], // "support" is also a role modifier: only the term rule catches it
+  ['a service in a report item', `Show customer support contacts. We sell ${P}.`],
+  // "receive" is not an event verb: what the buyers received may be the seller's product
+  ['received a product', `Find practices that received a new product. We sell ${P}.`],
+  ['received a product', `Find practices that have received a product. We sell ${P}.`],
 ]
 test('#349 class controls: changed product, audience, withdrawals, commercial terms and unproved sentences stay a choice', () => {
   const failures: string[] = []
