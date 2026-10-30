@@ -8,7 +8,7 @@ import { Icon } from './ui/icons'
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
   const token = (await cookies()).get('dazl_session')?.value
-  if (!getSessionUser(token)) redirect('/sign-in')
+  if (!(await getSessionUser(token))) redirect('/sign-in')
   return <>{children}</>
 }
 
