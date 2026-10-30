@@ -2,7 +2,8 @@
 // executive officers, directors and promoters in the filing's "related persons" list - often the founder/CEO that the
 // company's own site never lists. Gojiberry-class tools sell this as "founder contact"; here it is read straight from
 // the filing the funding signal matched to the lead. That match is only a name heuristic, so the fetched filing's own
-// primaryIssuer must also agree with the expected entity (missing or contradicting issuer -> nothing stored).
+// primaryIssuer must also agree with the expected entity (missing or contradicting issuer -> nothing stored), and its stated city/state must agree with the lead's place: two different
+// companies can share a name, so a name match alone never attaches anyone.
 //
 // Stored as 'person' enrichments ("First Last, Role") with the filing URL as source and labelled with the filing date:
 // the list is as of the filing, not verified as current staff. No addresses are kept (the filing carries a business
@@ -11,6 +12,7 @@
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
 import { classifyEntityMatch } from '../signals/entity-match.ts'
+import { contactAgreement, formatPlace } from '../scan/contact-agreement.ts'
 
 export const CONNECTOR = 'signals:sec-form-d'
 export const MAX_OFFICERS = 4
@@ -36,6 +38,14 @@ export function filingIssuer(xml: string): string {
   return block ? tag(block[0], 'entityName').slice(0, 200) : ''
 }
 
+// Where the issuer says it is (Form D primaryIssuer/issuerAddress: city + state or country code); null when absent. A registry fact, so it can agree or conflict with the lead's place.
+export function filingIssuerPlace(xml: string): { place: string | null; address: string | null } {
+  const block = /<primaryIssuer>[\s\S]*?<\/primaryIssuer>/i.exec(xml)?.[0] ?? ''
+  const addr = /<issuerAddress>[\s\S]*?<\/issuerAddress>/i.exec(block)?.[0] ?? ''
+  const city = tag(addr, 'city'), state = tag(addr, 'stateOrCountry'), street = tag(addr, 'street1')
+  return { place: city && state ? formatPlace(city, state, null) : null, address: street && city ? [street, city, state].filter(Boolean).join(', ').slice(0, 160) : null }
+}
+
 export function parseRelatedPersons(xml: string): FilingPerson[] {
   const out: FilingPerson[] = []
   const seen = new Set<string>()
@@ -59,6 +69,16 @@ export function parseRelatedPersons(xml: string): FilingPerson[] {
 
 const isFilingUrl = (u: string) => /^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/\d+\/\d{18}\/[\w.-]+\.xml$/.test(u)
 
+// What the lead is, for the identity check: its scan's geography, its own evidence text and its domain. null when the lead is not this tenant's.
+function leadContext(db: Database.Database, tenantId: string, leadId: string): { company_domain: string | null; where: string[]; evidence: string } | null {
+  try {
+    const r = db.prepare('SELECT l.company_domain, l.evidence_excerpt, l.signal, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { company_domain: string | null; evidence_excerpt: string | null; signal: string | null; icp: string | null } | undefined
+    if (!r) return null
+    let where: string[] = []; try { const w = r.icp ? (JSON.parse(r.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { where = [] }
+    return { company_domain: r.company_domain, where, evidence: `${r.evidence_excerpt ?? ''} ${r.signal ?? ''}` }
+  } catch { return null }
+}
+
 // Fetch the filing and store its people on the lead. Never throws; returns how many were stored.
 export async function storeFilingOfficers(db: Database.Database, tenantId: string, leadId: string, filing: { url: string; date: string; entity: string }, deps: { fetchImpl?: typeof fetch; now?: number; env?: Record<string, string | undefined> } = {}): Promise<number> {
   try {
@@ -70,6 +90,13 @@ export async function storeFilingOfficers(db: Database.Database, tenantId: strin
     // company's executives. Still a name heuristic (token-identical after suffix stripping), so labels stay "as of filing".
     const issuer = filingIssuer(xml)
     if (!issuer || classifyEntityMatch(filing.entity, issuer) !== 'heuristic') return 0
+    // A name match is not identity: two different companies can share a name. The filing's own registry data (the issuer's stated city/state) must AGREE with the lead's place (the scan's
+    // geography or the lead's own evidence), or the lead's confirmed domain must agree; no geography to compare, no stated address, or a conflict -> nothing is stored.
+    const ctx = leadContext(db, tenantId, leadId)
+    if (!ctx) return 0
+    const at = filingIssuerPlace(xml)
+    const agree = contactAgreement({ company_domain: ctx.company_domain, where: ctx.where, evidence: ctx.evidence }, { place: at.place, address: at.address })
+    if (!agree.ok || (agree.via !== 'location' && agree.via !== 'address' && agree.via !== 'domain')) return 0
     const now = Math.floor((deps.now ?? Date.now()) / 1000)
     let n = 0
     for (const p of parseRelatedPersons(xml)) {
