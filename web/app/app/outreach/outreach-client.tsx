@@ -17,6 +17,7 @@ const ERR: Record<string, string> = {
   gmail_not_connected: 'Connect Gmail in Settings first.',
   gmail_reconnect_needed: 'Gmail needs to be reconnected in Settings.',
   suppressed: 'This address unsubscribed, so it will not be emailed.',
+  already_contacted: 'This address was already emailed from another play, or an email to it is on its way. Nothing was sent; dazl waits 90 days before a new first email to the same person.',
   daily_cap: 'Daily sending limit reached. Try again tomorrow.',
   gmail_rate_limited: 'Gmail is rate limiting you. Try again later.',
   changed_since_approval: 'The message changed after approval. Approve it again.',

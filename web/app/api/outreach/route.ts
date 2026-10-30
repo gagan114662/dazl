@@ -23,6 +23,7 @@ const MSG: Record<string, [number, string]> = {
   lead_ungraded: [422, 'This lead could not be ICP-graded (scoring failed), so it cannot be emailed. Re-run the scan to grade it.'],
   suppressed: [409, 'This address unsubscribed or is on your suppression list'],
   already_drafted: [409, 'A draft for this lead already exists'],
+  already_contacted: [409, 'This address was already emailed from another play, or an email to it is on its way. dazl waits 90 days before a new first email to the same person.'],
 }
 
 export async function GET() {

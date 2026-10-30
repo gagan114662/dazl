@@ -94,6 +94,21 @@ export function isSuppressed(db: Database.Database, tenantId: string, email: str
   return !!db.prepare('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?').get(tenantId, norm(email))
 }
 
+// Cross-play recipient cooldown (#364): the same person is never emailed from two plays at once or again soon. Another
+// lead's message to the same normalized address (another play, another scan) blocks a first touch while it is going out
+// (sending, or uncertain: it may have gone) or was sent within CONTACT_COOLDOWN_DAYS. When drafting or approving, an
+// approved one blocks too (it is about to go). At the send claim it does not: two messages approved in a race would
+// otherwise block each other forever; the first claim wins and the other is then refused. Tenant-scoped; a lead's own
+// message is not "another" one; skipped drafts and unapproved drafts do not count. Approved test recipients (staging
+// fixtures) are exempt: they receive repeated sends by design.
+export const CONTACT_COOLDOWN_DAYS = 90
+export function contactedElsewhere(db: Database.Database, tenantId: string, email: string, leadId: string, now = Math.floor(Date.now() / 1000), o: { atSend?: boolean } = {}): boolean {
+  if (testRecipientApproved(db, tenantId, email)) return false
+  return !!db.prepare(`SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND lead_id <> ?
+    AND (status IN (${o.atSend ? "'sending', 'uncertain'" : "'approved', 'sending', 'uncertain'"}) OR (status = 'sent' AND COALESCE(sent_at, claimed_at, created_at) >= ?)) LIMIT 1`)
+    .get(tenantId, norm(email), leadId, now - CONTACT_COOLDOWN_DAYS * 86400)
+}
+
 export function suppress(db: Database.Database, tenantId: string, email: string, reason: 'unsubscribe' | 'manual' | 'bounce'): void {
   db.transaction(() => {
     db.prepare('INSERT OR IGNORE INTO suppressions (tenant_id, email, reason) VALUES (?, ?, ?)').run(tenantId, norm(email), reason)
@@ -263,6 +278,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
+  if (contactedElsewhere(db, tenantId, to, leadId)) throw new OutreachError('already_contacted')
   return { lead, to, addressUrl, test }
 }
 
@@ -356,6 +372,7 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   if (!skipAccount && !getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
   if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
+  if (contactedElsewhere(db, tenantId, m.to_email, m.lead_id)) throw new OutreachError('already_contacted')
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) throw new OutreachError('not_sales_contact')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
@@ -433,6 +450,7 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
   if (!testFixtureSend(db,tenantId,pre) && currentnessHeld(db,tenantId,pre.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, pre) && !leadEvidenceEligible(db, tenantId, pre.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
+  if (contactedElsewhere(db, tenantId, pre.to_email, pre.lead_id, undefined, { atSend: true })) throw new OutreachError('already_contacted')
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
@@ -459,6 +477,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   // The identity check and the claim are one write transaction (the same lock the review action takes), so a withdraw cannot land between them.
   const claim = db.transaction(() => {
     if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
+    // re-read under the write lock: another play's message to this address cannot be claimed in between
+    if (contactedElsewhere(db, tenantId, pre.to_email, pre.lead_id, nowS(d), { atSend: true })) throw new OutreachError('already_contacted')
     return db.prepare("UPDATE outreach_messages SET status = 'sending', attempts = attempts + 1, claimed_at = ?, error = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(nowS(d), id, tenantId)
   }).immediate()
   if (claim.changes !== 1) throw new OutreachError('already_sending')

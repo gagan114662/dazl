@@ -215,8 +215,11 @@ test('a revoked Gmail grant stops sends and keeps the message approved', async (
 
 test('suppression: enforced at send time, by unsubscribe token, and cancels pending drafts to that address', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
-  const other = createDraft(db, 'A', addLead(db, 'A'), 'Acme') // same address, second lead
+  // same address, second lead, drafted before the first is approved (once one is approved, another play cannot draft
+  // to the same person: test/cross-play-dedupe.test.ts)
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme')
+  const other = createDraft(db, 'A', addLead(db, 'A'), 'Acme')
+  approve(db, 'A', id)
   const { sent, sendFn } = okSend()
   // the recipient unsubscribes between approval and send
   db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES ('A','info@northside.example','manual')").run()
@@ -344,8 +347,8 @@ test('a crawled address needs the user identity review at approve and at send, n
   setDomainReview(db, 'A', lead, 'confirm', domainReviewFor({ id: lead, contact: null }, rows()).binding!)
   assert.equal(await sendMessage(db, 'A', 'legacy1', deps({ sendFn })), 'sent')
   assert.equal(sent.length, 1)
-  // An address printed on the cited page is unaffected.
-  const own = addLead(db, 'A')
+  // An address printed on the cited page is unaffected (another address: this person was just emailed from another play).
+  const own = addLead(db, 'A', { contact: 'sales@northside.example' })
   const id2 = createDraft(db, 'A', own, 'Acme'); approve(db, 'A', id2)
 })
 
