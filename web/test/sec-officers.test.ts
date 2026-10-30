@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { parseRelatedPersons, storeFilingOfficers, confirmFilingIdentity, CANDIDATE_KIND, CONNECTOR } from '../lib/people/sec-officers.ts'
+import { parseRelatedPersons, storeFilingOfficers, confirmFilingIdentity, filingIssuerPlace, unitsIn, CANDIDATE_KIND, CONNECTOR } from '../lib/people/sec-officers.ts'
 import { contactsFromEnrichments } from '../lib/people/rank.ts'
 
 // TEST-ONLY fixture shaped like a Form D primary_doc.xml; no network.
@@ -20,11 +20,12 @@ test('parse: people only, clarified title first, no entities, deduped, no addres
 })
 
 const KNOWN = 'Acme opened its second office at 100 Atlantic Avenue, New York'
-function setup(evidence = KNOWN) {
+function setup(evidence = KNOWN, confirmed = true) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['New York City'], who: [], signals: [] }), job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run('L1', job, 'Acme', null, 's', 'https://n.example.test/a', evidence, 90, 80)
+  if (confirmed) confirmFilingIdentity(db, 'A', 'L1', '123456')      // the identity review confirmed this filer (CIK) as the lead's company
   return db
 }
 const filing = { url: URL, date: '2026-09-01', entity: 'Acme Inc' }
@@ -34,7 +35,7 @@ test('stores labelled person rows that the right-people ranker reads; ICP role r
   const urls: string[] = []
   const n = await storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async (u: string) => { urls.push(u); return new Response(XML) }) as typeof fetch })
   assert.equal(n, 3); assert.deepEqual(urls, [URL])
-  const rows = db.prepare('SELECT kind,value,label,source_url,connector FROM lead_enrichments WHERE lead_id = ?').all('L1') as { kind: string; value: string; label: string; source_url: string; connector: string }[]
+  const rows = db.prepare("SELECT kind,value,label,source_url,connector FROM lead_enrichments WHERE lead_id = ? AND kind = 'person'").all('L1') as { kind: string; value: string; label: string; source_url: string; connector: string }[]
   assert.ok(rows.every(r => r.connector === CONNECTOR && r.kind === 'person' && r.source_url === URL && /not verified as current/.test(r.label)))
   const ranked = contactsFromEnrichments(rows, 'CEO; Executive Officer')
   assert.equal(ranked[0].name, 'Jane Doe'); assert.equal(ranked[0].tier, 'strong')
@@ -55,19 +56,19 @@ test('refuses non-sec.gov / non-filing URLs, kill switch, http failure, and junk
 
 test('issuer binding: contradicting, missing or fund-like issuer stores nothing; matching issuer stores', async () => {
   const body = (iss: string) => XML.replace(issuer('Acme, Inc.'), iss)
-  const run = async (xml: string) => { const db = setup(); const n = await storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async () => new Response(xml)) as typeof fetch }); return { n, rows: (db.prepare('SELECT count(*) n FROM lead_enrichments').get() as { n: number }).n } }
+  const run = async (xml: string) => { const db = setup(); const n = await storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async () => new Response(xml)) as typeof fetch }); return { n, rows: (db.prepare("SELECT count(*) n FROM lead_enrichments WHERE kind <> 'sec_filing_confirmed'").get() as { n: number }).n } }
   for (const iss of [issuer('Entirely Different Invented LLC'), '', '<primaryIssuer></primaryIssuer>', issuer('Acme Growth Fund II, LP')]) assert.deepEqual(await run(body(iss)), { n: 0, rows: 0 })
   assert.deepEqual(await run(body(issuer('ACME INC'))), { n: 3, rows: 3 })
 })
 
 // ---- two different companies with the same name: a name match alone is not identity ----
-const withGeo = (icp: { where: string[] } | null, evidence?: string) => { const db = setup(evidence); db.prepare('UPDATE scan_jobs SET icp = ?').run(icp ? JSON.stringify({ summary: 's', who: [], signals: [], ...icp }) : null); return db }
+const withGeo = (icp: { where: string[] } | null, evidence?: string, confirmed = true) => { const db = setup(evidence, confirmed); db.prepare('UPDATE scan_jobs SET icp = ?').run(icp ? JSON.stringify({ summary: 's', who: [], signals: [], ...icp }) : null); return db }
 const store = async (db: Database.Database, xml: string) => storeFilingOfficers(db, 'A', 'L1', filing, { fetchImpl: (async () => new Response(xml)) as typeof fetch })
 const body = (iss: string) => XML.replace(issuer('Acme, Inc.'), iss)
 
 test('same-name regression: "Acme Inc" in Austin TX does not attach to the New York "Acme"; the New York "Acme Inc" does', async () => {
   const austin = withGeo({ where: ['New York City'] }); assert.equal(await store(austin, body(issuer('Acme, Inc.', 'Austin', 'TX'))), 0)
-  assert.equal((austin.prepare('SELECT COUNT(*) n FROM lead_enrichments').get() as { n: number }).n, 0)
+  assert.equal((austin.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind <> 'sec_filing_confirmed'").get() as { n: number }).n, 0)
   const ny = withGeo({ where: ['New York City'] }); assert.equal(await store(ny, body(issuer('Acme, Inc.', 'New York', 'NY'))), 3)
   const brooklyn = withGeo({ where: ['New York City'] }); assert.equal(await store(brooklyn, body(issuer('Acme, Inc.', 'Brooklyn', 'NY'))), 3, 'a borough is the same city for the scan')
 })
@@ -87,13 +88,13 @@ test('a lead that is not this tenant\'s stores nothing; a London scan refuses a 
 // ---- same name AND same city is still not identity (review of a1450fe6) ----
 const rows = (db: Database.Database, kind: string) => (db.prepare('SELECT value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND kind = ?').all('L1', kind) as { value: string; label: string; source_url: string }[])
 const NO_STREET = 'Acme opened a dental office in New York this month'
-const nyc = (evidence: string) => withGeo({ where: ['New York City'] }, evidence)
+const nyc = (evidence: string) => withGeo({ where: ['New York City'] }, evidence, false)      // NOT confirmed by an identity review
 
 test('same-city namesake with no confirmed binding: nothing is attached; the people are QUARANTINED for identity review and never count as people or contacts', async () => {
   const db = nyc(NO_STREET)
   assert.equal(await store(db, body(issuer('Acme, Inc.', 'New York', 'NY'))), 0)
   assert.equal(rows(db, 'person').length, 0)
-  const q = rows(db, CANDIDATE_KIND); assert.equal(q.length, 3); assert.ok(q.every(r => /quarantined: same name, not confirmed as this company - needs identity review/.test(r.label)))
+  const q = rows(db, CANDIDATE_KIND); assert.equal(q.length, 3); assert.ok(q.every(r => /quarantined: same name and city only; not confirmed as this company - needs identity review/.test(r.label)))
   assert.equal(contactsFromEnrichments(db.prepare('SELECT kind,value,label,source_url,connector FROM lead_enrichments WHERE lead_id = ?').all('L1') as never, 'CEO; Executive Officer').length, 0, 'the ranker never sees a quarantined candidate')
 })
 
@@ -107,9 +108,42 @@ test('a conflicting place stays out entirely (other city, other country), even w
   for (const [city, state] of [['Austin', 'TX'], ['Toronto', 'A6']]) { const db = nyc(NO_STREET); assert.equal(await store(db, body(issuer('Acme, Inc.', city, state))), 0); assert.equal(rows(db, CANDIDATE_KIND).length + rows(db, 'person').length, 0, city) }
 })
 
-test('the SAME street address binds the filer to the lead: people are attached', async () => {
+test('the SAME street address is corroboration only: the people are quarantined, not attached, until an identity review confirms the filer', async () => {
   const db = nyc('Acme Dental opened at 100 Atlantic Avenue, New York this month')
-  assert.equal(await store(db, body(issuer('Acme, Inc.', 'New York', 'NY'))), 3); assert.equal(rows(db, 'person').length, 3); assert.equal(rows(db, CANDIDATE_KIND).length, 0)
+  assert.equal(await store(db, body(issuer('Acme, Inc.', 'New York', 'NY'))), 0); assert.equal(rows(db, 'person').length, 0)
+  const q = rows(db, CANDIDATE_KIND); assert.equal(q.length, 3); assert.ok(q.every(r => /street and unit match|unit not stated/.test(r.label) && /not confirmed as this company/.test(r.label)))
+})
+
+// ---- same building, different unit (review of cc8aced) ----
+const withUnit = (unit: string, city = 'New York', state = 'NY') => `<primaryIssuer><entityName>Acme, Inc.</entityName><issuerAddress><street1>100 Atlantic Avenue</street1><street2>${unit}</street2><city>${city}</city><stateOrCountry>${state}</stateOrCountry></issuerAddress></primaryIssuer>`
+const bodyU = (unit: string) => XML.replace(issuer('Acme, Inc.'), withUnit(unit))
+
+test('same building, DIFFERENT unit (filing Suite 100 vs the lead at Suite 900, a different known dental domain): nothing is attached; the people are quarantined and unranked', async () => {
+  const db = nyc('Acme Dental, Suite 900, 100 Atlantic Avenue, New York, opened its second office')
+  db.prepare("UPDATE leads SET company_domain = 'acmedental.example'").run()
+  assert.equal(await store(db, bodyU('Suite 100')), 0)
+  assert.equal(rows(db, 'person').length, 0, 'not attached')
+  const q = rows(db, CANDIDATE_KIND); assert.equal(q.length, 3); assert.ok(q.every(r => /same building, different unit \(filing 100 vs lead 900\)/.test(r.label)), q[0].label)
+  assert.equal(contactsFromEnrichments(db.prepare('SELECT kind,value,label,source_url,connector FROM lead_enrichments WHERE lead_id = ?').all('L1') as never, 'CEO; Executive Officer').length, 0, 'unranked')
+})
+
+test('the unit is parsed from SEC street2 and from street1; "Ste.", "#" and "Floor" forms compare; a shared building with no unit on either side is flagged, never bound', async () => {
+  assert.equal(filingIssuerPlace(withUnit('Suite 100')).unit, '100'); assert.equal(filingIssuerPlace(withUnit('Ste. 4B')).unit, '4b'); assert.equal(filingIssuerPlace(withUnit('#12')).unit, '12'); assert.equal(filingIssuerPlace(withUnit('3rd Floor')).unit, 'floor 3')
+  assert.deepEqual(unitsIn('Acme at 100 Atlantic Avenue, Suite 900 and Unit 4B'), ['900', '4b'])
+  const db = nyc('Acme Dental opened at 100 Atlantic Avenue, New York'); assert.equal(await store(db, body(issuer('Acme, Inc.', 'New York', 'NY'))), 0)
+  assert.ok(rows(db, CANDIDATE_KIND).every(r => /unit not stated on both sides \(shared-building ambiguity\)/.test(r.label)))
+  const same = nyc('Acme Dental, Suite 100, 100 Atlantic Avenue, New York'); assert.equal(await store(same, bodyU('Ste. 100')), 0); assert.ok(rows(same, CANDIDATE_KIND).every(r => /street and unit match \(corroboration only\)/.test(r.label)), 'even a full street + unit match is corroboration, not identity')
+})
+
+test('genuinely CIK/domain-bound: a reviewer binds the filer by the CIK and the lead\'s CONFIRMED domain, and only then are the people attached (a wrong or unconfirmed domain records nothing)', async () => {
+  const db = nyc('Acme Dental, Suite 900, 100 Atlantic Avenue, New York')
+  db.prepare("UPDATE leads SET company_domain = 'acmedental.example'").run()
+  assert.equal(await store(db, bodyU('Suite 100')), 0); assert.equal(rows(db, CANDIDATE_KIND).length, 3)
+  assert.equal(confirmFilingIdentity(db, 'A', 'L1', '123456', { domain: 'other.example' }), 0, 'a domain that is not the lead\'s'); assert.equal(confirmFilingIdentity(db, 'A', 'L1', '123456', { domain: 'acmedental.example' }), 0, 'the lead\'s domain is not confirmed yet')
+  assert.equal(rows(db, 'sec_filing_confirmed').length, 0, 'nothing recorded by a refused confirmation'); assert.equal(rows(db, 'person').length, 0)
+  db.prepare("INSERT INTO lead_enrichments (id, tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('d1', 'A', 'L1', 'user', 'domain_review', 'acmedental.example', 'confirmed', 'https://acmedental.example', '2026-10-20', 0)").run()
+  assert.equal(confirmFilingIdentity(db, 'A', 'L1', '123456', { domain: 'acmedental.example' }), 3)
+  assert.equal(rows(db, 'person').length, 3); assert.equal(rows(db, CANDIDATE_KIND).length, 0); assert.ok(rows(db, 'sec_filing_confirmed')[0].label.includes('confirmed domain'))
 })
 
 test('identity review: confirming the filer (CIK) promotes ITS quarantined people, only for the reviewing tenant, and never another filer\'s', async () => {

@@ -13,6 +13,7 @@ import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
 import { classifyEntityMatch } from '../signals/entity-match.ts'
 import { addressAgreement, contactAgreement, formatPlace } from '../scan/contact-agreement.ts'
+import { domainConfirmed } from '../signals/domain-basis.ts'
 
 export const CONNECTOR = 'signals:sec-form-d'
 export const MAX_OFFICERS = 4
@@ -41,11 +42,20 @@ export function filingIssuer(xml: string): string {
 }
 
 // Where the issuer says it is (Form D primaryIssuer/issuerAddress: city + state or country code); null when absent. A registry fact, so it can agree or conflict with the lead's place.
-export function filingIssuerPlace(xml: string): { place: string | null; address: string | null } {
+export function filingIssuerPlace(xml: string): { place: string | null; address: string | null; unit: string | null } {
   const block = /<primaryIssuer>[\s\S]*?<\/primaryIssuer>/i.exec(xml)?.[0] ?? ''
   const addr = /<issuerAddress>[\s\S]*?<\/issuerAddress>/i.exec(block)?.[0] ?? ''
-  const city = tag(addr, 'city'), state = tag(addr, 'stateOrCountry'), street = tag(addr, 'street1')
-  return { place: city && state ? formatPlace(city, state, null) : null, address: street && city ? [street, city, state].filter(Boolean).join(', ').slice(0, 160) : null }
+  const city = tag(addr, 'city'), state = tag(addr, 'stateOrCountry'), street = tag(addr, 'street1'), street2 = tag(addr, 'street2')
+  // The unit is kept: SEC carries it in street2 ("Suite 100"), or trailing street1. Two companies in one building are told apart by it.
+  const unit = unitsIn(`${street2} ${street}`)[0] ?? null
+  return { place: city && state ? formatPlace(city, state, null) : null, address: street && city ? [street, street2, city, state].filter(Boolean).join(', ').slice(0, 200) : null, unit }
+}
+// Normalised unit designators in a text: "Suite 100", "Ste. 100", "#100", "Unit 4B", "Floor 3" -> '100', '100', '100', '4b', 'floor 3'.
+export function unitsIn(text: string): string[] {
+  const out = new Set<string>()
+  for (const m of text.matchAll(/\b(?:suite|ste|unit|apt|apartment|room|rm)\.?\s*#?\s*([A-Za-z0-9-]{1,8})\b|#\s*([A-Za-z0-9-]{1,8})\b/gi)) out.add((m[1] ?? m[2]).toLowerCase())
+  for (const m of text.matchAll(/\b(\d{1,3})(?:st|nd|rd|th)?\s+(?:floor|fl)\b|\b(?:floor|fl)\.?\s*(\d{1,3})\b/gi)) out.add(`floor ${m[1] ?? m[2]}`)
+  return [...out]
 }
 
 export function parseRelatedPersons(xml: string): FilingPerson[] {
@@ -92,23 +102,27 @@ export async function storeFilingOfficers(db: Database.Database, tenantId: strin
     // company's executives. Still a name heuristic (token-identical after suffix stripping), so labels stay "as of filing".
     const issuer = filingIssuer(xml)
     if (!issuer || classifyEntityMatch(filing.entity, issuer) !== 'heuristic') return 0
-    // A name match - even with the same city - is not identity: two different companies can share a name and a city. People are ATTACHED only on a confirmed binding:
-    //   (1) the issuer's stated STREET address is the lead's own known street address (a registry fact against the lead's evidence), or
-    //   (2) a recorded identity review confirmed this filer's CIK for this lead (confirmFilingIdentity).
-    // A known street address that DIFFERS is a known different entity: nothing is stored. A same-city name match with no binding is QUARANTINED - kept as unattached candidates
-    // (kind sec_officer_candidate, never counted as contacts or people) for identity review. No stated address / no geography to compare / a conflicting place: nothing.
+    // A name match - even with the same city, even with the same street - is not identity: two companies can share a name, a city and a building. People are ATTACHED only when an
+    // identity review confirmed this filer (CIK) as this lead's company (confirmFilingIdentity). A matching street is CORROBORATION, not identity. A known DIFFERENT street address is a
+    // known different entity: nothing is stored. Everything else that agrees on place is QUARANTINED - unattached, unranked candidates (kind sec_officer_candidate) with the reason: a unit
+    // that DIFFERS (same building, different suite), a shared building with no unit to compare, a street match, or only the name and city.
     const ctx = leadContext(db, tenantId, leadId)
     if (!ctx) return 0
     const at = filingIssuerPlace(xml)
     const agree = contactAgreement({ company_domain: ctx.company_domain, where: ctx.where, evidence: ctx.evidence }, { place: at.place, address: at.address })
     if (!agree.ok || (agree.via !== 'location' && agree.via !== 'address' && agree.via !== 'domain')) return 0
-    if (addressAgreement(at.address, ctx.evidence) === 'conflict') return 0
-    const bound = addressAgreement(at.address, ctx.evidence) === 'agrees' || filingConfirmed(db, tenantId, leadId, filing.url)
+    const street = addressAgreement(at.address, ctx.evidence)
+    if (street === 'conflict') return 0
+    const leadUnits = unitsIn(ctx.evidence)
+    const note = street === 'agrees'
+      ? (at.unit && leadUnits.length && !leadUnits.includes(at.unit) ? `same building, different unit (filing ${at.unit} vs lead ${leadUnits.join('/')})` : !at.unit || !leadUnits.length ? 'same street, unit not stated on both sides (shared-building ambiguity)' : 'street and unit match (corroboration only)')
+      : 'same name and city only'
+    const bound = filingConfirmed(db, tenantId, leadId, filing.url)
     const now = Math.floor((deps.now ?? Date.now()) / 1000)
     let n = 0
     for (const p of parseRelatedPersons(xml)) {
       if (bound) { addEnrichment(db, tenantId, leadId, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.role}`.slice(0, 120), label: `named in SEC Form D filed ${filing.date} (as of filing, not verified as current)`.slice(0, 200), confidence: 60, source_url: filing.url, source_date: filing.date, retrieved_at: now }); n++ }
-      else addEnrichment(db, tenantId, leadId, { connector: CONNECTOR, kind: CANDIDATE_KIND, value: `${p.name}, ${p.role}`.slice(0, 120), label: `quarantined: same name, not confirmed as this company - needs identity review (SEC Form D filed ${filing.date})`.slice(0, 200), confidence: null, source_url: filing.url, source_date: filing.date, retrieved_at: now })
+      else addEnrichment(db, tenantId, leadId, { connector: CONNECTOR, kind: CANDIDATE_KIND, value: `${p.name}, ${p.role}`.slice(0, 120), label: `quarantined: ${note}; not confirmed as this company - needs identity review (SEC Form D filed ${filing.date})`.slice(0, 200), confidence: null, source_url: filing.url, source_date: filing.date, retrieved_at: now })
     }
     return n
   } catch { return 0 }
@@ -121,11 +135,17 @@ function filingConfirmed(db: Database.Database, tenantId: string, leadId: string
 }
 // The identity-review action: the reviewer confirmed that the filer with this CIK IS this lead's company. Records the confirmation (tenant- and lead-scoped) and promotes this filer's
 // quarantined candidates to people. Returns how many were promoted. Without this nothing quarantined ever becomes a person.
-export function confirmFilingIdentity(db: Database.Database, tenantId: string, leadId: string, cik: string, now = Math.floor(Date.now() / 1000)): number {
+export function confirmFilingIdentity(db: Database.Database, tenantId: string, leadId: string, cik: string, o: { domain?: string; now?: number } = {}): number {
+  const now = o.now ?? Math.floor(Date.now() / 1000)
   if (!/^\d{1,10}$/.test(cik)) return 0
-  const owned = db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId)
+  const owned = db.prepare('SELECT l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { company_domain: string | null } | undefined
   if (!owned) return 0
-  addEnrichment(db, tenantId, leadId, { connector: 'user', kind: CONFIRMED_KIND, value: cik, label: 'identity review: this SEC filer is this company', confidence: null, source_url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}`, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+  // A reviewer may bind the filer by the lead's CONFIRMED company domain as well as by the CIK: the domain they name must be the lead's own and confirmed, or nothing is recorded.
+  if (o.domain !== undefined) {
+    const d = o.domain.trim().toLowerCase().replace(/^www\./, '')
+    if (!d || (owned.company_domain ?? '').trim().toLowerCase().replace(/^www\./, '') !== d || !domainConfirmed(db, tenantId, leadId, d)) return 0
+  }
+  addEnrichment(db, tenantId, leadId, { connector: 'user', kind: CONFIRMED_KIND, value: cik, label: (o.domain ? 'identity review: this SEC filer is this company (bound by CIK and the lead\'s confirmed domain)' : 'identity review: this SEC filer is this company (bound by CIK)'), confidence: null, source_url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik}`, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
   const rows = db.prepare("SELECT value, source_url, source_date FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = ? AND kind = ?").all(tenantId, leadId, CONNECTOR, CANDIDATE_KIND) as { value: string; source_url: string; source_date: string }[]
   let n = 0
   for (const r of rows) {
