@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { polishDraft } from './draft-llm.ts'
+import { calibratedStop, launchGate, migrateLaunchPolicy, outsidePolicy } from './launch-policy.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -26,6 +27,7 @@ export const MIN_CONFIDENCE = 80
 export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1'
 
 export function migrateAutopilot(db: Database.Database): void {
+  migrateLaunchPolicy(db) // a calibrated launch's accepted policy (lib/outreach/launch-policy.ts, #405)
   db.exec(`
     CREATE TABLE IF NOT EXISTS autopilot_settings (
       tenant_id TEXT PRIMARY KEY,
@@ -118,15 +120,26 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
 
   const leads = db.prepare(
-    `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    `SELECT l.id, l.contact, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
      ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string }[]
+  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string; play: string }[]
+  // A calibrated launch (#405): an accepted, current policy launched by a passing preflight, from the policy's own
+  // mailbox. It replaces only the hand-approval warmup; it narrows every send to the policy and adds its stops and
+  // rollout cap. Without one, everything below is exactly as before.
+  const mailbox = () => { const g = gmailStatus(db, tenantId); return g?.status === 'active' ? g.email : null }
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends
     if (getState(db, tenantId).paused || !autopilotAvailable(env) || !getState(db, tenantId).enabled) return stop('paused')
+    const gate = launchGate(db, tenantId, mailbox(), now)
+    if (gate.calibrated) {
+      const halt = calibratedStop(db, tenantId, gate)
+      if (halt) { pause(db, tenantId, halt); return stop(halt) }
+      const outside = outsidePolicy(gate.policy, l.play, l.contact)
+      if (outside) { out.skipped++; audit(db, tenantId, 'skipped', outside, l.id); continue }
+    }
     let id: string
     try {
       id = createDraft(db, tenantId, l.id, businessName)
@@ -135,8 +148,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
     const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
-    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
-    if (autoSent24h(db, tenantId, now) >= st.daily_cap) { audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }
+    if (!gate.calibrated && sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
+    const cap = gate.calibrated ? Math.min(st.daily_cap, gate.cap) : st.daily_cap
+    if (autoSent24h(db, tenantId, now) >= cap) { audit(db, tenantId, 'daily_cap', `cap ${cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }
     const domain = to.split('@')[1]
     if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
     if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }

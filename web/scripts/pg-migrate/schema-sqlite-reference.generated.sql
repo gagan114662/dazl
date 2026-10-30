@@ -20,6 +20,15 @@ CREATE TABLE autopilot_audit (
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
 
+CREATE TABLE autopilot_launch_policy (
+    tenant_id TEXT PRIMARY KEY,
+    version TEXT NOT NULL CHECK (length(version) <= 20),
+    policy TEXT NOT NULL CHECK (length(policy) <= 8000),
+    accepted_at INTEGER NOT NULL,
+    launched_at INTEGER,
+    preflight TEXT CHECK (preflight IS NULL OR length(preflight) <= 4000)
+  );
+
 CREATE TABLE autopilot_settings (
       tenant_id TEXT PRIMARY KEY,
       enabled INTEGER NOT NULL DEFAULT 0,
