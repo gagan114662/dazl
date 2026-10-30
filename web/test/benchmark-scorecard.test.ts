@@ -223,6 +223,12 @@ test('integrity matrix: every inconsistency between the frozen set, the attempts
     { name: 'duplicate ranks', run: r9([attempt('a', 'complete', 1, [row(1, 'A'), row(1, 'B')])]), code: 'rank_duplicate', id: 'a' },
     { name: 'rank that is not a positive integer', run: r9([attempt('a', 'complete', 1, [row(0, 'A')])]), code: 'rank_invalid', id: 'a' },
     { name: 'aggregate with a non-numeric count', run: r9([{ ...attempt('a', 'complete', 1), aggregate: { hits: 'many' } }]), code: 'aggregate_invalid', id: 'a' },
+    // self-probe: recorded evidence with a hole, and names that would become file paths
+    { name: 'rank gap (rank 2 missing: a result dropped from the evidence)', run: r9([attempt('a', 'complete', 1, [row(1, 'A'), row(3, 'C')])]), code: 'rank_gap', id: 'a', detail: /1\.\.2.*3/ },
+    { name: 'ranks that do not start at 1', run: r9([attempt('a', 'complete', 1, [row(2, 'A')])]), code: 'rank_gap', id: 'a' },
+    { name: 'system name with path separators', run: r9([attempt('a', 'complete', 1, [okRow])], { system: '../../escape' }), code: 'run_system_invalid', id: null },
+    { name: 'commit with path separators', run: r9([attempt('a', 'complete', 1, [okRow])], { commit: '../x' }), code: 'run_commit_invalid', id: null },
+    { name: 'empty system name', run: r9([attempt('a', 'complete', 1, [okRow])], { system: '' }), code: 'run_system_invalid', id: null },
   ]
   for (const k of cases) {
     const c = invalid(scorecard(k.set ?? one, k.run), k.name)
@@ -282,4 +288,69 @@ test('CLI integrity: duplicate ids, truncated or malformed files, an unknown tas
     writeFileSync(sb, JSON.stringify({ commit: 'c0ffee1', date: '2026-10-29', rows: [sbRow('toronto-dental')] }))
     assert.equal(cli('from-scoreboard', '--result', sb, '--out', sbOut).status, 0); assert.ok(existsSync(sbOut))
   } finally { rmSync(T, { recursive: true, force: true }) }
+})
+
+test('a threshold set that parsed but is not a list, or an entry with a bad op, value or sample, is invalid_input, never meets or misses', () => {
+  const std = set.tasks.filter(t => t.kind === 'standard').slice(0, 10).map(t => attempt(t.id, 'complete', 1, [row(1, t.id)]))
+  const card = sc(set, run({}, std))
+  for (const bad of [{}, { status: 'proposed', version: '1' }, { status: 'proposed', version: '1', thresholds: { id: 'x' } }, null, 'thresholds']) {
+    const r = evaluateThresholds(card, bad as never)
+    assert.match(r.status, /invalid_input/, JSON.stringify(bad)); assert.deepEqual(r.results, [])
+  }
+  const entry = (over: Record<string, unknown>) => ({ id: 'x', metric: 'complete', op: '>=', value: 1, min_complete_tasks: 0, why: '', ...over })
+  for (const over of [{ op: '=>' }, { op: '>' }, { value: 'one' }, { value: Number.NaN }, { min_complete_tasks: -1 }, { min_complete_tasks: 'ten' }, { sample: 'positive' }, { metric: 'tasks ' }, { id: '' }, { metric: 7 }]) {
+    const r = evaluateThresholds(card, { status: 'proposed', version: '1', thresholds: [entry(over), entry({ id: 'ok' })] } as never)
+    assert.equal(r.results[0].result, 'invalid_input', JSON.stringify(over)); assert.equal(r.results[0].observed, null)
+    assert.equal(r.results[1].result, 'meets', 'the well-formed entry still evaluates')
+  }
+})
+
+test('variant corpus: statuses, verdicts, ids, versions, costs and ranks are exact; case, whitespace and synonym variants are invalid_input, exact values score', () => {
+  const r9 = (tasks: unknown[], over: Partial<BenchmarkRun> = {}) => run({ task_set_version: '9', ...over }, tasks as TaskRun[])
+  const ok = (over: Record<string, unknown>) => ({ ...attempt('a', 'complete', 1, [row(1, 'A')]), ...over })
+  const verdict = (identity: unknown) => ({ ...attempt('a', 'complete', 1), results: [{ rank: 1, entity_key: 'A', verdicts: { ...all('pass'), identity } }] })
+  const negatives: { name: string; run: BenchmarkRun; set?: TaskSet; code: string }[] = [
+    ...['Complete', 'COMPLETE', ' complete', 'complete ', 'completed', 'done', 'ok', 'success', 'FAILED', 'Failed', 'fail', 'Incomplete', 'not-run', 'notrun', 'not_run ', 'unsupported\n', '', null, 1, true].map(st => ({ name: `status ${JSON.stringify(st)}`, run: r9([ok({ status: st })]), code: 'status_invalid' })),
+    ...['Pass', 'PASS', ' pass', 'pass ', 'passed', 'true', 'yes', 'ok', 'FAIL', 'Unknown', 'contradict', 'n/a', '', null, 1, true, {}].map(vd => ({ name: `verdict ${JSON.stringify(vd)}`, run: r9([verdict(vd)]), code: 'verdict_invalid' })),
+    ...['A', ' a', 'a ', 'a\n', 'a.', 'b'].map(id => ({ name: `task id ${JSON.stringify(id)}`, run: r9([ok({ task_id: id })]), code: 'unknown_task' })),
+    ...[9, ' 9', '9 ', 'v9', '9.0', null, undefined].map(v => ({ name: `task_set_version ${JSON.stringify(v)}`, run: r9([ok({})], { task_set_version: v as never }), code: 'task_set_version_mismatch' })),
+    ...['1', '$1', ' 1', -0.01, Number.POSITIVE_INFINITY, JSON.parse('1e400'), true, [], {}].map(c => ({ name: `cost ${String(c)}`, run: r9([ok({ cost_usd: c })]), code: 'cost_invalid' })),
+    ...['1', 1.5, -1, 0, '01', null, true].map(rk => ({ name: `rank ${JSON.stringify(rk)}`, run: r9([ok({ results: [{ ...row(1, 'A'), rank: rk }] })]), code: 'rank_invalid' })),
+    ...['Live', 'LIVE', ' live', 'real', 'recorded '].map(o => ({ name: `origin ${JSON.stringify(o)}`, run: r9([ok({})], { origin: o as never }), code: 'run_origin_invalid' })),
+    ...['dazl-benchmark-run ', 'DAZL-BENCHMARK-RUN', 'dazl-benchmark', 'dazl-benchmark-scorecard'].map(f => ({ name: `format ${JSON.stringify(f)}`, run: r9([ok({})], { format: f as never }), code: 'run_format_invalid' })),
+    ...[{ independent: 'true' }, { independent: 'yes' }, { independent: 1 }, { name: '' }, { name: null }].map(e => ({ name: `evaluator ${JSON.stringify(e)}`, run: r9([ok({})], { evaluator: { name: 'i', version: '1', independent: true, ...e } as never }), code: 'run_evaluator_invalid' })),
+  ]
+  assert.ok(negatives.length >= 60, String(negatives.length))
+  for (const k of negatives) {
+    const c = invalid(scorecard(k.set ?? one, k.run), k.name)
+    assert.ok(c.problems.some(p => p.code === k.code), `${k.name}: expected ${k.code}, got ${JSON.stringify(c.problems)}`)
+  }
+  const positives: { name: string; run: BenchmarkRun; set?: TaskSet; check?: (c: Scorecard) => void }[] = [
+    ...(['complete', 'incomplete', 'failed', 'unsupported', 'not_run'] as TaskStatus[]).flatMap(st => [
+      { name: `status ${st}, cost known`, run: r9([attempt('a', st, 0.25)]) },
+      { name: `status ${st}, cost unknown (null)`, run: r9([attempt('a', st, null)]) },
+      { name: `status ${st}, cost missing`, run: r9([{ task_id: 'a', status: st, seconds: null, results: [] } as unknown as TaskRun]) },
+    ]),
+    ...(['pass', 'fail', 'unknown', 'contradicted'] as Verdict[]).flatMap(vd => FIELDS.map(f => ({ name: `${f} ${vd}`, run: r9([{ ...attempt('a', 'complete', 1), results: [{ rank: 1, entity_key: 'A', verdicts: { ...all('pass'), [f]: vd } }] }]) }))),
+    { name: 'cost 0', run: r9([ok({ cost_usd: 0 })]) }, { name: 'cost 0.001', run: r9([ok({ cost_usd: 0.001 })]) }, { name: 'cost 1e6', run: r9([ok({ cost_usd: 1e6 })]) },
+    { name: 'seconds 0', run: r9([ok({ seconds: 0 })]) }, { name: 'seconds null', run: r9([ok({ seconds: null })]) }, { name: 'seconds 1e5', run: r9([ok({ seconds: 1e5 })]) },
+    { name: 'ranks 1..3', run: r9([ok({ results: [row(1, 'A'), row(2, 'B'), row(3, 'C')] })]), check: c => assert.equal(c.tasks[0].returned, 3) },
+    { name: 'ranks out of order', run: r9([ok({ results: [row(3, 'C'), row(1, 'A'), row(2, 'B')] })]) },
+    { name: 'a complete task with no results', run: r9([ok({ results: [] })]), check: c => assert.equal(c.tasks[0].precision_at_10, null) },
+    { name: 'a failed task with partial results', run: r9([{ ...attempt('a', 'failed', 1, [row(1, 'A')]), reason: 'crash' }]), check: c => assert.equal(c.totals.returned, 1) },
+    { name: 'entity with spaces and unicode', run: r9([ok({ results: [row(1, 'Zürich Dental GmbH')] })]) },
+    { name: 'the same entity twice in one task (a quality fact, not an input fault)', run: r9([ok({ results: [row(1, 'A'), row(2, 'a ')] })]), check: c => assert.equal(c.totals.unique_validated_entities, 1) },
+    { name: 'an extra property on a task', run: r9([ok({ extra: 'ignored' })]) },
+    { name: 'reason null', run: r9([ok({ reason: null })]) },
+    { name: 'aggregate {}', run: r9([ok({ aggregate: {} })]) }, { name: 'aggregate counts', run: r9([ok({ aggregate: { hits: 0, candidates: 3 } })]), check: c => assert.equal(c.aggregates.length, 1) },
+    ...(['live', 'recorded', 'synthetic', 'historical-aggregate'] as const).map(o => ({ name: `origin ${o}`, run: r9([ok({})], { origin: o }) })),
+    { name: 'evaluator not independent', run: r9([ok({})], { evaluator: { name: 'self', version: '1', independent: false } }), check: c => assert.equal(c.evaluable, false) },
+    { name: 'commit null', run: r9([ok({})], { commit: null }) }, { name: 'system_version null', run: r9([ok({})], { system_version: null }) },
+    { name: 'system with dots and dashes', run: r9([ok({})], { system: 'chatgpt-web-baseline.v2' }) },
+    { name: 'dotted task set version', set: { ...one, version: '1.2' }, run: r9([ok({})], { task_set_version: '1.2' }) },
+    { name: 'empty run (nothing attempted)', run: r9([]), check: c => assert.equal(c.totals.not_run, 1) },
+    { name: 'v1 set, every kind, exact ids', run: run({}, set.tasks.map(t => attempt(t.id, 'complete', 1, t.kind === 'negative' ? [] : [row(1, t.id)]))), set, check: c => assert.equal(c.totals.complete, 14) },
+  ]
+  assert.ok(positives.length >= 40, String(positives.length))
+  for (const k of positives) { const c = sc(k.set ?? one, k.run); k.check?.(c) }
 })

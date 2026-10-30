@@ -46,10 +46,11 @@ A run is one system on one task set. Each returned result has a verdict on **ide
   - an attempt for a task that is not in the frozen set, or a run whose `task_set_version` is not the set's;
   - a cost or results recorded without an outcome (no or unknown `status`), or results on a task whose status is `not_run` or `unsupported`;
   - a negative, non-numeric or non-finite cost or time (unknown is `null`, never a string or a negative number);
-  - a result with a verdict outside pass / fail / unknown / contradicted, a missing field verdict, no entity, or a duplicate or non-positive rank;
+  - a result with a verdict outside pass / fail / unknown / contradicted, a missing field verdict, no entity, a duplicate or non-positive rank, or a gap in the ranks (they must be exactly 1..n: a missing rank is a result dropped from the evidence);
+  - a `system` or `commit` that is not a plain name (letters, digits, `.`, `_`, `-`): they name the card file;
   - a file that is truncated or not JSON, a run that is not `dazl-benchmark-run` version 1, no frozen task set for the run's version, an aggregate that is not numeric.
 
-  The same boundary applies to `from-scoreboard` (a scoreboard row outside the set, or recorded twice, converts to nothing) and to `compare` (a file that is not a scored card is rejected). A threshold that names a metric the card does not have is `invalid_input` for that threshold.
+  The same boundary applies to `from-scoreboard` (a scoreboard row outside the set, or recorded twice, converts to nothing) and to `compare` (a file that is not a scored card is rejected). Statuses, verdicts, ids and versions are exact: `Complete`, `passed`, ` a` or `v1` are rejected, never read as something close. A threshold file with no list is `invalid_input` as a whole; an entry that names a metric the card does not have, an op other than `>=`, `<=`, `==`, a non-numeric value or sample size, or a sample other than `negative`, is `invalid_input` for that threshold.
 
 A run can be evaluated against release thresholds only when **all** of these hold:
 - its origin is live or recorded (not synthetic, not a historical aggregate);

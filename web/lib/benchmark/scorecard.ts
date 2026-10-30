@@ -115,6 +115,7 @@ const KINDS: Task['kind'][] = ['standard', 'negative', 'ambiguous', 'cold_start'
 const ORIGINS: Origin[] = ['live', 'recorded', 'synthetic', 'historical-aggregate']
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 const isId = (x: unknown): x is string => typeof x === 'string' && x.trim().length > 0
+const isName = (x: unknown): x is string => typeof x === 'string' && /^[A-Za-z0-9][\w.-]*$/.test(x)   // becomes part of a file name
 const nonNeg = (x: unknown) => x === null || x === undefined || (typeof x === 'number' && Number.isFinite(x) && x >= 0)
 const show = (x: unknown) => x === undefined ? 'missing' : JSON.stringify(x)
 // Every problem with the frozen set and the run, as plain parsed JSON (the declared types are not trusted). Empty = scorable.
@@ -135,6 +136,8 @@ export function inputProblems(set: TaskSet, run: BenchmarkRun): InputProblem[] {
   if (r.format !== 'dazl-benchmark-run' || r.version !== 1) bad('run_format_invalid', null, `format ${show(r.format)} version ${show(r.version)}: expected dazl-benchmark-run version 1`)
   if (r.task_set_version !== s.version) bad('task_set_version_mismatch', null, `the run is for task set v${String(r.task_set_version)}, the frozen set is v${s.version}`)
   if (!ORIGINS.includes(r.origin as Origin)) bad('run_origin_invalid', null, `origin ${show(r.origin)} is not one of ${ORIGINS.join(', ')}`)
+  if (!isName(r.system)) bad('run_system_invalid', null, `system ${show(r.system)} must be a plain name (letters, digits, . _ -): it names the card file`)
+  if (r.commit !== null && r.commit !== undefined && !isName(r.commit)) bad('run_commit_invalid', null, `commit ${show(r.commit)} must be a plain name or null: it names the card file`)
   if (!isObj(r.evaluator) || !isId(r.evaluator.name) || typeof r.evaluator.independent !== 'boolean') bad('run_evaluator_invalid', null, 'the run has no evaluator with a name and independent: true | false')
   if (!Array.isArray(r.tasks)) { bad('run_tasks_invalid', null, 'run.tasks is not a list'); return out }
   const seen = new Map<string, Record<string, unknown>[]>()
@@ -163,6 +166,8 @@ export function inputProblems(set: TaskSet, run: BenchmarkRun): InputProblem[] {
       else for (const f of FIELDS) if (!VERDICTS.includes(x.verdicts[f] as Verdict)) bad('verdict_invalid', id, `results[${j}] ${f} verdict ${show(x.verdicts[f])} is not one of ${VERDICTS.join(', ')}`)
     })
     for (const [rank, k] of ranks) if (k > 1) bad('rank_duplicate', id, `rank ${rank} appears ${k} times`)
+    const missing = Array.from({ length: Math.max(0, ...ranks.keys()) }, (_, i) => i + 1).filter(k => !ranks.has(k))
+    if (missing.length) bad('rank_gap', id, `ranks must be 1..${n}: rank(s) ${missing.join(', ')} missing, highest ${Math.max(...ranks.keys())} (a result dropped from the recorded evidence)`)
   })
   for (const [id, ts] of seen) if (ts.length > 1) bad('duplicate_task', id, `${ts.length} attempts recorded for task ${id} (${ts.map(t => `${String(t.status)} cost_usd ${t.cost_usd ?? 'unknown'}, ${Array.isArray(t.results) ? t.results.length : 0} result(s)`).join('; ')}): one record per task; a repeated attempt is never selected, merged or dropped`)
   return out
@@ -171,7 +176,7 @@ export const problemSummary = (ps: InputProblem[]) => ps.map(p => `${p.code}${p.
 
 export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard | InvalidScorecard {
   const problems = inputProblems(set, run)
-  if (problems.length) return { format: 'dazl-benchmark-scorecard', version: 1, status: 'invalid_input', system: isObj(run) && isId(run.system) ? run.system : null, task_set_version: isObj(set) && isId(set.version) ? set.version : null, problems }
+  if (problems.length) return { format: 'dazl-benchmark-scorecard', version: 1, status: 'invalid_input', system: isObj(run) && isName(run.system) ? run.system : null, task_set_version: isObj(set) && isId(set.version) ? set.version : null, problems }
   const byId = new Map(run.tasks.map(t => [t.task_id, t]))   // one record per task: inputProblems rejected duplicates
   const tasks = set.tasks.map(t => scoreTask(t, byId.get(t.id)))
   const done = tasks.filter(t => t.status === 'complete')
@@ -223,14 +228,21 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard | InvalidS
 export const NEGATIVE_METRICS: (keyof Scorecard['totals'])[] = ['false_alerts']
 export interface Threshold { id: string; metric: keyof Scorecard['totals']; op: '>=' | '<=' | '=='; value: number; min_complete_tasks: number; sample?: 'negative'; why: string }
 export interface ThresholdSet { status: 'proposed'; version: string; thresholds: Threshold[] }
+const OPS: Threshold['op'][] = ['>=', '<=', '==']
 export type ThresholdResult = { id: string; result: 'meets' | 'misses' | 'insufficient_sample' | 'not_evaluable' | 'invalid_input'; observed: number | null; detail: string }
 export function evaluateThresholds(card: Scorecard | InvalidScorecard, set: ThresholdSet): { status: string; results: ThresholdResult[] } {
   if (card.status === 'invalid_input') {
     const detail = `invalid_input: ${problemSummary(card.problems)}`
     return { status: `invalid_input: nothing was evaluated (${card.problems.length} input problem(s): ${problemSummary(card.problems)})`, results: set.thresholds.map(t => ({ id: t.id, result: 'invalid_input', observed: null, detail })) }
   }
-  const results = set.thresholds.map((t): ThresholdResult => {
-    if (!(t.metric in card.totals)) return { id: t.id, result: 'invalid_input', observed: null, detail: `metric ${show(t.metric)} is not on the scorecard` }
+  if (!isObj(set) || !Array.isArray(set.thresholds)) return { status: 'invalid_input: the threshold set has no thresholds list; nothing was evaluated', results: [] }
+  const results = set.thresholds.map((t, i): ThresholdResult => {
+    const id = isObj(t) && isId(t.id) ? t.id : `thresholds[${i}]`
+    const fault = !isObj(t) ? 'not an object' : !isId(t.id) ? 'no id' : !(typeof t.metric === 'string' && t.metric in card.totals) ? `metric ${show(t.metric)} is not on the scorecard`
+      : !OPS.includes(t.op as Threshold['op']) ? `op ${show(t.op)} is not one of ${OPS.join(' ')}` : !(typeof t.value === 'number' && Number.isFinite(t.value)) ? `value ${show(t.value)} is not a number`
+      : !(typeof t.min_complete_tasks === 'number' && Number.isFinite(t.min_complete_tasks) && t.min_complete_tasks >= 0) ? `min_complete_tasks ${show(t.min_complete_tasks)} is not a non-negative number`
+      : t.sample !== undefined && t.sample !== 'negative' ? `sample ${show(t.sample)} is not "negative"` : null
+    if (fault) return { id, result: 'invalid_input', observed: null, detail: `threshold ${id}: ${fault}` }
     const observed = card.totals[t.metric] as number | null
     if (!card.evaluable) return { id: t.id, result: 'not_evaluable', observed, detail: card.not_evaluable_reason! }
     if (card.totals.complete < t.min_complete_tasks) return { id: t.id, result: 'insufficient_sample', observed, detail: `${card.totals.complete} complete task(s), at least ${t.min_complete_tasks} needed` }
