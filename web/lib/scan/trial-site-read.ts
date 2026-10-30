@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Db } from '../db/client.ts'
-import { admitTrialSiteReadBudget, settleTrialSiteRead, type TrialRefusal } from '../billing/trial-budget.ts'
+import { admitTrialSiteReadBudget, settleTrialSiteRead, trialPrincipal, type TrialRefusal } from '../billing/trial-budget.ts'
 import { rateLimit, type Limit } from '../rate-limit.ts'
 import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from './trial.ts'
 
@@ -64,19 +64,9 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   return { ok: true, key, settle: (spentUsd: number) => settleTrialSiteRead(db, user.id, a.reservation, spentUsd) }
 }
 
-// Whose trial a workspace's site read is: the workspace's own account, read on the server, never the person acting in it.
-// A personal workspace's id is its founder's user id (lib/workspaces.ts createPersonalWorkspace), so the principal is
-// that user's row: its id (wallet, attempts, Google sign-in) and its email (one trial per company domain). An invited
-// member's own email never stands in for it. A team workspace, or one without its founder's users row, has no trial
-// principal and is refused (fails closed).
-export async function workspaceTrialPrincipal(db: Db, tenantId: string): Promise<{ id: string; email: string } | null> {
-  const r = await db.get<{ id: string; email: string }>(
-    "SELECT u.id, u.email FROM organizations o JOIN users u ON u.id = o.id AND u.id = o.created_by WHERE o.id = ? AND o.kind = 'personal'", [tenantId])
-  return r && typeof r.email === 'string' && r.email.includes('@') ? { id: r.id, email: r.email } : null
-}
-
-// The route's admission: the workspace's trial principal, or a refusal when it has none.
-export async function admitWorkspaceSiteRead(db: Db, tenantId: string, ip: string, deps: SiteReadDeps = {}): Promise<SiteReadAdmission> {
-  const p = await workspaceTrialPrincipal(db, tenantId)
+// The route's admission: the workspace's trial principal (lib/billing/trial-budget.ts trialPrincipal: its founder's
+// account, acting itself), or a refusal when there is none.
+export async function admitWorkspaceSiteRead(db: Db, user: { tenantId: string; actorId: string }, ip: string, deps: SiteReadDeps = {}): Promise<SiteReadAdmission> {
+  const p = await trialPrincipal(db, user)
   return p ? admitTrialSiteRead(db, p, ip, deps) : { ok: false, reason: 'workspace_not_eligible' }
 }

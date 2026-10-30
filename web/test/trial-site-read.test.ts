@@ -2,8 +2,8 @@
 // (lib/scan/trial-site-read.ts). Synthetic accounts, a stubbed limiter; no provider call, no fetch.
 import assert from 'node:assert/strict'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan, admitTrialSiteReadBudget, settleTrialSiteRead, TRIAL_SITE_READ_RESERVE_USD, utcDay } from '../lib/billing/trial-budget.ts'
-import { admitTrialSiteRead, admitWorkspaceSiteRead, workspaceTrialPrincipal, trialSiteReadsPerDay, TRIAL_SITE_READS_PER_ACCOUNT, TRIAL_SITE_READS_PER_IP_PER_DAY } from '../lib/scan/trial-site-read.ts'
+import { admitTrialScan, admitTrialSiteReadBudget, settleTrialSiteRead, trialPrincipal, TRIAL_SITE_READ_RESERVE_USD, utcDay } from '../lib/billing/trial-budget.ts'
+import { admitTrialSiteRead, admitWorkspaceSiteRead, trialSiteReadsPerDay, TRIAL_SITE_READS_PER_ACCOUNT, TRIAL_SITE_READS_PER_IP_PER_DAY } from '../lib/scan/trial-site-read.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
@@ -166,18 +166,24 @@ bothEngines('#409 wallet: a reported read cost above its reserve counts in full 
   }
 })
 
-bothEngines('#444 the trial principal is the workspace founder\'s account, read on the server; a team workspace has none', async ({ db }) => {
+bothEngines('#444 the trial principal is the workspace founder\'s account, read on the server, only while it acts; otherwise none', async ({ db }) => {
   await withKey(OP, async () => {
     const owner = await user(db, uid(900), 'Owner@Corp.example')
     await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [owner.id, owner.id])
-    assert.deepEqual(await workspaceTrialPrincipal(db, owner.id), { id: owner.id, email: 'Owner@Corp.example' })
-    // a personal workspace whose founder row is missing, a team workspace, an unknown id: no principal, refused
+    const me = { tenantId: owner.id, actorId: owner.id }
+    assert.deepEqual(await trialPrincipal(db, me), { id: owner.id, email: 'Owner@Corp.example' })
+    assert.equal(await trialPrincipal(db, { tenantId: owner.id, actorId: uid(950) }), null, 'another member acting: none')
+    // a personal workspace whose founder row is missing; one whose created_by is someone else; a team workspace; an
+    // unknown id: no principal, refused
     await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [uid(901), uid(901)])
+    const other = await user(db, uid(904), 'x@else.example')
+    await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [other.id, owner.id])
     await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'T', 'team', ?, 1)", [uid(902), owner.id])
-    for (const id of [uid(901), uid(902), uid(903)]) {
-      assert.equal(await workspaceTrialPrincipal(db, id), null, id)
-      assert.deepEqual(await admitWorkspaceSiteRead(db, id, '203.0.113.200', { env: ENV, limit: limiter() }), { ok: false, reason: 'workspace_not_eligible' })
+    for (const id of [uid(901), other.id, uid(902), uid(903)]) {
+      assert.equal(await trialPrincipal(db, { tenantId: id, actorId: id }), null, id)
+      assert.deepEqual(await admitWorkspaceSiteRead(db, { tenantId: id, actorId: id }, '203.0.113.200', { env: ENV, limit: limiter() }), { ok: false, reason: 'workspace_not_eligible' })
     }
-    assert.equal((await admitWorkspaceSiteRead(db, owner.id, '203.0.113.201', { env: ENV, limit: limiter() })).ok, true, 'the founder\'s workspace is admitted')
+    assert.deepEqual(await admitWorkspaceSiteRead(db, { tenantId: owner.id, actorId: uid(950) }, '203.0.113.202', { env: ENV, limit: limiter() }), { ok: false, reason: 'workspace_not_eligible' })
+    assert.equal((await admitWorkspaceSiteRead(db, me, '203.0.113.201', { env: ENV, limit: limiter() })).ok, true, 'the founder acting: admitted')
   })
 })

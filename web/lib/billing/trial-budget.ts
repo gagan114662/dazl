@@ -216,3 +216,17 @@ export async function settleTrialReservation(db: DbLike, jobId: string, attempt:
 export async function linkTrialReservation(db: Db, tenantId: string, reservation: string, jobId: string): Promise<void> {
   await db.run('UPDATE trial_reservations SET job_id = ? WHERE id = ? AND tenant_id = ? AND job_id IS NULL', [jobId, reservation, tenantId])
 }
+
+// Whose free trial a workspace draws on: the account that founded it, read on the server, and only while that account
+// itself is acting (app/api/scan/route.ts, app/api/scan/icp-from-url/route.ts, app/api/usage/route.ts). A personal
+// workspace's id is its founder's user id (lib/workspaces.ts createPersonalWorkspace); the principal is that users row,
+// whose id carries the wallet, attempts and Google sign-in and whose email the one-trial-per-company-domain rule reads.
+// The acting session's email never stands in for it. Another member acting in the workspace, a team workspace, or a
+// workspace without its founder's users row has no trial principal: refused (fails closed). The trial stays with the
+// workspace's founder account; it does not follow a member.
+export async function trialPrincipal(db: Db, user: { tenantId: string; actorId: string }): Promise<{ id: string; email: string } | null> {
+  if (user.actorId !== user.tenantId) return null
+  const r = await db.get<{ id: string; email: string }>(
+    "SELECT u.id, u.email FROM organizations o JOIN users u ON u.id = o.id AND u.id = o.created_by WHERE o.id = ? AND o.kind = 'personal'", [user.tenantId])
+  return r && typeof r.email === 'string' && r.email.includes('@') ? { id: r.id, email: r.email } : null
+}

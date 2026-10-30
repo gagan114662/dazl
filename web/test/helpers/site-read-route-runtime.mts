@@ -29,35 +29,45 @@ const post = async () => {
   return { trial: j.trial ?? null, operatorKey: handedKeys.length > before }
 }
 
-test('the site read trial is the workspace founder\'s, never the acting member\'s (owner, invited member, another actor, team workspace)', async () => {
+test('the site read trial is the workspace founder\'s own account, acting itself (owner, invited member, another actor, Google, same domain, team workspace)', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
   const db = sqliteDb(raw)
-  const account = async (id: string, email: string, personal = true) => {
+  const account = async (id: string, email: string, personal = true, google = true) => {
     await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])
-    await db.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [`sub-${id}`, id])
+    if (google) await db.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [`sub-${id}`, id])
     if (personal) await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [id, id])
   }
-  const PRIOR = uid(1), OWNER = uid(2), INVITED = uid(3), FREE = uid(4), CORP_ACTOR = uid(5), TEAM = uid(6)
+  const PRIOR = uid(1), OWNER = uid(2), INVITED = uid(3), FREE = uid(4), CORP_ACTOR = uid(5), TEAM = uid(6), NOGOOGLE = uid(7), SAME = uid(8)
   await account(PRIOR, 'b@corp.example'); await account(OWNER, 'a@corp.example'); await account(INVITED, 'invited@gmail.com')
   await account(FREE, 'solo@gmail.com'); await account(CORP_ACTOR, 'c@corp.example')
   assert.equal((await admitTrialScan(db, { id: PRIOR, email: 'b@corp.example' }, { env: process.env })).ok, true, 'fixture: corp.example already used a trial')
 
-  // 1. The owner of a workspace whose company domain already had its trial: refused.
+  // 1. Same-domain control: the founder of a workspace whose company domain already had its trial is refused.
   setUser({ id: OWNER, business_name: 'Acme', email: 'a@corp.example' })
   assert.deepEqual(await post(), { trial: 'domain_used', operatorKey: false }, 'owner: domain_used')
-  // 2. Instinct's negative: the same workspace, acted in by an invited member with a free address. Still refused.
+  // 2. Instinct's negative: the same workspace, acted in by an invited member with a free address. Refused, no key.
   setUser({ id: OWNER, actorId: INVITED, role: 'operator', business_name: 'Acme', email: 'invited@gmail.com' })
-  assert.deepEqual(await post(), { trial: 'domain_used', operatorKey: false }, 'invited member: the workspace is still not eligible')
-  // 3. Positive control: an eligible workspace's owner is admitted (the operator key is handed to the read).
+  assert.deepEqual(await post(), { trial: 'workspace_not_eligible', operatorKey: false }, 'invited member: never the workspace trial')
+  // 3. Positive control: an eligible workspace's founder is admitted (the operator key is handed to the read).
   setUser({ id: FREE, business_name: 'Solo', email: 'solo@gmail.com' })
-  assert.deepEqual(await post(), { trial: null, operatorKey: true }, 'eligible owner: admitted')
-  // 4. Another actor in that eligible workspace, whose own address is at the used domain: admitted on the workspace's
-  //    trial; the actor's email is not read either way.
-  setUser({ id: FREE, actorId: CORP_ACTOR, role: 'operator', business_name: 'Solo', email: 'c@corp.example' })
-  assert.deepEqual(await post(), { trial: null, operatorKey: true }, 'another actor: the workspace decides')
-  // 5. A team workspace (no founder users row for its id): fails closed, whoever acts.
+  assert.deepEqual(await post(), { trial: null, operatorKey: true }, 'eligible founder: admitted')
+  // 4. Another member acting in that eligible workspace (own address at the used domain or not): refused, as for scans.
+  for (const [actor, email] of [[CORP_ACTOR, 'c@corp.example'], [INVITED, 'invited@gmail.com']]) {
+    setUser({ id: FREE, actorId: actor, role: 'operator', business_name: 'Solo', email })
+    assert.deepEqual(await post(), { trial: 'workspace_not_eligible', operatorKey: false }, `member ${email} in an eligible workspace`)
+  }
+  // 5. The founder's own Google sign-in decides, not a member's: a founder without one is refused google_required.
+  await account(NOGOOGLE, 'nog@fresh.example', true, false)
+  setUser({ id: NOGOOGLE, business_name: 'NoG', email: 'nog@fresh.example' })
+  assert.deepEqual(await post(), { trial: 'google_required', operatorKey: false }, 'founder without Google sign-in')
+  // 6. Same-domain control for the session email: a founder whose session claims another address is judged by its own
+  //    users row (corp.example, used), never by the session's.
+  await account(SAME, 'd@corp.example')
+  setUser({ id: SAME, business_name: 'Corp D', email: 'd-alias@gmail.com' })
+  assert.deepEqual(await post(), { trial: 'domain_used', operatorKey: false }, 'founder: the stored address decides')
+  // 7. A team workspace (no founder users row for its id): fails closed, whoever acts.
   await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Team', 'team', ?, 1)", [TEAM, FREE])
-  for (const [actor, email] of [[FREE, 'solo@gmail.com'], [INVITED, 'invited@gmail.com']]) {
+  for (const [actor, email] of [[FREE, 'solo@gmail.com'], [INVITED, 'invited@gmail.com'], [TEAM, 'team@gmail.com']]) {
     setUser({ id: TEAM, actorId: actor, role: 'owner', business_name: 'Team', email })
     assert.deepEqual(await post(), { trial: 'workspace_not_eligible', operatorKey: false }, `team workspace, actor ${email}`)
   }
