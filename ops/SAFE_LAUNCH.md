@@ -84,3 +84,11 @@ rejection. Parser accepts quote-free values literally including spaces, matching
 known legacy Python split semantics. $/backticks/backslash/NUL remain refused;
 quoted values still strict single-token parsing. No shell, source, interpolation,
 secret output or env rewriting. Existing env content itself was never displayed.
+
+## Required outer preflights must stop the launch
+
+The October30,2026 release used a shell sequence where an extra required SQL check failed but a later launch command still ran. The internal launch checks passed and later health/no-work checks were good, but neither makes that outer check a preflight success.
+
+For every future cutover, invoke `ops/checked_launch.py` as the single outer command. Pass each required check as a `--preflight` JSON argv array, followed by the one `--launch` argv array for `safe_launch.py --execute`. Include disk, live identity/config, pending-work, backup, release-gate and internal dry-run checks. Do not execute a launch in a following shell line. A missing command, nonzero exit or timeout stops the sequence before launch. Child output is suppressed to avoid credential logging; inspect nonsecret preflight reports separately when needed. Never put secrets in argv.
+
+`python3 -m unittest ops/test_checked_launch.py` independently runs the CLI with a deliberately failing command, nonexistent command and timeout, and proves neither a later preflight nor a sentinel launch is reached. A positive control proves successful preflights launch once. This wrapper does not create deployment permission and does not replace any required check.
