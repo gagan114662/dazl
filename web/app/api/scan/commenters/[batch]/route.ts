@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { commenterBatchStatus, deleteCommenterBatch } from '@/lib/scan/commenter-import'
+import { denied } from '@/lib/workspace-access'
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ batch: string }> }) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const { batch } = await ctx.params
-  const status = commenterBatchStatus(getScanDb(), user.id, batch)
+  const status = commenterBatchStatus(getScanDb(), user.tenantId, batch)
   if (!status) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json(status)
 }
@@ -17,8 +18,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ batch: str
 export async function DELETE(req: NextRequest, ctx: { params: Promise<{ batch: string }> }) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const { batch } = await ctx.params
-  if (!deleteCommenterBatch(getScanDb(), user.id, batch)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!deleteCommenterBatch(getScanDb(), user.tenantId, batch)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json({ ok: true })
 }
