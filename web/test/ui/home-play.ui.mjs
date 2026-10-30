@@ -106,7 +106,8 @@ try {
           assert.equal(await page.getByTestId('play-status').textContent(), 'Live')
           assert.match(await page.getByTestId('play-pace').textContent(), /^Runs weekly, next /)
           const stat = async t => (await page.getByTestId(t).locator('div').first().textContent()).trim()
-          assert.deepEqual([await stat('stat-ready'), await stat('stat-held'), await stat('stat-contacted')], ['5', '3', '2'])
+          assert.deepEqual([await stat('stat-ready'), await stat('stat-held'), await stat('stat-contacted')], ['5', '0', '2'], 'the three held leads are research only (identity, undated, window): none is a review task')
+          assert.match(await page.getByTestId('journey-research').textContent(), /^3 research only/)
           const yResults = (await page.getByTestId('journey-results').boundingBox()).y, yUnderstand = (await page.getByTestId('journey-understanding').boundingBox()).y
           assert.ok(yResults < yUnderstand, 'results come before the profile')
           assert.equal(await page.getByTestId('journey-opportunity').count(), 3)
