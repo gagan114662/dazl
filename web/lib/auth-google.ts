@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, createVerify, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, TxBody } from './db/client.ts'
+import { createPersonalWorkspace } from './workspaces.ts'
 
 // Sign in with Google: authorization code + PKCE + state + nonce, identity only
 // (openid email profile). The ID token is checked here before anyone is signed in.
@@ -160,6 +161,7 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
         if (u.changes !== 1) throw new RaceLost()
         const o = yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?) ON CONFLICT (provider, subject) DO NOTHING", [id.sub, uid])
         if (o.changes !== 1) throw new RaceLost()
+        yield* createPersonalWorkspace(t, uid, '')
         return { user_id: uid, created: true }
       })
     } catch (e) {
