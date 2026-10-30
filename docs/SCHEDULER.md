@@ -16,10 +16,34 @@ A scheduler can be configured on and still stale, for example when cron was neve
 ## What is recorded (durably, in the app's store)
 
 - **`scheduler_runs`, one row per tick.** Records start and finish time, and the status: `running`, `ok`, `partial` (some tenant failed), `failed` or `lease_lost`. Also records the lease owner and **generation** it ran under (the fencing token, lib/shared/lease.ts), tenants attempted and failed, and a scrubbed error. The row is written when the tick starts, before any work, so a tick whose process dies leaves a `running` row. The last 2000 runs are kept.
-- **`scheduler_progress`, one row per tenant and kind of work** (`reply_sync`, `followups`, `sequences`). Records the last attempt, last success, last failure reason and consecutive failures.
+- **`scheduler_progress`, one row per tenant and kind of work** (`reply_sync`, `followups`, `sequences`). Records the last attempt, last success, last failure reason, consecutive failures, and the outcome of the last attempt (`last_outcome`: `success`, `hold` or `failure`) with the hold's reason (`last_hold`).
   - The failure reason is the error's class plus the first line of its message, with addresses, tokens and query strings removed, at most 200 characters.
-  - A success is recorded only after the work returned, so its writes passed the lease fence.
+  - A result is recorded only after the work returned, so its writes passed the lease fence.
 - **The oldest due item is computed, not stored.** It is the earliest due time of a sequence step that should have been sent by now: step 1 sent, the next step's +3 or +7 days passed, the sequence still approved or active.
+
+## What the tick records for each worker result
+
+The workers report ordinary refusals as a result (`stopped`), not an exception. The tick classifies what came back (`classifyWork`, `classifySync` in `lib/ops/scheduler-runs.ts`) before it records progress, so a refused or non-running worker is never a successful pass:
+
+| outcome | meaning | progress row |
+|---|---|---|
+| `success` | work was done, or there was genuinely nothing due | `last_success_at` = now; `last_error`, `last_hold` cleared; `consecutive_failures` = 0 |
+| `hold` | a legitimate configuration or idle state: the tenant's own hold | `last_attempt_at` = now, `last_hold` = the reason; `last_success_at`, `last_error` and `consecutive_failures` unchanged |
+| `failure` | an operational refusal or failure | `last_error` = the reason; `consecutive_failures` + 1; `last_success_at` unchanged |
+
+| worker | result | outcome |
+|---|---|---|
+| `runFollowups`, `runSequences` | returned without `stopped` (sent, skipped, activated, or nothing due) | success |
+| both | `daily_cap`, `paused`; `runFollowups` `autopilot_off`, `followups_off`; `runSequences` `changed_since_approval` | hold; **success** if the same tick sent or activated something first |
+| both | `uncertain_send`, `gmail_unavailable`, `gmail_or_identity` | failure (an uncertain send outranks earlier progress in the same tick) |
+| `runFollowups` | `not_available` (operator switch off or kill switch, while the tenant has follow-ups on) | failure |
+| `runSequences` | `sequences_disabled` (operator switch off or kill switch, while the tenant has approved or active sequences), `reading_not_enabled`, `reply_sync_failed` | failure |
+| `syncReplies` | `error` (`reading_not_enabled`, `gmail_unavailable`, `reply_sync_failed`) | failure; follow-ups are not attempted that tick |
+| any | a thrown error, or a `stopped` reason the tick does not know | failure (an unknown refusal is never read as progress) |
+
+An operator switch that is off while tenants have work is deliberate, and still a failure here: the tick is running and refusing the work, and the alert after three ticks is the reminder. A tenant's own pause, cap or withdrawn consent is a hold: it is not progress, but nothing is failing. A hold does not resolve earlier failures either: a tenant blocked by three failures stays blocked while paused, until a run succeeds.
+
+A run is `partial` when some work failed; holds alone leave it `ok`. The tick's response carries `tenant_failures` and `tenant_holds`.
 
 ## States and thresholds
 
@@ -42,12 +66,14 @@ A tenant is:
   - a due step is more than `OVERDUE_ALERT_S` = 1 h overdue;
   - the scheduler itself is stale, crashed or never ran while the tenant has work.
 
+- **held** when nothing is failing or stale and the last attempt at some kind of work was a hold: neither progress nor a problem. `holds` names them as `kind:reason` (for example `sequences:paused`).
+
 Otherwise it is **healthy**, or **idle** if it has no scheduled work. The thresholds are constants in `lib/ops/scheduler-runs.ts`.
 
 `GET /api/health/scheduler` answers 200 when there is no problem and 503 otherwise. It returns:
 - the scheduler's own state and the last completed run's age;
 - the lease generation and the error **class** of the last run;
-- counts across tenants: tracked, blocked, reply sync stale, overdue, oldest overdue.
+- counts across tenants: tracked, blocked, held, reply sync stale, overdue, oldest overdue. Held tenants are a count only, never a problem.
 
 It contains no tenant id, name or error text. It is not part of `/api/ready`, so a stalled scheduler never blocks a deploy or restarts a healthy web process.
 
@@ -67,9 +93,9 @@ It contains no tenant id, name or error text. It is not part of `/api/ready`, so
 | `scheduler stale` | The cron/timer journal: does the call return 200? `last_error_class` in the health response. | fix the caller or the failing step. A 404 means the secret is missing or mismatched. |
 | `latest scheduler run failed` / `lease_lost` | The app journal for the failed tick; `last_error_class` in the health response. `lease_lost`: another process took the tick lease mid-run (two schedulers, or a run slower than the 30 min lease). | Fix the failing step, or make sure only one scheduler calls the tick. The alert clears on the next successful run. |
 | `scheduler crashed` | The app journal around `running_since`: OOM, restart or deploy. | Nothing to clean up. The next tick takes over once the lease expires (at most 30 min after the crash) at a new generation, and its run reads fresh. Unfinished sends from the dead run are handled by the claim machinery: `sending` claims older than 10 min become `uncertain` and are never resent automatically (docs/STAGING.md send-safety scenarios). Resolve those before resuming. |
-| `N tenant(s) blocked` | `scheduler_progress` rows with `consecutive_failures >= 3` and their `last_error` (operator DB access only; never in alerts). | Usually a disconnected Gmail account or withdrawn reply consent. The tenant sees "Scheduled work is blocked" on their Outreach page. |
+| `N tenant(s) blocked` | `scheduler_progress` rows with `consecutive_failures >= 3` and their `last_error` (operator DB access only; never in alerts). | Usually a disconnected Gmail account, withdrawn reply consent, a missing sender identity, or an uncertain send waiting for the tenant. `not_available` / `sequences_disabled`: the operator switch is off (or the kill switch on) while tenants have work turned on. The tenant sees "Scheduled work is blocked" on their Outreach page. A tenant's pause does not clear this: the next successful run does. |
 | `reply sync stale` | the same rows, `kind = 'reply_sync'` | Same as blocked. Gmail token refresh failing, or rate limits. |
-| `due work overdue` | Is the scheduler fresh? If yes, look at the tenant's `sequences` progress and whether a pause or an uncertain send is holding it: the gates in `GET /api/outreach/sequences`. | A configured hold (pause, uncertain send, kill switch) is expected to leave work due, so check the gates first. |
+| `due work overdue` | Is the scheduler fresh? If yes, look at the tenant's `sequences` progress: `last_outcome` and `last_hold` say whether a pause or a cap is holding it, `last_error` whether it is failing; the gates in `GET /api/outreach/sequences` say what is configured. | A configured hold (pause, uncertain send, kill switch) is expected to leave work due, so check the hold and the gates first. |
 
 A recovered run resumes safely:
 - each tick re-reads due work from the store;

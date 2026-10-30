@@ -13,7 +13,7 @@ import type { Lease } from '@/lib/shared/lease'
 import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
-import { finishRun, migrateSchedulerRuns, recordProgress, startRun } from '@/lib/ops/scheduler-runs'
+import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Outcome } from '@/lib/ops/scheduler-runs'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -53,25 +53,31 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   const db = lease.fenceSqlite(raw)
   // A refused write means this tick lost the lease: stop, never carry on with the next tenant.
   const fenced = (e: unknown) => { if (e instanceof StaleLeaseWrite) throw e }
-  // Progress per tenant and kind of work, recorded only after the work returned (its writes passed the fence).
-  let failures = 0
-  const progress = async (tenant: string, kind: 'reply_sync' | 'followups' | 'sequences', error?: unknown) => { if (error !== undefined) failures++; await recordProgress(raw, runId, tenant, kind, error === undefined ? { ok: true } : { ok: false, error }) }
+  // Progress per tenant and kind of work, recorded only after the work returned (its writes passed the fence). The
+  // workers report refusals as a result, not an exception, so what came back is classified (lib/ops/scheduler-runs.ts):
+  // success, a hold (the tenant's own configuration or idle state) or a failure. Only failures make the run partial.
+  let failures = 0, holds = 0
+  const progress = async (tenant: string, kind: 'reply_sync' | 'followups' | 'sequences', o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
+  const failed = (e: unknown): Outcome => ({ outcome: 'failure', error: e })
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0
   for (const t of tenants) {
     await lease.keep()
     let stage: 'reply_sync' | 'followups' = 'reply_sync'
     try {
-      const sync = await syncReplies(db, t.tenant_id)
-      if (sync.error) { await progress(t.tenant_id, 'reply_sync', new Error(sync.error)); continue }
-      await progress(t.tenant_id, 'reply_sync'); stage = 'followups'
-      await runFollowups(db, t.tenant_id, t.business_name ?? ''); await progress(t.tenant_id, 'followups'); done++
-    } catch (e) { fenced(e); await progress(t.tenant_id, stage, e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
+      const sync = classifySync(await syncReplies(db, t.tenant_id))
+      await progress(t.tenant_id, 'reply_sync', sync)
+      if (sync.outcome === 'failure') continue
+      stage = 'followups'
+      const f = classifyWork(await runFollowups(db, t.tenant_id, t.business_name ?? ''))
+      await progress(t.tenant_id, 'followups', f)
+      if (f.outcome !== 'failure') done++
+    } catch (e) { fenced(e); await progress(t.tenant_id, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent; await progress(t.tenant_id, 'sequences') } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
+    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
@@ -93,5 +99,5 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked })
 }
