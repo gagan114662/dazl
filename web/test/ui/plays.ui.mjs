@@ -9,7 +9,8 @@
 //   4. no saved plays: an empty state that says how to make one; a list that did not load is never shown as "none";
 //   5. the bare Leads page is headed "Find leads" (not "Plays") and links back to Plays from its weekly watches;
 //   6. no horizontal scroll at 390px;
-//   7. "All runs" lists every run of a play, newest first, each opening that run's own leads; a read that fails says so.
+//   7. "Show runs" lists a play's latest runs, newest first, each opening that run's own leads, and says when older
+//      runs exist; a read that fails says so; one hidden before it answers stays hidden; a paused play with none says so.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -40,7 +41,7 @@ const WATCHES = [
   { id: W2, query: 'Physio clinics in Manchester hiring', icp: { summary: 'Physiotherapy clinics', where: ['Manchester, UK'], signals: ['hiring'] }, active: false, next_run_at: T, last_run_at: T - 7 * 86400, paused_reason: 'quota', last_job_id: null, last_status: null, new_leads: 0 },
 ]
 // Three runs of the first watch, newest first (#351).
-const RUNS = [{ job_id: RUN, at: T, status: 'done', leads: 5, new_leads: 3 }, { job_id: 'd'.repeat(24), at: T - 7 * 86400, status: 'done', leads: 4, new_leads: 4 }, { job_id: 'f'.repeat(24), at: T - 14 * 86400, status: 'failed', leads: 0, new_leads: 0 }]
+const RUNS = [{ job_id: RUN, at: T, status: 'done', leads: 5, new_leads: 3 }, { job_id: 'd'.repeat(24), at: T - 7 * 86400, status: 'done', leads: 4, new_leads: 4 }, { job_id: 'f'.repeat(24), at: T - 14 * 86400, status: 'failed', leads: 0, new_leads: null }]
 const MONITORS = [{ id: M, query: 'Accounting firms in Bristol hiring payroll staff', icp: JSON.stringify({ summary: 'Accounting firms', where: ['Bristol, UK'], signals: ['hiring payroll staff'] }), interval_hours: 24, enabled: 1, paused_reason: null, last_run_at: null, next_run_at: T + 86400, last_new_count: null, run_count: 0, last_job_id: null }]
 
 const b = await chromium.launch()
@@ -57,7 +58,9 @@ async function open({ width, height, watches = WATCHES, monitors = MONITORS, fai
     if (p === '/api/watch') return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches })
     if (p === '/api/monitors') return fail === 'monitors' ? json({ error: 'x' }, 500) : json({ monitors })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
-    if (p === `/api/plays/watch/${W}/runs`) return json({ runs: RUNS })
+    if (p === `/api/plays/watch/${W}/runs`) return json({ runs: RUNS, more: true })
+    // the paused play's runs answer late, so hiding them first can be checked; then it has none
+    if (p === `/api/plays/watch/${W2}/runs`) { await new Promise(r => setTimeout(r, 600)); return json({ runs: [], more: false }) }
     if (p === `/api/plays/monitor/${M}/runs`) return json({ error: 'x' }, 500)
     return json({}, 404)
   })
@@ -94,16 +97,26 @@ try {
     await noScroll(page, width)
     for (const c of await cards.all()) assert.ok((await c.getByTestId('play-name').boundingBox()).width >= Math.min(240, width - 100), `the play name keeps its width at ${width}px (a long status wraps below)`)
     await shot(page, `plays-${tag}`)
-    // 7. Every run of a play, each opening its own leads (#351).
+    // 7. A play's latest runs, each opening its own leads (#351).
     await cards.nth(0).getByTestId('play-runs-toggle').click()
     const runs = cards.nth(0).getByTestId('play-run'); await runs.first().waitFor()
-    assert.deepEqual(await runs.allInnerTexts().then(t => t.map(x => x.replace(/\s+/g, ' ').trim())), ['26 Oct 2026 · Finished · 5 leads, 3 new Open these leads', '19 Oct 2026 · Finished · 4 leads, 4 new Open these leads', '12 Oct 2026 · Failed · 0 leads, 0 new Open these leads'])
+    assert.deepEqual(await runs.allInnerTexts().then(t => t.map(x => x.replace(/\s+/g, ' ').trim())), ['26 Oct 2026 · Finished · 5 leads, 3 new Open these leads', '19 Oct 2026 · Finished · 4 leads, 4 new Open these leads', '12 Oct 2026 · Failed · 0 leads Open these leads'])
+    assert.equal(await cards.nth(0).getByTestId('play-runs-more').innerText(), 'Showing the latest 3 runs.', 'says older runs exist')
     assert.deepEqual(await cards.nth(0).getByTestId('play-run-link').evaluateAll(as => as.map(a => a.getAttribute('href'))), RUNS.map(r => `/app/leads?job_id=${r.job_id}`))
     await cards.nth(2).getByTestId('play-runs-toggle').click()
     await cards.nth(2).getByTestId('play-runs-failed').waitFor()
     await noScroll(page, width)
     if (process.env.SHOTS) await cards.nth(0).screenshot({ path: path.join(process.env.SHOTS, `351-play-runs-${tag}.png`) })
     await cards.nth(0).getByTestId('play-runs-toggle').click(); await cards.nth(2).getByTestId('play-runs-toggle').click()
+    // Hidden before its runs arrive: the late answer does not open it again. Opened and answered: a paused play says so.
+    const paused = cards.nth(1)
+    await paused.getByTestId('play-runs-toggle').click(); await paused.getByTestId('play-runs-toggle').click()
+    await page.waitForTimeout(900)
+    assert.equal(await paused.getByTestId('play-runs-toggle').innerText(), 'Show runs', 'stays hidden after the late answer')
+    assert.equal(await paused.getByTestId('play-runs-empty').count(), 0)
+    await paused.getByTestId('play-runs-toggle').click()
+    assert.equal(await paused.getByTestId('play-runs-empty').innerText(), 'No runs yet. It is paused: resume it to run.')
+    await paused.getByTestId('play-runs-toggle').click()
     // 3. Only the existing actions; Delete asks first.
     if (tag === 'desktop') {
       await cards.nth(0).getByTestId('play-toggle').click()

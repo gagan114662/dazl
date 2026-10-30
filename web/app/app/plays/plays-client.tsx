@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { dayOf, savedPlays, type MonitorRow, type SavedPlay, type WatchRow } from '@/lib/saved-plays'
-import type { PlayRun } from '@/lib/play-runs'
+import type { PlayRun, PlayRuns } from '@/lib/play-runs'
 import { Icon } from '../ui/icons'
 import { Pill, type Tone } from '../ui/bits'
 
@@ -17,14 +17,15 @@ export default function PlaysClient() {
   const [monitors, setMonitors] = useState<Read<MonitorRow>>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState('')
-  // #351: a play's runs, read when its "All runs" is opened (null while loading, 'failed' when the read did not answer).
-  const [runs, setRuns] = useState<Record<string, PlayRun[] | null | 'failed'>>({})
+  // #351: a play's runs, read when its "Show runs" is opened (null while loading, 'failed' when the read did not answer).
+  const [runs, setRuns] = useState<Record<string, PlayRuns | null | 'failed'>>({})
   async function toggleRuns(p: SavedPlay) {
     const k = `${p.kind}-${p.id}`
     if (k in runs) { setRuns(r => { const rest = { ...r }; delete rest[k]; return rest }); return }
     setRuns(r => ({ ...r, [k]: null }))
     const j = await fetch(`/api/plays/${p.kind}/${p.id}/runs`).then(r => r.ok ? r.json() : null).catch(() => null)
-    setRuns(r => ({ ...r, [k]: Array.isArray(j?.runs) ? j.runs as PlayRun[] : 'failed' }))
+    // only into a list that is still open and still loading: one hidden meanwhile stays hidden
+    setRuns(r => k in r && r[k] === null ? { ...r, [k]: Array.isArray(j?.runs) ? { runs: j.runs as PlayRun[], more: j.more === true } : 'failed' } : r)
   }
   const get = <T,>(url: string, key: string) => fetch(url).then(r => r.ok ? r.json() : null).catch(() => null).then(j => Array.isArray(j?.[key]) ? j[key] as T[] : 'failed' as const)
   const load = () => { void get<WatchRow>('/api/watch', 'watches').then(setWatches); void get<MonitorRow>('/api/monitors', 'monitors').then(setMonitors) }
@@ -84,11 +85,11 @@ export default function PlaysClient() {
                 </dl>
                 <div className="flex flex-wrap gap-2 mt-4">
                   {p.lastHref && <Link href={p.lastHref} className="btn-ghost btn-sm" data-testid="play-results">See the last run&apos;s leads</Link>}
-                  <button type="button" className="btn-ghost btn-sm" onClick={() => void toggleRuns(p)} aria-expanded={`${p.kind}-${p.id}` in runs} data-testid="play-runs-toggle">{`${p.kind}-${p.id}` in runs ? 'Hide runs' : 'All runs'}</button>
+                  <button type="button" className="btn-ghost btn-sm" onClick={() => void toggleRuns(p)} aria-expanded={`${p.kind}-${p.id}` in runs} data-testid="play-runs-toggle">{`${p.kind}-${p.id}` in runs ? 'Hide runs' : 'Show runs'}</button>
                   <button type="button" className="btn-ghost btn-sm" disabled={busy === p.id} onClick={() => void act(p, p.active ? 'pause' : 'resume')} data-testid="play-toggle">{p.active ? 'Pause' : 'Resume'}</button>
                   <button type="button" className="btn-ghost btn-sm" disabled={busy === p.id} onClick={() => void act(p, 'delete')} data-testid="play-delete">Delete</button>
                 </div>
-                {`${p.kind}-${p.id}` in runs && <PlayRuns runs={runs[`${p.kind}-${p.id}`]} />}
+                {`${p.kind}-${p.id}` in runs && <PlayRunList runs={runs[`${p.kind}-${p.id}`]} active={p.active} />}
               </article>
             ))}
           </div>
@@ -98,20 +99,23 @@ export default function PlaysClient() {
   )
 }
 
-// #351: a play's runs, newest first; each opens that run's own leads.
+// #351: a play's latest runs, newest first; each opens that run's own leads. Says when older runs exist.
 const RUN_STATUS: Record<string, string> = { done: 'Finished', failed: 'Failed', pending: 'Queued', running: 'Running', enriching: 'Finishing' }
-function PlayRuns({ runs }: { runs: PlayRun[] | null | 'failed' }) {
-  if (runs === null) return <p className="text-sm text-[var(--ink-2)] mt-3">Loading runs...</p>
-  if (runs === 'failed') return <p className="text-sm mt-3" role="alert" data-testid="play-runs-failed">Could not load this play&apos;s runs. Try again.</p>
-  if (runs.length === 0) return <p className="text-sm text-[var(--ink-2)] mt-3" data-testid="play-runs-empty">No runs yet. The first runs on its next scheduled date.</p>
+function PlayRunList({ runs: r, active }: { runs: PlayRuns | null | 'failed'; active: boolean }) {
+  if (r === null) return <p className="text-sm text-[var(--ink-2)] mt-3">Loading runs...</p>
+  if (r === 'failed') return <p className="text-sm mt-3" role="alert" data-testid="play-runs-failed">Could not load this play&apos;s runs. Try again.</p>
+  if (r.runs.length === 0) return <p className="text-sm text-[var(--ink-2)] mt-3" data-testid="play-runs-empty">{active ? 'No runs yet. The first runs on its next scheduled date.' : 'No runs yet. It is paused: resume it to run.'}</p>
   return (
-    <ol className="mt-3 divide-y divide-[var(--line)] border-t border-[var(--line)] text-sm" data-testid="play-runs">
-      {runs.map(r => (
-        <li key={r.job_id} className="flex flex-wrap items-center justify-between gap-2 py-2 min-w-0" data-testid="play-run">
-          <span className="min-w-0">{dayOf(r.at)} · {RUN_STATUS[r.status] ?? r.status} · {r.leads} lead{r.leads === 1 ? '' : 's'}{r.new_leads !== null ? `, ${r.new_leads} new` : ''}</span>
-          <Link href={`/app/leads?job_id=${r.job_id}`} className="underline underline-offset-2 shrink-0" data-testid="play-run-link">Open these leads</Link>
-        </li>
-      ))}
-    </ol>
+    <>
+      <ol className="mt-3 divide-y divide-[var(--line)] border-t border-[var(--line)] text-sm" data-testid="play-runs">
+        {r.runs.map(run => (
+          <li key={run.job_id} className="flex flex-wrap items-center justify-between gap-2 py-2 min-w-0" data-testid="play-run">
+            <span className="min-w-0">{dayOf(run.at)} · {RUN_STATUS[run.status] ?? run.status} · {run.leads} lead{run.leads === 1 ? '' : 's'}{run.new_leads !== null ? `, ${run.new_leads} new` : ''}</span>
+            <Link href={`/app/leads?job_id=${run.job_id}`} className="underline underline-offset-2 shrink-0" data-testid="play-run-link">Open these leads</Link>
+          </li>
+        ))}
+      </ol>
+      {r.more && <p className="text-xs text-[var(--ink-3)] mt-2" data-testid="play-runs-more">Showing the latest {r.runs.length} runs.</p>}
+    </>
   )
 }
