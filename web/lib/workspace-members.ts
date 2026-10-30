@@ -165,9 +165,12 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
     const inv = yield* t.get<{ id: string; tenant_id: string; email: string; role: string; invited_by: string }>(
       'SELECT id, tenant_id, email, role, invited_by FROM invitations WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [sha256(token), now])
     if (!inv || !isRole(inv.role)) throw new MemberError('invalid_invite')
-    if (inv.email !== actor.email.trim().toLowerCase()) throw new MemberError('wrong_account')
+    // Serialize with email changes/recovery before binding this invitation to an account.
+    yield* t.run('UPDATE users SET email = email WHERE id = ?', [actor.actorId])
+    const account = yield* t.get<{email:string;email_verified_at:number|null}>('SELECT email,email_verified_at FROM users WHERE id = ?', [actor.actorId])
+    if (!account || inv.email !== account.email.trim().toLowerCase()) throw new MemberError('wrong_account')
     // the email binding means something only once the account has proved it owns that address (#357)
-    if (!(yield* t.get('SELECT 1 AS x FROM users WHERE id = ? AND email_verified_at IS NOT NULL', [actor.actorId]))) throw new MemberError('email_unverified')
+    if (account.email_verified_at === null) throw new MemberError('email_unverified')
     // the same lock every member and invitation change takes first, so a revoke and this accept are serialized; the
     // guarded update below then sees the outcome of whichever ran first
     yield* lockWorkspace(t, inv.tenant_id)

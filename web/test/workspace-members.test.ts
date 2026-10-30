@@ -192,3 +192,13 @@ bothEngines('revoking and accepting the same link at once: exactly one wins', as
     }
   }
 }, { pgMax: 4 })
+
+bothEngines('invitation acceptance rechecks the live verified email instead of stale authenticated email',async({db})=>{
+ await createPasswordUser({id:'invite-owner',email:'inviter@example.test',name:'Owner',business_name:'Owner',password_hash:'h',salt:'s'},db)
+ await createPasswordUser({id:'invite-mate',email:'oldmate@example.test',name:'Mate',business_name:'Mate',password_hash:'h',salt:'s'},db)
+ await db.run('UPDATE users SET email_verified_at=1 WHERE id=?',['invite-mate'])
+ const inv=await createInvitation(db,{actorId:'invite-owner',tenantId:'invite-owner',role:'owner'},'oldmate@example.test','operator')
+ await db.run('UPDATE users SET email=? WHERE id=?',['newmate@example.test','invite-mate'])
+ await assert.rejects(acceptInvitation(db,{actorId:'invite-mate',email:'oldmate@example.test'},inv.token),/wrong_account/)
+ assert.equal(await db.get('SELECT 1 FROM memberships WHERE tenant_id=? AND member_id=?',['invite-owner','invite-mate']),undefined)
+})
