@@ -33,6 +33,8 @@ The tick is expected every 15 minutes.
 | `stale` | no completed run within 45 min: cron off, the route returning 404 (no secret), or every run failing | |
 | `crashed` | the newest run started more than `CRASHED_AFTER_S` = 30 min ago (the lease TTL) and never finished: the process died inside a tick | |
 
+Separately from the state, the health response carries `unresolved_failure`: the latest finished run ended `failed` or `lease_lost`, and no run has completed `ok` or `partial` since. It is a problem, and so an alert, even while an earlier success keeps the state `fresh`: a recent success proves the scheduler was making progress, not that the newer tick worked. A run in progress does not clear it; the next successful run does.
+
 A tenant is:
 - **blocked** when one kind of work has failed `BLOCKED_AFTER_FAILURES` = 3 times in a row;
 - **stale** in any of these cases:
@@ -63,6 +65,7 @@ It contains no tenant id, name or error text. It is not part of `/api/ready`, so
 |---|---|---|
 | `scheduler never ran` with work waiting | Is the tick's cron or timer installed and enabled? Is `AUTOPILOT_TICK_SECRET` set in the app's env file? Without it the route is a 404. | install or enable the scheduler (docs/AUTOPILOT.md). This is an owner/Instinct production change. |
 | `scheduler stale` | The cron/timer journal: does the call return 200? `last_error_class` in the health response. | fix the caller or the failing step. A 404 means the secret is missing or mismatched. |
+| `latest scheduler run failed` / `lease_lost` | The app journal for the failed tick; `last_error_class` in the health response. `lease_lost`: another process took the tick lease mid-run (two schedulers, or a run slower than the 30 min lease). | Fix the failing step, or make sure only one scheduler calls the tick. The alert clears on the next successful run. |
 | `scheduler crashed` | The app journal around `running_since`: OOM, restart or deploy. | Nothing to clean up. The next tick takes over once the lease expires (at most 30 min after the crash) at a new generation, and its run reads fresh. Unfinished sends from the dead run are handled by the claim machinery: `sending` claims older than 10 min become `uncertain` and are never resent automatically (docs/STAGING.md send-safety scenarios). Resolve those before resuming. |
 | `N tenant(s) blocked` | `scheduler_progress` rows with `consecutive_failures >= 3` and their `last_error` (operator DB access only; never in alerts). | Usually a disconnected Gmail account or withdrawn reply consent. The tenant sees "Scheduled work is blocked" on their Outreach page. |
 | `reply sync stale` | the same rows, `kind = 'reply_sync'` | Same as blocked. Gmail token refresh failing, or rate limits. |
