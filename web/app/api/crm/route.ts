@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { auditPush, claimPush, claimState, CrmPushError, crmDestination, disconnectCrm, finishClaim, getCrmConfig, pushLead, resolveClaim, saveCrmConfig } from '@/lib/crm/index'
+import { auditPush, CRM_PROVIDERS, claimPush, claimState, CrmPushError, crmDestination, disconnectCrm, finishClaim, getCrmConfig, pushLead, resolveClaim, saveCrmConfig } from '@/lib/crm/index'
 import { defaultLookup, resolvePublic } from '@/lib/net/public-fetch'
 import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   switch (body?.action) {
     case 'save': {
       const provider = body?.provider
-      if (!['hubspot', 'pipedrive', 'webhook'].includes(provider)) return NextResponse.json({ error: 'Pick HubSpot, Pipedrive or webhook' }, { status: 400 })
+      if (!(CRM_PROVIDERS as readonly string[]).includes(provider)) return NextResponse.json({ error: 'Pick HubSpot, Pipedrive or webhook' }, { status: 400 })
       const key = typeof body?.key === 'string' ? body.key.trim() : ''
       const url = typeof body?.url === 'string' ? body.url.trim() : ''
       if (provider === 'webhook' && !/^https:\/\/\S{4,400}$/.test(url)) return NextResponse.json({ error: 'Webhook URL must be https' }, { status: 400 })

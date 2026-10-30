@@ -4,6 +4,7 @@ import Banner from './banner'
 import LandingDemo from './landing-demo'
 
 import { SITE_BASE } from '@/lib/site'
+import { PLAN_PRICES_USD_MONTH } from '@/lib/pricing'
 
 // Self-referencing canonical (Indexing audit finding: the homepage had none, so the
 // apex and www duplicates competed). Kept on the page, not the root layout, so child
@@ -85,13 +86,13 @@ export default function Home() {
         <div className="grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
           <div className="lp-card p-7">
             <div className="text-sm font-medium text-[var(--ink-2)] mb-1">Free</div>
-            <div className="text-4xl font-semibold mb-2">$0</div>
+            <div className="text-4xl font-semibold mb-2">${PLAN_PRICES_USD_MONTH.free}</div>
             <p className="text-[var(--ink-2)] text-sm mb-6">Start free.</p>
             <a href="/api/auth/google" className="btn-ghost w-full text-center block">Start free</a>
           </div>
           <div className="lp-card p-7">
             <div className="text-sm font-medium mb-1">Pro</div>
-            <div className="text-4xl font-semibold mb-2">$49<span className="text-base font-medium text-[var(--ink-2)]">/mo</span></div>
+            <div className="text-4xl font-semibold mb-2">${PLAN_PRICES_USD_MONTH.pro}<span className="text-base font-medium text-[var(--ink-2)]">/mo</span></div>
             <p className="text-[var(--ink-2)] text-sm mb-6">One flat price. Runs on your own AI key: your provider bills that usage separately. Fair-use limits apply.</p>
             <a href="/api/auth/google" className="btn-primary w-full text-center block">Start free, upgrade any time</a>
           </div>
