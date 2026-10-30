@@ -363,3 +363,10 @@ test('huge or unsafe ranks return invalid_input without allocation or argument-s
     assert.equal(card!.status, 'invalid_input', `rank ${rank}`)
   }
 })
+
+test('rank validation handles a large supplied evidence list without spreading ranks as arguments', () => {
+  const rows = Array.from({ length: 150000 }, (_, i) => row(i + 1, `E${i}`))
+  let problems: ReturnType<typeof inputProblems> | undefined
+  assert.doesNotThrow(() => { problems = inputProblems(one, run({ task_set_version: '9' }, [attempt('a', 'complete', 1, rows)])) })
+  assert.deepEqual(problems, [])
+})
