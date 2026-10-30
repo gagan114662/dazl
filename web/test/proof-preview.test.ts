@@ -78,3 +78,25 @@ bothEngines('loadProofInput: reads only the owning tenant\'s run and its own lea
   const p = buildProofPreview(mine!, NOW)
   assert.equal(p.status === 'ready' && p.companies[0].company, 't1 company')
 })
+
+test('HOLD: every emitted field obeys the privacy contract, URLs included; impossible calendar dates are rejected', () => {
+  const p = buildProofPreview(input([
+    lead({ id: 'a', company: 'Acme (owner@acme.test)', score: 99 }),
+    lead({ id: 'b', company: 'Beta Co', source_url: 'https://forum.test/t/2?contact=sales%40beta.test', score: 98 }),
+    lead({ id: 'c', company: 'Gamma Co', source_url: 'https://forum.test/t/3?call=%2B1%20415%20555%200100', score: 97 }),
+    lead({ id: 'd', company: 'Delta Co', source_url: 'https://forum.test/t/4#reach-me-at-delta@mail.test', score: 96 }),
+    lead({ id: 'e', company: 'owner@epsilon.test', score: 95 }),
+    lead({ id: 'f', company: 'Zeta Co', source_url: 'https://forum.test/t/1234567890123', score: 94 }),
+  ]), NOW)
+  assert.equal(p.status, 'ready')
+  if (p.status !== 'ready') return
+  assert.deepEqual(p.companies.map(c => c.company), ['Acme', 'Zeta Co'], 'contact text scrubbed from company; contact-bearing URLs and contact-only companies dropped; page-id digits kept')
+  const text = JSON.stringify(p)
+  for (const leak of ['@', '555', '%40', '%2B1']) assert.ok(!text.includes(leak), leak)
+  // the offer's source URL too: a contact detail in it holds the preview instead of being shown
+  for (const sourceUrl of ['https://seller.test/about?email=me%40seller.test', 'https://seller.test/about?tel=+1-415-555-0100', 'https://seller.test/about#me@seller.test'])
+    assert.deepEqual(buildProofPreview(input([lead()], { inferredOffer: { text: 'Scheduling software for clinics', sourceUrl } }), NOW), { status: 'hold', runId: 'job-synthetic-1', reason: 'no_inferred_offer' }, sourceUrl)
+  // impossible or loosely formatted dates are never normalised into proof
+  for (const event_date of ['2026-09-31', '2026-02-30', '2026-13-01', '2026-9-1', `${day(10)}T00:00:00Z`, 'October 20, 2026'])
+    assert.equal(buildProofPreview(input([lead({ event_date })]), NOW).status, 'hold', event_date)
+})

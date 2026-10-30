@@ -30,31 +30,54 @@ const CONTACT = /[\w.+-]+@[\w-]+\.[\w.-]+|\+?\d[\d\s().-]{7,}\d/g
 const isHttps = (u: string) => { try { return new URL(u).protocol === 'https:' } catch { return false } }
 const isIllustration = (u: string) => { try { return /(^|\.)example$|(^|\.)example\.(com|org|net)$/i.test(new URL(u).hostname) } catch { return true } }
 const clean = (s: string) => s.replace(CONTACT, '[removed]').replace(/\s+/g, ' ').trim()
+const EMAIL_IN = /[\w.+-]+@[\w-]+\.[\w.-]+/
+const PHONE_IN = /\+?\d[\d\s().-]{7,}\d/
+// A URL is emitted exactly as recorded or not at all (rewriting it would invent evidence). It may not carry contact
+// details: no email anywhere once decoded, and no phone number in its query or fragment (path digits are page ids).
+function urlCarriesContact(u: string): boolean {
+  let x: URL, whole: string, tail: string
+  try {
+    x = new URL(u)
+    whole = decodeURIComponent(u)
+    tail = decodeURIComponent((x.search + ' ' + x.hash).replace(/\+/g, ' '))
+  } catch { return true } // undecodable: cannot be shown to be clean
+  return EMAIL_IN.test(whole) || /^(?:mailto|tel):/i.test(u) || PHONE_IN.test(tail)
+}
+// A calendar date exactly as YYYY-MM-DD that exists: never a date the parser had to normalise ("2026-09-31" is not October 1).
+function strictDay(v: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v)
+  if (!m) return null
+  const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  const d = new Date(t)
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? t : null
+}
 
 export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPreview {
   const { run } = input
   if (run.status !== 'done') return { status: 'hold', runId: run.jobId, reason: 'run_not_finished' }
   const offer = input.inferredOffer
-  if (!offer || !offer.text.trim() || !isHttps(offer.sourceUrl) || isIllustration(offer.sourceUrl)) return { status: 'hold', runId: run.jobId, reason: 'no_inferred_offer' }
+  if (!offer || !offer.text.trim() || !isHttps(offer.sourceUrl) || isIllustration(offer.sourceUrl) || urlCarriesContact(offer.sourceUrl)) return { status: 'hold', runId: run.jobId, reason: 'no_inferred_offer' }
   const oldest = now - PROOF_EVIDENCE_DAYS * 86400_000
   const seen = new Set<string>()
   const companies: ProofCompany[] = []
   for (const l of [...input.leads].sort((a, b) => b.score - a.score)) {
     if (l.review_reason !== null || l.quarantined_at !== null || l.evidence_purged_at !== null || l.confidence === null) continue
-    if (!l.company.trim() || !l.evidence_excerpt?.trim()) continue
-    if (!isHttps(l.source_url) || isIllustration(l.source_url)) continue
+    // every emitted field obeys the privacy contract: text is scrubbed; a URL with contact details drops the lead
+    const company = clean(l.company).replace(/\[removed\]/g, '').replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim()
+    if (!company || !l.evidence_excerpt?.trim()) continue
+    if (!isHttps(l.source_url) || isIllustration(l.source_url) || urlCarriesContact(l.source_url)) continue
     if (l.date_status !== 'verified' || !l.event_date) continue
-    const t = Date.parse(l.event_date)
-    if (!Number.isFinite(t) || t < oldest || t > now) continue
-    const key = l.company.trim().toLowerCase()
+    const t = strictDay(l.event_date)
+    if (t === null || t < oldest || t > now) continue
+    const key = company.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
-    companies.push({ company: l.company.trim(), event: clean(l.signal), quote: clean(l.evidence_excerpt), eventDate: l.event_date, sourceUrl: l.source_url })
+    companies.push({ company, event: clean(l.signal), quote: clean(l.evidence_excerpt), eventDate: l.event_date, sourceUrl: l.source_url })
     if (companies.length === PROOF_MAX_COMPANIES) break
   }
   if (companies.length === 0) return { status: 'hold', runId: run.jobId, reason: 'no_usable_results' }
   // The preview expires with its oldest piece of evidence, so a stale signal is never shown as current.
-  const expiresAt = Math.min(...companies.map(c => Date.parse(c.eventDate))) + PROOF_EVIDENCE_DAYS * 86400_000
+  const expiresAt = Math.min(...companies.map(c => strictDay(c.eventDate)!)) + PROOF_EVIDENCE_DAYS * 86400_000
   return {
     status: 'ready', runId: run.jobId, builtAt: now, expiresAt, spendUsd: run.spendUsd,
     offer: { inferred: true, text: clean(offer.text), sourceUrl: offer.sourceUrl }, companies, disclaimer: DISCLAIMER,
