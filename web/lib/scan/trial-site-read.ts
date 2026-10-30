@@ -24,7 +24,7 @@ export const TRIAL_SITE_READS_PER_ACCOUNT = 3
 export const TRIAL_SITE_READS_PER_IP_PER_DAY = 6
 const DAY_MS = 86_400_000
 
-export type SiteReadRefusal = TrialDeny | TrialRefusal | 'site_reads_used' | 'site_reads_busy' | 'limit_unavailable'
+export type SiteReadRefusal = TrialDeny | TrialRefusal | 'site_reads_used' | 'site_reads_busy' | 'limit_unavailable' | 'workspace_not_eligible'
 // settle: the read's call ended and the provider reported its cost (USD); not called when the call failed or the cost is
 // unknown, so the reservation keeps counting in full.
 export type SiteReadAdmission = { ok: true; key: OperatorKey; settle: (spentUsd: number) => Promise<void> } | { ok: false; reason: SiteReadRefusal }
@@ -62,4 +62,21 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   const a = await admitTrialSiteReadBudget(db, user, { env })
   if (!a.ok) return { ok: false, reason: a.reason }
   return { ok: true, key, settle: (spentUsd: number) => settleTrialSiteRead(db, user.id, a.reservation, spentUsd) }
+}
+
+// Whose trial a workspace's site read is: the workspace's own account, read on the server, never the person acting in it.
+// A personal workspace's id is its founder's user id (lib/workspaces.ts createPersonalWorkspace), so the principal is
+// that user's row: its id (wallet, attempts, Google sign-in) and its email (one trial per company domain). An invited
+// member's own email never stands in for it. A team workspace, or one without its founder's users row, has no trial
+// principal and is refused (fails closed).
+export async function workspaceTrialPrincipal(db: Db, tenantId: string): Promise<{ id: string; email: string } | null> {
+  const r = await db.get<{ id: string; email: string }>(
+    "SELECT u.id, u.email FROM organizations o JOIN users u ON u.id = o.id AND u.id = o.created_by WHERE o.id = ? AND o.kind = 'personal'", [tenantId])
+  return r && typeof r.email === 'string' && r.email.includes('@') ? { id: r.id, email: r.email } : null
+}
+
+// The route's admission: the workspace's trial principal, or a refusal when it has none.
+export async function admitWorkspaceSiteRead(db: Db, tenantId: string, ip: string, deps: SiteReadDeps = {}): Promise<SiteReadAdmission> {
+  const p = await workspaceTrialPrincipal(db, tenantId)
+  return p ? admitTrialSiteRead(db, p, ip, deps) : { ok: false, reason: 'workspace_not_eligible' }
 }

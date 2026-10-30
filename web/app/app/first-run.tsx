@@ -41,6 +41,7 @@ function siteKeyReason(why: string | null): string {
   const own = 'Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'
   if (why === 'not_configured') return `The free trial isn't available here right now. ${own}`
   if (why === 'site_reads_used') return `You have used your free website reads. ${own}`
+  if (why === 'workspace_not_eligible') return `The free trial is for personal accounts, not shared workspaces. ${own}`
   if (why === 'google_required') return `The free trial needs an account that signs in with Google. ${own}`
   if (why === 'domain_used' || why === 'attempts_cap' || why === 'account_cap' || why === 'account_total_cap') return `Your free trial is used up. ${own}`
   if (why === 'ip_throttle' || why === 'global_daily_cap' || why === 'site_reads_busy' || why === 'limit_unavailable') return `The free trial is busy right now. Try again later. ${own}`

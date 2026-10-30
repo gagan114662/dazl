@@ -1,0 +1,65 @@
+// POST /api/scan/icp-from-url's trial admission, through the real route handler on a real SQLite store: the trial is the
+// workspace's own (its founder's account, read on the server), never the acting member's. Instinct's negative on
+// fa220d8: an owner refused for an already-used company domain must stay refused when an invited member with a free
+// email address acts in that workspace. Synthetic accounts; the page fetch and model call are stubbed
+// (icp-from-site-stub.ts); no network.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { NextRequest } from 'next/server'
+import { setScanDb, setUser } from './tenant-route-db.ts'
+import { handedKeys } from './icp-from-site-stub.ts'
+import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
+import { sqliteDb } from '../../lib/db/client.ts'
+import { admitTrialScan } from '../../lib/billing/trial-budget.ts'
+import { POST } from '../../app/api/scan/icp-from-url/route.ts'
+
+const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
+Object.assign(process.env, { DAZL_TRIAL_ANTHROPIC_KEY: OP, DAZL_TRIAL_SITE_READS_PER_DAY: '50', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
+  DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.004', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' })
+globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
+
+const uid = (n: number) => n.toString(16).padStart(32, '0')
+let ip = 10
+const post = async () => {
+  const req = new NextRequest('http://localhost/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `198.51.100.${ip++}` }, body: JSON.stringify({ url: 'https://acme.example' }) })
+  const before = handedKeys.length
+  const r = await POST(req)
+  const j = await r.json() as { error?: string; trial?: string }
+  return { trial: j.trial ?? null, operatorKey: handedKeys.length > before }
+}
+
+test('the site read trial is the workspace founder\'s, never the acting member\'s (owner, invited member, another actor, team workspace)', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
+  const db = sqliteDb(raw)
+  const account = async (id: string, email: string, personal = true) => {
+    await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])
+    await db.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [`sub-${id}`, id])
+    if (personal) await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [id, id])
+  }
+  const PRIOR = uid(1), OWNER = uid(2), INVITED = uid(3), FREE = uid(4), CORP_ACTOR = uid(5), TEAM = uid(6)
+  await account(PRIOR, 'b@corp.example'); await account(OWNER, 'a@corp.example'); await account(INVITED, 'invited@gmail.com')
+  await account(FREE, 'solo@gmail.com'); await account(CORP_ACTOR, 'c@corp.example')
+  assert.equal((await admitTrialScan(db, { id: PRIOR, email: 'b@corp.example' }, { env: process.env })).ok, true, 'fixture: corp.example already used a trial')
+
+  // 1. The owner of a workspace whose company domain already had its trial: refused.
+  setUser({ id: OWNER, business_name: 'Acme', email: 'a@corp.example' })
+  assert.deepEqual(await post(), { trial: 'domain_used', operatorKey: false }, 'owner: domain_used')
+  // 2. Instinct's negative: the same workspace, acted in by an invited member with a free address. Still refused.
+  setUser({ id: OWNER, actorId: INVITED, role: 'operator', business_name: 'Acme', email: 'invited@gmail.com' })
+  assert.deepEqual(await post(), { trial: 'domain_used', operatorKey: false }, 'invited member: the workspace is still not eligible')
+  // 3. Positive control: an eligible workspace's owner is admitted (the operator key is handed to the read).
+  setUser({ id: FREE, business_name: 'Solo', email: 'solo@gmail.com' })
+  assert.deepEqual(await post(), { trial: null, operatorKey: true }, 'eligible owner: admitted')
+  // 4. Another actor in that eligible workspace, whose own address is at the used domain: admitted on the workspace's
+  //    trial; the actor's email is not read either way.
+  setUser({ id: FREE, actorId: CORP_ACTOR, role: 'operator', business_name: 'Solo', email: 'c@corp.example' })
+  assert.deepEqual(await post(), { trial: null, operatorKey: true }, 'another actor: the workspace decides')
+  // 5. A team workspace (no founder users row for its id): fails closed, whoever acts.
+  await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Team', 'team', ?, 1)", [TEAM, FREE])
+  for (const [actor, email] of [[FREE, 'solo@gmail.com'], [INVITED, 'invited@gmail.com']]) {
+    setUser({ id: TEAM, actorId: actor, role: 'owner', business_name: 'Team', email })
+    assert.deepEqual(await post(), { trial: 'workspace_not_eligible', operatorKey: false }, `team workspace, actor ${email}`)
+  }
+  console.log('SITE_READ_ROUTE ok')
+})

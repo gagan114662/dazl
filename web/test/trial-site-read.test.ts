@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import type { Db } from '../lib/db/client.ts'
 import { admitTrialScan, admitTrialSiteReadBudget, settleTrialSiteRead, TRIAL_SITE_READ_RESERVE_USD, utcDay } from '../lib/billing/trial-budget.ts'
-import { admitTrialSiteRead, trialSiteReadsPerDay, TRIAL_SITE_READS_PER_ACCOUNT, TRIAL_SITE_READS_PER_IP_PER_DAY } from '../lib/scan/trial-site-read.ts'
+import { admitTrialSiteRead, admitWorkspaceSiteRead, workspaceTrialPrincipal, trialSiteReadsPerDay, TRIAL_SITE_READS_PER_ACCOUNT, TRIAL_SITE_READS_PER_IP_PER_DAY } from '../lib/scan/trial-site-read.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
@@ -164,4 +164,20 @@ bothEngines('#409 wallet: a reported read cost above its reserve counts in full 
     if (r.ok) await settleTrialSiteRead(db, b.id, r.reservation, bad)
     assert.deepEqual(await admitTrialScan(db, b, { env: { ...wallet('0.30', '10'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.26' } }), { ok: false, reason: 'account_total_cap' }, `${bad}: $0.05 + $0.26 > $0.30`)
   }
+})
+
+bothEngines('#444 the trial principal is the workspace founder\'s account, read on the server; a team workspace has none', async ({ db }) => {
+  await withKey(OP, async () => {
+    const owner = await user(db, uid(900), 'Owner@Corp.example')
+    await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [owner.id, owner.id])
+    assert.deepEqual(await workspaceTrialPrincipal(db, owner.id), { id: owner.id, email: 'Owner@Corp.example' })
+    // a personal workspace whose founder row is missing, a team workspace, an unknown id: no principal, refused
+    await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [uid(901), uid(901)])
+    await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'T', 'team', ?, 1)", [uid(902), owner.id])
+    for (const id of [uid(901), uid(902), uid(903)]) {
+      assert.equal(await workspaceTrialPrincipal(db, id), null, id)
+      assert.deepEqual(await admitWorkspaceSiteRead(db, id, '203.0.113.200', { env: ENV, limit: limiter() }), { ok: false, reason: 'workspace_not_eligible' })
+    }
+    assert.equal((await admitWorkspaceSiteRead(db, owner.id, '203.0.113.201', { env: ENV, limit: limiter() })).ok, true, 'the founder\'s workspace is admitted')
+  })
 })
