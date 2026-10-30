@@ -1,5 +1,6 @@
 'use client'
 import { CrmPush } from './crm-push'
+import { inSentence } from '../play-offer'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
@@ -1179,9 +1180,6 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
   return <span className="text-xs text-[#555] ml-2" data-testid="discovered-via">{l.discovered_via} (<a className="underline" href={l.discovered_via_link} target="_blank" rel="noopener noreferrer">gdeltproject.org</a>)</span>
 }
 
-// An offer quoted inside a sentence drops its own closing punctuation ("...New York City." would end "City.."); the
-// buttons keep the exact text, since that text is what gets stored.
-const inSentence = (t: string) => t.replace(/[.!?]+\s*$/, '')
 // The request names a different offer than the business profile: the user picks which one this play is for before it
 // runs. Nothing is changed in the profile.
 function OfferChooser({ c, onChoose }: { c: { stated: string; saved: string }; onChoose: (offer: string) => void }) {

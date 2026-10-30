@@ -14,7 +14,7 @@ const SOURCE: Record<string, string> = {
 
 // An offer quoted inside a sentence drops its own closing punctuation ("...New York City." would end "City.."); the
 // buttons keep the exact text, since that text is what gets stored.
-const inSentence = (t: string) => t.replace(/[.!?]+\s*$/, '')
+export const inSentence = (t: string) => t.replace(/[.!?]+\s*$/, '')
 
 export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: string; offer: PlayOffer | null | undefined; onChange?: (o: PlayOffer) => void; compact?: boolean }) {
   const [editing, setEditing] = useState(false)
