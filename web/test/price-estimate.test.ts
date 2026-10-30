@@ -78,3 +78,19 @@ test('actual vs estimate: priced from the tokens the provider reported; unknown 
   const none = compareActual(e, { inputTokens: null, outputTokens: null, tokensComplete: false, model: null, searches: null, reservedUsd: null })
   assert.equal(none.model_usd, null); assert.equal(none.within, 'unknown'); assert.match(none.summary, /not recorded/)
 })
+
+test('the confirmation changes with everything the person agreed to: payer, cap, reserved room, warning, rows on/off', () => {
+  const base = { budget: { max_usd: 2 }, payer: 'you' as const }
+  const a = estimateRun(base)
+  assert.notEqual(estimateRun({ ...base, payer: 'trial' }).ack, a.ack, 'trial -> own key (or back) needs a new confirmation')
+  const reserved = estimateRun({ ...base, reservedUsd: 1.5 })
+  assert.notEqual(reserved.ack, a.ack, 'reserving $1.50 of a $2 cap changes the confirmation')
+  assert.ok(reserved.verdict.warning && !a.verdict.warning, 'the reserved room produced a new warning, and the ack follows it')
+  assert.notEqual(estimateRun({ ...base, reservedUsd: 0.5 }).ack, a.ack, 'any change in the reserved amount')
+  assert.notEqual(estimateRun({ budget: { max_usd: 3 }, payer: 'you' }).ack, a.ack, 'a different limit')
+  assert.notEqual(estimateRun({ ...base, ownerCapUsd: 1 }).ack, a.ack, 'a tighter operator cap')
+  assert.notEqual(estimateRun({ budget: { max_usd: 2, judge: false }, payer: 'you' }).ack, a.ack, 'a row switched off')
+  assert.notEqual(estimateRun({ ...base, enrichmentVendors: ['apollo'] }).ack, a.ack, 'another provider in the menu')
+  assert.equal(estimateRun({ ...base }).ack, a.ack, 'identical inputs give the same confirmation (deterministic)')
+  assert.equal(estimateRun({ ...base, reservedUsd: 0.00001 }).ack, a.ack, 'sub-cent float noise does not invalidate it')
+})

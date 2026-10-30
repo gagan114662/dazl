@@ -111,8 +111,20 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     ...(i.payer === 'trial' ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
-  const ack = createHash('sha256').update(JSON.stringify({ rows: rows.map(r => [r.id, r.usd, r.units]), total, max: capped ? limit : null, ok })).digest('hex').slice(0, 16)
-  return { rows, total, unpriced, assumptions, payer: i.payer, cap: { max_usd: capped ? limit : null, reserved_usd: reserved, remaining_usd: remaining, capped_total: cappedTotal }, verdict: { ok, reason, message, change, warning }, ack }
+  const cap = { max_usd: capped ? limit : null, reserved_usd: reserved, remaining_usd: remaining, capped_total: cappedTotal }
+  const verdict = { ok, reason, message, change, warning }
+  // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
+  // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
+  // submitted - the payer switched, other runs reserved more of the limit, a new warning appeared - the old confirmation no longer matches and the person must confirm again.
+  const r4 = (n: number | null) => (n === null ? null : Math.round(n * 1e4) / 1e4)
+  const ack = createHash('sha256').update(JSON.stringify({
+    payer: i.payer, model,
+    rows: rows.map(r => [r.id, r.kind, r.capped, r.units, r.unit_usd, r.usd && { min: r4(r.usd.min), max: r4(r.usd.max) }, r.note]),
+    total: { min: r4(total.min), max: r4(total.max) }, unpriced,
+    cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) } },
+    verdict,
+  })).digest('hex').slice(0, 16)
+  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack }
 }
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported

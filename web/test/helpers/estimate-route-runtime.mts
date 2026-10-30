@@ -13,6 +13,7 @@ import { POST as SCAN } from '../../app/api/scan/route.ts'
 import { GET as STATUS } from '../../app/api/scan/status/route.ts'
 import { migrateModelUsage, writeModelCalls } from '../../lib/scan/model-usage.ts'
 import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
+import { periodOf } from '../../lib/llm/spend-pool.ts'
 
 // Real POST /api/scan/estimate and POST /api/scan handlers, in-memory db, network fenced, runner never started.
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
@@ -135,4 +136,29 @@ test('keyless: if creating the job fails AFTER the reservation, the reservation 
     db.exec('DROP TRIGGER boom')
     assert.equal((await scan({ query: Q, budget: { max_usd: 1, judge: false } })).status, 202); assert.equal(reservations(db).length, 1)
   })
+})
+
+test('payer change: a trial confirmation is not accepted after the account adds its own key (409, no job); the fresh confirmation runs', async () => {
+  await keyless(async (db, id) => {
+    const body = { query: Q, budget: { max_usd: 2, judge: false } }
+    const e = await (await est(body)).json() as { estimate: { ack: string; payer: string } }; assert.equal(e.estimate.payer, 'trial')
+    saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')           // an own key appears after the person confirmed the trial estimate
+    const r = await scan({ ...body, estimate_ack: e.estimate.ack }); const j = await r.json() as { error: string; estimate: { ack: string; payer: string } }
+    assert.equal(r.status, 409); assert.equal(j.error, 'estimate_changed'); assert.equal(j.estimate.payer, 'you'); assert.notEqual(j.estimate.ack, e.estimate.ack)
+    assert.equal(jobs(db).length, 0); assert.equal(reservations(db).length, 0)
+    assert.equal((await scan({ ...body, estimate_ack: j.estimate.ack })).status, 202, 'the fresh confirmation runs, on the own key')
+  })
+})
+
+test('reduced remaining room: reserving $1.50 of a $2 limit after the confirmation changes it (409, new warning, no job); the fresh confirmation runs', async () => {
+  const db = setup(); as(db)
+  const tenant = `E${n}`
+  const body = { query: Q, budget: { max_usd: 2, judge: false } }
+  const e = await (await est(body)).json() as { estimate: { ack: string; verdict: { warning: string | null }; cap: { reserved_usd: number } } }
+  assert.equal(e.estimate.verdict.warning, null); assert.equal(e.estimate.cap.reserved_usd, 0)
+  db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 1.5, 0, 1, ?)').run(tenant, periodOf('day', Math.floor(Date.now() / 1000)), Math.floor(Date.now() / 1000))
+  const r = await scan({ ...body, estimate_ack: e.estimate.ack }); const j = await r.json() as { error: string; estimate: { ack: string; verdict: { warning: string | null }; cap: { reserved_usd: number; remaining_usd: number } } }
+  assert.equal(r.status, 409); assert.equal(j.error, 'estimate_changed'); assert.equal(j.estimate.cap.reserved_usd, 1.5); assert.equal(j.estimate.cap.remaining_usd, 0.5)
+  assert.ok(j.estimate.verdict.warning, 'the reduced room raised a warning the person has not seen'); assert.equal(jobs(db).length, 0)
+  assert.equal((await scan({ ...body, estimate_ack: j.estimate.ack })).status, 202)
 })
