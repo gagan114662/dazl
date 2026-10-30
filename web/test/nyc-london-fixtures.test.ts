@@ -97,7 +97,9 @@ test('NYC: EITHER signal alone qualifies (a new location without a job post, a r
 test('NYC rejection variants never qualify: the same evidence with a missing quote, a company named only elsewhere, and a stale date', async () => {
   const noQuote = await runFixture({ ...nyc, extraction: [{ ...cOpen, excerpt: 'BrightSmile Dental announced a brand new flagship clinic with twelve operatories' }] })
   assert.equal(fate(noQuote, 'BrightSmile Dental'), 'review:quote_unconfirmed'); assert.equal(noQuote.leads.filter(l => !l.review_reason).length, 0)
-  const stale = await runFixture({ ...nyc, extraction: [{ ...cOpen, event_date: daysAgo(500) }] })
+  // the fetched page itself states the stale day for this event (a model date the page never states would be undated, not stale)
+  const withDate = (d: Record<string, { title: string; text: string }>) => ({ ...d, 'https://news.example/brightsmile-opens': { ...d['https://news.example/brightsmile-opens'], text: `On ${daysAgo(500)}, ${Q_OPEN}.` } })
+  const stale = await runFixture({ ...nyc, tfPages: withDate(nyc.tfPages as never), own: withDate((nyc.own ?? {}) as never), extraction: [{ ...cOpen, event_date: daysAgo(500) }] })
   assert.match(fate(stale, 'BrightSmile Dental')!, /^review:event_date_stale$/); assert.equal(stale.leads.filter(l => !l.review_reason).length, 0)
 })
 
