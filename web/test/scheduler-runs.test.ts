@@ -82,6 +82,6 @@ test('migrateSchedulerRuns widens the kind check of an older store (rebuilt once
   assert.equal(db.prepare('SELECT count(*) AS n FROM scheduler_progress').pluck().get(), 2, 'the probe row never stays')
   const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get() as string
   migrateSchedulerRuns(db)
-  assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get(), ddl, 'a second run does not rebuild')
+  assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get(), ddl, 'a second run does not rebuild (and does not probe again on this connection)')
   assert.equal(db.prepare("SELECT count(*) AS n FROM scheduler_progress WHERE tenant_id = ''").pluck().get(), 0)
 })

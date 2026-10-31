@@ -676,8 +676,8 @@ test('#448 keep (the lease heartbeat) is awaited before every message; when it t
 // exclusion is by the skipped audit row: its reason and its age.
 test('#448 a lead refused for a reason the user can clear is tried again an hour later; a transient store error on the next tick; a personal address never', async () => {
   const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
-  const fixable = lead(db, 'a@one.example'); db.prepare('UPDATE leads SET fit = 0, intent = NULL WHERE id = ?').run(fixable) // ungraded: the user grades it later
-  lead(db, 'p@gmail.com')
+  lead(db, 'p@gmail.com') // (lead() re-stamps every lead's confirmation: create it first)
+  const fixable = lead(db, 'a@one.example'); db.prepare('UPDATE leads SET fit = 0, intent = NULL, human_confirmed_at = ? WHERE id = ?').run(NOW - 1, fixable) // ungraded (confirmed earlier): the user grades it later
   const skipped = () => (db.prepare("SELECT lead_id, detail FROM autopilot_audit WHERE action = 'skipped' ORDER BY created_at, rowid").all() as { lead_id: string; detail: string }[]).map(s => s.detail)
   const r1 = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
   assert.deepEqual([r1.sent, skipped().sort()], [0, ['lead_ungraded', 'personal_email']], 'both refused once')
@@ -687,6 +687,11 @@ test('#448 a lead refused for a reason the user can clear is tried again an hour
   const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 3601))
   assert.deepEqual([r3.sent, sent.length, r3.skipped, skipped().length], [1, 1, 0, 2], 'an hour on: the graded lead is drafted and sent; the personal address is not retried')
   await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY)); assert.equal(skipped().length, 2, 'the personal address: never again')
+  // Still refused an hour later, and the hour after: the same skipped row moves, no new one (the audit view is not buried).
+  const db4 = await setup(); ok(db4); pastWarmup(db4); const four = sends(); const still = lead(db4, 'u@ungraded.example'); db4.prepare('UPDATE leads SET fit = 0, intent = NULL, human_confirmed_at = ? WHERE id = ?').run(NOW - 1, still)
+  for (const t of [NOW, NOW + 3601, NOW + 7202]) await runAutopilot(db4, 'A', 'Acme', at(four.d, t))
+  assert.deepEqual(db4.prepare("SELECT detail, created_at FROM autopilot_audit WHERE action = 'skipped'").all(), [{ detail: 'lead_ungraded', created_at: NOW + 7202 }], 'one row, its time the last refusal')
+  assert.equal(four.sent.length, 0)
   // A transient error while drafting (one failing insert): recorded as skipped:error, retried a day later, sent then.
   const db2 = await setup(); ok(db2); pastWarmup(db2); const two = sends(); lead(db2, 'b@two.example')
   const prepare = db2.prepare.bind(db2)

@@ -74,8 +74,9 @@ export function migrateSchedulerRuns(db: Database.Database): void {
   if (!cols.has('last_hold')) db.exec('ALTER TABLE scheduler_progress ADD COLUMN last_hold TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40)')
   // Stores created before the autopilot kind (#448): the kind check is part of the table, so it is rebuilt once, rows kept.
   // Whether the check already allows 'autopilot' is learned from a probe row under a savepoint that is always rolled back
-  // (SQLite keeps the check only in the table's SQL text; schema setup, SQLite only). Postgres: migration 0026 re-creates
-  // the constraint.
+  // (SQLite keeps the check only in the table's SQL text; schema setup, SQLite only), once per connection: the tick runs
+  // this on every request. Postgres: migration 0026 re-creates the constraint.
+  if (KIND_CHECKED.has(db)) return
   const widened = (() => {
     try { db.exec("SAVEPOINT kind_probe; INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at) VALUES ('', 'autopilot', 0); ROLLBACK TO kind_probe; RELEASE kind_probe"); return true }
     catch (e) { db.exec('ROLLBACK TO kind_probe; RELEASE kind_probe'); if (e instanceof Error && /CHECK constraint failed/.test(e.message)) return false; throw e }
@@ -87,7 +88,9 @@ export function migrateSchedulerRuns(db: Database.Database): void {
     DROP TABLE scheduler_progress;
     ALTER TABLE scheduler_progress_v2 RENAME TO scheduler_progress;
   `))()
+  KIND_CHECKED.add(db)
 }
+const KIND_CHECKED = new WeakSet<Database.Database>()
 
 // What the tick records for one tenant and kind of work, from what the worker returned.
 export type Outcome = { outcome: 'success' } | { outcome: 'hold'; reason: string } | { outcome: 'failure'; error: unknown }

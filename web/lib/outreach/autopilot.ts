@@ -198,7 +198,7 @@ const AUTHORITY_RETURNS = new Set(['autopilot_off', 'consent_required'])
 const AUTHORITY_ENDED = new Set(['autopilot_unavailable', 'reservation_lost', 'authority_unreadable'])
 // Refusals of the draft path that never change for a lead: recorded once, the lead is the user's from then on. Every
 // other refusal is tried again: a gate the user can clear after SKIP_RETRY_S, or at once when the lead was confirmed by
-// the user after the refusal; a store error ('error') after SKIP_ERROR_S (the next tick).
+// the user at or after the refusal; a store error ('error') after SKIP_ERROR_S (the next tick).
 const SKIP_FOR_GOOD = "('personal_email','not_sales_contact','suppressed','no_email_contact')"
 const SKIP_RETRY_S = 3600, SKIP_ERROR_S = 600
 // The authority could not be read at the send commitment (the store failed): fail closed, as if it had ended. Known not
@@ -404,7 +404,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
          AND (a.detail IN ${SKIP_FOR_GOOD}
            OR (a.detail = 'error' AND a.created_at > ?)
-           OR (a.detail <> 'error' AND a.created_at > ? AND a.created_at >= COALESCE(l.human_confirmed_at, 0))))
+           OR (a.detail <> 'error' AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
      ORDER BY l.score DESC LIMIT 25`,
   ).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId, now - SKIP_ERROR_S, now - SKIP_RETRY_S) as { id: string; contact: string }[]
 
@@ -419,7 +419,13 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       context = draftContext(db, tenantId, id)
       try { await polishDraft(db, tenantId, id, businessName, d) } catch { /* template stays */ }
     } catch (e) {
-      out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
+      // Recorded once per reason: a lead refused again for the same reason moves its skipped row's time instead of
+      // adding a row (an hourly retry must not bury the sends and releases in the audit).
+      const code = e instanceof OutreachError ? e.code : 'error'
+      const last = db.prepare("SELECT id, detail FROM autopilot_audit WHERE tenant_id = ? AND lead_id = ? AND action = 'skipped' ORDER BY created_at DESC LIMIT 1").get(tenantId, l.id) as { id: string; detail: string | null } | undefined
+      if (last && last.detail === code) db.prepare('UPDATE autopilot_audit SET created_at = ? WHERE id = ? AND tenant_id = ?').run(now, last.id, tenantId)
+      else audit(db, tenantId, 'skipped', code, l.id)
+      out.skipped++; continue
     }
     // The polish may change only the words: the offer, seller, sender settings or Gmail address changing across it hands
     // the draft to the user.
