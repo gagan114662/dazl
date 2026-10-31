@@ -733,23 +733,29 @@ export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, win
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
-export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): string {
+export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number }): string {
   // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
-  const partial = note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
+  // A provider rate-limit is its own state, never an outage or an empty result: the provider answered and told us to slow down.
+  const limited = note.limited ?? 0
+  // Both failed and limited beside answers that worked: name BOTH. A plain "partial:N_of_M" would hide the throttling behind the failure count.
+  const partial = note.failed > 0 && limited > 0 ? `partial:${note.failed}_of_${note.attempted}_plus_${limited}_limited` : note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : limited > 0 ? `partial:limited_${limited}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
   // Hits with usable page evidence but nothing extracted is NOT "nothing found": its own status, so progress and the outcome say evidence was read and no candidate came of it.
   if (leads) return partial ?? (leads.length ? 'ok' : note.hits > 0 ? 'no_candidates' : 'empty')
   if (!note.searched) return 'unavailable'
-  if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
+  if (note.hits === 0) {
+    if (limited > 0) return note.failed > 0 ? `limited_partial:${note.failed}_of_${note.attempted}` : 'limited'
+    return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
+  }
   return partial ?? 'unavailable'   // hits but no usable page evidence: unknown (named as partial when some requests also failed)
 }
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   // `queries` (the corroboration search) replaces the model's query planning: they name the companies whose second half is missing.
   const plan = queries ? { queries, source: 'model' as const } : queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
-  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed }
+  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -963,7 +969,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+        const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
         leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
         if (leads?.length) partial.candidates = leads
         // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
@@ -1029,7 +1035,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         // candidates (verified quote, identity, date window) that the sales-hiring gate later merges with the posting. A run that disabled the paid fallback makes no extra model call.
         const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
         if (targets.length > 0) {
-          const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+          const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
           let found: LeadDraft[] | null = null
           try { found = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, withGeography(targets.map(t => t.query), icpForSources.where)) }
@@ -1102,7 +1108,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
     recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
-      const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+      const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
       try {
         assertOwned(db, job)
