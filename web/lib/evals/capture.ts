@@ -15,7 +15,7 @@
 // runJob, and the runner slot it holds, from returning. A recorded trace is PRIVATE: it is not a World until
 // worldFromTrace (which accepts it only because it is redacted), and it is never published or shared across tenants.
 import { randomBytes } from 'node:crypto'
-import { getDb, type Db } from '../db/client.ts'
+import { getDb, type Db, type Tx, type TxBody } from '../db/client.ts'
 import { resolveServedCommit } from '../commit-marker.ts'
 import { TraceRecorder, TRACE_VERSION, type Trace, type TraceLead } from './trace.ts'
 import { redactTrace } from './redact.ts'
@@ -27,16 +27,18 @@ export const MAX_STRING_CHARS = 50_000      // one prompt, page or body; longer 
 export const MAX_TRACE_BYTES = 2_000_000     // the whole stored trace as UTF-8 JSON: a hard bound (capTrace), never exceeded on insert
 export const SETTLE_MS = 5_000
 export const FINISH_MS = 15_000
+export const PURGE_LIMIT = 500               // expired rows deleted per scheduled purge (one tick): bounded like the session reap
 
 // `purge`: whether the scheduled purge may delete anything - true only when capture is on, or a valid retention was set explicitly.
 export interface TraceCaptureConfig { enabled: boolean; retentionDays: number; reason: 'on' | 'off' | 'invalid_retention'; purge: boolean }
 
 // Both settings are configuration (environment), not code. An invalid retention never captures and never purges: nothing
-// is stored, and nothing deleted, under a retention nobody chose.
+// is stored, and nothing deleted, under a retention nobody chose. A retention is a plain decimal whole number of days
+// ("7", "14"); "0x10", "1e1", "+7", "7.0" are not accepted even though Number() would read them.
 export function traceCaptureConfig(env: Env = process.env): TraceCaptureConfig {
   const raw = env.DAZL_TRACE_RETENTION_DAYS?.trim()
   const explicit = raw !== undefined && raw !== ''
-  const n = explicit ? Number(raw) : DEFAULT_RETENTION_DAYS
+  const n = explicit ? (/^\d+$/.test(raw) ? Number(raw) : NaN) : DEFAULT_RETENTION_DAYS
   const valid = Number.isInteger(n) && n >= 1 && n <= MAX_RETENTION_DAYS
   if (env.DAZL_TRACE_CAPTURE !== '1') return { enabled: false, retentionDays: valid ? n : DEFAULT_RETENTION_DAYS, reason: 'off', purge: explicit && valid }
   if (!valid) return { enabled: false, retentionDays: DEFAULT_RETENTION_DAYS, reason: 'invalid_retention', purge: false }
@@ -182,8 +184,17 @@ export async function getTrace(db: Db, tenantId: string, id: string): Promise<Tr
 // under a retention somebody chose (traceCaptureConfig().purge: capture on, or an explicit valid DAZL_TRACE_RETENTION_DAYS
 // with capture off, which is how old rows are cleared after capture is turned off). Otherwise nothing is deleted and 0 is
 // returned: a deployment with capture unset, off or misconfigured applies no retention policy of its own.
-export async function purgeExpiredTraces(db: Db, env: Env = process.env, now = Date.now()): Promise<number> {
-  const { purge, retentionDays } = traceCaptureConfig(env)
+// Bounded and fenced like the session reap (lib/sessions.ts reapSessions): at most `limit` rows (PURGE_LIMIT) per call,
+// oldest first, in one transaction that takes the tick lease's fence first - a tick that lost its lease deletes nothing
+// (StaleLeaseWrite), and a first purge after weeks of capture drains over several ticks instead of one statement.
+export interface PurgeOptions { env?: Env; now?: number; fence?: (t: Tx) => TxBody<void>; limit?: number }
+export async function purgeExpiredTraces(db: Db, o: PurgeOptions = {}): Promise<number> {
+  const { purge, retentionDays } = traceCaptureConfig(o.env ?? process.env)
   if (!purge) return 0
-  return (await db.run('DELETE FROM scan_traces WHERE created_at < ?', [Math.floor(now / 1000) - retentionDays * 86_400])).changes
+  const cutoff = Math.floor((o.now ?? Date.now()) / 1000) - retentionDays * 86_400
+  const limit = Math.max(1, Math.min(o.limit ?? PURGE_LIMIT, 5000))
+  return db.tx(function* (t) {
+    if (o.fence) yield* o.fence(t)
+    return (yield* t.run('DELETE FROM scan_traces WHERE id IN (SELECT id FROM scan_traces WHERE created_at < ? ORDER BY created_at, id LIMIT ?)', [cutoff, limit])).changes
+  })
 }

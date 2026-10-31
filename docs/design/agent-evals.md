@@ -227,8 +227,10 @@ Retention: each capture deletes its own tenant's rows older than the retention, 
 (`/api/internal/tick`, `purgeExpiredTraces`) deletes everyone's - but only under a retention somebody chose: capture on
 (its retention, 14 by default), or an explicit valid `DAZL_TRACE_RETENTION_DAYS` with capture off (how old rows are
 cleared after capture is turned off). With capture unset, off, or on with an invalid retention the tick deletes zero
-trace rows (`traces_purged: 0`): no retention policy is applied by default. Shortening the retention takes effect at the
-next purge. The tick still needs its external scheduler; activating that is not part of this change.
+trace rows (`traces_purged: 0`): no retention policy is applied by default. The tick's purge is bounded and fenced like
+its session reap: at most 500 expired rows per tick (`PURGE_LIMIT`), oldest first, in one transaction that takes the tick
+lease's fence first, so a tick that lost its lease deletes nothing and a backlog drains over several ticks. Shortening the
+retention takes effect at the next purge. The tick still needs its external scheduler; activating that is not part of this change.
 
 A stored trace is a recorded, redacted trace: `worldFromTrace` turns it into a private World that replays offline
 (`test/trace-capture.test.ts` proves a capture replays to the same verdict with no world miss). Not recorded yet: the CSV

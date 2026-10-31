@@ -8,7 +8,8 @@ import { bothEngines } from './helpers/engines.ts'
 import Database from 'better-sqlite3'
 import { getDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { beginScanTrace, capTrace, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS, MAX_TRACE_BYTES } from '../lib/evals/capture.ts'
+import { beginScanTrace, capTrace, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS, MAX_TRACE_BYTES, PURGE_LIMIT } from '../lib/evals/capture.ts'
+import { StaleLeaseWrite, tryLease } from '../lib/shared/lease.ts'
 import { redactTrace } from '../lib/evals/redact.ts'
 import { TraceRecorder, TRACE_VERSION, type Trace } from '../lib/evals/trace.ts'
 import { worldFromTrace, validateWorld, WorldError } from '../lib/evals/world.ts'
@@ -41,8 +42,13 @@ test('config: OFF unless DAZL_TRACE_CAPTURE=1; retention defaults to 14 days; an
   assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: 'true' }), { enabled: false, retentionDays: 14, reason: 'off', purge: false })   // only "1" turns it on
   assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1' }), { enabled: true, retentionDays: DEFAULT_RETENTION_DAYS, reason: 'on', purge: true })
   assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '7' }), { enabled: true, retentionDays: 7, reason: 'on', purge: true })
-  for (const bad of ['0', '-1', '1.5', 'abc', '366', ' '.repeat(0) + 'NaN'])
+  // a retention is a plain decimal whole number of days: forms Number() would read (hex, exponent, sign, decimal point) are invalid
+  for (const bad of ['0', '-1', '1.5', 'abc', '366', ' '.repeat(0) + 'NaN', '0x10', '1e1', '+7', '7.0', '-7', '1_0', '14 days', '7,', 'Infinity'])
     assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: bad }), { enabled: false, retentionDays: 14, reason: 'invalid_retention', purge: false }, bad)
+  for (const [ok, days] of [['7', 7], ['007', 7], [' 14 ', 14], ['365', 365], ['1', 1]] as const)
+    assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: ok }), { enabled: true, retentionDays: days, reason: 'on', purge: true }, ok)
+  for (const bad of ['0x10', '1e1', '+7'])
+    assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_RETENTION_DAYS: bad }), { enabled: false, retentionDays: 14, reason: 'off', purge: false }, bad)
   // The purge runs only under a retention somebody chose: capture on (its retention, 14 by default), or an explicit valid
   // DAZL_TRACE_RETENTION_DAYS with capture off. Unset, off, or invalid: no retention policy, nothing is deleted.
   assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_RETENTION_DAYS: '3' }), { enabled: false, retentionDays: 3, reason: 'off', purge: true })
@@ -282,14 +288,50 @@ bothEngines('retention: a capture deletes only its own tenant\'s expired rows; t
   assert.deepEqual((await listTraces(db, 'tenant-B')).map(r => r.job_id).sort(), ['edge-b', 'old-b'])
   // no retention policy anybody chose (PR #463 review): unset, off, on with an invalid retention, an invalid retention alone
   for (const env of [{}, { DAZL_TRACE_CAPTURE: '0' }, { DAZL_TRACE_CAPTURE: 'true' }, { DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: 'nonsense' }, { DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '0' }, { DAZL_TRACE_RETENTION_DAYS: 'nonsense' }])
-    assert.equal(await purgeExpiredTraces(db, env, NOW * 1000), 0, JSON.stringify(env))
+    assert.equal(await purgeExpiredTraces(db, { env, now: NOW * 1000 }), 0, JSON.stringify(env))
   assert.deepEqual((await listTraces(db, 'tenant-B')).map(r => r.job_id).sort(), ['edge-b', 'old-b'])
-  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_CAPTURE: '1' }, NOW * 1000), 1)   // capture ON: its retention (14 by default) applies to everyone
+  assert.equal(await purgeExpiredTraces(db, { env: { DAZL_TRACE_CAPTURE: '1' }, now: NOW * 1000 }), 1)   // capture ON: its retention (14 by default) applies to everyone
   assert.deepEqual((await listTraces(db, 'tenant-B')).map(r => r.job_id), ['edge-b'])
-  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_RETENTION_DAYS: '7' }, NOW * 1000), 1)   // an explicit retention with capture off: the stated policy, at once
+  assert.equal(await purgeExpiredTraces(db, { env: { DAZL_TRACE_RETENTION_DAYS: '7' }, now: NOW * 1000 }), 1)   // an explicit retention with capture off: the stated policy, at once
   assert.deepEqual(await listTraces(db, 'tenant-B'), [])
   assert.deepEqual((await listTraces(db, 'tenant-A')).map(r => r.job_id), ['new-a'])
-  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '7' }, NOW * 1000), 0)   // nothing left to expire: idempotent
+  assert.equal(await purgeExpiredTraces(db, { env: { DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '7' }, now: NOW * 1000 }), 0)   // nothing left to expire: idempotent
+})
+
+// Bounded and fenced like the session reap (council review of #463): at most PURGE_LIMIT rows per scheduled purge, oldest
+// first, inside one transaction that takes the lease fence first.
+bothEngines('retention purge is bounded (1200 expired rows go 500/500/200/0 across ticks, oldest first) and fenced (a lost lease deletes nothing)', async ({ db }) => {
+  assert.equal(PURGE_LIMIT, 500)
+  await db.tx(function* (t) {
+    for (let i = 0; i < 1200; i++) yield* t.run('INSERT INTO scan_traces (id, tenant_id, job_id, attempt, created_at, bytes, trace) VALUES (?, ?, ?, 1, ?, 2, ?)', [`e${i}`, `tenant-${i % 3}`, `job-${i}`, NOW - 20 * DAY - i, '{}'])
+    yield* t.run('INSERT INTO scan_traces (id, tenant_id, job_id, attempt, created_at, bytes, trace) VALUES (?, ?, ?, 1, ?, 2, ?)', ['fresh', 'tenant-0', 'fresh', NOW, '{}'])
+  })
+  const env = { DAZL_TRACE_CAPTURE: '1' }
+  const count = async () => Number((await db.get<{ n: number | string }>('SELECT count(*) AS n FROM scan_traces'))!.n)
+  const oldest = async () => (await db.get<{ created_at: number | string }>('SELECT min(created_at) AS created_at FROM scan_traces'))!.created_at
+  assert.equal(await purgeExpiredTraces(db, { env, now: NOW * 1000 }), 500); assert.equal(await count(), 701)
+  assert.equal(Number(await oldest()), NOW - 20 * DAY - 699, 'the 500 oldest went first')
+  assert.equal(await purgeExpiredTraces(db, { env, now: NOW * 1000 }), 500); assert.equal(await count(), 201)
+  assert.equal(await purgeExpiredTraces(db, { env, now: NOW * 1000 }), 200); assert.equal(await count(), 1)
+  assert.equal(await purgeExpiredTraces(db, { env, now: NOW * 1000 }), 0); assert.equal(await count(), 1)
+  assert.equal((await db.get<{ id: string }>('SELECT id FROM scan_traces'))!.id, 'fresh')
+  // a smaller bound is honoured; a silly one is clamped to at least 1
+  await db.run('INSERT INTO scan_traces (id, tenant_id, job_id, attempt, created_at, bytes, trace) VALUES (?, ?, ?, 1, ?, 2, ?)', ['e-a', 't', 'j', NOW - 30 * DAY, '{}'])
+  await db.run('INSERT INTO scan_traces (id, tenant_id, job_id, attempt, created_at, bytes, trace) VALUES (?, ?, ?, 1, ?, 2, ?)', ['e-b', 't', 'j', NOW - 30 * DAY, '{}'])
+  assert.equal(await purgeExpiredTraces(db, { env, now: NOW * 1000, limit: 0 }), 1)
+  // fenced: a tick that lost its lease deletes nothing - a fence that refuses (StaleLeaseWrite) and a real lease that was released
+  await db.run('INSERT INTO scan_traces (id, tenant_id, job_id, attempt, created_at, bytes, trace) VALUES (?, ?, ?, 1, ?, 2, ?)', ['e-c', 't', 'j', NOW - 30 * DAY, '{}'])
+  const before = await count()
+  await assert.rejects(purgeExpiredTraces(db, { env, now: NOW * 1000, fence: function* () { throw new StaleLeaseWrite('internal-tick', 1) } }), StaleLeaseWrite)
+  assert.equal(await count(), before)
+  const lease = (await tryLease(db, 'internal-tick', { ttlMs: 60_000, stepBudgetMs: 1_000, heartbeat: false }))!
+  await lease.release()
+  await assert.rejects(purgeExpiredTraces(db, { env, now: NOW * 1000, fence: t => lease.fence(t) }), StaleLeaseWrite)
+  assert.equal(await count(), before)
+  // a live lease's fence lets the purge through
+  const live = (await tryLease(db, 'internal-tick', { ttlMs: 60_000, stepBudgetMs: 1_000, heartbeat: false }))!
+  try { assert.equal(await purgeExpiredTraces(db, { env, now: NOW * 1000, fence: t => live.fence(t) }), 2) } finally { await live.release() }
+  assert.equal(await count(), 1)
 })
 
 // ---- Credential redaction as a CLASS (PR #463 review): credential-NAMED fields wherever they sit (nested objects, arrays,
