@@ -146,6 +146,7 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
   const db = asDb(d)
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
+  const cols = await tableColumns(db)
   let t = await tombstone(db, tenant)
   if (!t) {
     // the policy and retention checks read the schema only; the shared-workspace check reads data, so it runs in the
@@ -155,7 +156,7 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     const unsatisfiable = retentionProblems(scope, await foreignKeys(db), keep)
     if (unsatisfiable.length) throw new Error(`retention policy cannot be honoured: ${unsatisfiable.join('; ')}`)
     if (!o.requestedBy) throw new Error('requestedBy is required (who asked, for the audit record)')
-    const cols = await tableColumns(db), requestedBy = o.requestedBy.slice(0, 200), requestedAt = o.requestedAt ?? now
+    const requestedBy = o.requestedBy.slice(0, 200), requestedAt = o.requestedAt ?? now
     await db.tx(function* (tx) {
       yield* refuseSharedWorkspace(tx, cols, tenant)
       yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
@@ -166,11 +167,18 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
   const policy = JSON.parse(t.policy) as DeletionPolicy
   const retain = new Set([...(policy.retainTables ?? []), ...(policy.suppressions === 'retain' ? ['suppressions'] : []), ...Object.keys(ALWAYS_RETAINED)])
   const has = (x: string) => scope.has(x)
-  // One step: its statements and the state change commit together, or not at all.
+  // Every table a step reads or deletes from: the tenant's tables, its identity rows and the lifecycle's own records.
+  const stepTables = [...scope.keys(), 'users', 'organizations', 'tenant_tombstone_keys'].filter(x => cols.has(x)).sort()
+  // One step: its statements and the state change commit together, or not at all. On Postgres a write for this tenant
+  // that passed the guard before the tombstone committed can still be open when a step runs (READ COMMITTED waits for
+  // nothing), and would commit after the step deleted around it. So each step first takes SHARE ROW EXCLUSIVE on every
+  // table it touches: that waits for those writers to finish, and the step's statements then see their rows. SQLite
+  // has one writer at a time (BEGIN IMMEDIATE in sqliteDb): an open writer makes the step wait or fail, never lose a row.
   const advance = async (from: DeletionState, to: DeletionState, body: (tx: Tx) => TxBody<void>) => {
     if (ORDER.indexOf(t!.state) >= ORDER.indexOf(to)) return true
     if (o.until && ORDER.indexOf(from) >= ORDER.indexOf(o.until)) return false
     await db.tx(function* (tx) {
+      if (db.kind === 'pg') yield* tx.run(`LOCK TABLE ${stepTables.map(x => `"${x}"`).join(', ')} IN SHARE ROW EXCLUSIVE MODE`)
       yield* body(tx)
       const r = yield* tx.run('UPDATE tenant_tombstones SET state = ? WHERE deleted_tenant = ? AND state = ?', [to, tenant, from])
       if (r.changes !== 1) throw new Error(`tenant deletion: expected state ${from}, another run moved it`)
