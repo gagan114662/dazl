@@ -39,6 +39,9 @@ The workers report ordinary refusals as a result (`stopped`), not an exception. 
 | `runFollowups` | `not_available` (operator switch off or kill switch, while the tenant has follow-ups on) | failure |
 | `runAutopilot` (first touches, #411) | `daily_cap`, `paused`, `off`, `autopilot_off`, `consent_required`, `gmail_not_connected`, `gmail_reconnect_needed` | hold (the tenant's own switch, consent or mailbox); **success** if the same tick sent something first |
 | `runAutopilot` | `not_available` / `autopilot_unavailable` (operator switch off or kill switch), `uncertain_send`, `authority_unreadable`, `reservation_lost`, a thrown error | failure |
+| `disable()` (the tenant turns autopilot off) | writes one `autopilot` hold row `off` with `consecutive_failures` 0: the tick no longer runs this tenant's drain, so an earlier failure must not keep it blocked | hold |
+
+The operator switch / kill switch is a failure for every enabled tenant's drain, as it is for follow-ups: after `BLOCKED_AFTER_FAILURES` ticks every such tenant reads as blocked (`autopilot_failing`) until the switch is back and a tick succeeds.
 | `runSequences` | `sequences_disabled` (operator switch off or kill switch, while the tenant has approved or active sequences), `reading_not_enabled`, `reply_sync_failed` | failure |
 | `syncReplies` | `error` (`reading_not_enabled`, `gmail_unavailable`, `reply_sync_failed`) | failure; follow-ups are not attempted that tick |
 | any | a thrown error, or a `stopped` reason the tick does not know | failure (an unknown refusal is never read as progress) |

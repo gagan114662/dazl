@@ -12,7 +12,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
 import { approve, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { ATTESTATIONS, CONSENT_VERSION, disable, enable, getState, pause, migrateAutopilot, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
+import { ATTESTATIONS, CONSENT_VERSION, NEW_LEADS_SQL, disable, enable, getState, pause, migrateAutopilot, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { GmailSendError } from '../lib/gmail/oauth.ts'
 
 const master = randomBytes(32)
@@ -761,4 +761,27 @@ test('#448 a manual send whose recheck read fails after the token refresh: refus
   const mid = createDraft(db, 'A', id, 'Acme'); approve(db, 'A', mid, true)
   await assert.rejects(sendMessage(db, 'A', mid, { ...at(d, NOW), fetchImpl: onToken(db, 1, db2 => db2.exec('DROP TABLE suppressions')) }), (e: unknown) => (e as { code?: string }).code === 'authority_unreadable')
   assert.deepEqual([sent.length, db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(mid)], [0, { status: 'approved', error: 'authority_unreadable' }])
+})
+
+// Reviewer 1 round 3 (R8): the new-lead query's skipped-row check and the commitment's disables read are index searches
+// by lead / by action, never a scan of the tenant's audit (never pruned; 200k rows scanned per candidate lead = minutes,
+// synchronously, on every tick).
+test('#448 query plans: the skipped-row check searches autopilot_audit by lead, the disables count by action', async () => {
+  const db = await setup()
+  const plan = (sql: string, ...params: unknown[]) => (db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...params) as { detail: string }[]).map(r => r.detail)
+  const leads = plan(NEW_LEADS_SQL, 'A', 80, 'A', 'A', NOW - 600, NOW - 3600)
+  assert.ok(leads.some(d => /SEARCH a USING (COVERING )?INDEX autopilot_audit_lead \(tenant_id=\? AND lead_id=\? AND action=\?\)/.test(d)), leads.join('\n'))
+  const disables = plan("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'disabled'", 'A')
+  assert.ok(disables.some(d => /USING (COVERING )?INDEX autopilot_audit_action \(tenant_id=\? AND action=\?\)/.test(d)), disables.join('\n'))
+})
+
+// Reviewer 1 round 3 (R10): the tenant turning autopilot off is a hold in the scheduler's view, not a frozen failure.
+test('#448 disable() writes one autopilot progress hold row (off, nothing failing) when the scheduler table exists', async () => {
+  const db = await setup(); ok(db)
+  const { migrateSchedulerRuns } = await import('../lib/ops/scheduler-runs.ts'); migrateSchedulerRuns(db)
+  db.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_error, last_outcome, consecutive_failures, last_run_id) VALUES ('A', 'autopilot', ?, 'SqliteError: no such table', 'failure', 3, 'r1')").run(NOW)
+  disable(db, 'A')
+  const row = db.prepare("SELECT last_outcome, last_hold, consecutive_failures, last_error FROM scheduler_progress WHERE tenant_id = 'A' AND kind = 'autopilot'").get()
+  assert.deepEqual(row, { last_outcome: 'hold', last_hold: 'off', consecutive_failures: 0, last_error: null })
+  assert.equal(db.prepare("SELECT count(*) AS n FROM scheduler_progress WHERE tenant_id = 'A'").pluck().get(), 1)
 })

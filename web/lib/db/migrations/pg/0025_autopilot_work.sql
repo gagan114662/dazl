@@ -12,3 +12,6 @@ CREATE TABLE autopilot_work (
       created_at BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT))
     );
 CREATE INDEX autopilot_work_due ON autopilot_work (tenant_id, next_at);
+-- The new-lead query checks each candidate lead's skipped audit rows, and a send's commitment reads the tenant's disables.
+CREATE INDEX autopilot_audit_lead ON autopilot_audit (tenant_id, lead_id, action);
+CREATE INDEX autopilot_audit_action ON autopilot_audit (tenant_id, action);

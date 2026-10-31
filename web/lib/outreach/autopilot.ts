@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
+import { tableExists } from './send-budget.ts'
 import { polishDraft } from './draft-llm.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
@@ -46,6 +47,12 @@ export function migrateAutopilot(db: Database.Database): void {
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
     CREATE INDEX IF NOT EXISTS autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
+  `)
+  // #448: the new-lead query checks each candidate lead's skipped rows, and a send's commitment reads the tenant's
+  // disables: by lead and by action, never a scan of the tenant's audit (which is never pruned).
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS autopilot_audit_lead ON autopilot_audit (tenant_id, lead_id, action);
+    CREATE INDEX IF NOT EXISTS autopilot_audit_action ON autopilot_audit (tenant_id, action);
   `)
   try { db.exec('ALTER TABLE autopilot_settings ADD COLUMN followups_enabled INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
   // #411: first touches autopilot drafted but could not send yet (a daily or per-company cap, a temporary Gmail error),
@@ -95,6 +102,11 @@ export function disable(db: Database.Database, tenantId: string): void {
     db.prepare('UPDATE autopilot_settings SET enabled = 0 WHERE tenant_id = ?').run(tenantId)
     audit(db, tenantId, 'disabled')
     returnHeld(db, tenantId, 'autopilot turned off: yours to approve')
+    // The scheduler's view of the drain (lib/ops/scheduler-runs.ts): off is a hold, nothing is failing any more; the tick
+    // will not run this tenant's drain, so its last row must not keep reporting an earlier failure.
+    if (tableExists(db, 'scheduler_progress')) db.prepare(`INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id)
+      VALUES (?, 'autopilot', ?, NULL, NULL, 'hold', 'off', 0, NULL)
+      ON CONFLICT (tenant_id, kind) DO UPDATE SET last_attempt_at = excluded.last_attempt_at, last_error = NULL, last_outcome = 'hold', last_hold = 'off', consecutive_failures = 0`).run(tenantId, Math.floor(Date.now() / 1000))
   })()
 }
 // Autopilot's held first touches (#411) go back to the user: out of its queue, unapproved where autopilot had approved
@@ -196,10 +208,19 @@ const AUTHORITY_RETURNS = new Set(['autopilot_off', 'consent_required'])
 // lost, the authority unreadable): known not sent, the slot released, the draft held and unapproved until autopilot runs
 // again and reads it afresh.
 const AUTHORITY_ENDED = new Set(['autopilot_unavailable', 'reservation_lost', 'authority_unreadable'])
+// The new-lead query (step 2 of a pass). Parameters: tenant, MIN_CONFIDENCE, tenant, tenant, now - SKIP_ERROR_S,
+// now - SKIP_RETRY_S. Its skipped-row check is by lead on autopilot_audit_lead (test: the query plan).
+export const NEW_LEADS_SQL = `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
+       AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
+         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+           OR (a.detail = 'error' AND a.created_at > ?)
+           OR (a.detail <> 'error' AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
+     ORDER BY l.score DESC LIMIT 25`
 // Refusals of the draft path that never change for a lead: recorded once, the lead is the user's from then on. Every
 // other refusal is tried again: a gate the user can clear after SKIP_RETRY_S, or at once when the lead was confirmed by
 // the user at or after the refusal; a store error ('error') after SKIP_ERROR_S (the next tick).
-const SKIP_FOR_GOOD = "('personal_email','not_sales_contact','suppressed','no_email_contact')"
 const SKIP_RETRY_S = 3600, SKIP_ERROR_S = 600
 // The authority could not be read at the send commitment (the store failed): fail closed, as if it had ended. Known not
 // sent, the slot released, the draft held and unapproved; the next pass reads it again.
@@ -256,8 +277,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // Changed since autopilot took its authority: the user's to approve.
   const release = (id: string, leadId: string, why = 'changed since autopilot drafted it: yours to approve') => {
     backToUser(id); out.held++
-    // Once per message: disable() may have released it already (returnHeld) while this pass was in its refresh.
-    if (!db.prepare("SELECT 1 FROM autopilot_audit WHERE tenant_id = ? AND message_id = ? AND action = 'released'").get(tenantId, id)) audit(db, tenantId, 'released', why, leadId, id)
+    // Once per message (a lead has one draft, so by lead, on the lead index): disable() may have released it already
+    // (returnHeld) while this pass was in its refresh.
+    if (!db.prepare("SELECT 1 FROM autopilot_audit WHERE tenant_id = ? AND lead_id = ? AND action = 'released'").get(tenantId, leadId)) audit(db, tenantId, 'released', why, leadId, id)
   }
   const ENDED_WHY = 'autopilot stopped before it was sent: yours to approve'
   const keepHeld = (id: string, leadId: string, code: string, attempts: number, nextAt: number = now, auth?: string) => {
@@ -397,16 +419,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // reason that can change is tried again later (SKIP_RETRY_S, or as soon as the user confirmed the lead after the
   // refusal), a store error on the next tick. So a pass every tick does not retry the same refusals, write the same
   // audit rows, or hold the 25 slots from leads it could send to.
-  const leads = db.prepare(
-    `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
-       AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
-         AND (a.detail IN ${SKIP_FOR_GOOD}
-           OR (a.detail = 'error' AND a.created_at > ?)
-           OR (a.detail <> 'error' AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
-     ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId, now - SKIP_ERROR_S, now - SKIP_RETRY_S) as { id: string; contact: string }[]
+  const leads = db.prepare(NEW_LEADS_SQL).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId, now - SKIP_ERROR_S, now - SKIP_RETRY_S) as { id: string; contact: string }[]
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends

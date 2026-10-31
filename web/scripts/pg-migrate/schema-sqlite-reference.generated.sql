@@ -844,6 +844,10 @@ CREATE TABLE work_queue (
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 
+CREATE INDEX autopilot_audit_action ON autopilot_audit (tenant_id, action);
+
+CREATE INDEX autopilot_audit_lead ON autopilot_audit (tenant_id, lead_id, action);
+
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
 CREATE INDEX autopilot_work_due ON autopilot_work (tenant_id, next_at);
