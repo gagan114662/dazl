@@ -26,6 +26,7 @@ import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { resolveTiming } from './page-timing.ts'
+import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -36,10 +37,10 @@ import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
-import { ownerLimits, ownerSetting, sharedPool } from '../llm/spend-pool.ts'
+import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
-import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
+import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
@@ -160,13 +161,21 @@ export interface ReviewLead extends LeadDraft { review_reason: string }
 // was created with, else the tenant's selling context (Memory positioning, else the profile offer). A play whose offer
 // is contested gets no offer block (scoring never assumes one). A missing column or row means no block; any other read
 // failure throws, so scoring never runs on a guessed offer.
-export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+function playDraftOffer(db: Database.Database, userId: string, jobId?: string): ReturnType<typeof draftOffer> | null {
   try {
     const tenant = readTenantOffer(db, userId)
     let play: { offer: string | null; seller: string | null; query: string | null } | undefined
     try { play = jobId ? db.prepare('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as typeof play : undefined } catch (e) { if (!isMissingSchema(e)) throw e /* else: a database from before per-play offers */ }
-    return sellerOfferBlock(draftOffer(play, tenant).offer)
-  } catch (e) { if (isMissingSchema(e)) return ''; throw e } // unreadable: scoring stops rather than guess the offer
+    return draftOffer(play, tenant)
+  } catch (e) { if (isMissingSchema(e)) return null; throw e } // unreadable: scoring stops rather than guess the offer
+}
+export function offerBlockFor(db: Database.Database, userId: string, jobId?: string): string {
+  return sellerOfferBlock(playDraftOffer(db, userId, jobId)?.offer ?? null)
+}
+// A play whose offer is contested (its request conflicts with the saved offer and no choice was made) is not scored at
+// all: grading it without an offer would rank buyers for nothing in particular. Its leads are held until the choice.
+export function playOfferUnresolved(db: Database.Database, userId: string, jobId: string): boolean {
+  return playDraftOffer(db, userId, jobId)?.refuse === 'offer_conflict'
 }
 // What buyer-fit scoring is told about the seller for one play: the tenant's Memory WITHOUT its positioning (a global
 // offer that may not be this play's), then this play's offer block, which is the only statement of what is sold.
@@ -264,7 +273,10 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = []): Promise<VerifyOutcome> {
+// The verifier's date rejections (verifyEvidence): a held copy whose claimed day is one of these stays held.
+const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
+
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
@@ -289,7 +301,21 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
-  for (const { c: c0, page } of fetched) {
+  for (const { c: cIn, page } of fetched) {
+    // #460: an event day counts only when the FETCHED page states it for THIS company and THIS event (the same sentence as the quote, or a sentence naming the company and
+    // describing the same event), or when a public job board's own structured publish date for exactly this posting URL was collected (structuredDates: Greenhouse
+    // first_published / Lever createdAt / Ashby publishedAt from the job-board source - an ATS hostname alone proves no date exists). The model's date, a search-hit day,
+    // the page's publication metadata, a "Published/Posted/Updated" line and another company's or an unrelated event's day on the page are not evidence of when THIS
+    // event happened: the candidate goes the undated way below (a publication day stays a label) and the window gate holds it.
+    let undatedWhy: string | null = null
+    let c0 = cIn
+    // A claimed day the verifier's date rules reject (stale, future, malformed) is left as it is: verifyEvidence below sends it to review,
+    // exactly as before. Unbinding it first would launder it into a verified undated lead.
+    const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
+    if (page && !isFail(page) && cIn.event_date && !claimedRejected && structuredDates?.get(canonUrl(cIn.source_url)) !== cIn.event_date) {
+      const b = eventDateBound(cIn.event_date, page.text, cIn.excerpt, cIn.company)
+      if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
+    }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
     if (page && !isFail(page) && !c0.event_date) {
@@ -302,7 +328,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         else drop('duplicate')
         note(c0, 'review', why); continue
       }
-      if (t.published || t.note) c = { ...c0, published_at: t.published, timing_note: t.note }
+      if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
     }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
@@ -313,8 +339,17 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       const copy = why && held ? held.text.copyFor(held.attempt, c.source_url, why) : null
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
-        const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '') && ownPlaceAgreement(cp, geo, c.company, c.excerpt) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        // The same date binding as a fetched page (#460 review): the held copy must tie the claimed day to this company and event, or the candidate is undated.
+        let cc = c
+        const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
+        if (cc.event_date && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && structuredDates?.get(canonUrl(cc.source_url)) !== cc.event_date) {
+          const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
+          if (!b.bound) cc = { ...cc, event_date: null, timing_note: `the claimed event date ${cc.event_date} is not tied to this company and event by the held copy (${b.why}); treated as undated`.slice(0, 300) }
+        }
+        // ...and the quote naming an old year keeps it held too, as on a fetched page (resolveTiming): an undated copy is not a fresh one
+        const oldYear = resolveTiming(cp.text, cc.excerpt, null, now.getFullYear()).olderYear
+        const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && oldYear === null ? verifyEvidence(cc, cp, now) : null
+        if (v2?.ok && !counterpartySignal(cc, cp, '') && ownPlaceAgreement(cp, geo, cc.company, cc.excerpt) !== 'mismatch') { passed.push({ c: cc, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
@@ -698,23 +733,29 @@ export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, win
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
-export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }): string {
+export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number }): string {
   // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
-  const partial = note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
+  // A provider rate-limit is its own state, never an outage or an empty result: the provider answered and told us to slow down.
+  const limited = note.limited ?? 0
+  // Both failed and limited beside answers that worked: name BOTH. A plain "partial:N_of_M" would hide the throttling behind the failure count.
+  const partial = note.failed > 0 && limited > 0 ? `partial:${note.failed}_of_${note.attempted}_plus_${limited}_limited` : note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : limited > 0 ? `partial:limited_${limited}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
   // Hits with usable page evidence but nothing extracted is NOT "nothing found": its own status, so progress and the outcome say evidence was read and no candidate came of it.
   if (leads) return partial ?? (leads.length ? 'ok' : note.hits > 0 ? 'no_candidates' : 'empty')
   if (!note.searched) return 'unavailable'
-  if (note.hits === 0) return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
+  if (note.hits === 0) {
+    if (limited > 0) return note.failed > 0 ? `limited_partial:${note.failed}_of_${note.attempted}` : 'limited'
+    return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
+  }
   return partial ?? 'unavailable'   // hits but no usable page evidence: unknown (named as partial when some requests also failed)
 }
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   // `queries` (the corroboration search) replaces the model's query planning: they name the companies whose second half is missing.
   const plan = queries ? { queries, source: 'model' as const } : queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
-  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed }
+  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -846,7 +887,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       const r = db.prepare("UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ? AND user_id = ? AND attempts = ? AND status = 'running'").run(usd, job.id, job.user_id, job.attempts)
       if (r.changes !== 1) throw new SpendRefused('ownership_lost')
     }
-    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(owner ? [new PooledGuard(sharedPool(db, job.user_id, owner))] : [])]
+    // The owner pool admits one unsettled ownerGuarded call at a time (lib/llm/spend-pool.ts): a scan waits for one in
+    // flight up to its deadline rather than stopping, and stops (budget_stopped) on one that never settled.
+    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(owner ? [new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000))] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
@@ -926,7 +969,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+        const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
         leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
         if (leads?.length) partial.candidates = leads
         // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
@@ -969,6 +1012,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
+    const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (from the job-board source only)
     const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
@@ -976,6 +1020,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         assertOwned(db, job)
         const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
+        for (const it of items) if (it.source === 'jobboards' && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
@@ -990,7 +1035,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         // candidates (verified quote, identity, date window) that the sales-hiring gate later merges with the posting. A run that disabled the paid fallback makes no extra model call.
         const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
         if (targets.length > 0) {
-          const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+          const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
           let found: LeadDraft[] | null = null
           try { found = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, withGeography(targets.map(t => t.query), icpForSources.where)) }
@@ -1051,7 +1096,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
+    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -1063,7 +1108,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
     recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
-      const note = { searched: false, hits: 0, attempted: 0, failed: 0, malformed: 0 }
+      const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
       try {
         assertOwned(db, job)
@@ -1151,7 +1196,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
     // candidate score through as if it were a grade. Ungraded leads are held at fit 0.
-    if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
+    if (complete && outcome.leads.length > 0 && (deps.score !== false) && playOfferUnresolved(db, job.user_id, job.id)) {
+      holdUngraded(outcome.leads, OFFER_UNRESOLVED_WHY) // no model call: the play's offer must be chosen first
+    } else if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
       const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
@@ -1212,7 +1259,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
     // its own home page shows it fits, quoted verbatim. Fail closed; never fails the scan.
     if (!(complete && deps.score !== false)) trace.note('buyer_fit', 'skipped', deps.score === false ? 'scoring disabled for this run' : 'no model provider for this run')
-    if (complete && deps.score !== false) {
+    if (complete && deps.score !== false && playOfferUnresolved(db, job.user_id, job.id)) {
+      let capped = 0; try { capped = failClosedBuyerFit(db, job.id, 'offer_unresolved') } catch { /* the cap is best effort */ }
+      trace.note('buyer_fit', 'skipped', `this play's offer is unresolved - no model call, ${capped} hiring lead(s) capped below the qualified bar`)
+    } else if (complete && deps.score !== false) {
       try {
         const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + offerBlockFor(db, job.user_id, job.id)
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')

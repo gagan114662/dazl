@@ -8,6 +8,7 @@
 // identity rules, unchanged). A date found this late is stored as evidence beside the lead; it does not re-qualify a lead the gates already held - the reason says so.
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
+import { probeDomains } from '../connectors/sitecrawl.ts'
 import { resolveStructuredDate } from './structured-date.ts'
 import { NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf } from './actionable.ts'
 import { windowStatus } from './window.ts'
@@ -26,7 +27,7 @@ export interface CandidateResolution {
 }
 export interface ResolutionSummary { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number>; leads: CandidateResolution[]; interrupted: string | null; lookups: number }
 type JobLike = { id: string; user_id: string; query?: string | null; icp?: string | null }
-type Row = { id: string; company: string; company_domain: string | null; event_date: string | null; review_reason: string | null; signal: string; evidence_excerpt: string | null }
+type Row = { id: string; company: string; company_domain: string | null; event_date: string | null; review_reason: string | null; signal: string; evidence_excerpt: string | null; source_url: string | null }
 const DATE_REASONS = new Set(['outside_window_undated', 'outside_window', 'event_date_future_date', 'event_date_bad_date', 'event_timing_unconfirmed'])
 const CONFLICT = new Set(['contact_location_mismatch', 'contact_domain_mismatch', 'contact_address_mismatch'])
 
@@ -41,11 +42,22 @@ function dateState(d: string | null, reason: string | null, windowDays: number |
   return 'found'
 }
 export function resolveFacts(db: Database.Database, job: JobLike, tried: Map<string, string[]> = new Map(), now = new Date()): CandidateResolution[] {
-  const leads = db.prepare("SELECT id, company, company_domain, event_date, review_reason, signal, evidence_excerpt FROM leads WHERE scan_job_id = ? AND company <> '' AND human_confirmed_at IS NULL AND quarantined_at IS NULL AND (source_kind IS NULL OR source_kind != 'test') ORDER BY score DESC").all(job.id) as Row[]
-  const enr = db.prepare('SELECT connector, kind, value, label FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ?')
+  const leads = db.prepare("SELECT id, company, company_domain, event_date, review_reason, signal, evidence_excerpt, source_url FROM leads WHERE scan_job_id = ? AND company <> '' AND human_confirmed_at IS NULL AND quarantined_at IS NULL AND (source_kind IS NULL OR source_kind != 'test') ORDER BY score DESC").all(job.id) as Row[]
+  const enr = db.prepare('SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ?')
+  // The site crawl's own attempts (identity/contact), so a held lead never reads "nothing tried" when the crawl DID try:
+  // audited once per job, attributed to a lead by company name, its deterministic name-probes, its evidence host, or a domain the crawl recorded on it.
+  let crawlAudit: { lookup: string; status: string }[] = []
+  try { crawlAudit = db.prepare("SELECT lookup, status FROM connector_audit WHERE scan_job_id = ? AND connector = 'sitecrawl'").all(job.id) as { lookup: string; status: string }[] } catch { crawlAudit = [] }
   const windowDays = parseWindowDays(job.query ?? '') ?? (() => { try { const w = JSON.parse(job.icp ?? 'null')?.window_days; return typeof w === 'number' ? w : null } catch { return null } })()
   return leads.map(l => {
-    const rows = enr.all(l.id, job.user_id) as { connector: string; kind: string; value: string; label: string | null }[]
+    const rows = enr.all(l.id, job.user_id) as { connector: string; kind: string; value: string; label: string | null; source_url?: string | null }[]
+    const leadDomains = new Set<string>([l.company, ...probeDomains(l.company)])
+    if (l.source_url) { try { leadDomains.add(new URL(l.source_url).hostname.toLowerCase()) } catch { /* non-url source */ } }
+    for (const r of rows) {
+      if (r.kind === 'domain') leadDomains.add(r.value.split('|')[0].toLowerCase())
+      if (r.kind === 'contact_rejected' && r.source_url) { try { leadDomains.add(new URL(r.source_url).hostname.toLowerCase()) } catch { /* skip */ } }
+    }
+    const crawlTried = crawlAudit.filter(a => leadDomains.has(a.lookup.toLowerCase()) || leadDomains.has(a.lookup)).map(a => `company site ${a.lookup}: ${a.status}`)
     const t = tried.get(l.id) ?? []
     const reasons: string[] = []
     // date: a real calendar day, not in the future, and (with a window) inside it - whatever the request's window, a malformed or future date is never "found"
@@ -75,7 +87,7 @@ export function resolveFacts(db: Database.Database, job: JobLike, tried: Map<str
     if (evidence_hold === 'no_event_evidence') reasons.push('no source quote affirms the event (no_event_evidence): the publication date is not event proof')
     if (evidence_hold === 'no_sales_hiring_evidence') reasons.push('no verified source shows sales hiring (no_sales_hiring_evidence)')
     const fallbacks = rows.filter(r => r.connector === 'scan:fallback').map(r => r.value)
-    return { lead_id: l.id, company: l.company, date, identity, contact, resolved: reasons.length === 0, reasons, tried: t, evidence_hold, fallbacks }
+    return { lead_id: l.id, company: l.company, date, identity, contact, resolved: reasons.length === 0, reasons, tried: [...t, ...crawlTried], evidence_hold, fallbacks }
   })
 }
 

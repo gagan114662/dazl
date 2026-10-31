@@ -26,7 +26,7 @@ test('the prompt: a seed + sales request splits into two facts; any other reques
 const FUND = (c: string) => `${c}, a London B2B SaaS startup, raised a 3m GBP seed round this month`, HIRE = (c: string) => `${c} is hiring a Sales Account Executive in London to sell to UK fintechs. Join the sales team`
 const funding = (c: string): { url: string; text: string; cand: Cand } => ({ url: `https://news.example/${c.toLowerCase()}-raises-seed`, text: FUND(c), cand: { company: c, signal: 'raised a seed round', source_url: `https://news.example/${c.toLowerCase()}-raises-seed`, excerpt: FUND(c), event_date: daysAgo(12) } })
 const posting = (c: string): { url: string; text: string; cand: Cand } => ({ url: `https://boards.greenhouse.io/${c.toLowerCase()}/jobs/1`, text: HIRE(c), cand: { company: c, signal: 'is hiring a sales account executive', source_url: `https://boards.greenhouse.io/${c.toLowerCase()}/jobs/1`, excerpt: HIRE(c), event_date: daysAgo(9) } })
-const page = (p: { url: string; text: string }) => ({ title: p.url, text: `Published ${daysAgo(10)}. ${p.text}.${filler}` })
+const page = (p: { url: string; text: string; cand?: Cand }) => ({ title: p.url, text: `On ${p.cand?.event_date ?? daysAgo(10)}, ${p.text}.${filler}` })   // the page states the candidate's own event day
 // The stub extractor: BEFORE (no split in the prompt) it returns an item only when it shows BOTH facts; AFTER it returns an item when it shows EITHER, as the prompt now asks.
 const extractor = (cands: Cand[]) => (prompt: string): Cand[] => {
   const split = /Return a company when an item shows EITHER fact/.test(prompt)

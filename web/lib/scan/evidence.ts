@@ -1,3 +1,4 @@
+import { isRecruitingInbox } from '../recruiting-inbox.ts'
 import type { Page } from './fetch-page.ts'
 import { classifySource } from './source-quality.ts'
 
@@ -287,7 +288,9 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
     const raw = c.contact.trim()
     const digits = raw.replace(/\D/g, '')
     const onPage = raw.includes('@') ? text.includes(raw.toLowerCase()) : digits.length >= 7 && page.text.replace(/\D/g, '').includes(digits)
-    if (onPage) { contact = raw; confidence += 10 }
+    // An advertised hiring mailbox is not a sales route. Its publication still corroborates the source,
+    // so do not lower event confidence or drop a genuine event just because the contact is unsuitable.
+    if (onPage) { contact = isRecruitingInbox(raw) ? null : raw; confidence += 10 }
   }
   confidence = Math.max(0, Math.min(100, confidence))
   if (confidence < MIN_CONFIDENCE) return { ok: false, reason: 'low_confidence' }

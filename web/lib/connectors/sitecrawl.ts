@@ -498,7 +498,7 @@ function locationRefusal(probe: boolean, havePlaces: boolean, home: string | und
 }
 export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
@@ -507,8 +507,12 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       ? (url: string) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, deps.signal)
       : defaultGet(deps.env))
     // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
-    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN ('outside_window_undated', 'quote_unconfirmed')) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
-    const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; signal?: string | null; evidence_excerpt?: string | null }[]
+    // Held leads whose evidence page could not be READ (blocked_by_site / needs_javascript) get the same identity attempt as the
+    // date/quote classes: a blocked article says nothing about the company's own site. This never re-fetches the blocked evidence
+    // page (below) and never clears the hold: identity/contact discovery only, qualification unchanged. Classes where the hold is
+    // the event itself (job_closed, no_event_evidence, counterparty_signal, ...) are NOT selected - identity cannot change them.
+    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN ('outside_window_undated', 'quote_unconfirmed', 'blocked_by_site', 'needs_javascript')) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
+    const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { /* no ICP: evidence places only */ }
@@ -540,7 +544,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     let probed = 0
     for (const l of leads) {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
-      const ev = deps.skipEvidenceFetch ? null : await get(l.source_url)
+      // A lead held because its evidence page blocked us (or needs JavaScript) never has that page fetched again here:
+      // the block is known, re-hitting it is pressure on a refusing site, and the answer would be the same. Identity is
+      // probed from the company name + place instead (strict agreement checks below apply unchanged).
+      const ev = (deps.skipEvidenceFetch || l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? null : await get(l.source_url)
+      // The blocked-host guard covers EVERY path to a site, not just the evidence URL: when the company name resolves to
+      // the very host that refused this lead's fetch (its own blog/docs were the evidence), probing it would re-hit a
+      // refusing site by another path. Such candidates are excluded and the skip is audited.
+      const blockedHost = (l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? (() => { try { return new URL(l.source_url).hostname.toLowerCase() } catch { return null } })() : null
+      const notBlockedHost = (d: string) => { const h = d.toLowerCase(); return !blockedHost || (h !== blockedHost && !h.endsWith('.' + blockedHost) && !blockedHost.endsWith('.' + h)) }
       const basisOf = new Map<string, DomainBasis>()
       let sites: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { sites.push(o.site); basisOf.set(o.site, o.basis) }
@@ -551,6 +563,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         probed++
         sites = probeDomains(l.company)
         for (const d of sites) basisOf.set(d, 'name_probe')
+        if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
