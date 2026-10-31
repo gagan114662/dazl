@@ -65,10 +65,12 @@ test('health response: an unmigrated store reads as never ran (200), not an erro
 })
 
 // #448: a store created before the autopilot kind of work existed is rebuilt once by migrateSchedulerRuns, rows kept.
-test('migrateSchedulerRuns widens the kind check of an older store (rebuilt once, rows kept); a fresh store needs no rebuild', async () => {
+test('migrateSchedulerRuns widens the kind check of an older store (rebuilt once, rows kept); a second connection finds nothing to rebuild', async () => {
   const { default: Database } = await import('better-sqlite3')
   const { migrateSchedulerRuns } = await import('../lib/ops/scheduler-runs.ts')
-  const db = new Database(':memory:')
+  const { mkdtempSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const path = await import('node:path')
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'sched-')), 'old.db')
+  const db = new Database(file)
   db.exec(`CREATE TABLE scheduler_progress (
       tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')), last_attempt_at INTEGER NOT NULL,
       last_success_at INTEGER, last_error TEXT, last_outcome TEXT NOT NULL DEFAULT 'success', last_hold TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_run_id TEXT,
@@ -82,6 +84,13 @@ test('migrateSchedulerRuns widens the kind check of an older store (rebuilt once
   assert.equal(db.prepare('SELECT count(*) AS n FROM scheduler_progress').pluck().get(), 2, 'the probe row never stays')
   const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get() as string
   migrateSchedulerRuns(db)
-  assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get(), ddl, 'a second run does not rebuild (and does not probe again on this connection)')
-  assert.equal(db.prepare("SELECT count(*) AS n FROM scheduler_progress WHERE tenant_id = ''").pluck().get(), 0)
+  assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get(), ddl, 'a second run on this connection does not rebuild (and does not probe again)')
+  // A fresh connection (another process starting) probes again and finds the check widened: no rebuild, rows as they are.
+  const other = new Database(file)
+  try {
+    migrateSchedulerRuns(other)
+    assert.equal(other.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get(), ddl, 'idempotent across connections')
+    assert.deepEqual(other.prepare('SELECT tenant_id, kind FROM scheduler_progress ORDER BY kind').all(), [{ tenant_id: 't1', kind: 'autopilot' }, { tenant_id: 't1', kind: 'followups' }])
+    assert.equal(other.prepare("SELECT count(*) AS n FROM scheduler_progress WHERE tenant_id = ''").pluck().get(), 0, 'the probe row never stays')
+  } finally { other.close(); db.close() }
 })
