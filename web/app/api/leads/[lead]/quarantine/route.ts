@@ -40,6 +40,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ l
   if (g.res) return g.res
   const r = await setQuarantine(await getDb(), g.user!.tenantId, lead, 'release')
   if (r.status === 'not_found') return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  await audit(g.user!, req, { action: 'pipeline.released', resource: 'lead', id: lead })
+  // releasing a lead that is not quarantined changes nothing, so it records nothing
+  if (r.status === 'released') await audit(g.user!, req, { action: 'pipeline.released', resource: 'lead', id: lead })
   return NextResponse.json({ quarantined: false })
 }

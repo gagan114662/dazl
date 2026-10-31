@@ -97,6 +97,8 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   await step('leads exported', t.A, () => exportRoute.GET(req(`/api/leads/export?job_id=${job}`, 'GET')))
   await step('lead quarantined', t.O, () => quarantine.POST(req(`/api/leads/${lead}/quarantine`, 'POST', { reason: MARK.reason }), { params: Promise.resolve({ lead }) }))
   await step('lead released', t.O, () => quarantine.DELETE(req(`/api/leads/${lead}/quarantine`, 'DELETE'), { params: Promise.resolve({ lead }) }))
+  // releasing a lead that is not quarantined changes nothing: the exact event list below has no second pipeline.released
+  await step('lead released again (not quarantined)', t.O, () => quarantine.DELETE(req(`/api/leads/${lead}/quarantine`, 'DELETE'), { params: Promise.resolve({ lead }) }))
   await step('connections imported', t.A, () => warm.POST(req('/api/warm/connections', 'POST', { csv: 'First Name,Last Name,URL,Connected On\nAda,Lovelace,https://linkedin.com/in/adalovelace,15 Mar 2024\n' })))
   await step('connections deleted', t.A, () => warm.DELETE(req('/api/warm/connections', 'DELETE')))
   await step('checkout started', t.A, () => checkout.POST(req('/api/billing/checkout', 'POST')))

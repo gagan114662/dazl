@@ -173,8 +173,11 @@ test('every audited route in the Covered table records its event, with the redac
   await step('autopilot enabled, cap 1000 asked', t.A, ap({ action: 'enable', ...consent, daily_cap: 1000 }), [['A', 'autopilot.enable', 'autopilot', null, { daily_cap: MAX_DAILY }]])
   await step('autopilot enable refused without consent', t.A, ap({ action: 'enable', version: 'old', attestations: [] }), [], 400)
   await step('autopilot paused', t.O, ap({ action: 'pause' }), [['O', 'autopilot.pause', 'autopilot', null, {}]])
+  await step('autopilot paused again: already paused, nothing recorded', t.O, ap({ action: 'pause' }), [])
   await step('autopilot resumed', t.O, ap({ action: 'resume' }), [['O', 'autopilot.resume', 'autopilot', null, {}]])
+  await step('autopilot resumed again: not paused, nothing recorded', t.O, ap({ action: 'resume' }), [])
   await step('autopilot disabled', t.A, ap({ action: 'disable' }), [['A', 'autopilot.disable', 'autopilot', null, {}]])
+  await step('autopilot disabled again: already off, nothing recorded', t.A, ap({ action: 'disable' }), [])
   await step('autopilot enabled, no cap asked', t.A, ap({ action: 'enable', ...consent }), [['A', 'autopilot.enable', 'autopilot', null, { daily_cap: DEFAULT_DAILY }]])
   assert.equal(DEFAULT_DAILY, 20)
   await step('autopilot enabled, cap 7 asked', t.A, ap({ action: 'enable', ...consent, daily_cap: 7 }), [['A', 'autopilot.enable', 'autopilot', null, { daily_cap: 7 }]])
@@ -268,7 +271,9 @@ test('every audited route in the Covered table records its event, with the redac
   raw.prepare("INSERT INTO monitors (id, user_id, query, interval_hours, next_run_at, created_at) VALUES (?, 'A', 'synthetic monitor query', 24, 0, 1)").run(mon)
   const pm = (enabled: boolean) => () => monitor.PATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled }), ctx('id', mon))
   await step('monitor paused', t.O, pm(false), [['O', 'monitor.disabled', 'monitor', mon, {}]])
+  await step('monitor paused again: already paused, nothing recorded', t.O, pm(false), [])
   await step('monitor resumed', t.O, pm(true), [['O', 'monitor.enabled', 'monitor', mon, {}]])
+  await step('monitor resumed again: already running, nothing recorded', t.O, pm(true), [])
 
   // only the stubbed services were called
   assert.deepEqual([...new Set(fetched.map(u => new URL(u).host))].sort(), ['api.hubapi.com', 'api.stripe.com', 'gmail.googleapis.com', 'oauth2.googleapis.com'])

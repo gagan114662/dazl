@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const db = getScanDb()
+  const before = getState(db, user.tenantId)
   try {
     // Pause and turn off always work, even when the operator has switched autopilot off.
     if (body?.action === 'pause') pause(db, user.tenantId)
@@ -34,9 +35,13 @@ export async function POST(req: NextRequest) {
     else if (body?.action === 'enable') enable(db, user.tenantId, { version: String(body.version ?? ''), attestations: Array.isArray(body.attestations) ? body.attestations.map(String) : [], daily_cap: Number(body.daily_cap) || undefined })
     else if (body?.action === 'resume') resume(db, user.tenantId)
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-    // budget and send automation: the action, and on enable the daily cap as applied (clamped and defaulted), not as asked
-    await audit(user, req, { action: `autopilot.${body.action}`, resource: 'autopilot', summary: body.action === 'enable' ? { daily_cap: getState(db, user.tenantId).daily_cap } : {} })
-    return NextResponse.json({ ok: true, state: getState(db, user.tenantId) })
+    // budget and send automation: the action, and on enable the daily cap as applied (clamped and defaulted), not as asked.
+    // A pause, resume or disable that leaves the state as it was changes nothing, so it records nothing; enable always
+    // re-records consent, so it is always a change.
+    const state = getState(db, user.tenantId)
+    const changed = body.action === 'enable' || before.enabled !== state.enabled || before.paused !== state.paused || before.pause_reason !== state.pause_reason
+    if (changed) await audit(user, req, { action: `autopilot.${body.action}`, resource: 'autopilot', summary: body.action === 'enable' ? { daily_cap: state.daily_cap } : {} })
+    return NextResponse.json({ ok: true, state })
   } catch (e) {
     if (e instanceof OutreachError) return NextResponse.json({ error: ERR[e.code] ?? 'Could not do that', code: e.code }, { status: 400 })
     throw e
