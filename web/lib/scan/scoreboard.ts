@@ -120,10 +120,18 @@ export function proofBackedTiming(l: { event_date?: string | null; event_date_pr
   return windowDays == null || age <= windowDays
 }
 
-// Read-side surfacing (#377): a stored intent grade is shown only with recognized, trigger-compatible
-// proof; anything else is held at 0 and labelled unconfirmed. The stored grade is never rewritten.
-export function surfaceStoredIntent(l: { intent: number | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }): { intent: number; timing: 'proof_backed' | 'unconfirmed' } {
-  if (l.intent != null && isEventDateProof(l.event_date_proof) && (l.event_date_proof !== 'ats_structured' || isHiringTrigger(l.signal, l.signal_kind)))
+// Recency wording in a request: the request asks for a CURRENT event but carries no numeric window.
+export const TIMING_REQUESTED = /\b(?:recent(?:ly)?|currently|newly|latest|just\s+(?:raised|announced|opened|launched|hired|posted)|(?:hiring|hired|raised|announced|opened|launched|posted)\s+(?:now|recently))\b/i
+
+// Read-side surfacing (#377): a stored intent grade is shown only when the SAME proof rule as the
+// write side holds: recognized, trigger-compatible proof, a valid calendar day, strictly not in the
+// future, and inside the request's window when the request has one (proofBackedTiming). A request
+// that asks for recency without a numeric window has an UNRESOLVED bound: nothing surfaces as
+// proof-backed on it. Anything else is held at 0 and labelled unconfirmed. The stored grade is
+// never rewritten.
+export function surfaceStoredIntent(l: { intent: number | null; event_date?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, opts: { windowDays?: number | null; now?: Date; timingRequired?: boolean } = {}): { intent: number; timing: 'proof_backed' | 'unconfirmed' } {
+  const windowDays = opts.windowDays ?? null
+  if (l.intent != null && !(opts.timingRequired && windowDays == null) && proofBackedTiming(l, windowDays, opts.now ?? new Date()))
     return { intent: l.intent, timing: 'proof_backed' }
   return { intent: 0, timing: 'unconfirmed' }
 }
@@ -170,7 +178,9 @@ export function scoreLeadV2(l: ScoredLeadInputV2, opts: ScoreOptsV2): LeadScoreC
   const proof_backed_actionable = actionable && current_event
   // "qualified / ready": never a rebrand of the timing-free count. When the request carries a timing
   // requirement, proof-backed timing is required; an explicit send-ineligibility always disqualifies.
-  const qualified = actionable && l.eligible !== false && (opts.timingRequired ? current_event : true)
+  // A timing requirement with no numeric window (recency wording only) is an UNRESOLVED bound: the
+  // lead is not labelled qualified on an unbounded age check. An explicit window gates as before.
+  const qualified = actionable && l.eligible !== false && (opts.timingRequired ? (opts.windowDays != null && current_event) : true)
   return { source_checked, fit, current_event, right_person, reachable_email, reachable_phone, eligible, actionable, proof_backed_actionable, qualified }
 }
 

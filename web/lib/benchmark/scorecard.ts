@@ -279,8 +279,8 @@ export function regressions(before: Scorecard, after: Scorecard, tolerance = 0):
 // v2 recordings add the proof and route fields the stricter verdicts need. A recording that predates
 // them keeps the v1 verdicts below (it is a self-report either way, never release evidence).
 type SbLead = { name: string; company: string; contact: string | null; review_reason: string | null; event_date: string | null; fit: number | null; contacts: string[]; source_url?: string; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null; routes?: RouteInput[] }
-type SbResult = { commit: string; date: string; model?: string; rubric?: string; budgetUsdTotal?: number; rows: { id: string; status: string; error: string | null; complete: boolean; seconds: number; leads: SbLead[] }[] }
-export function selfReportVerdicts(l: SbLead, asOf: Date, windowDays: number = RECENT_DAYS): Record<Field, Verdict> {
+type SbResult = { commit: string; date: string; model?: string; rubric?: string; budgetUsdTotal?: number; rows: { id: string; status: string; error: string | null; complete: boolean; seconds: number; window_days?: number | null; timing_required?: boolean; leads: SbLead[] }[] }
+export function selfReportVerdicts(l: SbLead, asOf: Date, windowDays?: number | null, timingRequired = false): Record<Field, Verdict> {
   const r = l.review_reason ?? ''
   const identity: Verdict = !r ? 'pass' : /mismatch|wrong (company|entity)|someone else|other company/i.test(r) ? 'contradicted' : 'unknown'
   const age = l.event_date && isCalendarDay(l.event_date) ? (asOf.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000 : null
@@ -292,9 +292,15 @@ export function selfReportVerdicts(l: SbLead, asOf: Date, windowDays: number = R
   const proofOk = isEventDateProof(l.event_date_proof) && (l.event_date_proof !== 'ats_structured' || isHiringTrigger(l.signal, l.signal_kind))
   // v2 timing is strictly not-future (age >= 0, UTC day contract); the v1 legacy branch keeps the
   // historical recording's original -1 day slack so old self-reports stay as recorded.
+  // Window: a recorded per-request window is used as recorded. windowDays undefined means an old
+  // recording with no window field - the legacy 90-day default stays so historical self-reports stay
+  // comparable. An explicitly recorded null window with a recency requirement is an UNRESOLVED bound:
+  // the date verdict is unknown, never a pass on an invented default. A recorded null window with no
+  // recency requirement invents no gate: recognized non-future proof passes.
+  const w = windowDays === undefined ? RECENT_DAYS : windowDays
   const event_date: Verdict = hasV2Timing
-    ? (!proofOk || age === null ? 'unknown' : age >= 0 && age <= windowDays ? 'pass' : 'fail')
-    : (age === null ? 'unknown' : age >= -1 && age <= windowDays ? 'pass' : 'fail')
+    ? (!proofOk || age === null ? 'unknown' : w === null ? (timingRequired ? 'unknown' : age >= 0 ? 'pass' : 'fail') : age >= 0 && age <= w ? 'pass' : 'fail')
+    : (age === null ? 'unknown' : age >= -1 && age <= (w ?? RECENT_DAYS) ? 'pass' : 'fail')
   const constraints: Verdict = typeof l.fit !== 'number' ? 'unknown' : l.fit >= FIT_MIN ? 'pass' : l.fit <= 2 ? 'fail' : 'unknown'
   // v2: when routes are recorded, a contact 'pass'es only on a role-appropriate company-published
   // route (recruiting inboxes excluded). v1 recordings keep the any-email/phone verdict.
@@ -313,7 +319,7 @@ export function fromScoreboardResult(sb: SbResult, set: TaskSet, source: string)
     evaluator: { name: 'pipeline-self-report', version: '2', independent: false }, started_at: asOf.toISOString(), source,
     tasks: sb.rows.map(r => ({
       task_id: r.id, status: r.complete ? 'complete' : 'incomplete', reason: r.error, seconds: r.seconds, cost_usd: null,
-      results: r.leads.map((l, i) => ({ rank: i + 1, entity_key: l.company, verdicts: selfReportVerdicts(l, asOf), evidence: l.source_url ? [l.source_url] : [] })),
+      results: r.leads.map((l, i) => ({ rank: i + 1, entity_key: l.company, verdicts: selfReportVerdicts(l, asOf, 'window_days' in r ? r.window_days : undefined, r.timing_required ?? false), evidence: l.source_url ? [l.source_url] : [] })),
     })),
   }
 }

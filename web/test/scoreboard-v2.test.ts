@@ -66,10 +66,12 @@ test('v2 totals and markdown carry the rubric version and the distinct labelled 
   assert.ok(md.includes('timing not yet proven'), 'the timing-free actionable count is labelled, never rebranded as ready')
 })
 
-test('windowless coherence: no invented window gate; mandatory timing still requires recognized non-future proof', () => {
+test('windowless coherence: no invented window gate; a recency requirement without a numeric window is an unresolved bound', () => {
   const noWindow = { ...OPTS, windowDays: null }
-  assert.equal(scoreLeadV2(good, { ...noWindow, timingRequired: true }).qualified, true,
-    'mandatory timing + recognized non-future proof + no requested window: qualified (no gate invented)')
+  assert.equal(scoreLeadV2(good, { ...noWindow, timingRequired: false }).qualified, true,
+    'no timing requirement + recognized non-future proof + no requested window: qualified (no gate invented)')
+  assert.equal(scoreLeadV2(good, { ...noWindow, timingRequired: true }).qualified, false,
+    'recency required but no numeric window: the bound is unresolved - an ancient event is never labelled current/qualified')
   assert.equal(scoreLeadV2({ ...good, event_date_proof: null }, { ...noWindow, timingRequired: true }).qualified, false,
     'mandatory timing without proof never qualifies, window or not')
   const c = scoreLeadV2({ ...good, event_date_proof: null }, { ...noWindow, timingRequired: false })

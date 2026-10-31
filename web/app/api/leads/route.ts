@@ -7,7 +7,8 @@ import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
 import { gdeltAttribution } from '@/lib/search/news-attribution'
 import { savedGradeWhy } from '@/lib/scan/leads-view'
-import { surfaceStoredIntent } from '@/lib/scan/scoreboard'
+import { surfaceStoredIntent, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
+import { parseWindowDays } from '@/lib/scan/window'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 
 export async function GET(req: NextRequest) {
@@ -27,7 +28,11 @@ export async function GET(req: NextRequest) {
   // Read-time only: preserve stored grade/rationale for inspection. Stored intent surfaces only
   // with a recognized, trigger-compatible event-date proof (#377); anything else is held at 0 and
   // labelled unconfirmed. No history is rewritten.
-  const safeLeads = leads.map(l => { const t = surfaceStoredIntent(l)
+  let icpWindow: number | null = null
+  try { const j = job.icp ? JSON.parse(job.icp) as { window_days?: unknown } : null; icpWindow = typeof j?.window_days === 'number' ? j.window_days : null } catch { icpWindow = null }
+  const windowDays = parseWindowDays(job.query ?? '') ?? icpWindow
+  const timingOpts = { windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(job.query ?? '') }
+  const safeLeads = leads.map(l => { const t = surfaceStoredIntent(l, timingOpts)
     return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing,
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     why:savedGradeWhy(l as typeof l & {why?:string|null}),

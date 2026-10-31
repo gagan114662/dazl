@@ -32,6 +32,7 @@ import { requiredGateHeld } from '../lib/scan/held-state.ts'
 import { getMemory, isExcluded } from '../lib/memory.ts'
 import { whoOf, personMatchesRole, NOT_A_FOUNDER_ROUTE } from '../lib/scan/actionable.ts'
 import { parseWindowDays } from '../lib/scan/window.ts'
+import { TIMING_REQUESTED } from '../lib/scan/scoreboard.ts'
 
 const key = process.env.SCOREBOARD_ANTHROPIC_KEY?.trim()
 if (!key) { console.error('SCOREBOARD_ANTHROPIC_KEY is required'); process.exit(2) }
@@ -58,7 +59,7 @@ const date = new Date().toISOString().slice(0, 10)
 const model = process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5'
 const rubric = createHash('sha256').update(readFileSync(path.join(root, 'web', 'lib', 'scan', 'score.ts'))).digest('hex').slice(0, 12)
 const INCOMPLETE = new Set(['budget_stopped', 'scan_timeout', 'key_rejected', 'key_unreadable', 'no_api_key'])
-const rows: { id: string; search: string; status: string; error: string | null; complete: boolean; seconds: number; score: SearchScoreV2; leads: unknown[] }[] = []
+const rows: { id: string; search: string; status: string; error: string | null; complete: boolean; seconds: number; score: SearchScoreV2; window_days: number | null; timing_required: boolean; leads: unknown[] }[] = []
 const qualifiedCompanies = new Set<string>()
 
 for (const s of searches) {
@@ -85,7 +86,6 @@ for (const s of searches) {
   // Timing is mandatory when the request truly asks for it: an explicit window OR recency intent
   // (recent/currently/newly/latest/just-verb/verb-now). A windowless request invents no gate; it still
   // requires recognized, non-future proof before timing counts (semantics ruling 15:42).
-  const TIMING_REQUESTED = /\b(?:recent(?:ly)?|currently|newly|latest|just\s+(?:raised|announced|opened|launched|hired|posted)|(?:hiring|hired|raised|announced|opened|launched|posted)\s+(?:now|recently))\b/i
   const opts = { who, windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(jobRow.query ?? '') }
   let memory: ReturnType<typeof getMemory> | null = null
   try { memory = getMemory(db, TENANT) } catch { memory = null }
@@ -109,7 +109,7 @@ for (const s of searches) {
   const score = scoreSearchV2(leads.map(l => l.v2), opts)
   for (const l of leads) if (scoreLeadV2(l.v2, opts).qualified) qualifiedCompanies.add(companyKey(l.company))
   const status = complete ? j.status : 'INCOMPLETE'
-  rows.push({ id: s.id, search: s.id, status, error, complete, seconds: Math.round((Date.now() - t0) / 1000), score, leads: leads.map(({ id: _id, v2: _v2, ...l }) => l) })
+  rows.push({ id: s.id, search: s.id, status, error, complete, seconds: Math.round((Date.now() - t0) / 1000), score, window_days: windowDays, timing_required: opts.timingRequired, leads: leads.map(({ id: _id, v2, ...l }) => ({ ...l, person_title: v2.person_title, routes: v2.routes })) })
   console.error(`${s.id}: ${status} ${error ?? ''} qualified=${score.qualified} leads=${score.leads} (${rows[rows.length - 1].seconds}s)`)
 }
 
