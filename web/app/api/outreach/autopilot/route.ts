@@ -4,14 +4,14 @@ import { autopilotAvailable, CONSENT_TEXT, CONSENT_VERSION, disable, enable, get
 import { OutreachError } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied } from '@/lib/workspace-access'
-import { acceptLaunchPolicy, LAUNCH_POLICY_VERSION, readLaunchPolicy } from '@/lib/outreach/launch-policy'
+import { acceptLaunchPolicy, LAUNCH_POLICY_VERSION, launchPolicyView } from '@/lib/outreach/launch-policy'
 import { runCalibration } from '@/lib/outreach/calibration'
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  return NextResponse.json({ available: autopilotAvailable(), state: getState(db, user.tenantId), consent: { version: CONSENT_VERSION, text: CONSENT_TEXT }, warmup: WARMUP_SENDS(), max_daily: MAX_DAILY, audit: recentAutopilotAudit(db, user.tenantId), launch: { version: LAUNCH_POLICY_VERSION, accepted: readLaunchPolicy(db, user.tenantId) } })
+  return NextResponse.json({ available: autopilotAvailable(), state: getState(db, user.tenantId), consent: { version: CONSENT_VERSION, text: CONSENT_TEXT }, warmup: WARMUP_SENDS(), max_daily: MAX_DAILY, audit: recentAutopilotAudit(db, user.tenantId), launch: { version: LAUNCH_POLICY_VERSION, ...launchPolicyView(db, user.tenantId) } })
 }
 
 const ERR: Record<string, string> = {

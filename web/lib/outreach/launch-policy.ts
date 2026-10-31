@@ -32,6 +32,7 @@ export type PolicyProblem =
   | 'version_not_current' | 'sender_missing' | 'audience_empty' | 'daily_cap_invalid' | 'spend_cap_invalid'
   | 'bounce_stop_invalid' | 'test_inbox_not_owned' | 'benchmark_not_https' | 'policy_too_large'
 export const MAX_POLICY_JSON = 8000     // the store's CHECK on the policy column; refused by name before any write
+export const MAX_LAUNCH_SPEND_USD = 500 // model and enrichment spend ceiling any one launch may set
 
 const EMAIL = /^[^\s@]+@([^\s@]+\.[^\s@]+)$/
 const domainOf = (email: string) => EMAIL.exec(email.trim().toLowerCase())?.[1] ?? null
@@ -45,7 +46,7 @@ export function policyProblems(p: LaunchPolicy): PolicyProblem[] {
   if (!senderDomain) out.push('sender_missing')
   if (!p.audience.playIds.filter(s => s.trim()).length) out.push('audience_empty')
   if (!Number.isInteger(p.dailyCap) || p.dailyCap < 1 || p.dailyCap > MAX_DAILY) out.push('daily_cap_invalid')
-  if (!(p.spendCapUsd > 0)) out.push('spend_cap_invalid')
+  if (!(p.spendCapUsd > 0 && p.spendCapUsd <= MAX_LAUNCH_SPEND_USD)) out.push('spend_cap_invalid')
   if (!(p.stops.maxBounceRate > 0 && p.stops.maxBounceRate <= 0.1)) out.push('bounce_stop_invalid')
   // The only inbox the tenant has proved it owns is the authenticated sender itself: a shared domain (gmail.com, a
   // company domain with other people on it) is no proof of owning another mailbox, so no other address is accepted.
@@ -132,6 +133,7 @@ export function migrateLaunchPolicy(db: Database.Database): void {
 }
 
 const strs = (v: unknown, max: number) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean).slice(0, max) : []
+const num = (v: unknown) => typeof v === 'number' ? v : NaN // a number is a number: no coercion (true is not a cap of 1)
 // A policy from untrusted input, with every field typed; anything missing becomes a problem policyProblems reports.
 export function parsePolicy(v: unknown): LaunchPolicy {
   const o = (v && typeof v === 'object' ? v : {}) as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -140,9 +142,9 @@ export function parsePolicy(v: unknown): LaunchPolicy {
     sender: typeof o.sender === 'string' ? o.sender.trim().toLowerCase() : '',
     audience: { playIds: strs(o.audience?.playIds, 50) },
     exclusions: { domains: strs(o.exclusions?.domains, 500).map(d => d.toLowerCase()), emails: strs(o.exclusions?.emails, 500).map(e => e.toLowerCase()) },
-    dailyCap: Number(o.dailyCap), spendCapUsd: Number(o.spendCapUsd),
+    dailyCap: num(o.dailyCap), spendCapUsd: num(o.spendCapUsd),
     claims: { mayStatePrice: o.claims?.mayStatePrice === true, benchmarkUrls: strs(o.claims?.benchmarkUrls, 20) },
-    stops: { pauseOnAnyReply: o.stops?.pauseOnAnyReply !== false, maxBounceRate: Number(o.stops?.maxBounceRate) },
+    stops: { pauseOnAnyReply: o.stops?.pauseOnAnyReply !== false, maxBounceRate: num(o.stops?.maxBounceRate) },
     testInbox: typeof o.testInbox === 'string' ? o.testInbox.trim().toLowerCase() : '',
   }
 }
@@ -161,6 +163,11 @@ export interface StoredPolicy { acceptanceId: string; policy: LaunchPolicy; vers
 export function readLaunchPolicy(db: Database.Database, tenantId: string): StoredPolicy | null {
   const r = db.prepare('SELECT acceptance_id, version, policy, accepted_at, launched_at FROM autopilot_launch_policy WHERE tenant_id = ?').get(tenantId) as { acceptance_id: string; version: string; policy: string; accepted_at: number; launched_at: number | null } | undefined
   return r ? { acceptanceId: r.acceptance_id, policy: parsePolicy(JSON.parse(r.policy)), version: r.version, acceptedAt: r.accepted_at, launchedAt: r.launched_at } : null
+}
+// What the settings page shows: the accepted policy, or that the stored row cannot be read (it is not a launch either:
+// launchGate treats the same failure as not calibrated). The page never fails because one row is corrupt.
+export function launchPolicyView(db: Database.Database, tenantId: string): { accepted: StoredPolicy | null; problem?: 'policy_unreadable' } {
+  try { return { accepted: readLaunchPolicy(db, tenantId) } } catch { return { accepted: null, problem: 'policy_unreadable' } }
 }
 
 // What the copy may claim under the policy: no price unless allowed; links only to https benchmarks it lists, the

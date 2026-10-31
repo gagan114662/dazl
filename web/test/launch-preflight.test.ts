@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { policyProblems, preflight, calibratedDailyCap, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, type LaunchPolicy, type PreflightInput, type SampleDraft } from '../lib/outreach/launch-policy.ts'
+import { parsePolicy, policyProblems, preflight, calibratedDailyCap, LAUNCH_POLICY_VERSION, MAX_LAUNCH_SPEND_USD, ROLLOUT_DAILY_CAP, type LaunchPolicy, type PreflightInput, type SampleDraft } from '../lib/outreach/launch-policy.ts'
 import { WARMUP_SENDS } from '../lib/outreach/autopilot.ts'
 
 // Synthetic sender, prospects and plays.
@@ -61,6 +61,14 @@ test('a policy whose JSON would not fit the store is refused by name, never a CH
   assert.ok(JSON.stringify(big).length > 8000)
   assert.deepEqual(policyProblems(big), ['policy_too_large'])
   assert.deepEqual(policyProblems(policy({ exclusions: { domains: domains.slice(0, 100), emails: [] } })), [])
+})
+
+test('numbers in a policy are numbers: a boolean is not a cap of 1; the spend cap has a ceiling (#405 council R2-5)', () => {
+  const raw = { ...policy(), dailyCap: true, spendCapUsd: '25', stops: { pauseOnAnyReply: true, maxBounceRate: '0.05' } }
+  assert.deepEqual(policyProblems(parsePolicy(raw)).sort(), ['bounce_stop_invalid', 'daily_cap_invalid', 'spend_cap_invalid'])
+  assert.deepEqual(policyProblems(parsePolicy({ ...policy(), spendCapUsd: MAX_LAUNCH_SPEND_USD + 1 })), ['spend_cap_invalid'])
+  assert.deepEqual(policyProblems(parsePolicy({ ...policy(), spendCapUsd: MAX_LAUNCH_SPEND_USD })), [])
+  assert.deepEqual(policyProblems(parsePolicy(policy())), [])
 })
 
 test('every stop must be enforced; a missing one holds the launch', () => {

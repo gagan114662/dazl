@@ -10,7 +10,7 @@ import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { approve, createDraft, OutreachError, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, pause, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
-import { acceptLaunchPolicy, calibratedStop, launchGate, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
+import { acceptLaunchPolicy, calibratedStop, launchGate, launchPolicyView, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { callCostUsd } from '../lib/llm/spend-guard.ts'
 import type { Provider, DetailedCompletion } from '../lib/llm/provider.ts'
@@ -200,6 +200,15 @@ test('a bounce is decided by the bounce-rate rule, never mislabelled as a reply;
   assert.equal(calibratedStop(db, 'A', gate), null, 'the bounce row alone does not trip the reply stop')
   inbound('r1', 'positive')
   assert.equal(calibratedStop(db, 'A', gate), 'reply_received')
+})
+
+test('a corrupt stored policy is reported as unreadable to the settings page and is not a launch (#405 council R2-5)', async () => {
+  const { db } = await launched()
+  assert.equal(launchPolicyView(db, 'A').accepted?.policy.sender, 'me@acme.example')
+  db.prepare("UPDATE autopilot_launch_policy SET policy = '{not json' WHERE tenant_id = 'A'").run()
+  assert.throws(() => readLaunchPolicy(db, 'A'))
+  assert.deepEqual(launchPolicyView(db, 'A'), { accepted: null, problem: 'policy_unreadable' })
+  assert.equal(launchGate(db, 'A', 'me@acme.example', NOW + 2).calibrated, false)
 })
 
 test('HOLD: provider acceptance is not receipt: the integration message must be found in the INBOX, with read access', async () => {
