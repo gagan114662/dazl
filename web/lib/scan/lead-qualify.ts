@@ -71,10 +71,10 @@ Company: ${f(i.company, FIELD_CAPS.company)}
 Why it was saved: ${f(i.signal, FIELD_CAPS.signal)} (a hiring signal only; it is not buying intent or fit)
 
 Judge three things separately. "unknown" is a correct answer whenever the text does not show it.
-1. company_fit (yes/no/unknown): does the text show the company matches the seller's target profile? Do not assume anything the profile leaves open.
-2. use_case (yes/no/unknown): does the text show a way this company's OWN team could use the seller's offer? The company's customers do not count.
+1. company_fit (yes/no/unknown): does the text show the company matches the seller's target profile? B2B SaaS describes the TARGET company's own software business selling to businesses; its customers need not be software companies. Assess what the target sells separately from who its customers are. A yes needs evidence for every material targeting condition. A no needs an explicit contradiction of a condition, not missing information or a quote merely naming founders. Otherwise use unknown. Do not add or waive targeting conditions.
+2. use_case (yes/no/unknown): does the text show a way this company's OWN team could use the seller's offer? The company's customers do not count. Existing CRM or in-house tools can show a use case; they do not by themselves prove no need for setup help or consulting, nor interest in buying it. A no needs explicit contradictory evidence, not absence.
 3. buying_evidence (stated/none_seen/unknown): does the text explicitly show the company is looking for or evaluating this kind of product? A job posting does not count. none_seen means only that these pages, as shown, do not say so; it is not a claim about the company elsewhere.
-Every verdict other than unknown/none_seen needs a quote copied exactly from ONE page, plus that page's URL as quote_url.
+Every verdict other than unknown/none_seen needs a quote copied exactly from ONE page, plus that page's URL as quote_url. The quote must support the specific judgment and company, not merely occur on the page. Briefing text and related posts are not evidence about this company. Explain the exact targeting condition or own-team use the quote supports or contradicts. Your assessment is unverified research; literal matching cannot establish semantic support.
 
 Reply with one JSON object and nothing else:
 {"company_fit":{"verdict":"","quote":"","quote_url":"","note":""},"use_case":{"verdict":"","quote":"","quote_url":"","note":""},"buying_evidence":{"verdict":"","quote":"","quote_url":"","note":""}}
