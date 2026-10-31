@@ -126,7 +126,7 @@ class RedirectAndTimeoutTests(unittest.TestCase):
   threads=[threading.Thread(target=s.serve_forever,daemon=True)for s in [origin,target]]
   for t in threads:t.start()
   original=m.urllib.request.Request
-  def reroute(url,**kw):return original('http://127.0.0.1:'+str(origin.server_port)+'/',**kw)
+  def reroute(url,**kw):return original('http://127.0.0.1:'+str(origin.server_port)+'/' if url.startswith('https://api.github.com/') else url,**kw)
   try:
    with tempfile.TemporaryDirectory()as tmp:
     token=Path(tmp)/'token';token.write_text('sentinel-bearer');token.chmod(0o600)
