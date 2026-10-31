@@ -2,7 +2,7 @@
 import {useState} from 'react'
 type Page={url:string;role:'posting'|'company_home';status:'fetched'|'failed';chars:number;fail?:string;used:boolean;not_used_reason?:string}
 type Sent={url:string;chars_sent:number;chars_available:number;truncated:boolean}
-type Judg={verdict:string;quote:string|null;quote_url:string|null;note:string}
+type Judg={assessment_conflict?:{kind:string;premise?:string;note:string};verdict:string;quote:string|null;quote_url:string|null;note:string}
 type Qual={company_fit:Judg;use_case:Judg;buying_evidence:Judg;caveat:string;evidence_scope:{pages_omitted:string[];any_truncated:boolean}}
 type Ev={scope:{pages_included:Sent[]}|null;pages:Page[];cost:{usd_estimate_max:number|null}|null}
 type Stored={prompt_sha256:string;status:'running'|'done'|'failed';vendor:string|null;model:string|null;created_at:number;evidence:Ev|null;qualification:Qual|null;error:string|null}
@@ -33,7 +33,7 @@ export default function QualifyPreview({leadId}:{leadId:string}){
  {s.evidence?.scope?s.evidence.scope.pages_included.map(e=><p key={e.url}>It was given {e.chars_sent} of {e.chars_available} characters of {e.url}{e.truncated?' (the rest was cut off)':''}. The page text itself was not saved.</p>):<p>The evidence given to it was not recorded.</p>}
  {s.evidence?.cost?.usd_estimate_max!=null&&<p>Estimated cost when requested: about ${s.evidence.cost.usd_estimate_max.toFixed(4)} (an estimate, not the billed amount).</p>}
  {s.status==='failed'&&<p>Failed ({s.error}). It will not run again by itself, because it may have been sent and billed.</p>}{s.status==='running'&&<p>Still running or interrupted. It will not be started again by itself.</p>}
- {s.qualification&&(Object.keys(NAME) as (keyof typeof NAME)[]).map(k=>{const j=s.qualification![k];return <p key={k}>{NAME[k]}: {WORD[j.verdict]??j.verdict}{j.quote&&<> - supporting quote "{j.quote}" (found on {j.quote_url}; the model's reading of it is not verified)</>}{j.note?` ${j.note}`:''}</p>})}
+ {s.qualification&&(Object.keys(NAME) as (keyof typeof NAME)[]).map(k=>{const j=s.qualification![k];return <p key={k}>{NAME[k]}: {WORD[j.verdict]??j.verdict}{j.assessment_conflict&&<strong className="block">{j.assessment_conflict.note}{j.assessment_conflict.premise&&<> Flagged comparison: "{j.assessment_conflict.premise}".</>}</strong>}{j.quote&&<> - model-cited quote "{j.quote}" (found on {j.quote_url}; the model's reading of it is not verified)</>}{j.note?` ${j.note}`:''}</p>})}
  {s.qualification&&<p>{s.qualification.caveat}{s.qualification.evidence_scope.any_truncated?' Some page text was cut off or left out, so "none seen" only covers the text that was sent.':''}</p>}
  </div>)}
  </div>}
