@@ -1217,7 +1217,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     } else if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
-      const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
+      const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl, { windowDays: parseWindowDays(job.query ?? '') ?? icpForSources?.window_days ?? null, now: deps.now ?? new Date() })
       if (grades) {
         // ICP match gate: a mismatch on a criterion the ICP specifies moves the lead
         // to the hidden lane with the reason named. 'unknown' never gates.
