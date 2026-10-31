@@ -558,3 +558,45 @@ test('#448 the store stays unreadable from the send commitment on: the pass fail
   const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 602))
   assert.deepEqual([r.stopped, getState(db, 'A').paused, sent.length], ['uncertain_send', true, 0], 'autopilot pauses on it; nothing is retried')
 })
+
+// Reviewer 1 on e9dff19: a send past its commitment, the request to Gmail in flight, is 'send_committed' and counts at
+// every other pass's commitment whatever its reservation's order ((created_at, id): the pass's start time, then a random
+// id). Before: only reservations ahead in that order counted, so an in-flight send sorted behind a later-reserved one
+// went uncounted and a lowered cap was exceeded.
+const inFlightThenLowered = async (nowL: number, nowM: number) => {
+  const db = await setup(); setCap(2)(db); pastWarmup(db); lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  const sent: string[] = []; const base = sends().d
+  let open!: () => void; const gate = new Promise<void>(r => { open = r })
+  let inFlight!: () => void; const started = new Promise<void>(r => { inFlight = r })
+  // Pass L: admitted and committed at cap 2, its request to Gmail in flight (held at the gate).
+  const L = runAutopilot(db, 'A', 'Acme', { ...base, now: nowL, sendFn: (async (_t: string, raw: string) => { inFlight(); await gate; sent.push(raw); return { id: 'gL' } }) as never })
+  await started
+  // Pass M (a finishing scan, say): admitted at cap 2 (L's slot counted: 1 < 2); the cap is lowered to 1 during its token
+  // refresh. At M's commitment one send, L's, is in flight.
+  const M = await runAutopilot(db, 'A', 'Acme', { ...base, now: nowM, fetchImpl: onToken(db, 1, setCap(1)), sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'gM' } }) as never })
+  open(); const Lr = await L
+  return { db, sent, L: Lr, M }
+}
+
+test('#448 a send in flight at Gmail counts at another pass\'s commitment whatever its order: L started later (NOW+5) is in flight, M (NOW) is admitted, the cap drops 2->1 during M\'s refresh: one send', async () => {
+  const { db, sent, L, M } = await inFlightThenLowered(NOW + 5, NOW)
+  assert.deepEqual([L.sent, M.sent, sent.length, M.stopped], [1, 0, 1, 'daily_cap'], 'M is refused at its commitment: L\'s committed send counts though its reservation sorts behind M\'s')
+  assert.deepEqual(counted(db).map(c => c.action), ['sent'], 'L\'s send counted once; M\'s slot released')
+  assert.deepEqual([work(db).map(w => w.reason), msgStatus(db, 'b@two.example'), reservations(db)], [['daily_cap'], 'draft', 0], 'M\'s draft held and unapproved')
+})
+
+test('#448 the same with both passes at the same start time (the random id decides the order), six times: never two sends', async () => {
+  for (let i = 0; i < 6; i++) {
+    const { sent, L, M } = await inFlightThenLowered(NOW, NOW)
+    assert.deepEqual([L.sent + M.sent, sent.length, M.stopped], [1, 1, 'daily_cap'], `round ${i + 1}`)
+  }
+})
+
+test('#448 the commit mark cannot be written: no send (fail closed), the slot released, the draft held and read again next pass', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+  const prepare = db.prepare.bind(db)
+  const failMark = (db2: Database.Database) => { db2.prepare = ((sql: string) => { if (sql.includes("SET action = 'send_committed'")) { delete (db2 as { prepare?: unknown }).prepare; throw new Error('disk I/O error') } return prepare(sql) }) as typeof db2.prepare }
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, failMark) })
+  assert.deepEqual([r.sent, sent.length, r.stopped, reservations(db), work(db).map(w => w.reason), msgStatus(db, 'a@one.example')], [0, 0, 'authority_unreadable', 0, ['authority_unreadable'], 'draft'])
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 1)); assert.deepEqual([r2.sent, sent.length, counted(db).map(c => c.action)], [1, 1, ['sent']], 'sent once when the mark can be written')
+})

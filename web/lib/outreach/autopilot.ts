@@ -114,16 +114,18 @@ export function recordBounce(db: Database.Database, tenantId: string, email: str
 }
 
 const sentTotal = (db: Database.Database, tenantId: string) => (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status = 'sent'").get(tenantId) as { n: number }).n
-// What counts against autopilot's caps: sends, sends in flight (reserved before the send path is entered) and sends whose
-// outcome is unknown. A reservation is released only when the send path refused before anything left (known not sent).
-const CAP_ACTIONS = "('sent','send_reserved','send_uncertain')"
+// What counts against autopilot's caps: sends, sends in flight (reserved before the send path is entered; committed once
+// past the final check with the request to Gmail in flight) and sends whose outcome is unknown. A reservation is released
+// only when the send path refused before anything left (known not sent).
+const CAP_ACTIONS = "('sent','send_committed','send_reserved','send_uncertain')"
 // Autopilot sends counted in the last 24 hours (sent, reserved, or possibly sent), and the oldest of them.
 const autoSent24h = (db: Database.Database, tenantId: string, now: number) => (db.prepare(`SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ${CAP_ACTIONS} AND created_at >= ?`).get(tenantId, now - 86400) as { n: number }).n
 const oldestCounted = (db: Database.Database, tenantId: string, now: number) => (db.prepare(`SELECT min(created_at) AS t FROM autopilot_audit WHERE tenant_id = ? AND action IN ${CAP_ACTIONS} AND created_at >= ?`).get(tenantId, now - 86400) as { t: number | null }).t
-// The same count as one send sees it at its own commitment: every send that went out or may have (whenever it was
-// reserved), plus the slots reserved before its own (by created_at, then id: one fixed order). Slots reserved after it do not count
-// against it, they count it against themselves, so two sends in flight never refuse each other: the one ahead in that
-// order goes, the other is refused when the cap, as it is now, has no room for it. Either way the window never exceeds the cap.
+// The same count as one send sees it at its own commitment: every send that went out, may have, or is committed (past its
+// own commitment, the request to Gmail in flight), whenever it was reserved; plus the slots still only reserved before its
+// own (by created_at, then id: one fixed order). Slots reserved after it do not count against it, they count it against
+// themselves, so two sends not yet committed never refuse each other: the one ahead in that order goes, the other is
+// refused when the cap, as it is now, has no room for it. Either way the window never exceeds the cap.
 const countedAhead = (db: Database.Database, tenantId: string, now: number, own: string) => (db.prepare(`SELECT count(*) AS n FROM autopilot_audit a WHERE a.tenant_id = ? AND a.action IN ${CAP_ACTIONS} AND a.created_at >= ? AND a.id <> ?
   AND (a.action <> 'send_reserved' OR (a.created_at, a.id) < (SELECT o.created_at, o.id FROM autopilot_audit o WHERE o.id = ?))`).get(tenantId, now - 86400, own, own) as { n: number }).n
 // The last time this company was emailed (sent, sending or uncertain) or had an autopilot send reserved, if within 7 days.
@@ -268,16 +270,21 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     }
     const settle = (action: 'sent' | 'send_uncertain' | null) => action
       ? db.prepare('UPDATE autopilot_audit SET action = ? WHERE id = ? AND tenant_id = ?').run(action, admit.reservation, tenantId)
-      : db.prepare("DELETE FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").run(admit.reservation, tenantId)
+      : db.prepare("DELETE FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action IN ('send_reserved','send_committed')").run(admit.reservation, tenantId)
     try {
       if (msg.status === 'draft') approve(db, tenantId, id)
       // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
       // authorize: re-read by the send path as its last check, after the token refresh, immediately before Gmail: autopilot's
       // own authority, the draft's fingerprint, this send's reservation, and the volume limits as they are now.
       // A read that fails there refuses the send (fail closed): no send goes on an authority nobody could read.
+      // The volume check and the commit mark are one write transaction (BEGIN IMMEDIATE, synchronous, nothing awaited
+      // between it and the request to Gmail): the reservation becomes 'send_committed', which every other pass's
+      // commitment counts whatever its order. A mark that fails (the row gone, or the write refused) is no send.
       const volumeNow = () => { const h = capHold(domain, { reservation: admit.reservation, message: id }); return h ? `volume_${h.held}` : null }
+      const commit = db.transaction((): string | null => volumeNow()
+        ?? (db.prepare("UPDATE autopilot_audit SET action = 'send_committed' WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").run(admit.reservation, tenantId).changes === 1 ? null : 'reservation_lost'))
       const authorize = (): string | null => {
-        try { return authority() ?? (draftAuthority(db, tenantId, id) !== expected ? AUTHORITY_CHANGED : null) ?? (db.prepare("SELECT 1 FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").get(admit.reservation, tenantId) ? null : 'reservation_lost') ?? volumeNow() }
+        try { return authority() ?? (draftAuthority(db, tenantId, id) !== expected ? AUTHORITY_CHANGED : null) ?? commit.immediate() }
         catch { return AUTHORITY_UNREADABLE }
       }
       const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize })
