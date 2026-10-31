@@ -208,7 +208,8 @@ const VOLUME_AT_SEND = new Map<string, 'daily_cap' | 'domain_cap'>([['volume_dai
 // One pass for this tenant: first the held first touches that are due again (#411), then verified leads that have no
 // message yet. Safe to call repeatedly and from two places at once (the scheduler tick and a finishing scan): a work row
 // is claimed before it is touched, a lead can have only one draft, and the send path claims each message once.
-export async function runAutopilot(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<RunResult> {
+// keep: awaited before each message (the scheduler's lease heartbeat); if it throws, the pass ends there, nothing started.
+export async function runAutopilot(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined>; keep?: () => Promise<void> } = {}): Promise<RunResult> {
   const out: RunResult = { sent: 0, held: 0, skipped: 0 }
   const env = d.flags ?? process.env
   const now = d.now ?? Math.floor(Date.now() / 1000)
@@ -297,8 +298,13 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const settle = (action: 'sent' | 'send_uncertain' | null) => action
       ? db.prepare('UPDATE autopilot_audit SET action = ? WHERE id = ? AND tenant_id = ?').run(action, admit.reservation, tenantId)
       : db.prepare("DELETE FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action IN ('send_reserved','send_committed')").run(admit.reservation, tenantId)
+    // Writes after the send path answered are each made on their own: one refused (the store busy, the scheduler's lease
+    // lost) does not skip the others, and the first such error ends the pass once the rest are done.
+    const guarded = () => { const errors: unknown[] = []; return { step: (f: () => unknown) => { try { f() } catch (e) { errors.push(e) } }, done: () => { if (errors.length) throw errors[0] } } }
+    const approvedHere = msg.status === 'draft'
+    let r: 'sent' | 'uncertain'
     try {
-      if (msg.status === 'draft') approve(db, tenantId, id)
+      if (approvedHere) approve(db, tenantId, id)
       // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
       // authorize: re-read by the send path as its last check, after the token refresh, immediately before Gmail: autopilot's
       // own authority, the draft's fingerprint, this send's reservation, and the volume limits as they are now.
@@ -313,29 +319,41 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
         try { return authority() ?? (draftAuthority(db, tenantId, id) !== expected ? AUTHORITY_CHANGED : null) ?? commit.immediate() }
         catch { return AUTHORITY_UNREADABLE }
       }
-      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize })
-      drop(id)
-      // The reservation becomes the send's record ('sent', counted once) or stays counted as possibly sent.
-      if (r === 'sent') { out.sent++; settle('sent') }
-      // An unknown outcome is never retried by autopilot: the message stays uncertain for the user.
-      else { settle('send_uncertain'); audit(db, tenantId, 'uncertain', 'send outcome unknown', leadId, id); pause(db, tenantId, 'uncertain_send'); out.stopped = 'uncertain_send'; return 'stop' }
+      r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize })
     } catch (e) {
       const code = e instanceof OutreachError ? e.code : 'error'
-      // The send path's refusals (OutreachError) come before anything is sent, so the reservation is released; anything
-      // else may have happened after the bytes left, so it keeps counting.
-      settle(e instanceof OutreachError ? null : 'send_uncertain')
-      audit(db, tenantId, 'send_failed', code, leadId, id)
-      // A volume limit refused it at commitment (the slot is released above): held until the limit has room, unapproved.
-      const vol = VOLUME_AT_SEND.get(code)
-      if (vol) { keepHeld(id, leadId, vol, attempts, capHold(domain)?.at ?? now, expected); out.held++; if (vol === 'daily_cap') { out.stopped = vol; return 'stop' } return }
-      if (AUTHORITY_RETURNS.has(code)) { release(id, leadId, ENDED_WHY); out.stopped = code; return 'stop' }
-      if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts, now, expected); out.held++; out.stopped = code; return 'stop' }
-      if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts, expected); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
-      if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1, expected); out.held++; return }
-      // Any other refusal (a check now holds the lead or the address, the sending account changed, retries ran out):
-      // the user decides.
-      backToUser(id); out.held++
+      const g = guarded()
+      // The draft first: autopilot's approval comes off it whatever else fails below (the user must never find a draft
+      // approved by autopilot that is not going). Then the slot: the send path's refusals (OutreachError) come before
+      // anything is sent, so the reservation is released; anything else may have happened after the bytes left, so it
+      // keeps counting. Then the record and the hold.
+      if (approvedHere) g.step(() => db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(id, tenantId))
+      g.step(() => settle(e instanceof OutreachError ? null : 'send_uncertain'))
+      g.step(() => audit(db, tenantId, 'send_failed', code, leadId, id))
+      let ends = false
+      g.step(() => {
+        // A volume limit refused it at commitment (the slot is released above): held until the limit has room, unapproved.
+        const vol = VOLUME_AT_SEND.get(code)
+        if (vol) { keepHeld(id, leadId, vol, attempts, capHold(domain)?.at ?? now, expected); out.held++; if (vol === 'daily_cap') { out.stopped = vol; ends = true } return }
+        if (AUTHORITY_RETURNS.has(code)) { release(id, leadId, ENDED_WHY); out.stopped = code; ends = true; return }
+        if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts, now, expected); out.held++; out.stopped = code; ends = true; return }
+        if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts, expected); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; ends = true; return }
+        if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1, expected); out.held++; return }
+        // Any other refusal (a check now holds the lead or the address, the sending account changed, retries ran out):
+        // the user decides.
+        backToUser(id); out.held++
+      })
+      g.done()
+      return ends ? 'stop' : undefined
     }
+    // Sent, or possibly sent: the message's own status is already written by the send path. The record follows: the
+    // reservation becomes the send's record ('sent', counted once) or stays counted as possibly sent; an unknown outcome
+    // is never retried by autopilot, the message stays uncertain for the user and autopilot pauses.
+    const g = guarded()
+    if (r === 'sent') { out.sent++; g.step(() => settle('sent')); g.step(() => drop(id)) }
+    else { g.step(() => settle('send_uncertain')); g.step(() => audit(db, tenantId, 'uncertain', 'send outcome unknown', leadId, id)); g.step(() => pause(db, tenantId, 'uncertain_send')); g.step(() => drop(id)); out.stopped = 'uncertain_send' }
+    g.done()
+    if (r !== 'sent') return 'stop'
   }
 
   // 1. Held first touches that are due again.
@@ -352,6 +370,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     // it, another address releases it below.
     if (gmailSender(db, tenantId) === null) { db.prepare('UPDATE autopilot_work SET claimed_at = NULL WHERE message_id = ? AND tenant_id = ?').run(w.message_id, tenantId); out.held++; continue }
     if (draftAuthority(db, tenantId, w.message_id) !== w.authority) { release(w.message_id, w.lead_id); continue }
+    await d.keep?.()
     if (await deliver(w.message_id, w.lead_id, w.attempts, w.authority) === 'stop') return out
   }
 
@@ -369,6 +388,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends
     if (!live()) return stop('paused')
+    await d.keep?.()
     let id: string
     let context: string | null
     try {

@@ -639,3 +639,31 @@ test('#448 the body, subject or recipient of the held draft changed during the t
     assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'changed_since_approval'), `${what}: recorded why`)
   }
 })
+
+// Adversarial probe on e9dff19 (F2, F3): a store write that fails while the outcome is being recorded. The draft is dealt
+// with first and every record written on its own, so what is true of the message (not sent / sent) is what the store
+// says; the pass still fails afterwards (the tick records the tenant failure).
+test('#448 the reservation store vanishes inside the refresh: nothing sent, the draft is NOT left approved by autopilot, the pass fails', async () => {
+  const db = await setup(); setCap(5)(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+  await assert.rejects(runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, db2 => db2.exec('DROP TABLE autopilot_audit')) }), /no such table: autopilot_audit/)
+  const m = db.prepare("SELECT status, approved_hash FROM outreach_messages WHERE to_email = 'a@one.example'").get() as { status: string; approved_hash: string | null }
+  assert.deepEqual([sent.length, m.status, m.approved_hash], [0, 'draft', null], 'known not sent, and the user does not find autopilot\'s approval on it')
+})
+
+test('#448 the queue table vanishes inside the refresh: the send goes (authority intact) and is recorded as sent, once; the pass fails on the queue', async () => {
+  const db = await setup(); setCap(5)(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+  await assert.rejects(runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, db2 => db2.exec('DROP TABLE autopilot_work')) }), /no such table: autopilot_work/)
+  assert.deepEqual([sent.length, msgStatus(db, 'a@one.example'), counted(db).map(c => c.action), getState(db, 'A').paused], [1, 'sent', ['sent'], false], 'a real send is a send in the record too, not an unknown outcome')
+})
+
+// Adversarial probe (F2, the realistic trigger): the scheduler's lease is kept alive between a tenant's messages.
+test('#448 keep (the lease heartbeat) is awaited before every message; when it throws the pass ends there with nothing started', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  let kept = 0
+  await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), keep: async () => { kept++ } })
+  assert.deepEqual([sent.length, kept], [2, 2], 'once per message')
+  const db2 = await setup(); ok(db2); pastWarmup(db2); const two = sends(); lead(db2, 'a@one.example'); lead(db2, 'b@two.example')
+  let n = 0
+  await assert.rejects(runAutopilot(db2, 'A', 'Acme', { ...at(two.d, NOW), keep: async () => { if (++n === 2) throw new Error('lease lost') } }), /lease lost/)
+  assert.deepEqual([two.sent.length, reservations(db2), (db2.prepare('SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND sent_at IS NULL').get('A') as { n: number }).n], [1, 0, 0], 'the first went and is settled; the second was never drafted')
+})
