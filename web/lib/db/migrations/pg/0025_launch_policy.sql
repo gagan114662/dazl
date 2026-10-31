@@ -1,9 +1,8 @@
 -- A calibrated launch's accepted policy (lib/outreach/launch-policy.ts, #405): one row per tenant, the policy JSON at
 -- its version, when it was accepted, and when a passing preflight launched it (NULL until then; a new acceptance clears it).
 -- acceptance_id identifies one acceptance: a calibration records its result only against the acceptance it started for.
--- 0025: the next number after main's 0024_play_research_sources, provisional. Migrations must be gap-free (the loader
--- refuses a gap), so this file takes whatever number is next on main when it merges; five open PRs ahead of this one in
--- the merge order would make it 0030. Re-checked against actual main at merge time.
+-- 0025: the next number after main's 0024_play_research_sources. Provisional; renumbered to the next available number
+-- after the predecessors land (migrations must be gap-free: the loader refuses a gap, so no number is reserved).
 CREATE TABLE autopilot_launch_policy (
     tenant_id TEXT PRIMARY KEY, acceptance_id TEXT NOT NULL CHECK (char_length(acceptance_id) = 16),
     version TEXT NOT NULL CHECK (char_length(version) <= 20),
