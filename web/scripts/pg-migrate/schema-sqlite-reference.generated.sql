@@ -152,6 +152,17 @@ CREATE TABLE email_patterns (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, site TEXT NOT NULL, format TEXT NOT NULL, support INTEGER NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, site));
 
+CREATE TABLE email_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('verify', 'reset', 'change')),
+    email TEXT NOT NULL CHECK (length(email) <= 254),
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
+
 CREATE TABLE evidence_purge_audit (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -196,6 +207,20 @@ CREATE TABLE inbound_messages (
     );
 
 CREATE TABLE inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
+
+CREATE TABLE invitations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    email TEXT NOT NULL CHECK (length(email) <= 254),
+    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'operator', 'viewer')),
+    token_hash TEXT NOT NULL UNIQUE,
+    invited_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    accepted_at INTEGER,
+    accepted_by TEXT,
+    revoked_at INTEGER
+  );
 
 CREATE TABLE lead_enrichments (
       id          TEXT PRIMARY KEY,
@@ -383,6 +408,14 @@ CREATE TABLE outreach_signal_context (
     captured_at INTEGER NOT NULL
   );
 
+CREATE TABLE play_research_sources (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+ input_json TEXT NOT NULL, query_snapshot TEXT NOT NULL, offer_snapshot TEXT NOT NULL,
+ play_created_at INTEGER NOT NULL, icp_snapshot TEXT, offer_source TEXT NOT NULL,
+ source_check TEXT NOT NULL, person_check TEXT, created_at INTEGER NOT NULL,
+ UNIQUE(tenant_id,job_id,fingerprint)
+);
+
 CREATE TABLE rate_limits (
       key TEXT PRIMARY KEY CHECK (length(key) <= 300),
       count INTEGER NOT NULL,
@@ -527,6 +560,31 @@ CREATE TABLE scan_traces (
       trace TEXT NOT NULL
     );
 
+CREATE TABLE scheduler_progress (
+      tenant_id            TEXT NOT NULL,
+      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      last_attempt_at      INTEGER NOT NULL,
+      last_success_at      INTEGER,
+      last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
+      last_outcome         TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure')),
+      last_hold            TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40),
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_run_id          TEXT,
+      PRIMARY KEY (tenant_id, kind)
+    );
+
+CREATE TABLE scheduler_runs (
+      id                TEXT PRIMARY KEY,
+      started_at        INTEGER NOT NULL,
+      finished_at       INTEGER,
+      status            TEXT NOT NULL CHECK (status IN ('running','ok','partial','failed','lease_lost')),
+      lease_owner       TEXT NOT NULL,
+      lease_generation  INTEGER NOT NULL,
+      tenants_attempted INTEGER NOT NULL DEFAULT 0,
+      tenants_failed    INTEGER NOT NULL DEFAULT 0,
+      error             TEXT CHECK (error IS NULL OR length(error) <= 200)
+    );
+
 CREATE TABLE seo_audits (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
     results TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
@@ -605,7 +663,7 @@ CREATE TABLE sessions (
       user_id TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch()),
       expires_at INTEGER NOT NULL
-    , active_tenant_id TEXT);
+    , active_tenant_id TEXT, public_id TEXT, last_seen_at INTEGER, device TEXT, revoked_at INTEGER, revoked_by TEXT, revoke_reason TEXT, authed_at INTEGER);
 
 CREATE TABLE source_reviews (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,
@@ -632,6 +690,15 @@ CREATE TABLE suppressions (
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       PRIMARY KEY (tenant_id, email)
     );
+
+CREATE TABLE system_mail_outbox (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    to_email TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 
 CREATE TABLE tenant_competitors (
     tenant_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL,
@@ -725,7 +792,7 @@ CREATE TABLE users (
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch())
-    , buyer_profile TEXT);
+    , buyer_profile TEXT, email_verified_at INTEGER);
 
 CREATE TABLE warm_user_paths (
       id           TEXT PRIMARY KEY,
@@ -795,6 +862,8 @@ CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
+CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
+
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
 
 CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
@@ -802,6 +871,8 @@ CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
 
 CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
+
+CREATE INDEX invitations_tenant ON invitations (tenant_id, created_at);
 
 CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
 
@@ -827,6 +898,8 @@ CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
 
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
 
+CREATE INDEX play_research_sources_play ON play_research_sources(tenant_id,job_id,created_at);
+
 CREATE INDEX rate_limits_reset ON rate_limits (reset_at);
 
 CREATE INDEX reply_threads_tenant ON reply_threads (tenant_id, created_at);
@@ -843,13 +916,23 @@ CREATE INDEX scan_traces_created ON scan_traces (created_at);
 
 CREATE INDEX scan_traces_tenant ON scan_traces (tenant_id, created_at);
 
+CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
+
 CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 
 CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, checked_at);
 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
 
+CREATE INDEX sessions_expires ON sessions (expires_at);
+
+CREATE UNIQUE INDEX sessions_public_id ON sessions (public_id);
+
+CREATE INDEX sessions_user ON sessions (user_id);
+
 CREATE INDEX source_reviews_tenant ON source_reviews(tenant_id,lead_id);
+
+CREATE INDEX system_mail_outbox_created ON system_mail_outbox (created_at);
 
 CREATE INDEX tenant_connections_tenant ON tenant_connections (tenant_id);
 

@@ -1,3 +1,4 @@
+import {migratePlayResearch} from './play-research-schema.ts'
 // Every sqlite migrate*() the app runs, in one place: the schema extractor (scripts/pg-migrate/extract-schema.ts) and the
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'
@@ -42,6 +43,7 @@ import { migrateHiringFeed } from '../scan/job-feed.ts'
 import { migrateEmailGuess } from '../people/email-pattern.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { migrateTrialBudget } from '../billing/trial-budget.ts'
+import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
 import { migrateTraceStore } from '../evals/trace-tables.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
@@ -54,8 +56,8 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
-    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migrateHiringFeed, migrateEmailGuess,
-    migrateTrialBudget, migrateTraceStore,
+    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
+    migrateTrialBudget, migrateSchedulerRuns, migrateTraceStore,
   ]
   for (const m of migrates) m(db)
   // The queue adapter owns its tables and creates them in its constructor.

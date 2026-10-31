@@ -108,15 +108,17 @@ Rules (#394): unknown is never pass. A case passes only when every verdict passe
 unknown makes it unknown. `validated_rate` counts unknowns in the denominator and `unknown_rate` is reported separately.
 Evaluators read the case, the World and the result; they cannot change the input or the targeting.
 
-Scan evaluators in increment 1 (all deterministic, contract `dazl.evals/1`):
+Scan evaluators (all deterministic, contract `dazl.evals/1`):
 
 | id | subject | fails when | unknown when |
 | --- | --- | --- | --- |
 | `world_closed` | run | the replay asked for anything the World could not answer | - |
 | `event_date_in_window` | each verified lead | date not a real calendar day, after as_of, or outside the window | no date |
+| `event_date_on_page` | each verified lead with a date | - | the date is not stated in the page text (only its publication metadata, or nowhere) (#395) |
 | `evidence_in_world` | each verified lead | quote not on the World's copy of the cited page, page not in the World, no quote | - |
 | `place_on_page` | each verified lead | - | the cited page never names a requested city (no gazetteer: "another city" and "no place" are both unknown) |
 | `contact_domain_matches_company` | each verified lead with a contact | email domain is not one of the company's (case ground truth) | phone-only contact, or no ground truth |
+| `contact_not_recruiting_inbox` | each verified lead with an email contact | the contact is a hiring inbox (careers@, jobs@, hr@, talent@ ...) (#395) | - |
 | `no_tenant_leak` | run | a canary value from the second tenant appears in any outgoing span input or lead, a lead belongs to it, or its rows changed | - |
 | `expected_outcomes` | each expectation | outcome or hold reason differs; exhaustive case verifies an unnamed company | - |
 
@@ -213,7 +215,7 @@ and spans are dropped until it fits, and the insert refuses anything over it. `c
 `complete: false`, and `worldFromTrace` refuses an incomplete capture. A response body the recorder itself cut (its
 body cap, a failed read, or the settle bound) counts as a drop (`bodies_truncated`), and `worldFromTrace` also refuses any
 span marked `truncated`, whatever `capture` says. It is written to `scan_traces` in the app's own store: tenant-scoped, one row per attempt, PG
-`0018_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
+`0026_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
 tenant's trace id answers like an unknown one. Recording or storing never reaches the run: a failure is logged as
 `{"trace_capture":"failed"}` with the error's class and code only (never its message, which can quote the row), and the scan's outcome stands. Response bodies are read from a clone in the
 background (capped), so no caller waits on capture; a model provider's own API records no request or response body.
@@ -248,6 +250,20 @@ The Lumen Ledger result was a real agent gap: for a London request `placeAgreeme
 `unconfirmed`, not `mismatch`, for a page naming a non-UK city (Paris, Berlin), and the runner holds only on `mismatch`. Fixed by
 `otherPlace` (any city, any country; the requested city's name in another country), and the baseline entry was removed in the
 same PR, so the case now passes outright.
+
+## The second case (#395 traps)
+
+`scan-toronto-office-traps` (SYNTHETIC): a Toronto new-office request with one genuine lead and two #395 traps.
+
+| company | trap | agent | verdicts |
+| --- | --- | --- | --- |
+| Maple Leaf Marketing | none (genuine) | verified, contact kept | all pass |
+| Northern Lights Agency | old opening, page re-published last week; the text never dates it | **verified**, event date = publication date | `event_date_on_page` unknown, `expected_outcomes` fail |
+| Lakeshore Creative | genuine opening, only contact is `careers@` | verified, **recruiting inbox kept as contact** | `contact_not_recruiting_inbox` fail |
+
+Both are real agent gaps, recorded in the baseline and not fixed in the eval PR: the extraction copies a page's publication
+date into `event_date` and the verifier accepts it when the text never dates the event; and a recruiting inbox passes as a
+verified lead's contact.
 
 ## Next increments (one PR each)
 

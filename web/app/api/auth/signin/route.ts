@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scryptSync, timingSafeEqual } from 'crypto'
 import { cookies } from 'next/headers'
-import { createSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
+import { createPasswordSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
 import { validateEmail } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { deviceLabel } from '@/lib/sessions'
 
 // Fixed dummy salt/hash so unknown emails cost the same time as known ones.
 const DUMMY_SALT = '00000000000000000000000000000000'
@@ -31,7 +32,8 @@ export async function POST(req: NextRequest) {
     const stored = Buffer.from(user?.password_hash ?? '0'.repeat(128), 'hex')
     if (!user || !timingSafeEqual(computed, stored)) return fail()
 
-    const token = await createSession(user.id)
+    const token = await createPasswordSession(user, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
+    if (!token) return fail()
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     return NextResponse.json({ ok: true, redirect: '/app' })

@@ -1,0 +1,173 @@
+{
+ "v": 1,
+ "kind": "dazl.trace",
+ "id": "synthetic-scan-toronto-office-traps",
+ "path": "scan.discovery",
+ "synthetic": true,
+ "redacted": false,
+ "started_at": "2026-10-20T12:00:00.000Z",
+ "agent": {
+  "commit": null,
+  "label": "SYNTHETIC: hand-written trace, no real run; every company, page and address is invented"
+ },
+ "input": {
+  "request": "Find marketing agencies in Toronto, Canada that opened a new office within the past 90 days.",
+  "icp": {
+   "summary": "Toronto marketing agencies that opened a new office in the past 90 days",
+   "who": [
+    "Founder",
+    "Managing Director"
+   ],
+   "industries": [
+    "marketing agency"
+   ],
+   "sizes": [],
+   "where": [
+    "Toronto, Canada"
+   ],
+   "signals": [
+    "opened a new office"
+   ],
+   "exclude": [],
+   "country": "CA",
+   "language": "en",
+   "window_days": 90
+  },
+  "as_of": "2026-10-20T12:00:00.000Z"
+ },
+ "spans": [
+  {
+   "id": "s0",
+   "seq": 0,
+   "kind": "model",
+   "name": "anthropic.completeDetailed",
+   "start_ms": 0,
+   "duration_ms": 40,
+   "input": {
+    "stage": "search_queries",
+    "method": "completeDetailed",
+    "prompt": "Write up to 6 web search queries that would find companies or people matching this request (SYNTHETIC trace: prompt abbreviated)",
+    "max_tokens": 300
+   },
+   "output": {
+    "text": "[\"toronto marketing agency new office\"]",
+    "model": "stub-model-served",
+    "usage": {
+     "input_tokens": 400,
+     "output_tokens": 20
+    }
+   }
+  },
+  {
+   "id": "s1",
+   "seq": 1,
+   "kind": "http",
+   "name": "tinyfish.search",
+   "start_ms": 50,
+   "duration_ms": 40,
+   "input": {
+    "method": "GET",
+    "url": "https://api.search.tinyfish.ai/?query=toronto%20marketing%20agency%20new%20office%20Toronto%2C%20Canada",
+    "body": null
+   },
+   "output": {
+    "status": 200,
+    "body": "{\"results\":[{\"url\":\"https://news.example/toronto/maple-leaf-office\",\"title\":\"Maple Leaf Marketing opens second office\",\"snippet\":\"On 2026-10-08, Maple Leaf Marketing, a Toronto agency, opened a second office at 100 King Street West, Toronto, ON this month. New business: he\",\"date\":\"2026-10-08\"},{\"url\":\"https://news.example/toronto/northern-lights-profile\",\"title\":\"Northern Lights Agency profile\",\"snippet\":\"Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city. Archive profile, first written for ou\",\"date\":\"2026-10-15\"},{\"url\":\"https://news.example/toronto/lakeshore-creative\",\"title\":\"Lakeshore Creative opens Liberty Village studio\",\"snippet\":\"On 2026-10-12, Lakeshore Creative, a Toronto marketing agency, opened a new office in Liberty Village, Toronto, ON this month and is hiring des\",\"date\":\"2026-10-12\"}]}"
+   }
+  },
+  {
+   "id": "s2",
+   "seq": 2,
+   "kind": "http",
+   "name": "tinyfish.fetch",
+   "start_ms": 100,
+   "duration_ms": 40,
+   "input": {
+    "method": "POST",
+    "url": "https://api.fetch.tinyfish.ai",
+    "body": "{\"urls\":[\"https://news.example/toronto/maple-leaf-office\",\"https://news.example/toronto/northern-lights-profile\",\"https://news.example/toronto/lakeshore-creative\"],\"format\":\"markdown\"}"
+   },
+   "output": {
+    "status": 200,
+    "body": "{\"results\":[{\"url\":\"https://news.example/toronto/maple-leaf-office\",\"title\":\"Maple Leaf Marketing opens second office\",\"text\":\"On 2026-10-08, Maple Leaf Marketing, a Toronto agency, opened a second office at 100 King Street West, Toronto, ON this month. New business: hello@mapleleaf.example. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario.\"},{\"url\":\"https://news.example/toronto/northern-lights-profile\",\"title\":\"Northern Lights Agency profile\",\"text\":\"Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city. Archive profile, first written for our agency directory. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants.\"},{\"url\":\"https://news.example/toronto/lakeshore-creative\",\"title\":\"Lakeshore Creative opens Liberty Village studio\",\"text\":\"On 2026-10-12, Lakeshore Creative, a Toronto marketing agency, opened a new office in Liberty Village, Toronto, ON this month and is hiring designers. Apply: careers@lakeshore.example. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada.\"}]}"
+   }
+  },
+  {
+   "id": "s3",
+   "seq": 3,
+   "kind": "model",
+   "name": "anthropic.completeDetailed",
+   "start_ms": 150,
+   "duration_ms": 40,
+   "input": {
+    "stage": "extraction",
+    "method": "completeDetailed",
+    "prompt": "You turn pre-collected public items into sales leads. (SYNTHETIC trace: prompt abbreviated)",
+    "max_tokens": 4000
+   },
+   "output": {
+    "text": "[{\"name\":\"\",\"company\":\"Maple Leaf Marketing\",\"contact\":\"hello@mapleleaf.example\",\"signal\":\"Opened a second office this month\",\"source_url\":\"https://news.example/toronto/maple-leaf-office\",\"score\":80,\"excerpt\":\"Maple Leaf Marketing, a Toronto agency, opened a second office at 100 King Street West, Toronto, ON this month\",\"event_date\":\"2026-10-08\"},{\"name\":\"\",\"company\":\"Northern Lights Agency\",\"contact\":null,\"signal\":\"Opened a new office\",\"source_url\":\"https://news.example/toronto/northern-lights-profile\",\"score\":70,\"excerpt\":\"Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city\",\"event_date\":\"2026-10-15\"},{\"name\":\"\",\"company\":\"Lakeshore Creative\",\"contact\":\"careers@lakeshore.example\",\"signal\":\"Opened a new office this month\",\"source_url\":\"https://news.example/toronto/lakeshore-creative\",\"score\":75,\"excerpt\":\"Lakeshore Creative, a Toronto marketing agency, opened a new office in Liberty Village, Toronto, ON this month\",\"event_date\":\"2026-10-12\"}]",
+    "model": "stub-model-served",
+    "usage": {
+     "input_tokens": 1000,
+     "output_tokens": 100
+    }
+   }
+  },
+  {
+   "id": "s4",
+   "seq": 4,
+   "kind": "page",
+   "name": "verifier.fetch",
+   "start_ms": 200,
+   "duration_ms": 40,
+   "input": {
+    "url": "https://news.example/toronto/maple-leaf-office"
+   },
+   "output": {
+    "text": "On 2026-10-08, Maple Leaf Marketing, a Toronto agency, opened a second office at 100 King Street West, Toronto, ON this month. New business: hello@mapleleaf.example. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario. The agency serves retail and hospitality clients across Ontario.",
+    "title": "Maple Leaf Marketing opens second office",
+    "retrievedAt": 1792497600
+   }
+  },
+  {
+   "id": "s5",
+   "seq": 5,
+   "kind": "page",
+   "name": "verifier.fetch",
+   "start_ms": 250,
+   "duration_ms": 40,
+   "input": {
+    "url": "https://news.example/toronto/northern-lights-profile"
+   },
+   "output": {
+    "text": "Northern Lights Agency opened a new office on Queen Street West in Toronto, ON, its third in the city. Archive profile, first written for our agency directory. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants. The agency builds brand campaigns for Toronto restaurants.",
+    "title": "Northern Lights Agency profile",
+    "retrievedAt": 1792497600,
+    "published": "2026-10-15"
+   }
+  },
+  {
+   "id": "s6",
+   "seq": 6,
+   "kind": "page",
+   "name": "verifier.fetch",
+   "start_ms": 300,
+   "duration_ms": 40,
+   "input": {
+    "url": "https://news.example/toronto/lakeshore-creative"
+   },
+   "output": {
+    "text": "On 2026-10-12, Lakeshore Creative, a Toronto marketing agency, opened a new office in Liberty Village, Toronto, ON this month and is hiring designers. Apply: careers@lakeshore.example. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada. Lakeshore Creative works with consumer brands in Canada.",
+    "title": "Lakeshore Creative opens Liberty Village studio",
+    "retrievedAt": 1792497600
+   }
+  }
+ ],
+ "synthetic_defaults": {
+  "http": {
+   "status": 404,
+   "body": ""
+  }
+ }
+}

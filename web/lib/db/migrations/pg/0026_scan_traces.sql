@@ -1,6 +1,6 @@
 -- Captured production scan traces (lib/evals/capture.ts, docs/design/agent-evals.md "Production capture"): one redacted
 -- trace per captured run attempt, tenant-scoped, deleted after DAZL_TRACE_RETENTION_DAYS (default 14). Capture is OFF
--- unless DAZL_TRACE_CAPTURE=1. The next unused number after 0016_inbox_thread_reads.
+-- unless DAZL_TRACE_CAPTURE=1. Numbered after 0024_play_research_sources (0025 is reserved for #448); re-checked against main at merge time.
 CREATE TABLE scan_traces (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,

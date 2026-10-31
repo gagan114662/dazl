@@ -11,8 +11,10 @@ import { getDb, type Tx } from '@/lib/db/client'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
 import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
+import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Outcome } from '@/lib/ops/scheduler-runs'
 import { purgeExpiredTraces } from '@/lib/evals/capture'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
@@ -28,10 +30,17 @@ export async function POST(req: NextRequest) {
   // blocks ticks for at most TICK_LEASE.ttlMs.
   const lease = await tryLease(await getDb(), 'internal-tick', TICK_LEASE)
   if (!lease) return NextResponse.json({ ok: true, skipped: 'another tick is running' })
+  // Heartbeat (lib/ops/scheduler-runs.ts): the run is recorded before any work, outside the lease's fence, so a tick
+  // that dies leaves a 'running' row that reads as crashed once it outlives the lease, and one that loses the lease
+  // still records why it stopped.
+  const raw = getScanDb()
+  migrateSchedulerRuns(raw)
+  const runId = await startRun(raw, lease)
   try {
-    return await tick(lease, requestIdOf(req))
+    return await tick(lease, runId, requestIdOf(req))
   } catch (e) {
-    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) { captureError(e, { source: 'worker', where: 'tick', requestId: requestIdOf(req) }); return NextResponse.json({ ok: false, stopped: 'lease_lost' }) }
+    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) { await finishRun(raw, runId, 'lease_lost', e); captureError(e, { source: 'worker', where: 'tick', requestId: requestIdOf(req) }); return NextResponse.json({ ok: false, stopped: 'lease_lost' }) }
+    await finishRun(raw, runId, 'failed', e)
     throw e
   } finally {
     await lease.release().catch(() => {})
@@ -41,21 +50,36 @@ export async function POST(req: NextRequest) {
 // Heartbeat every ~6.7 min (default (ttl - budget) / 3); keep() refuses a new step with under 10 min of confirmed lease.
 const TICK_LEASE = { ttlMs: 30 * 60 * 1000, stepBudgetMs: 10 * 60 * 1000 }
 
-async function tick(lease: Lease, requestId?: string) {
+async function tick(lease: Lease, runId: string, requestId?: string) {
   const raw = getScanDb()
   const db = lease.fenceSqlite(raw)
   // A refused write means this tick lost the lease: stop, never carry on with the next tenant.
   const fenced = (e: unknown) => { if (e instanceof StaleLeaseWrite) throw e }
+  // Progress per tenant and kind of work, recorded only after the work returned (its writes passed the fence). The
+  // workers report refusals as a result, not an exception, so what came back is classified (lib/ops/scheduler-runs.ts):
+  // success, a hold (the tenant's own configuration or idle state) or a failure. Only failures make the run partial.
+  let failures = 0, holds = 0
+  const progress = async (tenant: string, kind: 'reply_sync' | 'followups' | 'sequences', o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
+  const failed = (e: unknown): Outcome => ({ outcome: 'failure', error: e })
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0
   for (const t of tenants) {
     await lease.keep()
-    try { const sync = await syncReplies(db, t.tenant_id); if (sync.error) continue; await runFollowups(db, t.tenant_id, t.business_name ?? ''); done++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
+    let stage: 'reply_sync' | 'followups' = 'reply_sync'
+    try {
+      const sync = classifySync(await syncReplies(db, t.tenant_id))
+      await progress(t.tenant_id, 'reply_sync', sync)
+      if (sync.outcome === 'failure') continue
+      stage = 'followups'
+      const f = classifyWork(await runFollowups(db, t.tenant_id, t.business_name ?? ''))
+      await progress(t.tenant_id, 'followups', f)
+      if (f.outcome !== 'failure') done++
+    } catch (e) { fenced(e); await progress(t.tenant_id, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
+    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
@@ -76,10 +100,15 @@ async function tick(lease: Lease, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
+  // Expired and long-revoked sessions, at most 500 per tick (lib/sessions.ts); working sessions never match.
+  await lease.keep()
+  let sessionsReaped = 0
+  try { sessionsReaped = (await reapAccountHistory(shared, { fence })).sessions } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
   // Captured scan traces (lib/evals/capture.ts): every tenant's rows older than DAZL_TRACE_RETENTION_DAYS are deleted,
   // whether capture is on or off. Idempotent and best-effort: a failure here never stops the tick.
   let tracesPurged = 0
   await lease.keep()
-  try { tracesPurged = await purgeExpiredTraces(shared) } catch (e) { captureError(e, { source: 'worker', where: 'tick:trace-purge', requestId }) }
-  return NextResponse.json({ ok: true, tenants: done, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, index_checks: indexChecked, traces_purged: tracesPurged })
+  try { tracesPurged = await purgeExpiredTraces(shared) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:trace-purge', requestId }) }
+  await finishRun(raw, runId, failures ? 'partial' : 'ok')
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged })
 }

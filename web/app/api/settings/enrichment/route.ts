@@ -5,7 +5,8 @@ import { getDb } from '@/lib/db/client'
 import { writeAudit, connectorStatus, removeCredential, readRecentAudit, writeCredential } from '@/lib/connectors/store'
 import { sameOriginJson } from '@/lib/same-origin'
 import { enrichmentWriteLimit } from '@/lib/settings/enrichment-guard'
-import { denied } from '@/lib/workspace-access'
+import { denied, stale } from '@/lib/workspace-access'
+
 
 const CONNECTORS = ['enrich:apollo', 'enrich:pdl']
 
@@ -22,6 +23,8 @@ export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const no = denied(user, 'configure'); if (no) return no
+  const old = stale(user); if (old) return old
+
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   const limited = await enrichmentWriteLimit(user.tenantId)
   if (!limited.ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: { 'Retry-After': String(limited.retryAfterS) } })

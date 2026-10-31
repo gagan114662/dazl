@@ -2,7 +2,8 @@ name: release-gate
 # What must hold before a commit is deployed (issue #362; web/docs/DEPLOY.md "Release gate"). Runs on every pull request
 # touching web/ or ops/, and on every push to main, so the exact commit Instinct deploys has a run of its own:
 # - browser: the production build, then every production smoke check against it in Chromium: pages and chunks load,
-#   chunk-load recovery, the /app sign-in gate, the two-tenant leak check, and release identity plus readiness;
+#   chunk-load recovery, the /app sign-in gate, the two-tenant leak check, release identity plus readiness, and the
+#   recovery drill (docs/RECOVERY.md) on a synthetic backup with the app started on the restored copy;
 # - migrations: the previous release's SQLite database (filled by its own synthetic staging seed and a stored key) is
 #   migrated by this release keeping every row and value, a second migration changes nothing, the previous release's
 #   migration changes no value either, and each release's own code verifies the demo password and decrypts the key.
@@ -56,9 +57,15 @@ jobs:
       - name: Two tenants, no cross-tenant data on any route or page
         if: success() || failure()
         run: npm run test:smoke:tenants
+      - name: Saved-source recheck action and refusal states (fenced)
+        if: success() || failure()
+        run: node --experimental-strip-types test/smoke/evidence-recheck.smoke.mjs
       - name: Release identity and readiness
         if: success() || failure()
         run: npm run test:smoke:release
+      - name: Recovery drill with the app (synthetic backup, sending disabled)
+        if: success() || failure()
+        run: npm run test:smoke:recovery
       - uses: actions/upload-artifact@v4
         if: success()
         with:
