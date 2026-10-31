@@ -1,3 +1,4 @@
+import {migratePlayResearch} from '../scan/play-research.ts'
 // Every sqlite migrate*() the app runs, in one place: the schema extractor (scripts/pg-migrate/extract-schema.ts) and the
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'
@@ -54,7 +55,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
-    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migrateHiringFeed, migrateEmailGuess,
+    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
     migrateTrialBudget, migrateSchedulerRuns,
   ]
   for (const m of migrates) m(db)
