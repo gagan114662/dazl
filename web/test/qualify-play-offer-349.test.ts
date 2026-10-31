@@ -64,3 +64,13 @@ test('non-schema play context read failure is not silently replaced with global 
  const wrapped=new Proxy(db,{get(target,key){if(key==='prepare')return(sql:string)=>{if(sql==='SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?')throw Error('database locked');return target.prepare(sql)};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value}})
  await assert.rejects(preview(wrapped,L,async()=>{fetched++;return fetchPage()}),/database locked/);assert.equal(fetched,0)
 })
+test('an owned lead with no tenant/snapshot/request offer remains structured not-ready, never404',async()=>{
+ const{db,jobs}=setup();db.prepare('UPDATE users SET sells=?').run('');db.prepare('UPDATE scan_jobs SET seller=NULL,offer=NULL,query=? WHERE id=?').run('Find companies hiring sales.',jobs[0])
+ const p=await qualifyPreview(db,'u1',L,'',fetchPage,'anthropic',MODEL)
+ assert.ok(p);assert.equal(p.ready,false);assert.equal(p.seller_offer_present,false);assert.ok(p.notes.some(n=>/No seller profile/.test(n)))
+})
+test('legacy auth-profile offer read after sources catches a concurrent shared-profile change',async()=>{
+ const{db,jobs}=setup();db.prepare('UPDATE scan_jobs SET seller=NULL,offer=NULL,query=? WHERE id=?').run('Find companies hiring sales.',jobs[0])
+ const p=await preview(db,L,async()=>{db.prepare('UPDATE users SET sells=?').run('Bookkeeping');return fetchPage()})
+ assert.equal(p?.ready,false);assert.equal(p?.input,null);assert.ok(p?.notes.some(n=>/changed/.test(n)))
+})
