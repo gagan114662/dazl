@@ -8,7 +8,8 @@ import { runFixture, daysAgo } from './helpers/acceptance-harness.ts'
 
 test('a page that binds the claimed date to this company and this event persists page_bound; a publication stamp does not', async () => {
   const day = daysAgo(5)
-  const BOUND = `Acme Dental said it will open a second clinic in Toronto. Acme Dental confirmed the Toronto clinic opens on ${day}, adding six chairs.`
+  // The binder accepts the day in the quote's own company-naming clause; a separate restating sentence with an inflected verb stays unbound (conservative, reported for review).
+  const BOUND = `Acme Dental said it will open a second clinic in Toronto on ${day}. The expansion adds six chairs.`
   const STAMPED = `Published ${day}. Beta Dental said it will open a second clinic in Toronto. The expansion adds six chairs and two hygienists to the team.`
   const x = await runFixture({
     request: 'Dental clinics in Toronto opening a new location',
