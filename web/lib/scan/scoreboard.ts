@@ -1,3 +1,4 @@
+import { isRecruitingInbox } from '../recruiting-inbox.ts'
 // Scoreboard: how many leads a scan returns that a salesperson could act on today. This is the number every change
 // is judged by (docs/DECISIONS.md, "review before main"). Pure scoring only; scripts/scoreboard.ts runs the scans.
 //
@@ -25,7 +26,13 @@ const PHONE = /\+?\d[\d\s().-]{6,}\d/
 export const RECENT_DAYS = 90
 export const FIT_MIN = 4
 
-export const isReachable = (v: string | null | undefined): boolean => !!v && (EMAIL.test(v) || PHONE.test(v))
+export const isReachable = (v: string | null | undefined): boolean => {
+  if (!v) return false
+  const emails = v.match(new RegExp(EMAIL.source, 'gi')) ?? []
+  if (emails.some(email => !isRecruitingInbox(email))) return true
+  // Phone-like digits inside an email are not a separate contact route.
+  return PHONE.test(v.replace(new RegExp(EMAIL.source, 'gi'), ''))
+}
 
 export function scoreLead(l: ScoredLeadInput, now: Date = new Date()): LeadScoreCard {
   const verified = !l.review_reason

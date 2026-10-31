@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   }
   const r = await createNewsjack(db, user.tenantId, typeof body?.url === 'string' ? body.url : '')
   if ('error' in r) {
+    if (r.error === 'spend_limit') return NextResponse.json({ error: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.', code: 'spend_limit' }, { status: 429 })
     if (r.error === 'no_key') return NextResponse.json({ error: 'Drafts use your own AI key. Add one in Settings first.' }, { status: 400 })
     if (r.error === 'invalid') return NextResponse.json({ error: 'Paste the full https URL of the news article.' }, { status: 400 })
     if (r.error === 'fetch') return NextResponse.json({ error: 'Could not read that page. Check the link is public.' }, { status: 400 })

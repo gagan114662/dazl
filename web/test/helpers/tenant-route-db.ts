@@ -9,8 +9,9 @@ let user: SessionUser | null = null
 export function setScanDb(value: Database.Database) { db = value; setDb(sqliteDb(value)) }
 // `id` is the workspace (tenant); the actor defaults to the workspace's founder, the role to owner, as for every
 // account until it is invited into another workspace.
-export function setUser(u: { id: string; business_name: string; role?: Role; actorId?: string; email?: string } | null) {
-  user = u && { tenantId: u.id, actorId: u.actorId ?? u.id, role: u.role ?? 'owner', business_name: u.business_name, email: u.email ?? `${u.id}@example.test` }
+export function setUser(u: { id: string; business_name: string; role?: Role; actorId?: string; email?: string; authedAt?: number } | null) {
+  user = u && { tenantId: u.id, actorId: u.actorId ?? u.id, role: u.role ?? 'owner', business_name: u.business_name, email: u.email ?? `${u.id}@example.test`, authedAt: u.authedAt ?? Math.floor(Date.now() / 1000) }
+
 }
 export function getScanDb(): Database.Database { if (!db) throw new Error('test database unset'); return db }
 export async function requireUser() { return user }

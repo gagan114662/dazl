@@ -20,7 +20,9 @@ const COS: Co[] = [
   { name: 'Efive Dental', slug: 'efive', host: 'efivedental.com', dated: false, structured: true, site: 'full' },
 ]
 const url = (c: Co) => `https://news.example/${c.slug}-opens`
-const quote = (c: Co) => `${c.name} opened a new location in Brooklyn, New York this month`
+// A dated lead's page states the day in the quote's own sentence (#460: a day the text never ties to this company and event is not the event's date;
+// the hit's date alone would read undated). The undated lead's page says only "this month": its day comes from its structured data.
+const quote = (c: Co) => `${c.name} opened a new location in Brooklyn, New York ${c.dated ? `on ${daysAgo(10)}` : 'this month'}`
 const EVENT = (c: Co, startDate: string) => JSON.stringify({ '@context': 'https://schema.org', '@type': 'Event', name: `${c.name} grand opening`, startDate, organizer: { '@type': 'Organization', name: c.name }, location: { '@type': 'Place', name: 'Brooklyn, NY' } })
 
 function fx(): Fixture {

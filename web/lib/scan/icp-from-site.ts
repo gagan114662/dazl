@@ -1,10 +1,11 @@
 import type Database from 'better-sqlite3'
+import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
 import { normalizeIcp, type Icp } from './icp.ts'
 import { pickVendor } from './runner.ts'
-import { guardProvider, researchCostUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { guardProvider, researchCostUsd, SpendGuard } from '../llm/spend-guard.ts'
 import { TRIAL_SITE_READ_RESERVE_USD } from '../billing/trial-budget.ts'
 import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
 
@@ -15,7 +16,13 @@ import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
 // have it run on dazl's trial key only when deps.trial admits it (lib/scan/trial-site-read.ts,
 // #409), after the page was fetched and found readable, under a per-read spend ceiling.
 
-export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'trial_read_failed'
+// Two funding identities, each with its own spend guard and its own error:
+//   - own: the tenant's key, on the owner's workspace spend pool (lib/llm/owner-guard.ts, #363): reserved in the shared
+//     store before the call, settled to the reported cost after it; a refusal is 'spend_limit' (nothing was called).
+//   - trial: dazl's key, admitted per read by deps.trial (the trial wallet's bounded reservation and the canonical trial
+//     principal) and held to TRIAL_SITE_READ_MAX_USD by a per-read guard; any failure there is 'trial_read_failed'
+//     (dazl's, never "your key" and never the owner's pool, which a trial read does not touch).
+export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'spend_limit' | 'trial_read_failed'
 // The most one trial-funded read may cost: the wallet reservation (lib/billing/trial-budget.ts), and the call's own
 // guard here, from the prompt's size and the output cap (lib/llm/spend-guard.ts). A page capped at 5000 characters plus
 // 700 output tokens fits well inside it.
@@ -67,18 +74,26 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
   if (read?.unreadable) return { error: 'key_unreadable' }
   // No key of its own and no trial path: no fetch and no call.
   if (!read?.key && !deps.trial) return { error: 'no_api_key' }
+  // Own key: its provider, on the owner's spend pool (lib/llm/owner-guard.ts), resolved before any fetch as before. The
+  // pool reserves the call's worst case in the shared store when the call is made, and settles it after.
+  let own: { key: string; provider: Provider } | null = null
+  if (read?.key) {
+    const raw = (deps.providers ?? providers)[vendor!]
+    const provider = raw && ownerGuarded(db, tenantId, raw)
+    if (!provider?.complete) return { error: 'key_rejected' }
+    own = { key: read.key, provider }
+  }
 
   const page = await fetchPublicHtml(rawUrl, deps)
   if ('error' in page) return page
   const { title, text } = extractSiteText(page.html)
   if (text.length < 200) return { error: 'js_only' } // nothing readable without running JS
 
-  // The paid call: the tenant's key, or (admitted only now, after a readable page) dazl's trial key under a ceiling.
+  // The paid call: the tenant's key on the owner's pool, or (admitted only now, after a readable page) dazl's trial key
+  // under the read's own ceiling. A trial read is dazl's money in the trial wallet: it never reserves in the owner's pool.
   let call: { key: string; provider: Provider; funded: 'own' | 'trial'; settle?: (usd: number) => Promise<void> }
-  if (read?.key) {
-    const provider = (deps.providers ?? providers)[vendor!]
-    if (!provider?.complete) return { error: 'key_rejected' }
-    call = { key: read.key, provider, funded: 'own' }
+  if (own) {
+    call = { ...own, funded: 'own' }
   } else {
     const a = await deps.trial!()
     if (!a.ok) return { error: 'no_api_key', trial: a.reason }
@@ -106,8 +121,10 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     // Optional: what the seller offers, for the editable onboarding profile. Never required, never saved here.
     if (typeof parsed?.sells === 'string') sells = parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150)
   } catch (e) {
-    // On the trial key a failure (refused by the ceiling, provider error, unreadable answer) is dazl's, never "your key".
-    if (call.funded === 'trial' || e instanceof SpendRefused) return { error: 'trial_read_failed' }
+    // On the trial key a failure (refused by the read's ceiling, provider error, unreadable answer) is dazl's, never
+    // "your key" and never the owner's spend limit.
+    if (call.funded === 'trial') return { error: 'trial_read_failed' }
+    if (spendRefused(e)) return { error: 'spend_limit' } // the owner's spend limit: no call was made
     return { error: 'key_rejected' }
   }
   if (!icp) return { error: call.funded === 'trial' ? 'trial_read_failed' : 'key_rejected' }

@@ -13,5 +13,5 @@ test('POST /api/scan/estimate and the 402/409 gates on POST /api/scan (real hand
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 19/); assert.match(result.stdout, /# fail 0/)
+  assert.match(result.stdout, /# pass 20/); assert.match(result.stdout, /# fail 0/)
 })

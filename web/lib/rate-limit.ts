@@ -21,18 +21,23 @@ export interface Limit { ok: boolean; retryAfterS: number; unavailable?: true }
 //            count) are enforced in the send path itself, unchanged.
 export type Degraded = 'closed' | 'local'
 export const DEGRADED: Record<string, Degraded> = {
-  // auth
+  // auth (reauth: password re-entry for a fresh session, the same brute-force surface as sign-in)
+  reauth: 'closed', 'reauth-ip': 'closed',
+  // email ownership and recovery (#357): link guessing, and mail dazl sends
+  verify: 'closed', 'verify-send': 'closed', reset: 'closed', 'reset-ip': 'closed', 'reset-email': 'closed', 'email-change': 'closed',
   'signin-ip': 'closed', 'signin-acct': 'closed', signup: 'closed', google: 'closed', 'google-cb': 'closed',
   // scans, trial admission and paid or shared providers
-  scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'hiring-feed': 'closed',
-  'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'find-contact': 'closed',
+  scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'evidence-recheck': 'closed', 'hiring-feed': 'closed',
+  'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'play-research': 'closed', 'find-contact': 'closed',
   'settings:enrichment': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   // low risk: the app's own data, or must keep working
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'domain-review': 'local',
   'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local',
+  invite: 'local', 'invite-accept': 'local', sessions: 'local',
   'scan-estimate': 'local',   // read-only price estimate: no provider call, queues and counts nothing
+
   send: 'local', draft: 'local', reopen: 'local', sequences: 'local', 'ranking-fixture': 'local', 'verification-fixture': 'local',
 }
 // The kind of a key is the longest listed prefix followed by ':' (keys may hold IPv6 addresses or emails after it).

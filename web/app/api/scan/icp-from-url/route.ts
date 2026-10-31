@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   if (url.length < 5) return NextResponse.json({ error: 'invalid' }, { status: 400 })
   const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { trial: async () => admitWorkspaceSiteRead(await getDb(), user, clientIp(req)) })
   if ('error' in out) {
+    if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     const status = out.error === 'no_api_key' || out.error === 'key_unreadable' || out.error === 'invalid' || out.error === 'not_public' ? 400
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
     return NextResponse.json({ error: out.error, ...(out.trial ? { trial: out.trial } : {}) }, { status })

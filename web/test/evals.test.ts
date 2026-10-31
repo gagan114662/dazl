@@ -12,7 +12,7 @@ import { redactTrace } from '../lib/evals/redact.ts'
 import { loadCase, validateCase, CaseError, type Case } from '../lib/evals/case.ts'
 import { replayCase } from './helpers/eval-replay.ts'
 import { CANARY, CANARY_TENANT, type ReplayResult } from '../lib/evals/result.ts'
-import { scoreCase, eventDateInWindow, evidenceInWorld, contactDomainMatchesCompany, noTenantLeak, placeOnPage, worldClosed, expectedOutcomes, type EvalContext, type Evaluator } from '../lib/evals/evaluators.ts'
+import { scoreCase, eventDateOnPage, contactNotRecruitingInbox, eventDateInWindow, evidenceInWorld, contactDomainMatchesCompany, noTenantLeak, placeOnPage, worldClosed, expectedOutcomes, type EvalContext, type Evaluator } from '../lib/evals/evaluators.ts'
 import { runSuite, loadBaseline, compareBaseline, gate, type SuiteRow } from './helpers/eval-suite.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 
@@ -31,10 +31,14 @@ async function base() {
   return clone(cached)
 }
 
-test('the committed World is exactly what worldFromTrace derives from the committed synthetic trace', () => {
-  const { world } = loadCase(CASE_FILE)
-  assert.deepEqual(worldFromTrace(TRACE, world.id), world)
-  assert.equal(world.origin, 'synthetic')
+test('every committed World is exactly what worldFromTrace derives from its committed synthetic trace', () => {
+  for (const id of ['scan-london-seed-traps', 'scan-toronto-office-traps']) {
+    const { kase, world } = loadCase(`${DIR}cases/${id}.case.json`)
+    const trace = JSON.parse(readFileSync(`${DIR}traces/${id}.trace.json`, 'utf8')) as Trace
+    assert.equal(kase.provenance.from_trace, trace.id)
+    assert.deepEqual(worldFromTrace(trace, world.id), world, id)
+    assert.equal(world.origin, 'synthetic')
+  }
 })
 
 test('replay runs the real scan offline against the World: closed, deterministic, every trap handled', async () => {
@@ -69,28 +73,38 @@ test('a replay trace freezes back into the same World (search, pages, model repl
   assert.equal(t.model_calls, 2); assert.equal(t.page_fetches, 6); assert.equal(t.cost_usd, null) // stub model has no listed price: unknown, not $0
 })
 
+const LONDON = 'scan-london-seed-traps'
+// The London case and a baseline holding only it: the gate tests below do not depend on how many cases the suite has.
+async function londonOnly() {
+  const rows = (await runSuite(`${DIR}cases`)).filter(r => r.case === LONDON)
+  const full = loadBaseline(`${DIR}baseline.json`)
+  return { rows, b: { ...full, min_cases: 1, cases: { [LONDON]: full.cases[LONDON] } } }
+}
+
 test('the suite matches the committed baseline exactly, and a verdict change in either direction is reported', async () => {
-  const rows = await runSuite(`${DIR}cases`)
-  const b = loadBaseline(`${DIR}baseline.json`)
-  // registered with no known failures: the Paris-for-London gap this case found is fixed by lib/scan/place-agreement.ts
-  assert.deepEqual(b.cases['scan-london-seed-traps'], { status: 'pass', non_pass: [] })
-  assert.deepEqual(compareBaseline(rows, b), [{ case: 'scan-london-seed-traps', regressions: [], fixed: [] }])
-  assert.equal(gate(rows, b).ok, true)
-  const stale = { ...b, cases: { 'scan-london-seed-traps': { status: 'fail', non_pass: ['expected_outcomes|expect:Lumen Ledger|fail'] } } }
+  const all = await runSuite(`${DIR}cases`)
+  const full = loadBaseline(`${DIR}baseline.json`)
+  assert.equal(gate(all, full).ok, true)
+  assert.deepEqual(Object.keys(full.cases).sort(), all.map(r => r.case).sort())          // every case that runs is registered
+  assert.equal(full.min_cases, all.length)
+  const { rows, b } = await londonOnly()
+  assert.deepEqual(b.cases[LONDON], { status: 'pass', non_pass: [] })                     // no known failures
+  assert.deepEqual(compareBaseline(rows, b), [{ case: LONDON, regressions: [], fixed: [] }])
+  const stale = { ...b, cases: { [LONDON]: { status: 'fail', non_pass: ['expected_outcomes|expect:Lumen Ledger|fail'] } } }
   assert.deepEqual(compareBaseline(rows, stale)[0].fixed, ['expected_outcomes|expect:Lumen Ledger|fail'])  // a fixed entry left in the baseline fails the gate
   assert.equal(gate(rows, stale).ok, false)
   const regressed = rows.map(r => ({ ...r, nonPass: ['place_on_page|lead:Lumen Ledger|unknown'] }))
-  assert.deepEqual(compareBaseline(regressed, b)[0], { case: 'scan-london-seed-traps', regressions: ['place_on_page|lead:Lumen Ledger|unknown'], fixed: [] })
+  assert.deepEqual(compareBaseline(regressed, b)[0], { case: LONDON, regressions: ['place_on_page|lead:Lumen Ledger|unknown'], fixed: [] })
   assert.equal(gate(regressed, b).ok, false)
 })
 
 test('gate: the case set itself is checked - a missing, unregistered or duplicate case, or too few cases, is red', async () => {
-  const rows = await runSuite(`${DIR}cases`)
-  const b = loadBaseline(`${DIR}baseline.json`)
+  const { rows, b } = await londonOnly()
+  assert.equal(gate(rows, b).ok, true)
   const row = (id: string): SuiteRow => ({ ...rows[0], case: id })
   const missing = gate([], b)
-  assert.equal(missing.ok, false); assert.deepEqual(missing.missing, ['scan-london-seed-traps']); assert.equal(missing.ran, 0)
-  assert.deepEqual(compareBaseline([], b), [{ case: 'scan-london-seed-traps', regressions: ['case_did_not_run'], fixed: [] }]) // the comparison alone is never empty for a missing case
+  assert.equal(missing.ok, false); assert.deepEqual(missing.missing, [LONDON]); assert.equal(missing.ran, 0)
+  assert.deepEqual(compareBaseline([], b), [{ case: LONDON, regressions: ['case_did_not_run'], fixed: [] }]) // the comparison alone is never empty for a missing case
   const two = { ...b, min_cases: 2, cases: { ...b.cases, 'other-case': { status: 'pass', non_pass: [] } } }
   const dropped = gate(rows, two)                                     // one of two registered cases deleted
   assert.equal(dropped.ok, false); assert.deepEqual(dropped.missing, ['other-case'])
@@ -98,8 +112,8 @@ test('gate: the case set itself is checked - a missing, unregistered or duplicat
   assert.equal(floor.ok, false); assert.deepEqual(floor.missing, []); assert.equal(floor.ran, 1); assert.equal(floor.minCases, 2)
   const extra = gate([...rows, row('new-case')], b)                    // a case that runs without being registered
   assert.equal(extra.ok, false); assert.deepEqual(extra.unregistered, ['new-case'])
-  const dup = gate([...rows, row('scan-london-seed-traps')], { ...b, min_cases: 1 })
-  assert.equal(dup.ok, false); assert.deepEqual(dup.duplicates, ['scan-london-seed-traps'])
+  const dup = gate([...rows, row(LONDON)], b)
+  assert.equal(dup.ok, false); assert.deepEqual(dup.duplicates, [LONDON])
   assert.throws(() => { const f = join(mkdtempSync(join(tmpdir(), 'dazl-baseline-')), 'b.json'); writeFileSync(f, JSON.stringify({ ...b, min_cases: 0 })); loadBaseline(f) }, /min_cases/)
 })
 
@@ -123,7 +137,8 @@ const gateRed = (r: ReturnType<typeof runCli>, ...lines: RegExp[]) => {
   for (const l of lines) assert.match(r.stdout, l)
 }
 
-test('gate CLI: deleting or renaming the only case turns `npm run evals` red (exit 1, the case named)', () => {
+const committedMin = () => loadBaseline(`${DIR}baseline.json`).min_cases
+test('gate CLI: deleting or renaming a registered case turns `npm run evals` red (exit 1, the case named)', () => {
   for (const how of ['delete', 'rename'] as const) {
     const tmp = suiteCopy()
     try {
@@ -131,7 +146,7 @@ test('gate CLI: deleting or renaming the only case turns `npm run evals` red (ex
       assert.equal(intact.status, 0, intact.stdout + intact.stderr); assert.match(intact.stdout, /eval gate: ok/)
       const f = join(tmp, 'cases', 'scan-london-seed-traps.case.json')
       if (how === 'delete') unlinkSync(f); else renameSync(f, `${f}.bak`)
-      gateRed(runCli(tmp), /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps/, /TOO FEW CASES: 0 ran, baseline min_cases is 1/)
+      gateRed(runCli(tmp), /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps/, new RegExp(`TOO FEW CASES: ${committedMin() - 1} ran, baseline min_cases is ${committedMin()}`))
     } finally { rmSync(tmp, { recursive: true, force: true }) }
   }
 })
@@ -141,11 +156,12 @@ test('gate CLI: deleting one of several cases, or renaming its id, is red; an em
   try {
     const intact = runCli(tmp)
     assert.equal(intact.status, 0, intact.stdout + intact.stderr)
-    assert.match(intact.stdout, /2 of 2\+ registered cases ran/)
+    const n = committedMin() + 1
+    assert.match(intact.stdout, new RegExp(`${n} of ${n}\\+ registered cases ran`))
     const copy = join(tmp, 'cases', 'scan-london-seed-traps-copy.case.json')
     const saved = readFileSync(copy, 'utf8')
     unlinkSync(copy)
-    gateRed(runCli(tmp), /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps-copy/, /TOO FEW CASES: 1 ran, baseline min_cases is 2/)
+    gateRed(runCli(tmp), /MISSING CASE \(registered in baseline.json, did not run\): scan-london-seed-traps-copy/, new RegExp(`TOO FEW CASES: ${n - 1} ran, baseline min_cases is ${n}`))
     writeFileSync(copy, JSON.stringify({ ...JSON.parse(saved), id: 'renamed-case' }))  // same file, new id: the old id is missing, the new one unregistered
     gateRed(runCli(tmp), /MISSING CASE .*: scan-london-seed-traps-copy/, /UNREGISTERED CASE \(add to baseline.json\): renamed-case/)
     writeFileSync(copy, JSON.stringify({ ...JSON.parse(saved), id: 'scan-london-seed-traps' })) // two files, one id
@@ -317,4 +333,58 @@ test('redaction: emails, phones, LinkedIn slugs and extracted person names are r
   assert.equal(q.review_reason, null)
   assert.match(q.contact ?? '', /^p[0-9a-f]{10}@querix\.example$/)
   assert.equal(statuses(contactDomainMatchesCompany, { kase, world: w, result: res })['lead:Querix'], 'pass')
+})
+
+test('case 2 (#395 traps): metadata-only event held (#460), recruiting contact removed without dropping genuine event (#461)', async () => {
+  const { kase, world } = loadCase(`${DIR}cases/scan-toronto-office-traps.case.json`)
+  const result = await replayCase(kase, world)
+  assert.deepEqual(result.misses, [])
+  const got = Object.fromEntries(result.leads.map(l => [l.company, [l.review_reason, l.event_date, l.contact]]))
+  assert.deepEqual(got['Maple Leaf Marketing'], [null, '2026-10-08', 'hello@mapleleaf.example'])
+  assert.deepEqual(got['Northern Lights Agency'], ['outside_window_undated', null, null]) // #460: a publication day is not the event's date; held as undated
+  assert.deepEqual(got['Lakeshore Creative'], [null, '2026-10-12', null]) // #461 event stays verified, hiring contact removed
+  const s = scoreCase({ kase, world, result })
+  assert.equal(s.status, 'pass')
+  assert.deepEqual(s.verdicts.filter(v => v.status !== 'pass').map(v => `${v.evaluator}|${v.subject}|${v.status}`).sort(), loadBaseline(`${DIR}baseline.json`).cases['scan-toronto-office-traps'].non_pass)
+  // the genuine lead passes every evaluator, including the two new ones
+  assert.ok(s.verdicts.filter(v => v.subject === 'lead:Maple Leaf Marketing').every(v => v.status === 'pass'))
+})
+
+test('event_date_on_page: a date stated in the text passes in any common form; a publication-date-only or absent date is unknown', async () => {
+  const ctx = await base()
+  const q = ctx.result.leads.find(l => l.company === 'Querix')!
+  const URL_ = q.source_url
+  const at = (text: string, published?: string, date: string | null = '2026-10-08') => {
+    const c = clone(ctx); c.result.leads = [{ ...q, event_date: date }]
+    c.world.pages[URL_] = { title: 'Querix', text, ...(published ? { published } : {}) }; delete c.world.tinyfish_pages[URL_]
+    return statuses(eventDateOnPage, c)['lead:Querix']
+  }
+  assert.equal(at('Posted 2026-10-08. Querix raised a seed round.'), 'pass')
+  assert.equal(at('On October 8, 2026 Querix raised a seed round.'), 'pass')
+  assert.equal(at('Oct 8, 2026: Querix raised a seed round.'), 'pass')
+  assert.equal(at('On 8 October 2026 Querix raised a seed round.'), 'pass')
+  assert.equal(at('Querix raised a seed round.', '2026-10-08'), 'unknown')          // the old-article-fresh-publication trap
+  assert.equal(at('Querix raised a seed round on October 9, 2026.'), 'unknown')     // a different day
+  assert.equal(at('Querix raised a seed round.', undefined, null), undefined)        // undated: event_date_in_window holds it
+  // a date form counts only as a whole token (review of #453)
+  assert.equal(at('The old event was not dated. Import reference 2026-10-080123.'), 'unknown')
+  assert.equal(at('Archive filename x2026-10-08x.'), 'unknown')
+  assert.equal(at('Ticket 12026-10-08 was filed.'), 'unknown')
+  assert.equal(at('On 18 October 2026 Querix raised a seed round.'), 'unknown')        // the 18th, not the 8th
+  assert.equal(at('On October 8, 20261 Querix raised a seed round.'), 'unknown')
+  assert.equal(at('The event opens on October 8, 2026.'), 'pass')
+  assert.equal(at('(2026-10-08) Querix raised a seed round.'), 'pass')
+  assert.equal(at('Posted 2026-10-08: Querix raised a seed round.'), 'pass')
+})
+
+test('contact_not_recruiting_inbox: hiring inboxes fail, buyer-facing inboxes pass, phones get no verdict', async () => {
+  const ctx = await base()
+  const q = ctx.result.leads.find(l => l.company === 'Querix')!
+  const at = (contact: string) => { const c = clone(ctx); c.result.leads = [{ ...q, contact }]; return statuses(contactNotRecruitingInbox, c)['lead:Querix'] }
+  for (const bad of ['careers@querix.example', 'jobs@querix.example', 'Talent.Acquisition@querix.example', 'hr@querix.example', 'recruiting@querix.example', 'apply@querix.example', 'join-us@querix.example',
+    'careers+toronto@querix.example', 'jobs+sales@querix.example', 'Careers+Sales.Team@querix.example', 'talent.acquisition+emea@querix.example'])
+    assert.equal(at(bad), 'fail', bad)
+  for (const ok of ['hello@querix.example', 'sales@querix.example', 'jane.doe@querix.example', 'jobsworth@querix.example', 'hrishi@querix.example', 'hrishi+jobs@querix.example', 'sales+careers@querix.example'])
+    assert.equal(at(ok), 'pass', ok)
+  assert.equal(at('+44 20 7946 0000'), undefined)
 })
