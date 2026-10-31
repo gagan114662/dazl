@@ -190,8 +190,10 @@ punctuation the verifier normalises away.
 - free-text identifiers the patterns do not know (street addresses, account numbers, handles other than LinkedIn) are kept.
 
 Credentials (`[secret]`, never a hash) are found by **field name** at any nesting (token, secret, key, password, passcode,
-otp, cookie, session, authorization, signature, ...: strings under such a key always go; numbers go too unless the name is a
-token/key count or limit such as `max_tokens`, `token_count`, `tokens: 5`), by **family** (provider and GitHub/GitLab/npm
+otp, cookie, session, authorization, signature, ...: the WHOLE value under such a key goes, whatever its type - a string, a
+number, an object or array, a byte buffer - including lifetime or count children inside it (`session.created`,
+`auth.time` go with their parent: fail closed); only a token/key count or limit name such as `max_tokens`, `token_count`,
+`tokens: 5` keeps its numbers), by **family** (provider and GitHub/GitLab/npm
 keys, Slack, AWS, Google, JWTs, Bearer/Basic values, PEM blocks, cookie header lines, the password of a URL's
 `scheme://user:password@` userinfo), and as **assignments in text** (`name: value`, `name=value`, `name => value`,
 `"name": "value"`, JSON-escaped `\"name\": \"value\"`, HTML `name=.../value=...` attribute pairs, percent-encoded
