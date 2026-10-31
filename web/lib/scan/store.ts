@@ -151,7 +151,7 @@ function addColumns(db: Database.Database): void {
   // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
   // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
   add('leads', 'event_date_proof', "TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured'))")
-  add('leads', 'event_date_proof_reason', 'TEXT CHECK (event_date_proof_reason IS NULL OR length(event_date_proof_reason) <= 200)')
+  add('leads', 'event_date_proof_note', 'TEXT CHECK (event_date_proof_note IS NULL OR length(event_date_proof_note) <= 200)')
   widenWhyCap(db)
   backfillKindTags(db)
 }

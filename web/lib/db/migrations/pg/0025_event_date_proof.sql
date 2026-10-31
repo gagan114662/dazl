@@ -3,4 +3,4 @@
 -- this posting URL (a hiring posting day only, never funding or a general company event). NULL: unproven - consumers
 -- fail closed. No backfill: rows written before this column stay unproven.
 ALTER TABLE leads ADD COLUMN event_date_proof TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured'));
-ALTER TABLE leads ADD COLUMN event_date_proof_reason TEXT CHECK (event_date_proof_reason IS NULL OR length(event_date_proof_reason) <= 200);
+ALTER TABLE leads ADD COLUMN event_date_proof_note TEXT CHECK (event_date_proof_note IS NULL OR length(event_date_proof_note) <= 200);
