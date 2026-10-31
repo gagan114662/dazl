@@ -29,7 +29,9 @@ export function trialCopy(t: TrialBlock): TrialCopy {
     case 'attempts_cap':
       return { state: 'exhausted', text: `You have used all ${t.cap} free trial scan attempts (failed attempts count too).`, next: KEEP }
     case 'account_total_cap':
-      return { state: 'exhausted', text: `Your free trial's allowance is used up. ${usedText}`, next: KEEP }
+      // The money ceiling, not the attempt count: website reads on the trial (#409) draw on the same allowance, so this
+      // can be reached with scan attempts left. The attempt count is stated as it is, never as "used up".
+      return { state: 'exhausted', text: `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${usedText}`, next: KEEP }
     case 'ip_throttle':
       return { state: 'throttled', text: `Too many free trial scans from your network today. Try again tomorrow. ${usedText}`, next: NOW }
     case 'global_daily_cap':

@@ -8,7 +8,8 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { handedKeys, next } from './icp-from-site-stub.ts'
+import { calls, handedKeys, next } from './icp-from-site-stub.ts'
+import { GET as usageGet } from '../../app/api/usage/route.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 import { admitTrialScan } from '../../lib/billing/trial-budget.ts'
@@ -157,4 +158,54 @@ test('#444 R3-4: not_configured, account_cap, account_total_cap, global_daily_ca
     assert.deepEqual(await call(), { status, body: { error } }, error)
   }
   console.log('SITE_READ_ROUTE_REASONS ok')
+})
+
+// Adversarial probe on d6c89bf2 (R2, adopted) and its finding about the fetch: a keyless founder in an ineligible
+// workspace had the page fetched before the principal refused. Now the principal is read before any fetch; and after one
+// read that was refused before any call, GET /api/usage still shows the trial funded with 3 scans; after a read whose
+// call failed, it shows the money ceiling honestly (account_total_cap with 3 attempts left), never "scans used".
+test('#444 probe R2 + pre-fetch principal: no read is attempted for an ineligible workspace; usage after a released read is unchanged, after a failed call it names the money ceiling', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
+  const db = sqliteDb(raw)
+  const mk = async (n: number, email: string, personal = true) => {
+    const id = uid(n)
+    await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])
+    await db.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [`sub-${id}`, id])
+    if (personal) await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [id, id])
+    return id
+  }
+  const post = async () => {
+    const req = new NextRequest('http://localhost/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `198.51.100.${ip++}` }, body: JSON.stringify({ url: 'https://acme.example' }) })
+    const r = await POST(req)
+    return { status: r.status, body: await r.json() as { error?: string; trial?: string } }
+  }
+  const usage = async () => {
+    const r = await usageGet(new NextRequest('http://localhost/api/usage', { headers: { host: 'localhost', 'x-forwarded-for': '198.51.100.250' } }))
+    return ((await r.json()) as { trial: { funded: boolean; remaining: number; cap: number; blocked: string | null } }).trial
+  }
+  // 1. Ineligible workspaces: refused before the read module is even entered (no fetch), with the reason.
+  const F = await mk(61, 'f61@gmail.com'), M = await mk(62, 'm62@gmail.com'), NOROW = await mk(63, 'norow63@gmail.com', false)
+  const before = calls.n
+  setUser({ id: F, actorId: M, role: 'operator', business_name: 'b', email: 'm62@gmail.com' })
+  assert.deepEqual(await post(), { status: 400, body: { error: 'no_api_key', trial: 'workspace_not_eligible' } }, 'member acting')
+  setUser({ id: NOROW, business_name: 'b', email: 'norow63@gmail.com' })
+  assert.deepEqual(await post(), { status: 400, body: { error: 'no_api_key', trial: 'workspace_not_eligible' } }, 'no personal row')
+  assert.equal(calls.n, before, 'the read (and its fetch) never ran for an ineligible workspace')
+  // 2. The founder, allowance $0.34: one $0.30 scan fits; a scan and a $0.05 read do not.
+  const saved = process.env.DAZL_TRIAL_ACCOUNT_TOTAL_USD
+  process.env.DAZL_TRIAL_ACCOUNT_TOTAL_USD = '0.34'
+  try {
+    setUser({ id: F, business_name: 'b', email: 'f61@gmail.com' })
+    assert.deepEqual(await usage(), { funded: true, remaining: 3, cap: 3, blocked: null })
+    // a read the guard refused before any call: released, nothing changes
+    assert.deepEqual(await post(), { status: 502, body: { error: 'trial_read_failed' } })
+    assert.deepEqual(await usage(), { funded: true, remaining: 3, cap: 3, blocked: null }, 'a read refused before any call leaves the trial as it was')
+    assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [F]))!.n), 0)
+    // a read whose call failed: its $0.05 stays on the account, so the money ceiling blocks a scan, and the counter says
+    // so honestly: 3 attempts left, blocked by the allowance (lib/trial-copy.ts names the reads).
+    next.outcome = 'call_failed'
+    assert.deepEqual(await post(), { status: 502, body: { error: 'trial_read_failed' } })
+    assert.deepEqual(await usage(), { funded: false, remaining: 3, cap: 3, blocked: 'account_total_cap' })
+  } finally { if (saved === undefined) delete process.env.DAZL_TRIAL_ACCOUNT_TOTAL_USD; else process.env.DAZL_TRIAL_ACCOUNT_TOTAL_USD = saved }
+  console.log('SITE_READ_ROUTE_PROBE ok')
 })

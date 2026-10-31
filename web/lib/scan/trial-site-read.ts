@@ -37,10 +37,12 @@ export type SiteReadRefusal = TrialDeny | TrialRefusal | 'site_reads_used' | 'si
 // release: no call was made at all (the read's own guard refused first): the reservation and the account's read go back.
 export type SiteReadAdmission = { ok: true; key: OperatorKey; settle: (spentUsd: number | null) => Promise<void>; release: () => Promise<void> } | { ok: false; reason: SiteReadRefusal }
 
+// A plain positive decimal integer only ('1e1', '0x5', '5.0' are off: an operator ceiling is never guessed at).
 export function trialSiteReadsPerDay(env: Record<string, string | undefined> = process.env): number | null {
-  const v = env.DAZL_TRIAL_SITE_READS_PER_DAY?.trim()
-  const n = v ? Number(v) : NaN
-  return Number.isInteger(n) && n > 0 ? n : null
+  const v = env.DAZL_TRIAL_SITE_READS_PER_DAY?.trim() ?? ''
+  if (!/^\d{1,9}$/.test(v)) return null
+  const n = Number(v)
+  return n > 0 ? n : null
 }
 
 export interface SiteReadDeps { env?: Record<string, string | undefined>; limit?: (key: string, max: number, windowMs: number) => Promise<Limit>; refund?: (key: string) => Promise<boolean> }

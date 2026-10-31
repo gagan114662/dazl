@@ -240,6 +240,13 @@ test('#444 R1-1: a CJK page at the character cap reads on the trial under the pe
   assert.deepEqual([calls.n, seen.keys.length, released.n], [1, 1, 0], 'admitted once, one call on the trial key, nothing released')
   assert.ok(promptBytes > TRIAL_SITE_READ_TEXT_BYTES && promptBytes < TRIAL_SITE_READ_TEXT_BYTES + 1700, `page text capped in bytes: prompt ${promptBytes} bytes`)
   assert.ok(callCostUsd('claude-sonnet-4-5', promptBytes, 700) <= TRIAL_SITE_READ_MAX_USD, 'the largest trial prompt fits the ceiling at the listed price')
+  // Probe A2 as written (Japanese homepage with a title and meta description): read in one call, settled.
+  const JA = '私たちは営業チーム向けのCRMクリーンアップツールを販売しています。中堅のB2Bソフトウェア企業の営業オペレーション担当者が主なお客様です。'
+  const ja = (async () => htmlResponse(`<html><head><title>アクメ株式会社</title><meta name="description" content="営業チーム向けCRMツール"></head><body>${JA.repeat(80)}</body></html>`)) as unknown as typeof fetch
+  const a2 = { calls: { n: 0 }, settled: [] as (number | null)[], released: { n: 0 } }
+  const outJa = await icpFromWebsite(empty, 'A', 'https://acme.example.jp', { master, lookup: pubLookup, fetchImpl: ja, providers: { anthropic: trialProvider(seen) }, trial: admitted(a2.calls, a2.settled, a2.released) })
+  assert.ok('icp' in outJa && outJa.funded === 'trial', JSON.stringify(outJa))
+  assert.deepEqual([a2.calls.n, a2.settled, a2.released.n], [1, [null], 0], 'one admission, settled (complete() reports no usage), nothing released')
   // trimToBytes never splits a multi-byte character and leaves one-byte text alone.
   assert.equal(trimToBytes('我们为销售', 7), '我们')
   assert.equal(trimToBytes('abc', 9000), 'abc')
