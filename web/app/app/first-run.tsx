@@ -10,6 +10,7 @@ import { Avatar, Pill, Stepper } from './ui/bits'
 import BrainGraph from './onboarding/brain-graph'
 import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
+import { siteKeyReason } from '@/lib/scan/site-read-copy'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import { calendarDay } from '@/lib/day'
@@ -32,9 +33,11 @@ const SITE_ERR: Record<string, string> = {
   invalid: 'That address is not a public website.', not_public: 'That address is not a public website.',
   js_only: 'We could not read enough text from that page (it may need JavaScript). Try your about page, or fill in the profile yourself.',
   not_html: 'We could not read enough text from that page. Try your about page, or fill in the profile yourself.',
+  trial_read_failed: "dazl's free trial could not read your site just now. Try again, or describe your business yourself.",
   blocked: 'That site did not let us read it. Fill in the profile yourself instead.', timeout: 'That site took too long to answer. Try again, or fill in the profile yourself.',
 }
 
+// What the key form says when the free trial could not read the site: the real reason, never a free-start promise.
 // First run on Home: website -> editable "what you sell and who buys it" -> one sentence (3 suggested plays) -> Run.
 // Shown to a new account (no business details, no searches); after that Home shows the journey (the children).
 export default function FirstRun({ children }: { children: React.ReactNode }) {
@@ -60,6 +63,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
+  // Why the free trial could not read the site (lib/scan/trial-site-read.ts), shown with the key form and the manual path.
+  const [siteTrial, setSiteTrial] = useState<string | null>(null)
+  // A failure on the trial's side (trial_read_failed): the manual path is offered right there too (#409, #444 review).
+  const [siteManual, setSiteManual] = useState(false)
   // The brain: facts from the website read, revealed one by one while it builds.
   const [facts, setFacts] = useState<BrainFact[]>([])
   const [shown, setShown] = useState(0)
@@ -127,7 +134,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // Website only: dazl reads it, shows each inferred fact landing on the brain, saves the profile it inferred (the user
   // can edit it any time; nothing is asked up front) and opens the ready screen.
   async function readSite(e?: React.FormEvent) {
-    e?.preventDefault(); setError('')
+    e?.preventDefault(); setError(''); setSiteManual(false)
     const url = normalizeWebsite(website)
     if (!url) return setError('Enter your website, like acme.com.')
     setBusy(true); setFacts([]); setShown(0); setStep('building')
@@ -136,7 +143,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const j = await r.json().catch(() => ({}))
       if (!r.ok) {
         setStep('site')
-        if (j.error === 'no_api_key') { setNeedKey(true); return }
+        if (j.error === 'no_api_key') { setNeedKey(true); setSiteTrial(typeof j.trial === 'string' ? j.trial : null); return }
+        if (j.error === 'trial_read_failed') setSiteManual(true)
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
       if (j.sells) setSells(String(j.sells))
@@ -241,7 +249,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-[var(--ink)]">What&apos;s your website?</h1>
               <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first leads.</p>
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
-              {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); void loadUsage().then(() => readSite()) }} /></div>}
+              {siteManual && !needKey && <button type="button" className="btn-ghost btn-sm mt-3" data-testid="site-manual" onClick={() => { setError(''); setSiteManual(false); setStep('brain') }}>Describe your business yourself instead</button>}
+              {needKey && !hasKey && <div className="mt-5 text-left card p-4" data-testid="site-key">
+                <KeyInline reason={siteKeyReason(siteTrial)} onSaved={() => { setNeedKey(false); void loadUsage().then(() => readSite()) }} />
+                {/* The key-free way on: the profile by hand, then the first search (it runs on the trial when that is open). */}
+                <button type="button" className="btn-ghost btn-sm mt-3" data-testid="site-manual" onClick={() => { setError(''); setNeedKey(false); setStep('brain') }}>Describe your business yourself instead</button>
+              </div>}
               <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
                 <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} autoFocus />
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>

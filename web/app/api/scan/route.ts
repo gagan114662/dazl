@@ -16,7 +16,7 @@ import { getAuthDb, sellerProfile } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { connectorStatus } from '@/lib/connectors/store'
 import { estimateForBody } from '@/lib/scan/estimate-request'
-import { admitTrialScan, linkTrialReservation, releaseTrialReservation } from '@/lib/billing/trial-budget'
+import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
 import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
@@ -77,11 +77,14 @@ export async function POST(req: NextRequest) {
   // Keyless accounts fall back to the shared trial key: 3 scans per account, throttled per IP
   // per day. With no trial configured, queuing a keyless job would hang forever and burn a scan.
   let funded: 'user' | 'trial' = 'user'
+  let principal: { id: string; email: string } | null = null
   const ip = clientIp(req)
   if (!hasKey(db, user.tenantId)) {
     // The free trial belongs to the account that founded this workspace (its Google sign-in and email are what the
-    // trial's abuse limits check), so only that account, acting in its own workspace, can draw on it.
-    if (user.actorId !== user.tenantId) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
+    // trial's abuse limits check), so only that account, acting in its own workspace, can draw on it. Its identity is
+    // read on the server (lib/billing/trial-budget.ts trialPrincipal), never taken from the session.
+    principal = await trialPrincipal(await getDb(), user)
+    if (!principal) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
     const t = trialStatus(db, user.tenantId, ip)
     if (!t.funded) {
       if (t.reason === 'account_cap' || t.reason === 'ip_throttle') {
@@ -118,7 +121,7 @@ export async function POST(req: NextRequest) {
   let reservation: string | null = null
   let job_id: string | null = null
   if (funded === 'trial') {
-    const a = await admitTrialScan(await getDb(), { id: user.tenantId, email: user.email })
+    const a = principal ? await admitTrialScan(await getDb(), principal) : { ok: false as const, reason: 'not_configured' as const }
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
     reservation = a.reservation
   }

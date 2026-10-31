@@ -724,7 +724,7 @@ CREATE TABLE trial_reservations (
       created_at  BIGINT NOT NULL,
       settled_at  BIGINT,
       settled_attempt BIGINT
-    );
+    , kind TEXT NOT NULL DEFAULT 'scan' CHECK (kind IN ('scan', 'site_read')), spent_usd DOUBLE PRECISION CHECK (spent_usd IS NULL OR spent_usd >= 0));
 
 CREATE TABLE trial_scans (
       tenant_id TEXT NOT NULL,

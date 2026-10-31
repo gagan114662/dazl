@@ -6,9 +6,11 @@
 // per-process shadow. Protection is never removed or reset.
 import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
+import { captureError } from './ops/errors.ts'
 
 // unavailable: refused only because the shared store could not answer (the caller may say so instead of "too many")
-export interface Limit { ok: boolean; retryAfterS: number; unavailable?: true }
+// resetAt: the end of the window (ms) this call was counted in; a refund names it so it never lands in a later window.
+export interface Limit { ok: boolean; retryAfterS: number; unavailable?: true; resetAt?: number }
 
 // What a key's kind does while the shared store cannot answer. Every rateLimit call site's kind is listed here
 // (test/rate-limit-degraded.test.ts checks); a kind that is not listed fails closed.
@@ -31,7 +33,7 @@ export const DEGRADED: Record<string, Degraded> = {
   'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'play-research': 'closed', 'find-contact': 'closed',
   'settings:enrichment': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
-  checkout: 'closed', llmkey: 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
+  checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   // low risk: the app's own data, or must keep working
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'domain-review': 'local',
   'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local',
@@ -65,7 +67,7 @@ function bucket(key: string, now: number) {
   return b && b.resetAt > now ? b : undefined
 }
 const decide = (count: number, resetAt: number, limit: number, now: number): Limit =>
-  count <= limit ? { ok: true, retryAfterS: 0 } : { ok: false, retryAfterS: Math.ceil((resetAt - now) / 1000) }
+  count <= limit ? { ok: true, retryAfterS: 0, resetAt } : { ok: false, retryAfterS: Math.ceil((resetAt - now) / 1000), resetAt }
 
 export async function rateLimit(key: string, limit: number, windowMs: number, d?: Db, now = Date.now()): Promise<Limit> {
   const k = key.slice(0, 300)
@@ -102,7 +104,24 @@ export async function rateLimit(key: string, limit: number, windowMs: number, d?
   if (!b) { b = { seen: 0, offline: 0, resetAt: sharedReset }; local.set(k, b) }
   b.resetAt = Math.max(b.resetAt, sharedReset)
   b.seen = Math.max(b.seen, shared)
-  return decide(shared + b.offline, b.resetAt, limit, now)
+  // resetAt names the STORE's window (the row a refund would move), not the shadow's, which may be older and longer.
+  return { ...decide(shared + b.offline, b.resetAt, limit, now), resetAt: sharedReset }
+}
+
+// Gives one counted call of a key back: an admission that took its slot and then did nothing with it (lib/scan/
+// trial-site-read.ts: a read refused by its own spend guard before any call). Best effort, and never below zero, into a
+// closed window, or into a window other than the one the slot was counted in (resetAt, from the Limit the count
+// returned: a window that rolled meanwhile keeps its fresh count). If the store cannot answer the slot stays spent (an
+// allowance is never handed back on a guess) and the failure is recorded. The per-process shadow is left alone: it only
+// ever over-counts.
+export async function refundRateLimit(key: string, d?: Db, now = Date.now(), resetAt?: number): Promise<boolean> {
+  try {
+    const db = d ?? await getDb()
+    const r = resetAt === undefined
+      ? await db.run('UPDATE rate_limits SET count = count - 1 WHERE key = ? AND count > 0 AND reset_at > ?', [key.slice(0, 300), now])
+      : await db.run('UPDATE rate_limits SET count = count - 1 WHERE key = ? AND count > 0 AND reset_at > ? AND reset_at = ?', [key.slice(0, 300), now, resetAt])
+    return r.changes > 0
+  } catch (e) { captureError(e, { source: 'process', where: `rate-limit:refund:${key.split(':')[0]}` }); return false } // the slot stays spent; recorded
 }
 
 export function clientIp(req: Request): string {
