@@ -55,6 +55,14 @@ test('failed identity/date/contact/claim checks and excluded recipients hold the
   assert.ok(preflight(input({ samples: [sample(1), sample(2), sample(3, { to: 'CEO@partner.test' })] })).failures.includes('sample_excluded'))
 })
 
+test('a policy whose JSON would not fit the store is refused by name, never a CHECK violation at accept (#405 council R2-2)', () => {
+  const domains = Array.from({ length: 400 }, (_, i) => `excluded-customer-${i}.example.test`)
+  const big = policy({ exclusions: { domains, emails: [] } })
+  assert.ok(JSON.stringify(big).length > 8000)
+  assert.deepEqual(policyProblems(big), ['policy_too_large'])
+  assert.deepEqual(policyProblems(policy({ exclusions: { domains: domains.slice(0, 100), emails: [] } })), [])
+})
+
 test('every stop must be enforced; a missing one holds the launch', () => {
   for (const k of ['reply', 'optOut', 'bounce', 'uncertainPause', 'domainCap'] as const) {
     const stops = { ...input().stopsEnforced, [k]: false }

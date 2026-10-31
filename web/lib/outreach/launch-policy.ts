@@ -30,7 +30,8 @@ export interface LaunchPolicy {
 
 export type PolicyProblem =
   | 'version_not_current' | 'sender_missing' | 'audience_empty' | 'daily_cap_invalid' | 'spend_cap_invalid'
-  | 'bounce_stop_invalid' | 'test_inbox_not_owned' | 'benchmark_not_https'
+  | 'bounce_stop_invalid' | 'test_inbox_not_owned' | 'benchmark_not_https' | 'policy_too_large'
+export const MAX_POLICY_JSON = 8000     // the store's CHECK on the policy column; refused by name before any write
 
 const EMAIL = /^[^\s@]+@([^\s@]+\.[^\s@]+)$/
 const domainOf = (email: string) => EMAIL.exec(email.trim().toLowerCase())?.[1] ?? null
@@ -51,6 +52,7 @@ export function policyProblems(p: LaunchPolicy): PolicyProblem[] {
   const inbox = p.testInbox.trim().toLowerCase()
   if (!senderDomain || inbox !== p.sender.trim().toLowerCase()) out.push('test_inbox_not_owned')
   if (p.claims.benchmarkUrls.some(u => !/^https:\/\/\S+$/.test(u))) out.push('benchmark_not_https')
+  if (JSON.stringify(p).length > MAX_POLICY_JSON) out.push('policy_too_large')
   return out
 }
 
@@ -122,7 +124,7 @@ export function migrateLaunchPolicy(db: Database.Database): void {
     tenant_id TEXT PRIMARY KEY,
     acceptance_id TEXT NOT NULL CHECK (length(acceptance_id) = 16),
     version TEXT NOT NULL CHECK (length(version) <= 20),
-    policy TEXT NOT NULL CHECK (length(policy) <= 8000),
+    policy TEXT NOT NULL CHECK (length(policy) <= 8000), -- MAX_POLICY_JSON
     accepted_at INTEGER NOT NULL,
     launched_at INTEGER,
     preflight TEXT CHECK (preflight IS NULL OR length(preflight) <= 4000)
