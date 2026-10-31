@@ -7,7 +7,11 @@
 //     listing or read fails), holds no copy manifest, the newest copy is older than --offhost-max-age-s, or the newest
 //     manifest's ciphertext is absent, has other bytes than declared, or does not hash to its declared sha256: a
 //     manifest alone is not a recoverable backup. With OFFHOST_REQUIRED=1, no destination configured is a problem;
-//   - --drill-report (the newest recovery-drill.mts --report): missing, not ok, or older than --drill-max-age-s.
+//   - the drill report: --drill-report FILE, else DRILL_REPORT from the environment, else <BACKUP_DIR>/drill-report.json
+//     (an empty value is an unexpanded variable: the default, as with --max-age-s). That default is the file every
+//     run-backup.sh run writes with restore-drill --report (pass or fail), so the shipped producer and this monitor
+//     cannot drift; a manual recovery-drill.mts --report to the same path also feeds it. Missing, not ok, or older
+//     than --drill-max-age-s is a problem. The report is written via a .partial rename, so there is no read window.
 // Alerts go to OPS_ALERT_WEBHOOK_URL (https only; e.g. a Slack incoming webhook) or, for tests, BACKUP_ALERT_CMD (run
 // with the JSON as its one argument). The same set of problems (sorted, so discovery order does not matter) alerts at
 // most once per BACKUP_ALERT_EVERY_S (a decimal integer, default 3600; 0 = no throttle; anything else falls back to
@@ -203,8 +207,9 @@ if (!offSpec) {
   } catch (e) { problems.push(`off-host destination ${dest.label} unreadable: ${reason(e)}`) }
 }
 
-const drill = arg('--drill-report')
-if (drill) {
+const drillFlag = arg('--drill-report')
+const drill = (drillFlag && drillFlag.trim() ? drillFlag : undefined) ?? (process.env.DRILL_REPORT?.trim() || undefined) ?? path.join(dir, 'drill-report.json')
+{
   const max = num('--drill-max-age-s', 8 * 86_400)
   const r = readJson(drill)
   if (!r) problems.push('no readable recovery drill report')

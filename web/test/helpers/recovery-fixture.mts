@@ -23,6 +23,9 @@ export async function fixtureBackup(dir: string, mutate?: (raw: Database.Databas
       mutate?.(raw, tenant)
     } finally { raw.close() }
     const b = await createBackup({ source, destDir: path.join(dir, 'backups') })
+    // backup-check's drill leg reads <backup dir>/drill-report.json by default: a healthy fixture carries the fresh
+    // passing report a run-backup.sh run would have written (tests of the drill leg itself pass --drill-report)
+    writeFileSync(path.join(dir, 'backups', 'drill-report.json'), JSON.stringify({ tool: 'dazl-restore-drill', ok: true, started_at: new Date().toISOString(), steps: [{ step: 'restore drill', ok: true }] }) + '\n')
     const keyFile = path.join(dir, 'master.key')
     writeFileSync(keyFile, key + '\n', { mode: 0o600 })
     return { backup: b.backupPath, keyFile, key, source }

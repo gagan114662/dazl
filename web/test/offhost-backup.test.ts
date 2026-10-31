@@ -159,16 +159,18 @@ test('the shipped dazl-backup-check.service, run as systemd would (its ExecStart
   const unit = readFileSync(path.join(ops, 'dazl-backup-check.service'), 'utf8')
   const exec = /^ExecStart=(.*)$/m.exec(unit)![1]
   assert.ok(!/--offhost/.test(exec), 'the destination comes from the env file, not a second setting')
-  // the env file: env.example's keys with this test's values (systemd EnvironmentFile), the drill report fresh and ok
-  const drill = path.join(T, 'svc-drill.json'); writeFileSync(drill, JSON.stringify({ ok: true, started_at: new Date().toISOString(), steps: [] }))
+  assert.ok(!/--drill-report/.test(exec) && !/var\/lib\/dazl-drill/.test(unit), 'the drill report path is the shared default, not a hardcoded one nothing writes')
+  // the env file: env.example's keys with this test's values (systemd EnvironmentFile); the fixture's own fresh
+  // drill-report.json sits at the default <BACKUP_DIR>/drill-report.json the unit derives, exactly as shipped
   const keysIn = [...readFileSync(path.join(ops, 'env.example'), 'utf8').matchAll(/^([A-Z_]+)=/gm)].map(m => m[1])
-  for (const k of ['BACKUP_DIR', 'OFFHOST_DEST', 'OFFHOST_REQUIRED']) assert.ok(keysIn.includes(k), `env.example has ${k}`)
+  for (const k of ['BACKUP_DIR', 'OFFHOST_DEST', 'OFFHOST_REQUIRED', 'DRILL_REPORT']) assert.ok(keysIn.includes(k), `env.example has ${k}`)
   const env: Record<string, string> = { BACKUP_DIR: local, OFFHOST_DEST: dest, OFFHOST_REQUIRED: '1' }
-  // systemd expands ${VAR} in ExecStart from the environment; the unit's fixed drill path is pointed at the test's
-  const argv = exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? '').replace('/var/lib/dazl-drill/latest.json', drill).split(/\s+/)
+  // systemd expands ${VAR} in ExecStart from the environment; the unit runs with no test-side path substitution
+  const argv = exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? '').split(/\s+/)
   assert.equal(argv[0], '/usr/bin/env')
   const run = (e: Record<string, string>) => spawnSync(argv[1], [...argv.slice(2), '--state-dir', path.join(T, `svc-st-${Math.random()}`)], { cwd: web, encoding: 'utf8', env: { PATH: process.env.PATH!, HOME: process.env.HOME!, BACKUP_ALERT_CMD: 'true', ...e } as unknown as NodeJS.ProcessEnv })
   let r = run(env)
   assert.equal(r.status, 1, r.stdout + r.stderr); assert.match(r.stdout, /x\.db\.age is missing/)
+  assert.match(r.stdout, /"drill_ok":true/, 'the drill leg read the report at the shared default path, as shipped')
   r = run({ ...env, OFFHOST_DEST: '' }); assert.equal(r.status, 1); assert.match(r.stdout, /required .* no destination is configured/)
 })

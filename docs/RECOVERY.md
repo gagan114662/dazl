@@ -44,7 +44,7 @@ It never opens the database, a backup, an env file or a secret. Attach its outpu
 | RTO, host lost | **4 hours** | provision a replacement host, install the release, fetch and decrypt the off-host copy, restore secrets and config, start, check, switch DNS or Caddy. Dominated by provisioning. |
 | Retention, local | 48 hourly | at least two days of fine-grained points on the box |
 | Retention, off-host | 14 daily plus 8 weekly | about two months of history. Deletion is policy; #359 ties backup expiry to tenant deletion. |
-| Backup alert | newest good backup older than 2 hours, newest off-host copy older than 2 hours, or the last drill failed or is more than 8 days old | `backup-check.mts`, every 15 minutes |
+| Backup alert | newest good backup older than 2 hours, newest off-host copy older than 2 hours, or the last drill failed, was never reported, or is more than 2 hours old (the drill runs on every backup) | `backup-check.mts`, every 15 minutes |
 | Drill cadence | the content and key drill on every backup; the full app drill weekly and after every release | content and key checks take milliseconds |
 
 ## Key recovery (separate from the backups)
@@ -98,7 +98,7 @@ It contains no tenant data, keys or plaintext. The restored copy is deleted afte
 
 **Scheduled backup.** `ops/backup/run-backup.sh` runs hourly from `dazl-backup.timer`, as the app's user. Each run:
 1. takes an online snapshot with `create-backup.ts`;
-2. checks it restores faithfully with `restore-drill.ts`, and fails the run otherwise;
+2. checks it restores faithfully with `restore-drill.ts`, and fails the run otherwise. The drill writes its report - pass **or fail** - to `$BACKUP_DIR/drill-report.json` (the `DRILL_REPORT` setting overrides it; `backup-check.mts` reads the same setting, so the producer and the monitor cannot drift). The report is written mode 600 via a `.partial` rename, so the monitor never reads a half-written one;
 3. when `OFFHOST_DEST` is set, runs `offhost-copy.sh`.
 
 The settings live in `/etc/dazl-backup/env` (`ops/backup/env.example`). They hold no secrets: the database is only read, and the off-host recipients are public keys.
@@ -128,7 +128,7 @@ The `.db.json` sidecar travels inside the manifest's `source_sha256`. Recreate i
   - the newest copy is too old;
   - the newest manifest's **ciphertext is absent, has other bytes than declared, or does not hash to its declared sha256**. A manifest alone is not a backup.
 - `OFFHOST_REQUIRED=1` is set (once the owner has chosen a destination) and no destination is configured;
-- the last recovery drill report failed or is too old.
+- the drill report is missing, failing (the alert names the failed step), or older than 2 hours. The report exists because every `dazl-backup.service` run writes it; a manual `recovery-drill.mts --report` to the same path also counts. `backup-check.mts` resolves it as: `--drill-report` flag, else `DRILL_REPORT` from the environment, else `$BACKUP_DIR/drill-report.json`.
 
 Alerts go to `OPS_ALERT_WEBHOOK_URL` (https only; redirects are not followed, so a hook that redirects to plain http fails rather than leaking the alert). The same problems alert at most once per `BACKUP_ALERT_EVERY_S` (default 3600; `0` means every run; an invalid value falls back to 3600 with a log line), counted from a delivered alert: a failed delivery (webhook error or non-2xx, no destination) is retried on the next run, and the problem stays in the journal either way. There is deliberately no recovery notice: when the problem clears, the next alert is simply not sent. Every rclone call the monitor makes is bounded by `RCLONE_TIMEOUT_S` (a positive integer, default 120; `0`, negative or non-numeric values fall back to 120 with a log line, because `0` would mean no bound): a hung remote is reported as a problem, never a hung check. Only the newest few manifests are read each run (`dazl-backup-*` names by their embedded timestamp first, other names after), so the check stays fast as copies accrue; older copies are counted, not judged. Keep only `dazl-backup-*` names at the destination: a manual copy under another name is judged only when fewer than five dazl copies exist. A hung rclone helper that starts its own session escapes the monitor's process-group kill; only the unit's `TimeoutStartSec` ends that run, and it sends no alert. A few slow calls can still add up past the unit's 5-minute `TimeoutStartSec`; a run killed there has sent no alert and shows as a failed unit in the journal. Alerts carry problems, ages and file names, never data or paths.
 Known transient: `create-backup` writes its `.db.json` sidecar in place, so a check that reads it at that instant can raise one "unreadable sidecar" alert (throttled for an hour); the next run clears it. The off-host manifest is written with a rename, so it has no such window.
@@ -140,7 +140,8 @@ Known transient: `create-backup` writes its `.db.json` sidecar in place, so a ch
 2. Create `/etc/dazl-backup/env` and `recipients.txt` (public key).
 3. Run `rclone config` as the app user if using rclone.
 4. Run `systemctl daemon-reload && systemctl enable --now dazl-backup.timer dazl-backup-check.timer`.
-5. Check with `systemctl start dazl-backup.service && journalctl -u dazl-backup -n 20`.
+5. Check with `systemctl start dazl-backup.service && journalctl -u dazl-backup -n 20`. This first run also writes the first drill report, so the monitor's drill leg starts green; until a first run completes, "no readable recovery drill report" is the honest state, not a fault.
+6. Check the monitor: `systemctl start dazl-backup-check.service && journalctl -u dazl-backup-check -n 20` - one JSON line, `"ok":true` once a first backup and its drill report exist.
 
 ## Full-service recovery plan (host lost)
 

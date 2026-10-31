@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # One scheduled backup (issue #360; docs/RECOVERY.md). Run hourly by dazl-backup.timer, as the app's user.
 #   1. create-backup.ts: an online, consistent snapshot of DB_PATH into BACKUP_DIR with its sidecar
-#   2. restore-drill.ts on that file: it must restore faithfully (content), or the run fails
+#   2. restore-drill.ts on that file: it must restore faithfully (content), or the run fails. Its report goes to
+#      DRILL_REPORT (default $BACKUP_DIR/drill-report.json), on failure too: backup-check.mts's drill leg reads that
+#      same path, so a failing drill is named in the alert, not just a non-zero unit in the journal
 #   3. offhost-copy.sh, when OFFHOST_DEST is set: the encrypted copy, read back and hash-checked
 # Settings come from the environment (dazl-backup.service EnvironmentFile; no secrets needed: the off-host recipients
 # are PUBLIC keys and the database is read, never written). Retention is NOT done here: deleting backups is a policy
@@ -13,6 +15,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 cd "$WEB_DIR"
 out=$(node --experimental-strip-types --no-warnings scripts/backup/create-backup.ts --source "$DB_PATH" --dest-dir "$BACKUP_DIR" --json)
 b=$(printf '%s' "$out" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).backupPath)')
-node --experimental-strip-types --no-warnings scripts/backup/restore-drill.ts --backup "$b" >/dev/null || { echo "run-backup: restore drill FAILED for $(basename "$b")" >&2; exit 1; }
+DRILL_REPORT="${DRILL_REPORT:-$BACKUP_DIR/drill-report.json}"
+mkdir -p "$(dirname "$DRILL_REPORT")"
+node --experimental-strip-types --no-warnings scripts/backup/restore-drill.ts --backup "$b" --report "$DRILL_REPORT" >/dev/null || { echo "run-backup: restore drill FAILED for $(basename "$b") (report $DRILL_REPORT)" >&2; exit 1; }
 if [ -n "${OFFHOST_DEST:-}" ]; then bash "$here/offhost-copy.sh" "$b"; else echo "run-backup: OFFHOST_DEST not set: local backup only (not off-host)" >&2; fi
 printf '{"level":"info","type":"backup","ok":true,"backup":"%s","offhost":%s}\n' "$(basename "$b")" "$([ -n "${OFFHOST_DEST:-}" ] && echo true || echo false)"

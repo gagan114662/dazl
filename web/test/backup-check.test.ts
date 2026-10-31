@@ -136,7 +136,9 @@ test('BACKUP_DIR gone under a read-only parent, no --state-dir: the alert is sti
   try {
     let r = await run(['--dir', gone], { BACKUP_ALERT_CMD: cmd })
     assert.equal(r.code, 1, r.out); assert.doesNotMatch(r.out, /EACCES: permission denied, mkdir|at .*backup-check\.mts/, 'no uncaught error')
-    assert.equal(delivered().length, 1, 'exactly one delivered alert'); assert.match(delivered()[0].problems.join(), /^no backup with a sidecar in backups$/)
+    assert.equal(delivered().length, 1, 'exactly one delivered alert')
+    assert.match(delivered()[0].problems[0], /^no backup with a sidecar in backups$/)
+    assert.match(delivered()[0].problems[1], /^no readable recovery drill report$/, 'the drill report is gone with the same directory: named, not skipped')
     assert.match(r.out, /state dir .* unusable \(EACCES\); alerting without throttle/)
     r = await run(['--dir', gone], { BACKUP_ALERT_CMD: cmd })
     assert.equal(r.code, 1); assert.equal(delivered().length, 2, 'with no usable state dir every run alerts: better than silence')
@@ -295,7 +297,10 @@ test('alert body carries file names and error codes only: no directory path, eve
   // the no-backup message names the directory by its base name only
   const empty = path.join(T, 'paths-empty-dir'); mkdirSync(empty)
   const r2 = await run(['--dir', empty, '--state-dir', state], { BACKUP_ALERT_CMD: cmd })
-  assert.equal(r2.code, 1); assert.match(delivered().at(-1)!.problems.join(), /^no backup with a sidecar in paths-empty-dir$/); assert.ok(!JSON.stringify(delivered().at(-1)).includes(T))
+  assert.equal(r2.code, 1)
+  const emptyProblems = delivered().at(-1)!.problems
+  assert.deepEqual(emptyProblems, ['no backup with a sidecar in paths-empty-dir', 'no readable recovery drill report'])
+  assert.ok(!JSON.stringify(delivered().at(-1)).includes(T))
 })
 
 test('a healthy run removes only its own stamps: another tool\'s files in a shared --state-dir survive; a recurring problem alerts at once', async () => {
