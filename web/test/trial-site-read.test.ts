@@ -404,3 +404,43 @@ bothEngines('#444 G1/G2: a second release() refunds nothing; release() after set
     assert.equal(Number((await db.get<{ s: number }>("SELECT spent_usd AS s FROM trial_reservations WHERE tenant_id = ? AND kind = 'site_read'", [a.id]))!.s), 0.01)
   })
 })
+
+// Council round 3 R6: eight presses at once from one account raise its count before any refund lands, so five are refused;
+// none of them may say "used" (three reads held) when fewer than three reads are really held.
+bothEngines('#444 R6: concurrent presses from one account: at most three admitted, the rest refused as busy, never as used, unless three reads are really held', async ({ db }) => {
+  await withKey(OP, async () => {
+    const now = Date.now() // the limiter's window must hold the wallet's own clock (created_at) for "really held" to count
+    const limit = (k: string, max: number, win: number) => rateLimit(k, max, win, db, now)
+    const refund = (k: string, resetAt?: number) => refundRateLimit(k, db, now, resetAt)
+    const a = await user(db, uid(560), 'r6@gmail.com')
+    // Only one read's worth of money, so at most one press can be admitted: the others are refused by the wallet or by
+    // the crowded account count, and must say busy.
+    const env = { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: String(TRIAL_SITE_READ_RESERVE_USD) }
+    const results = await Promise.all(Array.from({ length: 8 }, (_, i) => admitTrialSiteRead(db, a, `203.0.113.${150 + (i % 4)}`, { env, limit, refund })))
+    const admitted = results.filter(r => r.ok).length
+    const reasons = results.filter(r => !r.ok).map(r => (r as { reason: string }).reason)
+    assert.ok(admitted <= 1, `at most one admitted: ${admitted}`)
+    assert.ok(!reasons.includes('site_reads_used'), `never "used" with ${admitted} held: ${reasons.join(',')}`)
+    assert.equal(Number((await db.get<{ c: number }>('SELECT count AS c FROM rate_limits WHERE key = ?', [`trial-site:${a.id}`]))?.c ?? 0), admitted, 'the account count equals the reads held')
+    // With three reads really held, the fourth press says used.
+    const b = await user(db, uid(561), 'r6b@gmail.com')
+    for (let i = 0; i < 3; i++) assert.equal((await admitTrialSiteRead(db, b, '203.0.113.160', { env: ENV, limit, refund })).ok, true)
+    assert.deepEqual(await admitTrialSiteRead(db, b, '203.0.113.160', { env: ENV, limit, refund }), { ok: false, reason: 'site_reads_used' })
+  })
+})
+
+// Council round 3 R7: a refund lands only in the window the slot was counted in; a window that rolled meanwhile keeps its
+// fresh count.
+bothEngines('#444 R7: a refund after the window rolled does nothing; rateLimit reports the window it counted in', async ({ db, kind }) => {
+  // The limiter's per-process shadow is keyed by key alone, so each engine gets its own key here.
+  const key = `trial-site:${uid(570)}-${kind}`, t0 = 1_800_000_000_000, win = 60_000
+  const first = await rateLimit(key, 3, win, db, t0)
+  assert.deepEqual([first.ok, first.resetAt], [true, t0 + win])
+  // the window rolls; a new press opens the next window with count 1
+  const second = await rateLimit(key, 3, win, db, t0 + win + 5)
+  assert.deepEqual([second.ok, second.resetAt], [true, t0 + 2 * win + 5])
+  assert.equal(await refundRateLimit(key, db, t0 + win + 10, first.resetAt), false, 'the old window\'s slot is not given back into the new one')
+  assert.equal(Number((await db.get<{ c: number }>('SELECT count AS c FROM rate_limits WHERE key = ?', [key]))!.c), 1)
+  assert.equal(await refundRateLimit(key, db, t0 + win + 10, second.resetAt), true, 'a refund into its own window lands')
+  assert.equal(Number((await db.get<{ c: number }>('SELECT count AS c FROM rate_limits WHERE key = ?', [key]))!.c), 0)
+})

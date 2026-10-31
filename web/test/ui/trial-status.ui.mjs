@@ -33,6 +33,9 @@ const SCENES = [
   ['available', usage({ funded: true, remaining: 2, cap: 3, blocked: null }), 'available', '2 of 3 free trial scans left.', 'Add your AI key for the full plan'],
   ['used-up', usage({ funded: false, remaining: 0, cap: 3, blocked: 'account_cap' }), 'exhausted', 'You have used all 3 free trial scan attempts (failed attempts count too).', 'Add your AI key to keep scanning'],
   ['throttled', usage({ funded: false, remaining: 3, cap: 3, blocked: 'ip_throttle' }), 'throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3 free trial scan attempts.', 'Or add your AI key to scan now'],
+  // #444: the money ceiling reached by website reads on the trial, with every scan attempt still unused: the line says
+  // which allowance, that reads count toward it, and the true attempt count.
+  ['allowance', usage({ funded: false, remaining: 3, cap: 3, blocked: 'account_total_cap' }), 'exhausted', "Your free trial's spending allowance is used up (website reads on the trial count toward it). You have used 0 of 3 free trial scan attempts.", 'Add your AI key to keep scanning'],
 ]
 const b = await chromium.launch()
 try {
@@ -56,7 +59,8 @@ try {
       assert.equal(await line.getAttribute('data-state'), state, name)
       assert.equal((await line.innerText()).trim(), `${text} ${link}`, name)
       assert.equal(await line.getByRole('link', { name: link }).getAttribute('href'), '#model-key')
-      if (name !== 'used-up') assert.doesNotMatch(await page.getByTestId('plan-panel').innerText(), /used up|used all/, `${name}: never "used up"`)
+      if (name !== 'used-up' && name !== 'allowance') assert.doesNotMatch(await page.getByTestId('plan-panel').innerText(), /used up|used all/, `${name}: never "used up"`)
+      if (name === 'allowance') assert.doesNotMatch(await line.innerText(), /used all|used your three/, 'the allowance line never says the attempts are used')
       if (name === 'fresh-unavailable') assert.doesNotMatch(await line.innerText(), /none|used/, 'an unavailable trial claims nothing about past use')
       assert.match(await page.getByTestId('plan-panel').innerText(), /0 of 50 scans used this month\./, 'usage stays separate from the trial line')
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${width}px`)

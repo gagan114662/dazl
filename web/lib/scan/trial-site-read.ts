@@ -17,7 +17,9 @@ import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from '
 //     took (account, network, deployment) is given back, so a refusal for any reason (ineligible, at its cap, busy,
 //     throttled, no money) uses up nothing of anyone's; an admitted read counts whether or not its call then succeeds,
 //     except when the read's own guard refused it before any call (then it is released: reservation and slots given
-//     back). An account at its own cap, or one the trial would refuse, cannot drain the shared allowance;
+//     back, each into the window it was counted in). An account at its own cap, or one the trial would refuse, cannot
+//     drain the shared allowance. Concurrent presses from one account each raise its count before the refunds land, so
+//     the surplus ones are refused; they say 'site_reads_busy' unless three reads are really held in the wallet;
 //   - one model call per read, bounded by the page text cap (lib/scan/icp-from-site.ts) and its output cap;
 //   - paid from the same wallet as trial scans: the read's maximum cost is reserved under the trial budget lock (lib/
 //     billing/trial-budget.ts admitTrialSiteReadBudget) and counts toward the account-total and daily-global ceilings
@@ -44,7 +46,7 @@ export function trialSiteReadsPerDay(env: Record<string, string | undefined> = p
   return n > 0 ? n : null
 }
 
-export interface SiteReadDeps { env?: Record<string, string | undefined>; limit?: (key: string, max: number, windowMs: number) => Promise<Limit>; refund?: (key: string) => Promise<boolean> }
+export interface SiteReadDeps { env?: Record<string, string | undefined>; limit?: (key: string, max: number, windowMs: number) => Promise<Limit>; refund?: (key: string, resetAt?: number) => Promise<boolean> }
 
 // Order (council on #444): nothing is counted or reserved for an account the trial would refuse anyway; the account's
 // own reads are taken first, so an account at its cap never touches the shared counters; every slot taken is given back
@@ -63,19 +65,32 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   if (why) return { ok: false, reason: why }
   // 2. The counters: the account's own reads first (an account at its cap stops here and burns nothing shared), then the
   //    network throttle, then the deployment-wide ceiling. A refusal gives back every slot this call took.
-  const limit = deps.limit ?? rateLimit, refund = deps.refund ?? refundRateLimit
-  const taken: string[] = []
-  const giveBack = async () => { for (const k of taken.splice(0)) await refund(k).catch(e => captureError(e, { source: 'process', where: 'trial-site-read:refund', tenantId: user.id })) }
+  const limit = deps.limit ?? rateLimit, refund = deps.refund ?? ((k: string, resetAt?: number) => refundRateLimit(k, undefined, Date.now(), resetAt))
+  // Each slot is given back into the window it was counted in (Limit.resetAt), never into a window that rolled meanwhile.
+  const taken: { key: string; resetAt?: number }[] = []
+  const giveBack = async () => { for (const t of taken.splice(0)) await refund(t.key, t.resetAt).catch(e => captureError(e, { source: 'process', where: 'trial-site-read:refund', tenantId: user.id })) }
   const net = createHash('sha256').update(`site-read:${ip}`).digest('hex').slice(0, 24)
+  const accountKey = `trial-site:${user.id}`
   for (const [k, max, windowMs, reason] of [
-    [`trial-site:${user.id}`, TRIAL_SITE_READS_PER_ACCOUNT, 30 * DAY_MS, 'site_reads_used'],
+    [accountKey, TRIAL_SITE_READS_PER_ACCOUNT, 30 * DAY_MS, 'site_reads_used'],
     [`trial-site-ip:${net}`, TRIAL_SITE_READS_PER_IP_PER_DAY, DAY_MS, 'ip_throttle'],
     ['trial-site-day:all', perDay, DAY_MS, 'site_reads_busy'],
   ] as const) {
     const r = await limit(k, max, windowMs)
     if (r.unavailable) { await giveBack(); return { ok: false, reason: 'limit_unavailable' } }
-    taken.push(k) // counted whether or not it fit: a refused call still raised the window's count
-    if (!r.ok) { await giveBack(); return { ok: false, reason } }
+    taken.push({ key: k, resetAt: r.resetAt }) // counted whether or not it fit: a refused call still raised the window's count
+    if (!r.ok) {
+      await giveBack()
+      // The account's own count refuses for presses still in flight as much as for reads really held (every press raises
+      // the count first; a refused one is given back a moment later). "Used" is said only when three reads of this
+      // account are actually held in the wallet (admitted in this window and not released); otherwise it is a moment's
+      // crowding: busy.
+      if (k === accountKey && r.resetAt !== undefined) {
+        const held = await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ? AND kind = 'site_read' AND created_at >= ?", [user.id, Math.floor((r.resetAt - 30 * DAY_MS) / 1000)])
+        if (Number(held?.n ?? TRIAL_SITE_READS_PER_ACCOUNT) < TRIAL_SITE_READS_PER_ACCOUNT) return { ok: false, reason: 'site_reads_busy' }
+      }
+      return { ok: false, reason }
+    }
   }
   // 3. Last, the money: the read's maximum cost reserved in the shared wallet, under its lock (step 1's rules checked
   //    again, atomically, against the room left now). Refused: every slot goes back.
