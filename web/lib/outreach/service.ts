@@ -74,7 +74,12 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
-export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
+// expectSender: the Gmail address the caller authorized this send from (autopilot's held drafts); the send is refused
+// (sender_changed) unless the connected account is that address at the moment the message is handed to Gmail.
+// authorize: the caller's own authority, re-read synchronously as the last check before the message is handed to Gmail
+// (after every await of the send path); a returned code refuses the send, known not sent. Autopilot passes one (on,
+// not paused, current consent, operator flag, its reserved slot); a manual send passes none and is unchanged.
+export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; expectSender?: string; authorize?: () => string | null }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
 
@@ -499,6 +504,13 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // A recheck that cannot run (a read fails) is a refusal, not an unknown outcome: nothing has left yet, the message goes
+  // back to approved with that reason and the caller decides (fail closed).
+  try {
+  // The sending identity first: the account may have been disconnected or reconnected to another address meanwhile. The
+  // message goes out only from the address read before the refresh (and, when given, the one the caller authorized).
+  const sender = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
+  if (!sender || sender.email.toLowerCase() !== acct!.email.toLowerCase() || (d.expectSender !== undefined && d.expectSender.toLowerCase() !== sender.email.toLowerCase())) release('sender_changed')
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
@@ -513,6 +525,11 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  if (d.authorize) { const why = d.authorize(); if (why) release(why) }
+  } catch (e) {
+    if (e instanceof OutreachError) throw e
+    release('authority_unreadable')
+  }
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({

@@ -125,7 +125,7 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   // --- tick 2: S hits the cap (one send today, cap 1): a hold that keeps its success time; U is now paused: a hold that keeps its failure
   db.prepare('UPDATE autopilot_settings SET daily_cap = 1 WHERE tenant_id = ?').run(S)
   const r2 = await call()
-  assert.equal(r2.tenant_failures, 2, 'R and F'); assert.equal(r2.tenant_holds, 3, 'P, S and U'); assert.equal(r2.sequences, 0)
+  assert.equal(r2.tenant_failures, 3, 'R, F and F\'s first-touch drain (operator switch off: not_available, #448)'); assert.equal(r2.tenant_holds, 3, 'P, S and U'); assert.equal(r2.sequences, 0)
   const s2 = p(S, 'sequences')!
   assert.equal(s2.last_outcome, 'hold'); assert.equal(s2.last_hold, 'daily_cap'); assert.equal(s2.last_success_at, s1.last_success_at); assert.equal(s2.consecutive_failures, 0); assert.equal(s2.last_error, null)
   assert.equal(stepStatus(seqS, 3), 'approved', 'the cap wait sent nothing')
@@ -138,7 +138,7 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   assert.equal(BLOCKED_AFTER_FAILURES, 3)
   assert.equal(p(R, 'sequences')!.consecutive_failures, 3); assert.equal(p(F, 'followups')!.consecutive_failures, 3)
   assert.deepEqual((await tenantFreshness(db, R)).reasons.filter(x => x.endsWith('_failing')), ['sequences_failing'])
-  assert.equal((await tenantFreshness(db, F)).state, 'blocked'); assert.deepEqual((await tenantFreshness(db, F)).reasons, ['followups_failing'])
+  assert.equal((await tenantFreshness(db, F)).state, 'blocked'); assert.deepEqual((await tenantFreshness(db, F)).reasons, ['autopilot_failing', 'followups_failing'], 'the first-touch drain is switched off with the follow-ups (#448)')
   const pf = await tenantFreshness(db, P)
   assert.equal(pf.state, 'held'); assert.deepEqual(pf.holds, ['sequences:paused']); assert.deepEqual(pf.reasons, [])
   assert.equal((await tenantFreshness(db, S)).state, 'held'); assert.equal((await tenantFreshness(db, U)).state, 'held')
@@ -222,7 +222,7 @@ test('two ticks at once: one runs, one is skipped, one run row, one attempt per 
   assert.equal(db.prepare('SELECT count(*) FROM scheduler_runs').pluck().get(), before + 1)
   // every tenant with work has exactly one row per kind, all stamped with the one run (the primary key allows no second)
   const rows = db.prepare('SELECT tenant_id, kind FROM scheduler_progress WHERE last_run_id = ? ORDER BY tenant_id, kind').all(ran[0].run) as { tenant_id: string; kind: string }[]
-  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/followups`, `${F}/reply_sync`, `${N}/sequences`, `${P}/sequences`, `${U}/sequences`, `${W}/followups`, `${W}/reply_sync`])
+  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/autopilot`, `${F}/followups`, `${F}/reply_sync`, `${N}/sequences`, `${P}/sequences`, `${U}/sequences`, `${W}/autopilot`, `${W}/followups`, `${W}/reply_sync`])
   assert.deepEqual(lastRun(), { status: 'ok', tenants_attempted: 5, tenants_failed: 0 })
 })
 
@@ -248,7 +248,8 @@ test('a thrown worker error is recorded as that tenant\'s failure; the tick goes
 test('kill switch on: refusals for every tenant with work, a hold stays a hold; off: recovery', async () => {
   process.env.AUTOPILOT_KILL = '1'
   const r = await call()
-  assert.equal(r.tenant_failures, 4, 'F and W follow-ups, P and N sequences'); assert.equal(r.tenant_holds, 1, 'U')
+  assert.equal(r.tenant_failures, 6, 'F and W follow-ups, P and N sequences, F and W first-touch drains (#448)'); assert.equal(r.tenant_holds, 1, 'U')
+  for (const t of [F, W]) { const x = p(t, 'autopilot')!; assert.equal(x.last_outcome, 'failure', t); assert.match(x.last_error ?? '', /not_available/, 'the drain is switched off with the rest') }
   for (const t of [F, W]) { const x = p(t, 'followups')!; assert.equal(x.last_outcome, 'failure', t); assert.match(x.last_error ?? '', /not_available/); assert.equal(p(t, 'reply_sync')!.last_outcome, 'success', 'reading replies is not switched off by the kill switch') }
   for (const t of [P, N]) { const x = p(t, 'sequences')!; assert.equal(x.last_outcome, 'failure', t); assert.match(x.last_error ?? '', /sequences_disabled/) }
   assert.equal(p(U, 'sequences')!.last_hold, 'paused')
@@ -256,6 +257,6 @@ test('kill switch on: refusals for every tenant with work, a hold stays a hold; 
   delete process.env.AUTOPILOT_KILL
   const r2 = await call()
   assert.equal(r2.tenant_failures, 0)
-  for (const [t, k] of [[F, 'followups'], [W, 'followups'], [P, 'sequences'], [N, 'sequences']]) { const x = p(t, k)!; assert.equal(x.last_outcome, 'success', `${t}/${k}`); assert.equal(x.consecutive_failures, 0) }
+  for (const [t, k] of [[F, 'followups'], [W, 'followups'], [P, 'sequences'], [N, 'sequences'], [F, 'autopilot'], [W, 'autopilot']]) { const x = p(t, k)!; assert.equal(x.last_outcome, 'success', `${t}/${k}`); assert.equal(x.consecutive_failures, 0) }
   assert.equal((await schedulerHealth(db)).tenants.blocked, 0)
 })

@@ -16,7 +16,7 @@ A scheduler can be configured on and still stale, for example when cron was neve
 ## What is recorded (durably, in the app's store)
 
 - **`scheduler_runs`, one row per tick.** Records start and finish time, and the status: `running`, `ok`, `partial` (some tenant failed), `failed` or `lease_lost`. Also records the lease owner and **generation** it ran under (the fencing token, lib/shared/lease.ts), tenants attempted and failed, and a scrubbed error. The row is written when the tick starts, before any work, so a tick whose process dies leaves a `running` row. The last 2000 runs are kept.
-- **`scheduler_progress`, one row per tenant and kind of work** (`reply_sync`, `followups`, `sequences`). Records the last attempt, last success, last failure reason, consecutive failures, and the outcome of the last attempt (`last_outcome`: `success`, `hold` or `failure`) with the hold's reason (`last_hold`).
+- **`scheduler_progress`, one row per tenant and kind of work** (`reply_sync`, `followups`, `sequences`, and `autopilot`: the first-touch drain, #411). Records the last attempt, last success, last failure reason, consecutive failures, and the outcome of the last attempt (`last_outcome`: `success`, `hold` or `failure`) with the hold's reason (`last_hold`).
   - The failure reason is the error's class plus the first line of its message, with addresses, tokens and query strings removed, at most 200 characters.
   - A result is recorded only after the work returned, so its writes passed the lease fence.
 - **The oldest due item is computed, not stored.** It is the earliest due time of a sequence step that should have been sent by now: step 1 sent, the next step's +3 or +7 days passed, the sequence still approved or active.
@@ -37,6 +37,8 @@ The workers report ordinary refusals as a result (`stopped`), not an exception. 
 | both | `daily_cap`, `paused`; `runFollowups` `autopilot_off`, `followups_off`; `runSequences` `changed_since_approval` | hold; **success** if the same tick sent or activated something first |
 | both | `uncertain_send`, `gmail_unavailable`, `gmail_or_identity` | failure (an uncertain send outranks earlier progress in the same tick) |
 | `runFollowups` | `not_available` (operator switch off or kill switch, while the tenant has follow-ups on) | failure |
+| `runAutopilot` (first touches, #411) | `daily_cap`, `paused`, `off`, `autopilot_off`, `consent_required`, `gmail_not_connected`, `gmail_reconnect_needed` | hold (the tenant's own switch, consent or mailbox); **success** if the same tick sent something first |
+| `runAutopilot` | `not_available` / `autopilot_unavailable` (operator switch off or kill switch), `uncertain_send`, `authority_unreadable`, `reservation_lost`, a thrown error | failure |
 | `runSequences` | `sequences_disabled` (operator switch off or kill switch, while the tenant has approved or active sequences), `reading_not_enabled`, `reply_sync_failed` | failure |
 | `syncReplies` | `error` (`reading_not_enabled`, `gmail_unavailable`, `reply_sync_failed`) | failure; follow-ups are not attempted that tick |
 | any | a thrown error, or a `stopped` reason the tick does not know | failure (an unknown refusal is never read as progress) |
