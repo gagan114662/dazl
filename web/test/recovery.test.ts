@@ -20,7 +20,7 @@ async function run(o: Opt) {
   const blogCand: Cand = { company: 'Orbitly', signal: 'raised a seed round', source_url: BLOG, excerpt: FUND, event_date: o.blogDate ?? null as never }
   const pressCand: Cand = o.otherCompany ? { company: 'Zenix', signal: 'raised a seed round', source_url: PRESS, excerpt: pressText, event_date: daysAgo(o.pressDays ?? 10) } : { company: 'Orbitly', signal: 'raised a seed round', source_url: PRESS, excerpt: FUND, event_date: daysAgo(o.pressDays ?? 10) }
   const f: Fixture = { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: BLOG, title: 'Orbitly raises seed', snippet: FUND, date: null }], tfPages: {},
-    own: { [BLOG]: { title: 'Orbitly seed', text: o.blogText ?? `${FUND}.${filler}` }, [PRESS]: { title: 'Orbitly raises seed round', text: `Published ${daysAgo(o.pressDays ?? 10)}. ${pressText}.${filler}` } },
+    own: { [BLOG]: { title: 'Orbitly seed', text: o.blogText ?? `${FUND}.${filler}` }, [PRESS]: { title: 'Orbitly raises seed round', text: `On ${daysAgo(o.pressDays ?? 10)}, ${pressText}.${filler}` } },
     extraction: [blogCand, pressCand], deps: { newsHttp, ...(o.paid === false ? { paidFallback: false } : {}) } }
   const x = await runFixture(f)
   const lead = x.db.prepare("SELECT id, company, review_reason, event_date, source_url FROM leads WHERE company = 'Orbitly'").get() as { id: string; company: string; review_reason: string | null; event_date: string | null; source_url: string } | undefined

@@ -1,3 +1,4 @@
+import {migratePlayResearch} from './play-research-schema.ts'
 // Every sqlite migrate*() the app runs, in one place: the schema extractor (scripts/pg-migrate/extract-schema.ts) and the
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'
@@ -43,6 +44,7 @@ import { migrateEmailGuess } from '../people/email-pattern.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { migrateTrialBudget } from '../billing/trial-budget.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateTenantLifecycle } from './tenant-guard.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
@@ -54,7 +56,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
-    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migrateHiringFeed, migrateEmailGuess,
+    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
     migrateTrialBudget, migrateSchedulerRuns,
   ]
   for (const m of migrates) m(db)
@@ -62,4 +64,6 @@ export function migrateAllSqlite(db: Database.Database): void {
   new SqliteQueue(db)
   // Last: it adds a column to tables the migrations above create.
   migrateInsertionOrder(db)
+  // After every table exists: the deleted-tenant guard is a trigger on each tenant-scoped table.
+  migrateTenantLifecycle(db)
 }

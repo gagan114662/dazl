@@ -144,7 +144,7 @@ const QOUT = JSON.stringify({ company_fit: { verdict: 'yes', quote: 'Acme runs o
 function qprov(answer: () => DetailedCompletion) { let n = 0; return { calls: () => n, p: { research: async () => ({ text: '', citedUrls: [] }), configuredModel: () => MODEL, completeDetailed: async () => { n++; return answer() } } as Provider } }
 async function approvalFor(db: Database.Database) {
   const pv = await qualifyPreview(db, 'u1', L, 'Sales prospecting software', fetchPage, 'anthropic', MODEL)
-  return { approved_by_user: true as const, vendor: 'anthropic', model: MODEL, max_usd_estimate: pv!.cost!.usd_estimate_max!, prompt_sha256: pv!.prompt_sha256!, limits: DEFAULT_LIMITS }
+  return { approved_by_user: true as const, vendor: 'anthropic', model: MODEL, max_usd_estimate: pv!.cost!.usd_estimate_max!, prompt_sha256: pv!.prompt_sha256!, request_context_sha256: pv!.packing!.context_sha256, limits: DEFAULT_LIMITS }
 }
 const qdeps = (p: Provider) => ({ enabled: true, sellerText: 'Sales prospecting software', vendor: 'anthropic', provider: p, apiKey: 'k', fetchPage })
 

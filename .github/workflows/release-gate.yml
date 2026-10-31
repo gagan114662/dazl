@@ -57,6 +57,9 @@ jobs:
       - name: Two tenants, no cross-tenant data on any route or page
         if: success() || failure()
         run: npm run test:smoke:tenants
+      - name: Saved-source recheck action and refusal states (fenced)
+        if: success() || failure()
+        run: node --experimental-strip-types test/smoke/evidence-recheck.smoke.mjs
       - name: Release identity and readiness
         if: success() || failure()
         run: npm run test:smoke:release

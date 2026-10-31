@@ -28,23 +28,33 @@ try {
 
 const body = { level: problems.length ? 'error' : 'info', type: 'scheduler_check', ok: problems.length === 0, host: os.hostname(), at: new Date().toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))
-const send = async (b: object) => {
+// A throttle stamp is a delivery receipt, never an attempted-send receipt.
+const send = async (b: object): Promise<boolean> => {
   const cmd = process.env.SCHEDULER_ALERT_CMD, hook = process.env.OPS_ALERT_WEBHOOK_URL
-  if (cmd) { if (spawnSync(cmd, [JSON.stringify(b)], { stdio: 'inherit' }).status !== 0) console.error('scheduler-check: alert command failed'); return }
-  if (!hook?.startsWith('https://')) { console.error('scheduler-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only'); return }
-  try { const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), signal: AbortSignal.timeout(10_000) }); if (!r.ok) console.error(`scheduler-check: alert webhook HTTP ${r.status}`) }
-  catch (e) { console.error(`scheduler-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`) }
+  if (cmd) {
+    const result = spawnSync(cmd, [JSON.stringify(b)], { stdio: 'inherit', timeout: 10_000 })
+    if (result.error || result.status !== 0) { console.error('scheduler-check: alert command failed'); return false }
+    return true
+  }
+  if (!hook?.startsWith('https://')) { console.error('scheduler-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only'); return false }
+  try {
+    const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), signal: AbortSignal.timeout(10_000) })
+    if (!r.ok) { console.error(`scheduler-check: alert webhook HTTP ${r.status}`); return false }
+    return true
+  } catch (e) { console.error(`scheduler-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`); return false }
 }
 mkdirSync(state, { recursive: true, mode: 0o700 })
 const stamps = () => readdirSync(state).filter(f => f.startsWith('alert-'))
 if (!problems.length) {
-  if (stamps().length) { await send({ ...body, type: 'scheduler_recovered' }); for (const f of stamps()) rmSync(path.join(state, f)) }
+  if (stamps().length) {
+    if (!await send({ ...body, type: 'scheduler_recovered' })) process.exit(1)
+    for (const f of stamps()) rmSync(path.join(state, f))
+  }
   process.exit(0)
 }
 const every = Number(process.env.SCHEDULER_ALERT_EVERY_S ?? 3600)
 // numbers in the messages change every run; the kind of problem is what is throttled
 const stamp = path.join(state, 'alert-' + createHash('sha256').update(problems.map(p => p.replace(/\d+/g, 'N')).join('\n')).digest('hex').slice(0, 16))
 if (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < every * 1000) { console.error('scheduler-check: alert already sent for these problems within the interval'); process.exit(1) }
-writeFileSync(stamp, '')
-await send(body)
+if (await send(body)) writeFileSync(stamp, '')
 process.exit(1)
