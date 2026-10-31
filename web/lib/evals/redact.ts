@@ -22,10 +22,10 @@
 //      are recognised as URL query parameters and as `name: value` / `name=value` / `"name": "value"` in prose, a
 //      prompt or an error message, where the WHOLE assigned value goes: a quoted value to its closing quote, spaces and
 //      all (`password: "two words"`), an unquoted one to the next delimiter. A NUMBER assigned to a credential name is a
-//      secret too (password=493827, otp: 493827, `{"token": 112233}`) UNLESS the name is count-shaped: it has a count or
-//      limit word (max_tokens, input_tokens, token_count, num_keys) or only plural credential words (`tokens: 5`), where a
-//      bare number is a count and stays. Booleans and null are never redacted; a number under an ordinary name (page,
-//      expires_in) never is; a number nested inside a credential-named object keeps its own key's judgment.
+//      secret too (password=493827, otp: 493827, `{"token": 112233}`) UNLESS the name is a token/key count or limit
+//      (max_tokens, input_tokens, token_count, num_keys, `tokens: 5`), where a bare number is a count and stays. In JSON
+//      the WHOLE value under a credential-named key goes whatever its type (object, array, byte map); booleans and null
+//      are never redacted; a number under an ordinary name (page, expires_in) never is.
 //   2. By FAMILY, for a value with no name next to it: provider keys (sk-ant-, sk-, sk-proj-, sk_live_/pk_test_/rk_…),
 //      GitHub (ghp_/gho_/ghu_/ghs_/ghr_ and fine-grained github_pat_), GitLab glpat-, npm_, Slack xox*/xapp-, AWS AKIA,
 //      Google AIza, JWTs, Bearer/Basic authorization values, PEM private-key blocks and Cookie/Set-Cookie header lines.
@@ -64,7 +64,6 @@ const COUNT_WORDS = new Set(['max', 'min', 'limit', 'limits', 'count', 'counts',
   'prompt', 'completion', 'reasoning', 'budget', 'size', 'len', 'length', 'bytes', 'chars', 'per', 'rate',
   'expires', 'expiry', 'expire', 'expiration', 'ttl', 'age', 'maxage', 'timeout', 'iat', 'exp', 'nbf', 'issued', 'created', 'updated', 'time', 'timestamp', 'ms', 'seconds', 'secs', 'duration', 'version'])
 const COUNTABLE = new Set(['token', 'tokens', 'key', 'keys'])
-const hasCountWord = (k: string): boolean => keyWords(k).some(w => COUNT_WORDS.has(w))
 export function isCountKey(k: string): boolean {
   const ws = keyWords(k), cw = ws.filter(w => CREDENTIAL_WORDS.has(w))
   return cw.length > 0 && cw.every(w => COUNTABLE.has(w)) && (ws.some(w => COUNT_WORDS.has(w)) || cw.every(w => w === 'tokens' || w === 'keys'))
@@ -129,10 +128,16 @@ function redactEncodedQueryValues(s: string, core: (x: string) => string): strin
 // Only a credential name consumes its value: after `https:` or `page=` the scan goes on inside what follows, so the
 // `refresh_token=` in a URL's query is still found. A name starts only where a word starts (the lookbehind): tried from
 // every character, the greedy name would be rescanned once per character of a long word, quadratic on a big body.
+//   - A name that ends its line (`credentials:` then an indented block, `password:` then the value on the next line)
+//     takes the whole indented block below it.
 // NOT covered, by design (documented limits): an unquoted value with spaces (`password: correct horse battery`) keeps
-// everything after its first word; prose (`the password is X`, `password - X`) and names that are not credential words
-// (verification_code, pin as a key) are not assignments to a credential name.
-const NAME_SEP = /(?<![\p{L}\p{N}_.-])([\p{L}][\p{L}\p{N}_.-]*)\\?["']?\s*(?:=>|[:=])\s*(\\?["']?)/gu
+// everything after its first word; prose (`the password is X`, `password - X`, `password → X`) and names that are not
+// credential words (verification_code, pin as a key) are not assignments to a credential name; a bare `Basic xxxx`
+// shorter than 8 characters with no name next to it is kept.
+// A name may start with a digit (2fa_token) and carry a percent-encoded underscore (refresh%5Ftoken); `=` and `:` may be
+// percent-encoded too (password%3Dx). A percent-encoded `&` (%26) ends an unquoted value like a plain one.
+const NAME_SEP = /(?<![\p{L}\p{N}_.-])((?:[\p{L}\p{N}]|%5[Ff])(?:[\p{L}\p{N}_.-]|%5[Ff])*)\\?["']?\s*(?:=>|[:=]|%3[DdAa])\s*(\\?["']?)/gu
+const ENCODED_AMP = /%26/i
 const UNQUOTED = /[^\s"'&,;})]+/y
 const SCHEME = /^(?:Bearer|Basic)\s+/i
 const SCHEME_AT = /(?:Bearer|Basic)\s+/iy
@@ -160,11 +165,27 @@ function closingBracket(s: string, at: number): number {
   return -1
 }
 const lineEnd = (s: string, from: number): number => { const nl = s.indexOf('\n', from); return nl >= 0 ? nl : s.length }
+// A YAML-style block: the name ends its line, and the value is the run of lines below it indented deeper than the name
+// (`credentials:\n  username: bob\n  value: x`). Ends before the first line indented no deeper (blank lines are inside).
+function blockEnd(s: string, nameAt: number, from: number): number {
+  const lineStart = s.lastIndexOf('\n', nameAt - 1) + 1
+  const base = s.slice(lineStart, nameAt).search(/\S|$/)
+  let end = from, at = s.lastIndexOf('\n', from - 1) + 1
+  while (at < s.length) {
+    const nl = s.indexOf('\n', at), stop = nl >= 0 ? nl : s.length
+    const line = s.slice(at, stop), indent = line.search(/\S|$/)
+    if (line.trim() !== '' && indent <= base) break
+    if (line.trim() !== '') end = stop
+    if (nl < 0) break
+    at = nl + 1
+  }
+  return end
+}
 function redactAssigned(s: string): string {
   let out = '', last = 0
   NAME_SEP.lastIndex = 0
   for (let m = NAME_SEP.exec(s); m; m = NAME_SEP.exec(s)) {
-    const name = m[1]
+    const name = m[1].replace(/%5[Ff]/g, '_')
     if (!isCredentialKey(name)) continue
     const quote = m[2], from = NAME_SEP.lastIndex
     let end: number
@@ -176,8 +197,12 @@ function redactAssigned(s: string): string {
       SCHEME_AT.lastIndex = from
       const start = SCHEME_AT.exec(s) ? SCHEME_AT.lastIndex : from
       if (s[start] === '{' || s[start] === '[') { const close = closingBracket(s, start); end = close >= 0 ? close : s.length }
+      else if (start === from && s.slice(m.index! + m[1].length, from).includes('\n')) end = blockEnd(s, m.index!, from)
       else if (start === from && lineValued(name)) end = lineEnd(s, from)
-      else { UNQUOTED.lastIndex = start; if (!UNQUOTED.exec(s)) continue; end = UNQUOTED.lastIndex }
+      else {
+        UNQUOTED.lastIndex = start; if (!UNQUOTED.exec(s)) continue; end = UNQUOTED.lastIndex
+        const amp = s.slice(start, end).search(ENCODED_AMP); if (amp >= 0) end = start + amp
+      }
     }
     const value = s.slice(from, end)
     const scheme = SCHEME.exec(value)?.[0] ?? ''
@@ -239,27 +264,28 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
     if (secret) return SECRET
     const parsed = parseJson(s)
     if (parsed === undefined || parsed === null || typeof parsed !== 'object') return text(s)
-    const before = JSON.stringify(parsed), after = JSON.stringify(deep(parsed, false, false))
+    const before = JSON.stringify(parsed), after = JSON.stringify(deep(parsed, false))
     return after === before ? s : after
   }
   // Object keys too: a World keys pages and HTTP answers by URL, and a URL can carry an email, a profile slug or a token.
-  // `secret` is true below a credential-named key: every string under it goes, whatever its own key is called.
-  // `secretNum` is true below a credential-named key that is not count-shaped: numbers there go too (`token: 112233`,
-  // `{"cookie": {"name": "sid", "value": 12345}}`, `{"secrets": [493827]}`, `{"auth": {"pin": 4938}}`), except under a
-  // key that names a count, limit or lifetime (`expires_in: 3600` under session, `max_tokens` anywhere). Booleans and
-  // null never go.
-  const deep = (v: unknown, secret: boolean, secretNum: boolean): unknown =>
+  // Under a credential-named key the WHOLE value goes, whatever its type: a string, a number (`token: 112233`), an object
+  // or array (`cookie: {name, value}`, `credentials: [...]`, `otp: [4, 9, 3]`), a Buffer's byte map (`{"0": 66, ...}`),
+  // a Map or Date (which serialise as {} here and go too). Booleans and null carry no value and stay. Only a count-shaped
+  // token/key name (max_tokens, tokens, num_keys) keeps its numbers and is descended into - with `secret` set, so every
+  // string below it still goes. A key that is a URL or path (a page map keyed by URL whose query says `?key=london`) is
+  // not a credential name for its subtree: its own text is redacted, its value is descended into normally.
+  const deep = (v: unknown, secret: boolean): unknown =>
     typeof v === 'string' ? str(v, secret)
-      : typeof v === 'number' ? (secretNum ? SECRET : v)
-        : Array.isArray(v) ? v.map(x => deep(x, secret, secretNum))
-          : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => {
-            const cred = isCredentialKey(k), count = cred ? isCountKey(k) : hasCountWord(k)
-            return [text(k), deep(x, secret || cred, count ? false : secretNum || cred)]
-          }))
-            : v
+      : Array.isArray(v) ? v.map(x => deep(x, secret))
+        : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => {
+          const cred = isCredentialKey(k) && !/[/?&=]/.test(k)
+          if (cred && !isCountKey(k) && x !== null && typeof x !== 'boolean') return [text(k), SECRET]
+          return [text(k), deep(x, secret || cred)]
+        }))
+          : v
   // EVERY string of the trace goes through the pass - span errors (an inner call's error message can quote a URL, a
   // header or an address), names, the agent label, metadata - except the structural identifiers this module's own code
   // wrote (trace and span ids, kinds, the path), which are put back as they were.
-  const all = deep(t, false, false) as Trace
+  const all = deep(t, false) as Trace
   return { ...all, v: t.v, kind: t.kind, id: t.id, path: t.path, redacted: true, spans: all.spans.map((s, i) => ({ ...s, id: t.spans[i].id, kind: t.spans[i].kind })) }
 }

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { bothEngines } from './helpers/engines.ts'
 import Database from 'better-sqlite3'
-import { getDb, sqliteDb, type Db } from '../lib/db/client.ts'
+import { getDb, setDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { beginScanTrace, capTrace, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS, MAX_TRACE_BYTES, PURGE_LIMIT } from '../lib/evals/capture.ts'
 import { StaleLeaseWrite, tryLease } from '../lib/shared/lease.ts'
@@ -55,16 +55,19 @@ test('config: OFF unless DAZL_TRACE_CAPTURE=1; retention defaults to 14 days; an
   assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '0', DAZL_TRACE_RETENTION_DAYS: 'abc' }), { enabled: false, retentionDays: 14, reason: 'off', purge: false })
 })
 
-test('OFF (default): beginScanTrace returns null, the run gets exactly its own deps, and nothing is stored', async () => {
+// The scan itself runs on the harness's own SQLite (as the app does before cutover); the trace store is the shared Db
+// layer, pointed at each engine in turn (setDb), as the tick harness does.
+const withStore = async (db: Db, fn: () => Promise<void>) => { setDb(db); try { await fn() } finally { setDb(null) } }
+bothEngines('OFF (default): beginScanTrace returns null, the run gets exactly its own deps, and nothing is stored', async ({ db }) => withStore(db, async () => {
   const deps = { fetchImpl: globalThis.fetch }
   assert.equal(beginScanTrace({ id: 'j', user_id: 'A', attempts: 1 }, deps, { env: {} }), null)
   const before = (await storedFor('A')).rows.length
   const x = await withEnv({ DAZL_TRACE_CAPTURE: undefined }, () => runFixture(fixture()))
   assert.equal(x.leads.find(l => l.company === 'Querix')?.review_reason, null)
   assert.equal((await storedFor('A')).rows.length, before)
-})
+}))
 
-test('ON: the real runJob is recorded, redacted and stored for its own tenant; no key or raw contact reaches the store; the run is unchanged', async () => {
+bothEngines('ON: the real runJob is recorded, redacted and stored for its own tenant; no key or raw contact reaches the store; the run is unchanged; the replay reaches the run\'s verdicts', async ({ db }) => withStore(db, async () => {
   const off = await withEnv({ DAZL_TRACE_CAPTURE: undefined }, () => runFixture(fixture()))
   const before = new Set((await storedFor('A')).rows.map(r => r.id))
   const on = await withEnv({ DAZL_TRACE_CAPTURE: '1' }, () => runFixture(fixture()))
@@ -89,9 +92,11 @@ test('ON: the real runJob is recorded, redacted and stored for its own tenant; n
   const kase: Case = { v: 1, kind: 'dazl.case', id: 'captured', title: 'captured', path: 'scan.discovery', world: '-', provenance: { from_trace: t.id, synthetic: false, why: 'test' },
     input: { request: t.input.request, icp: t.input.icp }, expect: { leads: [{ company: 'Querix', outcome: 'verified' }] } }
   const replay = await replayCase(kase, world)
-  assert.equal(replay.leads.find(l => l.company === 'Querix')?.review_reason, null)
+  // the same verdicts as the original run, lead for lead (R3-12): not just "Querix was not held"
+  const verdicts = (ls: { company: string; review_reason: string | null; event_date: string | null }[]) => ls.map(l => [l.company, l.review_reason, l.event_date]).sort()
+  assert.ok(on.leads.length > 0); assert.deepEqual(verdicts(replay.leads), verdicts(on.leads))
   assert.deepEqual(replay.misses, [])                    // the captured World answers every call the run makes
-})
+}))
 
 test('a failure to record or store never reaches the run: finish logs and returns null', async () => {
   const c = beginScanTrace({ id: 'j-fail', user_id: 'A', attempts: 1 }, {}, { env: { DAZL_TRACE_CAPTURE: '1' }, db: () => Promise.reject(new Error('store down')) })!
@@ -353,7 +358,7 @@ const CRED = {
 }
 const ORDINARY = ['Querix', 'raised a 3m GBP seed round', '2026-10-10', 'page=2', 'q=london+saas', '\\"max_tokens\\":300', '\\"input_tokens\\":12', '\\"expires_in\\":3600', 'keywords', 'press office', 'london']
 const RESPONSE = {
-  company: 'Querix', excerpt: 'Querix, a London B2B SaaS startup, raised a 3m GBP seed round', event_date: '2026-10-10', page: 2, max_tokens: 300,
+  company: 'Querix', excerpt: 'Querix, a London B2B SaaS startup, raised a 3m GBP seed round', event_date: '2026-10-10', page: 2, max_tokens: 300, expires_in: 3600,
   usage: { input_tokens: 12, output_tokens: 3 }, keywords: ['london', 'saas'], author: 'press office',
   refresh_token: CRED.refresh, access_token: CRED.access, client_secret: CRED.client_secret, api_key: CRED.api_key, apiKey: CRED.apiKey, password: CRED.password,
   authorization: `Bearer ${CRED.authz}`, cookie: `sid=${CRED.cookie}; Path=/`, 'set-cookie': `sid=${CRED.set_cookie}; HttpOnly`,
@@ -395,7 +400,7 @@ bothEngines('credential redaction: no credential-named field or known token fami
   assert.equal(http.url, 'https://api.synthetic.example/v1/items?refresh_token=[secret]&page=2&q=london+saas&otp=[secret]&max_tokens=300')
   assert.deepEqual(JSON.parse(http.body), { q: 'london saas', client_secret: '[secret]', password: '[secret]', token: '[secret]', max_tokens: 300 })
   const out = JSON.parse((t.spans[0].output as { body: string }).body) as Record<string, unknown>
-  assert.deepEqual([out.company, out.page, out.max_tokens, out.usage, out.keywords, out.auth, out.credentials], ['Querix', 2, 300, { input_tokens: 12, output_tokens: 3 }, ['london', 'saas'], { session: { id: '[secret]', expires_in: 3600 } }, [{ user: '[secret]', token: '[secret]' }]])
+  assert.deepEqual([out.company, out.page, out.max_tokens, out.usage, out.keywords, out.auth, out.credentials], ['Querix', 2, 300, { input_tokens: 12, output_tokens: 3 }, ['london', 'saas'], '[secret]', '[secret]'])   // whole values under auth / credentials
   for (const k of ['refresh_token', 'access_token', 'client_secret', 'api_key', 'apiKey', 'password', 'authorization', 'cookie', 'set-cookie', 'private_key', 'token']) assert.equal(out[k], '[secret]', k)
   assert.equal(out.note, 'password: "[secret]"; otp=[secret]; max_tokens=300')
   assert.deepEqual(JSON.parse(out.payload as string), { clientSecret: '[secret]', company: 'Querix' })
@@ -455,6 +460,16 @@ const COUNCIL: [string, string, string][] = [
   ['R1-6 short basic', 'sent Basic dXNlcjpwdw== next', 'sent Basic [secret] next'],
   ['R1-6 short jwt', 'got eyJhbGciOi.eyJzdWIi.SECRETXG5 back', 'got [secret] back'],
   ['R1-6 arrow', "password => 'SECRETXG6'; token => SECRETXG7", "password => '[secret]'; token => [secret]"],
+  // probe F1: a YAML-style block under a credential name; JSON that is not JSON (trailing comma); a prose prefix before a credentials list
+  ['F1 yaml block', 'credentials:\n  username: bob\n  value: SECRETXH1\nnext: kept', 'credentials:\n  [secret]\nnext: kept'],
+  ['F1 trailing comma', '{"token":{"value":"SECRETXH2"},}', '{"token":[secret],}'],
+  ['F1 prose + list', 'denied: {"credentials":[{"user":"bob","value":"SECRETXH3"}]} (from cache)', 'denied: {"credentials":[secret]} (from cache)'],
+  // probe F2: userinfo on a bare host; a value with a #fragment tail
+  ['F2 bare host', 'fetching https://user:SECRETXH4@host/path?x=1 failed', 'fetching https://user:[secret]@host/path?x=1 failed'],
+  ['hash tail', 'password=SECRETXH5#tail', 'password=[secret]'],
+  // R3-10 / R3-11: a name starting with a digit; percent-encoded separators and underscores; %26 ends the value
+  ['R3-10 digit name', '2fa_token: 123456; 2fa_code: 123456', '2fa_token: [secret]; 2fa_code: 123456'],
+  ['R3-11 encoded', 'https://x.example/cb?password%3DSECRETXH6%26a%3D1&refresh%5Ftoken=SECRETXH7&page=2', 'https://x.example/cb?password%3D[secret]%26a%3D1&refresh%5Ftoken=[secret]&page=2'],
   // control: ordinary text with counts, dates, a port, a plan name and a non-credential code is untouched
   ['control', 'the keynote: London; Basic plan from 2026-10-10; tokens: 5; max_tokens=300; expires_in: 3600; https://host.example:8080/p?page=2&q=a+b; verification_code=493827', 'the keynote: London; Basic plan from 2026-10-10; tokens: 5; max_tokens=300; expires_in: 3600; https://host.example:8080/p?page=2&q=a+b; verification_code=493827'],
 ]
@@ -476,7 +491,7 @@ bothEngines('council matrix: every reviewer case is redacted as stated in a prom
   const t = (await getTrace(db, 'tenant-C', (await c.finish('done'))!))!
   assert.equal(t.capture?.complete, true); assert.equal(t.spans.length, COUNCIL.length * 3)
   const stored = JSON.stringify(t)
-  assert.ok(!/SECRETX[A-G]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-G]\d.{0,20}/)?.[0])
+  assert.ok(!/SECRETX[A-H]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-H]\d.{0,20}/)?.[0])
   for (let i = 0; i < COUNCIL.length; i++) {
     const [label, , want] = COUNCIL[i]
     assert.equal((t.spans[3 * i].output as { body: string }).body, want, `${label}: body`)
@@ -491,7 +506,7 @@ bothEngines('names from a fenced, prefaced or truncated model reply are pseudony
   const replies = ['```json\n[{"name": "Priya Sample", "company": "Querix"}]\n```', 'Here you go: [{"name": "Omar Sample", "company": "Querix"}]', '[{"name": "Lee Sample", "company": "Querix"}, {"name": "Noor Sample", "compa', '{"name":"Dana Sample","note":"Dana Sample leads Querix; Priya Sample advises"}']
   let i = 0
   const stub = { complete: async () => replies[i++] }
-  const c = beginScanTrace({ id: 'job-names', user_id: 'tenant-N', attempts: 1, query: 'q' }, { fetchImpl: (async () => new Response('Priya Sample and Omar Sample and Lee Sample and Noor Sample spoke', { status: 200 })) as typeof fetch }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, finishMs: 10_000 })!
+  const c = beginScanTrace({ id: 'job-names', user_id: 'tenant-N', attempts: 1, query: 'q' }, { fetchImpl: (async () => new Response('Priya Sample and Omar Sample and Lee Sample and Noor Sample spoke; see https://linkedin.com/in/jane-synthetic-slug and https://www.linkedin.com/in/omar-synthetic-slug/', { status: 200 })) as typeof fetch }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, finishMs: 10_000 })!
   const p = c.recorder.providers({ anthropic: stub as never }).anthropic as { complete: (k: string, p: string) => Promise<string> }
   for (let k = 0; k < replies.length; k++) await p.complete('sk-ant-syntheticproviderkey', 'extract')
   await (await c.deps.fetchImpl!('https://page.synthetic.example/people')).text()
@@ -501,7 +516,24 @@ bothEngines('names from a fenced, prefaced or truncated model reply are pseudony
   assert.match((t.spans[0].output as { text: string }).text, /^```json\n\[\{"name": "Person-[0-9a-f]{6}", "company": "Querix"\}\]\n```$/)
   assert.match((t.spans[1].output as { text: string }).text, /^Here you go: \[\{"name": "Person-[0-9a-f]{6}"/)
   assert.match((t.spans[2].output as { text: string }).text, /^\[\{"name": "Person-[0-9a-f]{6}", "company": "Querix"\}, \{"name": "Person-[0-9a-f]{6}", "compa$/)
-  assert.match((t.spans[4].output as { body: string }).body, /^Person-[0-9a-f]{6} and Person-[0-9a-f]{6} and Person-[0-9a-f]{6} and Person-[0-9a-f]{6} spoke$/)
+  // R3-8: LinkedIn /in/ slugs become consistent redacted-<10 hex> tokens
+  assert.match((t.spans[4].output as { body: string }).body, /^Person-[0-9a-f]{6} and Person-[0-9a-f]{6} and Person-[0-9a-f]{6} and Person-[0-9a-f]{6} spoke; see https:\/\/linkedin\.com\/in\/redacted-[0-9a-f]{10} and https:\/\/www\.linkedin\.com\/in\/redacted-[0-9a-f]{10}\/$/)
+  assert.ok(!stored.includes('synthetic-slug'))
+})
+
+// Probe F3: non-plain values under a credential-named key in a model span - a Buffer, a typed array, a Map, a Date, a
+// digit array, a byte map - go whole; ordinary fields beside them stay.
+bothEngines('a Buffer, typed array, Map, Date, digit array or byte map under a credential-named key is redacted whole', async ({ db }) => {
+  const bytes = Buffer.from('SECRETXI1-bytes')
+  const research = async () => ({ text: '[]', citedUrls: ['https://a.example/'], max_tokens: 300, password: bytes, api_key: new Uint8Array(bytes), session: new Map([['k', 'SECRETXI2']]), token: new Date('2026-01-02T03:04:05Z'), otp: [4, 9, 3, 8, 2, 7], secret: { 0: 72, 1: 73 }, tokens: { input: 5, output: 7 } })
+  const c = beginScanTrace({ id: 'job-buf', user_id: 'tenant-B', attempts: 1, query: 'q' }, {}, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, finishMs: 10_000 })!
+  const p = c.recorder.providers({ anthropic: { research } as never }).anthropic as { research: (k: string, p: string) => Promise<unknown> }
+  await p.research('k', 'Write up to 6 web search queries. hello')
+  const t = (await getTrace(db, 'tenant-B', (await c.finish('done'))!))!
+  const out = t.spans[0].output as Record<string, unknown>
+  const j = JSON.stringify(out)
+  assert.ok(!j.includes([...bytes].slice(0, 4).join(',')) && !j.includes(`"0":${bytes[0]}`) && !j.includes('SECRETXI') && !j.includes('4,9,3,8,2,7') && !j.includes('"0":72'), j)
+  assert.deepEqual([out.text, out.citedUrls, out.max_tokens, out.password, out.api_key, out.session, out.token, out.otp, out.secret, out.tokens], ['[]', ['https://a.example/'], 300, '[secret]', '[secret]', '[secret]', '[secret]', '[secret]', '[secret]', { input: 5, output: 7 }])
 })
 
 // R3-6: a failed read of the run's leads fails the store (nothing kept), never a complete zero-lead trace.
@@ -551,14 +583,14 @@ test('credential-named keys: redacted at any nesting, in arrays, in JSON-in-stri
   const t = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'http', name: 'http', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/' },
     output: { top: obj, ord, deep: { a: [{ b: { c: obj } }] }, as_json: JSON.stringify({ inner: obj, ord }), twice: JSON.stringify({ s: JSON.stringify({ x: [obj] }) }),
       counts: { max_tokens: 300, input_tokens: 12, tokens: 5, key: 7, session: true, password: null },
-      under_credential: { credentials: { username: `${V}user`, nested: { deeper: `${V}deep` }, n: 1 } } } }] }), Buffer.alloc(16, 2))
+      holder: { credentials: { username: `${V}user`, nested: { deeper: `${V}deep` }, n: 1 } } } }] }), Buffer.alloc(16, 2))
   const j = JSON.stringify(t)
   assert.ok(!j.includes(V), j.slice(j.indexOf(V) - 80, j.indexOf(V) + 60))
   for (let i = 0; i < ORDINARY_KEYS.length; i++) assert.ok(j.includes(`${O} ${i}`), ORDINARY_KEYS[i])
   const o = t.spans[0].output as Record<string, unknown>
   for (const k of CREDENTIAL_KEYS) assert.equal((o.top as Record<string, unknown>)[k], '[secret]', k)
   assert.deepEqual(o.counts, { max_tokens: 300, input_tokens: 12, tokens: 5, key: '[secret]', session: true, password: null })   // `key: 7` is not count-shaped: it goes; booleans and null never do
-  assert.deepEqual(o.under_credential, { credentials: { username: '[secret]', nested: { deeper: '[secret]' }, n: '[secret]' } })   // a number inside a credential object goes too
+  assert.deepEqual(o.holder, { credentials: "[secret]" })   // the whole object under a credential name goes (holder itself is an ordinary key)
   assert.deepEqual(JSON.parse(o.as_json as string).ord, ord)
   assert.deepEqual(JSON.parse(JSON.parse(o.twice as string).s), { x: [Object.fromEntries(CREDENTIAL_KEYS.map(k => [k, '[secret]']))] })
   // the same names as URL query parameters, `k: v`, `k=v`, quoted JSON-ish fragments and header lines in prose
@@ -601,7 +633,7 @@ test('credential values are redacted whole: quoted values with spaces, numeric v
   const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'http', name: 'http', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/' }, output: { body: JSON.stringify(body), direct: body } }] }), Buffer.alloc(16, 4))
   // numbers inside a credential-named object or array go too (cookie value, secrets list, a pin under auth), except under a count/limit/lifetime key
   const want = { password: '[secret]', otp: '[secret]', token: '[secret]', api_key: '[secret]', max_tokens: 300, tokens: 5, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }, token_count: 4, key_count: 2, page: 2, expires_in: 3600, session: true, secret: null,
-    auth: { session: { id: '[secret]', expires_in: 3600 } }, credentials: [{ pin: '[secret]', token: '[secret]', max_tokens: 7 }], cookie: { name: '[secret]', value: '[secret]' }, secrets: ['[secret]'], otp_number: '[secret]', input_password: '[secret]' }
+    auth: '[secret]', credentials: '[secret]', cookie: '[secret]', secrets: '[secret]', otp_number: '[secret]', input_password: '[secret]' }
   assert.deepEqual(JSON.parse((r.spans[0].output as { body: string }).body), want)
   assert.deepEqual((r.spans[0].output as { direct: unknown }).direct, want)
 })
