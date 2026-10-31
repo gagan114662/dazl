@@ -10,8 +10,10 @@ import {getAuthDb} from '../../lib/auth-db.ts'
 import {POST,GET} from '../../app/api/leads/play-research/route.ts'
 const job='a'.repeat(24),body={job_id:job,company:'Epoch',signal:'First sales job claim',source_url:'https://epoch.example/jobs',excerpt:'Epoch is hiring a first sales representative in London.'}
 const request=(body:string,extra:Record<string,string>={})=>new NextRequest('https://dazl.test/api/leads/play-research',{method:'POST',headers:{'content-type':'application/json',host:'dazl.test',...extra},body})
+const GET_ROUTE = 'GET /api/leads/play-research', POST_ROUTE = 'POST /api/leads/play-research'
+assert.ok(GET_ROUTE&&POST_ROUTE)
 const read=()=>GET(new NextRequest('https://dazl.test/api/leads/play-research?job_id='+job))
-test('actual endpoint persists and reloads research only; auth/role/tenant/rate/origin/validation/error boundaries',async()=>{
+test('GET /api/leads/play-research and POST /api/leads/play-research persist/reload with auth/role/tenant/rate/origin/validation/error boundaries',async()=>{
  const db=new Database(':memory:');migrateAllSqlite(db);setScanDb(db);resetCalls();const limiter=getAuthDb()
  try{
  db.prepare("INSERT INTO users(id,email,password_hash,salt) VALUES('A','a@example.test','test','test')").run()
