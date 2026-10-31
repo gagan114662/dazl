@@ -46,8 +46,13 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const dayMonth = (d: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); return m && +m[2] >= 1 && +m[2] <= 12 ? `${+m[3]} ${MONTHS[+m[2] - 1]} ${m[1]}` : d }
 // The card's date line: the claimed event date when there is one; else the page's published date, saying the event
 // date is unknown; else "No dated source". A date is never invented for an undated lead.
-export function cardDate(eventDate: string | null, publishedAt?: string | null): string {
-  if (eventDate) return `claimed event date ${dayMonth(eventDate)}`
+export function cardDate(eventDate: string | null, publishedAt?: string | null, opts: { dayVerified?: boolean; windowMissed?: boolean } = {}): string {
+  // A proven event day is verified, not "claimed" (#498 chip coherence); anything unproven stays claimed.
+  if (eventDate) {
+    if (opts.dayVerified && opts.windowMissed) return `event date ${dayMonth(eventDate)} (verified on the cited source; outside the requested window)`
+    if (opts.dayVerified) return `event date ${dayMonth(eventDate)} (verified on the cited source)`
+    return `claimed event date ${dayMonth(eventDate)}`
+  }
   if (publishedAt) return `published ${dayMonth(publishedAt)}, event date unknown`
   return 'No dated source'
 }
@@ -77,7 +82,7 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
     why: firstSentence(l.why?.trim() || l.signal),
     sourceUrl: l.source_url,
     sourceHost,
-    date: cardDate(l.event_date, l.published_at),
+    date: cardDate(l.event_date, l.published_at, { dayVerified: l.day_verified === true, windowMissed: l.window_missed === true }),
     approve: approveState(l),
   }
 }

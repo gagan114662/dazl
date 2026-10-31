@@ -48,6 +48,7 @@ import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
+import { isHiringTrigger } from './scoreboard.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -276,6 +277,13 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 // The verifier's date rejections (verifyEvidence): a held copy whose claimed day is one of these stays held.
 const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
 
+// A job board's structured publish stamp proves the day THIS HIRING POSTING went up - never a funding round or any
+// other company event (#460 contract). Only a hiring-shaped signal may take the ats_structured proof; anything else
+// falls through to page binding or fails closed.
+// ats_structured is a HIRING-ONLY proof label: the write guard is the canonical strict trigger test (signal kind
+// when the grader has assigned one, strict hiring wording otherwise). The old broad text regex matched 'opening ...'
+// expansions and could persist a false hiring-proof label; consumer fail-closed is no excuse for a false persisted label.
+
 export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
@@ -312,9 +320,15 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // A claimed day the verifier's date rules reject (stale, future, malformed) is left as it is: verifyEvidence below sends it to review,
     // exactly as before. Unbinding it first would launder it into a verified undated lead.
     const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
-    if (page && !isFail(page) && cIn.event_date && !claimedRejected && structuredDates?.get(canonUrl(cIn.source_url)) !== cIn.event_date) {
-      const b = eventDateBound(cIn.event_date, page.text, cIn.excerpt, cIn.company)
-      if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
+    if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
+      if (isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null) && structuredDates?.get(canonUrl(cIn.source_url)) === cIn.event_date) {
+        // A job board's own structured publish date for exactly this posting URL: proves THIS hiring posting's day only, never funding or another event.
+        c0 = { ...cIn, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
+      } else {
+        const b = eventDateBound(cIn.event_date, page.text, cIn.excerpt, cIn.company)
+        if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
+        else c0 = { ...cIn, event_date_proof: 'page_bound', event_date_proof_note: b.why.slice(0, 200) }
+      }
     }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
@@ -342,9 +356,14 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         // The same date binding as a fetched page (#460 review): the held copy must tie the claimed day to this company and event, or the candidate is undated.
         let cc = c
         const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
-        if (cc.event_date && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && structuredDates?.get(canonUrl(cc.source_url)) !== cc.event_date) {
-          const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
-          if (!b.bound) cc = { ...cc, event_date: null, timing_note: `the claimed event date ${cc.event_date} is not tied to this company and event by the held copy (${b.why}); treated as undated`.slice(0, 300) }
+        if (cc.event_date && !(!claimed.ok && DATE_REJECTS.has(claimed.reason))) {
+          if (isHiringTrigger(cc.signal, (cc as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null) && structuredDates?.get(canonUrl(cc.source_url)) === cc.event_date) {
+            cc = { ...cc, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
+          } else {
+            const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
+            if (!b.bound) cc = { ...cc, event_date: null, timing_note: `the claimed event date ${cc.event_date} is not tied to this company and event by the held copy (${b.why}); treated as undated`.slice(0, 300) }
+            else cc = { ...cc, event_date_proof: 'page_bound', event_date_proof_note: b.why.slice(0, 200) }
+          }
         }
         // ...and the quote naming an old year keeps it held too, as on a fetched page (resolveTiming): an undated copy is not a fresh one
         const oldYear = resolveTiming(cp.text, cc.excerpt, null, now.getFullYear()).olderYear
@@ -499,14 +518,14 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
     const ins = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     const insertedKeys = new Set<string>()
-    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)',
     )
-    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
@@ -1201,7 +1220,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     } else if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = (icpForSources ? icpTextFor(icpForSources, job.query ?? '') : `${job.business_name} sells to ${job.industry} companies in ${job.location}`) + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
-      const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl)
+      const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl, { windowDays: parseWindowDays(job.query ?? '') ?? icpForSources?.window_days ?? null, now: deps.now ?? new Date() })
       if (grades) {
         // ICP match gate: a mismatch on a criterion the ICP specifies moves the lead
         // to the hidden lane with the reason named. 'unknown' never gates.
