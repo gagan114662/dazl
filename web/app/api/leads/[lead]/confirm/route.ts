@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { confirmLeadReview, unconfirmLeadReview } from '@/lib/scan/review-confirm'
+import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   if (!(await rateLimit(`confirm-lead:${g.user!.tenantId}`, 60, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const confirmed = await confirmLeadReview(await getDb(), g.user!.tenantId, lead)
   if (!confirmed) return NextResponse.json({ error: 'Lead not found in your review list' }, { status: 404 })
+  await audit(g.user!, req, { action: 'pipeline.confirmed', resource: 'lead', id: lead })
   return NextResponse.json({ confirmed: true })
 }
 
@@ -39,5 +41,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ l
   if (!(await rateLimit(`confirm-lead:${g.user!.tenantId}`, 60, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const withdrawn = await unconfirmLeadReview(await getDb(), g.user!.tenantId, lead)
   if (!withdrawn) return NextResponse.json({ error: 'No confirmation to withdraw' }, { status: 404 })
+  await audit(g.user!, req, { action: 'pipeline.unconfirmed', resource: 'lead', id: lead })
   return NextResponse.json({ confirmed: false })
 }

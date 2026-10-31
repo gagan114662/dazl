@@ -5,8 +5,8 @@ import { getDb } from '@/lib/db/client'
 import { writeAudit, connectorStatus, removeCredential, readRecentAudit, writeCredential } from '@/lib/connectors/store'
 import { sameOriginJson } from '@/lib/same-origin'
 import { enrichmentWriteLimit } from '@/lib/settings/enrichment-guard'
+import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
-
 
 const CONNECTORS = ['enrich:apollo', 'enrich:pdl']
 
@@ -33,12 +33,13 @@ export async function POST(req: NextRequest) {
   if (!body || !body.connector || !CONNECTORS.includes(body.connector)) return NextResponse.json({ error: 'Unknown connector' }, { status: 400 })
   const db = await getDb()
   if (body.disconnect) {
-    await removeCredential(db, user.tenantId, body.connector)
+    if (await removeCredential(db, user.tenantId, body.connector)) await audit(user, req, { action: 'credential.removed', resource: 'enrichment', id: body.connector, summary: { connector: body.connector } })
     return NextResponse.json({ ok: true, disconnected: true })
   }
   const key = (body.key ?? '').trim()
   if (key.length < 16 || key.length > 200) return NextResponse.json({ error: 'That does not look like an API key' }, { status: 400 })
   await writeCredential(db, user.tenantId, body.connector, key)
   await writeAudit(db, { tenantId: user.tenantId, connector: body.connector, lookup: 'key saved', status: 'ok', results: 0 })
+  await audit(user, req, { action: 'credential.saved', resource: 'enrichment', id: body.connector, summary: { connector: body.connector } })
   return NextResponse.json({ ok: true })
 }

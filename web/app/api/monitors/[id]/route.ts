@@ -3,6 +3,7 @@ import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { deleteMonitor, setMonitorEnabled } from '@/lib/monitors'
+import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -14,7 +15,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (!/^[a-f0-9]{24}$/.test(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const body = await req.json().catch(() => null)
   if (typeof body?.enabled !== 'boolean') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!(await setMonitorEnabled(await getDb(), user.tenantId, id, body.enabled))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  const db = await getDb()
+  if (!(await db.get('SELECT 1 FROM monitors WHERE id = ? AND user_id = ?', [id, user.tenantId]))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  // a toggle to the state the monitor is already in changes nothing, so it records nothing; "changed" is decided in the
+  // UPDATE itself (lib/monitors.ts), so of two interleaved toggles the one that flipped the row is the one recorded
+  if (await setMonitorEnabled(db, user.tenantId, id, body.enabled)) await audit(user, req, { action: body.enabled ? 'monitor.enabled' : 'monitor.disabled', resource: 'monitor', id })
   return NextResponse.json({ ok: true })
 }
 
@@ -26,5 +31,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const { id } = await params
   if (!/^[a-f0-9]{24}$/.test(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (!(await deleteMonitor(await getDb(), user.tenantId, id))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  await audit(user, req, { action: 'data.deleted', resource: 'monitor', id })
   return NextResponse.json({ ok: true })
 }

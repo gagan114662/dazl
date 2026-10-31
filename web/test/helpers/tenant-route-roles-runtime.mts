@@ -1,6 +1,7 @@
 // Every session route handler, called by a member whose role does not allow the handler's action
 // (test/tenant-isolation-manifest.ts `role`, lib/workspaces.ts ACTIONS), must refuse with 403 and change nothing. A
-// viewer's reads still work. Runs under tenant-route-loader.mjs: requireUser/getScanDb come from tenant-route-db.ts.
+// viewer's reads still work. The one write a refusal may make is the audit trail's own denied event (lib/audit.ts),
+// held to exactly that below. Runs under tenant-route-loader.mjs: requireUser/getScanDb come from tenant-route-db.ts.
 // Any outbound fetch fails the run.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -16,7 +17,8 @@ globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw ne
 
 function snapshot(db: Database.Database): string {
   // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(t => t.name)
+  // audit_events is checked on its own: a refusal may append its denied event, and nothing else.
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases', 'audit_events') ORDER BY name").all() as { name: string }[]).map(t => t.name)
   return JSON.stringify(tables.map(t => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]))
 }
 
@@ -41,6 +43,7 @@ test('a member whose role does not allow a route is refused with 403 and changes
   const before = snapshot(db)
   const failures: string[] = []
   let refused = 0, reads = 0
+  const deniedEvents: string[] = []
   for (const role of ROLES) {
     setUser({ id: 'A', actorId: 'M', role, business_name: 'Acme' })
     for (const r of ROUTES) {
@@ -49,6 +52,8 @@ test('a member whose role does not allow a route is refused with 403 and changes
       if (res.status !== 403) failures.push(`${role} ${r.method} /api/${r.path}: got ${res.status}, needs ${r.role}`)
       else assert.deepEqual(await res.json(), { error: 'forbidden', needs: r.role })
       if (snapshot(db) !== before) failures.push(`${role} ${r.method} /api/${r.path}: data changed`)
+      // the same member's repeated refusals within a minute are recorded once (route.ts, audit-denied rate limit)
+      if (r.path === 'workspace/audit' && deniedEvents.length === 0) deniedEvents.push(`A M audit.read denied ${role}`)
       refused++
     }
   }
@@ -77,6 +82,10 @@ test('a member whose role does not allow a route is refused with 403 and changes
     stale++
   }
   assert.deepEqual(failures, [])
+  // the only audit rows are the refused audit reads' own denied events, in the workspace that was asked for
+  const trail = db.prepare('SELECT tenant_id, actor_id, action, decision, summary FROM audit_events ORDER BY at, seq').all() as { tenant_id: string; actor_id: string; action: string; decision: string; summary: string }[]
+  assert.deepEqual(trail.map(e => `${e.tenant_id} ${e.actor_id} ${e.action} ${e.decision} ${JSON.parse(e.summary).role}`), deniedEvents)
+  assert.ok(deniedEvents.length > 0)
   assert.equal(fetchCalls.length, 0, 'no network call')
   console.log('ROLES', refused, reads, 'STALE', stale)
 

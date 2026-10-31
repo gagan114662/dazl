@@ -7,8 +7,8 @@ import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, pl
 import { tinyfishEnabled } from '@/lib/search/tinyfish'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
+import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
-
 
 // Status never includes a credential. When the operator has not enabled the tier, it reports available: false.
 export async function GET() {
@@ -44,11 +44,28 @@ export async function POST(req: NextRequest) {
   const p = body.platform
   if (body.action === 'consent') {
     if (body.accept !== true || body.version !== CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
+    // accepting the version already on record changes nothing, so it records nothing
+    const had = await readConsent(db, user.tenantId, scopeFor(p))
     await writeConsent(db, user.tenantId, scopeFor(p))
+    if (!had) await audit(user, req, { action: 'consent.accepted', resource: 'social', id: p, summary: { platform: p, version: CONSENT_VERSION } })
     return NextResponse.json({ ok: true })
   }
-  if (body.action === 'revoke') { await removeConsent(db, user.tenantId, scopeFor(p)); await setEnabled(db, user.tenantId, connectorId(p), false); return NextResponse.json({ ok: true }) }
-  if (body.action === 'toggle' && typeof body.enabled === 'boolean') return NextResponse.json({ ok: await setEnabled(db, user.tenantId, connectorId(p), body.enabled) })
+  if (body.action === 'revoke') {
+    // each change revoke makes is recorded on its own: the notice removed (any version; several platforms share one),
+    // and this platform's channel turned off if it was on. A revoke that changes neither records nothing.
+    const removed = await removeConsent(db, user.tenantId, scopeFor(p))
+    const turnedOff = await setEnabled(db, user.tenantId, connectorId(p), false)
+    if (removed) await audit(user, req, { action: 'consent.revoked', resource: 'social', id: p, summary: { platform: p } })
+    if (turnedOff) await audit(user, req, { action: 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
+    return NextResponse.json({ ok: true })
+  }
+  if (body.action === 'toggle' && typeof body.enabled === 'boolean') {
+    // a toggle to the state the channel is already in changes nothing, so it records nothing; "changed" is decided in
+    // the UPDATE itself (lib/connectors/store.ts), so interleaved toggles each record exactly the flip they made
+    const ok = !!(await db.get('SELECT 1 FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [user.tenantId, connectorId(p)]))
+    if (ok && await setEnabled(db, user.tenantId, connectorId(p), body.enabled)) await audit(user, req, { action: body.enabled ? 'connector.enabled' : 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
+    return NextResponse.json({ ok })
+  }
   if (body.action === 'save') {
     const rl = (await rateLimit(`adv:${user.tenantId}`, 10, 60 * 60 * 1000))
     if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
@@ -57,6 +74,7 @@ export async function POST(req: NextRequest) {
     if (session.length < 10 || session.length > 8000) return NextResponse.json({ error: 'That does not look like a valid session' }, { status: 400 })
     if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
     await writeCredential(db, user.tenantId, connectorId(p), session)
+    await audit(user, req, { action: 'credential.saved', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok: true, last4: session.slice(-4) })
   }
   return NextResponse.json({ error: 'Bad request' }, { status: 400 })
@@ -70,5 +88,7 @@ export async function DELETE(req: NextRequest) {
 
   const p = req.nextUrl.searchParams.get('platform')
   if (!isAdvPlatform(p)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  return NextResponse.json({ ok: await removeCredential(await getDb(), user.tenantId, connectorId(p)) })
+  const ok = await removeCredential(await getDb(), user.tenantId, connectorId(p))
+  if (ok) await audit(user, req, { action: 'credential.removed', resource: 'social', id: p, summary: { platform: p } })
+  return NextResponse.json({ ok })
 }

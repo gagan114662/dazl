@@ -51,9 +51,11 @@ export function migrateReplies(db: Database.Database): void {
 
 export const acceptReadConsent = (db: Database.Database, tenantId: string) =>
   db.prepare("INSERT INTO mail_read_consent (tenant_id, version) VALUES (?, ?) ON CONFLICT(tenant_id) DO UPDATE SET version = excluded.version, accepted_at = CAST(strftime('%s','now') AS INTEGER)").run(tenantId, READ_CONSENT_VERSION)
-export const revokeReadConsent = (db: Database.Database, tenantId: string) => {
-  db.prepare('DELETE FROM mail_read_consent WHERE tenant_id = ?').run(tenantId)
+// Whether a consent row (any version) was removed, so the caller can tell a revoke from a no-op.
+export const revokeReadConsent = (db: Database.Database, tenantId: string): boolean => {
+  const removed = db.prepare('DELETE FROM mail_read_consent WHERE tenant_id = ?').run(tenantId).changes > 0
   db.prepare('UPDATE autopilot_settings SET followups_enabled = 0 WHERE tenant_id = ?').run(tenantId)
+  return removed
 }
 export const hasReadConsent = (db: Database.Database, tenantId: string) =>
   (db.prepare('SELECT version FROM mail_read_consent WHERE tenant_id = ?').get(tenantId) as { version: string } | undefined)?.version === READ_CONSENT_VERSION

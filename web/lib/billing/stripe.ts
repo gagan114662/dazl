@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { writePlan } from '../plans.ts'
 import type { Db, Tx, TxBody } from '../db/client.ts'
+import { recordTx } from '../audit.ts'
 
 // Stripe-Signature check: HMAC-SHA256 over `${t}.${rawBody}`, 5-minute replay window.
 // Ported from the repo worker's billing.ts, using node:crypto.
@@ -167,7 +168,7 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     // this check) is refused for both.
     if (o.customer && t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('stripe_customer:' || ?, 0)) AS x", [o.customer])
     if (o.customer && (yield* t.get('SELECT 1 AS x FROM tenant_plans WHERE stripe_customer_id = ? AND tenant_id <> ?', [o.customer, tenantId]))) { ignoredWhy = 'customer_conflict'; return 'ignored' }
-    if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created)
+    if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created, event.id)
     if (!eventFx) return 'ignored'
     yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
     const row = (yield* t.get<PlanRow>(
@@ -186,6 +187,7 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
       yield* writePlan(t, tenantId, 'free')
       yield* t.run('UPDATE tenant_plans SET stripe_reconcile_at = ? WHERE tenant_id = ?', [created, tenantId])
       yield* t.run('DELETE FROM stripe_events WHERE id = ?', [event.id])
+      yield* planEvent(t, tenantId, event, 'billing.plan_held', { plan: 'free', previous: row.plan })
       return 'held'
     }
     if (tie && settled) {
@@ -197,6 +199,7 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     yield* writePlan(t, tenantId, fx.plan)
     if (fx.status) yield* t.run('UPDATE tenant_plans SET subscription_status = ? WHERE tenant_id = ?', [fx.status, tenantId])
     if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
+    yield* planEvent(t, tenantId, event, 'billing.plan_changed', { plan: fx.plan, previous: row.plan, status: fx.status ?? null, ends: fx.ends, reconciled: tie })
     return tie ? 'reconciled' : 'applied'
   })
   // A verified event naming no tenant this store knows (no client_reference_id or metadata.tenant_id, and a customer id
@@ -228,7 +231,7 @@ const logLine = (l: StripeLogLine) => { process.stdout.write(JSON.stringify(l) +
 // tenant's billing status becomes past_due so Settings can say why, even when Stripe's subscription.updated is late.
 // Only for the tenant's current subscription while it is Pro; an invoice of an older or ended subscription, or one
 // created before the event that last set the plan, changes nothing.
-function* paymentFailed(t: Tx, tenantId: string, subscription: string | undefined, created: number | null): TxBody<ApplyResult> {
+function* paymentFailed(t: Tx, tenantId: string, subscription: string | undefined, created: number | null, eventId: string): TxBody<ApplyResult> {
   const row = yield* t.get<PlanRow>(
     `SELECT plan, stripe_subscription_id, stripe_event_at, stripe_reconcile_at FROM tenant_plans WHERE tenant_id = ?${t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [tenantId])
   if (!row || !subscription || subscription !== row.stripe_subscription_id) return 'ignored'
@@ -237,7 +240,15 @@ function* paymentFailed(t: Tx, tenantId: string, subscription: string | undefine
   if (row.plan !== 'pro') return 'ignored'
   yield* t.run("UPDATE tenant_plans SET subscription_status = 'past_due' WHERE tenant_id = ?", [tenantId])
   if (created !== null) yield* t.run('UPDATE tenant_plans SET stripe_event_at = ? WHERE tenant_id = ? AND (stripe_event_at IS NULL OR stripe_event_at < ?)', [created, tenantId, created])
+  yield* planEvent(t, tenantId, { id: eventId, type: 'invoice.payment_failed' }, 'billing.payment_failed', { status: 'past_due' })
   return 'applied'
+}
+
+// The audit trail (lib/audit.ts) for a plan change Stripe made: written in the transaction that applies it, so the
+// change and its event commit together. The actor is the Stripe service; the Stripe event id is the correlation id.
+function* planEvent(t: Tx, tenantId: string, event: { id: string; type: string }, action: string, summary: Record<string, unknown>): TxBody<void> {
+  const id = /^evt_[A-Za-z0-9]{1,64}$/.test(event.id) ? event.id : null
+  yield* recordTx(t, { tenantId, actorId: 'stripe', actorKind: 'service', action, resourceType: 'plan', resourceId: id, correlationId: id, summary: { ...summary, event_type: event.type } })
 }
 
 function baseUrl() {

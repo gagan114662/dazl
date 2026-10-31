@@ -172,6 +172,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'watch', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'watch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'workspace', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'workspace/audit', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/audit-routes-runtime.mts' }, role: 'members' },
   { path: 'workspace/invitations/accept', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'read' },
   { path: 'workspace/invitations', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'members' },
   { path: 'workspace/invitations', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'members', fresh: true },
@@ -181,5 +182,4 @@ export const ROUTES: RouteEntry[] = [
   { path: 'workspace/members', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
   { path: 'workspace/members', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
   { path: 'workspace/switch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'read' },
-
 ]

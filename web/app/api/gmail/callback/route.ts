@@ -3,6 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { completeOAuth } from '@/lib/gmail/oauth'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 
 export async function GET(req: NextRequest) {
@@ -15,6 +16,7 @@ export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.get('error') || !code || !state) return back('denied')
   try {
     await completeOAuth(getScanDb(), user.tenantId, code, state)
+    await audit(user, req, { action: 'credential.saved', resource: 'gmail' })
     return back('connected')
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/gmail/callback', method: 'GET', tenantId: user.tenantId, requestId: requestIdOf(req) })

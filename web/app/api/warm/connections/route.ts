@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { connectionImportStatus, deleteConnections, importConnectionsCsv, MAX_IMPORT_ROWS } from '@/lib/warm/connections'
+import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 
 // The user's OWN LinkedIn connections export (Settings -> Data privacy -> Connections.csv),
@@ -44,5 +45,6 @@ export async function DELETE(req: NextRequest) {
   const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   const deleted = await deleteConnections(await getDb(), user.tenantId)
+  if (deleted > 0) await audit(user, req, { action: 'data.deleted', resource: 'warm_connections', summary: { rows: deleted } })
   return NextResponse.json({ deleted })
 }
