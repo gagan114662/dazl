@@ -210,7 +210,7 @@ export default function Journey() {
           </>}
         {j.play && playOffer !== undefined && <div className="mt-4 pt-4 border-t border-[var(--line)]" data-testid="journey-play-offer"><PlayOfferCard jobId={j.play.id} offer={playOffer} onChange={o => setPlayOfferOf({ id: j.play!.id, offer: o })} /></div>}
         {icp && <div className="mt-4 pt-4 border-t border-[var(--line)] text-sm" data-testid="journey-constraints">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)] mb-2">This play searched with<InfoTip>The reviewed profile this play ran with, exactly as saved. It is not changed when you edit the business profile above.</InfoTip></p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)] mb-2">This play searched with<InfoTip>The stored profile this play ran with. Stored metadata does not prove who reviewed or approved it. It is not changed when you edit the business profile above.</InfoTip></p>
           <div className="flex flex-wrap gap-2">
             {pills.map((t, i) => <span key={t.text + i} className={`pill ${t.kind === 'window' ? 'pill-mint' : t.kind === 'skip' ? 'pill-pink' : 'pill-plain'}`} style={i >= PILLS_SHOWN && !morePills ? { display: 'none' } : undefined} data-testid={t.kind === 'window' ? 'journey-window' : undefined}>{t.text}</span>)}
             {pills.length > PILLS_SHOWN && <button type="button" className="pill pill-plain hover:border-[var(--ink-3)]" aria-expanded={morePills} onClick={() => setMorePills(m => !m)} data-testid="pills-more">{morePills ? 'Show less' : `+${pills.length - PILLS_SHOWN} more`}</button>}

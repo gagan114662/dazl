@@ -1,0 +1,16 @@
+{
+  "ravical": {
+    "source_url": "https://ravical.com/blog/ravical-secures-17m-to-help-accounting-firms-break-the-link-between-growth-and-headcount",
+    "fetched_at": "2026-10-31T06:12:04Z",
+    "method": "fetchPageDetailed(url, async()=>null), no fallback, unedited full Page result",
+    "sha256": "94261562470ed07693d506dce960949d4d54c0288aaf429c610afcb3c23c9fd5",
+    "claim": "Geography parser regression only, not a qualified lead, contact proof, or permission to send."
+  },
+  "helmguard": {
+    "source_url": "https://helmguard.ai/resources/7.3m-seed-announcement",
+    "fetched_at": "2026-10-31T06:12:04Z",
+    "method": "fetchPageDetailed(url, async()=>null), no fallback, unedited full Page result",
+    "sha256": "975bc5ff5570ae6328e9e09e97daacfe1060b19d66f7dccad6c38609bb610bf0",
+    "claim": "Geography parser regression only, not a qualified lead, contact proof, or permission to send."
+  }
+}

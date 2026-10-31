@@ -6,7 +6,8 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { rateLimit } from '@/lib/rate-limit'
-import { denied } from '@/lib/workspace-access'
+import { denied, stale } from '@/lib/workspace-access'
+
 
 export async function GET() {
   const user = await requireUser()
@@ -28,6 +29,8 @@ export async function POST(req: NextRequest) {
   switch (body?.action) {
     case 'save': {
       const cannot = denied(user, 'configure'); if (cannot) return cannot
+      const old = stale(user); if (old) return old
+
       const provider = body?.provider
       if (!['hubspot', 'pipedrive', 'webhook'].includes(provider)) return NextResponse.json({ error: 'Pick HubSpot, Pipedrive or webhook' }, { status: 400 })
       const key = typeof body?.key === 'string' ? body.key.trim() : ''
@@ -46,6 +49,7 @@ export async function POST(req: NextRequest) {
     }
     case 'disconnect': {
       const cannot = denied(user, 'configure'); if (cannot) return cannot
+      const old = stale(user); if (old) return old
       disconnectCrm(db, user.tenantId)
       return NextResponse.json({ ok: true })
     }
@@ -68,6 +72,7 @@ export async function POST(req: NextRequest) {
         if (!dest || !resolveClaim(db, user.tenantId, dest, lead.id, body.created)) return NextResponse.json({ error: 'Nothing to resolve for this lead' }, { status: 409 })
         auditPush(db, user.tenantId, cfg.provider, lead, body.created ? 'resolved_created' : 'resolved_not_created')
         return NextResponse.json({ ok: true })
+
       }
       let attemptId = ''
       if (dest) {
