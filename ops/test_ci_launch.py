@@ -60,3 +60,18 @@ class CiGateTests(unittest.TestCase):
     args=[sys.executable,script,'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-file',str(token),'--preflight',json.dumps(pre),'--launch',json.dumps([sys.executable,str(Path(m.__file__).with_name('safe_launch.py')),'--commit',SHA,'--execute'])]
     r=subprocess.run(' '.join(map(shlex.quote,args))+'; true',shell=True,env={**os.environ,'PYTHONPATH':str(tmp)},capture_output=True,text=True)
     self.assertEqual(r.returncode,0);self.assertFalse(sentinel.exists());self.assertIn('ci_refused',r.stdout)
+
+ def test_main_movement_truncated_results_and_wrong_repo_refuse(self):
+  good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'})for n in m.REQUIRED_CI]
+  with tempfile.TemporaryDirectory() as tmp:
+   token=Path(tmp)/'token';token.write_text('synthetic')
+   for values in [
+    [{'object':{'sha':'b'*40}}],
+    [{'object':{'sha':SHA}},{'total_count':len(good)+1,'check_runs':good}],
+    [{'object':{'sha':SHA}},{'total_count':len(good),'check_runs':good},{'object':{'sha':'b'*40}}],
+   ]:
+    with patch.object(m.urllib.request,'urlopen',side_effect=[Response(v)for v in values]),self.assertRaises(Exception):m.require_ci('gagan114662/dazl',SHA,str(token))
+   with self.assertRaises(ValueError):m.require_ci('other/repo',SHA,str(token))
+ def test_positive_ci_launch_runs_exactly_once(self):
+  with patch.object(m,'bind_launch'),patch.object(m,'require_ci') as ci,patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0))as child:
+   result,code=m.run([['check']],['launch']);self.assertEqual(code,0);self.assertTrue(result['launch_reached']);self.assertEqual(ci.call_count,2);self.assertEqual(child.call_count,2);self.assertEqual(child.call_args.args[0],['launch'])
