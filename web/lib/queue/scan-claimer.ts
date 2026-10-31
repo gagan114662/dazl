@@ -87,8 +87,10 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
   await reapStaleScans(d.domain, lease, clock())
   await mirrorScans(d.domain, q, clock())
   while (d.slots.available()) {
-    // No per-tenant or global cap beyond this instance's run slots, as with the legacy claimer.
-    const claim = await q.claim({ kinds: ['scan'], leaseSeconds: lease, now: clock(), perTenantInFlight: 1_000_000, maxInFlight: 1_000_000 })
+    // No per-tenant or global cap beyond this instance's run slots, as with the legacy claimer. Round-robin across
+    // tenants (#355): a free slot goes to the tenant served longest ago, so one tenant's backlog cannot hold every slot
+    // while another tenant's scan waits.
+    const claim = await q.claim({ kinds: ['scan'], leaseSeconds: lease, now: clock(), perTenantInFlight: 1_000_000, maxInFlight: 1_000_000, order: 'round_robin' })
     if (!claim) return
     const job = await d.domain.get<J>(
       `UPDATE scan_jobs SET status = 'running', attempts = attempts + 1, claimed_at = ?
