@@ -147,6 +147,11 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'batch_id', 'TEXT')
   add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
   add('scan_jobs', 'enrich_finished_at', 'INTEGER')
+  // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
+  // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
+  // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
+  add('leads', 'event_date_proof', "TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured'))")
+  add('leads', 'event_date_proof_reason', 'TEXT CHECK (event_date_proof_reason IS NULL OR length(event_date_proof_reason) <= 200)')
   widenWhyCap(db)
   backfillKindTags(db)
 }

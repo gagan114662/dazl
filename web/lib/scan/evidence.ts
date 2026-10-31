@@ -11,6 +11,8 @@ export interface Candidate {
   score: number
   excerpt: string
   event_date: string | null
+  event_date_proof?: 'page_bound' | 'ats_structured' | null // how a surviving event_date was established (#460); NULL/undefined: unproven, fail closed
+  event_date_proof_reason?: string | null // the short sanitized reason for the proof (<= 200 chars); never a page quote or user text
   published_at?: string | null // the page's publication day (label only; never the event date)
   timing_note?: string | null // how the date was read from the page, or a season/"soon" label with no date (scan/page-timing.ts)
 }

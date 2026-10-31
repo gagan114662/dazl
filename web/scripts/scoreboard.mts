@@ -68,7 +68,7 @@ for (const s of searches) {
   const j = db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null }
   error = error ?? j.error
   const complete = !error?.startsWith('crashed') && !INCOMPLETE.has(j.error ?? '') && j.status !== 'pending' && j.status !== 'running'
-  const raw = db.prepare('SELECT id, name, company, contact, review_reason, event_date, fit, signal, source_url FROM leads WHERE scan_job_id = ?').all(id) as (ScoredLeadInput & { id: string; company: string; signal: string; source_url: string })[]
+  const raw = db.prepare('SELECT id, name, company, contact, review_reason, event_date, event_date_proof, fit, signal, source_url FROM leads WHERE scan_job_id = ?').all(id) as (ScoredLeadInput & { id: string; company: string; signal: string; source_url: string })[]
   const contactsOf = db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = 'contact'")
   const leads = raw.map(l => ({ ...l, contacts: (contactsOf.all(l.id) as { value: string }[]).map(r => r.value) }))
   const score = scoreSearch(leads)
