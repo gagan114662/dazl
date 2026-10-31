@@ -3,7 +3,7 @@
 -- BEFORE UPDATE OF the tenant column or parent key, that refuse a row for a deleted tenant (or under one of its deleted
 -- parents) whether it is inserted or moved there, so in-flight work or a late write cannot recreate erased data and no
 -- row can change hands into a deleted tenant. Generated from lib/db/tenant-guard.ts through scripts/pg-migrate
--- (translate-schema.ts): 164 guard triggers. Do not edit by hand; regenerate.
+-- (translate-schema.ts): 166 guard triggers. Do not edit by hand; regenerate.
 CREATE TABLE tenant_tombstone_keys (
       deleted_tenant TEXT NOT NULL,
       tbl            TEXT NOT NULL,
@@ -268,6 +268,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_memberships ON memberships;
 CREATE TRIGGER tomb_memberships BEFORE INSERT ON memberships FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_memberships();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_memberships_member_id() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.member_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_memberships_member_id ON memberships;
+CREATE TRIGGER tomb_memberships_member_id BEFORE INSERT ON memberships FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_memberships_member_id();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_monitor_runs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -884,6 +892,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_memberships ON memberships;
 CREATE TRIGGER tomb_upd_memberships BEFORE UPDATE OF tenant_id ON memberships FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_memberships();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_memberships_member_id() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.member_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_memberships_member_id ON memberships;
+CREATE TRIGGER tomb_upd_memberships_member_id BEFORE UPDATE OF member_id ON memberships FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_memberships_member_id();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_monitor_runs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

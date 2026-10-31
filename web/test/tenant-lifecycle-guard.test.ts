@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { bothEngines, type EngineCtx } from './helpers/engines.ts'
 import { deleteTenant, tenantScope, tombstone, type Scope } from '../lib/tenant/lifecycle.ts'
-import { guardTriggers, UNGUARDED } from '../lib/db/tenant-guard.ts'
+import { guardTriggers, ACCOUNT_COLUMNS, UNGUARDED } from '../lib/db/tenant-guard.ts'
 import { seedTenantSqlite, snapshotSqlite } from './helpers/tenant-seed-sqlite.ts'
 import { seedTenant, snapshot } from './helpers/tenant-seed.ts'
 
@@ -135,11 +135,37 @@ bothEngines('allowed: the other tenant\'s ordinary updates still succeed: other 
   assert.equal((await tombstone(c.db, A))?.state, 'completed')
 })
 
+// Review (PR #455, R1-2): memberships.member_id names an account without being the row's tenant column, so during a
+// deletion held at 'requested' the account could join another workspace and be deleted anyway, leaving a membership
+// naming a deleted account (decision 9 forbids it). Now the guard refuses it, and the erase step re-checks.
+bothEngines('decision 9 during a held deletion: the account cannot join another workspace or be moved into one; the erase step re-checks it', async c => {
+  await fixture(c)
+  const C = 'guard-team-cccc'
+  await c.db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'team c', 'team', 'someone', 1)", [C])
+  assert.equal((await deleteTenant(c.db, A, { policy: { suppressions: 'erase' }, requestedBy: BY, now: NOW, until: 'requested' })).state, 'requested')
+  await refused(c, "INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'viewer', 2)", [C, A], 'the account under deletion accepting an invitation')
+  await refused(c, 'UPDATE memberships SET member_id = ? WHERE tenant_id = ? AND member_id = ?', [A, B, B], "B's membership moved onto the account under deletion")
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM memberships WHERE member_id = ? AND tenant_id <> ?', [A, A]), 0)
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM memberships WHERE member_id = ? AND tenant_id = ?', [B, B]), 1, "B's membership unchanged")
+  // defence in depth: on a store without the member_id guard, the erase step itself finds the membership and stops
+  await c.db.run(c.kind === 'pg' ? 'DROP TRIGGER tomb_memberships_member_id ON memberships' : 'DROP TRIGGER tomb_memberships_member_id')
+  await c.db.run("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'viewer', 2)", [C, A])
+  await assert.rejects(deleteTenant(c.db, A), /founder belongs to another workspace/)
+  assert.equal((await tombstone(c.db, A))?.state, 'cancelled', 'credentials revoked and parents recorded, nothing erased')
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM users WHERE id = ?', [A]), 1, 'the account still exists')
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM tenant_memory WHERE tenant_id = ?', [A]), 1, 'its data too')
+  // the operator resolves it (the membership goes), the deletion resumes and completes with no membership naming A
+  await c.db.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [C, A])
+  assert.equal((await deleteTenant(c.db, A)).state, 'completed')
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM memberships WHERE member_id = ?', [A]), 0)
+})
+
 bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard, users and organizations too', async c => {
   const scope = await guarded(c)
   const want = guardTriggers(scope).map(g => g.name).sort()
-  assert.equal(want.length, 2 * (scope.length + 2), `${scope.length} guarded tables, users and organizations: two guards each`)
-  assert.equal(want.length, 164)
+  const accountCols = Object.entries(ACCOUNT_COLUMNS).filter(([t]) => scope.some(s => s.table === t)).reduce((n, [, cs]) => n + cs.length, 0)
+  assert.equal(want.length, 2 * (scope.length + 2 + accountCols), `${scope.length} guarded tables, users and organizations, ${accountCols} account column(s): two guards each`)
+  assert.equal(want.length, 166)
   const live = c.kind === 'sqlite'
     ? (await c.db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'tomb_%'")).map(r => r.name)
     : (await c.db.all<{ name: string }>("SELECT DISTINCT trigger_name AS name FROM information_schema.triggers WHERE trigger_schema = current_schema() AND trigger_name LIKE 'tomb_%'")).map(r => r.name)

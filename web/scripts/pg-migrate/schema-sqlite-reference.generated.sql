@@ -1068,6 +1068,8 @@ CREATE TRIGGER tomb_mail_read_consent BEFORE INSERT ON mail_read_consent WHEN EX
 
 CREATE TRIGGER tomb_memberships BEFORE INSERT ON memberships WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
+CREATE TRIGGER tomb_memberships_member_id BEFORE INSERT ON memberships WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.member_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
 CREATE TRIGGER tomb_monitor_runs BEFORE INSERT ON monitor_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_monitor_seen BEFORE INSERT ON monitor_seen WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
@@ -1221,6 +1223,8 @@ CREATE TRIGGER tomb_upd_leads BEFORE UPDATE OF scan_job_id ON leads WHEN EXISTS 
 CREATE TRIGGER tomb_upd_mail_read_consent BEFORE UPDATE OF tenant_id ON mail_read_consent WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_upd_memberships BEFORE UPDATE OF tenant_id ON memberships WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
+
+CREATE TRIGGER tomb_upd_memberships_member_id BEFORE UPDATE OF member_id ON memberships WHEN EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.member_id) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 
 CREATE TRIGGER tomb_upd_monitor_runs BEFORE UPDATE OF monitor_id ON monitor_runs WHEN EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)) BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;
 

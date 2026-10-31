@@ -202,6 +202,9 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     }
   })) return t
   if (!await advance('cancelled', 'erased', function* (tx) {
+    // decision 9 again, with the rows as they are now: the account must not have joined another workspace since the
+    // request (the memberships guard refuses that; this holds on a store without it, and stops before any erase)
+    yield* refuseSharedWorkspace(tx, cols, tenant)
     // unexpired evidence copies may only be deleted under this tenant's purge gate (lib/scan/evidence-copies.ts)
     const gate = has('evidence_purge_gate') && has('lead_evidence_copies')
     if (gate) yield* tx.run('INSERT INTO evidence_purge_gate (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenant])
