@@ -100,6 +100,7 @@ bothEngines('roles and removal: admins never touch owners, the last owner cannot
   await removeMember(db, act('A', 'D', 'owner'), 'O')
   assert.equal(await roleIn(db, 'A', 'O'), null)
   assert.equal(await roleIn(db, 'B2', 'O'), 'viewer', 'only this workspace')
+  await add(db, 'B2', 'A', 'viewer')
   await leave(db, act('A', 'A', 'admin'))
   assert.deepEqual((await listMembers(db, 'A')).map(m => [m.member_id, m.role]), [['D', 'owner']])
 })
@@ -201,4 +202,120 @@ bothEngines('invitation acceptance rechecks the live verified email instead of s
  await db.run('UPDATE users SET email=? WHERE id=?',['newmate@example.test','invite-mate'])
  await assert.rejects(acceptInvitation(db,{actorId:'invite-mate',email:'oldmate@example.test'},inv.token),/wrong_account/)
  assert.equal(await db.get('SELECT 1 FROM memberships WHERE tenant_id=? AND member_id=?',['invite-owner','invite-mate']),undefined)
+})
+
+bothEngines('a link carries its inviter\'s authority: once the inviter is removed or demoted below its role, it adds nothing', async ({ db }) => {
+  await users(db, 'A', 'D', 'E', 'X', 'Y')
+  await add(db, 'A', 'D', 'admin'); await add(db, 'A', 'E', 'owner')
+  const byAdmin = await createInvitation(db, act('A', 'D', 'admin'), 'x@example.test', 'admin')
+  const byOwner = await createInvitation(db, act('A', 'E', 'owner'), 'y@example.test', 'owner')
+  await removeMember(db, OWNER_A, 'D')
+  await changeRole(db, OWNER_A, 'E', 'admin')
+  // a dead link is dead to everyone: a wrong account gets the same 410, not a 403 that would tell it the link is live
+  await assert.rejects(acceptInvitation(db, me('Y'), byAdmin.token), code('invalid_invite'), 'wrong account, dead link')
+  await assert.rejects(acceptInvitation(db, me('X'), byAdmin.token), code('invalid_invite'), 'inviter removed')
+  await assert.rejects(acceptInvitation(db, me('Y'), byOwner.token), code('invalid_invite'), 'inviter demoted below owner')
+  assert.equal(await roleIn(db, 'A', 'X'), null)
+  assert.equal(await roleIn(db, 'A', 'Y'), null)
+  // a demoted inviter who can still grant the role: the link works
+  const stillOk = await createInvitation(db, act('A', 'E', 'admin'), 'x@example.test', 'operator')
+  assert.deepEqual(await acceptInvitation(db, me('X'), stillOk.token), { tenantId: 'A', role: 'operator' })
+})
+
+bothEngines('replacing a pending invitation takes what revoking it would: an admin cannot replace an owner invitation', async ({ db }) => {
+  await users(db, 'A', 'D', 'Y')
+  await add(db, 'A', 'D', 'admin')
+  const owner = await createInvitation(db, OWNER_A, 'y@example.test', 'owner')
+  await assert.rejects(createInvitation(db, act('A', 'D', 'admin'), 'y@example.test', 'viewer'), code('forbidden'))
+  assert.deepEqual((await listInvitations(db, 'A')).map(i => [i.email, i.role]), [['y@example.test', 'owner']])
+  assert.deepEqual(await acceptInvitation(db, me('Y'), owner.token), { tenantId: 'A', role: 'owner' })
+})
+
+bothEngines('no account is left without a workspace; leaving points the account\'s sessions elsewhere', async ({ db }) => {
+  await users(db, 'A', 'B')
+  await add(db, 'A', 'B', 'owner')
+  // B's only other workspace is its own; with that gone, A is its only one
+  await db.run("DELETE FROM memberships WHERE tenant_id = 'B' AND member_id = 'B'")
+  await assert.rejects(removeMember(db, OWNER_A, 'B'), code('only_workspace'))
+  await assert.rejects(leave(db, act('A', 'B', 'owner')), code('only_workspace'))
+  assert.equal(await roleIn(db, 'A', 'B'), 'owner')
+  // with its own workspace back, B may leave A, and its sessions stop pointing at A
+  await add(db, 'B', 'B', 'owner')
+  const t = await createSession('B', db)
+  await switchWorkspace(db, hashToken(t), 'B', 'A')
+  assert.equal((await getSessionUser(t, db))?.tenantId, 'A')
+  await leave(db, act('A', 'B', 'owner'))
+  assert.equal((await db.get<{ a: string | null }>('SELECT active_tenant_id AS a FROM sessions WHERE id = ?', [hashToken(t)]))?.a, null)
+  assert.equal((await getSessionUser(t, db))?.tenantId, 'B', 'the next request acts in B, not refused')
+})
+
+bothEngines('two workspaces dropping the same account at once: one wins, the account keeps a workspace', async ({ db }) => {
+  await users(db, 'X', 'Y')
+  for (let round = 0; round < 5; round++) {
+    const m = `M${round}`
+    await users(db, m)
+    await db.run('DELETE FROM memberships WHERE member_id = ?', [m])
+    await add(db, 'X', m, 'viewer'); await add(db, 'Y', m, 'viewer')
+    const r = await Promise.allSettled([removeMember(db, act('X', 'X', 'owner'), m), leave(db, act('Y', m, 'viewer'))])
+    assert.deepEqual(r.map(x => x.status).sort(), ['fulfilled', 'rejected'], `round ${round}`)
+    assert.ok(r.some(x => x.status === 'rejected' && code('only_workspace')(x.reason)))
+    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM memberships WHERE member_id = ?', [m]))?.n), 1)
+  }
+}, { pgMax: 4 })
+
+bothEngines('an expired invitation does not stand in the way of a new one', async ({ db }) => {
+  await users(db, 'A', 'D')
+  await add(db, 'A', 'D', 'admin')
+  const now = Math.floor(Date.now() / 1000)
+  await createInvitation(db, OWNER_A, 'y@example.test', 'owner', now - INVITE_TTL_S - 1)
+  await createInvitation(db, act('A', 'D', 'admin'), 'y@example.test', 'viewer', now)
+  assert.deepEqual((await listInvitations(db, 'A', now)).map(i => i.role), ['viewer'])
+})
+
+bothEngines('losing authority (demoted or removed) while changing a role, inviting and revoking at once: each action lands only if it ran first', async ({ db }) => {
+  for (const loss of ['demote', 'remove'] as const) for (let i = 0; i < 5; i++) {
+    for (const t of ['memberships', 'invitations', 'organizations', 'users']) await db.run(`DELETE FROM ${t}`)
+    await users(db, 'A', 'D', 'O')
+    await add(db, 'A', 'D', 'admin'); await add(db, 'A', 'O', 'operator')
+    const pending = await createInvitation(db, OWNER_A, `p${i}@example.test`, 'viewer')
+    const D = act('A', 'D', 'admin')
+    const [lost, role, inv, rev] = await Promise.allSettled([
+      loss === 'demote' ? changeRole(db, OWNER_A, 'D', 'viewer') : removeMember(db, OWNER_A, 'D'),
+      changeRole(db, D, 'O', 'viewer'),
+      createInvitation(db, D, `r${i}@example.test`, 'operator'),
+      revokeInvitation(db, D, pending.id),
+    ])
+    assert.equal(lost.status, 'fulfilled', `${loss} ${i}`)
+    assert.equal(await roleIn(db, 'A', 'D'), loss === 'demote' ? 'viewer' : null)
+    // each of D's actions changed something only if it ran before the loss; a refusal left its row exactly as it was
+    assert.equal(await roleIn(db, 'A', 'O'), role.status === 'fulfilled' ? 'viewer' : 'operator')
+    assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM invitations WHERE tenant_id = 'A' AND email LIKE 'r%'"))!.n), inv.status === 'fulfilled' ? 1 : 0)
+    const p = await db.get<{ revoked_at: number | null }>('SELECT revoked_at FROM invitations WHERE id = ?', [pending.id])
+    assert.equal(p?.revoked_at === null, rev.status === 'rejected')
+    for (const r of [role, inv, rev]) if (r.status === 'rejected') assert.ok(code('forbidden')(r.reason), `${loss} ${i}: ${String(r.reason)}`)
+  }
+}, { pgMax: 6 })
+
+bothEngines('invitation variants: email case and lookalikes, tampered tokens, another workspace, the expiry second, the pending cap', async ({ db }) => {
+  await users(db, 'A', 'B')
+  const now = Math.floor(Date.now() / 1000)
+  // the invited email matches whatever case the account uses; a lookalike address never does
+  const inv = await createInvitation(db, OWNER_A, 'q.mixed@example.test', 'viewer', now)
+  for (const email of ['q.mixed@example.test.evil', 'q.mixed+x@example.test', 'qmixed@example.test', 'q.mixed@example.tes', ' q.mixed@exampIe.test'])
+    await assert.rejects(acceptInvitation(db, { actorId: 'B', email }, inv.token, now), code('wrong_account'), email)
+  // a tampered or malformed token is the same 410 as an unknown one, and uses nothing up
+  for (const t of [inv.token.toUpperCase(), inv.token + '0', inv.token.slice(1), '', ' '.repeat(64), inv.token.replace(/^./, c => (c === 'a' ? 'b' : 'a'))])
+    await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'q.mixed@example.test' }, t, now), code('invalid_invite'), JSON.stringify(t))
+  // another workspace's owner cannot revoke or list A's invitation
+  await assert.rejects(revokeInvitation(db, act('B', 'B', 'owner'), inv.id), code('not_found'))
+  assert.deepEqual(await listInvitations(db, 'B', now), [])
+  await db.run('UPDATE users SET email=? WHERE id=?',['Q.Mixed@Example.TEST','B'])
+  assert.deepEqual(await acceptInvitation(db, { actorId: 'B', email: 'Q.Mixed@Example.TEST' }, inv.token, now), { tenantId: 'A', role: 'viewer' })
+  // a link is dead at its expiry second, not one second later
+  const edge = await createInvitation(db, OWNER_A, 'edge@example.test', 'viewer', now - INVITE_TTL_S)
+  await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'edge@example.test' }, edge.token, now), code('invalid_invite'))
+  // at most 50 pending
+  for (let i = 0; i < 50; i++) await createInvitation(db, OWNER_A, `p${i}@example.test`, 'viewer', now)
+  assert.equal((await listInvitations(db, 'A', now)).length, 50)
+  await assert.rejects(createInvitation(db, OWNER_A, 'p51@example.test', 'viewer', now), code('too_many_invites'))
 })

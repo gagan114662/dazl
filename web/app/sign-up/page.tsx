@@ -1,11 +1,14 @@
 "use client"
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { afterSignIn, keepInvite } from '@/lib/invite-return'
 
 export default function SignUp() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => { keepInvite() }, [])
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -23,7 +26,7 @@ export default function SignUp() {
     })
     const data = await res.json()
     if (!res.ok) { setError(data.error || 'Signup failed'); setLoading(false); return }
-    router.push('/app')
+    router.push(afterSignIn())
   }
 
   return (

@@ -1,12 +1,14 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { afterSignIn, keepInvite } from '@/lib/invite-return'
 
 export default function SignIn() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
+    keepInvite()
     const e = new URLSearchParams(window.location.search).get('error')
     const m: Record<string, string> = {
       google_failed: 'Google sign-in did not work. Try again.', google_unavailable: 'Google sign-in is not available right now.',
@@ -28,7 +30,7 @@ export default function SignIn() {
     })
     const data = await res.json()
     if (!res.ok) { setError(data.error || 'Sign in failed'); setLoading(false); return }
-    router.push('/app')
+    router.push(afterSignIn())
   }
 
   return (

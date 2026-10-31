@@ -22,6 +22,7 @@ const members = await import('../../app/api/workspace/members/route.ts')
 const invitations = await import('../../app/api/workspace/invitations/route.ts')
 const accept = await import('../../app/api/workspace/invitations/accept/route.ts')
 const sw = await import('../../app/api/workspace/switch/route.ts')
+const leaveRoute = await import('../../app/api/workspace/leave/route.ts')
 
 const req = (path: string, method: string, body?: unknown) => new NextRequest(`http://localhost${path}`, {
   method, headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -65,7 +66,7 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
 
   // C, the invited account, joins: now acting in A as an operator; the link is used up
   const joined = await call(tc, () => accept.POST(req('/api/workspace/invitations/accept', 'POST', { token })))
-  assert.deepEqual(joined, { status: 200, body: { ok: true, tenant_id: 'A', role: 'operator' } })
+  assert.deepEqual(joined, { status: 200, body: { ok: true, tenant_id: 'A', role: 'operator', switched: true } })
   const ws = await call(tc, () => workspace.GET())
   assert.deepEqual(ws.body.current, { tenant_id: 'A', role: 'operator' })
   assert.deepEqual((ws.body.workspaces as { tenant_id: string }[]).map(w => w.tenant_id), ['C', 'A'])
@@ -78,5 +79,47 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
   assert.deepEqual((await call(tc, () => workspace.GET())).body.current, { tenant_id: 'C', role: 'owner' })
   // the last owner cannot demote themselves
   assert.deepEqual(await call(ta, () => members.PATCH(req('/api/workspace/members', 'PATCH', { member_id: 'A', role: 'admin' }))), { status: 409, body: { error: 'last_owner' } })
+  // A store failure before each side effect: the route fails (500) and nothing changes, the link included
+  for (const id of ['D', 'E']) { await createPasswordUser(user(id)); raw.prepare('UPDATE users SET email_verified_at=1 WHERE id=?').run(id) }
+  const td = await createSession('D')
+  const refuse = (sql: string) => raw.exec(`CREATE TRIGGER dazl_test_refuse ${sql} BEGIN SELECT RAISE(ABORT, 'store refused'); END`)
+  const allow = () => raw.exec('DROP TRIGGER dazl_test_refuse')
+  const fails = async (name: string, token: string, fn: () => Promise<Response>) => {
+    const before = snapshot()
+    await assert.rejects(call(token, fn), /store refused/, name)
+    allow()
+    assert.equal(snapshot(), before, `${name}: a failed write changed A`)
+  }
+  const invD = await call(ta, () => invitations.POST(req('/api/workspace/invitations', 'POST', { email: 'd@example.test', role: 'operator' })))
+  const tokD = String(invD.body.link).split('#t=')[1]
+  refuse('BEFORE INSERT ON memberships')
+  await fails('accept, membership write fails', td, () => accept.POST(req('/api/workspace/invitations/accept', 'POST', { token: tokD })))
+  assert.equal((raw.prepare('SELECT accepted_at FROM invitations WHERE id = ?').get(invD.body.id) as { accepted_at: number | null }).accepted_at, null, 'the link is not used up')
+  assert.equal((await call(td, () => accept.POST(req('/api/workspace/invitations/accept', 'POST', { token: tokD })))).status, 200, 'the same link works once the store does')
+  refuse('BEFORE UPDATE ON memberships')
+  await fails('role change, write fails', ta, () => members.PATCH(req('/api/workspace/members', 'PATCH', { member_id: 'D', role: 'viewer' })))
+  refuse('BEFORE DELETE ON memberships')
+  await fails('removal, write fails', ta, () => members.DELETE(req('/api/workspace/members', 'DELETE', { member_id: 'D' })))
+  const invE = await call(ta, () => invitations.POST(req('/api/workspace/invitations', 'POST', { email: 'e@example.test', role: 'viewer' })))
+  refuse('BEFORE INSERT ON invitations')
+  await fails('replacing an invitation, write fails: the earlier link is not revoked', ta, () => invitations.POST(req('/api/workspace/invitations', 'POST', { email: 'e@example.test', role: 'admin' })))
+  refuse('BEFORE UPDATE ON invitations')
+  await fails('revoke, write fails', ta, () => invitations.DELETE(req('/api/workspace/invitations', 'DELETE', { id: invE.body.id })))
+  const pointer = () => (raw.prepare('SELECT active_tenant_id AS a FROM sessions WHERE user_id = ?').get('D') as { a: string | null }).a
+  assert.equal(pointer(), 'A')
+  refuse('BEFORE DELETE ON memberships')
+  await fails('leave, write fails: the session still points at A', td, () => leaveRoute.POST(req('/api/workspace/leave', 'POST')))
+  assert.equal(pointer(), 'A')
+  assert.equal((raw.prepare("SELECT role FROM memberships WHERE tenant_id = 'A' AND member_id = 'D'").get() as { role: string }).role, 'operator')
+  // the accept commits, then the session switch fails: the answer says so (switched: false), the membership stands
+  const te = await createSession('E')
+  const invE2 = await call(ta, () => invitations.POST(req('/api/workspace/invitations', 'POST', { email: 'e@example.test', role: 'viewer' })))
+  raw.exec("CREATE TRIGGER dazl_test_refuse BEFORE UPDATE OF active_tenant_id ON sessions WHEN NEW.active_tenant_id = 'A' BEGIN SELECT RAISE(ABORT, 'store refused'); END")
+  try {
+    const r = await call(te, () => accept.POST(req('/api/workspace/invitations/accept', 'POST', { token: String(invE2.body.link).split('#t=')[1] })))
+    assert.deepEqual(r, { status: 200, body: { ok: true, tenant_id: 'A', role: 'viewer', switched: false } })
+  } finally { allow() }
+  assert.equal((raw.prepare("SELECT role FROM memberships WHERE tenant_id = 'A' AND member_id = 'E'").get() as { role: string }).role, 'viewer')
+  assert.deepEqual((await call(te, () => workspace.GET())).body.current, { tenant_id: 'E', role: 'owner' })
   console.log('WORKSPACE MEMBERS ok')
 })
