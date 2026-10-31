@@ -201,7 +201,7 @@ Capture is switched on and tuned by configuration, never code:
 | setting | default | meaning |
 | --- | --- | --- |
 | `DAZL_TRACE_CAPTURE` | unset (OFF) | only `1` turns capture on |
-| `DAZL_TRACE_RETENTION_DAYS` | `14` | whole days, 1-365. An invalid value never captures (nothing is kept with a retention nobody chose); the purge then uses 14 |
+| `DAZL_TRACE_RETENTION_DAYS` | `14` | whole days, 1-365. An invalid value never captures and never purges (nothing is kept, and nothing deleted, with a retention nobody chose) |
 
 When on, `runJob` records the attempt with the same `TraceRecorder` the replay harness uses, through seams the run already
 resolves: model providers and the verifier's page fetch via `deps.trace`, TinyFish search/fetch and every other
@@ -224,8 +224,11 @@ Storing happens after the run's own work and is bounded: body reads get 5 s (the
 or the runner slot it holds, from returning.
 
 Retention: each capture deletes its own tenant's rows older than the retention, and the scheduled tick
-(`/api/internal/tick`, `purgeExpiredTraces`) deletes everyone's, whether capture is on or off. Shortening the retention
-takes effect at the next purge. The tick still needs its external scheduler; activating that is not part of this change.
+(`/api/internal/tick`, `purgeExpiredTraces`) deletes everyone's - but only under a retention somebody chose: capture on
+(its retention, 14 by default), or an explicit valid `DAZL_TRACE_RETENTION_DAYS` with capture off (how old rows are
+cleared after capture is turned off). With capture unset, off, or on with an invalid retention the tick deletes zero
+trace rows (`traces_purged: 0`): no retention policy is applied by default. Shortening the retention takes effect at the
+next purge. The tick still needs its external scheduler; activating that is not part of this change.
 
 A stored trace is a recorded, redacted trace: `worldFromTrace` turns it into a private World that replays offline
 (`test/trace-capture.test.ts` proves a capture replays to the same verdict with no world miss). Not recorded yet: the CSV

@@ -20,8 +20,12 @@
 //      Set-Cookie and session_id all count, at any nesting. Under such a key every string is replaced by `[secret]`,
 //      through nested objects and arrays (a cookie given as {name, value}, credentials given as a list). The same names
 //      are recognised as URL query parameters and as `name: value` / `name=value` / `"name": "value"` in prose, a
-//      prompt or an error message. Numbers, booleans and null are never redacted: max_tokens, input_tokens, expires_in
-//      and `tokens: 5` are counts and limits, and every credential dazl can meet in a trace travels as a string.
+//      prompt or an error message, where the WHOLE assigned value goes: a quoted value to its closing quote, spaces and
+//      all (`password: "two words"`), an unquoted one to the next delimiter. A NUMBER assigned to a credential name is a
+//      secret too (password=493827, otp: 493827, `{"token": 112233}`) UNLESS the name is count-shaped: it has a count or
+//      limit word (max_tokens, input_tokens, token_count, num_keys) or only plural credential words (`tokens: 5`), where a
+//      bare number is a count and stays. Booleans and null are never redacted; a number under an ordinary name (page,
+//      expires_in) never is; a number nested inside a credential-named object keeps its own key's judgment.
 //   2. By FAMILY, for a value with no name next to it: provider keys (sk-ant-, sk-, sk-proj-, sk_live_/pk_test_/rk_…),
 //      GitHub (ghp_/gho_/ghu_/ghs_/ghr_ and fine-grained github_pat_), GitLab glpat-, npm_, Slack xox*/xapp-, AWS AKIA,
 //      Google AIza, JWTs, Bearer/Basic authorization values, PEM private-key blocks and Cookie/Set-Cookie header lines.
@@ -42,7 +46,7 @@ const LINKEDIN = /(linkedin\.com\/in\/)([A-Za-z0-9_%-]+)/gi
 // Words that make a field name a credential name (whole words of the split key), and markers that count anywhere in
 // the key because they are commonly written glued together.
 const CREDENTIAL_WORDS = new Set(['token', 'tokens', 'secret', 'secrets', 'key', 'keys', 'apikey', 'password', 'passwords', 'passwd', 'pwd', 'pass', 'passphrase',
-  'credential', 'credentials', 'creds', 'auth', 'authorization', 'authentication', 'oauth', 'cookie', 'cookies', 'session', 'sessionid', 'signature', 'sig', 'jwt', 'bearer',
+  'credential', 'credentials', 'creds', 'passcode', 'auth', 'authorization', 'authentication', 'oauth', 'cookie', 'cookies', 'session', 'sessionid', 'signature', 'sig', 'jwt', 'bearer',
   'pat', 'otp', 'totp', 'csrf', 'xsrf'])
 const GLUED_END = ['token', 'tokens', 'secret', 'secrets', 'password', 'passwd', 'passphrase', 'apikey', 'cookie', 'cookies', 'credential', 'credentials', 'privatekey', 'accesskey', 'secretkey', 'signingkey', 'sessionid', 'jwt', 'csrf']
 const GLUED_ANY = ['passw', 'authoriz', 'authentication']
@@ -51,6 +55,19 @@ export function isCredentialKey(k: string): boolean {
   const compact = k.toLowerCase().replace(/[^a-z0-9]/g, '')
   return keyWords(k).some(w => CREDENTIAL_WORDS.has(w)) || GLUED_END.some(g => compact.endsWith(g)) || GLUED_ANY.some(g => compact.includes(g))
 }
+// A credential-named key under which a bare NUMBER is a count or a limit, not a secret: a count/limit word in the name
+// (max_tokens, input_tokens, token_count, num_keys, cache_read_tokens), or only plural credential words (tokens, keys).
+// Strings under such a key are still secrets; only the numeric exception reads this.
+const COUNT_WORDS = new Set(['max', 'min', 'limit', 'limits', 'count', 'counts', 'num', 'number', 'total', 'input', 'output', 'used', 'usage', 'remaining', 'cache', 'cached',
+  'prompt', 'completion', 'reasoning', 'budget', 'size', 'len', 'length', 'bytes', 'chars', 'per', 'rate'])
+const PLURAL_CREDENTIAL = new Set(['tokens', 'keys', 'secrets', 'credentials', 'creds', 'cookies', 'passwords'])
+export function isCountKey(k: string): boolean {
+  const ws = keyWords(k), cw = ws.filter(w => CREDENTIAL_WORDS.has(w))
+  return ws.some(w => COUNT_WORDS.has(w)) || (cw.length > 0 && cw.every(w => PLURAL_CREDENTIAL.has(w)))
+}
+const NUMBER = /^-?\d+(?:\.\d+)?$/
+// A number assigned to a credential name is a secret unless the name is count-shaped (text and JSON alike).
+const numberIsSecret = (k: string): boolean => isCredentialKey(k) && !isCountKey(k)
 
 // Families: run first, so a key is gone before any other pattern can reshape it.
 const FAMILIES: [RegExp, string][] = [
@@ -64,22 +81,50 @@ const FAMILIES: [RegExp, string][] = [
   [/\b(Set-Cookie|Cookie)\s*:\s*[^\n"'}]+/gi, `$1: ${SECRET}`],
 ]
 // `name: value`, `name=value`, `"name": "value"` in prose, a URL query or an error message, when the name is credential-
-// named. An authorization scheme word (Bearer/Basic) stays, a bare number stays (a count, a page), the value goes. Only
-// a credential name consumes its value: after `https:` or `page=` the scan goes on inside what follows, so the
-// `refresh_token=` in a URL's query is still found. A name starts only where a word starts (the lookbehind): tried from
-// every character, the greedy name would be rescanned once per character of a long word, quadratic on a big body.
-const NAME_SEP = /(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=]\s*["']?/g
-const VALUE = /((?:Bearer|Basic)\s+)?([^\s"'&,;})]+)/y
+// named: the WHOLE assigned value goes. A quoted value (the quote is captured, never consumed) runs to its closing quote,
+// whatever it holds - spaces, delimiters, digits; an escaped quote inside does not close it, and with no closing quote it
+// runs to the end of the line. An unquoted value runs to the next delimiter. An authorization scheme word (Bearer/Basic)
+// stays. A bare unquoted number stays only under a count-shaped name (max_tokens=300, tokens: 5); under password, otp,
+// token, api_key it is the secret. Only a credential name consumes its value: after `https:` or `page=` the scan goes
+// on inside what follows, so the `refresh_token=` in a URL's query is still found. A name starts only where a word
+// starts (the lookbehind): tried from every character, the greedy name would be rescanned once per character of a long
+// word, quadratic on a big body.
+const NAME_SEP = /(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=]\s*(["']?)/g
+const UNQUOTED = /[^\s"'&,;})]+/y
+const SCHEME = /^(?:Bearer|Basic)\s+/i
+const SCHEME_AT = /(?:Bearer|Basic)\s+/iy
+function closingQuote(s: string, from: number, q: string): number {
+  for (let i = from; i < s.length; i++) {
+    if (s[i] === '\\') { i++; continue }
+    if (s[i] === q) return i
+    if (s[i] === '\n') return -1
+  }
+  return -1
+}
 function redactAssigned(s: string): string {
   let out = '', last = 0
   NAME_SEP.lastIndex = 0
   for (let m = NAME_SEP.exec(s); m; m = NAME_SEP.exec(s)) {
     if (!isCredentialKey(m[1])) continue
-    VALUE.lastIndex = NAME_SEP.lastIndex
-    const v = VALUE.exec(s)
-    if (!v || /^\d+$/.test(v[2]) || v[2] === SECRET) continue
-    out += s.slice(last, NAME_SEP.lastIndex) + (v[1] ?? '') + SECRET
-    last = NAME_SEP.lastIndex = VALUE.lastIndex
+    const quote = m[2], from = NAME_SEP.lastIndex
+    let end: number
+    if (quote) {
+      const close = closingQuote(s, from, quote), nl = s.indexOf('\n', from)
+      end = close >= 0 ? close : nl >= 0 ? nl : s.length
+    } else {
+      // a scheme word and its value are one assignment: `auth: Bearer xyz`
+      SCHEME_AT.lastIndex = from
+      UNQUOTED.lastIndex = SCHEME_AT.exec(s) ? SCHEME_AT.lastIndex : from
+      if (!UNQUOTED.exec(s)) continue
+      end = UNQUOTED.lastIndex
+    }
+    const value = s.slice(from, end)
+    const scheme = SCHEME.exec(value)?.[0] ?? ''
+    const body = value.slice(scheme.length)
+    if (body === '' || body === SECRET) continue
+    if (!quote && NUMBER.test(body) && !numberIsSecret(m[1])) continue
+    out += s.slice(last, from) + scheme + SECRET
+    last = NAME_SEP.lastIndex = end
   }
   return out + s.slice(last)
 }
@@ -127,11 +172,13 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
     return after === before ? s : after
   }
   // Object keys too: a World keys pages and HTTP answers by URL, and a URL can carry an email, a profile slug or a token.
-  // `secret` is true below a credential-named key: every string under it goes, whatever its own key is called.
+  // `secret` is true below a credential-named key: every string under it goes, whatever its own key is called. A number
+  // goes only when its OWN key names a credential and is not count-shaped (`token: 112233` goes, `max_tokens: 300` and a
+  // nested `expires_in: 3600` stay).
   const deep = (v: unknown, secret: boolean): unknown =>
     typeof v === 'string' ? str(v, secret)
       : Array.isArray(v) ? v.map(x => deep(x, secret))
-        : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [text(k), deep(x, secret || isCredentialKey(k))]))
+        : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [text(k), typeof x === 'number' && numberIsSecret(k) ? SECRET : deep(x, secret || isCredentialKey(k))]))
           : v
   // EVERY string of the trace goes through the pass - span errors (an inner call's error message can quote a URL, a
   // header or an address), names, the agent label, metadata - except the structural identifiers this module's own code

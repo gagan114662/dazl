@@ -22,7 +22,9 @@ const withEnv = async <T>(vars: Record<string, string | undefined>, fn: () => Pr
 }
 
 const URL_ = 'https://news.example/london/querix-seed'
-const PAGE_TEXT = (d: string) => `${d}. Querix, a London B2B SaaS startup, raised a 3m GBP seed round this month. Press: founders@querix.example or +44 20 7946 0958. ${'The company sells workflow software to finance teams in London. '.repeat(12)}`
+// The event day sits in the evidence sentence itself, bound to the company (#460 event-date binding on main: a day elsewhere on
+// the page, or a publication stamp, no longer dates the event).
+const PAGE_TEXT = (d: string) => `Querix raised a seed round on ${d}: Querix, a London B2B SaaS startup, raised a 3m GBP seed round this month. Press: founders@querix.example or +44 20 7946 0958. ${'The company sells workflow software to finance teams in London. '.repeat(12)}`
 function fixture(): Fixture {
   const d = daysAgo(10); const page = { title: 'Querix raises seed', text: PAGE_TEXT(d) }
   return {
@@ -35,13 +37,16 @@ function fixture(): Fixture {
 const storedFor = async (tenant: string) => { const db = await getDb(); const rows = await listTraces(db, tenant, 50); return { db, rows } }
 
 test('config: OFF unless DAZL_TRACE_CAPTURE=1; retention defaults to 14 days; an invalid retention never captures', () => {
-  assert.deepEqual(traceCaptureConfig({}), { enabled: false, retentionDays: 14, reason: 'off' })
-  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: 'true' }), { enabled: false, retentionDays: 14, reason: 'off' })   // only "1" turns it on
-  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1' }), { enabled: true, retentionDays: DEFAULT_RETENTION_DAYS, reason: 'on' })
-  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '7' }), { enabled: true, retentionDays: 7, reason: 'on' })
+  assert.deepEqual(traceCaptureConfig({}), { enabled: false, retentionDays: 14, reason: 'off', purge: false })
+  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: 'true' }), { enabled: false, retentionDays: 14, reason: 'off', purge: false })   // only "1" turns it on
+  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1' }), { enabled: true, retentionDays: DEFAULT_RETENTION_DAYS, reason: 'on', purge: true })
+  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '7' }), { enabled: true, retentionDays: 7, reason: 'on', purge: true })
   for (const bad of ['0', '-1', '1.5', 'abc', '366', ' '.repeat(0) + 'NaN'])
-    assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: bad }), { enabled: false, retentionDays: 14, reason: 'invalid_retention' }, bad)
-  assert.equal(traceCaptureConfig({ DAZL_TRACE_RETENTION_DAYS: '3' }).retentionDays, 3)   // the purge follows retention even with capture off
+    assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: bad }), { enabled: false, retentionDays: 14, reason: 'invalid_retention', purge: false }, bad)
+  // The purge runs only under a retention somebody chose: capture on (its retention, 14 by default), or an explicit valid
+  // DAZL_TRACE_RETENTION_DAYS with capture off. Unset, off, or invalid: no retention policy, nothing is deleted.
+  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_RETENTION_DAYS: '3' }), { enabled: false, retentionDays: 3, reason: 'off', purge: true })
+  assert.deepEqual(traceCaptureConfig({ DAZL_TRACE_CAPTURE: '0', DAZL_TRACE_RETENTION_DAYS: 'abc' }), { enabled: false, retentionDays: 14, reason: 'off', purge: false })
 })
 
 test('OFF (default): beginScanTrace returns null, the run gets exactly its own deps, and nothing is stored', async () => {
@@ -268,19 +273,23 @@ bothEngines('tenant isolation: a tenant lists and reads only its own traces; ano
   assert.deepEqual(await listTraces(db, 'tenant-C'), [])
 })
 
-bothEngines('retention: a capture deletes only its own tenant\'s expired rows; the scheduled purge deletes everyone\'s, capture on or off', async ({ db }) => {
+bothEngines('retention: a capture deletes only its own tenant\'s expired rows; the scheduled purge deletes nothing unless capture is on or a retention was set explicitly', async ({ db }) => {
   await capture(db, 'tenant-A', 'old-a', NOW - 20 * DAY)
   await capture(db, 'tenant-B', 'old-b', NOW - 20 * DAY)
   await capture(db, 'tenant-B', 'edge-b', NOW - 13 * DAY)
   await capture(db, 'tenant-A', 'new-a', NOW)                                   // purges A's expired rows only
   assert.deepEqual((await listTraces(db, 'tenant-A')).map(r => r.job_id), ['new-a'])
   assert.deepEqual((await listTraces(db, 'tenant-B')).map(r => r.job_id).sort(), ['edge-b', 'old-b'])
-  assert.equal(await purgeExpiredTraces(db, {}, NOW * 1000), 1)                // capture OFF: default 14 days still applies
+  // no retention policy anybody chose (PR #463 review): unset, off, on with an invalid retention, an invalid retention alone
+  for (const env of [{}, { DAZL_TRACE_CAPTURE: '0' }, { DAZL_TRACE_CAPTURE: 'true' }, { DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: 'nonsense' }, { DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '0' }, { DAZL_TRACE_RETENTION_DAYS: 'nonsense' }])
+    assert.equal(await purgeExpiredTraces(db, env, NOW * 1000), 0, JSON.stringify(env))
+  assert.deepEqual((await listTraces(db, 'tenant-B')).map(r => r.job_id).sort(), ['edge-b', 'old-b'])
+  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_CAPTURE: '1' }, NOW * 1000), 1)   // capture ON: its retention (14 by default) applies to everyone
   assert.deepEqual((await listTraces(db, 'tenant-B')).map(r => r.job_id), ['edge-b'])
-  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_RETENTION_DAYS: '7' }, NOW * 1000), 1)   // shorter retention takes effect at once
+  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_RETENTION_DAYS: '7' }, NOW * 1000), 1)   // an explicit retention with capture off: the stated policy, at once
   assert.deepEqual(await listTraces(db, 'tenant-B'), [])
   assert.deepEqual((await listTraces(db, 'tenant-A')).map(r => r.job_id), ['new-a'])
-  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_RETENTION_DAYS: 'nonsense' }, NOW * 1000), 0) // invalid: the default, never "keep forever"
+  assert.equal(await purgeExpiredTraces(db, { DAZL_TRACE_CAPTURE: '1', DAZL_TRACE_RETENTION_DAYS: '7' }, NOW * 1000), 0)   // nothing left to expire: idempotent
 })
 
 // ---- Credential redaction as a CLASS (PR #463 review): credential-NAMED fields wherever they sit (nested objects, arrays,
@@ -293,6 +302,8 @@ const CRED = {
   set_cookie: 'syntheticsetcookiemarker', private_key: 'syntheticprivatekeymarker', nested: 'syntheticnestedsessionmarker', in_array: 'syntheticarraycredentialmarker',
   in_json_string: 'syntheticjsoninstringmarker', in_key: 'syntheticobjectkeycredentialmarker', prompt: 'syntheticpromptcredentialmarker', prompt2: 'syntheticpromptsecondmarker',
   reply: 'syntheticmodelreplykeymarker', error: 'syntheticerrorcredentialmarker', lead: 'syntheticleadexcerptmarker',
+  // assigned VALUES (PR #463 review): a quoted value with spaces, and numeric strings under an explicitly credential name
+  quoted: 'synthetic credential remainder marker', quoted2: 'synthetic second quoted marker', numeric: '493827', numeric2: '715904',
   // families (shape only; the characters are invented)
   pat: 'github_pat_syntheticfinegrainedmarkervalue', sk_ant: 'sk-ant-syntheticanthropicmarker', sk: 'sk-syntheticopenaimarkervaluexyz', sk_live: 'sk_live_syntheticstripemarker',
   bearer: 'syntheticbearermarkervalue', jwt: 'eyJsyntheticheader.eyJsyntheticpayload.syntheticsignaturepart', ghp: 'ghp_syntheticgithubclassicmarker', gho: 'gho_syntheticgithuboauthmarker',
@@ -310,6 +321,8 @@ const RESPONSE = {
   payload: JSON.stringify({ clientSecret: CRED.in_json_string, company: 'Querix' }), // JSON carried in a string
   [`https://x.example/u?token=${CRED.in_key}`]: 1,                              // an object KEY carrying a credential
   notes: `use ${CRED.pat} or ${CRED.sk_ant} or ${CRED.sk} or ${CRED.sk_live} or Bearer ${CRED.bearer} or ${CRED.jwt} or ${CRED.ghp} or ${CRED.gho} or ${CRED.slack} or ${CRED.aws}`,
+  note: `password: "${CRED.quoted}"; otp=${CRED.numeric}; max_tokens=300`,      // prose inside an ordinary field: whole quoted value, numeric credential; the count stays
+  token: Number(CRED.numeric2),                                                 // a NUMBER under an explicitly credential name is a secret too
 }
 const noCredential = (json: string, where: string) => { for (const [k, v] of Object.entries(CRED)) assert.ok(!json.includes(v), `${where}: ${k} survives`) }
 
@@ -318,17 +331,17 @@ bothEngines('credential redaction: no credential-named field or known token fami
   await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, evidence_excerpt, event_date, confidence) VALUES ('L1', 'job-red', 'Dana Synthetic', 'Querix', 'raised a seed round', ?, ?, '2026-10-10', 80)",
     [`https://news.example/q?api_key=${CRED.lead}`, `Querix raised a 3m GBP seed round (token=${CRED.lead})`])
   const inner = (async (input: RequestInfo | URL) => {
-    if (String(input).includes('/fail')) throw new Error(`refresh_token=${CRED.error} ${CRED.pat} Authorization: Bearer ${CRED.bearer}`)
+    if (String(input).includes('/fail')) throw new Error(`refresh_token=${CRED.error} ${CRED.pat} Authorization: Bearer ${CRED.bearer} password: "${CRED.quoted}" otp=${CRED.numeric}`)
     return new Response(JSON.stringify(RESPONSE), { status: 200 })
   }) as typeof fetch
-  const c = beginScanTrace({ id: 'job-red', user_id: 'tenant-R', attempts: 1, query: `find london saas; refresh_token=${CRED.prompt}`, icp: JSON.stringify({ who: ['Founder'], api_key: CRED.in_json_string }) }, { fetchImpl: inner }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, finishMs: 10_000 })!
-  const url = `https://api.synthetic.example/v1/items?refresh_token=${CRED.url_refresh}&page=2&q=london+saas`
-  const res = await c.deps.fetchImpl!(url, { method: 'POST', body: JSON.stringify({ q: 'london saas', client_secret: CRED.body_secret }) })
+  const c = beginScanTrace({ id: 'job-red', user_id: 'tenant-R', attempts: 1, query: `find london saas; refresh_token=${CRED.prompt}; password: "${CRED.quoted}"; password=${CRED.numeric}`, icp: JSON.stringify({ who: ['Founder'], api_key: CRED.in_json_string, passcode: CRED.numeric }) }, { fetchImpl: inner }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, finishMs: 10_000 })!
+  const url = `https://api.synthetic.example/v1/items?refresh_token=${CRED.url_refresh}&page=2&q=london+saas&otp=${CRED.numeric2}&max_tokens=300`
+  const res = await c.deps.fetchImpl!(url, { method: 'POST', body: JSON.stringify({ q: 'london saas', client_secret: CRED.body_secret, password: CRED.numeric, token: Number(CRED.numeric2), max_tokens: 300 }) })
   assert.equal((await res.json() as { refresh_token: string }).refresh_token, CRED.refresh)      // the run itself sees the real answer
   await assert.rejects(c.deps.fetchImpl!('https://api.synthetic.example/v1/fail'), /refresh_token/)
   const stub = { complete: async () => JSON.stringify([{ name: 'Dana Synthetic', company: 'Querix', api_key: CRED.reply, excerpt: 'raised a 3m GBP seed round' }]) }
   const p = c.recorder.providers({ anthropic: stub as never }).anthropic as { complete: (k: string, p: string, f?: unknown, m?: number) => Promise<string> }
-  await p.complete('sk-ant-syntheticproviderkey', `Write up to 6 web search queries. refresh_token=${CRED.prompt} client_secret: ${CRED.prompt2} max_tokens: 5`, undefined, 300)
+  await p.complete('sk-ant-syntheticproviderkey', `Write up to 6 web search queries. refresh_token=${CRED.prompt} client_secret: ${CRED.prompt2} max_tokens: 5 password: '${CRED.quoted2}' "api_key": "${CRED.quoted}" otp: ${CRED.numeric} tokens: 5`, undefined, 300)
   const id = (await c.finish('done'))!
   const row = (await db.get<{ trace: string }>('SELECT trace FROM scan_traces WHERE tenant_id = ? AND id = ?', ['tenant-R', id]))!
   noCredential(row.trace, 'stored row')
@@ -337,19 +350,20 @@ bothEngines('credential redaction: no credential-named field or known token fami
   for (const s of ORDINARY) assert.ok(row.trace.includes(s), `ordinary content lost: ${s}`)
   // field by field: the URL keeps its ordinary parameters, the bodies keep their shape, the error keeps its words
   const http = t.spans[0].input as { url: string; body: string }
-  assert.equal(http.url, 'https://api.synthetic.example/v1/items?refresh_token=[secret]&page=2&q=london+saas')
-  assert.deepEqual(JSON.parse(http.body), { q: 'london saas', client_secret: '[secret]' })
+  assert.equal(http.url, 'https://api.synthetic.example/v1/items?refresh_token=[secret]&page=2&q=london+saas&otp=[secret]&max_tokens=300')
+  assert.deepEqual(JSON.parse(http.body), { q: 'london saas', client_secret: '[secret]', password: '[secret]', token: '[secret]', max_tokens: 300 })
   const out = JSON.parse((t.spans[0].output as { body: string }).body) as Record<string, unknown>
   assert.deepEqual([out.company, out.page, out.max_tokens, out.usage, out.keywords, out.auth, out.credentials], ['Querix', 2, 300, { input_tokens: 12, output_tokens: 3 }, ['london', 'saas'], { session: { id: '[secret]', expires_in: 3600 } }, [{ user: '[secret]', token: '[secret]' }]])
-  for (const k of ['refresh_token', 'access_token', 'client_secret', 'api_key', 'apiKey', 'password', 'authorization', 'cookie', 'set-cookie', 'private_key']) assert.equal(out[k], '[secret]', k)
+  for (const k of ['refresh_token', 'access_token', 'client_secret', 'api_key', 'apiKey', 'password', 'authorization', 'cookie', 'set-cookie', 'private_key', 'token']) assert.equal(out[k], '[secret]', k)
+  assert.equal(out.note, 'password: "[secret]"; otp=[secret]; max_tokens=300')
   assert.deepEqual(JSON.parse(out.payload as string), { clientSecret: '[secret]', company: 'Querix' })
   assert.ok(Object.keys(out).includes('https://x.example/u?token=[secret]'), Object.keys(out).join(','))
-  assert.equal(t.spans[1].error, 'refresh_token=[secret] [secret] Authorization: Bearer [secret]')
-  assert.equal((t.spans[2].input as { prompt: string }).prompt, 'Write up to 6 web search queries. refresh_token=[secret] client_secret: [secret] max_tokens: 5')
+  assert.equal(t.spans[1].error, 'refresh_token=[secret] [secret] Authorization: Bearer [secret] password: "[secret]" otp=[secret]')
+  assert.equal((t.spans[2].input as { prompt: string }).prompt, 'Write up to 6 web search queries. refresh_token=[secret] client_secret: [secret] max_tokens: 5 password: \'[secret]\' "api_key": "[secret]" otp: [secret] tokens: 5')
   const reply = JSON.parse((t.spans[2].output as { text: string }).text) as { name: string }[]
   assert.match(reply[0].name, /^Person-[0-9a-f]{6}$/)                                               // the extracted person name, as before
   assert.deepEqual(reply, [{ name: reply[0].name, company: 'Querix', api_key: '[secret]', excerpt: 'raised a 3m GBP seed round' }])
-  assert.deepEqual(t.input, { request: 'find london saas; refresh_token=[secret]', icp: { who: ['Founder'], api_key: '[secret]' }, as_of: t.input.as_of })
+  assert.deepEqual(t.input, { request: 'find london saas; refresh_token=[secret]; password: "[secret]"; password=[secret]', icp: { who: ['Founder'], api_key: '[secret]', passcode: '[secret]' }, as_of: t.input.as_of })
   assert.deepEqual(t.output?.leads.map(l => [l.company, l.source_url, l.excerpt, l.event_date, l.confidence]), [['Querix', 'https://news.example/q?api_key=[secret]', 'Querix raised a 3m GBP seed round (token=[secret])', '2026-10-10', 80]])
   // replay semantics: the stored trace is still a complete, redacted World that answers the (redacted) URL with the (redacted) body
   const w = validateWorld(worldFromTrace(t))
@@ -389,7 +403,7 @@ test('credential-named keys: redacted at any nesting, in arrays, in JSON-in-stri
   for (let i = 0; i < ORDINARY_KEYS.length; i++) assert.ok(j.includes(`${O} ${i}`), ORDINARY_KEYS[i])
   const o = t.spans[0].output as Record<string, unknown>
   for (const k of CREDENTIAL_KEYS) assert.equal((o.top as Record<string, unknown>)[k], '[secret]', k)
-  assert.deepEqual(o.counts, { max_tokens: 300, input_tokens: 12, tokens: 5, key: 7, session: true, password: null })
+  assert.deepEqual(o.counts, { max_tokens: 300, input_tokens: 12, tokens: 5, key: '[secret]', session: true, password: null })   // `key: 7` is not count-shaped: it goes; booleans and null never do
   assert.deepEqual(o.under_credential, { credentials: { username: '[secret]', nested: { deeper: '[secret]' }, n: 1 } })
   assert.deepEqual(JSON.parse(o.as_json as string).ord, ord)
   assert.deepEqual(JSON.parse(JSON.parse(o.twice as string).s), { x: [Object.fromEntries(CREDENTIAL_KEYS.map(k => [k, '[secret]']))] })
@@ -401,6 +415,40 @@ test('credential-named keys: redacted at any nesting, in arrays, in JSON-in-stri
   for (let i = 0; i < 5; i++) assert.ok(rt.includes(`&page=${i}\n`), `page=${i}`)
   assert.ok(rt.includes('Bearer [secret]') && !rt.includes('[secret] [secret]'), rt.match(/.*Bearer.*/)?.[0])
   assert.equal((r.spans[0].output as { keep: string }).keep, 'design: tidy; tokens: 5; max_tokens=300; page=2; Updated 2026-10-10 12:30; the keynote: London')
+})
+
+// The assigned VALUE after a credential name (PR #463 review): the whole of a quoted value, spaces and all; a bare number
+// under an explicitly credential name (password=493827, otp: 493827); never a count or limit (max_tokens, input_tokens,
+// tokens: 5), never a number under an ordinary name. The same rule for text and for JSON-carried values.
+test('credential values are redacted whole: quoted values with spaces, numeric values under a credential name; counts, limits and ordinary numbers stay', () => {
+  const keep = 'the keynote: London; design: tidy; expires_in: 3600; passport: 12; page=2; Updated 2026-10-10 12:30; max_tokens: 300; input_tokens=12; tokens: 5; output_tokens: 7; token_count: 3; num_keys=2; "usage": {"input_tokens": 12}'
+  const cases: [string, string][] = [
+    ['password: "synthetic credential remainder marker"; password=493827', 'password: "[secret]"; password=[secret]'],   // the reviewer's exact case
+    ["token='two word marker' next", "token='[secret]' next"],
+    ['"client_secret": "has spaces and \\"escaped\\" quotes", "company": "Querix"', '"client_secret": "[secret]", "company": "Querix"'],
+    ['api_key = 493827 and page=2', 'api_key = [secret] and page=2'],
+    ['otp: 493827; secret: 12; signature=99; max_tokens: 300; tokens: 5; token_count: 3', 'otp: [secret]; secret: [secret]; signature=[secret]; max_tokens: 300; tokens: 5; token_count: 3'],
+    ['https://h.example/cb?code=1&otp=493827&token=112233&page=2&max_tokens=300&q=a+b', 'https://h.example/cb?code=1&otp=[secret]&token=[secret]&page=2&max_tokens=300&q=a+b'],
+    ['authorization: "Bearer 493827 with more words"; auth: Basic 112233', 'authorization: "Bearer [secret]"; auth: Basic [secret]'],
+    ['password: "unterminated quoted value\nnext_line: kept', 'password: "[secret]\nnext_line: kept'],                 // no closing quote: the rest of the line
+    ['password: "[secret]"; token=[secret]', 'password: "[secret]"; token=[secret]'],                                   // already redacted: stable
+    [keep, keep],
+  ]
+  for (const [input, want] of cases) {
+    const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/', prompt: input }, output: { text: input }, error: input }] }), Buffer.alloc(16, 4))
+    assert.equal((r.spans[0].output as { text: string }).text, want, input)
+    assert.equal((r.spans[0].input as { prompt: string }).prompt, want, input)
+    assert.equal(r.spans[0].error, want, input)
+  }
+  // JSON-carried: a numeric string or a number under a credential name is a secret; a count or limit, a boolean, null and a
+  // number under an ordinary name are kept, at any nesting and inside JSON carried in a string
+  const body = { password: '493827', otp: 493827, token: 112233, api_key: 7, max_tokens: 300, tokens: 5, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }, token_count: 4, key_count: 2, page: 2, expires_in: 3600, session: true, secret: null,
+    auth: { session: { id: 'syntheticnestedsessionmarker', expires_in: 3600 } }, credentials: [{ pin: 1234, token: 5 }] }
+  const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'http', name: 'http', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/' }, output: { body: JSON.stringify(body), direct: body } }] }), Buffer.alloc(16, 4))
+  const want = { password: '[secret]', otp: '[secret]', token: '[secret]', api_key: '[secret]', max_tokens: 300, tokens: 5, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }, token_count: 4, key_count: 2, page: 2, expires_in: 3600, session: true, secret: null,
+    auth: { session: { id: '[secret]', expires_in: 3600 } }, credentials: [{ pin: 1234, token: '[secret]' }] }
+  assert.deepEqual(JSON.parse((r.spans[0].output as { body: string }).body), want)
+  assert.deepEqual((r.spans[0].output as { direct: unknown }).direct, want)
 })
 
 test('credential families: known prefixes (github_pat_, ghp_/gho_, sk-ant-, sk-, sk_live_, xox, AKIA, JWT, Bearer/Basic, PEM blocks, cookie headers) are gone from text, keys and errors', () => {

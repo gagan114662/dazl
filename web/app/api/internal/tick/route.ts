@@ -105,7 +105,8 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let sessionsReaped = 0
   try { sessionsReaped = (await reapAccountHistory(shared, { fence })).sessions } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
   // Captured scan traces (lib/evals/capture.ts): every tenant's rows older than DAZL_TRACE_RETENTION_DAYS are deleted,
-  // whether capture is on or off. Idempotent and best-effort: a failure here never stops the tick.
+  // but only when capture is on or a retention was set explicitly; with capture unset, off or misconfigured nothing is
+  // deleted (traces_purged: 0). Idempotent and best-effort: a failure here never stops the tick.
   let tracesPurged = 0
   await lease.keep()
   try { tracesPurged = await purgeExpiredTraces(shared) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:trace-purge', requestId }) }

@@ -3,7 +3,10 @@
 // harness uses, and on finish the trace is REDACTED (./redact.ts: secrets, emails, phones, profile slugs, extracted names)
 // and size-capped, then written to the app's own store (scan_traces, tenant-scoped) - never to a third-party trace store.
 // Rows older than DAZL_TRACE_RETENTION_DAYS (default 14) are deleted on every capture for that tenant and by the
-// scheduled tick for everyone, whether capture is on or not.
+// scheduled tick for everyone - but the tick purges ONLY under a retention somebody chose: capture on (its retention),
+// or an explicit valid DAZL_TRACE_RETENTION_DAYS with capture off (so turning capture off can still clear old rows).
+// With capture unset, off, or on with an invalid retention, the tick deletes nothing: no retention policy is applied
+// by default (PR #463 review).
 //
 // Storage and retention are the owner's decision; the defaults above stand until Gagan says otherwise. Capture never
 // changes what a run does: the recorder returns and throws exactly what the inner call did, and a failure to record or
@@ -25,17 +28,19 @@ export const MAX_TRACE_BYTES = 2_000_000     // the whole stored trace as UTF-8 
 export const SETTLE_MS = 5_000
 export const FINISH_MS = 15_000
 
-export interface TraceCaptureConfig { enabled: boolean; retentionDays: number; reason: 'on' | 'off' | 'invalid_retention' }
+// `purge`: whether the scheduled purge may delete anything - true only when capture is on, or a valid retention was set explicitly.
+export interface TraceCaptureConfig { enabled: boolean; retentionDays: number; reason: 'on' | 'off' | 'invalid_retention'; purge: boolean }
 
-// Both settings are configuration (environment), not code. An invalid retention never captures: nothing is stored with a
-// retention nobody chose. Purging still runs, at the default.
+// Both settings are configuration (environment), not code. An invalid retention never captures and never purges: nothing
+// is stored, and nothing deleted, under a retention nobody chose.
 export function traceCaptureConfig(env: Env = process.env): TraceCaptureConfig {
   const raw = env.DAZL_TRACE_RETENTION_DAYS?.trim()
-  const n = raw === undefined || raw === '' ? DEFAULT_RETENTION_DAYS : Number(raw)
+  const explicit = raw !== undefined && raw !== ''
+  const n = explicit ? Number(raw) : DEFAULT_RETENTION_DAYS
   const valid = Number.isInteger(n) && n >= 1 && n <= MAX_RETENTION_DAYS
-  if (env.DAZL_TRACE_CAPTURE !== '1') return { enabled: false, retentionDays: valid ? n : DEFAULT_RETENTION_DAYS, reason: 'off' }
-  if (!valid) return { enabled: false, retentionDays: DEFAULT_RETENTION_DAYS, reason: 'invalid_retention' }
-  return { enabled: true, retentionDays: n, reason: 'on' }
+  if (env.DAZL_TRACE_CAPTURE !== '1') return { enabled: false, retentionDays: valid ? n : DEFAULT_RETENTION_DAYS, reason: 'off', purge: explicit && valid }
+  if (!valid) return { enabled: false, retentionDays: DEFAULT_RETENTION_DAYS, reason: 'invalid_retention', purge: false }
+  return { enabled: true, retentionDays: n, reason: 'on', purge: true }
 }
 
 export interface TraceJob { id: string; user_id: string; attempts: number; query?: string | null; icp?: string | null; business_name?: string; industry?: string; location?: string }
@@ -173,9 +178,12 @@ export async function getTrace(db: Db, tenantId: string, id: string): Promise<Tr
   return r ? JSON.parse(r.trace) as Trace : null
 }
 
-// The scheduled retention purge (app/api/internal/tick): every tenant's rows older than the configured retention. Runs
-// whether capture is on or off, so turning capture off never leaves old traces behind.
+// The scheduled retention purge (app/api/internal/tick): every tenant's rows older than the configured retention, ONLY
+// under a retention somebody chose (traceCaptureConfig().purge: capture on, or an explicit valid DAZL_TRACE_RETENTION_DAYS
+// with capture off, which is how old rows are cleared after capture is turned off). Otherwise nothing is deleted and 0 is
+// returned: a deployment with capture unset, off or misconfigured applies no retention policy of its own.
 export async function purgeExpiredTraces(db: Db, env: Env = process.env, now = Date.now()): Promise<number> {
-  const { retentionDays } = traceCaptureConfig(env)
+  const { purge, retentionDays } = traceCaptureConfig(env)
+  if (!purge) return 0
   return (await db.run('DELETE FROM scan_traces WHERE created_at < ?', [Math.floor(now / 1000) - retentionDays * 86_400])).changes
 }
