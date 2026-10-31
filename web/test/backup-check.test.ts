@@ -11,6 +11,7 @@ import https from 'node:https'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { fixtureBackup } from './helpers/recovery-fixture.mts'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
@@ -32,6 +33,8 @@ const recorder = (name: string) => {
   writeFileSync(cmd, `#!/bin/sh\necho "$1" >> ${log}\n`); chmodSync(cmd, 0o755)
   return { cmd, delivered: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as { type: string; problems: string[] }) : [] }
 }
+const root = process.getuid?.() === 0
+const firstJson = (out: string) => JSON.parse(out.split('\n').find(l => l.startsWith('{"level"')) ?? '{}') as Record<string, unknown>
 const stamps = (state: string) => existsSync(state) ? readdirSync(state).filter(f => f.startsWith('alert-')) : []
 
 test('alert command exits 1, then works: the retry inside the interval delivers; only a delivered alert is throttled', async () => {
@@ -142,7 +145,7 @@ test('newest local backup unreadable: a named problem and a delivered alert, not
   } finally { chmodSync(fx.backup, 0o600) }
 })
 
-test('a non-numeric age limit or alert interval is refused (exit 2), never a check that cannot flag staleness', async () => {
+test('a non-numeric age limit is refused (exit 2), never a check that cannot flag staleness; an empty one is the default', async () => {
   const fx = await fixtureBackup(path.join(T, 'nan')), dir = path.dirname(fx.backup), state = path.join(T, 'nan-state')
   const { cmd, delivered } = recorder('nan-alert')
   for (const args of [['--max-age-s', '2h'], ['--max-age-s', 'Infinity'], ['--offhost-max-age-s', 'x', '--offhost', dir], ['--drill-max-age-s', 'NaN', '--drill-report', path.join(T, 'none.json')]]) {
@@ -151,10 +154,86 @@ test('a non-numeric age limit or alert interval is refused (exit 2), never a che
   }
   let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', ''], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 0, 'an empty limit (an unexpanded variable) is the default, and this backup is fresh'); assert.equal(delivered().length, 0)
-  r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: 'abc' })
-  assert.equal(r.code, 2); assert.match(r.out, /BACKUP_ALERT_EVERY_S must be a number of seconds/); assert.equal(delivered().length, 0)
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '' })
   assert.equal(r.code, 1, 'an empty interval is the default'); assert.equal(delivered().length, 1)
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '' })
   assert.equal(r.code, 1); assert.match(r.out, /already sent/); assert.equal(delivered().length, 1, 'and it throttles')
+})
+
+// Review round 1, reviewer 3 (fixtures in scratchpad/r438): silent drops that let an older backup or copy stand in for
+// a newer one, an I/O error that ended the process before the alert, the interval paths, and untested delivery cells.
+test('a newer backup with a truncated sidecar is a problem, not silently replaced by the older good one', async () => {
+  const fx = await fixtureBackup(path.join(T, 'side')), dir = path.dirname(fx.backup), state = path.join(T, 'side-state')
+  const { cmd, delivered } = recorder('side-alert')
+  writeFileSync(path.join(dir, 'newer.db'), 'not a database'); writeFileSync(path.join(dir, 'newer.db.json'), '{"createdAt":"2026-10')
+  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200'], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1, r.out); assert.equal(delivered().length, 1)
+  assert.match(delivered()[0].problems.join(), /unreadable sidecar for newer\.db/)
+  assert.equal(firstJson(r.out).newest_backup, path.basename(fx.backup), 'the good backup is still the newest reported')
+})
+
+test('an unreadable or truncated off-host manifest is a problem, not silently replaced by the older copy', async () => {
+  const fx = await fixtureBackup(path.join(T, 'man')), dir = path.dirname(fx.backup), state = path.join(T, 'man-state')
+  const dest = path.join(T, 'man-dest'); mkdirSync(dest)
+  const ct = Buffer.from('ciphertext stand-in'); writeFileSync(path.join(dest, 'old.db.age'), ct)
+  writeFileSync(path.join(dest, 'old.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date(Date.now() - 60_000).toISOString(), ciphertext: 'old.db.age', ciphertext_sha256: createHash('sha256').update(ct).digest('hex'), bytes: ct.length }))
+  writeFileSync(path.join(dest, 'new.db.age.json'), '{"tool":"dazl-offhost-copy","copied_at":"2026')
+  writeFileSync(path.join(dest, 'other-tool.json.age.json'), JSON.stringify({ tool: 'something-else' }))
+  const locked = path.join(dest, 'locked.db.age.json'); writeFileSync(locked, '{}'); chmodSync(locked, 0o000)
+  const { cmd, delivered } = recorder('man-alert')
+  try {
+    const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', dest], { BACKUP_ALERT_CMD: cmd })
+    assert.equal(r.code, 1, r.out); assert.equal(delivered().length, 1); const p = delivered()[0].problems.join('\n')
+    assert.match(p, /off-host manifest new\.db\.age\.json unreadable/)
+    if (!root) assert.match(p, /off-host manifest locked\.db\.age\.json unreadable/)
+    assert.doesNotMatch(p, /other-tool/, "another tool's file is not ours and not a problem")
+    assert.equal(firstJson(r.out).newest_offhost_verified, true, 'the readable copy is still verified'); assert.equal(firstJson(r.out).offhost_copies, 1)
+  } finally { chmodSync(locked, 0o600) }
+})
+
+test('backup directory unreadable (mode 000): a named problem and a delivered alert, not an uncaught error', { skip: root ? 'root reads everything' : false }, async () => {
+  const dir = path.join(T, 'locked-dir'); mkdirSync(dir); chmodSync(dir, 0o000)
+  const { cmd, delivered } = recorder('locked-alert')
+  try {
+    const r = await run(['--dir', dir, '--state-dir', path.join(T, 'locked-state')], { BACKUP_ALERT_CMD: cmd })
+    assert.equal(r.code, 1, r.out); assert.doesNotMatch(r.out, /at .*backup-check\.mts/, 'no uncaught error')
+    assert.equal(delivered().length, 1); assert.match(delivered()[0].problems.join(), /backup directory locked-dir unreadable \(EACCES\)/)
+  } finally { chmodSync(dir, 0o755) }
+})
+
+test('interval: an invalid BACKUP_ALERT_EVERY_S is the default (logged, one delivery); a 1 s interval expires; a new problem alerts at once', async () => {
+  const fx = await fixtureBackup(path.join(T, 'every')), dir = path.dirname(fx.backup), state = path.join(T, 'every-state')
+  const { cmd, delivered } = recorder('every-alert')
+  const stale = (st: string, extra: string[] = []) => ['--dir', dir, '--state-dir', st, '--max-age-s', '-1', ...extra]
+  let r = await run(stale(state), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: 'abc' })
+  assert.equal(r.code, 1); assert.match(r.out, /BACKUP_ALERT_EVERY_S is not a number of seconds \("abc"\); using 3600/); assert.equal(delivered().length, 1)
+  r = await run(stale(state), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: 'abc' })
+  assert.equal(r.code, 1); assert.match(r.out, /already sent/); assert.equal(delivered().length, 1, 'abc twice: one delivery, not two')
+  r = await run(stale(state), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '-5' })
+  assert.match(r.out, /using 3600/); assert.equal(delivered().length, 1, 'a negative interval is not "never throttle"')
+  const state2 = path.join(T, 'every-state-2')
+  r = await run(stale(state2), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '1' }); assert.equal(delivered().length, 2)
+  await new Promise(res => setTimeout(res, 1200))
+  r = await run(stale(state2), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '1' })
+  assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 3, 'the interval expired: delivered again')
+  r = await run(stale(state, ['--offhost', path.join(T, 'nowhere')]), { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 4, 'a new problem joining an already-alerted set is a new set: delivered at once')
+  assert.match(delivered()[3].problems.join(), /unreadable: directory not found/)
+})
+
+test('webhook that never answers: TimeoutError and no stamp; command and webhook both set: the command wins and the webhook is never tried', async () => {
+  const fx = await fixtureBackup(path.join(T, 'hang')), dir = path.dirname(fx.backup), state = path.join(T, 'hang-state'), state2 = path.join(T, 'both-state')
+  const { key, cert, certPath } = tls()
+  let hits = 0; const server = https.createServer({ key, cert }, () => { hits++ /* never answers */ })
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+  const hook = `https://localhost:${(server.address() as { port: number }).port}/hook`
+  try {
+    const t0 = Date.now()
+    let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { OPS_ALERT_WEBHOOK_URL: hook, NODE_EXTRA_CA_CERTS: certPath })
+    assert.equal(r.code, 1); assert.match(r.out, /alert webhook failed \(TimeoutError\)/); assert.deepEqual(stamps(state), [], 'a hung webhook is not a receipt')
+    assert.ok(Date.now() - t0 < 25_000, 'bounded'); assert.equal(hits, 1)
+    const { cmd, delivered } = recorder('both-alert')
+    r = await run(['--dir', dir, '--state-dir', state2, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, OPS_ALERT_WEBHOOK_URL: hook, NODE_EXTRA_CA_CERTS: certPath })
+    assert.equal(r.code, 1); assert.equal(delivered().length, 1); assert.equal(stamps(state2).length, 1); assert.equal(hits, 1, 'the webhook was never tried')
+  } finally { server.closeAllConnections(); server.close() }
 })

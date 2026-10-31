@@ -14,8 +14,9 @@
 // the next run retries. Stamps live in --state-dir (default BACKUP_DIR/.backup-check; when it is unusable the alert
 // still goes out, unthrottled). When everything is ok the stamps are removed and nothing is sent: there is deliberately
 // no recovery announcement (scheduler-check.mts has one). The alert names problems, ages and file names only: no data,
-// no directory paths. The webhook is https only and redirects are not followed. Age limits and BACKUP_ALERT_EVERY_S
-// must be numbers of seconds (else exit 2). Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable).
+// no directory paths. The webhook is https only and redirects are not followed. Age limits must be numbers of seconds
+// (else exit 2); an invalid BACKUP_ALERT_EVERY_S falls back to 3600 with a log line, never to "no throttle" and never
+// to "no alert". Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable); 2 = usage.
 //   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --max-age-s 7200 \
 //     [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s 7200] [--drill-report FILE --drill-max-age-s 691200] [--state-dir DIR]
 import { createHash } from 'node:crypto'
@@ -34,25 +35,34 @@ const num = (f: string, d: number) => seconds(f, arg(f), d)
 const dir = arg('--dir')
 if (!dir) { console.error('usage: backup-check.mts --dir DIR [--max-age-s N] [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s N] [--drill-report FILE --drill-max-age-s N] [--state-dir DIR]'); process.exit(2) }
 const now = Date.now()
-const every = seconds('BACKUP_ALERT_EVERY_S', process.env.BACKUP_ALERT_EVERY_S, 3600)
+const everyRaw = process.env.BACKUP_ALERT_EVERY_S
+let every = everyRaw === undefined || everyRaw.trim() === '' ? 3600 : Number(everyRaw)
+if (!Number.isFinite(every) || every < 0) { console.error(`backup-check: BACKUP_ALERT_EVERY_S is not a number of seconds (${JSON.stringify(everyRaw)}); using 3600`); every = 3600 }
 const problems: string[] = []
 const facts: Record<string, unknown> = {}
 const sha256 = (f: string) => new Promise<string>((res, rej) => { const h = createHash('sha256'); createReadStream(f).on('data', d => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej) })
 const ageS = (iso: string | undefined | null) => iso && !Number.isNaN(Date.parse(iso)) ? Math.round((now - Date.parse(iso)) / 1000) : null
 const readJson = (f: string) => { try { return JSON.parse(readFileSync(f, 'utf8')) } catch { return null } }
 
-// local backups: newest by sidecar createdAt
+// local backups: newest by sidecar createdAt. A sidecar that exists but does not parse is a problem (a newer backup
+// must not be silently replaced by an older one); an I/O error here is a problem too, never an exit before the alert.
 const maxAge = num('--max-age-s', 7200)
-const local = existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.db') && existsSync(path.join(dir, f + '.json')))
-  .map(f => ({ f, side: readJson(path.join(dir, f + '.json')) })).filter(x => x.side?.createdAt).sort((a, b) => Date.parse(b.side.createdAt) - Date.parse(a.side.createdAt)) : []
-if (!local.length) problems.push(`no backup with a sidecar in ${path.basename(dir)}`)
-else {
-  const n = local[0], age = ageS(n.side.createdAt)
-  facts.newest_backup = n.f; facts.newest_backup_age_s = age; facts.backups = local.length
-  if (age === null || age > maxAge) problems.push(`newest backup is ${age}s old (limit ${maxAge}s)`)
-  try { if (await sha256(path.join(dir, n.f)) !== n.side.sha256) problems.push(`newest backup ${n.f} no longer matches its sidecar sha256`) }
-  catch (e) { problems.push(`newest backup ${n.f} unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
-}
+try {
+  const local: { f: string; side: { createdAt: string; sha256?: string } }[] = []
+  for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.db') && existsSync(path.join(dir, f + '.json'))) : []) {
+    const side = readJson(path.join(dir, f + '.json'))
+    if (side?.createdAt && !Number.isNaN(Date.parse(side.createdAt))) local.push({ f, side }); else problems.push(`unreadable sidecar for ${f}`)
+  }
+  local.sort((a, b) => Date.parse(b.side.createdAt) - Date.parse(a.side.createdAt))
+  if (!local.length) problems.push(`no backup with a sidecar in ${path.basename(dir)}`)
+  else {
+    const n = local[0], age = ageS(n.side.createdAt)
+    facts.newest_backup = n.f; facts.newest_backup_age_s = age; facts.backups = local.length
+    if (age === null || age > maxAge) problems.push(`newest backup is ${age}s old (limit ${maxAge}s)`)
+    try { if (await sha256(path.join(dir, n.f)) !== n.side.sha256) problems.push(`newest backup ${n.f} no longer matches its sidecar sha256`) }
+    catch (e) { problems.push(`newest backup ${n.f} unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
+  }
+} catch (e) { problems.push(`backup directory ${path.basename(dir)} unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
 
 // An off-host destination as the check reads it: list the files, read a small one, hash a large one (streamed).
 interface Dest { label: string; list(): Promise<string[]>; read(name: string): Promise<string>; digest(name: string): Promise<{ bytes: number; sha256: string } | null> }
@@ -94,7 +104,12 @@ if (!offSpec) {
   try {
     const manifests: Record<string, unknown>[] = []
     for (const f of (await dest.list()).filter(f => f.endsWith('.age.json') && plainName(f))) {
-      try { const m = JSON.parse(await dest.read(f)); if (m?.tool === 'dazl-offhost-copy' && m.copied_at) manifests.push(m) } catch { /* an unreadable manifest is not a copy */ }
+      // unreadable or truncated: a problem, never a silent skip that lets an older copy stand in for the newer one
+      let m: Record<string, unknown> | null = null
+      try { m = JSON.parse(await dest.read(f)) } catch { problems.push(`off-host manifest ${f} unreadable`); continue }
+      if (m?.tool !== 'dazl-offhost-copy') continue // another tool's file
+      if (!m.copied_at || Number.isNaN(Date.parse(String(m.copied_at)))) { problems.push(`off-host manifest ${f} has no copied_at`); continue }
+      manifests.push(m)
     }
     manifests.sort((a, b) => Date.parse(String(b.copied_at)) - Date.parse(String(a.copied_at)))
     facts.offhost_copies = manifests.length

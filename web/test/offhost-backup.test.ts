@@ -111,6 +111,9 @@ test('off-host check: a genuine encrypted copy passes; manifest only, truncated,
   rmSync(ct); r = checkAt(local, { OFFHOST_DEST: dest })
   assert.equal(r.code, 1); assert.match(r.json.problems.join(), /is missing \(only its manifest exists\)/)
   writeFileSync(ct, original); assert.equal(checkAt(local, { OFFHOST_DEST: dest }).code, 0, 'restored: ok again')
+  // a newer manifest that does not parse is a problem; the genuine copy is still verified, never silently stood in for
+  writeFileSync(path.join(dest, 'zz-newer.db.age.json'), '{"tool":"dazl-offhost-copy","copied_at":"2026'); r = checkAt(local, { OFFHOST_DEST: dest })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /off-host manifest zz-newer\.db\.age\.json unreadable/); assert.equal(r.json.newest_offhost_verified, true)
 })
 
 test("off-host check: the review's reproduction (a manifest with a zero hash and no ciphertext) is not healthy", async () => {
