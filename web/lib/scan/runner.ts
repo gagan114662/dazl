@@ -774,7 +774,7 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   return leads
 }
 
-export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
+export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean; news?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only; news=false: the free news search (and the blocked-lead recovery pass that reads it) is off FOR THIS RUN, labelled as off - never a zero result
 // Per-run explicit budget controls, stored on the job row by the CSV import route.
 // Absent or malformed JSON means current behavior - the control only ever NARROWS.
 // PAID SURFACES, honestly: the TinyFish-primary path ends in ONE paid LLM call
@@ -803,6 +803,7 @@ export function parseRunBudget(raw: string | null | undefined): RunBudget | null
     if (b.credit_enrichment === false) out.credit_enrichment = false
     if (b.judge === false) out.judge = false
     if (b.first5 === true) out.first5 = true
+    if (b.news === false) out.news = false
     if (typeof b.max_usd === 'number' && Number.isFinite(b.max_usd) && b.max_usd > 0) out.max_usd = b.max_usd
     return Object.keys(out).length ? out : null
   } catch { return null }
@@ -815,12 +816,13 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
     ...(budget.credit_enrichment === false ? { creditEnrichment: false } : {}),
     ...(budget.judge === false ? { judge: null } : {}),
     ...(budget.first5 ? { first5: true, paidFallback: false, creditEnrichment: false } : {}),
+    ...(budget.news === false ? { newsOff: true } : {}),
   }
 }
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
-  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
+  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; newsOff?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
 const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => Promise<void>>()
@@ -934,9 +936,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
     let budgetRefused = false // the run budget refused a call in the TinyFish path
-    // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
-    // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
-    const newsOn = !!deps.newsHttp || newsEnabled()
+    // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED) or this run's own
+    // budget switches it off (budget.news=false); an injected deps.newsHttp always turns it on for tests, EXCEPT under
+    // a per-run news-off, which must win so a disabled source is never contacted.
+    const newsOn = !deps.newsOff && (!!deps.newsHttp || newsEnabled())
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined }
     if (job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) {   // first5: free sources only
       try {
@@ -965,6 +968,8 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
+    // A run that switched news off says so on the source row: 'skipped', never 'empty' (a zero) or 'unavailable'.
+    if (!leads && !budgetRefused && job.query && icpForSources && complete && !newsOn && deps.newsOff) ledger.record('search:news', 'skipped: the run disabled the news search')
     if (!leads && !budgetRefused && job.query && icpForSources && complete && newsOn) {
       try {
         ledger.record('search:news', 'started')
@@ -1106,7 +1111,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
     const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
-    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
+    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? (deps.newsOff ? 'the run disabled the news search' : 'news search is off') : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
       const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')

@@ -8,7 +8,11 @@ import type { SharedPool } from './spend-pool.ts'
 //    tokenizers' purposes here: treated as an upper bound, stated as an assumption, not measured), plus a fixed margin;
 //  - output is bounded by the max_tokens the call passes;
 //  - only models with a known price are allowed; an unknown or unreadable model refuses everything;
-//  - the web-search research call is refused: its search-result tokens are not bounded by anything dazl sends.
+//  - the web-search research call is refused: its search-result tokens are not bounded by anything dazl sends;
+//  - guarded completion requests never enable prompt caching (a cache READ bills content no single prompt bounds):
+//    with caching off, completionCost() can only price input <= the byte bound and output <= max_tokens, so a
+//    reservation is a true per-request ceiling and a settle can never push the total past the limit. The byte bound
+//    is the reservation basis even when a token counter is available - the counter's estimate can only raise it.
 // Prices are USD per million tokens from the vendor's published page, keyed by the exact model id.
 export const PRICES_USD_PER_M: Record<string, { in: number; out: number }> = {
   'claude-sonnet-4-5': { in: 3, out: 15 }, // https://docs.anthropic.com/en/docs/about-claude/pricing
@@ -243,10 +247,13 @@ export const anthropicCountTokens: TokenCounter = async (apiKey, model, prompt, 
 export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?: TokenCounter, research?: { reserveUsd: number }, settle = false): Provider {
   const g = Array.isArray(gs) ? gs : [gs]
   const inputTokens = async (k: string, prompt: string, f?: typeof fetch) => {
-    if (!count) return Buffer.byteLength(prompt)
+    // The byte bound is always the reservation basis: it is the only input size that cannot underestimate the
+    // billed tokens (header assumption), so the cap does not depend on the count endpoint's accuracy.
+    const bytes = Buffer.byteLength(prompt)
+    if (!count) return bytes
     const m = (() => { try { return p.configuredModel?.() } catch { return undefined } })()
     if (!m) throw new SpendRefused('model_unpriced')
-    return Math.ceil((await count(k, m, prompt, f)) * COUNT_FACTOR)
+    return Math.max(bytes, Math.ceil((await count(k, m, prompt, f)) * COUNT_FACTOR))
   }
   const model = () => { try { return p.configuredModel?.() } catch { return undefined } }
   const out: Provider = {
