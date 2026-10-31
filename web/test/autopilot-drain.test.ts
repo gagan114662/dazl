@@ -527,3 +527,18 @@ test('#448 the postal address changes during the Gmail request and Gmail rate-li
   assert.deepEqual([r2.sent, sent.length, work(db).length, msgStatus(db, 'a@one.example')], [0, 0, 0, 'draft'], 'the retry sees the changed address: back with the user, never sent')
   assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'released'), 'recorded as released')
 })
+
+// Council on e9dff19: the drain runs every tick now. A lead the draft path refuses is skipped once, recorded once, and no
+// longer holds one of the pass's 25 slots from leads autopilot can send to.
+test('#448 a lead the draft path refuses is skipped once: one audit row over two passes, and the lower-scored leads behind it are reached', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
+  for (let i = 0; i < 25; i++) lead(db, `p${i}@gmail.com`) // personal addresses: createDraft refuses every one (score 80)
+  const eligible = lead(db, 'a@one.example'); db.prepare('UPDATE leads SET score = 70 WHERE id = ?').run(eligible)
+  const skipped = () => db.prepare("SELECT lead_id, detail FROM autopilot_audit WHERE action = 'skipped'").all() as { lead_id: string; detail: string }[]
+  const r1 = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual([r1.sent, r1.skipped, skipped().length, new Set(skipped().map(s => s.detail)).size], [0, 25, 25, 1], 'first pass: the 25 refusals fill the pass, each recorded once as personal_email')
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 60))
+  assert.deepEqual([r2.sent, r2.skipped, sent.length, skipped().length], [1, 0, 1, 25], 'second pass: no refusal retried or re-recorded; the eligible lead behind them is sent')
+  const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 120))
+  assert.deepEqual([r3.sent, r3.skipped, skipped().length], [0, 0, 25], 'nothing left to try')
+})

@@ -321,13 +321,16 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     if (await deliver(w.message_id, w.lead_id, w.attempts, w.authority) === 'stop') return out
   }
 
-  // 2. Verified leads with no message yet.
+  // 2. Verified leads with no message yet, and none autopilot already skipped: a lead the draft path refused (a personal
+  // address, not a sales contact, ungraded) is recorded once and left to the user, so a pass every tick does not retry
+  // the same refusals, write the same audit rows, or hold the 25 slots from leads it could send to.
   const leads = db.prepare(
     `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
+       AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped')
      ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string }[]
+  ).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId) as { id: string; contact: string }[]
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends
