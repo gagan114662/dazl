@@ -68,7 +68,7 @@ try {
   const box = a.page.getByLabel('Who do you want to reach?')
   await a.page.getByTestId('reuse-profile').waitFor({ timeout: 15000 })
   assert.equal(await box.inputValue(), Q)
-  assert.match(await a.page.getByTestId('reuse-profile').textContent(), /^Find leads runs with your reviewed profile: Owner-run dental practices with 2-10 chairs\./)
+  assert.match(await a.page.getByTestId('reuse-profile').textContent(), /^Find leads reuses this stored profile \(approval is not recorded here\): Owner-run dental practices with 2-10 chairs\./)
   await shot(a.page, 'reuse')
   await a.page.getByRole('button', { name: 'Find leads' }).click()
   await a.page.getByText('Queued - waiting to start.').waitFor()
