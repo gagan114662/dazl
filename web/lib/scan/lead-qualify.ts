@@ -18,7 +18,7 @@ export interface Rejection {
   named_page_truncated: boolean | null // whether the page the model named was cut off; null when no sent page was named
   model_note: string             // model-authored, untrusted, bounded; never evidence
 }
-export interface AssessmentConflict {kind:'customer_sector_not_target_business';note:string}
+export interface AssessmentConflict {kind:'customer_sector_not_target_business';premise:string;note:string}
 export interface Judgment<V> { verdict: V; quote: string | null; quote_url: string | null; quote_role: PageRole | null; note: string; rejected?: Rejection; assessment_conflict?:AssessmentConflict }
 export interface EvidenceScope { pages_included: { url: string; role?: PageRole; chars_sent: number; chars_available: number; truncated: boolean }[]; pages_omitted: string[]; any_truncated: boolean }
 export interface Qualification {
@@ -148,7 +148,7 @@ export function parseQualification(raw: string, included: { url: string; text: s
   if(fit.verdict==='no'&&targetCriteria&&!requiresSoftwareCustomers&&/\bb2b\s+(?:saas|software)\b/i.test(targetCriteria)){
    const rationale=fit.note
    const customerExclusion=/\bcustomers?\s+(?:are|is)\s+[^.!?]{1,100},?\s*(?:not|rather than)\s+(?:software companies|businesses buying software services)\b/i.exec(rationale)
-   if(customerExclusion)fit.assessment_conflict={kind:'customer_sector_not_target_business',note:'Disputed model reasoning: this no uses the customer sector to reject the target business model. B2B software can sell to non-software businesses. This does not settle the target business model or any other targeting condition; do not use this assessment as a fit conclusion.'}
+   if(customerExclusion)fit.assessment_conflict={kind:'customer_sector_not_target_business',premise:customerExclusion[0],note:'Customer-sector premise flagged: B2B software can sell to non-software businesses. This warning concerns only the quoted customer comparison, not the entire no assessment. Other rejection reasons may still apply; they have not been assessed by this check. The raw verdict and note are unchanged. This does not establish the target business model or fit.'}
   }
   return result
 }

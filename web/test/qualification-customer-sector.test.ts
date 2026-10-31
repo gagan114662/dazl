@@ -37,3 +37,15 @@ test('synthetic provider replay and stored pipeline return diagnostic without ne
  assert.equal((await runQualification(db,'u',id,approval,deps)).status,'done');const q=storedQualifications(db,'u',id)[0].qualification!;assert.equal(q.company_fit.verdict,'no');assert.equal(q.company_fit.assessment_conflict?.kind,'customer_sector_not_target_business');assert.equal(q.use_case.verdict,'unknown');assert.equal(q.buying_evidence.verdict,'none_seen');assert.deepEqual(db.prepare('SELECT * FROM leads').all(),before)
  assert.equal((await runQualification(db,'u',id,approval,deps)).status,'exists');assert.equal(calls,1);db.close()
 })
+
+
+test('mixed rejection grounds remain a raw no, only matched customer comparison is flagged',()=>{
+ for(const other of ['No evidence of seed funding or sales hiring.','Headquarters are outside London.','The target itself sells insurance, not software.','The page is about another company.']){
+  const note=`${other} Their customers are dentists, not software companies.`,q=grade(note)
+  assert.equal(q.verdict,'no');assert.equal(q.note,note)
+  assert.equal(q.assessment_conflict?.premise,'customers are dentists, not software companies')
+  assert.match(q.assessment_conflict!.note,/only the quoted customer comparison, not the entire no/)
+  assert.match(q.assessment_conflict!.note,/Other rejection reasons may still apply/)
+  assert.doesNotMatch(q.assessment_conflict!.note,/do not use this assessment|disputed model assessment/i)
+ }
+})
