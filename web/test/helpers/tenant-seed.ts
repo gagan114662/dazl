@@ -133,5 +133,8 @@ export async function snapshot(db: Db, tenant: string): Promise<Record<string, s
     const rows = await db.all(`SELECT * FROM ${t} WHERE ${where(t)}`)
     out[t] = JSON.stringify(rows.map(r => JSON.stringify(r)).sort())
   }
+  // the tenant's identity rows (global by classification: the id is the tenant), so a snapshot covers them too
+  out.users = JSON.stringify(await db.all('SELECT * FROM users WHERE id = ?', [tenant]))
+  out.organizations = JSON.stringify(await db.all('SELECT * FROM organizations WHERE id = ?', [tenant]))
   return out
 }

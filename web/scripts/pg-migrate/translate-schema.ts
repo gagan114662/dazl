@@ -33,8 +33,16 @@ const seqName = (t: string) => `${t}_insert_seq_seq`
 // Split: triggers contain semicolons inside BEGIN...END, so pull them out first.
 // WHEN is optional: a guard without one (immutable / append-only tables) always aborts.
 const triggerRe = /CREATE TRIGGER (?:IF NOT EXISTS )?(\w+)\s+BEFORE (INSERT|DELETE|UPDATE(?: OF \w+)?) ON (\w+)\s+(?:WHEN ([\s\S]*?)\s+)?BEGIN SELECT RAISE\(ABORT, '([^']*)'\); END;/g
-const triggers: { name: string; event: string; table: string; when: string; msg: string }[] = []
-const rest = srcNoSeq.replace(triggerRe, (_m, name, event, table, when, msg) => {
+// The tenant deletion guard (lib/db/tenant-guard.ts): one `SELECT <tenant id>;` per tenant the row names (a no-op on
+// SQLite), then `SELECT RAISE(ABORT, ...) WHERE <condition>`. Postgres takes a shared transaction-scoped advisory lock
+// on each tenant id instead, so a deletion step (which takes it exclusively) waits for that tenant's open writers.
+const guardRe = /CREATE TRIGGER (?:IF NOT EXISTS )?(tomb_\w+)\s+BEFORE (INSERT|UPDATE(?: OF \w+)?) ON (\w+)\s+BEGIN ((?:SELECT (?!RAISE\()[^;]*; )+)SELECT RAISE\(ABORT, '([^']*)'\) WHERE ([\s\S]*?); END;/g
+const triggers: { name: string; event: string; table: string; when: string; msg: string; locks?: string[] }[] = []
+const srcNoGuard = srcNoSeq.replace(guardRe, (_m, name, event, table, locks, msg, when) => {
+  triggers.push({ name, event, table: table as string, when: when as string, msg: msg as string, locks: (locks as string).trim().split(/; ?/).filter(Boolean).map(l => l.replace(/^SELECT /, '')) })
+  return ''
+})
+const rest = srcNoGuard.replace(triggerRe, (_m, name, event, table, when, msg) => {
   triggers.push({ name, event, table: table as string, when: (when as string | undefined) ?? 'TRUE', msg: msg as string })
   return ''
 })
@@ -155,10 +163,11 @@ for (const t of triggers) {
   // A BEFORE DELETE trigger that returns NULL silently skips the delete in PG, so it must return OLD.
   const ret = t.event === 'DELETE' ? 'OLD' : 'NEW'
   const ev = t.event.startsWith('UPDATE OF') ? `UPDATE OF ${t.event.slice(10)}` : t.event
+  const locks = (t.locks ?? []).map(l => `  PERFORM pg_advisory_xact_lock_shared(hashtext(${l}));\n`).join('')
   pgTriggers.push(`
 CREATE OR REPLACE FUNCTION dazl_guard_${t.name}() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF (${cond}) THEN RAISE EXCEPTION '${t.msg}'; END IF;
+${locks}  IF (${cond}) THEN RAISE EXCEPTION '${t.msg}'; END IF;
   RETURN ${ret};
 END $$;
 DROP TRIGGER IF EXISTS ${t.name} ON ${t.table};

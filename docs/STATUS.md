@@ -41,6 +41,12 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- PR #455 (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable `deleteTenant`, the
+  recreation guard (two generated triggers per guarded column on both engines, PG migration 0025, provisional until the
+  predecessors land) and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the
+  recovery-runbook step are part 2. Council round 1 fixes (in-flight Postgres writers, OLD-row moves, memberships.member_id,
+  second request with another policy, both-engine parity) on the branch. Awaits #448 and #463, then a main merge, regeneration and Instinct.
+
 - b/first5 (#324) review fix (Instinct 2026-10-28 23:08): first5 no longer runs the post-finish TinyFish people search (runner gate, trace note `skipped`); the first5 budget disclosure reports search_and_fetch as `off` (and says model calls are not free). Pinned by a real-runner test with tinyfish tables initialised plus a non-first5 control that does search.
 
 - b/cost-bounds (#221) review fixes (Instinct 2026-10-27): BYOK enrichment disclosure now says it is off only for max_usd or credit_enrichment=false (what the runner does), pinned by a real-runner test per budget form; profile-generation bound now built from the largest JSON-escaped prompt (control chars, 6 bytes each), checked against ASCII/quote/backslash/BMP/astral/control/newline inputs, and states that unlisted models are not covered. No behaviour change.

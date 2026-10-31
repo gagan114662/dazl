@@ -44,6 +44,7 @@ import { migrateEmailGuess } from '../people/email-pattern.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { migrateTrialBudget } from '../billing/trial-budget.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateTenantLifecycle } from './tenant-guard.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
@@ -63,4 +64,6 @@ export function migrateAllSqlite(db: Database.Database): void {
   new SqliteQueue(db)
   // Last: it adds a column to tables the migrations above create.
   migrateInsertionOrder(db)
+  // After every table exists: the deleted-tenant guard is a trigger on each tenant-scoped table.
+  migrateTenantLifecycle(db)
 }
