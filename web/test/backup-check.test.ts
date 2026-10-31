@@ -329,6 +329,13 @@ test('rclone that hangs on cat is bounded by RCLONE_TIMEOUT_S: a named problem, 
   assert.equal(r.code, 1, r.out); assert.ok(Date.now() - t0 < 20_000, 'bounded'); assert.equal(delivered().length, 1)
   const ps = delivered()[0].problems; assert.match(ps.join(), /off-host destination remote: unreadable: rclone cat timed out \(1s\)/)
   for (const p of ps) assert.doesNotMatch(p, /\//, `no "/" in any problem string: ${p}`)
+  // 0 is not "no bound" (spawnSync would take it as none): it and every other non-positive form fall back to 120, logged
+  const quick = path.join(T, 'quick-rclone'); writeFileSync(quick, `#!/bin/sh\ncase "$1" in lsf) ls -1 ${store} ;; cat) cat ${store}/x.db.age.json ;; *) exit 9 ;; esac\n`); chmodSync(quick, 0o755)
+  for (const v of ['0', '-1', 'abc', '1.5']) {
+    const r2 = await run(['--dir', dir, '--state-dir', path.join(T, 'rc-limit-' + v), '--max-age-s', '7200', '--offhost', 'rclone:remote:bucket'], { BACKUP_ALERT_CMD: 'true', RCLONE_BIN: quick, RCLONE_TIMEOUT_S: v })
+    assert.match(r2.out, new RegExp(`RCLONE_TIMEOUT_S must be a positive number of seconds \\(${JSON.stringify(v).replace(/[.]/g, '\\$&')}\\); using 120`), r2.out)
+    assert.doesNotMatch(r2.out, /ERR_OUT_OF_RANGE|timed out/, 'the fallback is in force: no range error, no spurious timeout'); assert.equal(r2.code, 1, 'the stand-in copy is still judged (its ciphertext is missing)')
+  }
 })
 
 // Probe round 2 (scratchpad/attack-438-r2.md): a future timestamp must not win the newest selection, and listing order

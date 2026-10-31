@@ -21,7 +21,9 @@
 // by code and syscall). The webhook is https only and redirects are not followed. Age limits are decimal integers of
 // seconds (else exit 2; a flag without a value is exit 2 too). A sidecar or manifest timestamp more than 300 s in the
 // future is a problem and never the newest; ages never go below 0. Every manifest that shares the newest copied_at is
-// judged. Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable); 2 = usage.
+// judged. RCLONE_TIMEOUT_S (positive integer, default 120; else 120 with a log line) bounds each rclone call; many slow
+// calls can still add up past the unit's TimeoutStartSec. Exit 0 = ok; 1 = problem (alerted, throttled or
+// undeliverable); 2 = usage.
 // Known one-off: create-backup writes its sidecar in place (lib.ts), so a check that reads it at that instant can see a
 // partial file and alert "unreadable sidecar" once; the next run clears it. offhost-copy.sh writes its manifest via a
 // .partial rename, so the off-host side has no such window.
@@ -99,8 +101,12 @@ function localDest(d: string): Dest {
 function rcloneDest(spec: string): Dest {
   const remote = spec.slice('rclone:'.length).replace(/\/+$/, '')
   const bin = process.env.RCLONE_BIN || 'rclone'
-  // every rclone call is bounded by RCLONE_TIMEOUT_S (120): a hung remote is a problem, never a hung check
-  const limitS = seconds('RCLONE_TIMEOUT_S', process.env.RCLONE_TIMEOUT_S, 120)
+  // every rclone call is bounded by RCLONE_TIMEOUT_S (120): a hung remote is a problem, never a hung check. Only a
+  // positive integer is a bound (spawnSync takes 0 as "no timeout"); anything else falls back to 120 with a log line.
+  // Several slow reads each just under the bound can still exceed the unit's 5-minute TimeoutStartSec backstop.
+  const rawLimit = process.env.RCLONE_TIMEOUT_S
+  let limitS = rawLimit === undefined || rawLimit.trim() === '' ? 120 : /^\d+$/.test(rawLimit.trim()) ? Number(rawLimit) : 0
+  if (!(limitS > 0)) { console.error(`backup-check: RCLONE_TIMEOUT_S must be a positive number of seconds (${JSON.stringify(rawLimit)}); using 120`); limitS = 120 }
   const run = (args: string[]) => {
     const r = spawnSync(bin, args, { encoding: 'utf8', timeout: limitS * 1000, killSignal: 'SIGKILL' })
     if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') throw new Error(`rclone ${args[0]} timed out (${limitS}s)`)
