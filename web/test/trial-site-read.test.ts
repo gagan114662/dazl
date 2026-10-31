@@ -2,7 +2,7 @@
 // (lib/scan/trial-site-read.ts). Synthetic accounts, a stubbed limiter; no provider call, no fetch.
 import assert from 'node:assert/strict'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan, admitTrialSiteReadBudget, settleTrialSiteRead, trialPrincipal, TRIAL_SITE_READ_RESERVE_USD, utcDay } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, admitTrialSiteReadBudget, settleTrialSiteRead, trialPrincipal, trialRefusal, READ_GRACE_S, TRIAL_SITE_READ_RESERVE_USD, utcDay } from '../lib/billing/trial-budget.ts'
 import { admitTrialSiteRead, admitWorkspaceSiteRead, trialSiteReadsPerDay, TRIAL_SITE_READS_PER_ACCOUNT, TRIAL_SITE_READS_PER_IP_PER_DAY } from '../lib/scan/trial-site-read.ts'
 import { bothEngines } from './helpers/engines.ts'
 
@@ -145,6 +145,70 @@ bothEngines('#409 wallet: across midnight a pending read counts toward both days
   if (pending.ok) await settleTrialSiteRead(db, a.id, pending.reservation, 0.02, lastSecond)
   assert.equal((await admitTrialScan(db, c, { env, now: next })).ok, true, 'settled before midnight: not today')
   assert.equal(TRIAL_SITE_READ_RESERVE_USD, 0.05)
+})
+
+// Council R2-1 on d6c89bf2: a read whose call failed or reported nothing was never settled, and an unsettled read counted
+// toward EVERY later day's global ceiling (ledger: one $0.05 read from day D showed on D+1, D+30, D+300), so a provider
+// outage or an unpriceable operator model ate reads-per-day x $0.05 of the daily cap for good. Now: a failed call settles
+// AT its reserve (null) and ends; a read that never settles (crash) ends for the day ceiling READ_GRACE_S after admission.
+// Either way the account keeps paying the reserve.
+bothEngines('#444 R2-1: a failed read ends at its reserve and a never-settled read expires for the day ceiling; the account keeps paying the reserve', async ({ db }) => {
+  const NOW = 1_800_000_000, DAY = utcDay(NOW), dayStart = DAY * 86400
+  // The global day ceiling is exactly one scan reserve: any read still counting today refuses the scan.
+  const env = { ...wallet('10', '0.30'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.30' }
+  const a = await user(db, uid(470), 'r21a@gmail.com'), probe = await user(db, uid(471), 'r21p@gmail.com')
+  // 1. Admitted at day D and never settled (the process died). Same day: counts. D+2: no longer counts toward the day.
+  const dead = await admitTrialSiteReadBudget(db, a, { env, now: NOW })
+  assert.ok(dead.ok)
+  assert.equal(await trialRefusal(db, probe, { env, now: NOW }), 'global_daily_cap', 'day D: the pending read counts')
+  assert.equal(await trialRefusal(db, probe, { env, now: NOW + READ_GRACE_S - 1 }), 'global_daily_cap', 'within the grace window: still counts')
+  assert.equal(await trialRefusal(db, probe, { env, now: dayStart + 2 * 86400 + 60 }), null, 'D+2: a never-settled read no longer eats the day ceiling')
+  // ... but it stays on the account at its full reserve for good.
+  assert.deepEqual(await admitTrialScan(db, a, { env: { ...wallet('0.34', '10'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.30' }, now: dayStart + 400 * 86400 }), { ok: false, reason: 'account_total_cap' }, '$0.05 + $0.30 > $0.34 on day D+400')
+  // 2. A read admitted late on D whose call fails: settled with null at its reserve, with a timestamp. It counts on D
+  //    (admitted) and on the day it ended, never after.
+  const b = await user(db, uid(472), 'r21b@gmail.com'), probe2 = await user(db, uid(473), 'r21q@gmail.com')
+  const lastSecond = dayStart + 86400 - 1, next = dayStart + 86400 + 60
+  const failed = await admitTrialSiteReadBudget(db, b, { env, now: lastSecond })
+  assert.ok(failed.ok)
+  if (failed.ok) await settleTrialSiteRead(db, b.id, failed.reservation, null, next)
+  const row = await db.get<{ settled_at: number; spent_usd: number }>('SELECT settled_at, spent_usd FROM trial_reservations WHERE id = ?', [failed.ok ? failed.reservation : ''])
+  assert.deepEqual([Number(row!.settled_at), Number(row!.spent_usd)], [next, TRIAL_SITE_READ_RESERVE_USD], 'settled now, at the full reserve')
+  assert.equal(await trialRefusal(db, probe2, { env, now: next + 10 }), 'global_daily_cap', 'ended on D+1: counts toward D+1')
+  assert.equal(await trialRefusal(db, probe2, { env, now: dayStart + 2 * 86400 + 60 }), null, 'D+2: a failed read no longer counts')
+  assert.deepEqual(await admitTrialScan(db, b, { env: { ...wallet('0.34', '10'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.30' }, now: dayStart + 2 * 86400 + 60 }), { ok: false, reason: 'account_total_cap' }, 'the account still pays the reserve')
+})
+
+// Council R2-2 on d6c89bf2: the account's three reads per 30 days were counted first, so three refusals further down
+// (deployment busy, network throttle, wallet) burned them with no read done. Now they are counted last, only for a read
+// everything else admitted, and a read refused there gives its wallet reservation back.
+bothEngines('#444 R2-2: refusals for busy, throttle or money never use one of the account\'s reads; the account count is last and releases the wallet when it refuses', async ({ db }) => {
+  await withKey(OP, async () => {
+    const a = await user(db, uid(480), 'r22a@gmail.com')
+    // A limiter whose deployment ceiling is full for the first three calls, then has room; it records every key counted.
+    const counted: string[] = []
+    let busy = 3
+    const lim = async (key: string, max: number) => {
+      counted.push(key)
+      if (key === 'trial-site-day:all') return busy-- > 0 ? { ok: false, retryAfterS: 60 } : { ok: true, retryAfterS: 0 }
+      const n = counted.filter(k => k === key).length
+      return { ok: n <= max, retryAfterS: 60 }
+    }
+    for (let i = 0; i < 3; i++) assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.90', { env: ENV, limit: lim }), { ok: false, reason: 'site_reads_busy' })
+    assert.equal(counted.filter(k => k === `trial-site:${a.id}`).length, 0, 'three busy refusals: the account\'s own reads untouched')
+    assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [a.id]))!.n), 0, 'nothing reserved for a refused read')
+    assert.equal((await admitTrialSiteRead(db, a, '203.0.113.90', { env: ENV, limit: lim })).ok, true, 'room again: admitted, and only now counted')
+    assert.equal(counted.filter(k => k === `trial-site:${a.id}`).length, 1)
+    // The wallet refuses (account total too small for a read): the account count is never reached.
+    const poor = await user(db, uid(481), 'r22p@gmail.com')
+    assert.deepEqual(await admitTrialSiteRead(db, poor, '203.0.113.91', { env: { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.01' }, limit: lim }), { ok: false, reason: 'account_total_cap' })
+    assert.equal(counted.filter(k => k === `trial-site:${poor.id}`).length, 0, 'no money: the account\'s reads untouched')
+    // The account count itself refusing (three admitted reads already) gives the wallet reservation back.
+    const full = await user(db, uid(482), 'r22f@gmail.com')
+    for (let i = 0; i < TRIAL_SITE_READS_PER_ACCOUNT; i++) assert.equal((await admitTrialSiteRead(db, full, '203.0.113.92', { env: ENV, limit: lim })).ok, true)
+    assert.deepEqual(await admitTrialSiteRead(db, full, '203.0.113.92', { env: ENV, limit: lim }), { ok: false, reason: 'site_reads_used' })
+    assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [full.id]))!.n), TRIAL_SITE_READS_PER_ACCOUNT, 'the refused fourth read left no reservation behind')
+  })
 })
 
 // Instinct's hold on 8cfcf7d: the read's reserve is dazl's own bound, not a vendor-enforced maximum. A reported cost

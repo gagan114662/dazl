@@ -45,7 +45,7 @@ const provider = (seen: string[], o: { model?: string; usage?: typeof USAGE | nu
 const read = (db: Database.Database, p: Provider, trial?: () => Promise<SiteReadAdmission>) =>
   icpFromWebsite(db, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: page, providers: { anthropic: p }, ...(trial ? { trial } : {}) })
 // A trial admission that records how often it was asked and what the read settled into the wallet.
-const admitted = (calls: { n: number }, settled: number[] = []) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number) => { settled.push(usd) } } }
+const admitted = (calls: { n: number }, settled: (number | null)[] = []) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number | null) => { settled.push(usd) } } }
 const neverTrial = async (): Promise<never> => { throw new Error('the trial must not be asked for an own-key read') }
 const round = (n: number) => Math.round(n * 1e6) / 1e6
 const pool = async (db: Database.Database) => (await poolRows(db, 'A')).map(r => [r.period.slice(0, 2), round(r.reserved_usd), round(r.reported_usd), r.calls])
@@ -91,7 +91,7 @@ test('own key: the pool refuses (over the limit, or another call of the owner un
 })
 
 test('trial: a keyless account reads on the trial key under the read\'s own guard and settles into the trial wallet; the owner\'s pool is never touched, even one that would refuse', async () => {
-  const db = store(false), seen: string[] = [], calls = { n: 0 }, settled: number[] = []
+  const db = store(false), seen: string[] = [], calls = { n: 0 }, settled: (number | null)[] = []
   // An owner limit that refuses every own-key call, and an unsettled marker: neither applies to dazl's trial money.
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:0.000001', DAZL_SPEND_BUSY_WAIT_MS: '0' }, async () => {
     const p = sharedPool(db, 'A', { day: 5 })
@@ -113,9 +113,9 @@ test('the two refusals are distinct and never cross: owner pool -> spend_limit; 
     // user to their workspace limit). The owner's pool for A stays empty.
     assert.deepEqual(await read(trial, provider(seen, { model: 'some-new-model' }), admitted({ n: 0 })), { error: 'trial_read_failed' })
     // Trial, the provider fails: trial_read_failed, never key_rejected (the user has no key to be rejected).
-    const settled: number[] = []
+    const settled: (number | null)[] = []
     assert.deepEqual(await read(trial, provider(seen, { fail: true }), admitted({ n: 0 }, settled)), { error: 'trial_read_failed' })
-    assert.deepEqual([settled, await pool(trial)], [[], []], 'a failed trial call keeps its full wallet reserve and writes nothing to the owner pool')
+    assert.deepEqual([settled, await pool(trial)], [[null], []], 'a failed trial call ends its wallet reservation at the full reserve (settle null) and writes nothing to the owner pool')
     assert.deepEqual(seen, [OP], 'the only call made was the failed trial one')
   })
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:5' }, async () => {

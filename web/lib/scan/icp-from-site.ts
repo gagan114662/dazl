@@ -91,7 +91,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
 
   // The paid call: the tenant's key on the owner's pool, or (admitted only now, after a readable page) dazl's trial key
   // under the read's own ceiling. A trial read is dazl's money in the trial wallet: it never reserves in the owner's pool.
-  let call: { key: string; provider: Provider; funded: 'own' | 'trial'; settle?: (usd: number) => Promise<void> }
+  let call: { key: string; provider: Provider; funded: 'own' | 'trial'; settle?: (usd: number | null) => Promise<void> }
   if (own) {
     call = { ...own, funded: 'own' }
   } else {
@@ -109,12 +109,14 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     let out: string
     if (call.funded === 'trial' && call.provider.completeDetailed) {
       // On the trial key, the provider's reported usage settles the wallet reservation to what the read cost; without a
-      // reported usage (or a listed price) it keeps its full reserve.
+      // reported usage (or a listed price) the read ends at its full reserve (settle null).
       const det = await call.provider.completeDetailed(call.key, prompt, deps.fetchImpl, 700)
-      const usd = researchCostUsd(det.usage as never, det.model ?? call.provider.configuredModel?.())
-      if (usd !== null) await call.settle?.(usd)
+      await call.settle?.(researchCostUsd(det.usage as never, det.model ?? call.provider.configuredModel?.()))
       out = det.text
-    } else out = await call.provider.complete!(call.key, prompt, deps.fetchImpl, 700)
+    } else {
+      out = await call.provider.complete!(call.key, prompt, deps.fetchImpl, 700)
+      if (call.funded === 'trial') await call.settle?.(null) // no usage report on this path: ends at the full reserve
+    }
     const json = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/.exec(out)?.[1] ?? out
     const parsed = JSON.parse(json)
     icp = normalizeIcp(parsed)
@@ -122,8 +124,9 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     if (typeof parsed?.sells === 'string') sells = parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150)
   } catch (e) {
     // On the trial key a failure (refused by the read's ceiling, provider error, unreadable answer) is dazl's, never
-    // "your key" and never the owner's spend limit.
-    if (call.funded === 'trial') return { error: 'trial_read_failed' }
+    // "your key" and never the owner's spend limit. The read has ended: its wallet reservation settles at the full
+    // reserve (the vendor may have billed the call), so it stops counting toward later days (lib/billing/trial-budget.ts).
+    if (call.funded === 'trial') { await call.settle?.(null); return { error: 'trial_read_failed' } }
     if (spendRefused(e)) return { error: 'spend_limit' } // the owner's spend limit: no call was made
     return { error: 'key_rejected' }
   }

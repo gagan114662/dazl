@@ -32,7 +32,7 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const CASES = [
   ['not-configured', 400, { error: 'no_api_key', trial: 'not_configured' }, "The free trial isn't available here right now. Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
-  ['reads-used', 400, { error: 'no_api_key', trial: 'site_reads_used' }, 'You have used your free website reads. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['reads-used', 400, { error: 'no_api_key', trial: 'site_reads_used' }, 'You have used your 3 free website reads for now; they come back 30 days after each read. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['busy', 400, { error: 'no_api_key', trial: 'site_reads_busy' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['google', 400, { error: 'no_api_key', trial: 'google_required' }, 'The free trial needs an account that signs in with Google. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
 ]

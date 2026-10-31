@@ -126,7 +126,7 @@ const trialProvider = (seen: { keys: string[]; max: number[] }, model = 'claude-
   configuredModel: () => model,
   complete: async (k, _p, _f, max = 10) => { seen.keys.push(k); seen.max.push(max); return goodProvider.complete!(k, _p, _f, max) },
 })
-const admitted = (calls: { n: number }, settled: number[] = []) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number) => { settled.push(usd) } } }
+const admitted = (calls: { n: number }, settled: (number | null)[] = []) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number | null) => { settled.push(usd) } } }
 
 test('#409: an account without its own key has its site read on the trial key, admitted only after a readable page', async () => {
   const empty = new Database(':memory:'); migrateKeys(empty)
@@ -186,31 +186,39 @@ test('redirects cannot introduce credentials or a nonstandard port', async () =>
   }
 })
 
-test('#409: a trial read settles its wallet reservation only to a cost the provider reported; a failed call keeps it', async () => {
+test('#409: a trial read settles its wallet reservation to the cost the provider reported; a failed or unreported call ends it at the full reserve (settle null)', async () => {
   const empty = new Database(':memory:'); migrateKeys(empty)
   const detailed = (usage?: { input_tokens: number; output_tokens: number }, fail = false): Provider => ({
     research: async () => { throw new Error('unused') },
     configuredModel: () => 'claude-sonnet-4-5',
     completeDetailed: async () => { if (fail) throw new Error('provider 500'); return { text: await goodProvider.complete!('k', '', undefined, 700), model: 'claude-sonnet-4-5', ...(usage ? { usage } : {}) } },
   })
-  const run = async (p: Provider) => { const settled: number[] = []; const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: p }, trial: admitted({ n: 0 }, settled) }); return { out, settled } }
+  const run = async (p: Provider) => { const settled: (number | null)[] = []; const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: p }, trial: admitted({ n: 0 }, settled) }); return { out, settled } }
   const reported = await run(detailed({ input_tokens: 2000, output_tokens: 300 }))
   assert.ok('icp' in reported.out)
   assert.deepEqual(reported.settled, [(2000 * 3 + 300 * 15) / 1e6], 'settled to the reported usage at the listed price')
-  assert.deepEqual((await run(detailed())).settled, [], 'no usage reported: keeps the full reserve')
+  assert.deepEqual((await run(detailed())).settled, [null], 'no usage reported: ends at the full reserve (null), never left pending')
   const failed = await run(detailed(undefined, true))
-  assert.deepEqual([failed.out, failed.settled], [{ error: 'trial_read_failed' }, []], 'failed call: keeps the full reserve')
+  assert.deepEqual([failed.out, failed.settled], [{ error: 'trial_read_failed' }, [null]], 'failed call: ends at the full reserve (null), never left pending')
+  // The per-read ceiling refusing before any call (unpriced model) also ends the read: it is not left pending either.
+  const ceiling = await run({ ...detailed({ input_tokens: 1, output_tokens: 1 }), configuredModel: () => 'some-new-model' })
+  assert.deepEqual([ceiling.out, ceiling.settled], [{ error: 'trial_read_failed' }, [null]])
 })
 
-test('#409: incomplete usage (one token count missing) is not a cost: the read keeps its full reserve', async () => {
+test('#409: incomplete usage (one token count missing) is not a cost: the read ends at its full reserve', async () => {
   const empty = new Database(':memory:'); migrateKeys(empty)
   const partial: Provider = {
     research: async () => { throw new Error('unused') },
     configuredModel: () => 'claude-sonnet-4-5',
     completeDetailed: async () => ({ text: await goodProvider.complete!('k', '', undefined, 700), model: 'claude-sonnet-4-5', usage: { input_tokens: 2000 } as never }),
   }
-  const settled: number[] = []
+  const settled: (number | null)[] = []
   const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: partial }, trial: admitted({ n: 0 }, settled) })
   assert.ok('icp' in out)
-  assert.deepEqual(settled, [])
+  assert.deepEqual(settled, [null])
+  // A provider with complete() only (no usage report at all): the same, the read ends at its reserve.
+  const plain: Provider = { research: async () => { throw new Error('unused') }, configuredModel: () => 'claude-sonnet-4-5', complete: async () => goodProvider.complete!('k', '', undefined, 700) }
+  const settled2: (number | null)[] = []
+  assert.ok('icp' in await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: plain }, trial: admitted({ n: 0 }, settled2) }))
+  assert.deepEqual(settled2, [null])
 })

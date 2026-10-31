@@ -10,6 +10,7 @@ import { Avatar, Pill, Stepper } from './ui/bits'
 import BrainGraph from './onboarding/brain-graph'
 import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
+import { siteKeyReason } from '@/lib/scan/site-read-copy'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import { calendarDay } from '@/lib/day'
@@ -37,17 +38,6 @@ const SITE_ERR: Record<string, string> = {
 }
 
 // What the key form says when the free trial could not read the site: the real reason, never a free-start promise.
-function siteKeyReason(why: string | null): string {
-  const own = 'Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'
-  if (why === 'not_configured') return `The free trial isn't available here right now. ${own}`
-  if (why === 'site_reads_used') return `You have used your free website reads. ${own}`
-  if (why === 'workspace_not_eligible') return `The free trial belongs to the account that created this workspace. ${own}`
-  if (why === 'google_required') return `The free trial needs an account that signs in with Google. ${own}`
-  if (why === 'domain_used' || why === 'attempts_cap' || why === 'account_cap' || why === 'account_total_cap') return `Your free trial is used up. ${own}`
-  if (why === 'ip_throttle' || why === 'global_daily_cap' || why === 'site_reads_busy' || why === 'limit_unavailable') return `The free trial is busy right now. Try again later. ${own}`
-  return 'Reading your site runs on your own Anthropic or OpenAI key.'
-}
-
 // First run on Home: website -> editable "what you sell and who buys it" -> one sentence (3 suggested plays) -> Run.
 // Shown to a new account (no business details, no searches); after that Home shows the journey (the children).
 export default function FirstRun({ children }: { children: React.ReactNode }) {

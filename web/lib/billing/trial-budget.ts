@@ -31,8 +31,11 @@
 // website" may run on the trial key for a keyless account (#409, lib/scan/trial-site-read.ts): it is paid work in this
 // same wallet, a 'site_read' reservation of TRIAL_SITE_READ_RESERVE_USD admitted under the same lock and ceilings
 // (account total, day, across midnight), counted at its full reserve until its single model call settles to the cost
-// the provider reported, in full even above the reserve (a failed or unreported call keeps the full reserve). It is
-// not one of the scan attempts.
+// the provider reported, in full even above the reserve. A failed or unreported call is settled AT its full reserve
+// (settleTrialSiteRead with null): it keeps costing the account its reserve, but it ends, so it does not count toward
+// every later day's global ceiling. A read that never settles at all (the process died between admission and settle)
+// is treated as ended READ_GRACE_S after it was admitted for the day ceiling, and keeps its reserve for the account.
+// It is not one of the scan attempts.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
@@ -62,6 +65,10 @@ export function migrateTrialBudget(db: Database.Database): void {
 // The most one trial-funded website read may cost: reserved before its model call (lib/scan/icp-from-site.ts bounds
 // the call to fit it with a spend guard).
 export const TRIAL_SITE_READ_RESERVE_USD = 0.05
+// A read's single call is bounded (the provider timeout, lib/llm/provider.ts) to far less than this. An unsettled read
+// older than this counts as ended for the day ceiling (its reserve stays on the account), so a crash between admission
+// and settle cannot hold a slice of every later day's global budget.
+export const READ_GRACE_S = 3600
 
 export interface TrialCaps {
   reserveUsd: number; accountTotalUsd: number; globalDailyUsd: number
@@ -102,14 +109,17 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
 // SETTLED_SQL and settled() are the same rule: the scan is finished and its current attempt's run has settled.
 const SETTLED_SQL = "(j.status IN ('done', 'failed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)"
-const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.settled_at, r.settled_attempt, j.status, j.error, j.attempts, j.spend_reserved_usd
+const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.attempts, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
-  WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND ((r.kind = 'site_read' AND (r.settled_at IS NULL OR r.settled_at >= ?))
+  WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND ((r.kind = 'site_read' AND COALESCE(r.settled_at, r.created_at + ${READ_GRACE_S}) >= ?)
     OR (r.kind <> 'site_read' AND (NOT COALESCE(${SETTLED_SQL}, FALSE) OR r.settled_at >= ?))))`
-export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; attempts: number | null; spend_reserved_usd: number | null }
+export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; attempts: number | null; spend_reserved_usd: number | null }
 const isRead = (r: LedgerRow) => r.kind === 'site_read'
-// A website read has ended once its call settled (settled_at); it then counts as the cost the provider reported.
+// A website read has ended once its call settled (settled_at); it then counts as the cost the provider reported (or its
+// full reserve, for a failed or unreported call). For the day ceiling only, a read that never settled counts as ended
+// READ_GRACE_S after it was admitted (see above); its reserve stays on the account.
 const readSettled = (r: LedgerRow) => r.settled_at !== null && r.spent_usd !== null && r.spent_usd !== undefined
+const readEndedAt = (r: LedgerRow) => r.settled_at !== null ? Number(r.settled_at) : Number(r.created_at ?? 0) + READ_GRACE_S
 // Every paid step of the scan has ended: it is finished ('done' or 'failed', not queued for a retry) AND the attempt
 // that finished it has settled (a scan reads 'done' before its enrichment, which can still pay for model calls; an
 // earlier attempt's settle never releases a later attempt's reserve).
@@ -120,7 +130,7 @@ export const reservationCost = (r: LedgerRow) => isRead(r)
   ? (readSettled(r) ? Math.max(0, Number(r.spent_usd)) : Number(r.reserve_usd))
   : settled(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
 const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
-  || (Number(r.day) < day && (isRead(r) ? (r.settled_at === null || Number(r.settled_at) >= day * 86400) : (!settled(r) || Number(r.settled_at) >= day * 86400)))
+  || (Number(r.day) < day && (isRead(r) ? readEndedAt(r) >= day * 86400 : (!settled(r) || Number(r.settled_at) >= day * 86400)))
 // A trial attempt released before any cost: its scan failed (not cancelled: a cancelled scan may have paid for work
 // already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
 // place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
@@ -188,12 +198,13 @@ export async function admitTrialSiteReadBudget(db: Db, user: { id: string; email
     return { ok: true, reservation: id }
   })
 }
-// A read's call has ended and the provider reported its cost: from now on it counts as that, even above its reserve.
-// Not called when the call failed or its cost is unknown, and a non-finite or negative cost is ignored: then it keeps
-// counting its full reserve. Best effort.
-export async function settleTrialSiteRead(db: Db, tenantId: string, reservation: string, spentUsd: number, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
-  if (!Number.isFinite(spentUsd) || spentUsd < 0) return
-  try { await db.run("UPDATE trial_reservations SET settled_at = ?, spent_usd = ? WHERE id = ? AND tenant_id = ? AND kind = 'site_read' AND settled_at IS NULL", [nowS, spentUsd, reservation, tenantId]) } catch { /* stays at its full reserve */ }
+// A read's call has ended. With the cost the provider reported, it counts as that from now on, even above its reserve.
+// With null (the call failed, or reported no usable cost), or a non-finite or negative cost, it counts as its full
+// reserve from now on: the money stays on the account, but the read has ended, so it no longer counts toward later
+// days. Best effort: if this write fails the row stays unsettled (full reserve; READ_GRACE_S bounds its day count).
+export async function settleTrialSiteRead(db: Db, tenantId: string, reservation: string, spentUsd: number | null, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
+  const usd = spentUsd !== null && Number.isFinite(spentUsd) && spentUsd >= 0 ? spentUsd : TRIAL_SITE_READ_RESERVE_USD
+  try { await db.run("UPDATE trial_reservations SET settled_at = ?, spent_usd = ? WHERE id = ? AND tenant_id = ? AND kind = 'site_read' AND settled_at IS NULL", [nowS, usd, reservation, tenantId]) } catch { /* stays at its full reserve */ }
 }
 
 // For the free-scans counter: why a trial scan would be refused right now (null = it would run), without reserving.
