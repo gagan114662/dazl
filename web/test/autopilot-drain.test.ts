@@ -515,3 +515,15 @@ test('#448 the volume authority cannot be read at the send commitment (the store
   assert.equal(db.prepare, Database.prototype.prepare, 'the fault is gone')
   const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 1)); assert.deepEqual([r2.sent, sent.length, work(db).length], [1, 1, 0], 'read again under working storage: sent once')
 })
+
+// Council on e9dff19: a hold is kept under the authority autopilot checked, not a fresh read at the time of the hold.
+test('#448 the postal address changes during the Gmail request and Gmail rate-limits a new draft: the retry hands it back, not sent', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const sent: string[] = []; let calls = 0
+  const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { if (++calls === 1) { saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '99 Other Rd, Ottawa ON K1A 0B1' }); throw new GmailSendError(429) } sent.push(raw); return { id: 'g' } }) as never }
+  lead(db, 'a@one.example')
+  const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual([r.sent, sent.length, work(db).map(w => [w.reason, w.attempts])], [0, 0, [['gmail_rate_limited', 1]]], 'held for the retry')
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 3601))
+  assert.deepEqual([r2.sent, sent.length, work(db).length, msgStatus(db, 'a@one.example')], [0, 0, 0, 'draft'], 'the retry sees the changed address: back with the user, never sent')
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'released'), 'recorded as released')
+})

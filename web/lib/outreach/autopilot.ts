@@ -202,8 +202,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
   const live = () => { const s2 = getState(db, tenantId); return !s2.paused && s2.enabled && autopilotAvailable(env) }
 
-  const hold = (id: string, leadId: string, reason: string, nextAt: number | null, attempts = 0) => {
-    const auth = draftAuthority(db, tenantId, id)
+  // auth: the authority fingerprint the hold is kept under. Inside deliver this is the one autopilot checked (expected),
+  // never a fresh read: a change during the Gmail request must not be stamped in as the authority the retry compares to.
+  const hold = (id: string, leadId: string, reason: string, nextAt: number | null, attempts = 0, auth: string | null = draftAuthority(db, tenantId, id)) => {
     if (!auth) return
     db.prepare(`INSERT INTO autopilot_work (message_id, tenant_id, lead_id, reason, next_at, authority, attempts, claimed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
       ON CONFLICT (message_id) DO UPDATE SET reason = excluded.reason, next_at = excluded.next_at, attempts = excluded.attempts, claimed_at = NULL`).run(id, tenantId, leadId, reason, nextAt, auth, attempts, now)
@@ -219,8 +220,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   }
   // Changed since autopilot took its authority: the user's to approve.
   const release = (id: string, leadId: string) => { backToUser(id); out.held++; audit(db, tenantId, 'released', 'changed since autopilot drafted it: yours to approve', leadId, id) }
-  const keepHeld = (id: string, leadId: string, code: string, attempts: number, nextAt: number = now) => {
-    hold(id, leadId, code, nextAt, attempts)
+  const keepHeld = (id: string, leadId: string, code: string, attempts: number, nextAt: number = now, auth?: string) => {
+    hold(id, leadId, code, nextAt, attempts, auth)
     db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(id, tenantId)
   }
   // The volume limits as the store has them now: the daily cap (autopilot_settings.daily_cap, re-read every time, never
@@ -242,12 +243,12 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   const deliver = async (id: string, leadId: string, attempts: number, expected: string): Promise<'stop' | void> => {
     // A draft polished (or a held one re-checked) across an await: autopilot may have been turned off meanwhile.
     const before = authority()
-    if (before) { out.held++; if (before === 'paused') hold(id, leadId, before, now, attempts); else keepHeld(id, leadId, before, attempts); out.stopped = before; return 'stop' }
+    if (before) { out.held++; if (before === 'paused') hold(id, leadId, before, now, attempts, expected); else keepHeld(id, leadId, before, attempts, now, expected); out.stopped = before; return 'stop' }
     if (draftAuthority(db, tenantId, id) !== expected) { release(id, leadId); return }
     const msg = db.prepare('SELECT to_email, status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { to_email: string; status: string }
     const to = msg.to_email
     // Warm-up drafts are the user's to approve: never sent by autopilot later, whatever happens to the caps.
-    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; hold(id, leadId, 'warmup', null); audit(db, tenantId, 'held_warmup', 'needs your approval', leadId, id); return }
+    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; hold(id, leadId, 'warmup', null, 0, expected); audit(db, tenantId, 'held_warmup', 'needs your approval', leadId, id); return }
     if (isSuppressed(db, tenantId, to)) { out.skipped++; drop(id); audit(db, tenantId, 'skipped', 'suppressed', leadId, id); return }
     const domain = to.split('@')[1]
     // The daily cap and the one-email-per-company-per-7-days rule are checked and this send reserved in one write
@@ -261,7 +262,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       return { reservation }
     }).immediate()
     if ('held' in admit) {
-      out.held++; hold(id, leadId, admit.held, admit.at, attempts)
+      out.held++; hold(id, leadId, admit.held, admit.at, attempts, expected)
       if (admit.held === 'domain_cap') { audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', leadId, id); return }
       audit(db, tenantId, 'daily_cap', `cap ${admit.cap}`, leadId, id); out.stopped = 'daily_cap'; return 'stop'
     }
@@ -293,10 +294,10 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       audit(db, tenantId, 'send_failed', code, leadId, id)
       // A volume limit refused it at commitment (the slot is released above): held until the limit has room, unapproved.
       const vol = VOLUME_AT_SEND.get(code)
-      if (vol) { keepHeld(id, leadId, vol, attempts, capHold(domain)?.at ?? now); out.held++; if (vol === 'daily_cap') { out.stopped = vol; return 'stop' } return }
-      if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts); out.held++; out.stopped = code; return 'stop' }
-      if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
-      if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1); out.held++; return }
+      if (vol) { keepHeld(id, leadId, vol, attempts, capHold(domain)?.at ?? now, expected); out.held++; if (vol === 'daily_cap') { out.stopped = vol; return 'stop' } return }
+      if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts, now, expected); out.held++; out.stopped = code; return 'stop' }
+      if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts, expected); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
+      if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1, expected); out.held++; return }
       // Any other refusal (a check now holds the lead or the address, the sending account changed, retries ran out):
       // the user decides.
       backToUser(id); out.held++
