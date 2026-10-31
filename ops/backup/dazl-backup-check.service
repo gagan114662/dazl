@@ -9,7 +9,9 @@ Description=dazl backup freshness check
 
 [Service]
 Type=oneshot
-# the check itself bounds every command, webhook and rclone call; this is the backstop for the whole job
+# the check itself bounds every command, webhook and rclone call and reads only the newest few manifests; this is the
+# backstop for the whole job. A run killed here has sent no alert: it shows as a failed unit in the journal and in
+# `systemctl status dazl-backup-check`; wire OnFailure=<your-notifier>.service if you run one.
 TimeoutStartSec=5min
 User=CHANGE-ME-app-user
 EnvironmentFile=/etc/dazl-backup/env

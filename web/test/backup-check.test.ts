@@ -165,6 +165,10 @@ test('a non-numeric age limit is refused (exit 2), never a check that cannot fla
   }
   let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s'], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 2, 'a flag as the last argument has no value'); assert.match(r.out, /--max-age-s needs a value/); assert.equal(delivered().length, 0)
+  r = await run(['--dir', dir, '--state-dir', state, '--offhost', ''], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 2, 'an empty --offhost is a mistake, not "not configured"'); assert.match(r.out, /--offhost needs a value/)
+  r = await run(['--dir', dir, '--state-dir', state], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 0); assert.match(r.out, /off-host copy not configured \(OFFHOST_DEST empty, OFFHOST_REQUIRED=0\)/, 'an unconfigured destination is said out loud')
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', ''], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 0, 'an empty limit (an unexpanded variable) is the default, and this backup is fresh'); assert.equal(delivered().length, 0)
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '' })
@@ -360,6 +364,10 @@ test('a future copied_at or createdAt is a problem and never the newest: the rea
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200'], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 1); assert.match(delivered().at(-1)!.problems.join(), /backup skewed\.db has a future timestamp/)
   assert.equal(firstJson(r.out).newest_backup, path.basename(fx.backup)); assert.ok((firstJson(r.out).newest_backup_age_s as number) < 60, 'the real backup, seconds old')
+  // a directory holding only the future-stamped backup: "no usable backup", not "no backup with a sidecar"
+  const only = path.join(T, 'future-only'); mkdirSync(only); writeFileSync(path.join(only, 'skewed.db'), 'x'); writeFileSync(path.join(only, 'skewed.db.json'), readFileSync(path.join(dir, 'skewed.db.json')))
+  r = await run(['--dir', only, '--state-dir', state], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1); assert.match(delivered().at(-1)!.problems.join('\n'), /^no usable backup in future-only$/m)
   // a clock a few seconds ahead is not a problem, and its age is 0, not negative
   writeFileSync(path.join(dir, 'skewed.db.json'), JSON.stringify({ createdAt: new Date(Date.now() + 60_000).toISOString(), sha256: createHash('sha256').update('x').digest('hex') }))
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200'], { BACKUP_ALERT_CMD: cmd })
@@ -390,4 +398,25 @@ test('the problem set is order-independent: the same problems in another discove
   assert.equal(r.code, 1); const ps = delivered()[0].problems; assert.equal(ps.length, 3)
   assert.match(ps[0], /^last recovery drill is \d+s old/); assert.match(ps[1], /^newest backup is/); assert.match(ps[2], /^off-host destination nowhere unreadable/)
   assert.deepEqual(ps, [...ps].sort(), 'problems are emitted sorted, not in discovery order')
+})
+
+// Confirmation round, reviewer 1 (R11): copies accrue hourly with no retention, so the number of rclone calls per run
+// must not grow with the number of manifests, or the unit's 5-minute backstop eventually kills every run before it alerts.
+test('300 off-host manifests behind a slow rclone: the check reads only the newest few and finishes fast', async () => {
+  const fx = await fixtureBackup(path.join(T, 'many')), dir = path.dirname(fx.backup), state = path.join(T, 'many-state')
+  const store = path.join(T, 'many-remote'); mkdirSync(store)
+  const ct = Buffer.from('ciphertext stand-in'), sha = createHash('sha256').update(ct).digest('hex')
+  for (let i = 1; i <= 300; i++) {
+    const name = `dazl-backup-2026${String(i).padStart(3, '0')}.db.age`
+    writeFileSync(path.join(store, name + '.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date(Date.now() - (301 - i) * 3600_000).toISOString(), ciphertext: name, ciphertext_sha256: sha, bytes: ct.length }))
+  }
+  writeFileSync(path.join(store, 'dazl-backup-2026300.db.age'), ct) // only the newest ciphertext exists; older ones are not judged
+  const calls = path.join(T, 'many-calls.log')
+  const slow = path.join(T, 'slow-many-rclone'); writeFileSync(slow, `#!/bin/sh\necho "$1 $3" >> ${calls}\ncase "$1" in lsf) ls -1 ${store} ;; cat) sleep 0.5; p=\${2#remote:bucket/}; cat "${store}/$p" ;; *) exit 9 ;; esac\n`); chmodSync(slow, 0o755)
+  const { cmd, delivered } = recorder('many-alert'); const t0 = Date.now()
+  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', 'rclone:remote:bucket'], { BACKUP_ALERT_CMD: cmd, RCLONE_BIN: slow })
+  const elapsed = Date.now() - t0, made = readFileSync(calls, 'utf8').trim().split('\n')
+  assert.equal(r.code, 0, r.out); assert.equal(delivered().length, 0)
+  const j = firstJson(r.out); assert.equal(j.offhost_manifests_listed, 300); assert.equal(j.offhost_copies, 5); assert.equal(j.offhost_manifests_read, 5); assert.equal(j.newest_offhost_verified, true)
+  assert.ok(made.length <= 1 + 10 + 5, `at most lsf + READ_MAX manifest reads + digests, got ${made.length}`); assert.ok(elapsed < 60_000, `finished in ${elapsed} ms`)
 })

@@ -21,8 +21,10 @@
 // by code and syscall). The webhook is https only and redirects are not followed. Age limits are decimal integers of
 // seconds (else exit 2; a flag without a value is exit 2 too). A sidecar or manifest timestamp more than 300 s in the
 // future is a problem and never the newest; ages never go below 0. Every manifest that shares the newest copied_at is
-// judged. RCLONE_TIMEOUT_S (positive integer, default 120; else 120 with a log line) bounds each rclone call; many slow
-// calls can still add up past the unit's TimeoutStartSec. Exit 0 = ok; 1 = problem (alerted, throttled or
+// judged. Only the newest 5 valid manifests by name (at most 10 files) are read, so a run stays O(1) as copies accrue.
+// RCLONE_TIMEOUT_S (positive integer, default 120; else 120 with a log line) bounds each rclone call; a few slow calls
+// can still add up past the unit's TimeoutStartSec. An empty --offhost is a usage error; an unset OFFHOST_DEST is
+// "not configured" and said in the journal. Exit 0 = ok; 1 = problem (alerted, throttled or
 // undeliverable); 2 = usage.
 // Known one-off: create-backup writes its sidecar in place (lib.ts), so a check that reads it at that instant can see a
 // partial file and alert "unreadable sidecar" once; the next run clears it. offhost-copy.sh writes its manifest via a
@@ -68,15 +70,15 @@ const readJson = (f: string) => { try { return JSON.parse(readFileSync(f, 'utf8'
 // must not be silently replaced by an older one); an I/O error here is a problem too, never an exit before the alert.
 const maxAge = num('--max-age-s', 7200)
 try {
-  const local: { f: string; side: { createdAt: string; sha256?: string } }[] = []
+  const local: { f: string; side: { createdAt: string; sha256?: string } }[] = []; let sawSidecar = false
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.db') && existsSync(path.join(dir, f + '.json'))) : []) {
-    const side = readJson(path.join(dir, f + '.json'))
+    const side = readJson(path.join(dir, f + '.json')); sawSidecar = true
     if (!side?.createdAt || Number.isNaN(Date.parse(side.createdAt))) problems.push(`unreadable sidecar for ${f}`)
     else if (future(side.createdAt)) problems.push(`backup ${f} has a future timestamp`)
     else local.push({ f, side })
   }
   local.sort((a, b) => Date.parse(b.side.createdAt) - Date.parse(a.side.createdAt))
-  if (!local.length) problems.push(`no backup with a sidecar in ${path.basename(dir)}`)
+  if (!local.length) problems.push(sawSidecar ? `no usable backup in ${path.basename(dir)}` : `no backup with a sidecar in ${path.basename(dir)}`)
   else {
     const n = local[0], age = ageS(n.side.createdAt)
     facts.newest_backup = n.f; facts.newest_backup_age_s = age; facts.backups = local.length
@@ -127,17 +129,29 @@ function rcloneDest(spec: string): Dest {
     }),
   }
 }
-const offSpec = arg('--offhost') ?? arg('--offhost-dir') ?? (process.env.OFFHOST_DEST?.trim() || undefined)
+const offFlag = arg('--offhost') ?? arg('--offhost-dir')
+if (offFlag !== undefined && offFlag.trim() === '') { console.error('backup-check: --offhost needs a value (unset OFFHOST_DEST means not configured; an empty flag is a mistake)'); process.exit(2) }
+const offSpec = offFlag ?? (process.env.OFFHOST_DEST?.trim() || undefined)
 if (!offSpec) {
   if (process.env.OFFHOST_REQUIRED === '1') problems.push('an off-host copy is required (OFFHOST_REQUIRED=1) but no destination is configured (OFFHOST_DEST)')
+  else console.error('backup-check: off-host copy not configured (OFFHOST_DEST empty, OFFHOST_REQUIRED=0): only local backups and the drill are checked')
   facts.offhost = 'not configured'
 } else {
   const max = num('--offhost-max-age-s', 7200)
   const dest = offSpec.startsWith('rclone:') ? rcloneDest(offSpec) : localDest(offSpec)
   facts.offhost = dest.label
   try {
-    const manifests: Record<string, unknown>[] = []
-    for (const f of (await dest.list()).filter(f => f.endsWith('.age.json') && plainName(f))) {
+    // Copies accrue hourly and retention is not implemented, so the check reads only the newest manifests by name
+    // (copy names embed the backup timestamp): at most READ_MAX files, stopping once NEWEST_K valid ones are in hand;
+    // copied_at is the authority within that window. The run stays O(1) however many copies exist; older manifests
+    // are listed and counted, not read or judged.
+    const NEWEST_K = 5, READ_MAX = 10
+    const names = (await dest.list()).filter(f => f.endsWith('.age.json') && plainName(f)).sort().reverse()
+    facts.offhost_manifests_listed = names.length
+    const manifests: Record<string, unknown>[] = []; let read = 0
+    for (const f of names) {
+      if (manifests.length >= NEWEST_K || read >= READ_MAX) break
+      read++
       // unreadable or truncated: a problem, never a silent skip that lets an older copy stand in for the newer one.
       // A filesystem error names this manifest; a transport error (rclone failed, timed out) is the destination's.
       let text: string
@@ -150,7 +164,7 @@ if (!offSpec) {
       manifests.push(m)
     }
     manifests.sort((a, b) => Date.parse(String(b.copied_at)) - Date.parse(String(a.copied_at)) || String(b.ciphertext ?? '').localeCompare(String(a.ciphertext ?? '')))
-    facts.offhost_copies = manifests.length
+    facts.offhost_copies = manifests.length; facts.offhost_manifests_read = read
     if (!manifests.length) problems.push(`no off-host copy manifest at ${dest.label}`)
     else {
       const age = ageS(String(manifests[0].copied_at)); facts.newest_offhost_age_s = age
@@ -186,7 +200,8 @@ if (drill) {
 }
 
 const state = arg('--state-dir') ?? path.join(dir, '.backup-check')
-problems.sort() // one set, one stamp, whatever the discovery order
+const kind = (p: string) => p.replace(/\d+s old/, 'Ns old') // numbers change every run; the kind of problem is what is throttled
+problems.sort((a, b) => kind(a).localeCompare(kind(b)) || a.localeCompare(b)) // one set, one stamp, whatever the discovery order or the ages
 const body = { level: problems.length ? 'error' : 'info', type: 'backup_check', ok: problems.length === 0, host: os.hostname(), at: new Date(now).toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))
 // Stamps are backup-alert-<hash of the problem kinds>. A healthy run removes only them: the state dir may be shared
@@ -220,7 +235,7 @@ const send = async (b: object): Promise<boolean> => {
 let stamp: string | null = null
 try {
   mkdirSync(state, { recursive: true, mode: 0o700 })
-  stamp = path.join(state, STAMP + createHash('sha256').update(problems.map(p => p.replace(/\d+s old/, 'Ns old')).join('\n')).digest('hex').slice(0, 16))
+  stamp = path.join(state, STAMP + createHash('sha256').update(problems.map(kind).join('\n')).digest('hex').slice(0, 16))
   if (existsSync(stamp) && now - statSync(stamp).mtimeMs < every * 1000) { console.error('backup-check: alert already sent for these problems within the interval'); process.exit(1) }
 } catch (e) { console.error(`backup-check: state dir ${state} unusable (${(e as NodeJS.ErrnoException).code ?? 'error'}); alerting without throttle`); stamp = null }
 if (await send(body) && stamp) { try { writeFileSync(stamp, '') } catch (e) { console.error(`backup-check: alert delivered, throttle stamp not written (${(e as NodeJS.ErrnoException).code ?? 'error'}); the next run alerts again`) } }
