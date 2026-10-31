@@ -30,12 +30,15 @@ test('#461 whole-mailbox lookalikes and genuine published buyer routes unchanged
  assert.equal(isReachable('+1 (416) 555-0199'),true)
  assert.equal(isReachable('careers@agency20265550199.example'),false,'phone-like digits inside a hiring email are not a telephone')
  assert.equal(isReachable('careers@lakeshore.example or sales@lakeshore.example'),true)
+ assert.equal(isReachable('careers@lakeshore.example; +1 (416) 555-0199'),true)
+ assert.equal(isReachable('careers@lakeshore.example; hr@another.example'),false)
 })
 
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createDraft } from '../lib/outreach/service.ts'
 import { contactPurposeRestricted } from '../lib/outreach/contact-purpose-db.ts'
+import { bothEngines } from './helpers/engines.ts'
 import { isRecruitingInbox } from '../lib/recruiting-inbox.ts'
 test('#461 legacy direct and crawled contacts refused by real draft path without writes; tenant isolation',()=>{
  const db=new Database(':memory:');migrateAllSqlite(db)
@@ -57,4 +60,17 @@ test('#461 legacy direct and crawled contacts refused by real draft path without
 test('#461 classifier anchored on whole local part, tags and punctuation never hide purpose',()=>{
  for(const v of ['Careers+sales@x.example','join-us@x.example','h.r@x.example','human_resources@x.example'])assert.equal(isRecruitingInbox(v),true,v)
  for(const v of ['jobsworth@x.example','hrishi@x.example','jane.doe@x.example','job.sworth@x.example','jobs@x@evil.example','jobs'])assert.equal(isRecruitingInbox(v),false,v)
+})
+
+// Persistence adapter parity: a stored primary/enriched hiring route never counts as reachable.
+bothEngines('#461 stored recruiting contacts retain event but never inflate reachability', async ({db}) => {
+ await db.run("INSERT INTO users(id,email,password_hash,salt)VALUES('A','a@x.example','x','y')")
+ await db.run("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status)VALUES('job','A','Seller','i','l','running')")
+ for (const [i,local] of hiring.entries()) {
+  const email=local+'@lakeshore.example'
+  await db.run("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,event_date)VALUES(?,'job','Lakeshore Creative','',?,'Opened office','https://news.example/a','Lakeshore Creative opened a new office',80,'2026-10-12')",['l'+i,email])
+  const row=await db.get<{contact:string;review_reason:string|null;event_date:string;name:string}>('SELECT contact,review_reason,event_date,name FROM leads WHERE id=?',['l'+i])
+  assert.ok(row);const card=scoreLead({...row,fit:5,contacts:[email]},NOW)
+  assert.equal(card.verified,true);assert.equal(card.recent,true);assert.equal(card.reachable,false);assert.equal(card.qualified,false)
+ }
 })
