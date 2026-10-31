@@ -95,11 +95,17 @@ For every future cutover, invoke `ops/checked_launch.py` as the single outer com
 
 ## Exact-main CI is part of the entrypoint
 
-`checked_launch.py` now requires `--repository gagan114662/dazl --commit <full SHA> --ci-token-file <protected file>`.
+`checked_launch.py` requires `--repository gagan114662/dazl --commit <full SHA>`. The repository is public, so
+the default path is tokenless: the entrypoint makes read-only unauthenticated GitHub requests and no credential is
+needed, requested or stored. `--ci-token-file <protected file>` remains supported for private mirrors.
 It reads GitHub directly inside the same process before any preflight and again before launch. Current main must
-match the full launch commit. Exactly one GitHub Actions result each for browser, migrations, test-sqlite and
-test-postgres and fail-closed must be completed/success for that SHA. Pending, failed, missing, duplicate, wrong-SHA, malformed,
-truncated or unreadable evidence refuses the launch. There is no bypass flag or cached green report.
+match the full launch commit. Each required name (browser, migrations, test-sqlite, test-postgres, fail-closed) must
+have at least one GitHub Actions result for that SHA, grouped per check suite (push and pull_request tracks are
+independent suites; a rerun replaces its attempt inside one suite). Any run not completed refuses the launch, and
+every suite's newest completed run must be a success: an independent track's failure refuses the launch no matter
+how green another track is, while a rerun success supersedes only the failed attempt inside its own suite. Missing,
+wrong-SHA, non-Actions, missing or malformed suite identity, truncated or unreadable evidence refuses the launch.
+There is no bypass flag or cached green report.
 The launch argv must call the sibling safe_launch.py with the same single --commit and --execute.
 The token file contains the credential, never an argv credential or logged value. Do not leave a credential on a host
 for a release check. Use an already-authorized protected file or a securely passed ephemeral file descriptor for
@@ -113,7 +119,7 @@ all CI green at cutover. The fix moves evidence validation inside the mutation e
 
 ## Anonymous stdin credential transport and strict launch binding
 
-For a remote host use `--ci-token-stdin` instead of `--ci-token-file`. Stream the already-authorized credential
+For a private mirror, or a remote host where a token is required, use `--ci-token-stdin` instead of `--ci-token-file`. Stream the already-authorized credential
 through encrypted SSH stdin to this single command. The entrypoint reads at most16KiB into an owned private
 anonymous Linux memory file, uses it for its own read-only GitHub checks, and closes it in a finally block.
 No credential pathname persists on disk, the descriptor is close-on-exec and is not passed to preflights or
