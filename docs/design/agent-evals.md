@@ -200,10 +200,19 @@ keys, Slack, AWS, Google, JWTs, Bearer/Basic values, PEM blocks, cookie header l
 query values): the whole assigned value goes - a quoted value to its closing quote, an object or array to its matching
 bracket (or the end of a cut body), an authorization or cookie value to the end of the line, anything else to the next
 delimiter. People named in a model reply are pseudonymised even when the reply is fenced, prefaced or cut short.
-Documented limits, by design: an **unquoted value with spaces** (`password: correct horse battery`) keeps everything after
-its first word; **prose** (`the password is X`, `password - X`) is not an assignment; names that are not credential words
-(`verification_code`, `pin` as a key outside a credential object) are not credential names; an **opaque value with no
-name and no known prefix** (a bare hex string in page text) is kept.
+Documented limits, by design (the same list as the `redact.ts` header): an **unquoted value with spaces**
+(`password: correct horse battery`) keeps everything after its first word; **prose** (`the password is X`,
+`password - X`, `password → X`) is not an assignment; names that are not credential words (`verification_code`, `pin` as
+a key outside a credential object) are not credential names; an **opaque value with no name and no known prefix** (a bare
+hex string in page text) is kept; a bare `Basic xxxx` shorter than 8 characters with no name next to it is kept; an HTML
+attribute pair more than 2,000 characters apart, past the first 60,000 characters of a string, with a `>` inside another
+attribute's value before it, or with an apostrophe inside a quoted attribute value, is not found; a userinfo password
+containing `/` (`user:ab/x@host`) is a URL password only when an `@` follows before `?`/`#`/`&`/`=`; a percent-encoded
+non-ASCII name (`%C3%A4`, `%C2%B2otp`) is decoded byte per character and not folded. Fail closed, by design: an
+unbalanced `password: {` takes the rest of the string; an Authorization/Cookie name takes the rest of its line (also in a
+cut single-line JSON body); the whole object under a non-count credential key goes (`session.created`, `auth.time`); a
+company given under a reply's `"name"` field is pseudonymised like a person; JSON nested ~20k levels deep throws and
+nothing is stored. Capture cuts every string to 50,000 characters before redaction, so nothing past that is ever kept.
 
 **Recorded Worlds are private and unpublished**: tenant-scoped, never committed to this repository, never shared across
 tenants. None has been captured or stored yet; every World in `web/test/fixtures/evals/` is synthetic.

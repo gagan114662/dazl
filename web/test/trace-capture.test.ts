@@ -429,7 +429,7 @@ bothEngines('credential redaction: no credential-named field or known token fami
 
 // ---- Council review of #463: one row per finding, each proven end to end through beginScanTrace -> store -> getTrace on
 // both engines, as the text of a prompt, of a response body and of a recorded error. Every value is synthetic.
-const COUNCIL: [string, string, string][] = [
+const COUNCIL: [string, string, string, RegExp?][] = [
   // R1-1: a credential-named value that opens an object/array in text that is not JSON as a whole (a cut body, NDJSON, a JS literal, truncated JSON)
   ['R1-1 object value in text', 'not json: {"credentials": {"value": "SECRETXA1"}} tail', 'not json: {"credentials": [secret]} tail'],
   ['R1-1 nested session', 'x {"session": {"id": "SECRETXA2"}} y', 'x {"session": [secret]} y'],
@@ -482,7 +482,12 @@ const COUNCIL: [string, string, string][] = [
   ['R2-F1 glued digits', 'token2=SECRETXK2; api_key2: SECRETXK3; session2=SECRETXK4; sha256: kept', 'token2=[secret]; api_key2: [secret]; session2=[secret]; sha256: kept'],
   ['R2-F3 userinfo with @', 'GET https://user:p@SECRETXK5@host.example/path?x=1', 'GET https://user:[secret]@host.example/path?x=1'],
   ['probe apostrophe in brackets', "credentials: [Bob's SECRETXK9] tail-KEEP; session: {\"id\": \"SECRETXL1\"} tail-KEEP", "credentials: [secret] tail-KEEP; session: [secret] tail-KEEP"],
-  ['R2-F3 userinfo with slash', 'https://user:ab/SECRETXL2@host/x and https://host.example:8080/path?u=a@b.example', 'https://user:[secret]@host/x and https://host.example:8080/path?u=p[0-9a-f]{10}@b.example'],
+  // (the address in this row is pseudonymised to p<10 hex>@b.example: asserted with the regex in the 4th column)
+  ['R2-F3 userinfo with slash', 'https://user:ab/SECRETXL2@host/x and https://host.example:8080/path?u=a@b.example', '', /^https:\/\/user:\[secret\]@host\/x and https:\/\/host\.example:8080\/path\?u=p[0-9a-f]{10}@b\.example$/],
+  // R3-16 (blocker regression): a value on the line after the name, unindented, even after a blank line
+  ['R3-16 next line', 'password:\nSECRETXN1 next', 'password:\n[secret] next'],
+  ['R3-16 blank line between', 'password:\n\nSECRETXN2 next', 'password:\n\n[secret] next'],
+  ['R3-16 token next line', 'token:\nSECRETXN3', 'token:\n[secret]'],
   ['R3-F1 form body', 'user=bob&password=a%26SECRETXM1%3Dc&page=2', 'user=bob&password=[secret]&page=2'],
   ['R3-F1 form body in json', '{"form":"user=bob&password=a%26SECRETXM2%3Dc&page=2","next":"%2Fl%3Fpassword%3DSECRETXM3%26a%3D1"}', '{"form":"user=bob&password=[secret]&page=2","next":"%2Fl%3Fpassword%3D[secret]%26a%3D1"}'],
   ['R2-F5 escaped backslash', 'payload: {\\"password\\":\\"abc\\\\\\"SECRETXK6\\"} tail', 'payload: {\\"password\\":\\"[secret]\\"} tail'],
@@ -507,14 +512,16 @@ bothEngines('council matrix: every reviewer case is redacted as stated in a prom
   const t = (await getTrace(db, 'tenant-C', (await c.finish('done'))!))!
   assert.equal(t.capture?.complete, true); assert.equal(t.spans.length, COUNCIL.length * 3)
   const stored = JSON.stringify(t)
-  assert.ok(!/SECRETX[A-M]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-M]\d.{0,20}/)?.[0])
+  assert.ok(!/SECRETX[A-N]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-N]\d.{0,20}/)?.[0])
+  let checked = 0
   for (let i = 0; i < COUNCIL.length; i++) {
-    const [label, , want] = COUNCIL[i]
-    const check = (got: string, where: string) => want.includes('[0-9a-f]') ? assert.match(got, new RegExp(`^${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/p\\\[0-9a-f\\\]\\\{10\\\}/g, 'p[0-9a-f]{10}')}$`), `${label}: ${where}`) : assert.equal(got, want, `${label}: ${where}`)
+    const [label, , want, re] = COUNCIL[i]
+    const check = (got: string, where: string) => { checked++; if (re) assert.match(got, re, `${label}: ${where}`); else assert.equal(got, want, `${label}: ${where}`) }
     check((t.spans[3 * i].output as { body: string }).body, 'body')
     check(t.spans[3 * i + 1].error ?? '', 'error')
     check((t.spans[3 * i + 2].input as { prompt: string }).prompt, 'prompt')
   }
+  assert.equal(checked, COUNCIL.length * 3)   // every row asserted on every channel
 })
 
 // R3-1 (blocker): a person named in a model reply that is not JSON as a whole - fenced, with a preamble, cut short - is
@@ -711,12 +718,14 @@ test('credential values are redacted whole: quoted values with spaces, numeric v
   // number under an ordinary name are kept, at any nesting and inside JSON carried in a string
   const body = { password: '493827', otp: 493827, token: 112233, api_key: 7, max_tokens: 300, tokens: 5, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }, token_count: 4, key_count: 2, page: 2, expires_in: 3600, session: true, secret: null,
     auth: { session: { id: 'syntheticnestedsessionmarker', expires_in: 3600 } }, credentials: [{ pin: 1234, token: 5, max_tokens: 7 }], cookie: { name: 'sid', value: 12345 }, secrets: [493827], otp_number: 493827, input_password: 493827,
-    secret2: 'syntheticglueddigitmarker', key1: 'syntheticglueddigitmarker', otp2: 493827, auth2: { time: 493827 }, keys: { count: 2, master: 99, nested: { total: 3, id: 4 } }, sha256: 'kept-hash-like', time: 493827 }
+    secret2: 'syntheticglueddigitmarker', key1: 'syntheticglueddigitmarker', otp2: 493827, auth2: { time: 493827 }, keys: { count: 2, master: 99, nested: { total: 3, id: 4 } }, sha256: 'kept-hash-like', time: 493827,
+    '/auth': 'syntheticurlkeymarker1', 'https://x.example/token': 'syntheticurlkeymarker2', 'https://x.example/u?token=abc': { title: 'kept page', text: 'kept text' }, '/pages/keynote': 'kept too' }
   const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'http', name: 'http', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/' }, output: { body: JSON.stringify(body), direct: body } }] }), Buffer.alloc(16, 4))
   // numbers inside a credential-named object or array go too (cookie value, secrets list, a pin under auth), except under a count/limit/lifetime key
   const want = { password: '[secret]', otp: '[secret]', token: '[secret]', api_key: '[secret]', max_tokens: 300, tokens: 5, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }, token_count: 4, key_count: 2, page: 2, expires_in: 3600, session: true, secret: null,
     auth: '[secret]', credentials: '[secret]', cookie: '[secret]', secrets: '[secret]', otp_number: '[secret]', input_password: '[secret]',
-    secret2: '[secret]', key1: '[secret]', otp2: '[secret]', auth2: '[secret]', keys: { count: 2, master: '[secret]', nested: { total: 3, id: '[secret]' } }, sha256: 'kept-hash-like', time: 493827 }
+    secret2: '[secret]', key1: '[secret]', otp2: '[secret]', auth2: '[secret]', keys: { count: 2, master: '[secret]', nested: { total: 3, id: '[secret]' } }, sha256: 'kept-hash-like', time: 493827,
+    '/auth': '[secret]', 'https://x.example/token': '[secret]', 'https://x.example/u?token=[secret]': { title: 'kept page', text: 'kept text' }, '/pages/keynote': 'kept too' }   // R3-19: a URL/path key is a credential name only by its last segment
   assert.deepEqual(JSON.parse((r.spans[0].output as { body: string }).body), want)
   assert.deepEqual((r.spans[0].output as { direct: unknown }).direct, want)
 })

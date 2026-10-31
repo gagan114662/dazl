@@ -111,6 +111,7 @@ const HTML_VALUE_NAME = new RegExp(String.raw`(\b(?:value|content)\s*=\s*)` + AT
 // hostile page (4M chars of repeated attributes took 12 s of blocked event loop) costs at most the bound's share.
 const HTML_SCAN_CHARS = 60_000
 const URL_KEY = /^(?:[a-z][a-z0-9+.-]*:\/\/|\/)/i
+const lastSegment = (k: string): string => k.split(/[?#]/)[0].replace(/\/+$/, '').split('/').pop() ?? ''
 function redactHtmlAttributes(s: string): string {
   if (!s.includes('<')) return s
   if (s.length > HTML_SCAN_CHARS) return redactHtmlAttributes(s.slice(0, HTML_SCAN_CHARS)) + s.slice(HTML_SCAN_CHARS)
@@ -165,8 +166,9 @@ function redactEncoded(s: string): string {
 // Only a credential name consumes its value: after `https:` or `page=` the scan goes on inside what follows, so the
 // `refresh_token=` in a URL's query is still found. A name starts only where a word starts (the lookbehind): tried from
 // every character, the greedy name would be rescanned once per character of a long word, quadratic on a big body.
-//   - A name that ends its line (`credentials:` then an indented block, `password:` then the value on the next line)
-//     takes the whole indented block below it.
+//   - A name that ends its line takes the whole indented block below it (`credentials:` then an indented YAML block);
+//     with no indented block (`password:` then `hunter2` on the next line, unindented, even after a blank line) the
+//     value is the first token of the next non-blank line.
 // The capture store cuts every string to MAX_STRING_CHARS (50,000) BEFORE redaction, so every pass here works on exactly
 // the text that is kept and nothing past it can be moved in by an earlier pass shrinking the text; the HTML pass also
 // reads at most 60,000 characters on its own. A percent-encoded NON-ASCII name (`?p%C3%A4ssword=`) is decoded byte per
@@ -260,11 +262,16 @@ function findAssigned(s: string): Hit[] {
       SCHEME_AT.lastIndex = from
       const start = SCHEME_AT.exec(s) ? SCHEME_AT.lastIndex : from
       if (s[start] === '{' || s[start] === '[') { const close = closingBracket(s, start); end = close >= 0 ? close : s.length }
-      else if (start === from && s.slice(m.index! + m[1].length, from).includes('\n')) end = blockEnd(s, m.index!, from)
-      else if (start === from && (lineValued(name) || OTHER_SCHEME.test(s.slice(from, from + 24)))) end = lineEnd(s, from)
       else {
-        const re = encodedSep ? UNQUOTED_ENC : UNQUOTED
-        re.lastIndex = start; if (!re.exec(s)) continue; end = re.lastIndex
+        end = -1
+        // a name that ends its line: the indented block below it; with no indented block (`password:\nhunter2 next`,
+        // a blank line between) the value is the first token of the next non-blank line, as for any unquoted value
+        if (start === from && s.slice(m.index! + m[1].length, from).includes('\n')) { const b = blockEnd(s, m.index!, from); if (b > from) end = b }
+        if (end < 0 && start === from && (lineValued(name) || OTHER_SCHEME.test(s.slice(from, from + 24)))) end = lineEnd(s, from)
+        if (end < 0) {
+          const re = encodedSep ? UNQUOTED_ENC : UNQUOTED
+          re.lastIndex = start; if (!re.exec(s)) continue; end = re.lastIndex
+        }
       }
     }
     const value = s.slice(from, end)
@@ -359,7 +366,7 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
       : typeof v === 'number' ? (countTree ? SECRET : v)
         : Array.isArray(v) ? v.map(x => deep(x, secret, countTree))
           : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => {
-            const cred = isCredentialKey(k) && !URL_KEY.test(k)   // a key that IS a URL or path (a page map) is not a credential name for its subtree
+            const cred = isCredentialKey(k) && (!URL_KEY.test(k) || isCredentialKey(lastSegment(k)))   // a URL/path key (a page map) is not a credential name for its subtree, unless its last path segment is one (/auth, https://x.example/token)
             if (cred && !isCountKey(k) && x !== null && typeof x !== 'boolean') return [text(k), SECRET]
             if (typeof x === 'number') return [text(k), !cred && countTree && !hasCountWord(k) ? SECRET : x]
             return [text(k), deep(x, secret || cred, countTree || cred)]
