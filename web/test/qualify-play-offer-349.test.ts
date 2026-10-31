@@ -59,3 +59,8 @@ test('legacy tenant Memory fallback matches shared play resolver and a concurren
  const changed=await preview(db,L,async()=>{db.prepare('UPDATE tenant_memory SET positioning=?').run('Bookkeeping');return fetchPage()})
  assert.equal(changed?.ready,false);assert.equal(changed?.input,null)
 })
+test('non-schema play context read failure is not silently replaced with global seller',async()=>{
+ const{db}=setup();let fetched=0
+ const wrapped=new Proxy(db,{get(target,key){if(key==='prepare')return(sql:string)=>{if(sql==='SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?')throw Error('database locked');return target.prepare(sql)};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value}})
+ await assert.rejects(preview(wrapped,L,async()=>{fetched++;return fetchPage()}),/database locked/);assert.equal(fetched,0)
+})
