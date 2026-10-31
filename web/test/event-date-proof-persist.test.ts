@@ -62,7 +62,7 @@ test('ats_structured: a job board structured publish date for exactly this posti
     modelQueries: ['dental front desk receptionist job New York'],
     hits: [{ url: gh, title: 'Front Desk Receptionist', snippet: quote, date: published }],
     tfPages: {}, own: { [gh]: { title: 'Front Desk Receptionist', text: `${quote}. The practice welcomes patients every week.` } },
-    extraction: [{ company: 'Brooklyn Smiles Dental', signal: 'front desk receptionist job', source_url: gh, excerpt: quote, event_date: published }],
+    extraction: [{ company: 'Brooklyn Smiles Dental', signal: 'hiring a front desk receptionist', source_url: gh, excerpt: quote, event_date: published }],
     deps: { sourceHttp: http },
   })
   const rows = proofCols(x.db)

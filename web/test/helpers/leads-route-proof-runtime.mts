@@ -48,7 +48,7 @@ test('GET /api/leads: a persisted page_bound proof surfaces the stored intent, l
   const job = createJob(db, 'A', { business_name: 'Synthetic A', industry: 'test', location: 'test' })
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
   const lead = randomBytes(12).toString('hex')
-  db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent,action,why,signal_kind,event_date,event_date_proof,event_date_proof_note) VALUES(?,?,'Acme Dental','Pat','pat@acme.test','Opening a second clinic','https://x.invalid/a','Acme Dental opens a second clinic',80,70,5,4,3,'Strong fit: expanding practice.','expansion',?,'page_bound','stated in the clause of the evidence sentence that names this company')").run(lead, daysAgoISO(5))
+  db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent,action,why,signal_kind,event_date,event_date_proof,event_date_proof_note) VALUES(?,?,'Acme Dental','Pat','pat@acme.test','Opening a second clinic','https://x.invalid/a','Acme Dental opens a second clinic',80,70,5,4,3,'Strong fit: expanding practice.','expansion',?,'page_bound','stated in the clause of the evidence sentence that names this company')").run(lead, job, daysAgoISO(5))
   const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${job}`))
   const body = await res.json() as { leads: { id: string; intent: number; stored_intent: number | null; timing: string; priority: { intent: number | null } | null }[] }
   const row = body.leads.find(l => l.id === lead)!

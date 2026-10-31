@@ -48,6 +48,7 @@ import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
+import { isHiringTrigger } from './scoreboard.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -279,7 +280,9 @@ const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
 // A job board's structured publish stamp proves the day THIS HIRING POSTING went up - never a funding round or any
 // other company event (#460 contract). Only a hiring-shaped signal may take the ats_structured proof; anything else
 // falls through to page binding or fails closed.
-const HIRING_SIGNAL = /hir|job|opening|posting|role|position|vacanc|recruit/i
+// ats_structured is a HIRING-ONLY proof label: the write guard is the canonical strict trigger test (signal kind
+// when the grader has assigned one, strict hiring wording otherwise). The old broad text regex matched 'opening ...'
+// expansions and could persist a false hiring-proof label; consumer fail-closed is no excuse for a false persisted label.
 
 export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
@@ -318,7 +321,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // exactly as before. Unbinding it first would launder it into a verified undated lead.
     const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
     if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
-      if (HIRING_SIGNAL.test(cIn.signal) && structuredDates?.get(canonUrl(cIn.source_url)) === cIn.event_date) {
+      if (isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null) && structuredDates?.get(canonUrl(cIn.source_url)) === cIn.event_date) {
         // A job board's own structured publish date for exactly this posting URL: proves THIS hiring posting's day only, never funding or another event.
         c0 = { ...cIn, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
       } else {
@@ -354,7 +357,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         let cc = c
         const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
         if (cc.event_date && !(!claimed.ok && DATE_REJECTS.has(claimed.reason))) {
-          if (HIRING_SIGNAL.test(cc.signal) && structuredDates?.get(canonUrl(cc.source_url)) === cc.event_date) {
+          if (isHiringTrigger(cc.signal, (cc as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null) && structuredDates?.get(canonUrl(cc.source_url)) === cc.event_date) {
             cc = { ...cc, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
           } else {
             const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
