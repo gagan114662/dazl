@@ -172,7 +172,10 @@ const WAIT_FOR_USER = new Set(['gmail_reconnect_needed', 'gmail_not_connected', 
 // Autopilot's own authority ended while the send was in progress (turned off, operator flag off, consent no longer
 // current, or its reserved slot gone): known not sent, the slot is released, and the draft stays held and unapproved
 // until autopilot runs again under current authority.
-const AUTHORITY_ENDED = new Set(['autopilot_off', 'autopilot_unavailable', 'consent_required', 'reservation_lost'])
+const AUTHORITY_ENDED = new Set(['autopilot_off', 'autopilot_unavailable', 'consent_required', 'reservation_lost', 'authority_unreadable'])
+// The authority could not be read at the send commitment (the store failed): fail closed, as if it had ended. Known not
+// sent, the slot released, the draft held and unapproved; the next pass reads it again.
+const AUTHORITY_UNREADABLE = 'authority_unreadable'
 // What autopilot was allowed to send changed while the send was in progress (draftAuthority no longer the stored value):
 // known not sent, the slot is released, and the draft goes back to the user unapproved.
 const AUTHORITY_CHANGED = 'authority_changed'
@@ -270,8 +273,13 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       // Only from the Gmail account the authority was taken with: the send path refuses at commitment if it changed.
       // authorize: re-read by the send path as its last check, after the token refresh, immediately before Gmail: autopilot's
       // own authority, the draft's fingerprint, this send's reservation, and the volume limits as they are now.
+      // A read that fails there refuses the send (fail closed): no send goes on an authority nobody could read.
       const volumeNow = () => { const h = capHold(domain, { reservation: admit.reservation, message: id }); return h ? `volume_${h.held}` : null }
-      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: () => authority() ?? (draftAuthority(db, tenantId, id) !== expected ? AUTHORITY_CHANGED : null) ?? (db.prepare("SELECT 1 FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").get(admit.reservation, tenantId) ? null : 'reservation_lost') ?? volumeNow() })
+      const authorize = (): string | null => {
+        try { return authority() ?? (draftAuthority(db, tenantId, id) !== expected ? AUTHORITY_CHANGED : null) ?? (db.prepare("SELECT 1 FROM autopilot_audit WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").get(admit.reservation, tenantId) ? null : 'reservation_lost') ?? volumeNow() }
+        catch { return AUTHORITY_UNREADABLE }
+      }
+      const r = await sendMessage(db, tenantId, id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize })
       drop(id)
       // The reservation becomes the send's record ('sent', counted once) or stays counted as possibly sent.
       if (r === 'sent') { out.sent++; settle('sent') }

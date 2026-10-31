@@ -501,3 +501,17 @@ test('#448 a cap hold at the commitment is not a try: a draft retried after a ra
     const mid = createDraft(db, 'A', id, 'Acme'); approve(db, 'A', mid, true)
     assert.equal(await sendMessage(db, 'A', mid, { ...at(d, NOW), fetchImpl: onToken(db, 1, setCap(1)) }), 'sent'); assert.equal(sent.length, 1, 'a manual send is not refused by the autopilot cap') }
 })
+
+test('#448 the volume authority cannot be read at the send commitment (the store fails once during the token refresh): refused, nothing sent, read again next pass', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+  // One failing read of the counted sends, installed during the refresh and gone after it fired: the commitment check
+  // cannot read the cap's standing, everything after it works again.
+  const prepare = db.prepare.bind(db)
+  const failOnce = (db2: Database.Database) => { db2.prepare = ((sql: string) => { if (sql.includes('FROM autopilot_audit a WHERE')) { delete (db2 as { prepare?: unknown }).prepare; throw new Error('disk I/O error') } return prepare(sql) }) as typeof db2.prepare }
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, failOnce) })
+  assert.deepEqual([r.sent, sent.length, r.stopped, reservations(db)], [0, 0, 'authority_unreadable', 0], 'fail closed: not sent, the slot released, the pass stopped')
+  assert.deepEqual([work(db).map(w => [w.reason, w.next_at, w.attempts]), msgStatus(db, 'a@one.example')], [[['authority_unreadable', NOW, 0]], 'draft'], 'held for the next pass, unapproved')
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'authority_unreadable'), 'recorded why')
+  assert.equal(db.prepare, Database.prototype.prepare, 'the fault is gone')
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 1)); assert.deepEqual([r2.sent, sent.length, work(db).length], [1, 1, 0], 'read again under working storage: sent once')
+})
