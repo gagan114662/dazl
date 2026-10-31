@@ -542,3 +542,19 @@ test('#448 a lead the draft path refuses is skipped once: one audit row over two
   const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 120))
   assert.deepEqual([r3.sent, r3.skipped, skipped().length], [0, 0, 25], 'nothing left to try')
 })
+
+// Council on e9dff19: the store stays unreadable from the send commitment on. Nothing can be recorded then, so the pass
+// fails as a whole (the tick records the tenant failure) and nothing is sent; the message stays in 'sending' and the slot
+// keeps counting until the stale-claim sweep marks the send interrupted (uncertain), which pauses autopilot for the user.
+test('#448 the store stays unreadable from the send commitment on: the pass fails, nothing is sent, the claim goes stale into uncertain and autopilot pauses', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+  const down = (db2: Database.Database) => { db2.prepare = (() => { throw new Error('disk I/O error') }) as typeof db2.prepare }
+  await assert.rejects(runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, down) }), /disk I\/O error/, 'the pass fails rather than deciding on an unreadable store')
+  delete (db as { prepare?: unknown }).prepare; assert.equal(db.prepare, Database.prototype.prepare, 'the store is back')
+  assert.deepEqual([sent.length, msgStatus(db, 'a@one.example'), reservations(db), work(db).length], [0, 'sending', 1, 0], 'not sent; the claim and the slot stand (conservative) until the sweep')
+  const { reapSending } = await import('../lib/outreach/service.ts')
+  reapSending(db, { now: NOW + 601 })
+  assert.equal(msgStatus(db, 'a@one.example'), 'uncertain', 'the stale claim is an interrupted send: the user resolves it')
+  const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 602))
+  assert.deepEqual([r.stopped, getState(db, 'A').paused, sent.length], ['uncertain_send', true, 0], 'autopilot pauses on it; nothing is retried')
+})
