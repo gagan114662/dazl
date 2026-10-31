@@ -41,6 +41,18 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- claude/trusting-bell-xyya6m-launch-preflight (#467, #405 calibrated launch): a tenant accepts one explicit launch policy
+  (audience plays, exclusions, caps, spend cap, claim authority, stops) and a machine preflight (sample drafts checked,
+  one self-addressed Gmail message found in the INBOX, every stop's store answering) launches it in place of the ten
+  hand approvals. Every stop autopilot requires (operator/tenant switches, consent, uncertain send, the same acceptance
+  from the same mailbox, the policy's reply/bounce-rate/unreadable-store stops, scope and claim authority on the final
+  words, the daily and rollout cap with one atomic reservation per send) is re-read before drafting, after the model
+  await, at the send claim and again after the Gmail token refresh; an unreadable store anywhere is a stop; an accepted
+  policy that is not calibrated stops autopilot rather than falling back to the warmup. PG migration 0025 (provisional;
+  renumbered after the predecessors land). UI follow-up: the settings page shows none of the launch state or the codes
+  policy_too_large / autopilot_off / consent_required / policy_unreadable / calibration_failed / launch_not_calibrated.
+  Everything stubbed; no live send.
+
 - b/first5 (#324) review fix (Instinct 2026-10-28 23:08): first5 no longer runs the post-finish TinyFish people search (runner gate, trace note `skipped`); the first5 budget disclosure reports search_and_fetch as `off` (and says model calls are not free). Pinned by a real-runner test with tinyfish tables initialised plus a non-first5 control that does search.
 
 - b/cost-bounds (#221) review fixes (Instinct 2026-10-27): BYOK enrichment disclosure now says it is off only for max_usd or credit_enrichment=false (what the runner does), pinned by a real-runner test per budget form; profile-generation bound now built from the largest JSON-escaped prompt (control chars, 6 bytes each), checked against ASCII/quote/backslash/BMP/astral/control/newline inputs, and states that unlisted models are not covered. No behaviour change.
