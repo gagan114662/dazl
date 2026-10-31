@@ -80,16 +80,20 @@ test('#411 per-company cap: held for 7 days from the last send to that company, 
   await runAutopilot(db, 'A', 'Acme', at(d, NOW + 7 * DAY + 1)); assert.equal(sent.length, 2)
 })
 
-test('#411 pause and disable stop the queue; resume drains it', async () => {
+test('#411 pause stops the queue and resume drains it; disable hands the held draft back to the user, and turning autopilot on again does not send it', async () => {
   const db = await setup(); cap1(db); pastWarmup(db); const { sent, d } = sends()
   lead(db, 'a@one.example'); lead(db, 'b@two.example')
   await runAutopilot(db, 'A', 'Acme', at(d, NOW)); assert.equal(sent.length, 1)
   db.prepare("UPDATE autopilot_settings SET paused = 1, pause_reason = 'paused_by_user' WHERE tenant_id = 'A'").run()
   assert.equal((await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY))).stopped, 'paused'); assert.equal(sent.length, 1)
-  disable(db, 'A'); resume(db, 'A')
-  assert.equal((await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY))).stopped, 'off'); assert.equal(sent.length, 1)
-  cap1(db)
-  assert.equal((await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY))).sent, 1); assert.equal(sent.length, 2)
+  resume(db, 'A')
+  assert.equal((await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY))).sent, 1); assert.equal(sent.length, 2, 'resumed: the held draft goes once')
+  lead(db, 'c@three.example'); await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY)); assert.deepEqual(work(db).map(w => w.reason), ['daily_cap'])
+  disable(db, 'A')
+  assert.deepEqual([work(db).length, msgStatus(db, 'c@three.example'), recentAutopilotAudit(db, 'A').filter(a => a.action === 'released').length], [0, 'draft', 1], 'off: out of the queue, unapproved, recorded as released')
+  assert.equal((await runAutopilot(db, 'A', 'Acme', at(d, NOW + 4 * DAY))).stopped, 'off'); assert.equal(sent.length, 2)
+  cap1(db) // on again: a new grant sends nothing autopilot held under the old one
+  assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + 4 * DAY))).sent, sent.length, work(db).length, msgStatus(db, 'c@three.example')], [0, 2, 0, 'draft'])
 })
 
 test('#411 changed words, sender identity or offer hand the held draft back to the user: never auto-sent', async () => {
@@ -297,10 +301,10 @@ test('#448 autopilot turned off, its operator flag off or its consent changed du
       return tokenOk(url as never)
     }) as unknown as typeof fetch
     const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), flags, fetchImpl })
-    assert.deepEqual([r.sent, sent.length], [0, 1], `${change}: nothing more sent`)
+    assert.deepEqual([r.sent, sent.length, r.stopped], [0, 1, { disable: 'autopilot_off', kill: 'autopilot_unavailable', consent: 'consent_required' }[change]], `${change}: nothing more sent`)
     assert.equal(reservations(db), 0, `${change}: the reserved slot is released`)
-    assert.deepEqual(work(db).map(w => w.reason), [{ disable: 'autopilot_off', kill: 'autopilot_unavailable', consent: 'consent_required' }[change]], `${change}: still held`)
-    assert.equal(msgStatus(db, 'b@two.example'), 'draft', `${change}: unapproved again, nothing to send by accident`)
+    assert.deepEqual([work(db).length, msgStatus(db, 'b@two.example')], [0, 'draft'], `${change}: back with the user, unapproved, out of autopilot's queue`)
+    assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'released'), `${change}: recorded as released`)
   }
 })
 
@@ -310,11 +314,10 @@ test('#448 autopilot turned off during the draft-polish await: the new draft is 
   const providers = { anthropic: { complete: async () => { disable(db, 'A'); return 'not a usable draft' } } }
   const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), providers } as never)
   assert.deepEqual([r.sent, sent.length, r.stopped], [0, 0, 'autopilot_off'])
-  assert.deepEqual(work(db).map(w => w.reason), ['autopilot_off'])
-  assert.equal(msgStatus(db, 'a@one.example'), 'draft')
+  assert.deepEqual([work(db).length, msgStatus(db, 'a@one.example')], [0, 'draft'], 'the user\'s draft now')
 })
 
-test('#448 positive controls: a pause during the token refresh holds as before; re-enabled, the held draft sends once; a manual send needs no autopilot', async () => {
+test('#448 positive controls: a pause during the token refresh holds as before; re-enabled after a disable, nothing held is sent; a manual send needs no autopilot', async () => {
   { const { db, sent, d } = await heldAfterOneSend()
     const fetchImpl = (async (url: string) => { if (String(url).includes('token')) pause(db, 'A'); return tokenOk(url as never) }) as unknown as typeof fetch
     await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl })
@@ -324,7 +327,7 @@ test('#448 positive controls: a pause during the token refresh holds as before; 
     await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl })
     cap1(db)
     await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 2))
-    assert.deepEqual([sent.length, work(db).length], [2, 0], 'turned on again: the held draft goes once') }
+    assert.deepEqual([sent.length, work(db).length, msgStatus(db, 'b@two.example')], [1, 0, 'draft'], 'turned on again: nothing held under the old grant is sent; the draft is the user\'s') }
   { const db = await setup(); const { sent, d } = sends(); lead(db, 'm@manual.example')
     disable(db, 'A')
     const id = (db.prepare('SELECT id FROM leads').get() as { id: string }).id
@@ -599,4 +602,18 @@ test('#448 the commit mark cannot be written: no send (fail closed), the slot re
   const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, failMark) })
   assert.deepEqual([r.sent, sent.length, r.stopped, reservations(db), work(db).map(w => w.reason), msgStatus(db, 'a@one.example')], [0, 0, 'authority_unreadable', 0, ['authority_unreadable'], 'draft'])
   const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 1)); assert.deepEqual([r2.sent, sent.length, counted(db).map(c => c.action)], [1, 1, ['sent']], 'sent once when the mark can be written')
+})
+
+// Reviewer 3 on e9dff19: disable() returns every held first touch to the user, approved ones included.
+test('#448 disable() hands every held first touch back: approved ones unapproved, work rows gone, one released row each; nothing sends after re-enable', async () => {
+  const { db, sent, d } = await heldAfterOneSend() // b held on the daily cap
+  const b = (db.prepare("SELECT id FROM outreach_messages WHERE to_email = 'b@two.example'").get() as { id: string }).id
+  approve(db, 'A', b) // the user approved it meanwhile: still autopilot's to send when the cap lifts, until autopilot is turned off
+  assert.deepEqual([work(db).length, msgStatus(db, 'b@two.example')], [1, 'approved'])
+  disable(db, 'A')
+  const released = recentAutopilotAudit(db, 'A').filter(a => a.action === 'released')
+  assert.deepEqual([work(db).length, msgStatus(db, 'b@two.example'), released.length, released[0]?.message_id], [0, 'draft', 1, b], 'unapproved, out of the queue, recorded')
+  assert.equal((db.prepare('SELECT approved_hash FROM outreach_messages WHERE id = ?').get(b) as { approved_hash: string | null }).approved_hash, null)
+  cap1(db)
+  assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))).sent, sent.length], [0, 1], 'on again: not sent')
 })

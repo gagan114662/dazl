@@ -91,8 +91,24 @@ export function enable(db: Database.Database, tenantId: string, input: { version
   audit(db, tenantId, 'enabled', `cap ${cap}`)
 }
 export function disable(db: Database.Database, tenantId: string): void {
-  db.prepare('UPDATE autopilot_settings SET enabled = 0 WHERE tenant_id = ?').run(tenantId)
-  audit(db, tenantId, 'disabled')
+  db.transaction(() => {
+    db.prepare('UPDATE autopilot_settings SET enabled = 0 WHERE tenant_id = ?').run(tenantId)
+    audit(db, tenantId, 'disabled')
+    returnHeld(db, tenantId, 'autopilot turned off: yours to approve')
+  })()
+}
+// Autopilot's held first touches (#411) go back to the user: out of its queue, unapproved where autopilot had approved
+// them, one 'released' audit row each. Turning autopilot off does this for the tenant; autopilot's authority ending at a
+// send's commitment does it for that draft. Nothing autopilot held is sent later on a new grant without the user.
+function returnHeld(db: Database.Database, tenantId: string, why: string, messageId?: string): void {
+  const rows = (messageId
+    ? db.prepare('SELECT message_id, lead_id FROM autopilot_work WHERE tenant_id = ? AND message_id = ?').all(tenantId, messageId)
+    : db.prepare('SELECT message_id, lead_id FROM autopilot_work WHERE tenant_id = ?').all(tenantId)) as { message_id: string; lead_id: string }[]
+  for (const w of rows) {
+    db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(w.message_id, tenantId)
+    db.prepare('DELETE FROM autopilot_work WHERE message_id = ? AND tenant_id = ?').run(w.message_id, tenantId)
+    audit(db, tenantId, 'released', why, w.lead_id, w.message_id)
+  }
 }
 export function pause(db: Database.Database, tenantId: string, reason = 'paused_by_user'): void {
   db.prepare('UPDATE autopilot_settings SET paused = 1, pause_reason = ? WHERE tenant_id = ?').run(reason, tenantId)
@@ -172,9 +188,12 @@ const RETRY_MAX = 3
 // The account must reconnect Gmail or resume: the work stays due and goes on the first pass after that.
 const WAIT_FOR_USER = new Set(['gmail_reconnect_needed', 'gmail_not_connected', 'paused'])
 // Autopilot's own authority ended while the send was in progress (turned off, operator flag off, consent no longer
-// current, or its reserved slot gone): known not sent, the slot is released, and the draft stays held and unapproved
-// until autopilot runs again under current authority.
-const AUTHORITY_ENDED = new Set(['autopilot_off', 'autopilot_unavailable', 'consent_required', 'reservation_lost', 'authority_unreadable'])
+// current): known not sent, the slot is released, and the draft goes back to the user, unapproved and out of the queue.
+// A later grant does not send what was held under the old one.
+const AUTHORITY_RETURNS = new Set(['autopilot_off', 'autopilot_unavailable', 'consent_required'])
+// The send's own standing is gone (its reserved slot lost, or the authority unreadable): known not sent, the slot
+// released, the draft held and unapproved until autopilot runs again and reads it afresh.
+const AUTHORITY_ENDED = new Set(['reservation_lost', 'authority_unreadable'])
 // The authority could not be read at the send commitment (the store failed): fail closed, as if it had ended. Known not
 // sent, the slot released, the draft held and unapproved; the next pass reads it again.
 const AUTHORITY_UNREADABLE = 'authority_unreadable'
@@ -221,7 +240,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     return !autopilotAvailable(env) ? 'autopilot_unavailable' : !s2.enabled ? 'autopilot_off' : s2.paused ? 'paused' : !s2.consent_current ? 'consent_required' : null
   }
   // Changed since autopilot took its authority: the user's to approve.
-  const release = (id: string, leadId: string) => { backToUser(id); out.held++; audit(db, tenantId, 'released', 'changed since autopilot drafted it: yours to approve', leadId, id) }
+  const release = (id: string, leadId: string, why = 'changed since autopilot drafted it: yours to approve') => { backToUser(id); out.held++; audit(db, tenantId, 'released', why, leadId, id) }
+  const ENDED_WHY = 'autopilot stopped before it was sent: yours to approve'
   const keepHeld = (id: string, leadId: string, code: string, attempts: number, nextAt: number = now, auth?: string) => {
     hold(id, leadId, code, nextAt, attempts, auth)
     db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(id, tenantId)
@@ -245,7 +265,12 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   const deliver = async (id: string, leadId: string, attempts: number, expected: string): Promise<'stop' | void> => {
     // A draft polished (or a held one re-checked) across an await: autopilot may have been turned off meanwhile.
     const before = authority()
-    if (before) { out.held++; if (before === 'paused') hold(id, leadId, before, now, attempts, expected); else keepHeld(id, leadId, before, attempts, now, expected); out.stopped = before; return 'stop' }
+    if (before) {
+      out.stopped = before
+      if (AUTHORITY_RETURNS.has(before)) release(id, leadId, ENDED_WHY)
+      else { out.held++; if (before === 'paused') hold(id, leadId, before, now, attempts, expected); else keepHeld(id, leadId, before, attempts, now, expected) }
+      return 'stop'
+    }
     if (draftAuthority(db, tenantId, id) !== expected) { release(id, leadId); return }
     const msg = db.prepare('SELECT to_email, status FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { to_email: string; status: string }
     const to = msg.to_email
@@ -302,6 +327,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       // A volume limit refused it at commitment (the slot is released above): held until the limit has room, unapproved.
       const vol = VOLUME_AT_SEND.get(code)
       if (vol) { keepHeld(id, leadId, vol, attempts, capHold(domain)?.at ?? now, expected); out.held++; if (vol === 'daily_cap') { out.stopped = vol; return 'stop' } return }
+      if (AUTHORITY_RETURNS.has(code)) { release(id, leadId, ENDED_WHY); out.stopped = code; return 'stop' }
       if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts, now, expected); out.held++; out.stopped = code; return 'stop' }
       if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts, expected); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; return 'stop' }
       if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1, expected); out.held++; return }
