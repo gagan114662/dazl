@@ -21,7 +21,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
+      # age for the encrypted off-host backup tests (test/offhost-backup.test.ts); DAZL_REQUIRE_AGE makes a missing one fail
+      - run: sudo apt-get update -q && sudo apt-get install -y -q age
       - run: npm test
+        env:
+          DAZL_REQUIRE_AGE: "1"
 
   # Full suite again with a Postgres 16 service container. Tests that take DAZL_TEST_PG_URL run against it (data layer
   # contract, migrations, schema drift) and DAZL_REQUIRE_PG=1 makes them fail instead of skipping if it is missing.
