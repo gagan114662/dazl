@@ -101,9 +101,11 @@ export function tombstoneLedgerEntry(t: Tombstone): string {
 // whose row also holds the workspace profile. Deleting a workspace that is shared (a team workspace, other members in
 // it, or a founder who belongs to another workspace) would either delete a person still using dazl elsewhere or leave
 // this workspace's profile on their account. Until the owner decides how that works, it is refused, never guessed.
-// Runs inside the transaction that writes the tombstone (deleteTenant), so a membership added between the check and
-// the tombstone cannot slip through: the insert of a membership reads tenant_tombstones through its guard trigger, so
-// under SERIALIZABLE one of the two transactions is refused.
+// Runs with the tombstone, then again inside the first step (before anything is revoked) and the erase step. App
+// writes are READ COMMITTED, so a membership insert that straddles the tombstone is not refused by isolation; it is
+// waited for (the step holds the tenant's advisory lock, which that insert's guard shares) and then found by the
+// re-check: the deletion stops at 'requested' with nothing revoked, or at 'cancelled' if it arrives later, for the
+// operator to resolve and resume.
 function* refuseSharedWorkspace(tx: Tx, cols: Map<string, string[]>, tenant: string): TxBody<void> {
   if (!cols.has('organizations') || !cols.has('memberships')) return
   const org = yield* tx.get<{ kind: string }>('SELECT kind FROM organizations WHERE id = ?', [tenant])
@@ -144,8 +146,9 @@ function validPolicy(p: DeletionPolicy | undefined, scope: Map<string, Scope>): 
 
 // Delete (or resume deleting) one tenant. `until` stops after a given state (staged deletion, and the tests' crash
 // points). `requestedAt` is the time of the original request when a deletion is re-applied from the ledger (default:
-// now). Returns the tombstone after the run.
-export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: DeletionPolicy; requestedBy?: string; now?: number; requestedAt?: number; until?: DeletionState } = {}): Promise<Tombstone> {
+// now). `lockTimeoutMs` (Postgres) bounds how long a step waits for the tenant's in-flight writers before giving up
+// with nothing changed (default 5 s). Returns the tombstone after the run.
+export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: DeletionPolicy; requestedBy?: string; now?: number; requestedAt?: number; until?: DeletionState; lockTimeoutMs?: number } = {}): Promise<Tombstone> {
   const db = asDb(d)
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
@@ -170,28 +173,38 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
       yield* refuseSharedWorkspace(tx, cols, tenant)
       yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
         [tenant, requestedAt, requestedBy, JSON.stringify(policy)])
-    }, 'serializable')
+    })
     t = (await tombstone(db, tenant))!
   }
   const policy = JSON.parse(t.policy) as DeletionPolicy
   const retain = new Set([...(policy.retainTables ?? []), ...(policy.suppressions === 'retain' ? ['suppressions'] : []), ...Object.keys(ALWAYS_RETAINED)])
   const has = (x: string) => scope.has(x)
-  // Every table a step reads or deletes from: the tenant's tables, its identity rows and the lifecycle's own records.
-  const stepTables = [...scope.keys(), 'users', 'organizations', 'tenant_tombstone_keys'].filter(x => cols.has(x)).sort()
+  const lockTimeoutMs = o.lockTimeoutMs ?? 5000
   // One step: its statements and the state change commit together, or not at all. On Postgres a write for this tenant
   // that passed the guard before the tombstone committed can still be open when a step runs (READ COMMITTED waits for
-  // nothing), and would commit after the step deleted around it. So each step first takes SHARE ROW EXCLUSIVE on every
-  // table it touches: that waits for those writers to finish, and the step's statements then see their rows. SQLite
-  // has one writer at a time (BEGIN IMMEDIATE in sqliteDb): an open writer makes the step wait or fail, never lose a row.
+  // nothing), and would commit after the step deleted around it. Every guard trigger holds a shared advisory lock on
+  // the row's tenant id for its transaction (lib/db/tenant-guard.ts), so each step first takes that key exclusively:
+  // it waits for this tenant's open writers only (never for, or against, another tenant's), and its statements then
+  // see their rows. The wait is bounded by lock_timeout for this transaction: on timeout the step rolls back, the
+  // state is unchanged and the caller retries. SQLite has one writer at a time (BEGIN IMMEDIATE in sqliteDb): an open
+  // writer makes the step wait or fail, never lose a row.
   const advance = async (from: DeletionState, to: DeletionState, body: (tx: Tx) => TxBody<void>) => {
     if (ORDER.indexOf(t!.state) >= ORDER.indexOf(to)) return true
     if (o.until && ORDER.indexOf(from) >= ORDER.indexOf(o.until)) return false
-    await db.tx(function* (tx) {
-      if (db.kind === 'pg') yield* tx.run(`LOCK TABLE ${stepTables.map(x => `"${x}"`).join(', ')} IN SHARE ROW EXCLUSIVE MODE`)
-      yield* body(tx)
-      const r = yield* tx.run('UPDATE tenant_tombstones SET state = ? WHERE deleted_tenant = ? AND state = ?', [to, tenant, from])
-      if (r.changes !== 1) throw new Error(`tenant deletion: expected state ${from}, another run moved it`)
-    })
+    try {
+      await db.tx(function* (tx) {
+        if (db.kind === 'pg') {
+          yield* tx.get("SELECT set_config('lock_timeout', ?, true)", [`${lockTimeoutMs}ms`])
+          yield* tx.get('SELECT pg_advisory_xact_lock(hashtext(?))', [tenant])
+        }
+        yield* body(tx)
+        const r = yield* tx.run('UPDATE tenant_tombstones SET state = ? WHERE deleted_tenant = ? AND state = ?', [to, tenant, from])
+        if (r.changes !== 1) throw new Error(`tenant deletion: expected state ${from}, another run moved it`)
+      })
+    } catch (e) {
+      if (/lock timeout/.test(e instanceof Error ? e.message : String(e))) throw new Error(`tenant deletion: step ${from} -> ${to} waited ${lockTimeoutMs} ms for in-flight writes of this tenant and gave up; nothing changed, retry`, { cause: e })
+      throw e
+    }
     t = (await tombstone(db, tenant))!
     return true
   }
@@ -200,6 +213,8 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
   const erase = [...scope.keys()].filter(x => !retain.has(x) && !UNGUARDED.has(x)).sort((a, b) => depth(scope, b) - depth(scope, a) || a.localeCompare(b))
 
   if (!await advance('requested', 'revoked', function* (tx) {
+    // decision 9 with the rows as they are now, before anything is revoked (a membership that straddled the tombstone)
+    yield* refuseSharedWorkspace(tx, cols, tenant)
     for (const x of CREDENTIAL_TABLES) if (has(x)) yield* del(tx, x)
   })) return t
   if (!await advance('revoked', 'cancelled', function* (tx) {
@@ -211,8 +226,8 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     }
   })) return t
   if (!await advance('cancelled', 'erased', function* (tx) {
-    // decision 9 again, with the rows as they are now: the account must not have joined another workspace since the
-    // request (the memberships guard refuses that; this holds on a store without it, and stops before any erase)
+    // decision 9 once more, right before the erase (a membership that arrived between the first step and this one on
+    // a store without the member_id guard)
     yield* refuseSharedWorkspace(tx, cols, tenant)
     // unexpired evidence copies may only be deleted under this tenant's purge gate (lib/scan/evidence-copies.ts)
     const gate = has('evidence_purge_gate') && has('lead_evidence_copies')

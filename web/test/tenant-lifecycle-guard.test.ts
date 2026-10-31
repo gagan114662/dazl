@@ -178,17 +178,37 @@ bothEngines('decision 9 during a held deletion: the account cannot join another 
   await refused(c, 'UPDATE memberships SET member_id = ? WHERE tenant_id = ? AND member_id = ?', [A, B, B], "B's membership moved onto the account under deletion")
   assert.equal(await rows(c, 'SELECT count(*) AS n FROM memberships WHERE member_id = ? AND tenant_id <> ?', [A, A]), 0)
   assert.equal(await rows(c, 'SELECT count(*) AS n FROM memberships WHERE member_id = ? AND tenant_id = ?', [B, B]), 1, "B's membership unchanged")
-  // defence in depth: on a store without the member_id guard, the erase step itself finds the membership and stops
+  // defence in depth: on a store without the member_id guard, the first step finds the membership and stops before
+  // anything is revoked
   await c.db.run(c.kind === 'pg' ? 'DROP TRIGGER tomb_memberships_member_id ON memberships' : 'DROP TRIGGER tomb_memberships_member_id')
   await c.db.run("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'viewer', 2)", [C, A])
   await assert.rejects(deleteTenant(c.db, A), /founder belongs to another workspace/)
-  assert.equal((await tombstone(c.db, A))?.state, 'cancelled', 'credentials revoked and parents recorded, nothing erased')
+  assert.equal((await tombstone(c.db, A))?.state, 'requested', 'nothing revoked, nothing erased')
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM sessions WHERE user_id = ?', [A]), 1, 'credentials untouched')
   assert.equal(await rows(c, 'SELECT count(*) AS n FROM users WHERE id = ?', [A]), 1, 'the account still exists')
   assert.equal(await rows(c, 'SELECT count(*) AS n FROM tenant_memory WHERE tenant_id = ?', [A]), 1, 'its data too')
+  // and if it arrives after the first step, the erase step finds it
+  await c.db.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [C, A])
+  assert.equal((await deleteTenant(c.db, A, { until: 'cancelled' })).state, 'cancelled')
+  await c.db.run("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'viewer', 3)", [C, A])
+  await assert.rejects(deleteTenant(c.db, A), /founder belongs to another workspace/)
+  assert.equal((await tombstone(c.db, A))?.state, 'cancelled', 'stuck before the erase, for the operator')
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM tenant_memory WHERE tenant_id = ?', [A]), 1, 'nothing erased')
   // the operator resolves it (the membership goes), the deletion resumes and completes with no membership naming A
   await c.db.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [C, A])
   assert.equal((await deleteTenant(c.db, A)).state, 'completed')
   assert.equal(await rows(c, 'SELECT count(*) AS n FROM memberships WHERE member_id = ?', [A]), 0)
+})
+
+// Review (PR #455, R7): a SET that keeps the same value is not a move; it is allowed even on the deleted tenant's
+// retained rows, and the guard's chain lookups run only when the key changes.
+bothEngines('allowed: a same-value SET of the guarded column on the deleted tenant\'s retained row', async c => {
+  const f = await fixture(c)
+  await deleteTenant(c.db, A, { policy: { suppressions: 'retain', retainTables: ['scan_jobs', 'leads'] }, requestedBy: BY, now: NOW })
+  assert.deepEqual(await c.db.run('UPDATE suppressions SET tenant_id = ? WHERE tenant_id = ?', [A, A]), { changes: 1 }, 'a retained row, same owner')
+  assert.deepEqual(await c.db.run('UPDATE leads SET scan_job_id = ? WHERE scan_job_id = ?', [f.ids[A].scan_jobs, f.ids[A].scan_jobs]), { changes: 1 }, 'a retained child, same parent')
+  await refused(c, 'UPDATE suppressions SET tenant_id = ? WHERE tenant_id = ?', [B, A], 'but moving it out is still refused')
+  await refused(c, 'UPDATE leads SET scan_job_id = ? WHERE scan_job_id = ?', [f.ids[B].scan_jobs, f.ids[A].scan_jobs], 'and so is moving the child out')
 })
 
 bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard, users and organizations too', async c => {

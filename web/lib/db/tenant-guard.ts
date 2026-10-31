@@ -77,8 +77,15 @@ export function migrateTenantLifecycle(db: Database.Database): void {
 // deleted (tenant_tombstone_keys) and, while the deletion is still in progress or the parent is retained, when the
 // parent row's own chain belongs to a tombstoned tenant. The UPDATE guard tests the row's old value too: a tombstoned
 // tenant's row can no more be moved out to another tenant (its data would survive the erase under a new owner) than
-// another tenant's row can be moved in. Each trigger is dropped and recreated (as the translator does on Postgres), so
-// a change to a guard's body reaches an existing store at its next start.
+// another tenant's row can be moved in; a SET that keeps the same value is allowed without the subqueries (the row does
+// not move, and the per-row cost of the chain lookups is paid only when the key changes). Each trigger is dropped and
+// recreated (as the translator does on Postgres), so a change to a guard's body reaches an existing store at its next
+// start.
+//
+// Each guard body starts with one SELECT per tenant id the row names (NEW's, and OLD's for an update): on SQLite that
+// is a no-op; the translator turns it into pg_advisory_xact_lock_shared(hashtext(<tenant id>)), held to the end of
+// the writer's transaction. A deletion step takes the same key exclusively (lib/tenant/lifecycle.ts), so it waits for
+// that tenant's in-flight writers only, and never for or against any other tenant's.
 export function guardTriggers(scope: Scope[]): { name: string; table: string; sql: string }[] {
   const byTable = new Map(scope.map(s => [s.table, s]))
   // rows of `table` that belong to a tombstoned tenant, as a WHERE clause over that table (through its parent chain)
@@ -89,21 +96,33 @@ export function guardTriggers(scope: Scope[]): { name: string; table: string; sq
     const up = tombstoned(s.parent)
     return up && `${s.col} IN (SELECT id FROM ${s.parent} WHERE ${up})`
   }
+  // the tenant id a row of `table` belongs to, as an expression over its columns prefixed by `pre` ('NEW.', 'OLD.', or
+  // '' for a row of the parent table inside a subquery), through the parent chain
+  const tenantId = (table: string, pre: string): string | undefined => {
+    const s = byTable.get(table)
+    if (!s) return undefined
+    if (s.how === 'direct') return `${pre}${s.col}`
+    const up = tenantId(s.parent, '')
+    return up && `(SELECT ${up} FROM ${s.parent} WHERE id = ${pre}${s.col})`
+  }
   const out: { name: string; table: string; sql: string }[] = []
-  const ddl = (name: string, event: string, table: string, when: string) =>
-    `DROP TRIGGER IF EXISTS ${name}; CREATE TRIGGER ${name} BEFORE ${event} ON ${table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`
-  // `deleted(row)` says whether the row's value of `col` (NEW or OLD) belongs to a tombstoned tenant
-  const guard = (table: string, col: string, deleted: (row: 'NEW' | 'OLD') => string, suffix = '') => {
-    out.push({ name: `tomb_${table}${suffix}`, table, sql: ddl(`tomb_${table}${suffix}`, 'INSERT', table, deleted('NEW')) })
-    out.push({ name: `tomb_upd_${table}${suffix}`, table, sql: ddl(`tomb_upd_${table}${suffix}`, `UPDATE OF ${col}`, table, `(${deleted('NEW')}) OR (${deleted('OLD')})`) })
+  const ddl = (name: string, event: string, table: string, locks: string[], when: string) =>
+    `DROP TRIGGER IF EXISTS ${name}; CREATE TRIGGER ${name} BEFORE ${event} ON ${table} BEGIN ${locks.map(l => `SELECT ${l}; `).join('')}SELECT RAISE(ABORT, 'tenant deleted') WHERE ${when}; END;`
+  // `deleted(row)` says whether the row's value of `col` (NEW or OLD) belongs to a tombstoned tenant; `tenant(row)` is
+  // that tenant's id (the advisory lock key)
+  const guard = (table: string, col: string, deleted: (row: 'NEW' | 'OLD') => string, tenant: (row: 'NEW' | 'OLD') => string, suffix = '') => {
+    out.push({ name: `tomb_${table}${suffix}`, table, sql: ddl(`tomb_${table}${suffix}`, 'INSERT', table, [tenant('NEW')], deleted('NEW')) })
+    out.push({ name: `tomb_upd_${table}${suffix}`, table, sql: ddl(`tomb_upd_${table}${suffix}`, `UPDATE OF ${col}`, table, [tenant('NEW'), tenant('OLD')], `NEW.${col} IS NOT OLD.${col} AND ((${deleted('NEW')}) OR (${deleted('OLD')}))`) })
   }
   const tenantOf = (col: string) => (row: string) => `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = ${row}.${col})`
+  const own = (col: string) => (row: string) => `${row}.${col}`
   for (const s of scope) {
-    if (s.how === 'direct') { guard(s.table, s.col, tenantOf(s.col)); continue }
+    if (s.how === 'direct') { guard(s.table, s.col, tenantOf(s.col), own(s.col)); continue }
     const live = tombstoned(s.parent)
-    guard(s.table, s.col, row => `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = ${row}.${s.col})${live ? ` OR ${row}.${s.col} IN (SELECT id FROM ${s.parent} WHERE ${live})` : ''}`)
+    guard(s.table, s.col, row => `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = ${row}.${s.col})${live ? ` OR ${row}.${s.col} IN (SELECT id FROM ${s.parent} WHERE ${live})` : ''}`,
+      row => tenantId(s.table, `${row}.`) ?? `${row}.${s.col}`)
   }
-  for (const t of ['organizations', 'users']) guard(t, 'id', tenantOf('id'))
-  for (const [table, cols] of Object.entries(ACCOUNT_COLUMNS)) if (byTable.has(table)) for (const col of cols) guard(table, col, tenantOf(col), `_${col}`)
+  for (const t of ['organizations', 'users']) guard(t, 'id', tenantOf('id'), own('id'))
+  for (const [table, cols] of Object.entries(ACCOUNT_COLUMNS)) if (byTable.has(table)) for (const col of cols) guard(table, col, tenantOf(col), own(col), `_${col}`)
   return out
 }
