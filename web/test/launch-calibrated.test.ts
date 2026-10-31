@@ -661,6 +661,33 @@ test('F4: a launched tenant past the warmup whose policy is re-accepted, stale o
   assert.deepEqual([g.to().sort(), r.stopped ?? null], [['d@four.example', 'x@plain.example'], null])
 })
 
+test('F5: a store the send service itself rechecks after the refresh (suppressions) unreadable: released with the reason, run stopped and paused, no phantom uncertain send', async () => {
+  const { db, job } = await launched()
+  const got = await duringRefresh(db, () => db.exec('ALTER TABLE suppressions RENAME TO suppressions_x'))
+  assert.deepEqual(got, { sent: 0, run: [0, 'stop_check_unavailable'], msg: ['draft', 'stop_check_unavailable'], pause: 'stop_check_unavailable', warmup: false })
+  // later, with the store back and the stale-send window passed: nothing has turned into an uncertain send
+  db.exec('ALTER TABLE suppressions_x RENAME TO suppressions'); lead(db, job, 'e@five.example', 85)
+  const r2 = await runAutopilot(db, 'A', 'Acme', { ...gmail().d, now: NOW + 2 + 601 })
+  assert.deepEqual([r2.stopped, statuses(db).filter(x => x === 'uncertain').length], ['paused', 0], 'still paused for the named reason, no phantom uncertain')
+  // a hand send sees the same contract: refused with the reason, the approval kept
+  const { db: h } = await launched()
+  const leadId = (h.prepare("SELECT id FROM leads WHERE contact = 'd@four.example'").get() as { id: string }).id
+  const id = createDraft(h, 'A', leadId, 'Acme'); approve(h, 'A', id)
+  const g = gmail()
+  const fetchImpl = (async (url: string, init?: RequestInit) => { if (String(url).includes('token')) h.exec('ALTER TABLE suppressions RENAME TO suppressions_x'); return (g.d.fetchImpl as typeof fetch)(url, init) }) as typeof fetch
+  await assert.rejects(sendMessage(h, 'A', id, { ...g.d, fetchImpl, now: NOW + 2 }), (e: unknown) => e instanceof OutreachError && e.code === 'stop_check_unavailable')
+  assert.deepEqual([g.sent.length, h.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id)], [0, { status: 'approved', error: 'stop_check_unavailable' }])
+})
+
+test('R3-10: the tenant switches unreadable during the model await: the run ends with stop_check_unavailable, never rejects', async () => {
+  const { db, job } = await launchedWithKey(5); lead(db, job, 'd@four.example')
+  const dropping = model('claude-sonnet-4-5', () => { db.exec('DROP TABLE autopilot_settings'); return { input_tokens: 10, output_tokens: 10 } })
+  const g = gmail()
+  const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, providers: dropping.providers } as never)
+  assert.deepEqual([g.sent.length, r.sent, r.stopped], [0, 0, 'stop_check_unavailable'])
+  assert.deepEqual(db.prepare("SELECT status, error FROM outreach_messages WHERE to_email = 'd@four.example'").get(), { status: 'draft', error: 'stop_check_unavailable' })
+})
+
 test('R3-6: calibration needs autopilot on under the current consent: otherwise no draft, no message, no launch', async () => {
   const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
   acceptLaunchPolicy(db, 'A', policy([job]), NOW)

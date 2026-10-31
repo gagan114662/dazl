@@ -474,7 +474,12 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   // The caller's sendAuthority answers with a refusal code or null. One that cannot answer (its own store unreadable)
   // is a refusal too: fail closed with a specific code, so a claimed message never stays 'sending' for the stale reaper.
   const authority = (): string | null => { try { return d.sendAuthority?.() ?? null } catch { return 'stop_check_unavailable' } }
+  // A final check that cannot be read (its store unreadable, an unexpected fault) is a refusal, never a claim left in
+  // 'sending' for the stale reaper to turn into a false uncertain send: the service's own refusals pass through, anything
+  // else releases with stop_check_unavailable.
+  const guarded = <T,>(f: () => T): T => { try { return f() } catch (e) { if (e instanceof OutreachError) throw e; return release('stop_check_unavailable') } }
   const m = getMsg(db, tenantId, id)!
+  const { settings, acct } = guarded(() => {
   if (isSuppressed(db, tenantId, m.to_email)) {
     db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL, claimed_at = NULL WHERE id = ?").run(id)
     throw new OutreachError('suppressed')
@@ -499,6 +504,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
   const authorityAtClaim = authority()
   if (authorityAtClaim) release(authorityAtClaim)
+    return { settings, acct }
+  })
 
   let token: string
   try {
@@ -509,6 +516,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  guarded(() => {
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
@@ -525,6 +533,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
   const authorityAtHandoff = authority()
   if (authorityAtHandoff) release(authorityAtHandoff)
+  })
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
