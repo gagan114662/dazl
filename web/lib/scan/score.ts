@@ -152,6 +152,9 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
 // Timing status appended (never replacing the fit rationale) when no recognized proof supports the
 // claimed trigger (#377). The exact wording is pinned by tests.
 export const TIMING_UNCONFIRMED_NOTE = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
+// Urgency wording that asserts a current buying need: explicit urgency markers, or an emphatic uppercase NOW
+// (lowercase 'now' alone is common in neutral text and does not count).
+export const URGENCY_CLAIM = /\burgent(?:ly)?\b|\bright now\b|\bimmediately\b|\basap\b|\bact now\b|\bneeds? this now\b|\bNOW\b/
 export interface ScoreTimingOpts { windowDays?: number | null; now?: Date }
 export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], fetchImpl?: typeof fetch, opts: ScoreTimingOpts = {}): Promise<LeadScore[] | null> {
   if (!provider.complete || leads.length === 0) return null
@@ -167,9 +170,13 @@ export async function scoreLeads(provider: Provider, apiKey: string, icpText: st
       const src = leads[i]
       if (proofBackedTiming({ event_date: src?.event_date ?? null, event_date_proof: src?.event_date_proof ?? null, signal: src?.signal, signal_kind: src?.signal_kind }, opts.windowDays ?? null, opts.now ?? new Date())) return
       g.intent = 0
-      // The deterministic zero is not enough when the model's prose still asserts an unsupported NOW:
-      // the rationale survives only as an explicitly unverified claim, never as a recommendation.
-      if (!g.why.includes(TIMING_UNCONFIRMED_NOTE)) g.why = `${TIMING_UNCONFIRMED_NOTE} Model rationale, unverified: ${g.why}`.slice(0, WHY_MAX)
+      // Neutral fit rationale is preserved with the timing status appended. Prose asserting an unsupported
+      // NOW is demoted to a labelled unverified claim: the deterministic zero alone cannot keep urgency
+      // wording from standing as a recommendation (#377 ruling).
+      if (!g.why.includes(TIMING_UNCONFIRMED_NOTE))
+        g.why = (URGENCY_CLAIM.test(g.why)
+          ? `${TIMING_UNCONFIRMED_NOTE} Model rationale, unverified: ${g.why}`
+          : `${g.why} ${TIMING_UNCONFIRMED_NOTE}`).slice(0, WHY_MAX)
     })
     return parsed
   } catch (e) {
