@@ -617,3 +617,25 @@ test('#448 disable() hands every held first touch back: approved ones unapproved
   cap1(db)
   assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))).sent, sent.length], [0, 1], 'on again: not sent')
 })
+
+// Reviewer 3 on e9dff19: a read that fails inside the send path's own rechecks (before authorize) is the same refusal.
+test('#448 the autopilot settings read fails once during the token refresh (the send path\'s own paused check): authority_unreadable, nothing sent, held and unapproved', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends(); lead(db, 'a@one.example')
+  const prepare = db.prepare.bind(db)
+  const failOnce = (db2: Database.Database) => { db2.prepare = ((sql: string) => { if (sql.includes('FROM autopilot_settings')) { delete (db2 as { prepare?: unknown }).prepare; throw new Error('disk I/O error') } return prepare(sql) }) as typeof db2.prepare }
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW), fetchImpl: onToken(db, 1, failOnce) })
+  assert.deepEqual([r.sent, sent.length, r.stopped, reservations(db), work(db).map(w => [w.reason, w.next_at]), msgStatus(db, 'a@one.example')], [0, 0, 'authority_unreadable', 0, [['authority_unreadable', NOW]], 'draft'])
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'authority_unreadable'), 'recorded why')
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 1)); assert.deepEqual([r2.sent, sent.length], [1, 1], 'read again: sent once')
+})
+
+// Reviewer 3 on e9dff19: the words and the recipient are covered by the send path's own changed-since-approval check.
+test('#448 the body, subject or recipient of the held draft changed during the token refresh: changed_since_approval, nothing sent, back with the user', async () => {
+  for (const [what, sql] of [['body', "UPDATE outreach_messages SET body = body || ' PS: one more thing' WHERE to_email = 'b@two.example'"], ['subject', "UPDATE outreach_messages SET subject = 'Other subject' WHERE to_email = 'b@two.example'"], ['recipient', "UPDATE outreach_messages SET to_email = 'c@two.example' WHERE to_email = 'b@two.example'"]] as const) {
+    const { db, sent, d } = await heldAfterOneSend()
+    const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl: duringTokenRefresh(db, db2 => { db2.prepare(sql).run() }) })
+    const to = what === 'recipient' ? 'c@two.example' : 'b@two.example'
+    assert.deepEqual([r.sent, sent.length, reservations(db), work(db).length, draftsBack(db), msgStatus(db, to)], [0, 1, 0, 0, 1, 'draft'], `${what}: not sent, slot released, the user\'s again`)
+    assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'send_failed' && a.detail === 'changed_since_approval'), `${what}: recorded why`)
+  }
+})

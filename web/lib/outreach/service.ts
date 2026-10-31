@@ -504,6 +504,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // A recheck that cannot run (a read fails) is a refusal, not an unknown outcome: nothing has left yet, the message goes
+  // back to approved with that reason and the caller decides (fail closed).
+  try {
   // The sending identity first: the account may have been disconnected or reconnected to another address meanwhile. The
   // message goes out only from the address read before the refresh (and, when given, the one the caller authorized).
   const sender = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
@@ -523,6 +526,10 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
   if (d.authorize) { const why = d.authorize(); if (why) release(why) }
+  } catch (e) {
+    if (e instanceof OutreachError) throw e
+    release('authority_unreadable')
+  }
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
