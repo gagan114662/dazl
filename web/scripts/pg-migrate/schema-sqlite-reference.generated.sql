@@ -763,7 +763,7 @@ CREATE TABLE trial_reservations (
       created_at  INTEGER NOT NULL,
       settled_at  INTEGER,
       settled_attempt INTEGER
-    );
+    , kind TEXT NOT NULL DEFAULT 'scan' CHECK (kind IN ('scan', 'site_read')), spent_usd REAL CHECK (spent_usd IS NULL OR spent_usd >= 0));
 
 CREATE TABLE trial_scans (
       tenant_id TEXT NOT NULL,

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { isPublicIp, fetchPublicHtml, pinnedLookup, type Lookup } from '../lib/net/public-fetch.ts'
-import { extractSiteText, icpFromWebsite } from '../lib/scan/icp-from-site.ts'
+import { extractSiteText, icpFromWebsite, trimToBytes, TRIAL_SITE_READ_MAX_USD, TRIAL_SITE_READ_TEXT_BYTES } from '../lib/scan/icp-from-site.ts'
+import { callCostUsd } from '../lib/llm/spend-guard.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 
@@ -111,12 +112,59 @@ test('icpFromWebsite: no key, unreadable key, js-only page and bad model output 
   assert.deepEqual(await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: junk } }), { error: 'key_rejected' })
 })
 
-test('icpFromWebsite: the key is checked before any fetch (trial or operator keys never pay)', async () => {
+test('icpFromWebsite: without a key and without a trial path, nothing is fetched and nothing is called', async () => {
   let called = 0
   const counting = (async () => { called++; return htmlResponse(HTML) }) as unknown as typeof fetch
   const empty = new Database(':memory:'); migrateKeys(empty)
   await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: counting, providers: { anthropic: goodProvider } })
   assert.equal(called, 0, 'no outbound fetch without a tenant key')
+})
+
+// ---------- #409: the trial-funded read ----------
+const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
+const trialProvider = (seen: { keys: string[]; max: number[] }, model = 'claude-sonnet-4-5'): Provider => ({
+  research: async () => { throw new Error('unused') },
+  configuredModel: () => model,
+  complete: async (k, _p, _f, max = 10) => { seen.keys.push(k); seen.max.push(max); return goodProvider.complete!(k, _p, _f, max) },
+})
+const admitted = (calls: { n: number }, settled: (number | null)[] = [], released = { n: 0 }) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number | null) => { settled.push(usd) }, release: async () => { released.n++ } } }
+
+test('#409: an account without its own key has its site read on the trial key, admitted only after a readable page', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const seen = { keys: [] as string[], max: [] as number[] }, calls = { n: 0 }
+  const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen) }, trial: admitted(calls) })
+  assert.ok('icp' in out, JSON.stringify(out))
+  if ('icp' in out) { assert.equal(out.funded, 'trial'); assert.match(out.icp.summary, /Sales ops/) }
+  assert.deepEqual([calls.n, seen.keys, seen.max], [1, [OP], [700]], 'one admission, one bounded call on the trial key')
+})
+
+test('#409: with its own key the read never touches the trial, even when a trial path is offered', async () => {
+  const seen = { keys: [] as string[], max: [] as number[] }, calls = { n: 0 }
+  const own: Provider = { ...trialProvider(seen) }
+  const out = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: own }, trial: admitted(calls) })
+  assert.ok('icp' in out && out.funded === 'own')
+  assert.deepEqual([calls.n, seen.keys], [0, [KEY]])
+})
+
+test('#409: trial refused, JS-only page, fetch failure and an unpriced model each stop before any paid call', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const seen = { keys: [] as string[], max: [] as number[] }
+  // Refused (e.g. the deployment has no trial): the reason comes back with no_api_key, and the model is never called.
+  const refused = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen) }, trial: async () => ({ ok: false, reason: 'not_configured' }) })
+  assert.deepEqual(refused, { error: 'no_api_key', trial: 'not_configured' })
+  for (const reason of ['attempts_cap', 'global_daily_cap', 'site_reads_used'] as const)
+    assert.deepEqual(await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen) }, trial: async () => ({ ok: false, reason }) }), { error: 'no_api_key', trial: reason })
+  // A JS-only page or a fetch failure never asks for (or uses up) a trial read.
+  const calls = { n: 0 }
+  const tiny = (async () => htmlResponse('<html><body><script>app()</script></body></html>')) as unknown as typeof fetch
+  assert.deepEqual(await icpFromWebsite(empty, 'A', 'https://spa.example', { master, lookup: pubLookup, fetchImpl: tiny, providers: { anthropic: trialProvider(seen) }, trial: admitted(calls) }), { error: 'js_only' })
+  const down = (async () => htmlResponse('nope', 503)) as unknown as typeof fetch
+  const failed = await icpFromWebsite(empty, 'A', 'https://down.example', { master, lookup: pubLookup, fetchImpl: down, providers: { anthropic: trialProvider(seen) }, trial: admitted(calls) })
+  assert.ok('error' in failed && failed.error !== 'no_api_key', JSON.stringify(failed))
+  assert.equal(calls.n, 0, 'no admission for an unreadable page')
+  // The per-read ceiling refuses a model it cannot price: admitted, but no call is made, and it is dazl's failure.
+  assert.deepEqual(await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen, 'some-new-model') }, trial: admitted(calls) }), { error: 'trial_read_failed' })
+  assert.deepEqual(seen.keys, [], 'no paid call in any of these')
 })
 
 
@@ -137,4 +185,72 @@ test('redirects cannot introduce credentials or a nonstandard port', async () =>
     assert.deepEqual(await fetchPublicHtml('https://acme.example', { lookup: pubLookup, fetchImpl: f }), { error: 'invalid' })
     assert.equal(calls, 1)
   }
+})
+
+test('#409: a trial read settles its wallet reservation to the cost the provider reported; a failed or unreported call ends it at the full reserve (settle null)', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const detailed = (usage?: { input_tokens: number; output_tokens: number }, fail = false): Provider => ({
+    research: async () => { throw new Error('unused') },
+    configuredModel: () => 'claude-sonnet-4-5',
+    completeDetailed: async () => { if (fail) throw new Error('provider 500'); return { text: await goodProvider.complete!('k', '', undefined, 700), model: 'claude-sonnet-4-5', ...(usage ? { usage } : {}) } },
+  })
+  const run = async (p: Provider) => { const settled: (number | null)[] = []; const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: p }, trial: admitted({ n: 0 }, settled) }); return { out, settled } }
+  const reported = await run(detailed({ input_tokens: 2000, output_tokens: 300 }))
+  assert.ok('icp' in reported.out)
+  assert.deepEqual(reported.settled, [(2000 * 3 + 300 * 15) / 1e6], 'settled to the reported usage at the listed price')
+  assert.deepEqual((await run(detailed())).settled, [null], 'no usage reported: ends at the full reserve (null), never left pending')
+  const failed = await run(detailed(undefined, true))
+  assert.deepEqual([failed.out, failed.settled], [{ error: 'trial_read_failed' }, [null]], 'failed call: ends at the full reserve (null), never left pending')
+  // The per-read ceiling refusing before any call (unpriced model) does not settle: nothing was spent, so the admission is
+  // released instead (reservation and the account's read given back; see the release test below).
+  const ceiling = await run({ ...detailed({ input_tokens: 1, output_tokens: 1 }), configuredModel: () => 'some-new-model' })
+  assert.deepEqual([ceiling.out, ceiling.settled], [{ error: 'trial_read_failed' }, []])
+})
+
+test('#409: incomplete usage (one token count missing) is not a cost: the read ends at its full reserve', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const partial: Provider = {
+    research: async () => { throw new Error('unused') },
+    configuredModel: () => 'claude-sonnet-4-5',
+    completeDetailed: async () => ({ text: await goodProvider.complete!('k', '', undefined, 700), model: 'claude-sonnet-4-5', usage: { input_tokens: 2000 } as never }),
+  }
+  const settled: (number | null)[] = []
+  const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: partial }, trial: admitted({ n: 0 }, settled) })
+  assert.ok('icp' in out)
+  assert.deepEqual(settled, [null])
+  // A provider with complete() only (no usage report at all): the same, the read ends at its reserve.
+  const plain: Provider = { research: async () => { throw new Error('unused') }, configuredModel: () => 'claude-sonnet-4-5', complete: async () => goodProvider.complete!('k', '', undefined, 700) }
+  const settled2: (number | null)[] = []
+  assert.ok('icp' in await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: plain }, trial: admitted({ n: 0 }, settled2) }))
+  assert.deepEqual(settled2, [null])
+})
+
+// Council R1-1 on d6c89bf2: the guard prices the prompt in UTF-8 bytes, so a 5000-character CJK page (about 15000 bytes)
+// cost more than the $0.05 ceiling and was refused after the reservation and the account's read were taken. Now the
+// trial prompt's page text is capped in bytes, and a refusal before any call releases the admission.
+test('#444 R1-1: a CJK page at the character cap reads on the trial under the per-read ceiling (one call); a refusal before any call releases the admission', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const cjk = (async () => htmlResponse('<html><head><title>客户关系</title></head><body>' + '我们为销售团队提供客户关系管理工具。'.repeat(400) + '</body></html>')) as unknown as typeof fetch
+  const seen = { keys: [] as string[], max: [] as number[] }, calls = { n: 0 }, settled: (number | null)[] = [], released = { n: 0 }
+  let promptBytes = 0
+  const base = trialProvider(seen)
+  const p: Provider = { ...base, complete: async (k, prompt, f, max) => { promptBytes = Buffer.byteLength(prompt); return base.complete!(k, prompt, f, max) } }
+  const out = await icpFromWebsite(empty, 'A', 'https://cjk.example', { master, lookup: pubLookup, fetchImpl: cjk, providers: { anthropic: p }, trial: admitted(calls, settled, released) })
+  assert.ok('icp' in out && out.funded === 'trial', JSON.stringify(out))
+  assert.deepEqual([calls.n, seen.keys.length, released.n], [1, 1, 0], 'admitted once, one call on the trial key, nothing released')
+  assert.ok(promptBytes > TRIAL_SITE_READ_TEXT_BYTES && promptBytes < TRIAL_SITE_READ_TEXT_BYTES + 1700, `page text capped in bytes: prompt ${promptBytes} bytes`)
+  assert.ok(callCostUsd('claude-sonnet-4-5', promptBytes, 700) <= TRIAL_SITE_READ_MAX_USD, 'the largest trial prompt fits the ceiling at the listed price')
+  // trimToBytes never splits a multi-byte character and leaves one-byte text alone.
+  assert.equal(trimToBytes('我们为销售', 7), '我们')
+  assert.equal(trimToBytes('abc', 9000), 'abc')
+  // An operator model the guard cannot price refuses before any call: released (reservation and read back), not settled.
+  const unpriced = { settled: [] as (number | null)[], released: { n: 0 } }
+  const seen2 = { keys: [] as string[], max: [] as number[] }
+  assert.deepEqual(await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen2, 'some-new-model') }, trial: admitted({ n: 0 }, unpriced.settled, unpriced.released) }), { error: 'trial_read_failed' })
+  assert.deepEqual([seen2.keys, unpriced.settled, unpriced.released.n], [[], [], 1])
+  // A provider with no completion method at all: no call possible, released too.
+  const none: Provider = { research: async () => { throw new Error('unused') } }
+  const nothing = { released: { n: 0 } }
+  assert.deepEqual(await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: none }, trial: admitted({ n: 0 }, [], nothing.released) }), { error: 'trial_read_failed' })
+  assert.equal(nothing.released.n, 1)
 })

@@ -31,7 +31,7 @@ export const DEGRADED: Record<string, Degraded> = {
   'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'play-research': 'closed', 'find-contact': 'closed',
   'settings:enrichment': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
-  checkout: 'closed', llmkey: 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
+  checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   // low risk: the app's own data, or must keep working
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'domain-review': 'local',
   'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local',
@@ -103,6 +103,17 @@ export async function rateLimit(key: string, limit: number, windowMs: number, d?
   b.resetAt = Math.max(b.resetAt, sharedReset)
   b.seen = Math.max(b.seen, shared)
   return decide(shared + b.offline, b.resetAt, limit, now)
+}
+
+// Gives one counted call of a key back: an admission that took its slot and then did nothing with it (lib/scan/
+// trial-site-read.ts: a read refused by its own spend guard before any call). Best effort, and never below zero or into
+// a closed window: if the store cannot answer the slot stays spent (an allowance is never handed back on a guess).
+// The per-process shadow is left alone: it only ever over-counts.
+export async function refundRateLimit(key: string, d?: Db, now = Date.now()): Promise<boolean> {
+  try {
+    const db = d ?? await getDb()
+    return (await db.run('UPDATE rate_limits SET count = count - 1 WHERE key = ? AND count > 0 AND reset_at > ?', [key.slice(0, 300), now])).changes > 0
+  } catch { return false }
 }
 
 export function clientIp(req: Request): string {

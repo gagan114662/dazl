@@ -24,6 +24,7 @@ function account(email: string) {
   const id = `trial${++n}`.padEnd(32, '0')
   db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'Acme', 'x', 'y')").run(id, email)
   db.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
+  db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Acme', 'personal', ?, 1)").run(id, id) // as sign-in creates it
   setUser({ id, business_name: 'Acme', email } as never)
   return { db, id }
 }
@@ -70,4 +71,43 @@ test('a cancelled trial scan that reserved nothing still uses its attempt; a sca
   const f = await start('10.0.1.6')
   assert.equal(f.status, 402, JSON.stringify(f))
   assert.deepEqual(await admitTrialScan(sqliteDb(db), { id, email: 'sam@gmail.com' }), { ok: false, reason: 'attempts_cap' })
+})
+
+// #444 (Instinct's hold on fa220d8): the scan trial's principal is the workspace founder's own account, read on the
+// server, never the session's email; another member and a team workspace have none. Synthetic accounts; no job runs.
+test('scan trial principal: founder only, its stored address decides; members and team workspaces are refused', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); setScanDb(db)
+  const acct = (id: string, email: string, personal = true) => {
+    db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'Acme', 'x', 'y')").run(id, email)
+    db.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
+    if (personal) db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Acme', 'personal', ?, 1)").run(id, id)
+    return id
+  }
+  const PRIOR = acct('p'.repeat(32), 'b@corp.example'), OWNER = acct('o'.repeat(32), 'a@corp.example'), FREE = acct('f'.repeat(32), 'solo@gmail.com')
+  const INVITED = acct('i'.repeat(32), 'invited@gmail.com'), TEAM = 't'.repeat(32), NOROW = acct('n'.repeat(32), 'norow@gmail.com', false)
+  db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Team', 'team', ?, 1)").run(TEAM, FREE)
+  assert.equal((await admitTrialScan(sqliteDb(db), { id: PRIOR, email: 'b@corp.example' })).ok, true, 'fixture: corp.example already used a trial')
+  const jobs = () => (db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n
+  const cases: [string, Parameters<typeof setUser>[0], number, string, string | undefined][] = [
+    ['same-domain founder', { id: OWNER, business_name: 'Acme', email: 'a@corp.example' }, 402, 'trial_unavailable', 'domain_used'],
+    // getSessionUser reads id and email from one users row, so this session cannot occur today; it pins that admission
+    // never reads the session's email
+    ['founder whose session claims another address', { id: OWNER, business_name: 'Acme', email: 'a-alias@gmail.com' }, 402, 'trial_unavailable', 'domain_used'],
+    ['invited member with a free address', { id: OWNER, actorId: INVITED, role: 'operator', business_name: 'Acme', email: 'invited@gmail.com' }, 400, 'no_api_key', undefined],
+    ['member in an eligible workspace', { id: FREE, actorId: INVITED, role: 'operator', business_name: 'Solo', email: 'invited@gmail.com' }, 400, 'no_api_key', undefined],
+    ['team workspace', { id: TEAM, actorId: FREE, role: 'owner', business_name: 'Team', email: 'solo@gmail.com' }, 400, 'no_api_key', undefined],
+    // #444 council R3-9: a keyless account whose personal workspace row is missing has no trial principal: refused, fails closed
+    ['keyless account without its personal workspace row', { id: NOROW, business_name: 'X', email: 'norow@gmail.com' }, 400, 'no_api_key', undefined],
+  ]
+  for (const [name, u, status, error, reason] of cases) {
+    setUser(u as never)
+    const r = await start('10.9.0.1')
+    assert.deepEqual([r.status, r.error, r.reason], [status, error, reason], name)
+  }
+  assert.equal(jobs(), 0, 'nothing queued on a refused trial')
+  // positive control: the eligible founder, acting itself
+  setUser({ id: FREE, business_name: 'Solo', email: 'solo@gmail.com' } as never)
+  const ok = await start('10.9.0.2')
+  assert.equal(ok.status, 202, JSON.stringify(ok))
+  assert.equal(jobs(), 1)
 })
