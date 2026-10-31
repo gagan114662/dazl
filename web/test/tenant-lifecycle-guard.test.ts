@@ -8,37 +8,20 @@
 import assert from 'node:assert/strict'
 import { bothEngines, type EngineCtx } from './helpers/engines.ts'
 import { deleteTenant, tenantScope, tombstone, type Scope } from '../lib/tenant/lifecycle.ts'
-import { guardTriggers, ACCOUNT_COLUMNS, UNGUARDED } from '../lib/db/tenant-guard.ts'
-import { seedTenantSqlite, snapshotSqlite } from './helpers/tenant-seed-sqlite.ts'
-import { seedTenant, snapshot } from './helpers/tenant-seed.ts'
+import { guardTriggers, tableColumns, ACCOUNT_COLUMNS, UNGUARDED } from '../lib/db/tenant-guard.ts'
+import { tenantFixture, type Fixture } from './helpers/tenant-fixture.ts'
 
 const A = 'guard-tenant-aaaa', B = 'guard-tenant-bbbb', NOW = 1_900_000_000
 const BY = 'operator (synthetic guard test)'
 // Tables whose own triggers also refuse every UPDATE (append-only audit, immutable evidence copies): an ownership move
 // there is refused with whichever guard fires first, which differs by engine.
 const IMMUTABLE: Record<string, RegExp> = { evidence_purge_audit: /tenant deleted|append-only/, lead_evidence_copies: /tenant deleted|immutable/ }
+// Tables with another BEFORE INSERT trigger: Postgres fires them in name order, so leads_only_while_running (the
+// parent scan is gone) answers before tomb_leads there; the guard itself on a leads INSERT is held by the "late inserts
+// under a deleted parent" and "parent chain onto a retained parent" cases.
+const OTHER_INSERT: Record<string, RegExp> = { leads: /tenant deleted|only be added to a running job/ }
 
-type Fixture = { ids: Record<string, Record<string, string>>; snap: (tenant: string) => Promise<Record<string, string>> }
-// Two personal workspaces with a row in every tenant-scoped table (the lifecycle tests' fixture, on either engine).
-async function fixture(c: EngineCtx): Promise<Fixture> {
-  const ids: Fixture['ids'] = {}
-  if (c.kind === 'sqlite') {
-    for (const [t, tag] of [[A, 'ga'], [B, 'gb']]) {
-      const s = seedTenantSqlite(c.raw!, t, tag); assert.deepEqual(s.failed, {}, `every tenant table seeded for ${t}`); ids[t] = s.ids
-      c.raw!.prepare("UPDATE memberships SET member_id = ?, role = 'owner' WHERE tenant_id = ?").run(t, t)
-      c.raw!.prepare("INSERT OR IGNORE INTO organizations (id, name, kind, created_by, created_at) VALUES (?, ?, 'personal', ?, 1)").run(t, `${t} workspace`, t)
-    }
-    return { ids, snap: async t => snapshotSqlite(c.raw!, t) }
-  }
-  for (const [t, tag] of [[A, 'ga'], [B, 'gb']]) {
-    await c.db.run("INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, 'x', 'y')", [t, `${tag}@example.test`])
-    const s = await seedTenant(c.db, t, tag); assert.deepEqual(s.failed, {}, `every tenant table seeded for ${t}`)
-    ids[t] = Object.fromEntries(Object.entries(s.ids).map(([k, v]) => [k, v[0]]))
-    await c.db.run("UPDATE memberships SET member_id = ?, role = 'owner' WHERE tenant_id = ?", [t, t])
-    await c.db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, ?, 'personal', ?, 1) ON CONFLICT (id) DO NOTHING", [t, `${t} workspace`, t])
-  }
-  return { ids, snap: t => snapshot(c.db, t) }
-}
+const fixture = (c: EngineCtx) => tenantFixture(c, [[A, 'ga'], [B, 'gb']])
 const guarded = async (c: EngineCtx) => (await tenantScope(c.db)).filter(s => !UNGUARDED.has(s.table))
 // The UPDATE that moves B's rows of one table under A: its tenant column, or its parent key onto A's parent row.
 function move(s: Scope, f: Fixture): [string, string[]] {
@@ -133,6 +116,54 @@ bothEngines('allowed: the other tenant\'s ordinary updates still succeed: other 
   assert.deepEqual(await c.db.run('UPDATE lead_sources SET lead_id = ? WHERE lead_id = ?', [f.ids[B].leads, f.ids[B].leads]), { changes: 1 }, 'the same parent')
   assert.equal(await rows(c, 'SELECT count(*) AS n FROM tenant_memory WHERE tenant_id = ?', [B]), 1)
   assert.equal((await tombstone(c.db, A))?.state, 'completed')
+})
+
+// Review (PR #455, R3-1): the UPDATE guard checked only the new value, so a tombstoned tenant's row could be moved OUT
+// to another tenant and its data survive the erase under the new owner. Every guarded table, during the held
+// deletion: moving A's row to B (its tenant column, or its parent key onto B's parent) is refused and A's data is
+// unchanged; the reviewer's case, A's scan re-owned by B, first.
+bothEngines('review negative (R3-1): during a held deletion, moving the deleted tenant\'s rows OUT to another tenant is refused, every guarded table', async c => {
+  const f = await fixture(c)
+  assert.equal((await deleteTenant(c.db, A, { policy: { suppressions: 'erase' }, requestedBy: BY, now: NOW, until: 'requested' })).state, 'requested')
+  const aBefore = await f.snap(A), bBefore = await f.snap(B)
+  await refused(c, 'UPDATE scan_jobs SET user_id = ? WHERE user_id = ?', [B, A], "the reviewer's case: A's scan re-owned by B")
+  for (const s of await guarded(c)) {
+    const [sql, params] = s.how === 'direct'
+      ? [`UPDATE "${s.table}" SET "${s.col}" = ? WHERE "${s.col}" = ?`, [B, A]]
+      : [`UPDATE "${s.table}" SET "${s.col}" = ? WHERE "${s.col}" = ?`, [f.ids[B][s.parent], f.ids[A][s.parent]]]
+    await refused(c, sql, params, `${s.table} moved out of the deleted tenant`, IMMUTABLE[s.table])
+  }
+  await refused(c, 'UPDATE memberships SET member_id = ? WHERE member_id = ?', [B, A], "A's own membership re-pointed")
+  assert.deepEqual(await f.snap(A), aBefore, 'nothing of A moved')
+  assert.deepEqual(await f.snap(B), bBefore, 'nothing arrived at B')
+  // the deletion completes; B's data is still only B's
+  assert.equal((await deleteTenant(c.db, A)).state, 'completed')
+  assert.deepEqual(await f.snap(B), bBefore)
+})
+
+// Review (PR #455, R3-5): the INSERT guard, registry-driven on both engines: after the deletion, a copy of B's row in
+// every guarded table, re-owned by A (its tenant column, or its parent key onto A's deleted parent), is refused.
+bothEngines('every guarded table: inserting a row for the deleted tenant, or under its deleted parent, is refused', async c => {
+  const f = await fixture(c)
+  const bBefore = await f.snap(B)
+  assert.equal((await deleteTenant(c.db, A, { policy: { suppressions: 'erase' }, requestedBy: BY, now: NOW })).state, 'completed')
+  const cols = await tableColumns(c.db)
+  let swept = 0
+  for (const s of await guarded(c)) {
+    const cs = cols.get(s.table)!
+    const [asA, ofB] = s.how === 'direct' ? [A, B] : [f.ids[A][s.parent], f.ids[B][s.parent]]
+    const sql = `INSERT INTO "${s.table}" (${cs.map(x => `"${x}"`).join(', ')}) SELECT ${cs.map(x => x === s.col ? 'CAST(? AS TEXT)' : `"${x}"`).join(', ')} FROM "${s.table}" WHERE "${s.col}" = ?`
+    await refused(c, sql, [asA, ofB], `a copy of B's ${s.table} row for the deleted tenant`, OTHER_INSERT[s.table])
+    swept++
+  }
+  assert.ok(swept >= 70, `${swept} tables swept`)
+  for (const [sql, params] of [
+    ["INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'again@example.test', 'x', 'y')", [A]],
+    ["INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'again', 'personal', ?, 1)", [A, A]],
+    ["INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'viewer', 1)", [B, A]],
+  ] as [string, string[]][]) await refused(c, sql, params, 'identity rows')
+  assert.deepEqual(await f.snap(B), bBefore, 'B byte-identical')
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM tenant_memory WHERE tenant_id = ?', [A]), 0)
 })
 
 // Review (PR #455, R1-2): memberships.member_id names an account without being the row's tenant column, so during a

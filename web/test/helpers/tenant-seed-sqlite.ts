@@ -109,5 +109,6 @@ export function snapshotSqlite(db: Database.Database, tenant: string, tables = t
   const out: Record<string, string> = {}
   for (const t of [...tables.keys()].sort()) { const w = where(t); out[t] = JSON.stringify((db.prepare(`SELECT * FROM "${t}" WHERE ${w.sql}`).all(...w.p) as object[]).map(r => JSON.stringify(r)).sort()) }
   out.users = JSON.stringify(db.prepare('SELECT * FROM users WHERE id = ?').all(tenant))
+  out.organizations = JSON.stringify(db.prepare('SELECT * FROM organizations WHERE id = ?').all(tenant))
   return out
 }

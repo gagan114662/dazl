@@ -101,7 +101,7 @@ test('no recreation: late inserts for the deleted tenant, under its deleted pare
   await deleteTenant(d, A, { policy: POLICY, requestedBy: 'test', now: NOW })
   // the in-flight scan finishes after the deletion: its leads cannot come back
   const lead = { name: 'Owner', company: 'Late Co', contact: null, signal: 's', source_url: 'https://late.example.test/x', score: 50, evidence_excerpt: 'late', event_date: null, date_status: null, retrieved_at: NOW, confidence: 50, dedup_key: 'late', fit: 3, intent: 3, action: 3, why: 'w', signal_kind: 'other', source_kind: 'company_site' }
-  await finishJob(d, { id: job, attempts: 1 }, { status: 'done', error: null, leads: [lead as never], candidates: 1, dropped: {}, now: NOW + 60 }).catch(() => {})
+  await finishJob(d, { id: job, attempts: 1 }, { status: 'done', error: null, leads: [lead as never], candidates: 1, dropped: {}, now: NOW + 60 }) // the job row is gone: nothing to finish, no error swallowed
   assert.equal((db.prepare("SELECT count(*) AS n FROM leads WHERE company = 'Late Co'").get() as { n: number }).n, 0, 'no lead from the in-flight scan')
   for (const [sql, args] of [
     ["INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('late-job', ?, 'x', 'y', 'z')", [A]],
