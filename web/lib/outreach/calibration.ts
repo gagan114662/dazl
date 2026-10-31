@@ -14,7 +14,7 @@ import type Database from 'better-sqlite3'
 import { getAccessToken, gmailSend, gmailStatus, confirmedSendResult } from '../gmail/oauth.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { approveBlockReason, createDraft, getSettings, OutreachError, type Deps } from './service.ts'
-import { getState, MIN_CONFIDENCE, resume } from './autopilot.ts'
+import { getState, liftLaunchPause, MIN_CONFIDENCE } from './autopilot.ts'
 import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, REQUIRED_STOPS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
 
 // Receipt evidence: the message with this Message-ID is in the mailbox's INBOX. Any error or absence is "not received".
@@ -115,8 +115,8 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
   }
 
   const r = recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
-  // autopilot pauses itself while an accepted policy is not a launch (launch_not_calibrated); a passing preflight is the
-  // one event that lifts exactly that pause. Any other pause reason stays the tenant's to resume.
-  if (r.ok && getState(db, tenantId).pause_reason === 'launch_not_calibrated') resume(db, tenantId)
+  // autopilot pauses itself while an accepted policy is not a launch (launch_not_calibrated); a passing preflight lifts
+  // exactly that pause (so does withdrawing the policy). Any other pause reason stays the tenant's to resume.
+  if (r.ok) liftLaunchPause(db, tenantId)
   return r
 }

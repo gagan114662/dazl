@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { autopilotAvailable, CONSENT_TEXT, CONSENT_VERSION, disable, enable, getState, pause, recentAutopilotAudit, resume, WARMUP_SENDS, MAX_DAILY } from '@/lib/outreach/autopilot'
+import { autopilotAvailable, CONSENT_TEXT, CONSENT_VERSION, disable, enable, getState, pause, recentAutopilotAudit, resume, withdrawLaunch, WARMUP_SENDS, MAX_DAILY } from '@/lib/outreach/autopilot'
 import { OutreachError } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied } from '@/lib/workspace-access'
@@ -40,6 +40,10 @@ export async function POST(req: NextRequest) {
     else if (body?.action === 'accept_launch_policy') {
       const r = acceptLaunchPolicy(db, user.tenantId, body.policy, Math.floor(Date.now() / 1000))
       if (!r.ok) return NextResponse.json({ error: 'The launch policy is incomplete', problems: r.problems }, { status: 400 })
+    }
+    // Withdrawing the policy ends the launch (and the launch pause) and puts the tenant back on the hand-approval warmup.
+    else if (body?.action === 'withdraw_launch_policy') {
+      if (!withdrawLaunch(db, user.tenantId)) return NextResponse.json({ error: 'No launch policy to withdraw', code: 'no_launch_policy' }, { status: 404 })
     }
     else if (body?.action === 'launch_calibrated') {
       // a stored policy row that cannot be read, or a store fault while drafting a sample, is a failed calibration (the

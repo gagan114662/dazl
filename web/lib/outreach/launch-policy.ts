@@ -1,7 +1,9 @@
 // Calibrated launch (#405): an alternative to approving the first WARMUP_SENDS emails by hand. The tenant writes one
 // explicit launch policy - who sends, to whom, what is excluded, how much, what the copy may claim, when to stop - and
 // the machine runs a preflight against it. Only a policy the tenant accepted at the current version, with every check
-// passing, replaces the hand-approval warmup; the warmup stays the default and nothing here changes existing consent.
+// passing, replaces the hand-approval warmup. The warmup is the default for a tenant with no policy; once a policy is
+// accepted it is the tenant's last word: until a preflight passes (or the tenant withdraws the policy) autopilot pauses
+// (launch_not_calibrated) rather than sending under the warmup's wider rules. Nothing here changes existing consent.
 // Every other autopilot guard (reply, opt-out and bounce stops, uncertain-send pause, daily and per-domain caps,
 // suppression) still applies on top, and the first days of a calibrated launch run under a stricter rollout cap.
 import { randomBytes } from 'node:crypto'
@@ -32,7 +34,10 @@ export type PolicyProblem =
   | 'version_not_current' | 'sender_missing' | 'audience_empty' | 'daily_cap_invalid' | 'spend_cap_invalid'
   | 'bounce_stop_invalid' | 'test_inbox_not_owned' | 'benchmark_not_https' | 'policy_too_large'
   | 'audience_too_many' | 'exclusions_too_many' | 'benchmarks_too_many'
-export const MAX_AUDIENCE_PLAYS = 50, MAX_EXCLUSIONS = 500, MAX_BENCHMARKS = 20 // list limits: refused by name, never truncated
+// List limits: refused by name, never truncated. The store's size cap (MAX_POLICY_JSON, 8000 chars) binds first for long
+// entries: about 350 short domains, fewer emails; both problems are reported when both apply. The count limits are the
+// ceiling for the shortest entries, so a tenant is never told "too many" for a list the store would have held.
+export const MAX_AUDIENCE_PLAYS = 50, MAX_EXCLUSIONS = 500, MAX_BENCHMARKS = 20
 export const MAX_POLICY_JSON = 8000     // the store's CHECK on the policy column; refused by name before any write
 export const MAX_LAUNCH_SPEND_USD = 500 // model and enrichment spend ceiling any one launch may set
 
@@ -84,7 +89,8 @@ const validSample = (s: SampleDraft) => !!s && typeof s === 'object' && typeof s
 export interface PreflightResult { ok: boolean; failures: PreflightFailure[]; heldLeads: string[] }
 
 // Any failure holds the launch; failing samples are named so they are held or skipped, never sent. A failed preflight
-// leaves the tenant on the hand-approval warmup.
+// leaves the policy accepted and not launched: autopilot stays paused (launch_not_calibrated) until a preflight passes
+// or the tenant withdraws the policy (withdrawLaunchPolicy), which puts them back on the hand-approval warmup.
 export function preflight(input: PreflightInput): PreflightResult {
   const { policy } = input
   const failures = new Set<PreflightFailure>(policyProblems(policy))
@@ -138,7 +144,8 @@ export function migrateLaunchPolicy(db: Database.Database): void {
   )`)
 }
 
-// every string entry, kept whole: the list limits are policyProblems' to refuse (MAX_*), not this parser's to cut
+// every string entry, kept whole: the list limits are policyProblems' to refuse (MAX_*), not this parser's to cut. An
+// oversize list is parsed in full first; that is bounded by the request body the route accepts (Next.js body limit).
 const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean) : []
 const num = (v: unknown) => typeof v === 'number' ? v : NaN // a number is a number: no coercion (true is not a cap of 1)
 // A policy from untrusted input, with every field typed; anything missing becomes a problem policyProblems reports.
@@ -166,6 +173,11 @@ export function acceptLaunchPolicy(db: Database.Database, tenantId: string, inpu
   return { ok: true }
 }
 
+// The tenant withdraws the policy: the row goes, and with it the launch; they are back on the hand-approval warmup. The
+// caller (autopilot.withdrawLaunch) lifts the launch_not_calibrated pause and audits it.
+export function withdrawLaunchPolicy(db: Database.Database, tenantId: string): boolean {
+  return db.prepare('DELETE FROM autopilot_launch_policy WHERE tenant_id = ?').run(tenantId).changes === 1
+}
 export interface StoredPolicy { acceptanceId: string; policy: LaunchPolicy; version: string; acceptedAt: number; launchedAt: number | null }
 export function readLaunchPolicy(db: Database.Database, tenantId: string): StoredPolicy | null {
   const r = db.prepare('SELECT acceptance_id, version, policy, accepted_at, launched_at FROM autopilot_launch_policy WHERE tenant_id = ?').get(tenantId) as { acceptance_id: string; version: string; policy: string; accepted_at: number; launched_at: number | null } | undefined
@@ -204,8 +216,7 @@ export function recordPreflight(db: Database.Database, tenantId: string, accepte
 }
 
 // What autopilot reads before each send. Calibrated only while the accepted policy is the current version, still valid,
-// launched by a passing preflight, and the connected mailbox is the policy's sender; otherwise the hand-approval warmup
-// applies exactly as before.
+// launched by a passing preflight, and the connected mailbox is the policy's sender.
 // accepted: a launch policy row exists for the tenant (accepted, stale, re-accepted, invalid) but is not a launch right now.
 // Autopilot must then STOP, not run the warmup: past the warmup's first sends the warmup is unrestricted, and the tenant's
 // last word was a policy. Only a tenant with no row at all is on the warmup.

@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { polishDraft, type LlmDeps } from './draft-llm.ts'
-import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
+import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, withdrawLaunchPolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
 import { providers as defaultProviders } from '../llm/provider.ts'
 import { captureError } from '../ops/errors.ts'
 
@@ -88,6 +88,19 @@ export function resume(db: Database.Database, tenantId: string): void {
   if (!getState(db, tenantId).consent_current) throw new OutreachError('consent_required')
   db.prepare('UPDATE autopilot_settings SET paused = 0, pause_reason = NULL WHERE tenant_id = ?').run(tenantId)
   audit(db, tenantId, 'resumed')
+}
+// The one pause autopilot takes on its own account for the launch (launch_not_calibrated: an accepted policy that is not a
+// launch) is lifted by the two events that end that state: a passing preflight, or the tenant withdrawing the policy. Any
+// other pause reason is the tenant's to resume.
+export function liftLaunchPause(db: Database.Database, tenantId: string): void {
+  if (getState(db, tenantId).pause_reason === 'launch_not_calibrated') { db.prepare("UPDATE autopilot_settings SET paused = 0, pause_reason = NULL WHERE tenant_id = ? AND pause_reason = 'launch_not_calibrated'").run(tenantId); audit(db, tenantId, 'resumed', 'launch_not_calibrated') }
+}
+// The tenant withdraws their launch policy: the row goes, the launch with it, the launch pause is lifted, and they are back
+// on the hand-approval warmup (the sample drafts stay theirs). Returns false when there was nothing to withdraw.
+export function withdrawLaunch(db: Database.Database, tenantId: string): boolean {
+  const gone = withdrawLaunchPolicy(db, tenantId)
+  if (gone) { audit(db, tenantId, 'launch_withdrawn'); liftLaunchPause(db, tenantId) }
+  return gone
 }
 
 // A bounce suppresses the address for good. Three bounces in a day pause autopilot.
@@ -225,7 +238,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   const ended = (code: string, leadId: string, id?: string): RunResult => {
     if (id) {
       out.held++
-      if (AUTHORITY_CODES.has(code)) attempt(() => db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, claimed_at = NULL, error = ? WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(code, id, tenantId))
+      // 'sending' too: the claim is autopilot's own and the send call has returned, so a claim the service could not
+      // release itself (its store failing on the release) is released here instead of waiting for the stale reaper
+      if (AUTHORITY_CODES.has(code)) attempt(() => db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, claimed_at = NULL, error = ? WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved','sending')").run(code, id, tenantId))
     }
     if (PAUSES.has(code)) attempt(() => pause(db, tenantId, runOutcome(code)))
     if (id) attempt(() => audit(db, tenantId, `held_${runOutcome(code)}`, code === 'launch_policy_changed' ? 'the launch policy changed' : code, leadId, id))
