@@ -31,13 +31,13 @@ const nowS = () => Math.floor(Date.now() / 1000)
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 export const isInviteToken = (t: unknown): t is string => typeof t === 'string' && /^[a-f0-9]{64}$/.test(t)
 
-type MemberErrorCode = 'forbidden' | 'not_found' | 'last_owner' | 'already_member' | 'too_many_invites' | 'invalid_invite' | 'wrong_account' | 'email_unverified'
+type MemberErrorCode = 'forbidden' | 'not_found' | 'last_owner' | 'only_workspace' | 'already_member' | 'too_many_invites' | 'invalid_invite' | 'wrong_account' | 'email_unverified'
 export class MemberError extends Error {
   readonly code: MemberErrorCode
   constructor(code: MemberErrorCode) { super(code); this.code = code }
 }
 export const MEMBER_ERROR_STATUS: Record<MemberError['code'], number> = {
-  forbidden: 403, not_found: 404, last_owner: 409, already_member: 409, too_many_invites: 429, invalid_invite: 410, wrong_account: 403, email_unverified: 403,
+  forbidden: 403, not_found: 404, last_owner: 409, only_workspace: 409, already_member: 409, too_many_invites: 429, invalid_invite: 410, wrong_account: 403, email_unverified: 403,
 }
 
 // The acting member: who, in which workspace, as what (from getSessionUser, never from the request).
@@ -64,6 +64,11 @@ function* roleOf(t: Tx, tenantId: string, memberId: string): TxBody<Role | null>
   const r = (yield* t.get<{ role: string }>('SELECT role FROM memberships WHERE tenant_id = ? AND member_id = ?', [tenantId, memberId]))?.role
   return isRole(r) ? r : null
 }
+
+// Lock account before workspace, matching acceptance/recovery. This serializes
+// removals across workspaces without reversing the account -> workspace lock order.
+function* lockAccount(t:Tx,id:string):TxBody<void>{yield* t.run('UPDATE users SET email=email WHERE id=?',[id])}
+function* lastWorkspace(t:Tx,id:string):TxBody<boolean>{return Number((yield* t.get<{n:number}>('SELECT count(*) AS n FROM memberships WHERE member_id=?',[id]))?.n??0)<=1}
 
 function* owners(t: Tx, tenantId: string): TxBody<number> {
   return Number((yield* t.get<{ n: number }>("SELECT count(*) AS n FROM memberships WHERE tenant_id = ? AND role = 'owner'", [tenantId]))?.n ?? 0)
@@ -101,22 +106,27 @@ export async function changeRole(db: Db, by: Acting, memberId: string, role: Rol
 export async function removeMember(db: Db, by: Acting, memberId: string): Promise<void> {
   if (memberId === by.actorId) throw new MemberError('forbidden')
   await db.tx(function* (t) {
+    yield* lockAccount(t,memberId)
     const me = yield* actingRole(t, by)
     const current = yield* roleOf(t, by.tenantId, memberId)
     if (!current) throw new MemberError('not_found')
     if (!mayManage(me, current, null)) throw new MemberError('forbidden')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
+    if(yield* lastWorkspace(t,memberId))throw new MemberError('only_workspace')
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, memberId])
   })
 }
 
 export async function leave(db: Db, by: Acting): Promise<void> {
   await db.tx(function* (t) {
+    yield* lockAccount(t,by.actorId)
     yield* lockWorkspace(t, by.tenantId)
     const current = yield* roleOf(t, by.tenantId, by.actorId)
     if (!current) throw new MemberError('not_found')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
+    if(yield* lastWorkspace(t,by.actorId))throw new MemberError('only_workspace')
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, by.actorId])
+    yield* t.run('UPDATE sessions SET active_tenant_id=NULL WHERE user_id=? AND active_tenant_id=?',[by.actorId,by.tenantId])
   })
 }
 
@@ -126,8 +136,12 @@ export async function createInvitation(db: Db, by: Acting, email: string, role: 
   if (!mayManage(by.role, null, role)) throw new MemberError('forbidden') // fast refusal; re-checked under the lock
   const token = randomBytes(32).toString('hex'), id = randomBytes(12).toString('hex')
   await db.tx(function* (t) {
-    if (!mayManage(yield* actingRole(t, by), null, role)) throw new MemberError('forbidden')
+    const me = yield* actingRole(t, by)
+    if (!mayManage(me, null, role)) throw new MemberError('forbidden')
     if (yield* t.get('SELECT 1 AS x FROM memberships m JOIN users u ON u.id = m.member_id WHERE m.tenant_id = ? AND lower(u.email) = ?', [by.tenantId, email])) throw new MemberError('already_member')
+    // replacing a pending invitation revokes it, so it takes what revoking it would (an owner invitation: 'owners')
+    for (const p of yield* t.all<{ role: string }>('SELECT role FROM invitations WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, email, now]))
+      if (!isRole(p.role) || !mayManage(me, null, p.role)) throw new MemberError('forbidden')
     yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL', [now, by.tenantId, email])
     const pending = Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM invitations WHERE tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [by.tenantId, now]))?.n ?? 0)
     if (pending >= MAX_PENDING_INVITES) throw new MemberError('too_many_invites')
@@ -165,17 +179,15 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
     const inv = yield* t.get<{ id: string; tenant_id: string; email: string; role: string; invited_by: string }>(
       'SELECT id, tenant_id, email, role, invited_by FROM invitations WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [sha256(token), now])
     if (!inv || !isRole(inv.role)) throw new MemberError('invalid_invite')
-    // Serialize with email changes/recovery before binding this invitation to an account.
-    yield* t.run('UPDATE users SET email = email WHERE id = ?', [actor.actorId])
-    const account = yield* t.get<{email:string;email_verified_at:number|null}>('SELECT email,email_verified_at FROM users WHERE id = ?', [actor.actorId])
-    if (!account || inv.email !== account.email.trim().toLowerCase()) throw new MemberError('wrong_account')
-    // the email binding means something only once the account has proved it owns that address (#357)
-    if (account.email_verified_at === null) throw new MemberError('email_unverified')
-    // the same lock every member and invitation change takes first, so a revoke and this accept are serialized; the
-    // guarded update below then sees the outcome of whichever ran first
+    yield* lockAccount(t,actor.actorId)
     yield* lockWorkspace(t, inv.tenant_id)
-    const used = yield* t.run('UPDATE invitations SET accepted_at = ?, accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', [now, actor.actorId, inv.id, now])
-    if (used.changes !== 1) throw new MemberError('invalid_invite')
+    const inviter=yield* roleOf(t,inv.tenant_id,inv.invited_by)
+    if(!inviter || !mayManage(inviter,null,inv.role))throw new MemberError('invalid_invite')
+    const used=yield* t.run('UPDATE invitations SET accepted_at=?,accepted_by=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?',[now,actor.actorId,inv.id,now])
+    if(used.changes!==1)throw new MemberError('invalid_invite')
+    const account=yield* t.get<{email:string;email_verified_at:number|null}>('SELECT email,email_verified_at FROM users WHERE id=?',[actor.actorId])
+    if(!account || inv.email!==account.email.trim().toLowerCase())throw new MemberError('wrong_account')
+    if(account.email_verified_at===null)throw new MemberError('email_unverified')
     yield* t.run('INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, member_id) DO NOTHING',
       [inv.tenant_id, actor.actorId, inv.role, now, inv.invited_by])
     const role = yield* roleOf(t, inv.tenant_id, actor.actorId)

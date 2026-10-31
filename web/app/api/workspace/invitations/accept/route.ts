@@ -20,7 +20,8 @@ export async function POST(req: NextRequest) {
     const db = await getDb()
     const m = await acceptInvitation(db, user, body?.token)
     const token = (await cookies()).get('dazl_session')?.value
-    if (token) await switchWorkspace(db, hashToken(token), user.actorId, m.tenantId)
-    return NextResponse.json({ ok: true, tenant_id: m.tenantId, role: m.role })
+    let switched = false
+    if (token) switched = await switchWorkspace(db, hashToken(token), user.actorId, m.tenantId).then(() => true, () => false)
+    return NextResponse.json({ ok: true, tenant_id: m.tenantId, role: m.role, switched })
   } catch (e) { return memberFail(e) }
 }
