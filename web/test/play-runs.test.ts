@@ -63,3 +63,50 @@ bothEngines('#351 the latest PLAY_RUNS_LIMIT runs, and a flag when older ones ex
   assert.deepEqual([over!.runs.length, over!.more], [PLAY_RUNS_LIMIT, true], 'one more: the newest LIMIT, and older ones exist')
   assert.deepEqual(over!.runs.map(r => r.job_id), ids.slice(1).reverse(), 'the oldest is the one left out')
 })
+
+// Saving "watch this weekly" from a finished search links that search as the play's first run: its leads are the
+// watch's first surfacing (new, and remembered), and later scheduled runs only count companies not seen before.
+bothEngines('#351 a play saved from a finished search starts with that search as its first run', async ({ db }) => {
+  const j = id24()
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, ?, 'x', '(from request)', '-', 'Dental practices hiring front desk', 'running', ?)", [j, A, NOW - DAY])
+  for (const c of ['Co One', 'Co Two']) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, ?, ?, 'hiring', 'https://n.example/a')", [id24(), j, c])
+  await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [NOW - DAY + 60, j])
+  const w = (await createWatch(db, A, 'Dental practices hiring front desk', '{"summary":"s"}', null, NOW, j)).watch!
+  assert.equal(w.last_run_at, NOW - DAY + 60, 'the card shows the linked run as the last run')
+  assert.deepEqual(await playRuns(db, A, 'watch', w.id), { more: false, runs: [
+    { job_id: j, at: NOW - DAY, status: 'done', leads: 2, new_leads: 2 },
+  ] })
+  // a later scheduled run re-finding Co One plus a new company: only the unseen one is new
+  const j2 = id24()
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at, watch_id) VALUES (?, ?, 'x', '(from request)', '-', 'q', 'running', ?, ?)", [j2, A, NOW + 7 * DAY, w.id])
+  for (const c of ['Co One', 'Co Three']) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, ?, ?, 'hiring', 'https://n.example/b')", [id24(), j2, c])
+  await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [j2])
+  // scheduled runs mark through the runner; emulate with the Db-layer twin used inside transactions
+  const { writeWatchLeads } = await import('../lib/watch.ts')
+  assert.equal(await writeWatchLeads(db, w.id, j2), 1)
+  assert.deepEqual((await playRuns(db, A, 'watch', w.id))!.runs.map(r => [r.job_id, r.new_leads]), [[j2, 1], [j, 2]])
+})
+
+bothEngines('#351 origin-run link refuses foreign, unfinished, changed or already-linked searches', async ({ db }) => {
+  const mk = async (user: string, status: string, query: string, watchId: string | null = null) => {
+    const j = id24()
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at, watch_id) VALUES (?, ?, 'x', '(from request)', '-', ?, ?, ?, ?)", [j, user, query, status, NOW - DAY, watchId])
+    return j
+  }
+  const foreign = await mk(B, 'done', 'q one')
+  assert.deepEqual(await createWatch(db, A, 'q one', '{"summary":"s"}', null, NOW, foreign), { error: 'That search could not be found.' })
+  const running = await mk(A, 'running', 'q two')
+  assert.deepEqual(await createWatch(db, A, 'q two', '{"summary":"s"}', null, NOW, running), { error: 'Only a finished search can start a play.' })
+  const changed = await mk(A, 'done', 'q three')
+  assert.deepEqual(await createWatch(db, A, 'q three edited', '{"summary":"s"}', null, NOW, changed), { error: 'The search changed since it ran - run it again, then save the play.' })
+  const owned = await mk(A, 'done', 'q four')
+  const first = (await createWatch(db, A, 'q four', '{"summary":"s"}', null, NOW, owned)).watch!
+  const second = await mk(A, 'done', 'q five')
+  await db.run('UPDATE scan_jobs SET watch_id = ? WHERE id = ?', [first.id, second])
+  assert.deepEqual(await createWatch(db, A, 'q five', '{"summary":"s"}', null, NOW, second), { error: 'That search already belongs to a play.' })
+  // a rejected link must not leave a watch behind (transactional)
+  assert.equal((await db.get<{ n: number }>("SELECT count(*) AS n FROM watches WHERE user_id = ? AND query = 'q three edited'", [A]))!.n, 0)
+  // no job_id: unchanged behavior - play saved, no runs yet
+  const plain = (await createWatch(db, A, 'q six', '{"summary":"s"}', null, NOW)).watch!
+  assert.deepEqual(await playRuns(db, A, 'watch', plain.id), { runs: [], more: false })
+})

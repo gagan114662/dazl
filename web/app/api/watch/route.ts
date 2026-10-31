@@ -35,7 +35,10 @@ export async function POST(req: NextRequest) {
   const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
   const nb = normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
   if (!nb.ok) return NextResponse.json({ error: 'invalid_budget', detail: nb.error }, { status: 400 })
-  const { watch, error } = await createWatch(db, user.tenantId, query, JSON.stringify(icp), nb.value)
+  // Optional: the finished own search this play continues from, linked as its first run.
+  const jobId = typeof body?.job_id === 'string' ? body.job_id : undefined
+  if (jobId !== undefined && !/^[a-f0-9]{24}$/.test(jobId)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  const { watch, error } = await createWatch(db, user.tenantId, query, JSON.stringify(icp), nb.value, undefined, jobId)
   if (error) return NextResponse.json({ error }, { status: 400 })
   return NextResponse.json({ watch })
 }

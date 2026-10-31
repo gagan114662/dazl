@@ -778,7 +778,7 @@ export default function LeadsClient() {
           </ul>
           <div className="flex items-center gap-3 mt-2">
             <button className="underline text-[#111] text-xs" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
-            <button className="underline text-[#111] text-xs" onClick={() => void watchReq({ query: query.trim(), icp: icp.icp })}>Watch this weekly</button>
+            <button className="underline text-[#111] text-xs" onClick={() => void watchReq(jobId ? { query: query.trim(), icp: icp.icp, job_id: jobId } : { query: query.trim(), icp: icp.icp })}>Watch this weekly</button>
           </div>
           {watchNote && <p className="text-xs text-gray-500 mt-1">{watchNote}</p>}
         </details>
