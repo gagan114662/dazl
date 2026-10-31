@@ -74,7 +74,12 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
-export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
+// sendAuthority: a caller's own final authorization for THIS send, re-read from the store each time it is asked (autopilot:
+// every stop it requires; under a calibrated launch the same accepted policy from the same mailbox, the policy's own
+// stops, its scope and its claim authority on the final words). Checked at the claim and again after the token refresh,
+// immediately before the bytes go to Gmail, after the service's own rechecks; a refusal code releases the claim like any
+// other final check. Other final checks may be added beside it; it is one of them, not a replacement.
+export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; sendAuthority?: () => string | null }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
 
@@ -466,6 +471,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     db.prepare("UPDATE outreach_messages SET status = 'approved', claimed_at = NULL, error = ? WHERE id = ? AND status = 'sending'").run(code, id)
     throw new OutreachError(code)
   }
+  // The caller's sendAuthority answers with a refusal code or null. One that cannot answer (its own store unreadable)
+  // is a refusal too: fail closed with a specific code, so a claimed message never stays 'sending' for the stale reaper.
+  const authority = (): string | null => { try { return d.sendAuthority?.() ?? null } catch { return 'stop_check_unavailable' } }
   const m = getMsg(db, tenantId, id)!
   if (isSuppressed(db, tenantId, m.to_email)) {
     db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL, claimed_at = NULL WHERE id = ?").run(id)
@@ -489,6 +497,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
   if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
+  const authorityAtClaim = authority()
+  if (authorityAtClaim) release(authorityAtClaim)
 
   let token: string
   try {
@@ -513,6 +523,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  const authorityAtHandoff = authority()
+  if (authorityAtHandoff) release(authorityAtHandoff)
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
