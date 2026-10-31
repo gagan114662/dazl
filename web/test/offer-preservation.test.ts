@@ -9,6 +9,7 @@ import Database from 'better-sqlite3'
 import { sqliteDb, pgDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { createSession } from '../lib/auth-db.ts'
 import { createQueryJob } from '../lib/scan/store-db.ts'
 import { readPlayOffer, setPlayOffer } from '../lib/scan/play-offer.ts'
 import { writeKey, readTenantKey } from '../lib/llm/key-store.ts'
@@ -29,7 +30,7 @@ async function snapshot(db: Db) {
 async function scenario(db: Db, rerun: () => Promise<string>, master: Buffer) {
   for (const [id, sells] of [[A, DENTAL], [B, 'Bookkeeping for agencies']] as const)
     await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt, sells) VALUES (?, ?, 'n', 'Acme', ?, ?, ?)", [id, `${id.slice(0, 4)}@example.test`, `scrypt$${id}$hash`, `salt-${id}`, sells])
-  await db.run('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)', ['s'.repeat(64), A, 2_000_000_000])
+  await createSession(A, db) // valid current-schema session; legacy backfill has separate migration controls
   await writeKey(db, A, 'anthropic', API_KEY, master)
   const dental = await createQueryJob(db, A, { query: 'Independent dental practices in New York City hiring a front-desk coordinator. We sell appointment booking and reminder software.', icp: null, seller: SELLER })
   const london = await createQueryJob(db, A, { query: 'Find London SaaS startups hiring their first sales rep. We sell CRM setup and outbound consulting.', icp: null, seller: SELLER, offer: 'CRM setup and outbound consulting' })

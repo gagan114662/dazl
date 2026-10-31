@@ -47,6 +47,7 @@ export async function runQualification(db: Database.Database, userId: string, le
   const prev = await qualifyPreview(db, userId, leadId, d.sellerText, d.fetchPage ?? fetchPageDetailed, d.vendor, model)
   if (!prev || !prev.input) return { status: 'blocked', reason: prev ? 'no_evidence' : 'not_found' }
   if (!prev.ready) return { status: 'blocked', reason: 'not_ready' }
+  if (!approval.request_context_sha256 || approval.request_context_sha256 !== prev.packing?.context_sha256) return { status: 'blocked', reason: 'request_context_mismatch' }
   // Any earlier claim for this lead (running, done or failed, whatever page content it was made on) blocks a new paid
   // request: changed page text produces a new hash, and that must not quietly buy a second call.
   const existing = storedQualifications(db, userId, leadId)[0]

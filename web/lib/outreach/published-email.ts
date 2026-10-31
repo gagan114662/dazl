@@ -1,3 +1,4 @@
+import { isRecruitingInbox } from '../recruiting-inbox.ts'
 import {contextRestriction,readContextLabel,type ContactContext} from './contact-context.ts'
 export const PUBLISHED_EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
 const address = (value: string | null) => value?.trim().toLowerCase() ?? ''
@@ -78,7 +79,7 @@ export function classifyPurpose(email: string, context?: ContactContext | null):
   const local = (email.split('@')[0] ?? '').toLowerCase()
   const first = local.split(/[.+_\-]/).filter(Boolean)[0] ?? ''
   const restriction=contextRestriction(context)
-  if(NON_SALES.has(first)||restriction)return {purpose:'non-sales',hint:restriction??first}
+  if(isRecruitingInbox(email)||NON_SALES.has(first)||restriction)return {purpose:'non-sales',hint:restriction??first}
   const positive=context?.excerpt && /\b(sales (inquir|enquir)|business (inquir|enquir)|partnership (inquir|enquir))/.test(context.excerpt.toLowerCase())
   return {purpose:positive?'sales':'unknown',hint:positive?'business inquiry context':'purpose not established'}
 }

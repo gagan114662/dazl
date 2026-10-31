@@ -84,7 +84,7 @@ function fx(newsArticles: unknown[]): Fixture {
   const sourceHttp = http({ 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { status: 200, body: GH('brightloop') }, 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { status: 200, body: GHD('brightloop') } })
   const newsHttp: SafeGet = async () => ({ status: 200, body: gdelt(newsArticles) })
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup hiring account executive'], hits: [{ url: JOB, title: 'Account Executive', snippet: JOBQ, date: daysAgo(9) }], tfPages: {},
-    own: { [JOB]: { title: 'Account Executive at Brightloop', text: `Posted ${daysAgo(9)}. ${JOBQ}.${filler}` }, [NEWS]: { title: 'Brightloop raises seed round', text: `Published ${daysAgo(12)}. ${FUNDQ}.${filler}` } },
+    own: { [JOB]: { title: 'Account Executive at Brightloop', text: `On ${daysAgo(9)}, ${JOBQ}.${filler}` }, [NEWS]: { title: 'Brightloop raises seed round', text: `On ${daysAgo(12)}, ${FUNDQ}.${filler}` } },
     extraction: [jobCand, fundCand], deps: { sourceHttp, newsHttp } }
 }
 const brightloop = (x: Awaited<ReturnType<typeof runFixture>>) => x.db.prepare("SELECT review_reason, confidence, source_url FROM leads WHERE company = 'Brightloop'").all() as { review_reason: string | null; confidence: number | null; source_url: string }[]
@@ -114,7 +114,7 @@ const seedCand: Cand = { company: 'Brightloop', signal: 'raised a seed round', s
 function seedOnly(board: { ghJobs?: unknown; ghDetail?: unknown } | null, over: Partial<Fixture> = {}): Fixture {
   const sourceHttp = http(board ? { 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { status: 200, body: board.ghJobs }, 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { status: 200, body: board.ghDetail } } : {})
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: NEWS, title: 'Brightloop raises seed round', snippet: SEED_Q, date: daysAgo(12) }], tfPages: {},
-    own: { [NEWS]: { title: 'Brightloop raises seed round', text: `Published ${daysAgo(12)}. ${SEED_Q}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Brightloop', text: `Posted ${daysAgo(9)}. ${JOBQ}.${filler}` } },
+    own: { [NEWS]: { title: 'Brightloop raises seed round', text: `On ${daysAgo(12)}, ${SEED_Q}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Brightloop', text: `On ${daysAgo(9)}, ${JOBQ}.${filler}` } },
     extraction: [seedCand, jobCand], deps: { sourceHttp }, ...over }
 }
 const lead1 = (x: Awaited<ReturnType<typeof runFixture>>) => x.db.prepare("SELECT review_reason, confidence, why FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null; why: string | null }

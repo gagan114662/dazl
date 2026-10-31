@@ -25,6 +25,7 @@ export async function GET(req: NextRequest) {
     if (e instanceof InboxQueryError) return NextResponse.json({ error: e.code }, { status: 400 })
     throw e
   }
+
   const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
   const gmail = gmailStatus(db, user.tenantId)
   return NextResponse.json({
@@ -33,6 +34,7 @@ export async function GET(req: NextRequest) {
     read_granted: acc?.read_granted === 1,
     account: gmail?.status === 'active' ? gmail.email : null,
     ...page,
+
     // The tenant's own booking link, shown back only to that tenant. Validated https-only
     // on save (cleanBookingUrl). Display is a handoff - it never proves availability or books.
     booking_url: getSettings(db, user.tenantId)?.booking_url ?? null,

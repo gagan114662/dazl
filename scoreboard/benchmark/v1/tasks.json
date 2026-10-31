@@ -1,0 +1,462 @@
+{
+  "version": "1",
+  "frozen_at": "2026-10-29",
+  "note": "Frozen benchmark task set (issue #372). Never edited in place: a change is a new version directory. The six scoreboard searches are reused unchanged (from_scoreboard).",
+  "tasks": [
+    {
+      "id": "ohio-payroll",
+      "region": "Ohio",
+      "country": "US",
+      "sector": "professional services",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "Outsourced payroll and HR service for small businesses"
+      },
+      "query": "Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Ohio, US"
+          },
+          {
+            "headcount": [
+              10,
+              100
+            ]
+          },
+          {
+            "event": "job_posting",
+            "roles": [
+              "payroll",
+              "HR",
+              "office manager"
+            ],
+            "within_days": 90
+          }
+        ]
+      },
+      "from_scoreboard": true
+    },
+    {
+      "id": "us-seed-sdr",
+      "region": "United States",
+      "country": "US",
+      "sector": "software",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "Sales recruiting agency for early-stage startups"
+      },
+      "query": "US B2B software startups that raised a seed or Series A round in the last 3 months and are hiring their first sales reps",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "US"
+          },
+          {
+            "segment": "B2B software"
+          },
+          {
+            "event": "funding",
+            "rounds": [
+              "seed",
+              "series_a"
+            ],
+            "within_days": 90
+          },
+          {
+            "event": "job_posting",
+            "roles": [
+              "sales representative",
+              "SDR",
+              "account executive"
+            ],
+            "within_days": 90
+          }
+        ]
+      },
+      "from_scoreboard": true
+    },
+    {
+      "id": "toronto-dental",
+      "region": "Toronto",
+      "country": "CA",
+      "sector": "healthcare",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "Dental clinic fit-out and renovation contractor"
+      },
+      "query": "Dental clinics in Toronto opening a new location or expanding",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Toronto, CA"
+          },
+          {
+            "segment": "dental clinic"
+          },
+          {
+            "any_of": [
+              {
+                "event": "new_location"
+              },
+              {
+                "event": "expansion"
+              }
+            ],
+            "within_days": 90
+          }
+        ]
+      },
+      "from_scoreboard": true
+    },
+    {
+      "id": "lisbon-sales",
+      "region": "Lisbon",
+      "country": "PT",
+      "sector": "any",
+      "kind": "standard",
+      "language": "pt",
+      "brief": {
+        "seller": "Sales training and coaching for B2B teams"
+      },
+      "query": "Companies in Lisbon hiring a head of sales or sales manager",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Lisbon, PT"
+          },
+          {
+            "event": "job_posting",
+            "roles": [
+              "head of sales",
+              "sales manager",
+              "diretor comercial"
+            ],
+            "within_days": 90
+          }
+        ]
+      },
+      "from_scoreboard": true
+    },
+    {
+      "id": "pune-schools",
+      "region": "Pune",
+      "country": "IN",
+      "sector": "education",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "School management software"
+      },
+      "query": "Schools and coaching institutes in Pune hiring teachers or expanding",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Pune, IN"
+          },
+          {
+            "segment": "school or coaching institute"
+          },
+          {
+            "any_of": [
+              {
+                "event": "job_posting",
+                "roles": [
+                  "teacher"
+                ]
+              },
+              {
+                "event": "expansion"
+              }
+            ],
+            "within_days": 90
+          }
+        ]
+      },
+      "from_scoreboard": true
+    },
+    {
+      "id": "gurugram-offices",
+      "region": "Gurugram",
+      "country": "IN",
+      "sector": "any",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "Grade A commercial office space for lease or sale in Gurugram"
+      },
+      "query": "Companies in Gurugram expanding their team or opening a new office",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Gurugram, IN"
+          },
+          {
+            "any_of": [
+              {
+                "event": "headcount_growth"
+              },
+              {
+                "event": "new_office"
+              }
+            ],
+            "within_days": 90
+          }
+        ]
+      },
+      "from_scoreboard": true
+    },
+    {
+      "id": "nyc-dental-local",
+      "region": "New York City",
+      "country": "US",
+      "sector": "healthcare (local services)",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "Dental practice marketing agency"
+      },
+      "query": "Independent dental practices in New York City hiring a receptionist or office manager, not part of a dental service organization",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "New York City, US"
+          },
+          {
+            "segment": "independent dental practice"
+          },
+          {
+            "event": "job_posting",
+            "roles": [
+              "receptionist",
+              "office manager"
+            ],
+            "within_days": 60
+          }
+        ],
+        "none_of": [
+          {
+            "segment": "dental service organization"
+          }
+        ]
+      }
+    },
+    {
+      "id": "london-saas-revops",
+      "region": "London",
+      "country": "GB",
+      "sector": "software",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "RevOps consultancy for B2B SaaS"
+      },
+      "query": "London B2B SaaS companies with 20 to 200 employees that hired a first RevOps or sales operations lead in the last 60 days",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "London, GB"
+          },
+          {
+            "segment": "B2B SaaS"
+          },
+          {
+            "headcount": [
+              20,
+              200
+            ]
+          },
+          {
+            "event": "hire",
+            "roles": [
+              "RevOps",
+              "sales operations"
+            ],
+            "within_days": 60
+          }
+        ]
+      }
+    },
+    {
+      "id": "dubai-b2b-launch",
+      "region": "Dubai",
+      "country": "AE",
+      "sector": "business services",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "Corporate event management"
+      },
+      "query": "B2B companies in Dubai that announced a product launch or new regional headquarters in the last 90 days",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Dubai, AE"
+          },
+          {
+            "any_of": [
+              {
+                "event": "product_launch"
+              },
+              {
+                "event": "regional_hq"
+              }
+            ],
+            "within_days": 90
+          }
+        ]
+      }
+    },
+    {
+      "id": "munich-maschinenbau-de",
+      "region": "Munich",
+      "country": "DE",
+      "sector": "manufacturing",
+      "kind": "standard",
+      "language": "de",
+      "brief": {
+        "seller": "Industrial maintenance software (German-language market)"
+      },
+      "query": "Maschinenbau-Unternehmen in München und Umgebung, die in den letzten 90 Tagen eine neue Produktionshalle oder einen neuen Standort angekündigt haben",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Munich region, DE"
+          },
+          {
+            "segment": "machine building"
+          },
+          {
+            "any_of": [
+              {
+                "event": "new_facility"
+              },
+              {
+                "event": "new_location"
+              }
+            ],
+            "within_days": 90
+          }
+        ]
+      }
+    },
+    {
+      "id": "vancouver-agency-tech",
+      "region": "Vancouver",
+      "country": "CA",
+      "sector": "marketing agencies",
+      "kind": "standard",
+      "language": "en",
+      "brief": {
+        "seller": "Agency resource-planning software"
+      },
+      "query": "Marketing agencies in Vancouver that switched project management tools or adopted HubSpot in the last 6 months",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Vancouver, CA"
+          },
+          {
+            "segment": "marketing agency"
+          },
+          {
+            "event": "technology_change",
+            "within_days": 180
+          }
+        ]
+      }
+    },
+    {
+      "id": "negative-antarctica-dental",
+      "region": "Antarctica",
+      "country": "AQ",
+      "sector": "healthcare",
+      "kind": "negative",
+      "language": "en",
+      "brief": {
+        "seller": "Dental equipment supplier"
+      },
+      "query": "Dental clinics in Antarctica opening a new location in the last 30 days",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Antarctica"
+          },
+          {
+            "segment": "dental clinic"
+          },
+          {
+            "event": "new_location",
+            "within_days": 30
+          }
+        ]
+      },
+      "expect": {
+        "expected_empty": true,
+        "why": "no such market: any validated result is a false alert"
+      }
+    },
+    {
+      "id": "ambiguous-mercury-name",
+      "region": "United States",
+      "country": "US",
+      "sector": "fintech",
+      "kind": "ambiguous",
+      "language": "en",
+      "brief": {
+        "seller": "Treasury management software"
+      },
+      "query": "Companies named Mercury in the US that raised money in the last 6 months (several unrelated companies share the name)",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "US"
+          },
+          {
+            "name": "Mercury"
+          },
+          {
+            "event": "funding",
+            "within_days": 180
+          }
+        ]
+      },
+      "expect": {
+        "identity_trap": true,
+        "why": "same-name entities: a result must prove which Mercury it is (domain, address) or be unknown"
+      }
+    },
+    {
+      "id": "cold-start-no-website",
+      "region": "Lagos",
+      "country": "NG",
+      "sector": "retail",
+      "kind": "cold_start",
+      "language": "en",
+      "brief": {
+        "seller": "Point-of-sale hardware"
+      },
+      "query": "Supermarkets in Lagos opening a new branch in the last 90 days, including ones without a website",
+      "constraints": {
+        "all_of": [
+          {
+            "geo": "Lagos, NG"
+          },
+          {
+            "segment": "supermarket"
+          },
+          {
+            "event": "new_location",
+            "within_days": 90
+          }
+        ]
+      },
+      "expect": {
+        "why": "companies without a website: identity and contact must still be proved from other sources, or reported unknown"
+      }
+    }
+  ]
+}

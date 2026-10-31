@@ -217,7 +217,7 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
   return id
 }
 
-// icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
+// icp is submitted JSON; presence does not prove human review or approval. null means infer it when the job runs.
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = input.id ?? randomBytes(12).toString('hex')   // a caller may fix the id first (a trial reservation is linked to it before the job exists)
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
