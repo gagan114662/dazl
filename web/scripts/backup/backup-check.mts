@@ -22,7 +22,10 @@
 // seconds (else exit 2; a flag without a value is exit 2 too). A sidecar or manifest timestamp more than 300 s in the
 // future is a problem and never the newest; ages never go below 0. Every manifest that shares the newest copied_at is
 // judged. Only the newest 5 valid manifests (at most 10 files) are read, so a run stays O(1) as copies accrue: by the
-// timestamp in dazl-backup-* names first, then other names; copied_at decides within that window.
+// timestamp in dazl-backup-* names first, then other names; copied_at decides within that window. Keep only
+// dazl-backup-* names at the destination: copies under other names are judged only when fewer than 5 dazl copies
+// exist. A hung rclone grandchild that starts its own session escapes the process-group kill; only the unit's
+// TimeoutStartSec ends that run, and such a kill sends no alert.
 // RCLONE_TIMEOUT_S (positive integer, default 120; else 120 with a log line) bounds each rclone call; a few slow calls
 // can still add up past the unit's TimeoutStartSec. An empty --offhost is a usage error; an unset OFFHOST_DEST is
 // "not configured" and said in the journal. Exit 0 = ok; 1 = problem (alerted, throttled or
