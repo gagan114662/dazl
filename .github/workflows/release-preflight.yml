@@ -1,10 +1,10 @@
 name: release-preflight
 on:
   pull_request:
-    paths: ['ops/checked_launch.py', 'ops/test_checked_launch.py', '.github/workflows/release-preflight.yml']
+    paths: ['ops/checked_launch.py', 'ops/test_checked_launch.py', 'ops/test_ci_launch.py', '.github/workflows/release-preflight.yml']
   push:
     branches: [main]
-    paths: ['ops/checked_launch.py', 'ops/test_checked_launch.py', '.github/workflows/release-preflight.yml']
+    paths: ['ops/checked_launch.py', 'ops/test_checked_launch.py', 'ops/test_ci_launch.py', '.github/workflows/release-preflight.yml']
 permissions:
   contents: read
 jobs:
@@ -12,4 +12,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest ops/test_checked_launch.py
+      - run: python3 -m unittest discover -s ops -p 'test_*launch*.py'

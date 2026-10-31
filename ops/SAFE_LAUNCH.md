@@ -92,3 +92,21 @@ The October30,2026 release used a shell sequence where an extra required SQL che
 For every future cutover, invoke `ops/checked_launch.py` as the single outer command. Pass each required check as a `--preflight` JSON argv array, followed by the one `--launch` argv array for `safe_launch.py --execute`. Include disk, live identity/config, pending-work, backup, release-gate and internal dry-run checks. Do not execute a launch in a following shell line. A missing command, nonzero exit or timeout stops the sequence before launch. Child output is suppressed to avoid credential logging; inspect nonsecret preflight reports separately when needed. Never put secrets in argv.
 
 `python3 -m unittest ops/test_checked_launch.py` independently runs the CLI with a deliberately failing command, nonexistent command and timeout, and proves neither a later preflight nor a sentinel launch is reached. A positive control proves successful preflights launch once. This wrapper does not create deployment permission and does not replace any required check.
+
+## Exact-main CI is part of the entrypoint
+
+`checked_launch.py` now requires `--repository gagan114662/dazl --commit <full SHA> --ci-token-file <protected file>`.
+It reads GitHub directly inside the same process before any preflight and again before launch. Current main must
+match the full launch commit. Exactly one GitHub Actions result each for browser, migrations, test-sqlite and
+test-postgres and fail-closed must be completed/success for that SHA. Pending, failed, missing, duplicate, wrong-SHA, malformed,
+truncated or unreadable evidence refuses the launch. There is no bypass flag or cached green report.
+The launch argv must call the sibling safe_launch.py with the same single --commit and --execute.
+The token file contains the credential, never an argv credential or logged value. Do not copy credentials to a host
+merely for a release check; use this entrypoint from the environment already authorized to access the credential,
+or arrange a restricted read-only credential through the secure vault workflow.
+
+The shell is not a gate. Even `checked_launch.py ...; true` cannot run its launch or preflight when CI is refused.
+The test suite exercises this with an attempted sentinel mutation and a caller deliberately ignoring failure.
+2026-10-30 incident: a shell assertion refused pending exact-main PG, but a separate following checked-launch still
+ran. Live health/static and all88 DB tables were preserved, and that PG suite later passed. Never record this as
+all CI green at cutover. The fix moves evidence validation inside the mutation entrypoint.
