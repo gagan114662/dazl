@@ -577,6 +577,18 @@ test('R1-3: two concurrent passes share the rollout cap: with room for one send,
   assert.deepEqual(rest, [{ status: 'draft', error: 'daily_cap' }], 'the lead that lost the race is the tenant\'s draft again')
 })
 
+test('R3-6: calibration needs autopilot on under the current consent: otherwise no draft, no message, no launch', async () => {
+  const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
+  acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+  disable(db, 'A')
+  const g = gmail()
+  assert.deepEqual(await runCalibration(db, 'A', 'Acme', g.d), { ok: false, failures: ['autopilot_off'], heldLeads: [] })
+  enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 20 })
+  db.prepare("UPDATE autopilot_settings SET consent_version = '2000-01-01' WHERE tenant_id = 'A'").run()
+  assert.deepEqual(await runCalibration(db, 'A', 'Acme', g.d), { ok: false, failures: ['consent_required'], heldLeads: [] })
+  assert.deepEqual([g.sent.length, statuses(db), readLaunchPolicy(db, 'A')!.launchedAt], [0, [], null])
+})
+
 test('R3-4: under a calibrated launch the per-company cap and the opt-out list still apply', async () => {
   const { db, job } = await launched()
   lead(db, job, 'second@four.example') // same company as d@four.example
@@ -588,6 +600,15 @@ test('R3-4: under a calibrated launch the per-company cap and the opt-out list s
   const audit = recentAutopilotAudit(db, 'A').map(a => [a.action, a.detail])
   assert.ok(audit.some(([a]) => a === 'held_domain_cap'), 'second address at the same company is held')
   assert.ok(audit.some(([a, d]) => a === 'skipped' && d === 'suppressed'), 'the opted-out recipient is skipped')
+})
+
+test('R3-7: a store fault while drafting a sample surfaces; it is not reported as too few samples', async () => {
+  const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
+  acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+  db.exec("CREATE TRIGGER no_draft BEFORE INSERT ON outreach_messages BEGIN SELECT RAISE(ABORT, 'synthetic store failure'); END")
+  const g = gmail()
+  await assert.rejects(runCalibration(db, 'A', 'Acme', g.d), /synthetic store failure/)
+  assert.deepEqual([g.sent.length, readLaunchPolicy(db, 'A')!.launchedAt], [0, null])
 })
 
 test('HOLD: unchanged state at the same boundary sends exactly once; two competing passes never send a lead twice', async () => {
