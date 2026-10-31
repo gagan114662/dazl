@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
-import { progressOf, outcomeInputs, sourceStatusOf } from '../lib/scan/progress.ts'
+import { progressOf, outcomeInputs, sourceStatusOf, partialNote } from '../lib/scan/progress.ts'
 import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { sourceRuns } from '../lib/scan/source-runs.ts'
 import { newsSearch, resetNewsQueue } from '../lib/search/news.ts'
@@ -283,4 +283,38 @@ test('newsStatus: evidence + no extraction is no_candidates; zero hits is empty;
   assert.equal(newsStatus([], { searched: true, hits: 2, attempted: 2, failed: 0 }), 'no_candidates')
   assert.equal(newsStatus([], { searched: true, hits: 0, attempted: 2, failed: 0 }), 'empty')
   assert.equal(newsStatus([], { searched: true, hits: 2, attempted: 2, failed: 1 }), 'partial:1_of_2', 'a failed request still wins')
+})
+
+test('REGRESSION (#352 review): a rate-limited news source is FAILED at the consumer layer - never ok, never a clean zero-match - and the copy names the throttling', () => {
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 1, failed: 0, limited: 1 }), 'limited')
+  const rows = [R('search:tinyfish', 'unavailable', null, null), R('fallback:news', 'limited', 0, 0)]
+  const prog = progressOf(rows, 'done')
+  assert.equal(prog[1].status, 'failed', 'limited must never fall through to ok')
+  assert.match(prog[1].note ?? '', /rate-limited by the provider/)
+  const oi = outcomeInputs(SEARCH0, rows, 'failed')
+  assert.deepEqual(oi.failed_sources, ['fallback:news (rate-limited by the provider, asked to slow down)'])
+  assert.deepEqual(oi.partial_sources, [])
+  const o = outcomeOf(rows)
+  assert.equal(o.kind, 'failed', 'a throttled source with zero evidence is not a zero-match')
+  assert.match(o.label, /fallback:news/)
+  assert.doesNotMatch(o.label + (o.detail ?? ''), /sources returned nothing|none of them failed/)
+})
+
+test('mixed limited + failures + hits keeps the partial reason visible; limited_partial without hits is failed, never ok', () => {
+  assert.equal(sourceStatusOf('limited_partial:2_of_3', false), 'failed')
+  assert.equal(sourceStatusOf('partial:limited_1_of_3', false), 'partial')
+  assert.equal(partialNote('partial:limited_1_of_3'), '1 of 3 requests rate-limited by the provider')
+  assert.equal(partialNote('limited_partial:2_of_3'), 'rate-limited by the provider; 2 of 3 requests also failed')
+  const o = outcomeOf([R('search:tinyfish', 'empty', null, null), R('search:news', 'partial:limited_1_of_3', 2, 0)])
+  assert.equal(o.kind, 'none_extracted', 'a partial source can never leave the result reading as a clean zero')
+  assert.match(o.detail ?? '', /rate-limited/)
+})
+
+test('mixed failed + limited + hits names BOTH reasons; the throttling is never hidden behind the failure count', () => {
+  const st = newsStatus([{ company: 'X' } as never], { searched: true, hits: 2, attempted: 5, failed: 2, limited: 1 })
+  assert.equal(st, 'partial:2_of_5_plus_1_limited')
+  assert.equal(sourceStatusOf(st, false), 'partial')
+  assert.equal(partialNote(st), '2 of 5 requests failed and 1 rate-limited by the provider')
+  const o = outcomeOf([R('search:tinyfish', 'empty', null, null), R('search:news', st, 2, 1)])
+  assert.match(o.detail ?? '', /2 of 5 requests failed and 1 rate-limited by the provider/)
 })
