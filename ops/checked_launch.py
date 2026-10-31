@@ -3,6 +3,18 @@
 
 Commands are JSON argv arrays, never shell prose. Do not put secrets in argv.
 Output is limited to stage/index/return code; child output is suppressed.
+
+CI evidence is read from the public GitHub API. The repository is public, so
+the default path is tokenless and read-only: no credential is requested,
+stored, or sent. A token remains supported for private mirrors through
+--ci-token-file / --ci-token-stdin, validated with the same ownership rules.
+
+Duplicate check-runs (push and pull_request tracks, reruns) resolve
+deterministically per check name: any run not completed fails closed
+(a newer in-flight evaluation can never be overridden by an older success);
+among completed runs the one with the newest (completed_at, id) wins, so a
+newer failure defeats an older success and a rerun success supersedes the
+failure it replaced.
 """
 import argparse
 import json
@@ -30,9 +42,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 REQUIRED_CI = frozenset({'browser', 'migrations', 'test-sqlite', 'test-postgres', 'fail-closed'})
 
-def require_ci(repository, commit, token_file):
-    if repository != 'gagan114662/dazl' or not re.fullmatch(r'[a-f0-9]{40}', commit or ''):
-        raise ValueError('ci_identity')
+
+def read_token(token_file):
     path = Path(token_file)
     # Anonymous descriptors are allowed only for an owned, private regular file.
     # They let an encrypted stdin transport avoid persisting a host credential.
@@ -48,11 +59,44 @@ def require_ci(repository, commit, token_file):
         raise ValueError('ci_credentials')
     if not token:
         raise ValueError('ci_credentials')
-    def get(path):
-        req = urllib.request.Request('https://api.github.com/repos/' + repository + '/' + path,
-            headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json'})
-        with urllib.request.build_opener(NoRedirect()).open(req, timeout=20) as response:
-            return json.load(response)
+    return token
+
+
+def github_get(repository, path, token=None):
+    headers = {'Accept': 'application/vnd.github+json'}
+    if token is not None:
+        headers['Authorization'] = 'Bearer ' + token
+    req = urllib.request.Request('https://api.github.com/repos/' + repository + '/' + path, headers=headers)
+    with urllib.request.build_opener(NoRedirect()).open(req, timeout=20) as response:
+        return json.load(response)
+
+
+def effective_run(matches, commit):
+    # Fail-closed resolution of duplicate and rerun check-runs for one name.
+    # Every run must belong to this commit and to GitHub Actions.
+    for c in matches:
+        if c.get('head_sha') != commit or c.get('app', {}).get('slug') != 'github-actions':
+            raise ValueError('ci_not_passed')
+    # A newer in-flight evaluation defeats any older completed evidence.
+    if any(c.get('status') != 'completed' for c in matches):
+        raise ValueError('ci_pending')
+    # Among completed runs the newest (completed_at, id) is authoritative:
+    # a newer failure overrides an older success, and a rerun success
+    # supersedes the failed attempt it replaced. Ties break on run id.
+    def key(c):
+        return (str(c.get('completed_at') or ''), int(c.get('id') or 0))
+    latest = max(matches, key=key)
+    if latest.get('conclusion') != 'success':
+        raise ValueError('ci_not_passed')
+
+
+def require_ci(repository, commit, token_file=None, *, get=None):
+    if repository != 'gagan114662/dazl' or not re.fullmatch(r'[a-f0-9]{40}', commit or ''):
+        raise ValueError('ci_identity')
+    token = read_token(token_file) if token_file else None
+    if get is None:
+        def get(path):
+            return github_get(repository, path, token)
     if get('git/ref/heads/main')['object']['sha'] != commit:
         raise ValueError('ci_main_changed')
     data = get('commits/' + commit + '/check-runs?per_page=100')
@@ -61,11 +105,9 @@ def require_ci(repository, commit, token_file):
         raise ValueError('ci_incomplete')
     for name in REQUIRED_CI:
         matches = [c for c in checks if c.get('name') == name]
-        if len(matches) != 1:
-            raise ValueError('ci_missing_or_duplicate')
-        c = matches[0]
-        if c.get('head_sha') != commit or c.get('status') != 'completed' or c.get('conclusion') != 'success' or c.get('app', {}).get('slug') != 'github-actions':
-            raise ValueError('ci_not_passed')
+        if not matches:
+            raise ValueError('ci_missing')
+        effective_run(matches, commit)
     # Recheck moving main after the checks read, before any launch mutation.
     if get('git/ref/heads/main')['object']['sha'] != commit:
         raise ValueError('ci_main_changed')
@@ -128,7 +170,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--repository', required=True)
     parser.add_argument('--commit', required=True)
-    credentials = parser.add_mutually_exclusive_group(required=True)
+    credentials = parser.add_mutually_exclusive_group(required=False)
     credentials.add_argument('--ci-token-file')
     credentials.add_argument('--ci-token-stdin', action='store_true')
     parser.add_argument('--preflight', type=command, action='append', required=True)
