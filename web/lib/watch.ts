@@ -42,6 +42,19 @@ export interface Watch { run_budget?: string | null; id: string; user_id: string
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
+class LinkRace extends Error {}
+
+// Key-sorted stable JSON so two normalized buyer profiles compare by content, not key order.
+function canonical(json: string | null): string {
+  if (!json) return ''
+  try {
+    const sort = (v: unknown): unknown => Array.isArray(v) ? v.map(sort)
+      : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : 1).map(([k, x]) => [k, sort(x)]))
+      : v
+    return JSON.stringify(sort(JSON.parse(json)))
+  } catch { return '' }
+}
+
 export async function createWatch(db: Db, userId: string, query: string, icp: string, runBudget: string | null = null, now = nowS(), originJobId?: string): Promise<{ watch?: Watch; error?: string }> {
   const active = Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM watches WHERE user_id = ? AND active = 1', [userId]))!.n)
   if (active >= MAX_WATCHES) return { error: `You already have ${MAX_WATCHES} weekly watches. Pause or delete one first.` }
@@ -49,29 +62,37 @@ export async function createWatch(db: Db, userId: string, query: string, icp: st
   if (dupe) return { error: 'You are already watching that search.' }
   const id = randomBytes(12).toString('hex')
   // Saving "watch this weekly" from a finished search links that search as the play's first run: the history a
-  // user just looked at is where the play begins, without an extra scan. The leads it found are this watch's
-  // first surfacing, so they count as new and are remembered like a scheduled run's (writeWatchLeads).
+  // user just looked at is where the play begins, without an extra scan. The play must be the same search it
+  // continues: the query AND the canonical buyer profile it ran with. Its leads are remembered in watch_seen so
+  // scheduled runs dedupe against them, but they are not relabelled: watch_new stays a scheduled-run flag, the
+  // origin run predates the play, and its row keeps the meaning it had when the user first saw it (scores,
+  // evidence and source_kind are never touched).
   if (originJobId) {
-    const linked = await db.tx(function* (t: Tx): TxBody<Watch | { error: string }> {
-      const job = yield* t.get<{ id: string; status: string; query: string | null; watch_id: string | null; finished_at: number | null; created_at: number }>('SELECT id, status, query, watch_id, finished_at, created_at FROM scan_jobs WHERE id = ? AND user_id = ?', [originJobId, userId])
-      if (!job) return { error: 'That search could not be found.' }
-      if (job.watch_id) return { error: 'That search already belongs to a play.' }
-      if (job.status !== 'done') return { error: 'Only a finished search can start a play.' }
-      if ((job.query ?? '').trim() !== query) return { error: 'The search changed since it ran - run it again, then save the play.' }
-      yield* t.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, last_run_at, run_budget) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, userId, query.slice(0, 600), icp, now + WEEK_S, job.finished_at ?? job.created_at, runBudget])
-      const r = yield* t.run('UPDATE scan_jobs SET watch_id = ? WHERE id = ? AND user_id = ? AND watch_id IS NULL', [id, originJobId, userId])
-      if (r.changes !== 1) throw new Error('watch_link_race')
-      const leads = yield* t.all<WatchLead>(WATCH_LEADS_SQL, [originJobId])
-      for (const l of freshLeads(leads, new Set())) {
-        if (l.fresh) yield* t.run(MARK_NEW_SQL, [l.id])
-        yield* t.run(REMEMBER_SQL, [id, l.key])
-      }
-      return (yield* t.get<Watch>('SELECT * FROM watches WHERE id = ? AND user_id = ?', [id, userId]))!
-    })
+    let linked: Watch | { error: string }
+    try {
+      linked = await db.tx(function* (t: Tx): TxBody<Watch | { error: string }> {
+        const job = yield* t.get<{ id: string; status: string; query: string | null; icp: string | null; watch_id: string | null; finished_at: number | null; created_at: number }>('SELECT id, status, query, icp, watch_id, finished_at, created_at FROM scan_jobs WHERE id = ? AND user_id = ?', [originJobId, userId])
+        if (!job) return { error: 'That search could not be found.' }
+        if (job.watch_id) return { error: 'That search already belongs to a play.' }
+        if (job.status !== 'done') return { error: 'Only a finished search can start a play.' }
+        if ((job.query ?? '').trim() !== query) return { error: 'The search changed since it ran - run it again, then save the play.' }
+        if (canonical(job.icp) !== canonical(icp)) return { error: 'The buyer profile changed since it ran - run it again, then save the play.' }
+        yield* t.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, last_run_at, run_budget, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, userId, query.slice(0, 600), icp, now + WEEK_S, job.finished_at ?? job.created_at, runBudget, now])
+        const r = yield* t.run('UPDATE scan_jobs SET watch_id = ? WHERE id = ? AND user_id = ? AND watch_id IS NULL', [id, originJobId, userId])
+        if (r.changes !== 1) throw new LinkRace()
+        const leads = yield* t.all<WatchLead>(WATCH_LEADS_SQL, [originJobId])
+        for (const l of freshLeads(leads, new Set())) yield* t.run(REMEMBER_SQL, [id, l.key])
+        return (yield* t.get<Watch>('SELECT * FROM watches WHERE id = ? AND user_id = ?', [id, userId]))!
+      })
+    } catch (e) {
+      // A concurrent save linked the same search between read and guarded update: a controlled conflict, not a crash.
+      if (e instanceof LinkRace) return { error: 'That search already belongs to a play.' }
+      throw e
+    }
     if ('error' in linked) return { error: linked.error }
     return { watch: linked }
   }
-  await db.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, run_budget) VALUES (?, ?, ?, ?, ?, ?)', [id, userId, query.slice(0, 600), icp, now + WEEK_S, runBudget])
+  await db.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, run_budget, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, userId, query.slice(0, 600), icp, now + WEEK_S, runBudget, now])
   return { watch: await db.get<Watch>('SELECT * FROM watches WHERE id = ? AND user_id = ?', [id, userId]) }
 }
 

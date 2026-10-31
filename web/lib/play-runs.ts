@@ -13,14 +13,17 @@ export interface PlayRuns { runs: PlayRun[]; more: boolean }
 export async function playRuns(db: Db, userId: string, kind: PlayKind, id: string): Promise<PlayRuns | null> {
   const page = (rows: PlayRun[]): PlayRuns => ({ runs: rows.slice(0, PLAY_RUNS_LIMIT), more: rows.length > PLAY_RUNS_LIMIT })
   if (kind === 'watch') {
-    if (!await db.get('SELECT 1 AS x FROM watches WHERE id = ? AND user_id = ?', [id, userId])) return null
+    const watch = await db.get<{ created_at: number }>('SELECT created_at FROM watches WHERE id = ? AND user_id = ?', [id, userId])
+    if (!watch) return null
     const rows = await db.all<{ job_id: string; at: number; status: string; leads: number; new_leads: number }>(
       `SELECT j.id AS job_id, j.created_at AS at, j.status,
               (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id) AS leads,
               (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id AND l.watch_new = 1) AS new_leads
        FROM scan_jobs j WHERE j.watch_id = ? AND j.user_id = ? ORDER BY j.created_at DESC, j.insert_seq DESC LIMIT ?`, [id, userId, PLAY_RUNS_LIMIT + 1])
-    // watch_new is marked when a run finishes (lib/watch.ts), so an unfinished run has no "new" count yet
-    return page(rows.map(r => ({ ...r, leads: Number(r.leads), new_leads: r.status === 'done' ? Number(r.new_leads) : null })))
+    // watch_new is marked when a scheduled run finishes (lib/watch.ts), so an unfinished run has no "new" count
+    // yet. A run that predates the play (the search it was saved from) never gets a "new" count: its leads were
+    // the play's starting point, not finds, and their rows keep the meaning they had as a standalone search.
+    return page(rows.map(r => ({ ...r, leads: Number(r.leads), new_leads: r.status === 'done' && r.at >= watch.created_at ? Number(r.new_leads) : null })))
   }
   if (!await db.get('SELECT 1 AS x FROM monitors WHERE id = ? AND user_id = ?', [id, userId])) return null
   const rows = await db.all<{ job_id: string; at: number; status: string; leads: number; new_leads: number | null }>(

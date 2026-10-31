@@ -68,14 +68,16 @@ bothEngines('#351 the latest PLAY_RUNS_LIMIT runs, and a flag when older ones ex
 // watch's first surfacing (new, and remembered), and later scheduled runs only count companies not seen before.
 bothEngines('#351 a play saved from a finished search starts with that search as its first run', async ({ db }) => {
   const j = id24()
-  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, ?, 'x', '(from request)', '-', 'Dental practices hiring front desk', 'running', ?)", [j, A, NOW - DAY])
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, created_at) VALUES (?, ?, 'x', '(from request)', '-', 'Dental practices hiring front desk', ?, 'running', ?)", [j, A, '{"summary":"s"}', NOW - DAY])
   for (const c of ['Co One', 'Co Two']) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, ?, ?, 'hiring', 'https://n.example/a')", [id24(), j, c])
   await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [NOW - DAY + 60, j])
   const w = (await createWatch(db, A, 'Dental practices hiring front desk', '{"summary":"s"}', null, NOW, j)).watch!
   assert.equal(w.last_run_at, NOW - DAY + 60, 'the card shows the linked run as the last run')
+  // the origin run predates the play: its leads are the starting point, not "new" finds - and their standalone rows are untouched
   assert.deepEqual(await playRuns(db, A, 'watch', w.id), { more: false, runs: [
-    { job_id: j, at: NOW - DAY, status: 'done', leads: 2, new_leads: 2 },
+    { job_id: j, at: NOW - DAY, status: 'done', leads: 2, new_leads: null },
   ] })
+  assert.equal((await db.get<{ n: number }>('SELECT count(*) AS n FROM leads WHERE scan_job_id = ? AND watch_new = 1', [j]))!.n, 0, 'origin leads are not relabelled')
   // a later scheduled run re-finding Co One plus a new company: only the unseen one is new
   const j2 = id24()
   await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at, watch_id) VALUES (?, ?, 'x', '(from request)', '-', 'q', 'running', ?, ?)", [j2, A, NOW + 7 * DAY, w.id])
@@ -84,15 +86,17 @@ bothEngines('#351 a play saved from a finished search starts with that search as
   // scheduled runs mark through the runner; emulate with the Db-layer twin used inside transactions
   const { writeWatchLeads } = await import('../lib/watch.ts')
   assert.equal(await writeWatchLeads(db, w.id, j2), 1)
-  assert.deepEqual((await playRuns(db, A, 'watch', w.id))!.runs.map(r => [r.job_id, r.new_leads]), [[j2, 1], [j, 2]])
+  assert.deepEqual((await playRuns(db, A, 'watch', w.id))!.runs.map(r => [r.job_id, r.new_leads]), [[j2, 1], [j, null]])
 })
 
 bothEngines('#351 origin-run link refuses foreign, unfinished, changed or already-linked searches', async ({ db }) => {
-  const mk = async (user: string, status: string, query: string, watchId: string | null = null) => {
+  const mk = async (user: string, status: string, query: string, watchId: string | null = null, icp: string | null = '{"summary":"s"}') => {
     const j = id24()
-    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at, watch_id) VALUES (?, ?, 'x', '(from request)', '-', ?, ?, ?, ?)", [j, user, query, status, NOW - DAY, watchId])
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, created_at, watch_id) VALUES (?, ?, 'x', '(from request)', '-', ?, ?, ?, ?, ?)", [j, user, query, icp, status, NOW - DAY, watchId])
     return j
   }
+  const wrongIcp = await mk(A, 'done', 'q seven', null, '{"summary":"different"}')
+  assert.deepEqual(await createWatch(db, A, 'q seven', '{"summary":"s"}', null, NOW, wrongIcp), { error: 'The buyer profile changed since it ran - run it again, then save the play.' })
   const foreign = await mk(B, 'done', 'q one')
   assert.deepEqual(await createWatch(db, A, 'q one', '{"summary":"s"}', null, NOW, foreign), { error: 'That search could not be found.' })
   const running = await mk(A, 'running', 'q two')
