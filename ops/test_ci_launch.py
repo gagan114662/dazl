@@ -130,8 +130,9 @@ class RedirectAndTimeoutTests(unittest.TestCase):
   try:
    with tempfile.TemporaryDirectory()as tmp:
     token=Path(tmp)/'token';token.write_text('sentinel-bearer');token.chmod(0o600)
-    with patch.object(m.urllib.request,'Request',side_effect=reroute),self.assertRaises(m.urllib.error.HTTPError):m.require_ci('gagan114662/dazl',SHA,str(token))
-   self.assertEqual(received,[])
+    try:
+     with patch.object(m.urllib.request,'Request',side_effect=reroute),self.assertRaises(m.urllib.error.HTTPError):m.require_ci('gagan114662/dazl',SHA,str(token))
+    finally:self.assertEqual(received,[])
   finally:
    origin.shutdown();target.shutdown();origin.server_close();target.server_close()
    for t in threads:t.join()
