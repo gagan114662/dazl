@@ -133,6 +133,18 @@ export const TIMING_REQUESTED = /\b(?:recent(?:ly)?|currently|newly|latest|just\
 // and proofBackedTiming, so card copy can name the actual gap next to the badge instead of a blanket "unconfirmed"
 // (#498 whole-card coherence). null = proof-backed. surfaceStoredIntent is defined on this, so the two can never disagree.
 export type TimingUnconfirmedReason = 'no_saved_grade' | 'unresolved_recency_bound' | 'no_proof' | 'proof_kind_mismatch' | 'bad_date' | 'future_date' | 'out_of_window'
+// The event-DAY proof alone, with no recency-window judgement: true when the cited source is shown to date the event
+// (recognized, trigger-compatible proof on a valid past calendar day). Copy about the event day itself keys on this;
+// timing qualification still goes through timingUnconfirmedReason, whose unresolved/failed window must NOT negate a
+// proven association. The proof predicates MUST stay the same four as timingUnconfirmedReason's proof block below.
+export function eventDayVerified(l: { event_date?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, opts: { now?: Date } = {}): boolean {
+  if (!isEventDateProof(l.event_date_proof)) return false
+  if (l.event_date_proof === 'ats_structured' && !isHiringTrigger(l.signal, l.signal_kind)) return false
+  if (!l.event_date || !isCalendarDay(l.event_date)) return false
+  const age = ((opts.now ?? new Date()).getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000
+  return age >= 0
+}
+
 export function timingUnconfirmedReason(l: { intent: number | null; event_date?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, opts: { windowDays?: number | null; now?: Date; timingRequired?: boolean } = {}): TimingUnconfirmedReason | null {
   const windowDays = opts.windowDays ?? null
   if (l.intent == null) return 'no_saved_grade'

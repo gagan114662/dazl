@@ -4,7 +4,7 @@
 // is never buying need: every state keeps current need unconfirmed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { surfaceStoredIntent, timingUnconfirmedReason } from '../lib/scan/scoreboard.ts'
+import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason } from '../lib/scan/scoreboard.ts'
 import { savedGradeWhy, timingHeadline } from '../lib/scan/leads-view.ts'
 import { eventDateCopy } from '../lib/scan/date-copy.ts'
 import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
@@ -97,4 +97,34 @@ test('opportunity card: unconfirmed keeps the claimed-day assumption and the con
   assert.equal(c.next, 'Review the source to confirm the timing before any outreach.')
   const legacy = opportunityCard({ ...base }, '', NOW)
   assert.equal(legacy.next, 'Review the source to confirm the timing before any outreach.')
+})
+
+test('unresolved recency window with valid event-day proof: association stays proven, qualification stays held, reason alone never implies proof', () => {
+  const l = { ...graded, event_date_proof: 'page_bound' }
+  const o = { now: NOW, timingRequired: true } // no windowDays: requested recency unresolved
+  assert.equal(timingUnconfirmedReason(l as never, o), 'unresolved_recency_bound')
+  assert.equal(eventDayVerified(l, { now: NOW }), true) // the page DID date the event
+  const t = surfaceStoredIntent(l as never, o)
+  assert.equal(t.timing, 'unconfirmed'); assert.equal(t.intent, 0) // intent held: no positive qualification for an unresolved window
+  const copy = eventDateCopy(l.event_date, 'verified', t.timing, eventDayVerified(l))
+  assert.match(copy, /event day verified/); assert.match(copy, /recency window unresolved/)
+  assert.doesNotMatch(copy, /claimed|association unconfirmed/)
+  // Same reason, NO proof: reason alone must not verify anything (unresolved_recency precedes no_proof in rule order).
+  const noProof = { ...graded, event_date_proof: null }
+  assert.equal(timingUnconfirmedReason(noProof as never, o), 'unresolved_recency_bound')
+  assert.equal(eventDayVerified(noProof, { now: NOW }), false)
+  assert.match(eventDateCopy(noProof.event_date, null, 'unconfirmed', eventDayVerified(noProof)), /claimed event day; event association and current need unconfirmed/)
+})
+
+test('opportunity card: proven event day with unresolved window is a fact about the source, never "not shown to date the event"', () => {
+  const base: CardLead = { company: 'Acme', signal: 'Hiring AEs', source_url: 'https://acme.example/jobs', evidence_excerpt: 'Hiring 3 AEs', event_date: day, date_status: 'verified', review_reason: null, fit: 4, intent: 4, why: null, icp_match: null, company_domain: null, contact: null, confidence: 0.9, timing: 'unconfirmed', day_verified: true, currentness_held: true }
+  const card = opportunityCard(base as never)
+  const blob = JSON.stringify(card)
+  assert.match(blob, /dates the event to 2026-10-10; whether it sits inside the requested recency window is unresolved/)
+  assert.doesNotMatch(blob, /not shown to date the event/)
+  assert.match(blob, /Review the source before any outreach\./)
+  assert.doesNotMatch(blob, /confirm the timing/)
+  const unproven = opportunityCard({ ...base, day_verified: false } as never)
+  assert.match(JSON.stringify(unproven), /not shown to date the event itself/)
+  assert.match(JSON.stringify(unproven), /confirm the timing/)
 })
