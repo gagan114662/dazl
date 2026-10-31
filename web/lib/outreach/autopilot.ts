@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { tableExists } from './send-budget.ts'
+import { captureError } from '../ops/errors.ts'
 import { polishDraft } from './draft-llm.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
@@ -102,12 +103,15 @@ export function disable(db: Database.Database, tenantId: string): void {
     db.prepare('UPDATE autopilot_settings SET enabled = 0 WHERE tenant_id = ?').run(tenantId)
     audit(db, tenantId, 'disabled')
     returnHeld(db, tenantId, 'autopilot turned off: yours to approve')
-    // The scheduler's view of the drain (lib/ops/scheduler-runs.ts): off is a hold, nothing is failing any more; the tick
-    // will not run this tenant's drain, so its last row must not keep reporting an earlier failure.
+  })()
+  // The scheduler's view of the drain (lib/ops/scheduler-runs.ts): off is a hold, nothing is failing any more; the tick
+  // will not run this tenant's drain, so its last row must not keep reporting an earlier failure. Best effort, after the
+  // switch is off: the user's off switch never depends on this row (a store whose kind check is not widened yet refuses it).
+  try {
     if (tableExists(db, 'scheduler_progress')) db.prepare(`INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id)
       VALUES (?, 'autopilot', ?, NULL, NULL, 'hold', 'off', 0, NULL)
       ON CONFLICT (tenant_id, kind) DO UPDATE SET last_attempt_at = excluded.last_attempt_at, last_error = NULL, last_outcome = 'hold', last_hold = 'off', consecutive_failures = 0`).run(tenantId, Math.floor(Date.now() / 1000))
-  })()
+  } catch (e) { captureError(e, { source: 'worker', where: 'autopilot:disable:progress', tenantId }) }
 }
 // Autopilot's held first touches (#411) go back to the user: out of its queue, unapproved where autopilot had approved
 // them, one 'released' audit row each. Turning autopilot off does this for the tenant; autopilot's authority ending at a
@@ -209,20 +213,23 @@ const AUTHORITY_RETURNS = new Set(['autopilot_off', 'consent_required'])
 // again and reads it afresh.
 const AUTHORITY_ENDED = new Set(['autopilot_unavailable', 'reservation_lost', 'authority_unreadable'])
 // The new-lead query (step 2 of a pass). Parameters: tenant, MIN_CONFIDENCE, tenant, tenant, now - SKIP_ERROR_S,
-// now - SKIP_RETRY_S. Its skipped-row check is by lead on autopilot_audit_lead (test: the query plan).
+// now - SKIP_RETRY_S. Only leads of finished scans (j.status = 'done'): the runner records a lead's required sales/hiring
+// gate after the network checks, so a tick during a running scan must not read a gate not yet run as a refusal. Its
+// skipped-row check is by lead on autopilot_audit_lead (test: the query plan).
 export const NEW_LEADS_SQL = `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
+     WHERE j.user_id = ? AND j.status = 'done' AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
-         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact','sales_hiring_check_failed','lead_not_verified')
+         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
            OR (a.detail IN ('error','offer_unreadable') AND a.created_at > ?)
-           OR (a.detail <> 'error' AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
+           OR (a.detail NOT IN ('error','offer_unreadable') AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
      ORDER BY l.score DESC LIMIT 25`
 // Refusals of the draft path that never change for a lead (createDraft's draftChecks: a personal address, not a sales
-// contact, suppressed, no address, a failed required sales/hiring check, evidence that is not verified): recorded once,
-// the lead is the user's from then on. Every other refusal (currentness or domain to confirm, ungraded, an offer
-// conflict) is tried again: after SKIP_RETRY_S, or at once when the lead was confirmed by the user at or after the
-// refusal; a store error ('error') or an unreadable offer after SKIP_ERROR_S (the next tick).
+// contact, suppressed, no address): recorded once, the lead is the user's from then on. Every other refusal (currentness
+// or domain to confirm, ungraded, a sales/hiring gate not passed yet (held-state.ts: a held lead clears when the gate
+// runs again and passes), evidence the user can confirm, an offer conflict) is tried again: after SKIP_RETRY_S, or at
+// once when the lead was confirmed by the user at or after the refusal; a store error ('error') or an unreadable offer
+// after SKIP_ERROR_S (the next tick).
 const SKIP_RETRY_S = 3600, SKIP_ERROR_S = 600
 // The authority could not be read at the send commitment (the store failed): fail closed, as if it had ended. Known not
 // sent, the slot released, the draft held and unapproved; the next pass reads it again.

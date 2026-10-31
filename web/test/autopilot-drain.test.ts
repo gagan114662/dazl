@@ -37,6 +37,7 @@ function lead(db: Database.Database, contact: string | null, conf: number | null
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, job, 'Co ' + id.slice(0, 4), contact, 'Hiring roofers', 'https://n.example/a', ev, conf, 80)
   // Test baseline is explicitly human-reviewed; no machine timing inference.
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE confidence IS NOT NULL AND evidence_excerpt IS NOT NULL").run()
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job) // finished: its gates have run; only leads of a done scan are autopilot's candidates
   return id
 }
 const ok = (db: Database.Database) => enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 3 })
@@ -687,8 +688,9 @@ test('#448 a lead refused for a reason the user can clear is tried again an hour
   const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 3601))
   assert.deepEqual([r3.sent, sent.length, r3.skipped, skipped().length], [1, 1, 0, 2], 'an hour on: the graded lead is drafted and sent; the personal address is not retried')
   await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY)); assert.equal(skipped().length, 2, 'the personal address: never again')
-  // The other refusals that never clear: a failed required sales/hiring check, unverified evidence.
-  for (const code of ['sales_hiring_check_failed', 'lead_not_verified']) {
+  // The other refusals that never clear: not a sales contact, no address. (A sales/hiring gate not passed yet and
+  // unverified evidence DO clear: the gate runs again, the user confirms; they retry like the rest.)
+  for (const code of ['not_sales_contact', 'no_email_contact']) {
     const l = lead(db, `${code}@never.example`)
     db.prepare("INSERT INTO autopilot_audit (id, tenant_id, lead_id, action, detail, created_at) VALUES (?, 'A', ?, 'skipped', ?, ?)").run(code.slice(0, 24).padEnd(24, '0'), l, code, NOW - 30 * DAY)
     const n = sent.length; await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY + 1))
@@ -780,6 +782,34 @@ test('#448 query plans: the skipped-row check searches autopilot_audit by lead, 
   assert.ok(leads.some(d => /SEARCH a USING (COVERING )?INDEX autopilot_audit_lead \(tenant_id=\? AND lead_id=\? AND action=\?\)/.test(d)), leads.join('\n'))
   const disables = plan("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'disabled'", 'A')
   assert.ok(disables.some(d => /USING (COVERING )?INDEX autopilot_audit_action \(tenant_id=\? AND action=\?\)/.test(d)), disables.join('\n'))
+})
+
+// Reviewer 1 final (R11): the runner records a lead's required sales/hiring gate after its network checks; a tick during
+// a running scan must not read that as a refusal. Leads of a scan that is not done are not candidates at all; once the
+// scan is done (its gates run), they are drafted. A gate that has not passed yet is a retried refusal, never permanent.
+test('#448 leads of a scan still running are not candidates (no skipped row); once the scan is done they are drafted and sent', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' }); db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const l = randomBytes(12).toString('hex')
+  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(l, job, 'Co One', 'a@one.example', 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, 80)
+  db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = ?").run(l)
+  const r1 = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual([r1.sent, r1.skipped, db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE action = 'skipped'").pluck().get()], [0, 0, 0], 'not a candidate while the scan runs: nothing tried, nothing recorded')
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
+  assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + 60))).sent, sent.length], [1, 1], 'the scan done: drafted and sent on the next pass')
+  // A sales/hiring gate refusal, should one be recorded, is retried after an hour like the other clearable refusals.
+  const db2 = await setup(); ok(db2); pastWarmup(db2); const two = sends(); const g = lead(db2, 'b@two.example')
+  db2.prepare("INSERT INTO autopilot_audit (id, tenant_id, lead_id, action, detail, created_at) VALUES ('g1g1g1g1g1g1g1g1g1g1g1g1', 'A', ?, 'skipped', 'sales_hiring_check_failed', ?)").run(g, NOW + 1) // refused after the lead's confirmation (NOW)
+  assert.deepEqual([(await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + 2))).sent, (await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + 3602))).sent, two.sent.length], [0, 1, 1], 'retried once the hour is up')
+})
+
+// Probe final round (R4-1): the user's off switch never depends on the scheduler's progress row.
+test('#448 disable() turns autopilot off even when the scheduler_progress kind check is not widened yet (the hold row is best effort)', async () => {
+  const db = await setup(); ok(db)
+  db.exec(`CREATE TABLE scheduler_progress (tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')), last_attempt_at INTEGER NOT NULL,
+    last_success_at INTEGER, last_error TEXT, last_outcome TEXT NOT NULL DEFAULT 'success', last_hold TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_run_id TEXT, PRIMARY KEY (tenant_id, kind))`)
+  disable(db, 'A')
+  assert.deepEqual([getState(db, 'A').enabled, db.prepare('SELECT count(*) AS n FROM scheduler_progress').pluck().get(), recentAutopilotAudit(db, 'A')[0].action], [false, 0, 'disabled'], 'off, recorded, no progress row')
 })
 
 // Reviewer 1 round 3 (R10): the tenant turning autopilot off is a hold in the scheduler's view, not a frozen failure.

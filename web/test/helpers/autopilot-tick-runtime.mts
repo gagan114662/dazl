@@ -41,6 +41,7 @@ function lead(contact: string) {
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, job, 'Co ' + id.slice(0, 4), contact, 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, 80)
   db.prepare("UPDATE leads SET human_confirmed_at=?, human_confirmed_from='test_review' WHERE id = ?").run(NOW, id)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job) // finished: its gates have run; only leads of a done scan are autopilot's candidates
   return id
 }
 lead('a@one.example'); lead('b@two.example')
