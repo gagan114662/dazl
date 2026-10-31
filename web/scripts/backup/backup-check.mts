@@ -9,16 +9,19 @@
 //     manifest alone is not a recoverable backup. With OFFHOST_REQUIRED=1, no destination configured is a problem;
 //   - --drill-report (the newest recovery-drill.mts --report): missing, not ok, or older than --drill-max-age-s.
 // Alerts go to OPS_ALERT_WEBHOOK_URL (https only; e.g. a Slack incoming webhook) or, for tests, BACKUP_ALERT_CMD (run
-// with the JSON as its one argument). The same set of problems alerts at most once per BACKUP_ALERT_EVERY_S (3600),
-// counted from a delivered alert (command exit 0, webhook 2xx): a failed delivery or no destination leaves no stamp, so
-// the next run retries. Stamps (backup-alert-*) live in --state-dir (default BACKUP_DIR/.backup-check; when it is
-// unusable the alert still goes out, unthrottled; the directory may be shared with scheduler-check, only this script's
-// stamps are ever removed). Runs are not locked against each other: two concurrent runs can both deliver (the systemd
-// timer never overlaps its own job; a manual start during one can). When everything is ok the stamps are removed and nothing is sent: there is deliberately
-// no recovery announcement (scheduler-check.mts has one). The alert names problems, ages and file names only: no data,
-// no directory paths (I/O errors are forwarded by code and syscall). The webhook is https only and redirects are not followed. Age limits must be numbers of seconds
-// (else exit 2); an invalid BACKUP_ALERT_EVERY_S falls back to 3600 with a log line, never to "no throttle" and never
-// to "no alert". Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable); 2 = usage.
+// with the JSON as its one argument). The same set of problems (sorted, so discovery order does not matter) alerts at
+// most once per BACKUP_ALERT_EVERY_S (a decimal integer, default 3600; 0 = no throttle; anything else falls back to
+// 3600 with a log line), counted from a delivered alert (command exit 0, webhook 2xx): a failed delivery or no
+// destination leaves no stamp, so the next run retries. Stamps (backup-alert-*) live in --state-dir (default
+// BACKUP_DIR/.backup-check; when it is unusable the alert still goes out, unthrottled; the directory may be shared with
+// scheduler-check, only this script's stamps are ever removed). Runs are not locked against each other: two concurrent
+// runs can both deliver (the systemd timer never overlaps its own job; a manual start during one can). When everything
+// is ok the stamps are removed and nothing is sent: there is deliberately no recovery announcement (scheduler-check.mts
+// has one). The alert names problems, ages and file names only: no data, no directory paths (I/O errors are forwarded
+// by code and syscall). The webhook is https only and redirects are not followed. Age limits are decimal integers of
+// seconds (else exit 2; a flag without a value is exit 2 too). A sidecar or manifest timestamp more than 300 s in the
+// future is a problem and never the newest; ages never go below 0. Every manifest that shares the newest copied_at is
+// judged. Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable); 2 = usage.
 // Known one-off: create-backup writes its sidecar in place (lib.ts), so a check that reads it at that instant can see a
 // partial file and alert "unreadable sidecar" once; the next run clears it. offhost-copy.sh writes its manifest via a
 // .partial rename, so the off-host side has no such window.
@@ -30,23 +33,30 @@ import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmS
 import os from 'node:os'
 import path from 'node:path'
 
-const arg = (f: string) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : undefined }
+const arg = (f: string) => {
+  const i = process.argv.indexOf(f); if (i < 0) return undefined
+  const v = process.argv[i + 1]
+  if (v === undefined || v.startsWith('--')) { console.error(`backup-check: ${f} needs a value`); process.exit(2) }
+  return v
+}
 const seconds = (what: string, v: string | undefined, d: number) => {
   if (v === undefined || v.trim() === '') return d
-  const n = Number(v); if (!Number.isFinite(n)) { console.error(`backup-check: ${what} must be a number of seconds, got ${JSON.stringify(v)}`); process.exit(2) }
-  return n
+  if (!/^-?\d+$/.test(v.trim())) { console.error(`backup-check: ${what} must be a number of seconds, got ${JSON.stringify(v)}`); process.exit(2) }
+  return Number(v)
 }
 const num = (f: string, d: number) => seconds(f, arg(f), d)
 const dir = arg('--dir')
 if (!dir) { console.error('usage: backup-check.mts --dir DIR [--max-age-s N] [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s N] [--drill-report FILE --drill-max-age-s N] [--state-dir DIR]'); process.exit(2) }
 const now = Date.now()
 const everyRaw = process.env.BACKUP_ALERT_EVERY_S
-let every = everyRaw === undefined || everyRaw.trim() === '' ? 3600 : Number(everyRaw)
-if (!Number.isFinite(every) || every < 0) { console.error(`backup-check: BACKUP_ALERT_EVERY_S is not a number of seconds (${JSON.stringify(everyRaw)}); using 3600`); every = 3600 }
+let every = everyRaw === undefined || everyRaw.trim() === '' ? 3600 : /^\d+$/.test(everyRaw.trim()) ? Number(everyRaw) : NaN
+if (!Number.isFinite(every)) { console.error(`backup-check: BACKUP_ALERT_EVERY_S is not a number of seconds (${JSON.stringify(everyRaw)}); using 3600`); every = 3600 }
 const problems: string[] = []
 const facts: Record<string, unknown> = {}
 const sha256 = (f: string) => new Promise<string>((res, rej) => { const h = createHash('sha256'); createReadStream(f).on('data', d => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej) })
-const ageS = (iso: string | undefined | null) => iso && !Number.isNaN(Date.parse(iso)) ? Math.round((now - Date.parse(iso)) / 1000) : null
+const ageS = (iso: string | undefined | null) => iso && !Number.isNaN(Date.parse(iso)) ? Math.max(0, Math.round((now - Date.parse(iso)) / 1000)) : null
+const SKEW_S = 300 // a clock this far ahead is tolerated; beyond it a timestamp is from the future and never the newest
+const future = (iso: string) => Date.parse(iso) - now > SKEW_S * 1000
 // an error as the alert may name it: our own messages verbatim, a filesystem error by code and syscall (never its
 // message, which carries a full path)
 const reason = (e: unknown) => { const x = e as NodeJS.ErrnoException; return x?.code ? `${x.code}${x.syscall ? ' on ' + x.syscall : ''}` : e instanceof Error ? e.message : 'error' }
@@ -59,7 +69,9 @@ try {
   const local: { f: string; side: { createdAt: string; sha256?: string } }[] = []
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.db') && existsSync(path.join(dir, f + '.json'))) : []) {
     const side = readJson(path.join(dir, f + '.json'))
-    if (side?.createdAt && !Number.isNaN(Date.parse(side.createdAt))) local.push({ f, side }); else problems.push(`unreadable sidecar for ${f}`)
+    if (!side?.createdAt || Number.isNaN(Date.parse(side.createdAt))) problems.push(`unreadable sidecar for ${f}`)
+    else if (future(side.createdAt)) problems.push(`backup ${f} has a future timestamp`)
+    else local.push({ f, side })
   }
   local.sort((a, b) => Date.parse(b.side.createdAt) - Date.parse(a.side.createdAt))
   if (!local.length) problems.push(`no backup with a sidecar in ${path.basename(dir)}`)
@@ -128,24 +140,28 @@ if (!offSpec) {
       try { m = JSON.parse(text) } catch { problems.push(`off-host manifest ${f} unreadable (not JSON)`); continue }
       if (m?.tool !== 'dazl-offhost-copy') continue // another tool's file
       if (!m.copied_at || Number.isNaN(Date.parse(String(m.copied_at)))) { problems.push(`off-host manifest ${f} has no copied_at`); continue }
+      if (future(String(m.copied_at))) { problems.push(`off-host manifest ${f} has a future timestamp`); continue }
       manifests.push(m)
     }
-    manifests.sort((a, b) => Date.parse(String(b.copied_at)) - Date.parse(String(a.copied_at)))
+    manifests.sort((a, b) => Date.parse(String(b.copied_at)) - Date.parse(String(a.copied_at)) || String(b.ciphertext ?? '').localeCompare(String(a.ciphertext ?? '')))
     facts.offhost_copies = manifests.length
     if (!manifests.length) problems.push(`no off-host copy manifest at ${dest.label}`)
     else {
-      const m = manifests[0] as { copied_at: string; ciphertext?: string; bytes?: number; ciphertext_sha256?: string }
-      const age = ageS(m.copied_at); facts.newest_offhost_age_s = age
+      const age = ageS(String(manifests[0].copied_at)); facts.newest_offhost_age_s = age
       if (age === null || age > max) problems.push(`newest off-host copy is ${age}s old (limit ${max}s)`)
-      // the copy itself, not its manifest: present, the declared size, the declared hash
-      if (!m.ciphertext || !plainName(m.ciphertext) || !/^[0-9a-f]{64}$/.test(m.ciphertext_sha256 ?? '') || typeof m.bytes !== 'number') problems.push('newest off-host manifest does not name a ciphertext, its size and its sha256')
-      else {
+      // the copy itself, not its manifest: present, the declared size, the declared hash. Every manifest that shares
+      // the newest copied_at is judged, so the listing order never decides which one is.
+      const newest = manifests.filter(x => Date.parse(String(x.copied_at)) === Date.parse(String(manifests[0].copied_at))) as { ciphertext?: string; bytes?: number; ciphertext_sha256?: string }[]
+      let verified = 0
+      for (const m of newest) {
+        if (!m.ciphertext || !plainName(m.ciphertext) || !/^[0-9a-f]{64}$/.test(m.ciphertext_sha256 ?? '') || typeof m.bytes !== 'number') { problems.push('newest off-host manifest does not name a ciphertext, its size and its sha256'); continue }
         const d = await dest.digest(m.ciphertext)
         if (!d) problems.push(`newest off-host copy ${m.ciphertext} is missing (only its manifest exists)`)
         else if (d.bytes !== m.bytes) problems.push(`newest off-host copy ${m.ciphertext} has ${d.bytes} bytes, its manifest says ${m.bytes} (truncated or replaced)`)
         else if (d.sha256 !== m.ciphertext_sha256) problems.push(`newest off-host copy ${m.ciphertext} does not match its manifest sha256 (replaced or corrupted)`)
-        else facts.newest_offhost_verified = true
+        else verified++
       }
+      if (verified === newest.length) facts.newest_offhost_verified = true
     }
   } catch (e) { problems.push(`off-host destination ${dest.label} unreadable: ${reason(e)}`) }
 }
@@ -157,16 +173,18 @@ if (drill) {
   if (!r) problems.push('no readable recovery drill report')
   else {
     const age = ageS(r.started_at); facts.drill_age_s = age; facts.drill_ok = r.ok
+    if (typeof r.started_at === 'string' && age !== null && future(r.started_at)) problems.push('last recovery drill report has a future timestamp')
     if (r.ok !== true) problems.push(`last recovery drill FAILED (${(r.steps ?? []).filter((s: { ok: boolean }) => !s.ok).map((s: { step: string }) => s.step).join(', ') || 'unknown step'})`)
     if (age === null || age > max) problems.push(`last recovery drill is ${age}s old (limit ${max}s)`)
   }
 }
 
 const state = arg('--state-dir') ?? path.join(dir, '.backup-check')
+problems.sort() // one set, one stamp, whatever the discovery order
 const body = { level: problems.length ? 'error' : 'info', type: 'backup_check', ok: problems.length === 0, host: os.hostname(), at: new Date(now).toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))
-// Stamps are backup-alert-<hash of the problem kinds>. A healthy run removes only them: the state dir may be shared with
-// scheduler-check (alert-*) or hold other tools' files, and an operator-supplied directory is never deleted.
+// Stamps are backup-alert-<hash of the problem kinds>. A healthy run removes only them: the state dir may be shared
+// with scheduler-check (alert-*) or hold other tools' files, and an operator-supplied directory is never deleted.
 const STAMP = 'backup-alert-'
 if (!problems.length) {
   try { if (existsSync(state)) for (const f of readdirSync(state)) if (f.startsWith(STAMP)) rmSync(path.join(state, f), { force: true }) }
@@ -174,7 +192,8 @@ if (!problems.length) {
   process.exit(0)
 }
 
-// A throttle stamp is a delivery receipt, never an attempted-send receipt (the same contract as scripts/ops/scheduler-check.mts).
+// A throttle stamp is a delivery receipt, never an attempted-send receipt (the same contract as
+// scripts/ops/scheduler-check.mts).
 const send = async (b: object): Promise<boolean> => {
   const cmd = process.env.BACKUP_ALERT_CMD, hook = process.env.OPS_ALERT_WEBHOOK_URL
   if (cmd) {

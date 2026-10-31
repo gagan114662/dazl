@@ -111,6 +111,11 @@ test('webhook HTTP 500, then unreachable, then 200: each failure retries at once
     status = 200
     r = await check(dir, path.join(T, 'hook-state-http'), { OPS_ALERT_WEBHOOK_URL: hook.replace('https:', 'http:') })
     assert.equal(r.code, 1); assert.match(r.out, /no alert destination/); assert.equal(got.length, 1, 'a plain-http webhook is not a destination')
+    const state1 = path.join(T, 'hook-state-1s')
+    r = await check(dir, state1, { OPS_ALERT_WEBHOOK_URL: hook, NODE_EXTRA_CA_CERTS: certPath, BACKUP_ALERT_EVERY_S: '1' }); assert.equal(got.length, 2)
+    await new Promise(res => setTimeout(res, 1200))
+    r = await check(dir, state1, { OPS_ALERT_WEBHOOK_URL: hook, NODE_EXTRA_CA_CERTS: certPath, BACKUP_ALERT_EVERY_S: '1' })
+    assert.doesNotMatch(r.out, /already sent/); assert.equal(got.length, 3, 'the webhook is delivered again after the interval')
   } finally { server.close(); target.close() }
 })
 
@@ -154,11 +159,13 @@ test('newest local backup unreadable: a named problem and a delivered alert, not
 test('a non-numeric age limit is refused (exit 2), never a check that cannot flag staleness; an empty one is the default', async () => {
   const fx = await fixtureBackup(path.join(T, 'nan')), dir = path.dirname(fx.backup), state = path.join(T, 'nan-state')
   const { cmd, delivered } = recorder('nan-alert')
-  for (const args of [['--max-age-s', '2h'], ['--max-age-s', 'Infinity'], ['--offhost-max-age-s', 'x', '--offhost', dir], ['--drill-max-age-s', 'NaN', '--drill-report', path.join(T, 'none.json')]]) {
+  for (const args of [['--max-age-s', '2h'], ['--max-age-s', 'Infinity'], ['--max-age-s', '0x10'], ['--max-age-s', '1e3'], ['--offhost-max-age-s', 'x', '--offhost', dir], ['--drill-max-age-s', 'NaN', '--drill-report', path.join(T, 'none.json')]]) {
     const r = await run(['--dir', dir, '--state-dir', state, ...args], { BACKUP_ALERT_CMD: cmd })
     assert.equal(r.code, 2, JSON.stringify(args) + r.out); assert.match(r.out, /must be a number of seconds/)
   }
-  let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', ''], { BACKUP_ALERT_CMD: cmd })
+  let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s'], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 2, 'a flag as the last argument has no value'); assert.match(r.out, /--max-age-s needs a value/); assert.equal(delivered().length, 0)
+  r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', ''], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 0, 'an empty limit (an unexpanded variable) is the default, and this backup is fresh'); assert.equal(delivered().length, 0)
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '' })
   assert.equal(r.code, 1, 'an empty interval is the default'); assert.equal(delivered().length, 1)
@@ -185,6 +192,7 @@ test('an unreadable or truncated off-host manifest is a problem, not silently re
   writeFileSync(path.join(dest, 'old.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date(Date.now() - 60_000).toISOString(), ciphertext: 'old.db.age', ciphertext_sha256: createHash('sha256').update(ct).digest('hex'), bytes: ct.length }))
   writeFileSync(path.join(dest, 'new.db.age.json'), '{"tool":"dazl-offhost-copy","copied_at":"2026')
   writeFileSync(path.join(dest, 'other-tool.json.age.json'), JSON.stringify({ tool: 'something-else' }))
+  writeFileSync(path.join(dest, 'nodate.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', ciphertext: 'nodate.db.age' }))
   const locked = path.join(dest, 'locked.db.age.json'); writeFileSync(locked, '{}'); chmodSync(locked, 0o000)
   const { cmd, delivered } = recorder('man-alert')
   try {
@@ -193,6 +201,7 @@ test('an unreadable or truncated off-host manifest is a problem, not silently re
     assert.match(p, /off-host manifest new\.db\.age\.json unreadable \(not JSON\)/)
     if (!root) assert.match(p, /off-host manifest locked\.db\.age\.json unreadable \(EACCES on open\)/)
     assert.doesNotMatch(p, /other-tool/, "another tool's file is not ours and not a problem")
+    assert.match(p, /off-host manifest nodate\.db\.age\.json has no copied_at/)
     assert.equal(firstJson(r.out).newest_offhost_verified, true, 'the readable copy is still verified'); assert.equal(firstJson(r.out).offhost_copies, 1)
   } finally { chmodSync(locked, 0o600) }
 })
@@ -217,14 +226,19 @@ test('interval: an invalid BACKUP_ALERT_EVERY_S is the default (logged, one deli
   assert.equal(r.code, 1); assert.match(r.out, /already sent/); assert.equal(delivered().length, 1, 'abc twice: one delivery, not two')
   r = await run(stale(state), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '-5' })
   assert.match(r.out, /using 3600/); assert.equal(delivered().length, 1, 'a negative interval is not "never throttle"')
+  r = await run(stale(state), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '0x10' })
+  assert.match(r.out, /using 3600/); assert.equal(delivered().length, 1, 'only decimal integers are intervals')
+  const state0 = path.join(T, 'every-state-0')
+  for (let i = 0; i < 2; i++) r = await run(stale(state0), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '0' })
+  assert.equal(delivered().length, 3, '0 means no throttle (documented): every run delivers')
   const state2 = path.join(T, 'every-state-2')
-  r = await run(stale(state2), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '1' }); assert.equal(delivered().length, 2)
+  r = await run(stale(state2), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '1' }); assert.equal(delivered().length, 4)
   await new Promise(res => setTimeout(res, 1200))
   r = await run(stale(state2), { BACKUP_ALERT_CMD: cmd, BACKUP_ALERT_EVERY_S: '1' })
-  assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 3, 'the interval expired: delivered again')
+  assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 5, 'the interval expired: delivered again')
   r = await run(stale(state, ['--offhost', path.join(T, 'nowhere')]), { BACKUP_ALERT_CMD: cmd })
-  assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 4, 'a new problem joining an already-alerted set is a new set: delivered at once')
-  assert.match(delivered()[3].problems.join(), /unreadable: directory not found/)
+  assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 6, 'a new problem joining an already-alerted set is a new set: delivered at once')
+  assert.match(delivered().at(-1)!.problems.join(), /unreadable: directory not found/)
 })
 
 test('webhook that never answers: TimeoutError and no stamp; command and webhook both set: the command wins and the webhook is never tried', async () => {
@@ -241,6 +255,9 @@ test('webhook that never answers: TimeoutError and no stamp; command and webhook
     const { cmd, delivered } = recorder('both-alert')
     r = await run(['--dir', dir, '--state-dir', state2, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, OPS_ALERT_WEBHOOK_URL: hook, NODE_EXTRA_CA_CERTS: certPath })
     assert.equal(r.code, 1); assert.equal(delivered().length, 1); assert.equal(stamps(state2).length, 1); assert.equal(hits, 1, 'the webhook was never tried')
+    const failing = path.join(T, 'both-failing.sh'); writeFileSync(failing, '#!/bin/sh\nexit 1\n'); chmodSync(failing, 0o755)
+    r = await run(['--dir', dir, '--state-dir', path.join(T, 'both-failing-state'), '--max-age-s', '-1'], { BACKUP_ALERT_CMD: failing, OPS_ALERT_WEBHOOK_URL: hook, NODE_EXTRA_CA_CERTS: certPath })
+    assert.equal(r.code, 1); assert.match(r.out, /alert command failed/); assert.equal(hits, 1, 'a failing command does not fall back to the webhook'); assert.deepEqual(stamps(path.join(T, 'both-failing-state')), [])
   } finally { server.closeAllConnections(); server.close() }
 })
 
@@ -312,4 +329,54 @@ test('rclone that hangs on cat is bounded by RCLONE_TIMEOUT_S: a named problem, 
   assert.equal(r.code, 1, r.out); assert.ok(Date.now() - t0 < 20_000, 'bounded'); assert.equal(delivered().length, 1)
   const ps = delivered()[0].problems; assert.match(ps.join(), /off-host destination remote: unreadable: rclone cat timed out \(1s\)/)
   for (const p of ps) assert.doesNotMatch(p, /\//, `no "/" in any problem string: ${p}`)
+})
+
+// Probe round 2 (scratchpad/attack-438-r2.md): a future timestamp must not win the newest selection, and listing order
+// must not decide which of two equally new manifests is judged.
+const manifestFor = (dest: string, name: string, copiedAt: string, ct: Buffer | null) => {
+  if (ct) writeFileSync(path.join(dest, name), ct)
+  writeFileSync(path.join(dest, name + '.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: copiedAt, ciphertext: name, ciphertext_sha256: createHash('sha256').update(ct ?? Buffer.from('x')).digest('hex'), bytes: (ct ?? Buffer.from('x')).length }))
+}
+test('a future copied_at or createdAt is a problem and never the newest: the real, stale copy is what gets judged', async () => {
+  const fx = await fixtureBackup(path.join(T, 'future')), dir = path.dirname(fx.backup), state = path.join(T, 'future-state')
+  const dest = path.join(T, 'future-dest'); mkdirSync(dest)
+  const year = 365 * 86_400_000, ct = Buffer.from('ciphertext stand-in')
+  manifestFor(dest, 'real.db.age', new Date(Date.now() - 90_000_000).toISOString(), ct)
+  manifestFor(dest, 'skewed.db.age', new Date(Date.now() + year).toISOString(), ct)
+  const { cmd, delivered } = recorder('future-alert')
+  let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', dest], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1, r.out); const p = delivered()[0].problems.join('\n')
+  assert.match(p, /off-host manifest skewed\.db\.age\.json has a future timestamp/); assert.match(p, /newest off-host copy is 9000\ds old \(limit 7200s\)/)
+  const j = firstJson(r.out); assert.ok((j.newest_offhost_age_s as number) >= 90_000, 'the stale real copy is the newest, with a non-negative age')
+  // a local sidecar from the future
+  writeFileSync(path.join(dir, 'skewed.db'), 'x'); writeFileSync(path.join(dir, 'skewed.db.json'), JSON.stringify({ createdAt: new Date(Date.now() + year).toISOString(), sha256: '0'.repeat(64) }))
+  r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200'], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1); assert.match(delivered().at(-1)!.problems.join(), /backup skewed\.db has a future timestamp/)
+  assert.equal(firstJson(r.out).newest_backup, path.basename(fx.backup)); assert.ok((firstJson(r.out).newest_backup_age_s as number) < 60, 'the real backup, seconds old')
+  // a clock a few seconds ahead is not a problem, and its age is 0, not negative
+  writeFileSync(path.join(dir, 'skewed.db.json'), JSON.stringify({ createdAt: new Date(Date.now() + 60_000).toISOString(), sha256: createHash('sha256').update('x').digest('hex') }))
+  r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200'], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 0, r.out); assert.equal(firstJson(r.out).newest_backup, 'skewed.db'); assert.equal(firstJson(r.out).newest_backup_age_s, 0)
+})
+
+test('two manifests with the same copied_at: every one of them is judged, whichever the listing order', async () => {
+  const fx = await fixtureBackup(path.join(T, 'tied')), dir = path.dirname(fx.backup), state = path.join(T, 'tied-state')
+  const at = new Date(Date.now() - 60_000).toISOString(), ct = Buffer.from('ciphertext stand-in')
+  for (const [good, broken] of [['a', 'b'], ['b', 'a']]) {
+    const dest = path.join(T, `tied-dest-${good}${broken}`); mkdirSync(dest)
+    manifestFor(dest, `${good}.db.age`, at, ct); manifestFor(dest, `${broken}.db.age`, at, null)
+    const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', dest], { BACKUP_ALERT_CMD: 'true' })
+    assert.equal(r.code, 1, r.out); const j = firstJson(r.out)
+    assert.match((j.problems as string[]).join(), new RegExp(`newest off-host copy ${broken}\\.db\\.age is missing`)); assert.notEqual(j.newest_offhost_verified, true)
+  }
+  const dest = path.join(T, 'tied-dest-good'); mkdirSync(dest); manifestFor(dest, 'a.db.age', at, ct); manifestFor(dest, 'b.db.age', at, ct)
+  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', dest], { BACKUP_ALERT_CMD: 'true' })
+  assert.equal(r.code, 0, r.out); assert.equal(firstJson(r.out).newest_offhost_verified, true, 'both verified')
+})
+
+test('the problem set is order-independent: the same problems in another discovery order share one stamp', async () => {
+  const fx = await fixtureBackup(path.join(T, 'order')), dir = path.dirname(fx.backup), state = path.join(T, 'order-state')
+  const { cmd, delivered } = recorder('order-alert')
+  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1', '--offhost', path.join(T, 'nowhere')], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1); const ps = delivered()[0].problems; assert.equal(ps.length, 2); assert.deepEqual(ps, [...ps].sort(), 'problems are emitted sorted')
 })
