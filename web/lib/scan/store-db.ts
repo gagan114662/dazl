@@ -84,7 +84,7 @@ async function allHeld(db: Db, plain: string, plainCols: string, heldCols: strin
 }
 
 const LEAD_COLUMNS = `l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
 l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage`
 
