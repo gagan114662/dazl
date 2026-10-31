@@ -54,3 +54,21 @@ test('a publication or model date alone never upgrades timing', async () => {
   ], undefined, { windowDays: 90, now: new Date('2026-10-26T12:00:00Z') })
   assert.equal(out![0].intent, 0)
 })
+
+test('future boundary pinned: +1 day is UTC timezone slack and passes, +2 days is future and fails', async () => {
+  const now = new Date('2026-10-26T12:00:00Z')
+  const out = await scoreLeads(providerFor(2), 'k', 'icp', [
+    { ...base, event_date: '2026-10-27', event_date_proof: 'page_bound' }, // age -1: day-precision date at most 24h ahead
+    { ...base, event_date: '2026-10-28', event_date_proof: 'page_bound' }, // age -2: genuinely future, not slack
+  ], undefined, { windowDays: 90, now })
+  assert.deepEqual(out!.map(l => l.intent), [4, 0],
+    'predicate: age >= -1 (UTC-day slack for event dates in zones ahead of UTC) AND age <= windowDays')
+})
+
+test('windowless requests: intent held at 0 with timing status, fit rationale preserved (no window is not a window)', async () => {
+  const out = await scoreLeads(providerFor(1), 'k', 'icp', [
+    { ...base, event_date: '2026-10-20', event_date_proof: 'page_bound' },
+  ], undefined, { now: new Date('2026-10-26T12:00:00Z') }) // no windowDays supplied
+  assert.equal(out![0].intent, 0)
+  assert.ok(out![0].why.startsWith(WHY_FIT) && out![0].why.includes(TIMING_UNCONFIRMED_NOTE))
+})

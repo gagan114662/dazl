@@ -65,3 +65,13 @@ test('v2 totals and markdown carry the rubric version and the distinct labelled 
   assert.ok(md.includes('rubric v2'))
   assert.ok(md.includes('timing not yet proven'), 'the timing-free actionable count is labelled, never rebranded as ready')
 })
+
+test('windowless coherence: mandatory timing with no window qualifies nothing; a no-timing request still qualifies on actionable', () => {
+  const provenNoWindow = { ...OPTS, windowDays: null }
+  assert.equal(scoreLeadV2(good, { ...provenNoWindow, timingRequired: true }).qualified, false,
+    'mandatory timing + no derivable window fails closed: nothing is qualified')
+  const c = scoreLeadV2({ ...good, event_date_proof: null }, { ...provenNoWindow, timingRequired: false })
+  assert.equal(c.current_event, false, 'no window: timing is unproven, reported as such')
+  assert.equal(c.actionable, true)
+  assert.equal(c.qualified, true, 'a request without a timing requirement is not made unknown by the timing rule')
+})
