@@ -147,6 +147,11 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'batch_id', 'TEXT')
   add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
   add('scan_jobs', 'enrich_finished_at', 'INTEGER')
+  // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
+  // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
+  // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
+  add('leads', 'event_date_proof', "TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured'))")
+  add('leads', 'event_date_proof_note', 'TEXT CHECK (event_date_proof_note IS NULL OR length(event_date_proof_note) <= 200)')
   widenWhyCap(db)
   backfillKindTags(db)
 }
@@ -286,7 +291,7 @@ function allWithHeldFallback(db: Database.Database, sql: { held: string; plain: 
 export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200, includeHidden = false) {
   const plain =
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
@@ -368,6 +373,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
   const plain =
       `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
               l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
+              l.event_date_proof, l.signal_kind, j.query AS job_query, j.icp AS job_icp,
               l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL

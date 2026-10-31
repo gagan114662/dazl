@@ -38,10 +38,25 @@ export function quoteNote(literalFound: boolean | undefined): { prefix: string; 
     : { prefix: 'Unconfirmed quote: ', confirmed: 'confirmed by you - dazl did not verify the quote' }
 }
 
+// The headline's timing sentence, from the SAME canonical timing state the badge uses (lib/scan/scoreboard.ts):
+// a proof-backed lead never reads "timing unconfirmed", and an unconfirmed lead names the actual gap (#498). Proof
+// of the event day is never buying need: every variant keeps need unconfirmed.
+export function timingHeadline(t?: { timing: 'proof_backed' | 'unconfirmed'; reason?: import('./scoreboard.ts').TimingUnconfirmedReason | null }): string {
+  if (t?.timing === 'proof_backed') return 'Event timing is verified against the cited source. Current need is unconfirmed.'
+  switch (t?.reason) {
+    case 'bad_date': return 'The claimed event date is invalid. Event timing and current need are unconfirmed.'
+    case 'future_date': return 'The claimed event date is in the future. Event timing and current need are unconfirmed.'
+    case 'out_of_window': return 'The claimed event date is outside the freshness window. Event timing and current need are unconfirmed.'
+    case 'unresolved_recency_bound': return 'The request asks for a recent event but sets no time window, so event timing is unresolved. Current need is unconfirmed.'
+    case 'proof_kind_mismatch': return 'The saved date proof does not belong to this kind of signal. Event timing and current need are unconfirmed.'
+    default: return 'Event timing and current need are unconfirmed.'
+  }
+}
+
 // Read-time copy for the saved rationale (leads API). "No saved grade" must not be shown next to a saved fit/intent/action
 // grade: a grade can exist without a written rationale (#198 live acceptance finding).
-export function savedGradeWhy(l: { why?: string | null; fit?: number | null; intent?: number | null; action?: number | null }): string {
-  if (l.why) return 'Event timing and current need are unconfirmed. Saved grades are historical, not a currentness verdict.'
+export function savedGradeWhy(l: { why?: string | null; fit?: number | null; intent?: number | null; action?: number | null }, t?: { timing: 'proof_backed' | 'unconfirmed'; reason?: import('./scoreboard.ts').TimingUnconfirmedReason | null }): string {
+  if (l.why) return `${timingHeadline(t)} Saved grades are historical, not a currentness verdict.`
   const parts = [['fit', l.fit], ['intent', l.intent], ['action', l.action]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${v}`)
-  return parts.length ? `A saved grade exists (${parts.join(', ')}) but no written rationale was saved. Event timing and current need are unconfirmed.` : 'This lead has no saved grade. Event timing and current need are unconfirmed.'
+  return parts.length ? `A saved grade exists (${parts.join(', ')}) but no written rationale was saved. ${timingHeadline(t)}` : `This lead has no saved grade. ${timingHeadline(t)}`
 }

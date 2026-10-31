@@ -53,13 +53,14 @@ test('valid event-dated pages keep their date: the same sentence as the quote, o
   assert.equal((await run(lead('2026-10-09'), neighbour)).lead.event_date, '2026-10-09')
 })
 
-test('structured job-board provenance: a collected posting date for exactly this URL is kept; a board-looking hostname alone is not', async () => {
-  const job = lead('2026-10-12', { source_url: 'https://boards.greenhouse.io/aurora/jobs/1', excerpt: 'Aurora Agency is hiring an Account Executive in Toronto, ON' })
+test('structured job-board provenance: a collected posting date for exactly this URL is kept only for a hiring trigger; a board-looking hostname alone is not', async () => {
+  const job = lead('2026-10-12', { signal: 'Hiring an Account Executive', source_url: 'https://boards.greenhouse.io/aurora/jobs/1', excerpt: 'Aurora Agency is hiring an Account Executive in Toronto, ON' })
   const p = page(`Aurora Agency is hiring an Account Executive in Toronto, ON.${filler}`)
   assert.equal((await run(job, p, new Map([['https://boards.greenhouse.io/aurora/jobs/1', '2026-10-12']]))).lead.event_date, '2026-10-12')
   undated((await run(job, p)).lead)                                                                         // ATS hostname, no collected date
   undated((await run(job, p, new Map([['https://boards.greenhouse.io/aurora/jobs/2', '2026-10-12']]))).lead) // another posting's date
   undated((await run(job, p, new Map([['https://boards.greenhouse.io/aurora/jobs/1', '2026-09-01']]))).lead) // a different day than the claim
+  assert.notEqual((await run(lead('2026-10-12', { source_url: 'https://boards.greenhouse.io/aurora/jobs/1' }), p, new Map([['https://boards.greenhouse.io/aurora/jobs/1', '2026-10-12']]))).lead?.event_date, '2026-10-12') // an ATS date never supports a non-hiring trigger
 })
 
 test('an old year in the quote is still held as stale; a bound date is judged by the window as before', async () => {

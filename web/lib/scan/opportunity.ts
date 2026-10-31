@@ -20,6 +20,9 @@ export interface CardLead {
   fit: number | null; intent: number | null; why: string | null; icp_match: string | null
   company_domain: string | null; contact: string | null; quarantined_at?: number | null
   confidence?: number | null; human_confirmed_at?: number | null
+  // The canonical timing state (lib/scan/scoreboard.ts via the leads route): the card's date lines and next
+  // action must agree with the badge, never assert "claimed/unconfirmed" beside proof-backed timing (#498).
+  timing?: 'proof_backed' | 'unconfirmed' | null
   currentness_held?: boolean; window_held?: boolean
   enrichments?: { connector: string; kind: string; value: string; label: string | null; source_url: string; retrieved_at?: number | null }[]
 }
@@ -88,7 +91,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const ageDays = l.event_date ? Math.floor((now.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000) : null
   // date_status 'verified' is a legacy nearby-year verdict, not proof the page dates the EVENT; same wording as the lead
   // list and CSV (date-copy.ts). Never "confirmed on the page" (#198 live acceptance finding).
-  const dateNote = !l.event_date ? 'event date unknown' : `${eventDateCopy(l.event_date, l.date_status)}, ${ageDays} days ago`
+  const dateNote = !l.event_date ? 'event date unknown' : `${eventDateCopy(l.event_date, l.date_status, l.timing)}, ${ageDays} days ago`
 
   const people: PersonContact[] = rows.filter(r => r.kind === 'contact' || r.kind === 'person').map(r => {
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)
@@ -123,6 +126,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   if (top) assumptions.push(`${top.name} is listed with this title; current role not verified.`)
   if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
+  else if (l.timing === 'proof_backed') facts.push(`The cited source dates the event to ${l.event_date}.`)
   else assumptions.push(`The date ${l.event_date} is the event day as claimed; the page was not shown to date the event itself.`)
   const history = people.filter(p => p.historical)
   if (history.length) assumptions.push(`${history.map(p => `${p.name}${p.title ? ` (${p.title})` : ''}`).join('; ')} named in an SEC Form D filing: history as of the filing, not a current role and not a contact. Not recommended for outreach.`)
@@ -137,7 +141,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const next = l.quarantined_at ? 'None: quarantined.'
     : l.window_held ? 'None: outside the time window you asked for, or undated. Research only.'
     : l.review_reason ? 'Check the source yourself before using this lead.'
-    : l.currentness_held ? 'Review the source to confirm the timing before any outreach.'
+    : l.currentness_held ? (l.timing === 'proof_backed' ? 'Review the source before any outreach.' : 'Review the source to confirm the timing before any outreach.')
     : !top ? 'Find the decision-maker before reaching out.'
     : identityOpen ? (ident?.state === 'conflict' ? 'Settle which website is theirs before reaching out.' : ident ? `Confirm ${ident.site} is their site before reaching out.` : 'Identify the company\'s own website before reaching out.')
     : draftable ? `Draft a first message to ${top.name} introducing your offer; mention the event only as context.`
