@@ -290,8 +290,10 @@ export function selfReportVerdicts(l: SbLead, asOf: Date, windowDays: number = R
   // legacy date-window verdict so historical self-reports stay comparable.
   const hasV2Timing = 'event_date_proof' in l
   const proofOk = isEventDateProof(l.event_date_proof) && (l.event_date_proof !== 'ats_structured' || isHiringTrigger(l.signal, l.signal_kind))
+  // v2 timing is strictly not-future (age >= 0, UTC day contract); the v1 legacy branch keeps the
+  // historical recording's original -1 day slack so old self-reports stay as recorded.
   const event_date: Verdict = hasV2Timing
-    ? (!proofOk || age === null ? 'unknown' : age >= -1 && age <= windowDays ? 'pass' : 'fail')
+    ? (!proofOk || age === null ? 'unknown' : age >= 0 && age <= windowDays ? 'pass' : 'fail')
     : (age === null ? 'unknown' : age >= -1 && age <= windowDays ? 'pass' : 'fail')
   const constraints: Verdict = typeof l.fit !== 'number' ? 'unknown' : l.fit >= FIT_MIN ? 'pass' : l.fit <= 2 ? 'fail' : 'unknown'
   // v2: when routes are recorded, a contact 'pass'es only on a role-appropriate company-published

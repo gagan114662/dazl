@@ -55,20 +55,23 @@ test('a publication or model date alone never upgrades timing', async () => {
   assert.equal(out![0].intent, 0)
 })
 
-test('future boundary pinned: +1 day is UTC timezone slack and passes, +2 days is future and fails', async () => {
+test('strict no-future boundary pinned: today passes, even one day ahead fails', async () => {
   const now = new Date('2026-10-26T12:00:00Z')
-  const out = await scoreLeads(providerFor(2), 'k', 'icp', [
-    { ...base, event_date: '2026-10-27', event_date_proof: 'page_bound' }, // age -1: day-precision date at most 24h ahead
-    { ...base, event_date: '2026-10-28', event_date_proof: 'page_bound' }, // age -2: genuinely future, not slack
+  const out = await scoreLeads(providerFor(3), 'k', 'icp', [
+    { ...base, event_date: '2026-10-26', event_date_proof: 'page_bound' }, // age 0: today
+    { ...base, event_date: '2026-10-27', event_date_proof: 'page_bound' }, // age < 0: future, never a valid event date
+    { ...base, event_date: '2026-10-28', event_date_proof: 'page_bound' },
   ], undefined, { windowDays: 90, now })
-  assert.deepEqual(out!.map(l => l.intent), [4, 0],
-    'predicate: age >= -1 (UTC-day slack for event dates in zones ahead of UTC) AND age <= windowDays')
+  assert.deepEqual(out!.map(l => l.intent), [4, 0, 0],
+    'predicate: recognized proof AND valid calendar day AND age >= 0 (strict no-future, UTC day contract) AND inside the window when one was requested')
 })
 
-test('windowless requests: intent held at 0 with timing status, fit rationale preserved (no window is not a window)', async () => {
-  const out = await scoreLeads(providerFor(1), 'k', 'icp', [
+test('windowless request: no invented window gate - recognized non-future proof keeps the intent grade', async () => {
+  const out = await scoreLeads(providerFor(2), 'k', 'icp', [
     { ...base, event_date: '2026-10-20', event_date_proof: 'page_bound' },
+    { ...base, event_date: '2026-10-20', event_date_proof: null },
   ], undefined, { now: new Date('2026-10-26T12:00:00Z') }) // no windowDays supplied
-  assert.equal(out![0].intent, 0)
-  assert.ok(out![0].why.startsWith(WHY_FIT) && out![0].why.includes(TIMING_UNCONFIRMED_NOTE))
+  assert.equal(out![0].intent, 4, 'no window was requested, so none is invented; proof + non-future is enough')
+  assert.equal(out![1].intent, 0, 'proof is still required')
+  assert.ok(out![1].why.startsWith(WHY_FIT) && out![1].why.includes(TIMING_UNCONFIRMED_NOTE))
 })

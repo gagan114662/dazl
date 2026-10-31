@@ -108,14 +108,16 @@ export const isHiringTrigger = (signal: string | null | undefined, signalKind?: 
   signalKind === 'hiring' || signalKind === 'hiring_relevant_role' || HIRING_EN.test(signal ?? '')
 
 // The only path from a stored grade to a NOW claim: a recognized proof that is compatible with the
-// lead's trigger, a valid calendar day, not in the future (-1 day tolerance as v1), inside the
-// REQUEST's window. A missing window is not a window: timing stays unproven.
+// lead's trigger, a valid calendar day, strictly not in the future (UTC day contract: age >= 0), and
+// inside the REQUEST's window WHEN the request has one. A missing window invents no gate: a
+// recognized non-future proof is enough; the upper bound applies only when a window was requested.
 export function proofBackedTiming(l: { event_date?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, windowDays: number | null | undefined, now: Date = new Date()): boolean {
   if (!isEventDateProof(l.event_date_proof)) return false
   if (l.event_date_proof === 'ats_structured' && !isHiringTrigger(l.signal, l.signal_kind)) return false
-  if (!l.event_date || !isCalendarDay(l.event_date) || windowDays == null) return false
+  if (!l.event_date || !isCalendarDay(l.event_date)) return false
   const age = (now.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000
-  return age >= -1 && age <= windowDays
+  if (age < 0) return false
+  return windowDays == null || age <= windowDays
 }
 
 // Read-side surfacing (#377): a stored intent grade is shown only with recognized, trigger-compatible
