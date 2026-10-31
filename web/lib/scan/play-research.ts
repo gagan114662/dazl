@@ -33,8 +33,26 @@ function check(page:Page|FetchFail,quote:string,name:string,now:number,url:strin
  const fold=(s:string)=>s.toLowerCase().replace(/\s+/g,' ').trim()
  return {...provenance,fetch_status:'fetched',quote_match:page.text.includes(quote),company_named:fold(quote).includes(fold(name))&&page.text.includes(quote),checked_at:page.retrievedAt}
 }
+// Driver statement errors are wrapped by Db.tx; commit errors can arrive directly.
+function pgCode(error:unknown):string|undefined {
+ let e=error
+ for(let depth=0;e&&typeof e==='object'&&depth<5;depth++){
+  const value=e as {code?:string;cause?:unknown}
+  if(value.code)return value.code
+  e=value.cause
+ }
+}
+async function retryContext<T>(work:()=>Promise<T>):Promise<T>{
+ for(let attempt=0;;attempt++){
+  try{return await work()}catch(e){
+   const code=pgCode(e)
+   if(code!=='40001'&&code!=='40P01')throw e
+   if(attempt===2)throw new PlayResearchError('The play is being changed. Reload before saving research.')
+  }
+ }
+}
 export async function savePlayResearch(dbLike:DbLike,tenant:string,job:string,raw:unknown,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=Math.floor(Date.now()/1000)) {
- const db=asDb(dbLike),input=parseResearch(raw),before=await db.tx(t=>context(t,tenant,job),'serializable')
+ const db=asDb(dbLike),input=parseResearch(raw),before=await retryContext(()=>db.tx(t=>context(t,tenant,job),'serializable'))
  if(!before.job)throw new PlayResearchError('Play not found.')
  if(before.job.status!=='done'||!before.job.query?.trim())throw new PlayResearchError('Choose a completed play with its original request.')
  const offer=effectiveOffer(before.job,tenantOffer(before.memory?.positioning??'',before.profile?.sells??'')??'')
@@ -49,17 +67,13 @@ export async function savePlayResearch(dbLike:DbLike,tenant:string,job:string,ra
   const existing=yield* t.get<{id:string}>('SELECT id FROM play_research_sources WHERE tenant_id=? AND job_id=? AND fingerprint=?',[tenant,job,fingerprint])
   if(existing)return existing.id
   const id=randomBytes(12).toString('hex')
-  yield* t.run('INSERT INTO play_research_sources(id,tenant_id,job_id,fingerprint,input_json,query_snapshot,offer_snapshot,play_created_at,icp_snapshot,offer_source,source_check,person_check,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',[id,tenant,job,fingerprint,JSON.stringify(input),before.job!.query,offer.offer,before.job!.created_at,before.job!.icp,offer.source,JSON.stringify(source_check),person_check?JSON.stringify(person_check):null,now])
-  return id
+  const inserted=yield* t.get<{id:string}>('INSERT INTO play_research_sources(id,tenant_id,job_id,fingerprint,input_json,query_snapshot,offer_snapshot,play_created_at,icp_snapshot,offer_source,source_check,person_check,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,job_id,fingerprint) DO NOTHING RETURNING id',[id,tenant,job,fingerprint,JSON.stringify(input),before.job!.query,offer.offer,before.job!.created_at,before.job!.icp,offer.source,JSON.stringify(source_check),person_check?JSON.stringify(person_check):null,now])
+  if(inserted)return inserted.id
+  const winner=yield* t.get<{id:string}>('SELECT id FROM play_research_sources WHERE tenant_id=? AND job_id=? AND fingerprint=?',[tenant,job,fingerprint])
+  if(!winner)throw new PlayResearchError('The play is being changed. Reload before saving research.')
+  return winner.id
  },'serializable')
- let id=''
- for(let attempt=0;attempt<3;attempt++){
-  try{id=await commit();break}catch(e){
-   const code=(e as {code?:string}).code
-   if(code!=='40001'&&code!=='40P01')throw e
-   if(attempt===2)throw new PlayResearchError('The play is being changed. Reload before saving research.')
-  }
- }
+ const id=await retryContext(commit)
  return {id,job_id:job,research_only:true,can_draft:false}
 }
 export async function playResearchCards(dbLike:DbLike,tenant:string,job:string):Promise<PlayResearchCard[]>{
