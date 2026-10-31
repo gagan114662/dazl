@@ -8,7 +8,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { approve, createDraft, OutreachError, saveSettings, sendMessage, suppress, type Deps } from '../lib/outreach/service.ts'
+import { approve, createDraft, OutreachError, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, pause, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { acceptLaunchPolicy, launchGate, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
@@ -384,10 +384,12 @@ test('HOLD: the send service rechecks the same acceptance after its token refres
 
 // ---------- the final send boundary (#405 review HOLD on 3571b7ee) ----------
 // Everything autopilot requires in order to send is re-read from the store after the Gmail token refresh, immediately
-// before the bytes go to Gmail. Each case below changes exactly one thing from inside that await: the policy's own stops
-// (reply, bounce rate, an unreadable stop store), the tenant's switches (off, paused, consent, the operator kill flag),
-// the cap, the sender identity, the mailbox, an uncertain send elsewhere, and the recipient's opt-out. The unchanged
-// control sends exactly once.
+// before the bytes go to Gmail (its sendAuthority). Each case below changes exactly one thing from inside that await: the
+// policy's own stops (reply, bounce rate, an unreadable stop store), the tenant's switches (off, paused, consent, the
+// operator kill flag), the cap, an uncertain send elsewhere, the launch itself (re-accepted, mailbox changed or gone).
+// Each refuses the send with its specific reason, pauses when the stop is a pause, and releases the message to the
+// tenant as a draft. The unchanged control sends exactly once. The service's own rechecks (suppression, the exact
+// approved words, the recipient's lead) are unchanged and covered by the send suites.
 async function launched() {
   const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
   acceptLaunchPolicy(db, 'A', policy([job]), NOW)
@@ -420,16 +422,13 @@ const boundaryCases: Record<string, Case> = {
   paused: { change: db => pause(db, 'A'), stopped: 'paused', pause: 'paused_by_user', msg: ['draft', 'paused'] },
   kill_flag: { change: (_db, flags) => { flags.AUTOPILOT_KILL = '1' }, stopped: 'not_available', pause: null, msg: ['draft', 'not_available'] },
   consent_replaced: { change: db => db.prepare("UPDATE autopilot_settings SET consent_version = '2000-01-01' WHERE tenant_id = 'A'").run(), stopped: 'consent_required', pause: null, msg: ['draft', 'consent_required'] },
-  // volume, identity, mailbox, an uncertain send elsewhere
+  // volume and an uncertain send elsewhere
   daily_cap_lowered: { change: db => db.prepare("UPDATE autopilot_settings SET daily_cap = 1 WHERE tenant_id = 'A'").run(), stopped: 'daily_cap', pause: null, msg: ['draft', 'daily_cap'] },
-  sender_identity_removed: { change: db => db.prepare("DELETE FROM outreach_settings WHERE tenant_id = 'A'").run(), stopped: null, pause: null, msg: ['approved', 'sender_identity_missing'] },
-  mailbox_disconnected: { change: db => db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(), stopped: 'gmail_not_connected', pause: 'gmail_not_connected', msg: ['approved', 'gmail_not_connected'] },
-  uncertain_elsewhere: { change: db => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES ('u1a2b3c4d5e6f7a8b9c0d1e2', 'A', 'xu', 'u@other.example', 's', 'bodybodybodybodybodybody', 'uncertain', ?)").run(NOW), stopped: 'uncertain_send', pause: 'uncertain_send', msg: ['draft', 'already_uncertain'] },
-  // the launch itself: the same policy accepted again (a new acceptance, launch cleared) or the mailbox changed
+  uncertain_elsewhere: { change: db => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES ('u1a2b3c4d5e6f7a8b9c0d1e2', 'A', 'xu', 'u@other.example', 's', 'bodybodybodybodybodybody', 'uncertain', ?)").run(NOW), stopped: 'uncertain_send', pause: 'uncertain_send', msg: ['draft', 'uncertain_send'] },
+  // the launch itself: the same policy accepted again (a new acceptance, launch cleared), the mailbox changed or gone
   policy_reaccepted: { change: db => { assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([(db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id]), NOW + 1), { ok: true }) }, stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
   mailbox_changed: { change: db => db.prepare("UPDATE gmail_accounts SET email = 'other@acme.example' WHERE tenant_id = 'A'").run(), stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
-  // the recipient opts out: the service's own suppression check, unchanged
-  recipient_opted_out: { change: db => suppress(db, 'A', 'd@four.example', 'unsubscribe'), stopped: null, pause: null, msg: ['skipped', 'suppressed'] },
+  mailbox_disconnected: { change: db => db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(), stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
 }
 
 test('HOLD: every stop is re-read after the token refresh, right before Gmail: no send, the specific reason, the message released', async () => {

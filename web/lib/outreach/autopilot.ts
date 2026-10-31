@@ -177,7 +177,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       out.held++
       audit(db, tenantId, `held_${runOutcome(code)}`, code === 'launch_policy_changed' ? 'the launch policy changed' : code, leadId, id)
       if (AUTHORITY_CODES.has(code)) db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, claimed_at = NULL, error = ? WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(code, id, tenantId)
-    }
+    } else audit(db, tenantId, 'stopped', runOutcome(code), leadId) // nothing drafted yet: the lead is picked up again next run
     if (PAUSES.has(code)) pause(db, tenantId, runOutcome(code))
     return stop(runOutcome(code))
   }

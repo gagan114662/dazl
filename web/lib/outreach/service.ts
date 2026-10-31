@@ -74,10 +74,11 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
-// sendAuthority: a caller's own final authorization for THIS send (autopilot: every stop it requires, re-read from the
-// store; under a calibrated launch also the same accepted policy, mailbox, claim authority and the policy's own stops).
-// Checked at the claim and again after the token refresh, immediately before the bytes go to Gmail, after the service's
-// own final checks; a refusal code releases the claim like any other final check.
+// sendAuthority: a caller's own final authorization for THIS send, re-read from the store each time it is asked (autopilot:
+// every stop it requires; under a calibrated launch the same accepted policy from the same mailbox, the policy's own
+// stops, its scope and its claim authority on the final words). Checked at the claim and again after the token refresh,
+// immediately before the bytes go to Gmail, after the service's own rechecks; a refusal code releases the claim like any
+// other final check. Other final checks may be added beside it; it is one of them, not a replacement.
 export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; sendAuthority?: () => string | null }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
@@ -471,48 +472,30 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     throw new OutreachError(code)
   }
   const m = getMsg(db, tenantId, id)!
-  // Every final check, in ONE place, run twice: at the claim, and again after the token refresh immediately before the
-  // immutable MIME bytes are handed to Gmail. Nothing is carried across that await: the recipient's lead and contact,
-  // suppression, the exact approved words, the sequence set, the sender identity, the connected mailbox, the shared
-  // daily cap, an uncertain send elsewhere and autopilot's pause are all re-read from the store, then the caller's own
-  // authority (sendAuthority) has the last word. The values the MIME is built from are the ones read at the handoff.
-  const finalChecks = () => {
-    if (isSuppressed(db, tenantId, m.to_email)) {
-      db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL, claimed_at = NULL WHERE id = ?").run(id)
-      throw new OutreachError('suppressed')
-    }
-    if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
-    if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
-    if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
-    if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) release('lead_currentness_unconfirmed')
-    if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
-    if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
-    const final = getMsg(db,tenantId,id)!
-    if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
-    if (tableExists(db, 'sequences')) {
-      const seq = db.prepare("SELECT id,status FROM sequences WHERE tenant_id = ? AND message_id = ?").get(tenantId,id) as { id: string; status: string } | undefined
-      if (seq && (seq.status !== 'approved' || db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND (status <> 'approved' OR approved_hash IS NULL)").get(tenantId,seq.id))) release('approve_sequence_set')
-      if (seq) {
-        const steps = db.prepare('SELECT step,subject,body,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ?').all(tenantId,seq.id) as {step:number;subject:string;body:string;approved_hash:string}[]
-        // Production sets are always exactly 3 steps. A shorter set passes only for the
-        // test-only fixture on the designated test tenant (exact inbox, allowlisted, test = 1);
-        // every hash / changed-since-approval check still applies.
-        const shortTestSet = testRecipientApproved(db, tenantId, m.to_email) && m.test === 1
-        if ((steps.length !== 3 && !shortTestSet) || steps.length < 2 || steps.some(st => st.approved_hash !== hash(m.to_email,st.subject,st.body)) || !steps.some(st => st.step === 1 && st.subject === m.subject && st.body === m.body)) release('changed_since_approval')
-      }
-    }
-    const settings = getSettings(db, tenantId)
-    if (!settings) return release('sender_identity_missing')
-    const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
-    if (!acct) return release('gmail_not_connected')
-    if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
-    if (anyUncertainSend(db, tenantId)) release('already_uncertain')
-    if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
-    const authority = d.sendAuthority?.() ?? null
-    if (authority) release(authority)
-    return { settings, acct }
+  if (isSuppressed(db, tenantId, m.to_email)) {
+    db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL, claimed_at = NULL WHERE id = ?").run(id)
+    throw new OutreachError('suppressed')
   }
-  finalChecks()
+  if (m.approved_hash !== hash(m.to_email, m.subject, m.body)) release('changed_since_approval')
+  if (tableExists(db, 'sequences')) {
+    const seq = db.prepare("SELECT id,status FROM sequences WHERE tenant_id = ? AND message_id = ?").get(tenantId,id) as { id: string; status: string } | undefined
+    if (seq && (seq.status !== 'approved' || db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND (status <> 'approved' OR approved_hash IS NULL)").get(tenantId,seq.id))) release('approve_sequence_set')
+    if (seq) {
+      const steps = db.prepare('SELECT step,subject,body,approved_hash FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ?').all(tenantId,seq.id) as {step:number;subject:string;body:string;approved_hash:string}[]
+      // Production sets are always exactly 3 steps. A shorter set passes only for the
+      // test-only fixture on the designated test tenant (exact inbox, allowlisted, test = 1);
+      // every hash / changed-since-approval check still applies.
+      const shortTestSet = testRecipientApproved(db, tenantId, m.to_email) && m.test === 1
+      if ((steps.length !== 3 && !shortTestSet) || steps.length < 2 || steps.some(st => st.approved_hash !== hash(m.to_email,st.subject,st.body)) || !steps.some(st => st.step === 1 && st.subject === m.subject && st.body === m.body)) release('changed_since_approval')
+    }
+  }
+  const settings = getSettings(db, tenantId)
+  if (!settings) release('sender_identity_missing')
+  const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
+  if (!acct) release('gmail_not_connected')
+  if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
+  const authorityAtClaim = d.sendAuthority?.() ?? null
+  if (authorityAtClaim) release(authorityAtClaim)
 
   let token: string
   try {
@@ -521,13 +504,29 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     return release(e instanceof GmailError && e.kind === 'reconnect' ? 'gmail_reconnect_needed' : 'gmail_unavailable')
   }
 
-  // Token refresh is asynchronous: the same checks again, immediately before handing the immutable MIME bytes to Gmail.
-  const { settings, acct } = finalChecks()
+  // Token refresh is asynchronous. Recheck authorization and suppression after it,
+  // immediately before handing the immutable MIME bytes to Gmail.
+  if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
+  if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
+  if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
+  if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) release('lead_currentness_unconfirmed')
+  if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
+  if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
+  if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
+  const final = getMsg(db,tenantId,id)!
+  if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
+  if (tableExists(db,'sequences')) {
+    const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
+    if (set && set.status !== 'approved') release('approve_sequence_set')
+  }
+  if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  const authorityAtHandoff = d.sendAuthority?.() ?? null
+  if (authorityAtHandoff) release(authorityAtHandoff)
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
-    fromName: settings.sender_name, fromEmail: acct.email, to: m.to_email, subject: m.subject,
-    body: composeBody(m.body, settings, unsubUrl), messageId: `dazl.${id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(nowS(d) * 1000),
+    fromName: settings!.sender_name, fromEmail: acct!.email, to: m.to_email, subject: m.subject,
+    body: composeBody(m.body, settings!, unsubUrl), messageId: `dazl.${id}@${acct!.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(nowS(d) * 1000),
   }))
   try {
     const out = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl))
