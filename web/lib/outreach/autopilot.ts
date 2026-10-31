@@ -4,6 +4,7 @@ import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
 import { tableExists } from './send-budget.ts'
 import { captureError } from '../ops/errors.ts'
+import { ENRICH_STALE_S } from '../scan/enrichment.ts'
 import { polishDraft } from './draft-llm.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
@@ -212,12 +213,15 @@ const AUTHORITY_RETURNS = new Set(['autopilot_off', 'consent_required'])
 // lost, the authority unreadable): known not sent, the slot released, the draft held and unapproved until autopilot runs
 // again and reads it afresh.
 const AUTHORITY_ENDED = new Set(['autopilot_unavailable', 'reservation_lost', 'authority_unreadable'])
-// The new-lead query (step 2 of a pass). Parameters: tenant, MIN_CONFIDENCE, tenant, tenant, now - SKIP_ERROR_S,
-// now - SKIP_RETRY_S. Only leads of finished scans (j.status = 'done'): the runner records a lead's required sales/hiring
-// gate after the network checks, so a tick during a running scan must not read a gate not yet run as a refusal. Its
+// The new-lead query (step 2 of a pass). Parameters: tenant, now - ENRICH_STALE_S, MIN_CONFIDENCE, tenant, tenant,
+// now - SKIP_ERROR_S, now - SKIP_RETRY_S. Only leads of finished scans whose post-finish enrichment (buyer fit, the
+// required sales/hiring gate) is not running: the runner marks the scan done before that stage and records the gate in
+// it, so a tick during a running scan or its enrichment must not read a gate not yet run as a refusal. An enrichment
+// that never finished (a crash) stops holding its leads after ENRICH_STALE_S, the store's own staleness rule. Its
 // skipped-row check is by lead on autopilot_audit_lead (test: the query plan).
 export const NEW_LEADS_SQL = `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND j.status = 'done' AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
+     WHERE j.user_id = ? AND j.status = 'done' AND (j.enrich_started_at IS NULL OR j.enrich_finished_at IS NOT NULL OR j.enrich_started_at < ?)
+       AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
          AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
@@ -428,7 +432,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // reason that can change is tried again later (SKIP_RETRY_S, or as soon as the user confirmed the lead after the
   // refusal), a store error on the next tick. So a pass every tick does not retry the same refusals, write the same
   // audit rows, or hold the 25 slots from leads it could send to.
-  const leads = db.prepare(NEW_LEADS_SQL).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId, now - SKIP_ERROR_S, now - SKIP_RETRY_S) as { id: string; contact: string }[]
+  const leads = db.prepare(NEW_LEADS_SQL).all(tenantId, now - ENRICH_STALE_S, MIN_CONFIDENCE, tenantId, tenantId, now - SKIP_ERROR_S, now - SKIP_RETRY_S) as { id: string; contact: string }[]
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends

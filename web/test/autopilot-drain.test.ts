@@ -778,7 +778,7 @@ test('#448 a manual send whose recheck read fails after the token refresh: refus
 test('#448 query plans: the skipped-row check searches autopilot_audit by lead, the disables count by action', async () => {
   const db = await setup()
   const plan = (sql: string, ...params: unknown[]) => (db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...params) as { detail: string }[]).map(r => r.detail)
-  const leads = plan(NEW_LEADS_SQL, 'A', 80, 'A', 'A', NOW - 600, NOW - 3600)
+  const leads = plan(NEW_LEADS_SQL, 'A', NOW - 3600, 80, 'A', 'A', NOW - 600, NOW - 3600)
   assert.ok(leads.some(d => /SEARCH a USING (COVERING )?INDEX autopilot_audit_lead \(tenant_id=\? AND lead_id=\? AND action=\?\)/.test(d)), leads.join('\n'))
   const disables = plan("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'disabled'", 'A')
   assert.ok(disables.some(d => /USING (COVERING )?INDEX autopilot_audit_action \(tenant_id=\? AND action=\?\)/.test(d)), disables.join('\n'))
@@ -796,7 +796,17 @@ test('#448 leads of a scan still running are not candidates (no skipped row); on
   const r1 = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
   assert.deepEqual([r1.sent, r1.skipped, db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE action = 'skipped'").pluck().get()], [0, 0, 0], 'not a candidate while the scan runs: nothing tried, nothing recorded')
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
-  assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + 60))).sent, sent.length], [1, 1], 'the scan done: drafted and sent on the next pass')
+  // Done, but its post-finish enrichment (where the gate is recorded) is running: still not a candidate.
+  db.prepare('UPDATE scan_jobs SET enrich_started_at = ? WHERE id = ?').run(NOW + 30, job)
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 60))
+  assert.deepEqual([r2.sent, r2.skipped, db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE action = 'skipped'").pluck().get()], [0, 0, 0], 'enrichment running: nothing tried, nothing recorded')
+  db.prepare('UPDATE scan_jobs SET enrich_finished_at = ? WHERE id = ?').run(NOW + 90, job)
+  assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + 120))).sent, sent.length], [1, 1], 'enrichment finished: drafted and sent on the next pass')
+  // An enrichment that never finished (a crash) stops holding its leads once stale.
+  const { ENRICH_STALE_S } = await import('../lib/scan/enrichment.ts')
+  const db3 = await setup(); ok(db3); pastWarmup(db3); const three = sends(); const c = lead(db3, 'c@three.example')
+  db3.prepare('UPDATE scan_jobs SET enrich_started_at = ? WHERE id = (SELECT scan_job_id FROM leads WHERE id = ?)').run(NOW - ENRICH_STALE_S - 1, c)
+  assert.deepEqual([(await runAutopilot(db3, 'A', 'Acme', at(three.d, NOW))).sent, three.sent.length], [1, 1], 'stale enrichment: reachable again')
   // A sales/hiring gate refusal, should one be recorded, is retried after an hour like the other clearable refusals.
   const db2 = await setup(); ok(db2); pastWarmup(db2); const two = sends(); const g = lead(db2, 'b@two.example')
   db2.prepare("INSERT INTO autopilot_audit (id, tenant_id, lead_id, action, detail, created_at) VALUES ('g1g1g1g1g1g1g1g1g1g1g1g1', 'A', ?, 'skipped', 'sales_hiring_check_failed', ?)").run(g, NOW + 1) // refused after the lead's confirmation (NOW)
