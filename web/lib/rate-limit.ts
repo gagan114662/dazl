@@ -27,7 +27,7 @@ export const DEGRADED: Record<string, Degraded> = {
   verify: 'closed', 'verify-send': 'closed', reset: 'closed', 'reset-ip': 'closed', 'reset-email': 'closed', 'email-change': 'closed',
   'signin-ip': 'closed', 'signin-acct': 'closed', signup: 'closed', google: 'closed', 'google-cb': 'closed',
   // scans, trial admission and paid or shared providers
-  scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'hiring-feed': 'closed',
+  scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'evidence-recheck': 'closed', 'hiring-feed': 'closed',
   'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'find-contact': 'closed',
   'settings:enrichment': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
