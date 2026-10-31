@@ -29,6 +29,8 @@ export const stateOf = (raw: string, status: SourceStatus): SourceState => (/^(?
 // Throttling is named as throttling, never as an unreadable answer: "partial:limited_1_of_3" -> "1 of 3 requests
 // rate-limited by the provider"; a bare "limited" / "limited_partial:2_of_3" row (failed overall) gets the same honesty.
 export function partialNote(raw: string): string | null {
+  const both = /^partial:(\d+)_of_(\d+)_plus_(\d+)_limited/i.exec(raw)
+  if (both) return `${both[1]} of ${both[2]} requests failed and ${both[3]} rate-limited by the provider`
   const lim = /^partial:limited_(\d+)_of_(\d+)/i.exec(raw)
   if (lim) return `${lim[1]} of ${lim[2]} requests rate-limited by the provider`
   if (raw === 'limited') return 'rate-limited by the provider, asked to slow down'

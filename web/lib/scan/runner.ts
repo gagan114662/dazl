@@ -737,7 +737,8 @@ export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean;
   // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
   // A provider rate-limit is its own state, never an outage or an empty result: the provider answered and told us to slow down.
   const limited = note.limited ?? 0
-  const partial = note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : limited > 0 ? `partial:limited_${limited}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
+  // Both failed and limited beside answers that worked: name BOTH. A plain "partial:N_of_M" would hide the throttling behind the failure count.
+  const partial = note.failed > 0 && limited > 0 ? `partial:${note.failed}_of_${note.attempted}_plus_${limited}_limited` : note.failed > 0 ? `partial:${note.failed}_of_${note.attempted}` : limited > 0 ? `partial:limited_${limited}_of_${note.attempted}` : (note.malformed ?? 0) > 0 ? 'partial:malformed' : null
   // Hits with usable page evidence but nothing extracted is NOT "nothing found": its own status, so progress and the outcome say evidence was read and no candidate came of it.
   if (leads) return partial ?? (leads.length ? 'ok' : note.hits > 0 ? 'no_candidates' : 'empty')
   if (!note.searched) return 'unavailable'

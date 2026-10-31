@@ -309,3 +309,12 @@ test('mixed limited + failures + hits keeps the partial reason visible; limited_
   assert.equal(o.kind, 'none_extracted', 'a partial source can never leave the result reading as a clean zero')
   assert.match(o.detail ?? '', /rate-limited/)
 })
+
+test('mixed failed + limited + hits names BOTH reasons; the throttling is never hidden behind the failure count', () => {
+  const st = newsStatus([{ company: 'X' } as never], { searched: true, hits: 2, attempted: 5, failed: 2, limited: 1 })
+  assert.equal(st, 'partial:2_of_5_plus_1_limited')
+  assert.equal(sourceStatusOf(st, false), 'partial')
+  assert.equal(partialNote(st), '2 of 5 requests failed and 1 rate-limited by the provider')
+  const o = outcomeOf([R('search:tinyfish', 'empty', null, null), R('search:news', st, 2, 1)])
+  assert.match(o.detail ?? '', /2 of 5 requests failed and 1 rate-limited by the provider/)
+})
