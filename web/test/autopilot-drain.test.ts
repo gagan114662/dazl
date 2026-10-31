@@ -671,9 +671,10 @@ test('#448 keep (the lease heartbeat) is awaited before every message; when it t
   assert.deepEqual([two.sent.length, reservations(db2), (db2.prepare('SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND sent_at IS NULL').get('A') as { n: number }).n], [1, 0, 0], 'the first went and is settled; the second was never drafted')
 })
 
-// Round 2 (all seats + probe): a refusal of the draft path that can change is retried after a day; one that never changes
-// is final. (The exclusion is by the skipped audit row: its reason and its age.)
-test('#448 a lead refused for a reason the user can clear is tried again a day later; a transient store error too; a personal address never', async () => {
+// Round 2 (all seats + probe): a refusal of the draft path that can change is tried again (an hour later, or at once when
+// the user confirmed the lead after it; a store error on the next tick); one that never changes is final. The
+// exclusion is by the skipped audit row: its reason and its age.
+test('#448 a lead refused for a reason the user can clear is tried again an hour later; a transient store error on the next tick; a personal address never', async () => {
   const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
   const fixable = lead(db, 'a@one.example'); db.prepare('UPDATE leads SET fit = 0, intent = NULL WHERE id = ?').run(fixable) // ungraded: the user grades it later
   lead(db, 'p@gmail.com')
@@ -682,16 +683,25 @@ test('#448 a lead refused for a reason the user can clear is tried again a day l
   assert.deepEqual([r1.sent, skipped().sort()], [0, ['lead_ungraded', 'personal_email']], 'both refused once')
   db.prepare('UPDATE leads SET fit = 1, intent = 4 WHERE id = ?').run(fixable) // graded
   const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 120))
-  assert.deepEqual([r2.sent, r2.skipped, skipped().length], [0, 0, 2], 'within the day: neither retried, nothing re-recorded')
-  const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))
-  assert.deepEqual([r3.sent, sent.length, r3.skipped, skipped().length], [1, 1, 0, 2], 'a day on: the graded lead is drafted and sent; the personal address is not retried')
+  assert.deepEqual([r2.sent, r2.skipped, skipped().length], [0, 0, 2], 'within the hour: neither retried, nothing re-recorded')
+  const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 3601))
+  assert.deepEqual([r3.sent, sent.length, r3.skipped, skipped().length], [1, 1, 0, 2], 'an hour on: the graded lead is drafted and sent; the personal address is not retried')
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY)); assert.equal(skipped().length, 2, 'the personal address: never again')
   // A transient error while drafting (one failing insert): recorded as skipped:error, retried a day later, sent then.
   const db2 = await setup(); ok(db2); pastWarmup(db2); const two = sends(); lead(db2, 'b@two.example')
   const prepare = db2.prepare.bind(db2)
   db2.prepare = ((sql: string) => { if (sql.includes('INSERT INTO outreach_messages')) { delete (db2 as { prepare?: unknown }).prepare; throw new Error('SQLITE_BUSY: database is locked') } return prepare(sql) }) as typeof db2.prepare
   const e1 = await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW))
   assert.deepEqual([e1.sent, e1.skipped, (db2.prepare("SELECT detail FROM autopilot_audit WHERE action = 'skipped'").all() as { detail: string }[]).map(x => x.detail)], [0, 1, ['error']])
-  assert.deepEqual([(await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + 60))).sent, (await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + DAY + 1))).sent, two.sent.length], [0, 1, 1], 'not hammered; tried again a day later')
+  assert.deepEqual([(await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + 60))).sent, (await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + 601))).sent, two.sent.length], [0, 1, 1], 'not hammered; tried again on the next tick')
+  // Probe r2: a verified lead not yet confirmed by the user is refused (lead_currentness_unconfirmed); confirmed later, it
+  // is drafted on the very next pass.
+  const db3 = await setup(); ok(db3); pastWarmup(db3); const three = sends(); const unc = lead(db3, 'c@three.example')
+  db3.prepare('UPDATE leads SET human_confirmed_at = NULL, human_confirmed_from = NULL WHERE id = ?').run(unc)
+  const u1 = await runAutopilot(db3, 'A', 'Acme', at(three.d, NOW))
+  assert.deepEqual([u1.sent, u1.skipped, (db3.prepare("SELECT detail FROM autopilot_audit WHERE action = 'skipped'").all() as { detail: string }[]).map(x => x.detail)], [0, 1, ['lead_currentness_unconfirmed']])
+  db3.prepare("UPDATE leads SET human_confirmed_at = ?, human_confirmed_from = 'user_review' WHERE id = ?").run(NOW + 60, unc)
+  assert.deepEqual([(await runAutopilot(db3, 'A', 'Acme', at(three.d, NOW + 120))).sent, three.sent.length], [1, 1], 'confirmed after the refusal: drafted and sent on the next pass')
 })
 
 // Reviewer 1 round 2: disable() and enable() again DURING a held draft's token refresh. The pass's commitment requires
