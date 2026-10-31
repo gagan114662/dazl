@@ -12,9 +12,10 @@ const TITLES: Record<string, string> = {
   'pg': 'Postgres reachable with every shipped migration: store and schema ready (503 only while raw-SQLite modules remain)',
   'pg-behind': 'Postgres missing a shipped migration: 503 not ready (schema behind)',
   'env-missing': 'a required environment variable missing: 503 not ready by count only; /api/health (databases) and liveness 200',
+  'stats-hang': 'the queue answers but its alert statistics hang: 200 ready, alerts null with reason timeout (#430)',
 }
 
-for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind', 'env-missing']) {
+for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind', 'env-missing', 'stats-hang']) {
   test(`health routes: ${TITLES[mode]}`, { skip: mode === 'pg' || mode === 'pg-behind' ? pgSkip : false }, () => {
     const env: NodeJS.ProcessEnv = { ...process.env, HEALTH_MODE: mode }
     delete env.NODE_TEST_CONTEXT

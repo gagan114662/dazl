@@ -135,3 +135,32 @@ The SQL backend is a documented later step, not part of this slice:
   data-layer slice), security patch files, load harness.
 - No production access, no cron changes, no live DB writes; tests are
   synthetic and in-memory only.
+
+## Fair service (#355, shared adapter `DbQueue` only)
+
+- **Lanes** (`LANES` in `lib/queue/types.ts`): a claim with `lane: true` counts `maxInFlight` and
+  `perTenantInFlight` over its own `kinds` only, so research holding every research slot never blocks a reply
+  check or suppression. `replies` (reply-check, suppression, followup, sequence; 4 slots) and `research` (scan,
+  enrich, monitor, watch, index-check; 3 slots).
+- **Round-robin** (`order: 'round_robin'`): the tenant whose last claim is oldest goes first (never claimed counts
+  as oldest), then its oldest item. `work_queue_meta` row `t:<tenant>` holds the token of the tenant's last claim;
+  claims are already serialized by the token row, so the order holds across instances. The shared scan claimer
+  uses it. The default stays FIFO, so the in-process and SQLite adapters keep parity (they refuse the new options).
+- **Admission** (`maxBacklog` on enqueue): refuses a tenant's item when it already has that many active items of
+  the kind; returned as `{created: false, refused: 'backlog'}`, nothing written. Serialized per tenant and kind by
+  the `a:<tenant>:<kind>` meta row (Postgres row lock), so racing instances admit exactly the limit.
+- **Dead letters**: `failed()` lists them; `replay(id)` puts one back (attempts reset). A token from the dead
+  attempt stays stale.
+- **Alerts** (`lib/queue/alerts.ts` over `DbQueue.stats()`): a kind whose oldest due item waited past its limit
+  (15 min reply checks, 5 min suppression, 30 min follow-ups and sequences, 60 min otherwise), more than 20 dead
+  letters, or an expired claim nobody reaped. `/api/ready` reports them as `queue.alerts` (kinds and counts only)
+  without becoming unready; the error reporter gets one record when the set changes. The statistics are read outside
+  the mandatory queue check (the reachability `SELECT`), under their own budget (500 ms by default): when the read
+  throws, hangs or runs over it the body says `queue: {alerts: null, reason: 'error' | 'timeout'}` and the instance
+  stays ready. Only the queue's reachability failing or timing out fails readiness.
+- Proof: `test/queue-fair.test.ts` on both engines, including a load simulation (one tenant with 300 slow scans,
+  four tenants with reply checks every minute and a scan every fifth): with lanes and round-robin every reply check
+  is served in its minute and every quiet scan within four rounds; with one shared pool, 32 of 160 reply checks
+  are reached at all.
+- Not yet: the tick route's follow-ups, sequences, watches and monitors still run inline (serially per tenant);
+  moving them onto lane workers is the next slice, as is the load test on the dedicated load-test host.
