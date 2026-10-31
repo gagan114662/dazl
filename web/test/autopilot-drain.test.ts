@@ -303,8 +303,9 @@ test('#448 autopilot turned off, its operator flag off or its consent changed du
     const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), flags, fetchImpl })
     assert.deepEqual([r.sent, sent.length, r.stopped], [0, 1, { disable: 'autopilot_off', kill: 'autopilot_unavailable', consent: 'consent_required' }[change]], `${change}: nothing more sent`)
     assert.equal(reservations(db), 0, `${change}: the reserved slot is released`)
+    if (change === 'kill') { assert.deepEqual([work(db).map(w => w.reason), msgStatus(db, 'b@two.example')], [['autopilot_unavailable'], 'draft'], 'the operator switch is not the tenant\'s decision: held, unapproved'); continue }
     assert.deepEqual([work(db).length, msgStatus(db, 'b@two.example')], [0, 'draft'], `${change}: back with the user, unapproved, out of autopilot's queue`)
-    assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'released'), `${change}: recorded as released`)
+    assert.equal(recentAutopilotAudit(db, 'A').filter(a => a.action === 'released').length, 1, `${change}: recorded as released, once`)
   }
 })
 
@@ -321,7 +322,9 @@ test('#448 positive controls: a pause during the token refresh holds as before; 
   { const { db, sent, d } = await heldAfterOneSend()
     const fetchImpl = (async (url: string) => { if (String(url).includes('token')) pause(db, 'A'); return tokenOk(url as never) }) as unknown as typeof fetch
     await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl })
-    assert.deepEqual([sent.length, work(db).map(w => w.reason), reservations(db)], [1, ['paused'], 0]) }
+    assert.deepEqual([sent.length, work(db).map(w => w.reason), reservations(db)], [1, ['paused'], 0])
+    assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 2))).stopped, sent.length], ['paused', 1], 'still paused: still not sent')
+    resume(db, 'A'); assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 3))).sent, sent.length, work(db).length], [1, 2, 0], 'resumed: the held draft goes once') }
   { const { db, sent, d } = await heldAfterOneSend()
     const fetchImpl = (async (url: string) => { if (String(url).includes('token')) disable(db, 'A'); return tokenOk(url as never) }) as unknown as typeof fetch
     await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl })
@@ -666,4 +669,76 @@ test('#448 keep (the lease heartbeat) is awaited before every message; when it t
   let n = 0
   await assert.rejects(runAutopilot(db2, 'A', 'Acme', { ...at(two.d, NOW), keep: async () => { if (++n === 2) throw new Error('lease lost') } }), /lease lost/)
   assert.deepEqual([two.sent.length, reservations(db2), (db2.prepare('SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND sent_at IS NULL').get('A') as { n: number }).n], [1, 0, 0], 'the first went and is settled; the second was never drafted')
+})
+
+// Round 2 (all seats + probe): a refusal of the draft path that can change is retried after a day; one that never changes
+// is final. (The exclusion is by the skipped audit row: its reason and its age.)
+test('#448 a lead refused for a reason the user can clear is tried again a day later; a transient store error too; a personal address never', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
+  const fixable = lead(db, 'a@one.example'); db.prepare('UPDATE leads SET fit = 0, intent = NULL WHERE id = ?').run(fixable) // ungraded: the user grades it later
+  lead(db, 'p@gmail.com')
+  const skipped = () => (db.prepare("SELECT lead_id, detail FROM autopilot_audit WHERE action = 'skipped' ORDER BY created_at, rowid").all() as { lead_id: string; detail: string }[]).map(s => s.detail)
+  const r1 = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual([r1.sent, skipped().sort()], [0, ['lead_ungraded', 'personal_email']], 'both refused once')
+  db.prepare('UPDATE leads SET fit = 1, intent = 4 WHERE id = ?').run(fixable) // graded
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 120))
+  assert.deepEqual([r2.sent, r2.skipped, skipped().length], [0, 0, 2], 'within the day: neither retried, nothing re-recorded')
+  const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 1))
+  assert.deepEqual([r3.sent, sent.length, r3.skipped, skipped().length], [1, 1, 0, 2], 'a day on: the graded lead is drafted and sent; the personal address is not retried')
+  // A transient error while drafting (one failing insert): recorded as skipped:error, retried a day later, sent then.
+  const db2 = await setup(); ok(db2); pastWarmup(db2); const two = sends(); lead(db2, 'b@two.example')
+  const prepare = db2.prepare.bind(db2)
+  db2.prepare = ((sql: string) => { if (sql.includes('INSERT INTO outreach_messages')) { delete (db2 as { prepare?: unknown }).prepare; throw new Error('SQLITE_BUSY: database is locked') } return prepare(sql) }) as typeof db2.prepare
+  const e1 = await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW))
+  assert.deepEqual([e1.sent, e1.skipped, (db2.prepare("SELECT detail FROM autopilot_audit WHERE action = 'skipped'").all() as { detail: string }[]).map(x => x.detail)], [0, 1, ['error']])
+  assert.deepEqual([(await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + 60))).sent, (await runAutopilot(db2, 'A', 'Acme', at(two.d, NOW + DAY + 1))).sent, two.sent.length], [0, 1, 1], 'not hammered; tried again a day later')
+})
+
+// Reviewer 1 round 2: disable() and enable() again DURING a held draft's token refresh. The pass's commitment requires
+// the grant it started under (no disable since) and, for a held draft, its work row: both gone, so nothing is sent and
+// the draft is the user's, released once.
+test('#448 disable then re-enable during a held draft\'s token refresh: not sent under the new grant, draft unapproved, slot released, one released row', async () => {
+  const { db, sent, d } = await heldAfterOneSend()
+  const fetchImpl = (async (url: string) => { if (String(url).includes('token')) { disable(db, 'A'); cap1(db) } return tokenOk(url as never) }) as unknown as typeof fetch
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), fetchImpl })
+  const b = db.prepare("SELECT status, approved_hash FROM outreach_messages WHERE to_email = 'b@two.example'").get() as { status: string; approved_hash: string | null }
+  assert.deepEqual([r.sent, sent.length, r.stopped, reservations(db), work(db).length, b.status, b.approved_hash], [0, 1, 'autopilot_off', 0, 0, 'draft', null])
+  assert.equal(recentAutopilotAudit(db, 'A').filter(a => a.action === 'released').length, 1, 'released once, not twice')
+  assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', at(d, NOW + DAY + 2))).sent, sent.length], [0, 1], 'the new grant sends nothing autopilot held')
+  // A new draft (no work row) in the same situation: the grant check alone refuses it.
+  const db2 = await setup(); ok(db2); pastWarmup(db2); const two = sends(); lead(db2, 'c@three.example')
+  const r2 = await runAutopilot(db2, 'A', 'Acme', { ...at(two.d, NOW), fetchImpl: onToken(db2, 1, db3 => { disable(db3, 'A'); setCap(3)(db3) }) })
+  assert.deepEqual([r2.sent, two.sent.length, r2.stopped, msgStatus(db2, 'c@three.example'), work(db2).length], [0, 0, 'autopilot_off', 'draft', 0])
+})
+
+// Reviewer 1 round 2 (R1-6): disable() landing after the commitment, the Gmail request in flight: that send completes
+// and is recorded as sent; no "released" row is written for it.
+test('#448 disable() during the Gmail request (after the commitment): the send completes, recorded as sent, nothing released for it', async () => {
+  const db = await setup(); cap1(db); pastWarmup(db); const sent: string[] = []
+  const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { disable(db, 'A'); sent.push(raw); return { id: 'g' } }) as never }
+  lead(db, 'a@one.example')
+  const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual([r.sent, sent.length, msgStatus(db, 'a@one.example'), counted(db).map(c => c.action), work(db).length], [1, 1, 'sent', ['sent'], 0])
+  assert.equal(recentAutopilotAudit(db, 'A').filter(a => a.action === 'released').length, 0)
+})
+
+// Reviewer 2 round 2 (R2-7): disable() leaves warm-up holds alone (the user's already) and releases only the due ones.
+test('#448 disable() leaves warm-up holds as they are and releases only the held first touches that were due', async () => {
+  const db = await setup(); cap1(db); const { sent, d } = sends() // warm-up of 2 not reached: the first draft is a warm-up hold
+  lead(db, 'w@warm.example')
+  await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual(work(db).map(w => [w.reason, w.next_at]), [['warmup', null]])
+  disable(db, 'A')
+  assert.deepEqual([work(db).map(w => w.reason), recentAutopilotAudit(db, 'A').filter(a => a.action === 'released').length, sent.length], [['warmup'], 0, 0], 'untouched, nothing "released"')
+})
+
+// Reviewer 2 round 2 (R2-8): a manual send whose post-refresh recheck read fails is refused (authority_unreadable), the
+// message back in approved with that reason recorded; nothing sent.
+test('#448 a manual send whose recheck read fails after the token refresh: refused, approved again with the reason recorded, not sent', async () => {
+  const db = await setup(); const { sent, d } = sends(); lead(db, 'm@manual.example')
+  const id = (db.prepare('SELECT id FROM leads').get() as { id: string }).id
+  const { createDraft } = await import('../lib/outreach/service.ts')
+  const mid = createDraft(db, 'A', id, 'Acme'); approve(db, 'A', mid, true)
+  await assert.rejects(sendMessage(db, 'A', mid, { ...at(d, NOW), fetchImpl: onToken(db, 1, db2 => db2.exec('DROP TABLE suppressions')) }), (e: unknown) => (e as { code?: string }).code === 'authority_unreadable')
+  assert.deepEqual([sent.length, db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(mid)], [0, { status: 'approved', error: 'authority_unreadable' }])
 })

@@ -8,6 +8,7 @@ import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } fro
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
+import { captureError } from '../ops/errors.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm } from './store.ts'
@@ -528,6 +529,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (d.authorize) { const why = d.authorize(); if (why) release(why) }
   } catch (e) {
     if (e instanceof OutreachError) throw e
+    captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId })
     release('authority_unreadable')
   }
   const master = d.master ?? getMasterKey()

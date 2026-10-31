@@ -100,10 +100,11 @@ export function disable(db: Database.Database, tenantId: string): void {
 // Autopilot's held first touches (#411) go back to the user: out of its queue, unapproved where autopilot had approved
 // them, one 'released' audit row each. Turning autopilot off does this for the tenant; autopilot's authority ending at a
 // send's commitment does it for that draft. Nothing autopilot held is sent later on a new grant without the user.
-function returnHeld(db: Database.Database, tenantId: string, why: string, messageId?: string): void {
-  const rows = (messageId
-    ? db.prepare('SELECT message_id, lead_id FROM autopilot_work WHERE tenant_id = ? AND message_id = ?').all(tenantId, messageId)
-    : db.prepare('SELECT message_id, lead_id FROM autopilot_work WHERE tenant_id = ?').all(tenantId)) as { message_id: string; lead_id: string }[]
+// Warm-up holds (next_at NULL) are the user's already and stay as they are; a message in flight (sending) is not touched:
+// its own pass settles it (its commitment re-reads the grant).
+function returnHeld(db: Database.Database, tenantId: string, why: string): void {
+  const rows = db.prepare(`SELECT w.message_id, w.lead_id FROM autopilot_work w JOIN outreach_messages m ON m.id = w.message_id AND m.tenant_id = w.tenant_id
+    WHERE w.tenant_id = ? AND w.next_at IS NOT NULL AND m.status IN ('draft','approved')`).all(tenantId) as { message_id: string; lead_id: string }[]
   for (const w of rows) {
     db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(w.message_id, tenantId)
     db.prepare('DELETE FROM autopilot_work WHERE message_id = ? AND tenant_id = ?').run(w.message_id, tenantId)
@@ -187,13 +188,17 @@ const TRANSIENT = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap
 const RETRY_MAX = 3
 // The account must reconnect Gmail or resume: the work stays due and goes on the first pass after that.
 const WAIT_FOR_USER = new Set(['gmail_reconnect_needed', 'gmail_not_connected', 'paused'])
-// Autopilot's own authority ended while the send was in progress (turned off, operator flag off, consent no longer
-// current): known not sent, the slot is released, and the draft goes back to the user, unapproved and out of the queue.
-// A later grant does not send what was held under the old one.
-const AUTHORITY_RETURNS = new Set(['autopilot_off', 'autopilot_unavailable', 'consent_required'])
-// The send's own standing is gone (its reserved slot lost, or the authority unreadable): known not sent, the slot
-// released, the draft held and unapproved until autopilot runs again and reads it afresh.
-const AUTHORITY_ENDED = new Set(['reservation_lost', 'authority_unreadable'])
+// The tenant's own grant ended while the send was in progress (turned off, consent no longer current): known not sent,
+// the slot is released, and the draft goes back to the user, unapproved and out of the queue. A later grant does not
+// send what was held under the old one.
+const AUTHORITY_RETURNS = new Set(['autopilot_off', 'consent_required'])
+// Not the tenant's decision, or the send's own standing gone (the operator switch or kill switch off, its reserved slot
+// lost, the authority unreadable): known not sent, the slot released, the draft held and unapproved until autopilot runs
+// again and reads it afresh.
+const AUTHORITY_ENDED = new Set(['autopilot_unavailable', 'reservation_lost', 'authority_unreadable'])
+// Refusals of the draft path that never change for a lead: recorded once, the lead is the user's from then on. Every
+// other refusal (a gate the user can clear, a store error) is retried after a day.
+const SKIP_FOR_GOOD = "('personal_email','not_sales_contact','suppressed','no_email_contact')"
 // The authority could not be read at the send commitment (the store failed): fail closed, as if it had ended. Known not
 // sent, the slot released, the draft held and unapproved; the next pass reads it again.
 const AUTHORITY_UNREADABLE = 'authority_unreadable'
@@ -222,6 +227,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (!st.consent_current) return stop('consent_required')
   const uncertain = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId)
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
+  // The grant this pass runs under: a disable since it started (even with autopilot on again by now) ends it, at the
+  // commitment and in what is done with a refused draft. (Counted from the audit: a cap change through enable() is not it.)
+  const disables = () => (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'disabled'").get(tenantId) as { n: number }).n
+  const grant = disables()
+  const regranted = () => disables() !== grant
   const live = () => { const s2 = getState(db, tenantId); return !s2.paused && s2.enabled && autopilotAvailable(env) }
 
   // auth: the authority fingerprint the hold is kept under. Inside deliver this is the one autopilot checked (expected),
@@ -242,7 +252,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     return !autopilotAvailable(env) ? 'autopilot_unavailable' : !s2.enabled ? 'autopilot_off' : s2.paused ? 'paused' : !s2.consent_current ? 'consent_required' : null
   }
   // Changed since autopilot took its authority: the user's to approve.
-  const release = (id: string, leadId: string, why = 'changed since autopilot drafted it: yours to approve') => { backToUser(id); out.held++; audit(db, tenantId, 'released', why, leadId, id) }
+  const release = (id: string, leadId: string, why = 'changed since autopilot drafted it: yours to approve') => {
+    backToUser(id); out.held++
+    // Once per message: disable() may have released it already (returnHeld) while this pass was in its refresh.
+    if (!db.prepare("SELECT 1 FROM autopilot_audit WHERE tenant_id = ? AND message_id = ? AND action = 'released'").get(tenantId, id)) audit(db, tenantId, 'released', why, leadId, id)
+  }
   const ENDED_WHY = 'autopilot stopped before it was sent: yours to approve'
   const keepHeld = (id: string, leadId: string, code: string, attempts: number, nextAt: number = now, auth?: string) => {
     hold(id, leadId, code, nextAt, attempts, auth)
@@ -264,7 +278,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // The gates and the send, for a draft autopilot made (new, or held earlier). 'stop' ends the pass, with out.stopped set.
   // expected: the draft's authority fingerprint autopilot holds (the stored one for a held draft; the one taken after the
   // polish for a new draft). Rechecked here and, through authorize, at the send commitment after the token refresh.
-  const deliver = async (id: string, leadId: string, attempts: number, expected: string): Promise<'stop' | void> => {
+  // held: the draft came from the queue (its work row must still be there at the commitment: disable() removes it).
+  const deliver = async (id: string, leadId: string, attempts: number, expected: string, held = false): Promise<'stop' | void> => {
     // A draft polished (or a held one re-checked) across an await: autopilot may have been turned off meanwhile.
     const before = authority()
     if (before) {
@@ -313,7 +328,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       // between it and the request to Gmail): the reservation becomes 'send_committed', which every other pass's
       // commitment counts whatever its order. A mark that fails (the row gone, or the write refused) is no send.
       const volumeNow = () => { const h = capHold(domain, { reservation: admit.reservation, message: id }); return h ? `volume_${h.held}` : null }
-      const commit = db.transaction((): string | null => volumeNow()
+      const commit = db.transaction((): string | null => (regranted() || (held && !db.prepare('SELECT 1 FROM autopilot_work WHERE message_id = ? AND tenant_id = ?').get(id, tenantId)) ? 'autopilot_off' : null)
+        ?? volumeNow()
         ?? (db.prepare("UPDATE autopilot_audit SET action = 'send_committed' WHERE id = ? AND tenant_id = ? AND action = 'send_reserved'").run(admit.reservation, tenantId).changes === 1 ? null : 'reservation_lost'))
       const authorize = (): string | null => {
         try { return authority() ?? (draftAuthority(db, tenantId, id) !== expected ? AUTHORITY_CHANGED : null) ?? commit.immediate() }
@@ -335,7 +351,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
         // A volume limit refused it at commitment (the slot is released above): held until the limit has room, unapproved.
         const vol = VOLUME_AT_SEND.get(code)
         if (vol) { keepHeld(id, leadId, vol, attempts, capHold(domain)?.at ?? now, expected); out.held++; if (vol === 'daily_cap') { out.stopped = vol; ends = true } return }
-        if (AUTHORITY_RETURNS.has(code)) { release(id, leadId, ENDED_WHY); out.stopped = code; ends = true; return }
+        if (AUTHORITY_RETURNS.has(code) || regranted()) { release(id, leadId, ENDED_WHY); out.stopped = AUTHORITY_RETURNS.has(code) ? code : 'autopilot_off'; ends = true; return }
         if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts, now, expected); out.held++; out.stopped = code; ends = true; return }
         if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts, expected); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; ends = true; return }
         if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1, expected); out.held++; return }
@@ -371,19 +387,20 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     if (gmailSender(db, tenantId) === null) { db.prepare('UPDATE autopilot_work SET claimed_at = NULL WHERE message_id = ? AND tenant_id = ?').run(w.message_id, tenantId); out.held++; continue }
     if (draftAuthority(db, tenantId, w.message_id) !== w.authority) { release(w.message_id, w.lead_id); continue }
     await d.keep?.()
-    if (await deliver(w.message_id, w.lead_id, w.attempts, w.authority) === 'stop') return out
+    if (await deliver(w.message_id, w.lead_id, w.attempts, w.authority, true) === 'stop') return out
   }
 
-  // 2. Verified leads with no message yet, and none autopilot already skipped: a lead the draft path refused (a personal
-  // address, not a sales contact, ungraded) is recorded once and left to the user, so a pass every tick does not retry
-  // the same refusals, write the same audit rows, or hold the 25 slots from leads it could send to.
+  // 2. Verified leads with no message yet, and none autopilot skipped: a lead the draft path refused for good (a personal
+  // address, not a sales contact, suppressed, no address) is recorded once and left to the user; one refused for a
+  // reason that can change (a gate the user clears, a store error) is tried again a day later. So a pass every tick
+  // does not retry the same refusals, write the same audit rows, or hold the 25 slots from leads it could send to.
   const leads = db.prepare(
     `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
-       AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped')
+       AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped' AND (a.detail IN ${SKIP_FOR_GOOD} OR a.created_at > ?))
      ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId) as { id: string; contact: string }[]
+  ).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId, now - 86400) as { id: string; contact: string }[]
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends
