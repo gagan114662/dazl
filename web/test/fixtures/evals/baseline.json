@@ -1,8 +1,16 @@
 {
  "contract": "dazl.evals/1",
  "note": "The suite's registry. Every case is listed, passing ones with non_pass []. The gate fails when a listed case does not run, a case runs that is not listed, two cases share an id, fewer than min_cases run, or a case's non-pass verdicts differ from its list in EITHER direction (a new failure is a regression; a fixed one must be removed here in the PR that fixes it). Lowering min_cases or removing an entry needs a reason in the PR.",
- "min_cases": 1,
+ "min_cases": 2,
  "cases": {
-  "scan-london-seed-traps": { "status": "pass", "non_pass": [] }
+  "scan-london-seed-traps": {
+   "status": "pass",
+   "non_pass": []
+  },
+  "scan-toronto-office-traps": {
+   "status": "pass",
+   "non_pass": [],
+   "why": "#460 metadata-only event held as undated; #461 recruiting contact removed while dated event remains verified."
+  }
  }
 }

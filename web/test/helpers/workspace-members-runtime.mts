@@ -36,6 +36,7 @@ const user = (id: string) => ({ id, email: `${id.toLowerCase()}@example.test`, n
 
 test('invite, join and switch through the routes; nothing of workspace A is reachable from workspace B', async () => {
   for (const id of ['A', 'B', 'C']) await createPasswordUser(user(id))
+  raw.prepare('UPDATE users SET email_verified_at = 1').run() // accepting an invitation needs a verified email
   const ta = await createSession('A'), tb = await createSession('B'), tc = await createSession('C')
 
   // A invites C as an operator; the link carries the token in its fragment
@@ -78,9 +79,8 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
   assert.deepEqual((await call(tc, () => workspace.GET())).body.current, { tenant_id: 'C', role: 'owner' })
   // the last owner cannot demote themselves
   assert.deepEqual(await call(ta, () => members.PATCH(req('/api/workspace/members', 'PATCH', { member_id: 'A', role: 'admin' }))), { status: 409, body: { error: 'last_owner' } })
-
   // A store failure before each side effect: the route fails (500) and nothing changes, the link included
-  for (const id of ['D', 'E']) await createPasswordUser(user(id))
+  for (const id of ['D', 'E']) { await createPasswordUser(user(id)); raw.prepare('UPDATE users SET email_verified_at=1 WHERE id=?').run(id) }
   const td = await createSession('D')
   const refuse = (sql: string) => raw.exec(`CREATE TRIGGER dazl_test_refuse ${sql} BEGIN SELECT RAISE(ABORT, 'store refused'); END`)
   const allow = () => raw.exec('DROP TRIGGER dazl_test_refuse')

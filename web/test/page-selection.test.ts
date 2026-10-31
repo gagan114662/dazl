@@ -69,7 +69,7 @@ function londonFixture(promptsSeen: string[]): Fixture {
     { url: 'https://boards.greenhouse.io/brightloop/jobs/7', title: 'Account Executive - Brightloop', snippet: 'Brightloop is hiring an Account Executive in London', date: daysAgo(4) },
     { url: 'https://news.example/ldn-ai-startups', title: 'London startups to watch', snippet: 'A roundup', date: null },
   ]
-  const tf = Object.fromEntries(hits.map(h => [h.url, { title: h.title, text: `${h.url === NEWS ? `Published ${daysAgo(12)}. ${TARGET_SENTENCE}.` : h.snippet + '.'} ${'More page text about the company and its people. '.repeat(20)}` }]))
+  const tf = Object.fromEntries(hits.map(h => [h.url, { title: h.title, text: `${h.url === NEWS ? `On ${daysAgo(12)}, ${TARGET_SENTENCE}.` : h.snippet + '.'} ${'More page text about the company and its people. '.repeat(20)}` }]))
   return { request: LONDON, modelIcp: ICP, modelQueries: [], hits, tfPages: tf, own: { [NEWS]: { title: 'Brightloop raises seed round', text: tf[NEWS].text } }, extraction: [], deps: { providers: stubProviders(promptsSeen) } }
 }
 

@@ -1,6 +1,7 @@
 # Workspaces, memberships and roles (#353)
 
 Status: increments 1 (model, resolution), 2 (route layer) and 3 (invitations, members, switching) built. Related: #358 (sessions/offboarding), #357 (email ownership),
+
 #371 (audit trail), product direction #204.
 
 ## Problem
@@ -73,6 +74,7 @@ pending invitation takes what revoking it would.
 - SQLite (production today): `migrateAuth()` creates the tables, adds `sessions.active_tenant_id` and runs
   `BACKFILL_SQL` in one transaction on startup. Idempotent; it keys on "no `organizations` row".
 - Postgres: `0015_workspaces.sql`, same DDL and the same backfill statements (a test holds them equal).
+
 - New accounts: password signup and Google sign-up create the account and its workspace in one transaction.
 - Rollback: the old code ignores the new tables and column; nothing it reads changed.
 
@@ -97,11 +99,13 @@ pending invitation takes what revoking it would.
    sent to, and uses the token up in the same transaction that adds the membership (an unknown, used, revoked or
    expired link all answer 410). dazl sends no email yet: the inviter gets the link once, with the token in the
    `#fragment` so it never reaches a server log. A link opened while signed out survives sign-in and sign-up (kept in the
-   tab's `sessionStorage`, not a cookie) and is accepted after them; Google sign-in does not carry it yet. Every member change locks the workspace row first, so two owners
+   tab's `sessionStorage`, not a cookie) and is accepted after them; Google sign-in does not carry it yet. Every member
+   change locks the workspace row (removal, leaving and accepting lock the account row before it: one lock order), so two owners
    demoting each other at once cannot both pass the last-owner check (tested on Postgres). Switching writes
    `active_tenant_id` only for a workspace the account belongs to, and only on its own session.
    Known limit until #357: password-account emails are unverified, so the token is the real proof; after #357,
    accepting will also require a verified email.
+
 
 Then #358 (session inventory, revoke-all, revoke on removal/recovery), #357 (email verification, reset), #371
 (actor audit trail, which records `actorId` and `tenantId` separately from the start).

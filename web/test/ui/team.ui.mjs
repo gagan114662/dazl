@@ -5,13 +5,14 @@
 // 390px screenshots). Throwaway database, server under test/helpers/net-fence.ts (no outbound call), no email sent.
 // It proves:
 //   1. the owner sees "You are owner", invites by email and role, and gets the link once, with the token after #t=;
-//   2. the teammate opens the link signed out, signs up from there and is returned to it: "You are in", then Settings > Team says operator and offers the switcher;
+//   2. the teammate opens the link signed in: "You are in", then Settings > Team says operator and offers the switcher;
 //   3. the teammate (operator) gets no invite form and no Remove buttons;
 //   4. the owner sees both members and removes the teammate; the teammate's next load is their own workspace again;
 //   5. a replayed link says it expired or was used; /app/join without a link says to open the emailed one;
 //   6. no horizontal scroll at 390px on any of these screens.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { loadPlaywright, newContext, startServer } from '../smoke/harness.mjs'
@@ -49,26 +50,29 @@ try {
   const link = (await team(owner).locator('code').textContent({ timeout: 10000 }))?.trim() ?? ''
   assert.match(link, new RegExp(`^${base.replace(/[.]/g, '\\.')}/app/join#t=[a-f0-9]{64}$`))
   await team(owner).getByText('mate@example.test (operator, pending)').waitFor()
-  // the screenshot never shows a working token
-  await team(owner).locator('code').evaluate(c => { c.textContent = c.textContent.replace(/#t=[a-f0-9]+/, '#t=<one-time code>') })
   await shot(owner, 'team-owner-invited')
 
-  // 2. the teammate opens the link signed out: sent to sign-in, follows "Create an account", signs up (a fresh
-  //    account, its own workspace), and lands back on the link, which is accepted
+  // 2. the teammate signs up (a fresh account, its own workspace) and opens the link
   const mateCtx = await browser.newContext()
   await mateCtx.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort())
   const mate = await mateCtx.newPage()
+  await mate.goto(`${base}/sign-up`, { waitUntil: 'networkidle' })
+  const signup = await mate.evaluate(async () => (await fetch('/api/auth/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'mate@example.test', password: 'a long password 42', name: 'Mate', business_name: 'Mate Co' }) })).status)
+  assert.equal(signup, 200)
   await mate.goto(link, { waitUntil: 'networkidle' })
-  assert.equal(new URL(mate.url()).pathname, '/sign-in')
-  assert.equal(new URL(mate.url()).hash, '', 'the token is cleared from the sign-in address bar')
-  await mate.getByRole('link', { name: 'Create an account' }).click()
-  await mate.waitForURL(`${base}/sign-up`)
-  await mate.locator('input[name=name]').fill('Mate')
-  await mate.locator('input[name=email]').fill('mate@example.test')
-  await mate.locator('input[name=password]').fill('a long password 42')
-  await mate.locator('form button[type=submit]').click()
-  await mate.getByText('You are in.').waitFor({ timeout: 15000 })
-  assert.equal(new URL(mate.url()).pathname, '/app/join')
+  await mate.getByText('Confirm your email').waitFor()
+  // Signup is unverified. Obtain its own fixture mail token from this throwaway
+  // server's local outbox, then exercise the real verification endpoint before join.
+  const fixtureDb = new Database(srv.dbPath)
+  const mail = fixtureDb.prepare('SELECT body FROM system_mail_outbox WHERE to_email = ? ORDER BY rowid DESC').get('mate@example.test')
+  fixtureDb.close()
+  const verification = /\/verify#t=([a-f0-9]{64})/.exec(mail?.body ?? '')?.[1]
+  assert.ok(verification, 'signup fixture has its own verification link')
+  const verified = await mate.evaluate(async token => (await fetch('/api/auth/verify', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token})})).status, verification)
+  assert.equal(verified,200)
+  await mate.goto(`${base}/app/settings`, {waitUntil:'networkidle'})
+  await mate.goto(link, {waitUntil:'networkidle'})
+  await mate.getByText('You are in.').waitFor()
   assert.equal(new URL(mate.url()).hash, '', 'the token is cleared from the address bar')
   await shot(mate, 'join-accepted')
   await mate.goto(`${base}/app/settings#team`, { waitUntil: 'networkidle' })

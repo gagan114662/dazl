@@ -9,8 +9,10 @@ import type { Db } from '../lib/db/client.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const code = (c: string) => (e: unknown) => e instanceof MemberError && e.code === c
+// accounts with verified emails (accepting an invitation needs one; the unverified case is tested below)
 async function users(db: Db, ...ids: string[]) {
   for (const id of ids) await createPasswordUser({ id, email: `${id.toLowerCase()}@example.test`, name: id, business_name: `Biz ${id}`, password_hash: 'h', salt: 's' }, db)
+  for (const id of ids) await db.run('UPDATE users SET email_verified_at = 1 WHERE id = ?', [id])
 }
 const add = (db: Db, tenant: string, member: string, role: Role) => db.run('INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, ?, 1)', [tenant, member, role])
 const roleIn = async (db: Db, tenant: string, member: string) => (await db.get<{ role: string }>('SELECT role FROM memberships WHERE tenant_id = ? AND member_id = ?', [tenant, member]))?.role ?? null
@@ -36,6 +38,16 @@ bothEngines('an invitation is accepted once, by the invited account only, and st
   await assert.rejects(acceptInvitation(db, me('B'), 'not-a-token'), code('invalid_invite'))
   assert.deepEqual((await listWorkspaces(db, 'B')).map(w => [w.tenant_id, w.role]), [['B', 'owner'], ['A', 'operator']])
   assert.deepEqual(await listInvitations(db, 'A'), [])
+})
+
+bothEngines('an account whose email is unverified cannot accept, even holding the link; once verified it can', async ({ db }) => {
+  await users(db, 'A')
+  await createPasswordUser({ id: 'U', email: 'u@example.test', name: 'U', business_name: 'U', password_hash: 'h', salt: 's' }, db)
+  const inv = await createInvitation(db, OWNER_A, 'u@example.test', 'admin')
+  await assert.rejects(acceptInvitation(db, me('U'), inv.token), code('email_unverified'))
+  assert.equal(await roleIn(db, 'A', 'U'), null)
+  await db.run("UPDATE users SET email_verified_at = 1 WHERE id = 'U'")
+  assert.deepEqual(await acceptInvitation(db, me('U'), inv.token), { tenantId: 'A', role: 'admin' })
 })
 
 bothEngines('expired, revoked and replaced links add nothing; an existing member cannot be invited', async ({ db }) => {
@@ -184,6 +196,16 @@ bothEngines('revoking and accepting the same link at once: exactly one wins', as
   }
 }, { pgMax: 4 })
 
+bothEngines('invitation acceptance rechecks the live verified email instead of stale authenticated email',async({db})=>{
+ await createPasswordUser({id:'invite-owner',email:'inviter@example.test',name:'Owner',business_name:'Owner',password_hash:'h',salt:'s'},db)
+ await createPasswordUser({id:'invite-mate',email:'oldmate@example.test',name:'Mate',business_name:'Mate',password_hash:'h',salt:'s'},db)
+ await db.run('UPDATE users SET email_verified_at=1 WHERE id=?',['invite-mate'])
+ const inv=await createInvitation(db,{actorId:'invite-owner',tenantId:'invite-owner',role:'owner'},'oldmate@example.test','operator')
+ await db.run('UPDATE users SET email=? WHERE id=?',['newmate@example.test','invite-mate'])
+ await assert.rejects(acceptInvitation(db,{actorId:'invite-mate',email:'oldmate@example.test'},inv.token),/wrong_account/)
+ assert.equal(await db.get('SELECT 1 FROM memberships WHERE tenant_id=? AND member_id=?',['invite-owner','invite-mate']),undefined)
+})
+
 bothEngines('a link carries its inviter\'s authority: once the inviter is removed or demoted below its role, it adds nothing', async ({ db }) => {
   await users(db, 'A', 'D', 'E', 'X', 'Y')
   await add(db, 'A', 'D', 'admin'); await add(db, 'A', 'E', 'owner')
@@ -252,29 +274,6 @@ bothEngines('an expired invitation does not stand in the way of a new one', asyn
   assert.deepEqual((await listInvitations(db, 'A', now)).map(i => i.role), ['viewer'])
 })
 
-bothEngines('invitation variants: email case and lookalikes, tampered tokens, another workspace, the expiry second, the pending cap', async ({ db }) => {
-  await users(db, 'A', 'B')
-  const now = Math.floor(Date.now() / 1000)
-  // the invited email matches whatever case the account uses; a lookalike address never does
-  const inv = await createInvitation(db, OWNER_A, 'q.mixed@example.test', 'viewer', now)
-  for (const email of ['q.mixed@example.test.evil', 'q.mixed+x@example.test', 'qmixed@example.test', 'q.mixed@example.tes', ' q.mixed@exampIe.test'])
-    await assert.rejects(acceptInvitation(db, { actorId: 'B', email }, inv.token, now), code('wrong_account'), email)
-  // a tampered or malformed token is the same 410 as an unknown one, and uses nothing up
-  for (const t of [inv.token.toUpperCase(), inv.token + '0', inv.token.slice(1), '', ' '.repeat(64), inv.token.replace(/^./, c => (c === 'a' ? 'b' : 'a'))])
-    await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'q.mixed@example.test' }, t, now), code('invalid_invite'), JSON.stringify(t))
-  // another workspace's owner cannot revoke or list A's invitation
-  await assert.rejects(revokeInvitation(db, act('B', 'B', 'owner'), inv.id), code('not_found'))
-  assert.deepEqual(await listInvitations(db, 'B', now), [])
-  assert.deepEqual(await acceptInvitation(db, { actorId: 'B', email: 'Q.Mixed@Example.TEST' }, inv.token, now), { tenantId: 'A', role: 'viewer' })
-  // a link is dead at its expiry second, not one second later
-  const edge = await createInvitation(db, OWNER_A, 'edge@example.test', 'viewer', now - INVITE_TTL_S)
-  await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'edge@example.test' }, edge.token, now), code('invalid_invite'))
-  // at most 50 pending
-  for (let i = 0; i < 50; i++) await createInvitation(db, OWNER_A, `p${i}@example.test`, 'viewer', now)
-  assert.equal((await listInvitations(db, 'A', now)).length, 50)
-  await assert.rejects(createInvitation(db, OWNER_A, 'p51@example.test', 'viewer', now), code('too_many_invites'))
-})
-
 bothEngines('losing authority (demoted or removed) while changing a role, inviting and revoking at once: each action lands only if it ran first', async ({ db }) => {
   for (const loss of ['demote', 'remove'] as const) for (let i = 0; i < 5; i++) {
     for (const t of ['memberships', 'invitations', 'organizations', 'users']) await db.run(`DELETE FROM ${t}`)
@@ -298,3 +297,27 @@ bothEngines('losing authority (demoted or removed) while changing a role, inviti
     for (const r of [role, inv, rev]) if (r.status === 'rejected') assert.ok(code('forbidden')(r.reason), `${loss} ${i}: ${String(r.reason)}`)
   }
 }, { pgMax: 6 })
+
+bothEngines('invitation variants: email case and lookalikes, tampered tokens, another workspace, the expiry second, the pending cap', async ({ db }) => {
+  await users(db, 'A', 'B')
+  const now = Math.floor(Date.now() / 1000)
+  // the invited email matches whatever case the account uses; a lookalike address never does
+  const inv = await createInvitation(db, OWNER_A, 'q.mixed@example.test', 'viewer', now)
+  for (const email of ['q.mixed@example.test.evil', 'q.mixed+x@example.test', 'qmixed@example.test', 'q.mixed@example.tes', ' q.mixed@exampIe.test'])
+    await assert.rejects(acceptInvitation(db, { actorId: 'B', email }, inv.token, now), code('wrong_account'), email)
+  // a tampered or malformed token is the same 410 as an unknown one, and uses nothing up
+  for (const t of [inv.token.toUpperCase(), inv.token + '0', inv.token.slice(1), '', ' '.repeat(64), inv.token.replace(/^./, c => (c === 'a' ? 'b' : 'a'))])
+    await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'q.mixed@example.test' }, t, now), code('invalid_invite'), JSON.stringify(t))
+  // another workspace's owner cannot revoke or list A's invitation
+  await assert.rejects(revokeInvitation(db, act('B', 'B', 'owner'), inv.id), code('not_found'))
+  assert.deepEqual(await listInvitations(db, 'B', now), [])
+  await db.run('UPDATE users SET email=? WHERE id=?',['Q.Mixed@Example.TEST','B'])
+  assert.deepEqual(await acceptInvitation(db, { actorId: 'B', email: 'Q.Mixed@Example.TEST' }, inv.token, now), { tenantId: 'A', role: 'viewer' })
+  // a link is dead at its expiry second, not one second later
+  const edge = await createInvitation(db, OWNER_A, 'edge@example.test', 'viewer', now - INVITE_TTL_S)
+  await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'edge@example.test' }, edge.token, now), code('invalid_invite'))
+  // at most 50 pending
+  for (let i = 0; i < 50; i++) await createInvitation(db, OWNER_A, `p${i}@example.test`, 'viewer', now)
+  assert.equal((await listInvitations(db, 'A', now)).length, 50)
+  await assert.rejects(createInvitation(db, OWNER_A, 'p51@example.test', 'viewer', now), code('too_many_invites'))
+})

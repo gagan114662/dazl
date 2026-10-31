@@ -20,7 +20,7 @@ function prov() { let calls = 0; return { calls: () => calls, p: { research: asy
 async function approvalFor(db: Database.Database) {
   const pv = await qualifyPreview(db, 'u1', L, 'Sales prospecting software', fetchPage, 'anthropic', MODEL)
   assert.ok(pv && pv.cost && pv.prompt_sha256)
-  return { approved_by_user: true as const, vendor: 'anthropic', model: MODEL, max_usd_estimate: pv.cost.usd_estimate_max!, prompt_sha256: pv.prompt_sha256, limits: DEFAULT_LIMITS }
+  return { approved_by_user: true as const, vendor: 'anthropic', model: MODEL, max_usd_estimate: pv.cost.usd_estimate_max!, prompt_sha256: pv.prompt_sha256, request_context_sha256: pv.packing!.context_sha256, limits: DEFAULT_LIMITS }
 }
 const deps = (p: unknown, over: Record<string, unknown> = {}) => ({ enabled: true, sellerText: 'Sales prospecting software', vendor: 'anthropic', provider: p as never, apiKey: 'k', fetchPage, ...over })
 

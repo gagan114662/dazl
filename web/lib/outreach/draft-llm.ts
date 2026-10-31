@@ -3,6 +3,7 @@
 // inside a tenant-enabled automation - never silently on draft creation, because the
 // call bills the tenant's provider key. Any failure leaves the template in place.
 import type Database from 'better-sqlite3'
+import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { defaultVendor, getKey } from '../llm/key-store.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
@@ -17,12 +18,12 @@ export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?
 export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
   | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
-  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'error'; usage?: PolishUsage }
+  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'spend_limit' | 'error'; usage?: PolishUsage }
 
 // Accounting only: vendor, requested + served model, bounded outcome code, token
 // counts, request id. Never secrets, never the prompt, never the output text,
 // never raw provider error text.
-type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded'
+type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded' | 'spend_limit'
 
 // A durable PENDING attempt is written before any provider call. If it cannot be
 // recorded, the paid call is refused - no invisible spend. Null means "do not call".
@@ -60,7 +61,9 @@ function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps): {
   if (!vendor) return null
   const key = getKey(db, tenantId, vendor, deps.master ?? getMasterKey())
   if (!key) return null
-  const provider = (deps.providers ?? providers)[vendor]
+  const raw = (deps.providers ?? providers)[vendor]
+  // The owner's spend pool (lib/llm/owner-guard.ts): every completion reserves its worst case first.
+  const provider = raw && ownerGuarded(db, tenantId, raw)
   return provider?.complete || provider?.completeDetailed ? { provider, key, vendor } : null
 }
 
@@ -139,7 +142,8 @@ export async function polishDraft(db: Database.Database, tenantId: string, messa
     if (r.changes === 1) { finish('rewritten', d); return result({ rewritten: true, vendor: p.vendor, usage }) }
     finish('superseded', d)
     return result({ rewritten: false, reason: 'error', usage })
-  } catch {
+  } catch (e) {
+    if (spendRefused(e)) { finish('spend_limit'); return { rewritten: false, reason: 'spend_limit' } } // the owner's spend limit: no call was made
     finish('error')
     return { rewritten: false, reason: 'error' }
   }

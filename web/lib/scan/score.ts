@@ -80,6 +80,7 @@ export const isHidden = (s: LeadScore | null): boolean => !!s && s.fit <= HIDE_F
 // verified grade. Fit is held at 0 (hidden lane) with the reason in why; intent/action stay
 // unset so the UI can tell "held, ungraded" apart from a real grade of 0.
 export const GRADING_FAILED_WHY = 'ICP grading failed (model error). Held at fit 0: the raw candidate score is not a verified fit. Re-run the scan to grade this lead.'
+export const OFFER_UNRESOLVED_WHY = "Not graded: this play's offer is unresolved (its request conflicts with the saved offer). Held at fit 0 until you choose what this play sells; re-run the scan to grade it."
 export const NOT_GRADED_WHY = 'Not ICP-graded (beyond the scored batch). Held at fit 0: the raw candidate score is not a verified fit.'
 export function holdUngraded(leads: { fit?: number; why?: string }[], reason: string): void {
   for (const l of leads) { l.fit = 0; l.why = reason.slice(0, WHY_MAX) }

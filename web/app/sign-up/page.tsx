@@ -7,6 +7,7 @@ export default function SignUp() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
   useEffect(() => { keepInvite() }, [])
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
