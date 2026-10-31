@@ -129,10 +129,24 @@ export const TIMING_REQUESTED = /\b(?:recent(?:ly)?|currently|newly|latest|just\
 // that asks for recency without a numeric window has an UNRESOLVED bound: nothing surfaces as
 // proof-backed on it. Anything else is held at 0 and labelled unconfirmed. The stored grade is
 // never rewritten.
-export function surfaceStoredIntent(l: { intent: number | null; event_date?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, opts: { windowDays?: number | null; now?: Date; timingRequired?: boolean } = {}): { intent: number; timing: 'proof_backed' | 'unconfirmed' } {
+// WHY a stored intent does not surface as proof-backed, ruled out in the SAME order as the surfacing preconditions
+// and proofBackedTiming, so card copy can name the actual gap next to the badge instead of a blanket "unconfirmed"
+// (#498 whole-card coherence). null = proof-backed. surfaceStoredIntent is defined on this, so the two can never disagree.
+export type TimingUnconfirmedReason = 'no_saved_grade' | 'unresolved_recency_bound' | 'no_proof' | 'proof_kind_mismatch' | 'bad_date' | 'future_date' | 'out_of_window'
+export function timingUnconfirmedReason(l: { intent: number | null; event_date?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, opts: { windowDays?: number | null; now?: Date; timingRequired?: boolean } = {}): TimingUnconfirmedReason | null {
   const windowDays = opts.windowDays ?? null
-  if (l.intent != null && !(opts.timingRequired && windowDays == null) && proofBackedTiming(l, windowDays, opts.now ?? new Date()))
-    return { intent: l.intent, timing: 'proof_backed' }
+  if (l.intent == null) return 'no_saved_grade'
+  if (opts.timingRequired && windowDays == null) return 'unresolved_recency_bound'
+  if (!isEventDateProof(l.event_date_proof)) return 'no_proof'
+  if (l.event_date_proof === 'ats_structured' && !isHiringTrigger(l.signal, l.signal_kind)) return 'proof_kind_mismatch'
+  if (!l.event_date || !isCalendarDay(l.event_date)) return 'bad_date'
+  const age = ((opts.now ?? new Date()).getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000
+  if (age < 0) return 'future_date'
+  if (windowDays != null && age > windowDays) return 'out_of_window'
+  return null
+}
+export function surfaceStoredIntent(l: { intent: number | null; event_date?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, opts: { windowDays?: number | null; now?: Date; timingRequired?: boolean } = {}): { intent: number; timing: 'proof_backed' | 'unconfirmed' } {
+  if (timingUnconfirmedReason(l, opts) === null) return { intent: l.intent!, timing: 'proof_backed' }
   return { intent: 0, timing: 'unconfirmed' }
 }
 

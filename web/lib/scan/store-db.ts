@@ -122,6 +122,7 @@ export function exportLeads(db: Db, userId: string, jobId?: string, limit = 5000
   return allHeld(db,
     `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
             l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
+            l.event_date_proof, l.signal_kind, j.query AS job_query, j.icp AS job_icp,
             l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
