@@ -21,7 +21,8 @@
 // by code and syscall). The webhook is https only and redirects are not followed. Age limits are decimal integers of
 // seconds (else exit 2; a flag without a value is exit 2 too). A sidecar or manifest timestamp more than 300 s in the
 // future is a problem and never the newest; ages never go below 0. Every manifest that shares the newest copied_at is
-// judged. Only the newest 5 valid manifests by name (at most 10 files) are read, so a run stays O(1) as copies accrue.
+// judged. Only the newest 5 valid manifests (at most 10 files) are read, so a run stays O(1) as copies accrue: by the
+// timestamp in dazl-backup-* names first, then other names; copied_at decides within that window.
 // RCLONE_TIMEOUT_S (positive integer, default 120; else 120 with a log line) bounds each rclone call; a few slow calls
 // can still add up past the unit's TimeoutStartSec. An empty --offhost is a usage error; an unset OFFHOST_DEST is
 // "not configured" and said in the journal. Exit 0 = ok; 1 = problem (alerted, throttled or
@@ -156,7 +157,10 @@ if (!offSpec) {
     // copied_at is the authority within that window. The run stays O(1) however many copies exist; older manifests
     // are listed and counted, not read or judged.
     const NEWEST_K = 5, READ_MAX = 10
-    const names = (await dest.list()).filter(f => f.endsWith('.age.json') && plainName(f)).sort().reverse()
+    // dazl-backup-<timestamp> names come first, newest timestamp first, so a few copies under other names (a manual
+    // pre-migration copy, say) can never push the real newest out of the window; other names follow, newest-named first
+    const rank = (f: string) => { const m = /^dazl-backup-(\d{8}T\d{6}Z)/.exec(f); return m ? `1-${m[1]}` : `0-${f}` }
+    const names = (await dest.list()).filter(f => f.endsWith('.age.json') && plainName(f)).sort((a, b) => rank(b).localeCompare(rank(a)))
     facts.offhost_manifests_listed = names.length
     const manifests: Record<string, unknown>[] = []; let read = 0
     for (const f of names) {

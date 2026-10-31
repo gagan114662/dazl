@@ -431,3 +431,16 @@ test('300 off-host manifests behind a slow rclone: the check reads only the newe
   const j = firstJson(r.out); assert.equal(j.offhost_manifests_listed, 300); assert.equal(j.offhost_copies, 5); assert.equal(j.offhost_manifests_read, 5); assert.equal(j.newest_offhost_verified, true)
   assert.ok(made.length <= 1 + 10 + 5, `at most lsf + READ_MAX manifest reads + digests, got ${made.length}`); assert.ok(elapsed < 60_000, `finished in ${elapsed} ms`)
 })
+
+test('the window is by backup timestamp, not by raw name: copies under other names cannot hide a broken newest dazl backup', async () => {
+  const fx = await fixtureBackup(path.join(T, 'window')), dir = path.dirname(fx.backup), state = path.join(T, 'window-state')
+  const dest = path.join(T, 'window-dest'); mkdirSync(dest)
+  const ct = Buffer.from('ciphertext stand-in')
+  for (let i = 1; i <= 5; i++) manifestFor(dest, `pre-migration-${i}.db.age`, new Date(Date.now() - 60_000 * i).toISOString(), ct) // "p" sorts above "d"
+  manifestFor(dest, 'dazl-backup-20261031T170000Z-abcd1234.db.age', new Date().toISOString(), null) // the real newest, ciphertext missing
+  const { cmd, delivered } = recorder('window-alert')
+  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', dest], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1, r.out); assert.equal(delivered().length, 1)
+  assert.match(delivered()[0].problems.join(), /newest off-host copy dazl-backup-20261031T170000Z-abcd1234\.db\.age is missing/)
+  assert.equal(firstJson(r.out).offhost_manifests_read, 5); assert.notEqual(firstJson(r.out).newest_offhost_verified, true)
+})
