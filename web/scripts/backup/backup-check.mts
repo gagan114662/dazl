@@ -9,8 +9,10 @@
 //     manifest alone is not a recoverable backup. With OFFHOST_REQUIRED=1, no destination configured is a problem;
 //   - --drill-report (the newest recovery-drill.mts --report): missing, not ok, or older than --drill-max-age-s.
 // Alerts go to OPS_ALERT_WEBHOOK_URL (https only; e.g. a Slack incoming webhook) or, for tests, BACKUP_ALERT_CMD (run
-// with the JSON as its one argument). The same set of problems alerts at most once per BACKUP_ALERT_EVERY_S (3600);
-// stamps live in --state-dir. The alert names problems and ages only: no data, paths of backups only by file name.
+// with the JSON as its one argument). The same set of problems alerts at most once per BACKUP_ALERT_EVERY_S (3600),
+// counted from a delivered alert (command exit 0, webhook 2xx): a failed delivery or no destination leaves no stamp, so
+// the next run retries. Stamps live in --state-dir. The alert names problems and ages only: no data, paths of backups
+// only by file name. Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable).
 //   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --max-age-s 7200 \
 //     [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s 7200] [--drill-report FILE --drill-max-age-s 691200] [--state-dir DIR]
 import { createHash } from 'node:crypto'
@@ -122,15 +124,23 @@ const body = { level: problems.length ? 'error' : 'info', type: 'backup_check', 
 console.log(JSON.stringify(body))
 if (!problems.length) { rmSync(state, { recursive: true, force: true }); process.exit(0) }
 
+// A throttle stamp is a delivery receipt, never an attempted-send receipt (the same contract as scripts/ops/scheduler-check.mts).
+const send = async (b: object): Promise<boolean> => {
+  const cmd = process.env.BACKUP_ALERT_CMD, hook = process.env.OPS_ALERT_WEBHOOK_URL
+  if (cmd) {
+    const result = spawnSync(cmd, [JSON.stringify(b)], { stdio: 'inherit', timeout: 10_000 })
+    if (result.error || result.status !== 0) { console.error('backup-check: alert command failed'); return false }
+    return true
+  }
+  if (!hook?.startsWith('https://')) { console.error('backup-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only'); return false }
+  try {
+    const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), signal: AbortSignal.timeout(10_000) })
+    if (!r.ok) { console.error(`backup-check: alert webhook HTTP ${r.status}`); return false }
+    return true
+  } catch (e) { console.error(`backup-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`); return false }
+}
 mkdirSync(state, { recursive: true, mode: 0o700 })
 const stamp = path.join(state, 'alert-' + createHash('sha256').update(problems.map(p => p.replace(/\d+s old/, 'Ns old')).join('\n')).digest('hex').slice(0, 16))
 if (existsSync(stamp) && now - statSync(stamp).mtimeMs < every * 1000) { console.error('backup-check: alert already sent for these problems within the interval'); process.exit(1) }
-writeFileSync(stamp, '')
-const cmd = process.env.BACKUP_ALERT_CMD
-const url = process.env.OPS_ALERT_WEBHOOK_URL
-if (cmd) { const r = spawnSync(cmd, [JSON.stringify(body)], { stdio: 'inherit' }); if (r.status !== 0) console.error('backup-check: alert command failed') }
-else if (url?.startsWith('https://')) {
-  try { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) }); if (!r.ok) console.error(`backup-check: alert webhook HTTP ${r.status}`) }
-  catch (e) { console.error(`backup-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`) }
-} else console.error('backup-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only')
+if (await send(body)) writeFileSync(stamp, '')
 process.exit(1)

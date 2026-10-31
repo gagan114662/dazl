@@ -67,7 +67,7 @@ test('run-backup: snapshot, restore check and encrypted off-host copy in one sch
 test('backup-check: fresh is ok; stale, modified, missing off-host copy and a failed drill each alert, throttled', async () => {
   const fx = await fixtureBackup(path.join(T, 'd'))
   const dir = path.dirname(fx.backup), state = path.join(T, 'd-state'), alerts = path.join(T, 'alerts.log')
-  writeFileSync(path.join(T, 'alert.sh'), `echo "$1" >> ${alerts}\n`)
+  writeFileSync(path.join(T, 'alert.sh'), `#!/bin/sh\necho "$1" >> ${alerts}\n`) // the shebang: macOS execs no shebang-less script (ENOEXEC), glibc falls back to sh
   const check = (args: string[]) => {
     const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/backup/backup-check.mts', '--dir', dir, '--state-dir', state, ...args], { cwd: web, encoding: 'utf8', env: { ...process.env, BACKUP_ALERT_CMD: `${path.join(T, 'alert.sh')}`, OPS_ALERT_WEBHOOK_URL: '' } })
     return { code: r.status, out: r.stdout + r.stderr }

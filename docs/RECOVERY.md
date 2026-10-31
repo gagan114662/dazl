@@ -130,7 +130,7 @@ The `.db.json` sidecar travels inside the manifest's `source_sha256`. Recreate i
 - `OFFHOST_REQUIRED=1` is set (once the owner has chosen a destination) and no destination is configured;
 - the last recovery drill report failed or is too old.
 
-Alerts go to `OPS_ALERT_WEBHOOK_URL` (https). The same problems alert at most once an hour. Alerts carry problems and ages, never data.
+Alerts go to `OPS_ALERT_WEBHOOK_URL` (https). The same problems alert at most once an hour, counted from a delivered alert: a failed delivery (webhook error or non-2xx, no destination) is retried on the next run, and the problem stays in the journal either way. Alerts carry problems and ages, never data.
 
 **Retention is not implemented.** Deleting backups is a policy decision (see the proposed targets). Until the owner sets it, backups accumulate, and the disk alert is the backstop.
 
