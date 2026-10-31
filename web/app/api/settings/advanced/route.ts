@@ -44,8 +44,10 @@ export async function POST(req: NextRequest) {
   const p = body.platform
   if (body.action === 'consent') {
     if (body.accept !== true || body.version !== CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
+    // accepting the version already on record changes nothing, so it records nothing
+    const had = await readConsent(db, user.tenantId, scopeFor(p))
     await writeConsent(db, user.tenantId, scopeFor(p))
-    await audit(user, req, { action: 'consent.accepted', resource: 'social', id: p, summary: { platform: p, version: CONSENT_VERSION } })
+    if (!had) await audit(user, req, { action: 'consent.accepted', resource: 'social', id: p, summary: { platform: p, version: CONSENT_VERSION } })
     return NextResponse.json({ ok: true })
   }
   if (body.action === 'revoke') {

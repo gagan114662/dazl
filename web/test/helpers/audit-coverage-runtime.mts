@@ -215,6 +215,7 @@ test('every audited route in the Covered table records its event, with the redac
   // ---- social channels (settings/advanced): consent, connector on/off only when a connector exists, session save/remove
   const adv = (body: Record<string, unknown>) => () => advanced.POST(post('/api/settings/advanced', body))
   await step('social consent accepted', t.D, adv({ platform: 'x', action: 'consent', accept: true, version: SOCIAL_CONSENT }), [['D', 'consent.accepted', 'social', 'x', { platform: 'x', version: SOCIAL_CONSENT }]])
+  await step('social consent accepted again: already current, nothing recorded', t.D, adv({ platform: 'x', action: 'consent', accept: true, version: SOCIAL_CONSENT }), [])
   const none = await step('social toggle with no session', t.D, adv({ platform: 'x', action: 'toggle', enabled: true }), [])
   assert.deepEqual(await none.json(), { ok: false })
   await step('social session saved', t.D, adv({ platform: 'x', action: 'save', session: MARK.social }), [['D', 'credential.saved', 'social', 'x', { platform: 'x' }]])

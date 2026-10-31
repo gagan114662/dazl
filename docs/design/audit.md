@@ -72,7 +72,10 @@ identifiers and redacted scalars today, so the guard is defence in depth.
   event changes nothing and records nothing.
 - **Route actions** are written after the change succeeded (`lib/audit-route.ts`). For the on/off toggles (monitors,
   social channels) "changed" is decided in the `UPDATE` itself (`... AND enabled <> ?`), so of two interleaved toggles
-  each records exactly the flip it made and the trail's last event matches the row. A failed audit write does not undo
+  each records exactly the flip it made and the trail's last event matches the row. Autopilot pause, resume and
+  disable compare the state before and after the call instead (the service functions do not report a change), so two
+  interleaved opposite requests have a window in which both, or only the later one, record; the row ends in the state
+  of the later write either way. A failed audit write does not undo
   the change; it is reported through `captureError` (`where: audit:<action>`, tested), so a gap is an alert rather
   than silent. Whether a failed audit write should instead refuse the change is an owner decision.
 - The event's workspace is the one the route acted in (`user.tenantId`, #424), its actor the account acting
@@ -98,9 +101,13 @@ Every route row above is tested through its real route (`test/audit-routes.test.
 each test names the exact events one request adds, and fails if that route's audit call is removed. Stripe's rows are
 tested through `applyStripeEvent` (`test/audit.test.ts`, both engines) and through the real webhook route
 (`test/billing-events.test.ts`, both engines). A request that changes nothing (a repeat send, a disconnect with
-nothing connected, a toggle to the current state, a pause, resume or disable to the current state, a consent accepted
-again at the current version, follow-ups turned on again, a release of a lead that is not quarantined, a revoke with
-nothing on record, a no-op stop or resume) records nothing, and so does a refused or failed request (a key that is
+nothing connected, a toggle to the current state, a pause, resume or disable to the current state, a social or
+reply-reading consent accepted again at the current version, follow-ups turned on again, a release of a lead that is
+not quarantined, a revoke with nothing on record, a no-op stop or resume) records nothing. Two exceptions, by choice:
+re-saving the business profile, memory, competitors or sender settings with the same values records
+`settings.changed` (the save is the action; comparing free text would mean reading it), and re-saving a credential
+records `credential.saved` (a new value is a change even when it equals the old one, which the route never learns).
+A refused or failed request also records nothing (a key that is
 not a key, a bad website, invalid memory, a monitor interval under the plan's minimum, a delete of an unknown id, a
 checkout while already on Pro): each has a route-level negative.
 
