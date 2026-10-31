@@ -41,6 +41,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/leads/export',
   '/api/leads/hiring-feed',
   '/api/leads/page-signals',
+  '/api/leads/play-research',
   '/api/leads/qualify',
   '/api/leads/qualify-preview',
   '/api/leads/ranking-fixture',
