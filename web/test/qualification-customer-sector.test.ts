@@ -33,7 +33,7 @@ test('synthetic provider replay and stored pipeline return diagnostic without ne
  const fetchPage=async()=>({title:'Nettle',text:fixture.input.pages[0].text,retrievedAt:1}),model='claude-sonnet-4-5',p=await qualifyPreview(db,'u',id,'CRM setup and outbound sales consulting',fetchPage,'anthropic',model);assert.ok(p?.ready&&p.prompt_sha256&&p.cost)
  const before=db.prepare('SELECT * FROM leads').all();let calls=0
  const deps={enabled:true,sellerText:'CRM setup and outbound sales consulting',vendor:'anthropic',apiKey:'synthetic',fetchPage,provider:{configuredModel:()=>model,completeDetailed:async()=>{calls++;return{text:fixture.raw_model_text,model:fixture.served_model,usage:fixture.usage}}}as never}
- const approval={approved_by_user:true as const,vendor:'anthropic',model,max_usd_estimate:1,prompt_sha256:p.prompt_sha256,limits:p.cost.limits}
+ const approval={approved_by_user:true as const,vendor:'anthropic',model,max_usd_estimate:1,prompt_sha256:p.prompt_sha256,request_context_sha256:p.packing!.context_sha256,limits:p.cost.limits}
  assert.equal((await runQualification(db,'u',id,approval,deps)).status,'done');const q=storedQualifications(db,'u',id)[0].qualification!;assert.equal(q.company_fit.verdict,'no');assert.equal(q.company_fit.assessment_conflict?.kind,'customer_sector_not_target_business');assert.equal(q.use_case.verdict,'unknown');assert.equal(q.buying_evidence.verdict,'none_seen');assert.deepEqual(db.prepare('SELECT * FROM leads').all(),before)
  assert.equal((await runQualification(db,'u',id,approval,deps)).status,'exists');assert.equal(calls,1);db.close()
 })

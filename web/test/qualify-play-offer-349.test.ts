@@ -17,13 +17,14 @@ function setup(chosen=true){
  for(const[id,query]of [[L,LONDON],[D,DENTAL]]){
   const job=createQueryJob(db,'u1',{query});jobs.push(job)
   db.prepare("UPDATE scan_jobs SET status='running',seller=?,offer=? WHERE id=?").run(SAVED,id===L&&chosen?CRM:null,job)
+  if(id===L)db.prepare('UPDATE scan_jobs SET icp=? WHERE id=?').run(JSON.stringify({summary:'B2B SaaS startups in London, UK that raised seed funding or are hiring their first sales representative in the last 90 days.',industries:['B2B SaaS'],where:['London, UK']}),job)
   db.prepare('INSERT INTO leads(id,scan_job_id,company,signal,source_url,review_reason) VALUES (?,?,?,?,?,?)').run(id,job,'Acme','Raised seed funding','https://acme.example/news','counterparty_signal')
  }
  return{db,jobs}
 }
 const fetchPage=async()=>({text:'Acme raised seed funding and runs outbound sales.',title:'t',retrievedAt:1})
 const preview=(db:Database.Database,id=L,fetcher=fetchPage)=>qualifyPreview(db,'u1',id,SAVED,fetcher,'anthropic',MODEL)
-const approval=(p:NonNullable<Awaited<ReturnType<typeof preview>>>)=>({approved_by_user:true as const,vendor:'anthropic',model:MODEL,max_usd_estimate:p.cost!.usd_estimate_max!,prompt_sha256:p.prompt_sha256!,limits:DEFAULT_LIMITS})
+const approval=(p:NonNullable<Awaited<ReturnType<typeof preview>>>)=>({approved_by_user:true as const,vendor:'anthropic',model:MODEL,max_usd_estimate:p.cost!.usd_estimate_max!,prompt_sha256:p.prompt_sha256!,request_context_sha256:p.packing!.context_sha256,limits:DEFAULT_LIMITS})
 const deps=(p:unknown)=>({enabled:true,sellerText:SAVED,vendor:'anthropic',provider:p as never,apiKey:'synthetic',fetchPage})
 test('original London chosen CRM and dental snapshot persist, preview uses their own offer, no lead promotion',async()=>{
  const{db}=setup();const before=db.prepare('SELECT * FROM leads').all()
@@ -61,7 +62,7 @@ test('legacy tenant Memory fallback matches shared play resolver and a concurren
 })
 test('non-schema play context read failure is not silently replaced with global seller',async()=>{
  const{db}=setup();let fetched=0
- const wrapped=new Proxy(db,{get(target,key){if(key==='prepare')return(sql:string)=>{if(sql==='SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?')throw Error('database locked');return target.prepare(sql)};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value}})
+ const wrapped=new Proxy(db,{get(target,key){if(key==='prepare')return(sql:string)=>{if(sql.startsWith('SELECT offer, seller, query'))throw Error('database locked');return target.prepare(sql)};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value}})
  await assert.rejects(preview(wrapped,L,async()=>{fetched++;return fetchPage()}),/database locked/);assert.equal(fetched,0)
 })
 test('an owned lead with no tenant/snapshot/request offer remains structured not-ready, never404',async()=>{
