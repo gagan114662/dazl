@@ -49,7 +49,8 @@ export const PRICE_TABLE: Record<string, { input_per_mtok: number; output_per_mt
 
 export const LITERAL_CAVEAT = 'Literal match only: each quote was found on the named page, but it may be about another company or mean something else, and none of this is a verified fit or buying need.'
 
-export interface Prepared { prompt: string; prompt_sha256: string; scope: EvidenceScope; included: { url: string; text: string; role?: PageRole }[] }
+export interface ContextField { field: keyof typeof FIELD_CAPS; units_available: number; units_sent: number; truncated: boolean }
+export interface Prepared { context_fields: ContextField[]; context_complete: boolean; prompt: string; prompt_sha256: string; scope: EvidenceScope; included: { url: string; text: string; role?: PageRole }[] }
 
 export function preparePrompt(i: QualifyInput, limits: QualifyLimits = DEFAULT_LIMITS): Prepared {
   let budget = Math.max(0, limits.max_input_chars)
@@ -85,7 +86,8 @@ Each JSON record below names one source URL and its page text. Only that record'
 ${JSON.stringify(included.map(p => ({ url: p.url, text: p.text })))}
 END SOURCE PAGES`
 
-  return { prompt, prompt_sha256: createHash('sha256').update(prompt).digest('hex'), scope, included }
+  const context_fields = (Object.keys(FIELD_CAPS) as (keyof typeof FIELD_CAPS)[]).map(field => ({ field, units_available: i[field].length, units_sent: Math.min(i[field].length, FIELD_CAPS[field]), truncated: i[field].length > FIELD_CAPS[field] }))
+  return { context_fields, context_complete: !context_fields.some(f => f.truncated), prompt, prompt_sha256: createHash('sha256').update(prompt).digest('hex'), scope, included }
 }
 
 export function estimateCost(prompt: string, vendor: string | null, model: string | null, limits: QualifyLimits = DEFAULT_LIMITS) {
@@ -154,10 +156,10 @@ export function parseQualification(raw: string, included: { url: string; text: s
 }
 
 // Approval must name the exact model and the estimate it was shown. Booleans alone are not accepted.
-export interface PaidApproval { approved_by_user: true; vendor: string; model: string; max_usd_estimate: number; prompt_sha256: string; limits: QualifyLimits }
+export interface PaidApproval { request_context_sha256?: string; approved_by_user: true; vendor: string; model: string; max_usd_estimate: number; prompt_sha256: string; limits: QualifyLimits }
 export type QualifyResult =
   | { status: 'dry_run'; cost: ReturnType<typeof estimateCost>; scope: EvidenceScope }
-  | { status: 'blocked'; reason: 'no_approval' | 'model_mismatch' | 'unpriced_model' | 'over_estimate' | 'content_mismatch' | 'limits_mismatch' | 'no_pages' | 'no_provider'; cost?: ReturnType<typeof estimateCost> }
+  | { status: 'blocked'; reason: 'incomplete_context' | 'no_approval' | 'model_mismatch' | 'unpriced_model' | 'over_estimate' | 'content_mismatch' | 'limits_mismatch' | 'no_pages' | 'no_provider'; cost?: ReturnType<typeof estimateCost> }
   | { status: 'done'; qualification: Qualification; cost: ReturnType<typeof estimateCost>; usage?: unknown; served_model: string | null }
 
 // Exactly one provider request. No retry. Without `approval` it only reports the estimate.
@@ -165,6 +167,7 @@ export async function qualifyLead(provider: Provider, apiKey: string, input: Qua
   const limits = opts.limits ?? DEFAULT_LIMITS
   if (!input.pages.some(p => p.text.trim().length > 0)) return { status: 'blocked', reason: 'no_pages' }
   const prep = preparePrompt(input, limits)
+  if (!prep.context_complete) return { status: 'blocked', reason: 'incomplete_context' }
   const model = provider.configuredModel ? provider.configuredModel() : null
   const cost = estimateCost(prep.prompt, opts.vendor ?? null, model, limits)
   if (!opts.approval) return { status: 'dry_run', cost, scope: prep.scope }

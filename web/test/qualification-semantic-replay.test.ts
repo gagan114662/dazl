@@ -51,7 +51,7 @@ test('real stored pipeline replay preserves lead review/eligibility and disclose
  const p=await qualifyPreview(db,'u',id,'CRM setup and outbound sales consulting',fetchPage,'anthropic',model);assert.ok(p?.ready&&p.prompt_sha256&&p.cost)
  const before=db.prepare('SELECT * FROM leads').all();let calls=0
  const deps={enabled:true,sellerText:'CRM setup and outbound sales consulting',vendor:'anthropic',apiKey:'synthetic',fetchPage,provider:{configuredModel:()=>model,completeDetailed:async()=>{calls++;return{text:f.raw_model_text,model:f.served_model,usage:f.usage}}}as never}
- const approval={approved_by_user:true as const,vendor:'anthropic',model,max_usd_estimate:1,prompt_sha256:p.prompt_sha256,limits:p.cost.limits}
+ const approval={approved_by_user:true as const,vendor:'anthropic',model,max_usd_estimate:1,prompt_sha256:p.prompt_sha256,request_context_sha256:p.packing!.context_sha256,limits:p.cost.limits}
  const result=await runQualification(db,'u',id,approval,deps);assert.equal(result.status,'done');assert.equal(calls,1)
  assert.deepEqual(db.prepare('SELECT * FROM leads').all(),before)
  const stored=storedQualifications(db,'u',id)[0];assert.equal(stored.qualification?.company_fit.verdict,'no');assert.equal(stored.qualification?.use_case.verdict,'unknown');assert.match(stored.qualification!.caveat,/none of this is a verified fit/)
