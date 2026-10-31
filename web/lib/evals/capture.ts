@@ -84,7 +84,9 @@ export function beginScanTrace<D extends { trace?: TraceRecorder; fetchImpl?: ty
         spans: recorder.spans,
         output: { status: outcome, leads: await jobLeads(db, job) },
       }
-      const stored = capTrace(redactTrace(raw))
+      // Strings are cut to the stored size BEFORE redaction: every redaction pass then works on exactly what will be
+      // kept, so nothing past the stored prefix can be moved into it by an earlier pass shrinking the text (council R15).
+      const stored = capTrace(redactTrace(cutStrings(raw)))
       const json = JSON.stringify(stored)
       if (Buffer.byteLength(json) > MAX_TRACE_BYTES) throw new Error('trace over MAX_TRACE_BYTES') // capTrace guarantees this; never insert past it
       const at = Math.floor(now() / 1000)
@@ -124,15 +126,19 @@ function jobLeads(db: Db, job: TraceJob): Promise<TraceLead[]> {
 //   3. output leads dropped (count kept);
 //   4. input dropped and spans dropped (count kept): a header only.
 // Throws when even the header does not fit (an absurdly small bound): the caller then stores nothing.
-export function capTrace(t: Trace, maxBytes = MAX_TRACE_BYTES): Trace {
+const TRUNCATED = '…[truncated]'
+// Stage 1 of the cap on its own: every string and key cut to MAX_STRING_CHARS (never splitting a surrogate pair), the
+// count recorded in `capture` (complete: false when anything was cut). Idempotent: an already-cut string is left alone.
+// Run BEFORE redaction by the capture store, and again inside capTrace.
+export function cutStrings(t: Trace): Trace {
   let cut = 0
   const cutStr = (v: string): string => {
-    if (v.length <= MAX_STRING_CHARS) return v
+    if (v.length <= MAX_STRING_CHARS || (v.endsWith(TRUNCATED) && v.length <= MAX_STRING_CHARS + TRUNCATED.length)) return v
     cut++
     let n = MAX_STRING_CHARS
     const c = v.charCodeAt(n - 1)
     if (c >= 0xd800 && c <= 0xdbff) n-- // a high surrogate whose pair would be cut off
-    return `${v.slice(0, n)}…[truncated]`
+    return `${v.slice(0, n)}${TRUNCATED}`
   }
   const deep = (v: unknown): unknown => {
     if (typeof v === 'string') return cutStr(v)
@@ -140,9 +146,17 @@ export function capTrace(t: Trace, maxBytes = MAX_TRACE_BYTES): Trace {
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [cutStr(k), deep(x)]))
     return v
   }
-  const fits = (x: Trace) => Buffer.byteLength(JSON.stringify(x)) <= maxBytes
   const base = deep(t) as Trace
+  if (!cut) return base
   const prior = t.capture ?? {}
+  return { ...base, capture: { ...prior, truncated_strings: (prior.truncated_strings ?? 0) + cut, complete: false } }
+}
+export function capTrace(t: Trace, maxBytes = MAX_TRACE_BYTES): Trace {
+  const cutStr = (v: string): string => v.length <= MAX_STRING_CHARS ? v : `${v.slice(0, MAX_STRING_CHARS)}${TRUNCATED}`
+  const fits = (x: Trace) => Buffer.byteLength(JSON.stringify(x)) <= maxBytes
+  const base = cutStrings(t)
+  const cut = 0
+  const prior = base.capture ?? {}
   const mark = (x: Trace, more: NonNullable<Trace['capture']>): Trace => {
     const truncated = (prior.truncated_strings ?? 0) + cut
     const c = { ...prior, ...more, ...(truncated ? { truncated_strings: truncated } : {}), ...(bodies ? { bodies_truncated: bodies } : {}) }

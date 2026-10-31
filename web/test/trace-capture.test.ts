@@ -8,7 +8,7 @@ import { bothEngines } from './helpers/engines.ts'
 import Database from 'better-sqlite3'
 import { getDb, setDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { beginScanTrace, capTrace, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS, MAX_TRACE_BYTES, PURGE_LIMIT } from '../lib/evals/capture.ts'
+import { beginScanTrace, capTrace, cutStrings, getTrace, listTraces, purgeExpiredTraces, traceCaptureConfig, DEFAULT_RETENTION_DAYS, MAX_STRING_CHARS, MAX_TRACE_BYTES, PURGE_LIMIT } from '../lib/evals/capture.ts'
 import { StaleLeaseWrite, tryLease } from '../lib/shared/lease.ts'
 import { redactTrace } from '../lib/evals/redact.ts'
 import { TraceRecorder, TRACE_VERSION, type Trace } from '../lib/evals/trace.ts'
@@ -538,6 +538,30 @@ bothEngines('names from a fenced, prefaced or truncated model reply are pseudony
   assert.ok(!stored.includes('synthetic-slug'))
 })
 
+// R15: strings are cut to the stored size BEFORE redaction, so text beyond the stored prefix can never be moved into it
+// by a pass that shrinks the text ahead of it (an encoded value, a pseudonym): the reviewers' exact input.
+bothEngines('a credential past the stored prefix cannot slide into it: strings are cut before redaction', async ({ db }) => {
+  const body = `see https://x.example/r?next=token%253D${'A'.repeat(70_000)}<input type="hidden" name="csrf_token" value="SECRETXQ1">`
+  const c = beginScanTrace({ id: 'job-cut-first', user_id: 'tenant-Q', attempts: 1, query: 'q' }, { fetchImpl: (async () => new Response(body, { status: 200 })) as typeof fetch }, { env: { DAZL_TRACE_CAPTURE: '1' }, db: async () => db, finishMs: 10_000 })!
+  await (await c.deps.fetchImpl!('https://page.synthetic.example/p')).text()
+  const t = (await getTrace(db, 'tenant-Q', (await c.finish('done'))!))!
+  const stored = (t.spans[0].output as { body: string }).body
+  assert.ok(!JSON.stringify(t).includes('SECRETXQ1'))
+  // the cut happened first (recorded), then the encoded assignment took its whole 50k value, cut marker included: fail closed
+  assert.equal(stored, 'see https://x.example/r?next=token%253D[secret]')
+  assert.deepEqual([t.capture?.complete, t.capture?.truncated_strings], [false, 1])
+  assert.throws(() => worldFromTrace(t), WorldError)
+})
+
+test('cutStrings is idempotent and capTrace counts a pre-cut string once', () => {
+  const long = 'z'.repeat(MAX_STRING_CHARS + 10)
+  const once = cutStrings(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'p', start_ms: 0, duration_ms: 1, input: {}, output: { text: long, short: 'ok' } }] }))
+  const twice = cutStrings(once)
+  assert.deepEqual(twice, once); assert.deepEqual(once.capture, { truncated_strings: 1, complete: false })
+  const capped = capTrace(once)
+  assert.equal(capped.capture?.truncated_strings, 1); assert.equal((capped.spans[0].output as { text: string }).text.length, MAX_STRING_CHARS + '…[truncated]'.length)
+})
+
 // Probe F3: non-plain values under a credential-named key in a model span - a Buffer, a typed array, a Map, a Date, a
 // digit array, a byte map - go whole; ordinary fields beside them stay.
 bothEngines('a Buffer, typed array, Map, Date, digit array or byte map under a credential-named key is redacted whole', async ({ db }) => {
@@ -590,17 +614,25 @@ test('a 1M-character single HTML tag, and a 4M-character page of repeated attrib
   assert.ok(tag.length > 1_000_000)
   const hostile = `<div ${'name="a" name="b" name="c" '.repeat(100)}>`.repeat(1_500)   // ~4M chars, hundreds of name= per tag
   assert.ok(hostile.length > 4_000_000)
-  // each string on its own, timed: the whole pass is linear in the text (about 0.25 us per character on this machine)
-  const timed = (text: string, budgetMs: number, label: string) => {
-    const t0 = performance.now()
-    const out = (redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: {}, output: { text } }] }), Buffer.alloc(16, 5)).spans[0].output as { text: string }).text
-    const ms = performance.now() - t0
-    assert.ok(ms < budgetMs, `${label}: took ${ms.toFixed(0)} ms`)
-    return out
+  // each case is LINEAR: the same pattern at one tenth the size sets its unit, and the full size may take at most 15 units
+  // plus slack (a quadratic pass would take ~100). A wall-clock budget alone failed once under full-suite load.
+  const run = (text: string) => { const t0 = performance.now(); const out = (redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: {}, output: { text } }] }), Buffer.alloc(16, 5)).spans[0].output as { text: string }).text; return { out, ms: performance.now() - t0 } }
+  run('warm up '.repeat(20_000))
+  const linear = (small: string, big: string, label: string) => { const unit = Math.max(run(small).ms, 5); const r = run(big); assert.ok(r.ms < 15 * unit + 300, `${label}: ${big.length} chars took ${r.ms.toFixed(0)} ms, ${small.length} chars ${unit.toFixed(1)} ms`); return r.out }
+  const o = {
+    text: linear(`<input name="csrf_token" value="SECRETXP1" ${'data-a="1" '.repeat(10_000)}>`, tag, '1M-char tag'),
+    inner: linear(`<form ${'x '.repeat(40_000)} name="password" value="SECRETXP2">`, `<form ${'x '.repeat(400_000)} name="password" value="SECRETXP2">`, '800k-char tag'),
+    hostile: linear(`<div ${'name="a" name="b" name="c" '.repeat(100)}>`.repeat(150), hostile, '4M-char hostile page'),
   }
-  const o = { text: timed(tag, 1_000, '1M-char tag'), inner: timed(`<form ${'x '.repeat(400_000)} name="password" value="SECRETXP2">`, 1_000, '800k-char tag'), hostile: timed(hostile, 2_500, '4M-char hostile page') }
+  // R14: an encoded separator followed by an encoded & repeated 70k times stays linear (was quadratic: 1M chars took 173 s)
+  const enc = linear('token%3Dabc%26'.repeat(7_200), 'token%3Dabc%26'.repeat(72_000), '1M chars of token%3Dabc%26')
+  assert.ok(enc.startsWith('token%3D[secret]%26token%3D[secret]%26') && !enc.includes('abc'), enc.slice(0, 80))
+  // R18: the bound is the distance between the two attributes, not from the tag start
+  const longTag = `<input ${'class="c" '.repeat(300)}name="csrf_token" value="SECRETXP3">`
+  assert.ok(run(longTag).out.endsWith('name="csrf_token" value="[secret]">'), 'pair adjacent after a long tag prefix')
   assert.ok(o.text.startsWith('<input name="csrf_token" value="[secret]" '), o.text.slice(0, 60))
-  // the documented bound: a pair more than 2,000 characters from the tag start is not found (and the scan stays linear)
+  // the 800k tag: its pair sits past the 60,000-character read bound of the HTML pass, so it is left (documented; the
+  // capture store never keeps a string past 50,000 characters). The anchoring itself is proven by the 3k-char tag below.
   assert.ok(o.inner.endsWith('name="password" value="SECRETXP2">'), o.inner.slice(-60))
 })
 

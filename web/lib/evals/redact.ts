@@ -97,16 +97,20 @@ const FAMILIES: [RegExp, string][] = [
 ]
 // HTML attribute pairs: <input name="csrf_token" value="..."> and <meta name="csrf-token" content="...">, in either
 // attribute order, the attribute named by `name` or `id`, its value quoted or bare. The attribute's name decides, exactly
-// as a key does. Each scan inside a tag is BOUNDED (2,000 characters): a page is attacker-controlled and this pass runs
-// synchronously inside finish(), so an unbounded lazy scan would be quadratic in the length of one tag (a 400k-char tag
-// took 12 s). A pair further apart than the bound is not found - documented.
+// as a key does. The scan from the one attribute to the other is BOUNDED (2,000 characters): a page is
+// attacker-controlled and this pass runs synchronously inside finish(), so an unbounded lazy scan would be quadratic in
+// the length of one tag (a 400k-char tag took 12 s). A pair further apart than the bound is not found - documented.
+// (The pass also matches `name=x value=y` outside a tag: harmless, the value next to a credential name goes.)
 const ATTR_VALUE = String.raw`(?:(["'])([^"'<>]*)\2|([^\s"'<>]+))`
-const HTML_NAME_VALUE = new RegExp(String.raw`(<[a-z][^<>]{0,2000}?\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)(["']?[^<>]{0,2000}?\b(?:value|content)\s*=\s*)` + ATTR_VALUE.replace('\\2', '\\4'), 'gi')
-const HTML_VALUE_NAME = new RegExp(String.raw`(<[a-z][^<>]{0,2000}?\b(?:value|content)\s*=\s*)` + ATTR_VALUE + String.raw`([^<>]{0,2000}?\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)`, 'gi')
+// Anchored at the attribute itself (not the tag start), so the 2,000-character bound is the distance between the name
+// attribute and its value attribute, however long the tag is before them.
+const HTML_NAME_VALUE = new RegExp(String.raw`(\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)(["']?[^<>]{0,2000}?\b(?:value|content)\s*=\s*)` + ATTR_VALUE.replace('\\2', '\\4'), 'gi')
+const HTML_VALUE_NAME = new RegExp(String.raw`(\b(?:value|content)\s*=\s*)` + ATTR_VALUE + String.raw`([^<>]{0,2000}?\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)`, 'gi')
 // The HTML pass covers the first HTML_SCAN_CHARS characters of a string: capture stores at most MAX_STRING_CHARS
 // (50,000) of any string (lib/evals/capture.ts capTrace), so nothing past this bound is ever kept, and a multi-megabyte
 // hostile page (4M chars of repeated attributes took 12 s of blocked event loop) costs at most the bound's share.
 const HTML_SCAN_CHARS = 60_000
+const URL_KEY = /^(?:[a-z][a-z0-9+.-]*:\/\/|\/)/i
 function redactHtmlAttributes(s: string): string {
   if (!s.includes('<')) return s
   if (s.length > HTML_SCAN_CHARS) return redactHtmlAttributes(s.slice(0, HTML_SCAN_CHARS)) + s.slice(HTML_SCAN_CHARS)
@@ -163,8 +167,10 @@ function redactEncoded(s: string): string {
 // every character, the greedy name would be rescanned once per character of a long word, quadratic on a big body.
 //   - A name that ends its line (`credentials:` then an indented block, `password:` then the value on the next line)
 //     takes the whole indented block below it.
-// The HTML attribute pass reads only the first 60,000 characters of a string (capture keeps at most 50,000): a pair
-// further in is never stored anyway.
+// The capture store cuts every string to MAX_STRING_CHARS (50,000) BEFORE redaction, so every pass here works on exactly
+// the text that is kept and nothing past it can be moved in by an earlier pass shrinking the text; the HTML pass also
+// reads at most 60,000 characters on its own. A percent-encoded NON-ASCII name (`?p%C3%A4ssword=`) is decoded byte per
+// character and is not folded to its letters: not found (documented).
 // COVERED, to be explicit: names starting with or glued to digits (2fa_token, token2, api_key2), percent-encoded names
 // and separators (refresh%5Ftoken, password%3D, &%70assword=), double-encoded values, JSON-escaped quotes (\\"), values
 // in a URL's path or fragment, count-word CHILD keys under a credential object ({"auth": {"time": 1}} goes whole; a
@@ -182,11 +188,11 @@ function redactEncoded(s: string): string {
 // encoded as well (an encoded query carried inside a value: %3Fpassword%3Dx%26a%3D1); after a raw `=` it is part of the
 // value - in a form-urlencoded body (`password=a%26b&page=2`) only the raw `&` separates fields.
 const NAME_SEP = /(?<![\p{L}\p{N}_.-])((?:[\p{L}\p{N}]|%5[Ff])(?:[\p{L}\p{N}_.-]|%5[Ff])*)\\?["']?\s*(=>|[:=]|%3[DdAa])\s*(\\?["']?)/gu
-const ENCODED_AMP = /%26/i
 // An authorization scheme other than Bearer/Basic has its own syntax after the word: the value runs to the end of the
 // line under ANY credential-named header (x-auth-token: Token x, access_token: Token x, Digest username=...).
 const OTHER_SCHEME = /^(?:Token|Digest|OAuth|Hawk|Negotiate|NTLM|AWS4-HMAC-SHA256|SSWS|ApiKey|Api-Key|Zoho-oauthtoken|Splunk)\s/i
 const UNQUOTED = /[^\s"'&,;})]+/y
+const UNQUOTED_ENC = /(?:(?!%26)[^\s"'&,;})])+/iy   // after an encoded separator the encoded `&` (%26) ends the value: stop AT it, never scan past it
 const SCHEME = /^(?:Bearer|Basic)\s+/i
 const SCHEME_AT = /(?:Bearer|Basic)\s+/iy
 // Index of the quote that closes a value opened by `q` (`"`, `'` or the JSON-escaped `\"`), or -1 when the line ends first.
@@ -257,8 +263,8 @@ function findAssigned(s: string): Hit[] {
       else if (start === from && s.slice(m.index! + m[1].length, from).includes('\n')) end = blockEnd(s, m.index!, from)
       else if (start === from && (lineValued(name) || OTHER_SCHEME.test(s.slice(from, from + 24)))) end = lineEnd(s, from)
       else {
-        UNQUOTED.lastIndex = start; if (!UNQUOTED.exec(s)) continue; end = UNQUOTED.lastIndex
-        if (encodedSep) { const amp = s.slice(start, end).search(ENCODED_AMP); if (amp >= 0) end = start + amp }
+        const re = encodedSep ? UNQUOTED_ENC : UNQUOTED
+        re.lastIndex = start; if (!re.exec(s)) continue; end = re.lastIndex
       }
     }
     const value = s.slice(from, end)
@@ -353,7 +359,7 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
       : typeof v === 'number' ? (countTree ? SECRET : v)
         : Array.isArray(v) ? v.map(x => deep(x, secret, countTree))
           : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => {
-            const cred = isCredentialKey(k) && !/[/?&=]/.test(k)
+            const cred = isCredentialKey(k) && !URL_KEY.test(k)   // a key that IS a URL or path (a page map) is not a credential name for its subtree
             if (cred && !isCountKey(k) && x !== null && typeof x !== 'boolean') return [text(k), SECRET]
             if (typeof x === 'number') return [text(k), !cred && countTree && !hasCountWord(k) ? SECRET : x]
             return [text(k), deep(x, secret || cred, countTree || cred)]
