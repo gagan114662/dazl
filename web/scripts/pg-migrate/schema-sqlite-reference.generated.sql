@@ -550,6 +550,16 @@ CREATE TABLE scan_source_stats (
     PRIMARY KEY (job_id, attempt, collector)
   );
 
+CREATE TABLE scan_traces (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      bytes INTEGER NOT NULL,
+      trace TEXT NOT NULL
+    );
+
 CREATE TABLE scheduler_progress (
       tenant_id            TEXT NOT NULL,
       kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
@@ -901,6 +911,10 @@ CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
+
+CREATE INDEX scan_traces_created ON scan_traces (created_at);
+
+CREATE INDEX scan_traces_tenant ON scan_traces (tenant_id, created_at);
 
 CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
 
