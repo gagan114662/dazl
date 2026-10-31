@@ -38,7 +38,7 @@ const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', '
 export const CREDENTIAL_TABLES = ['sessions', 'oauth_states', 'oauth_identities', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']
 // Left out of an export entirely (token material, no value to the tenant) and redacted columns.
 export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session tokens (hashed); never exported', oauth_states: 'one-time OAuth state and PKCE verifiers; never exported' }
-export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash)$|secret/
+export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash|claim_token)$|secret/
 // Kept whatever the policy: append-only audit records that hold no tenant content (lib/scan/evidence-copies.ts: who
 // purged evidence, why, and counts). Reported on the tombstone as retained, like any policy retention.
 export const ALWAYS_RETAINED: Record<string, string> = { evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content' }
