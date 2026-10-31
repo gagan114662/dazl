@@ -206,6 +206,7 @@ export async function createBackup(opts: { source: string; destDir: string }): P
 
 export interface DrillReport {
   verdict: 'pass' | 'fail'
+  steps: { step: string; ok: boolean }[]
   reasons: string[]
   warnings: string[]
   backupPath: string
@@ -398,8 +399,16 @@ export async function restoreDrill(opts: {
   }
 
   if (mismatches.length) reasons.push(...mismatches)
+  // One entry per thing the drill checks, so a monitor (backup-check.mts) can name what failed, not only that it did.
+  const steps: { step: string; ok: boolean }[] = [
+    { step: 'sidecar sha256', ok: sidecarVerified !== false },
+    { step: 'backup integrity', ok: sourceMetrics?.integrityOk === true },
+    { step: 'restore and compare', ok: restoredMetrics !== null && restoredMetrics.integrityOk && mismatches.length === 0 },
+    { step: 'backup unchanged by drill', ok: backupUnchangedAfterDrill },
+  ]
   return {
     verdict: reasons.length === 0 ? 'pass' : 'fail',
+    steps,
     reasons,
     warnings,
     backupPath: backup,
