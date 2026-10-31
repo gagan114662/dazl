@@ -78,6 +78,23 @@ test('crawlJob stores each contact with its source page and date; the site is re
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: { SITECRAWL_ENABLED: '0' } }) // switch off does nothing
 })
 
+test('a lead held because its evidence page blocked us gets an identity attempt WITHOUT re-fetching the blocked page; event-hold classes are not selected', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)")
+  db.prepare(`INSERT INTO leads VALUES
+    ('lb','j1','Clera','https://blocked.example/article','blocked_by_site',NULL,80,NULL,NULL,NULL),
+    ('lj','j1','JsCo','https://js.example/article','needs_javascript',NULL,75,NULL,NULL,NULL),
+    ('lc','j1','CounterCo','https://news.example/x','counterparty_signal',NULL,70,NULL,NULL,NULL),
+    ('ld','j1','ClosedCo','https://news.example/y','job_closed',NULL,60,NULL,NULL,NULL)`).run()
+  const reads: string[] = []
+  const get: Get = async url => { const u = new URL(url); reads.push(u.hostname + u.pathname); return { status: 404, body: '', finalUrl: url } }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-31T12:00:00Z') })
+  assert.ok(!reads.some(r => r.includes('blocked.example') || r.includes('js.example')), 'a known-blocked / JS-only evidence page is never re-fetched')
+  assert.ok(reads.some(r => r.includes('clera')) && reads.some(r => r.includes('jsco')), 'identity is probed from the company name instead')
+  assert.ok(!reads.some(r => r.includes('counterco')) && !reads.some(r => r.includes('closedco')) && !reads.some(r => r.includes('news.example')), 'counterparty / job-closed holds are not selected - identity cannot change them')
+  assert.equal((db.prepare("SELECT review_reason FROM leads WHERE id='lb'").get() as { review_reason: string }).review_reason, 'blocked_by_site', 'the hold is untouched: discovery never clears it')
+})
+
 test('crawl4ai sidecar: POST /crawl shape, robots check on, public hosts only, same-site only', async () => {
   let body: { urls?: string[]; crawler_config?: { params?: { check_robots_txt?: boolean } } } = {}
   const f = (async (_u: string, i: RequestInit) => { body = JSON.parse(String(i.body)); return new Response(JSON.stringify({ results: [{ url: 'https://acme.com/contact', html: '<p>x</p>', status_code: 200, success: true, redirected_url: 'https://acme.com/contact' }] })) }) as unknown as typeof fetch
