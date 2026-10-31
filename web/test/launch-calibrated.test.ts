@@ -10,7 +10,7 @@ import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { approve, createDraft, OutreachError, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, pause, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
-import { acceptLaunchPolicy, launchGate, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
+import { acceptLaunchPolicy, calibratedStop, launchGate, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { callCostUsd } from '../lib/llm/spend-guard.ts'
 import type { Provider, DetailedCompletion } from '../lib/llm/provider.ts'
@@ -183,6 +183,23 @@ test('the policy\'s stops pause the launch: any reply, a bounce rate over the li
   const g3 = gmail()
   assert.equal((await runAutopilot(db3, 'A', 'Acme', { ...g3.d, now: NOW + 2 })).stopped, 'stop_check_unavailable')
   assert.equal(g3.sent.length, 0)
+})
+
+test('a bounce is decided by the bounce-rate rule, never mislabelled as a reply; a real reply pauses as a reply (#405 council R2-4)', async () => {
+  const { db } = await launched()
+  const gate = launchGate(db, 'A', 'me@acme.example', NOW + 2)
+  assert.equal(gate.calibrated, true); if (!gate.calibrated) return
+  const inbound = (gmailId: string, cls: string) => db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, 'A', 't1', NULL, 's0@cal0.example', 'x', ?, ?)").run(gmailId, cls, NOW + 1)
+  assert.equal(calibratedStop(db, 'A', gate), null)
+  // the reply sync logs bounces and auto-replies in inbound_messages too: none of them is a reply
+  inbound('sb1', 'soft_bounce'); inbound('au1', 'auto')
+  assert.equal(calibratedStop(db, 'A', gate), null, 'a soft bounce or an auto-reply is not a reply')
+  inbound('hb1', 'bounce'); auditAt(db, 'A', 'bounce', 's0@cal0.example', undefined, undefined, NOW + 1)
+  assert.equal(calibratedStop(db, 'A', gate), 'bounce_rate', 'one hard bounce over the 5% limit is the bounce-rate stop')
+  db.exec("DELETE FROM autopilot_audit WHERE action = 'bounce'")
+  assert.equal(calibratedStop(db, 'A', gate), null, 'the bounce row alone does not trip the reply stop')
+  inbound('r1', 'positive')
+  assert.equal(calibratedStop(db, 'A', gate), 'reply_received')
 })
 
 test('HOLD: provider acceptance is not receipt: the integration message must be found in the INBOX, with read access', async () => {

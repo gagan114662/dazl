@@ -124,7 +124,7 @@ export function migrateLaunchPolicy(db: Database.Database): void {
     tenant_id TEXT PRIMARY KEY,
     acceptance_id TEXT NOT NULL CHECK (length(acceptance_id) = 16),
     version TEXT NOT NULL CHECK (length(version) <= 20),
-    policy TEXT NOT NULL CHECK (length(policy) <= 8000), -- MAX_POLICY_JSON
+    policy TEXT NOT NULL CHECK (length(policy) <= 8000),
     accepted_at INTEGER NOT NULL,
     launched_at INTEGER,
     preflight TEXT CHECK (preflight IS NULL OR length(preflight) <= 4000)
@@ -211,10 +211,13 @@ export function outsidePolicy(policy: LaunchPolicy, playId: string, to: string):
 }
 
 // The policy's own stops, on top of autopilot's: any reply since launch (when the policy says so), or a bounce rate
-// since launch above the policy's limit. A store that cannot be read stops the launch (fail closed).
+// since launch above the policy's limit. A store that cannot be read stops the launch (fail closed). The reply sync
+// (replies.ts) logs bounces and auto-replies in inbound_messages as well; those are not replies, so they are left to
+// the bounce-rate rule and never pause the launch under the wrong name.
+const NOT_A_REPLY = ['bounce', 'soft_bounce', 'auto'] as const
 export function calibratedStop(db: Database.Database, tenantId: string, gate: Extract<LaunchGate, { calibrated: true }>): 'reply_received' | 'bounce_rate' | 'stop_check_unavailable' | null {
   try {
-    if (gate.policy.stops.pauseOnAnyReply && db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND received_at >= ? LIMIT 1').get(tenantId, gate.launchedAt)) return 'reply_received'
+    if (gate.policy.stops.pauseOnAnyReply && db.prepare(`SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND received_at >= ? AND classification NOT IN (${NOT_A_REPLY.map(() => '?').join(', ')}) LIMIT 1`).get(tenantId, gate.launchedAt, ...NOT_A_REPLY)) return 'reply_received'
     const n = (action: string) => (db.prepare('SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = ? AND created_at >= ?').get(tenantId, action, gate.launchedAt) as { n: number }).n
     const sent = n('sent'), bounced = n('bounce')
     if (bounced > 0 && bounced / Math.max(sent, 1) > gate.policy.stops.maxBounceRate) return 'bounce_rate'
