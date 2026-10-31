@@ -58,7 +58,7 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE users ADD COLUMN email_verified_at INTEGER') } catch { /* exists */ }
   d.exec(EMAIL_TOKENS_DDL)
   d.exec(OUTBOX_DDL)
-  // Durable audit trail (lib/audit.ts). PG: 0028_audit_events.sql.
+  // Durable audit trail (lib/audit.ts). PG: 0025_audit_events.sql.
   d.exec(AUDIT_DDL)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)

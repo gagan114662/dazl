@@ -2,13 +2,14 @@
 // whether policy allowed it. Append-only in the database itself: an UPDATE is refused by a trigger, and a DELETE is
 // refused except inside the retention purge's own transaction (the audit_purge_gate row exists only there). No API
 // writes or edits events; members read them through GET /api/workspace/audit, scoped to their own workspace.
+// Automatic deletion is OFF until the owner chooses a retention period (auditRetention, below).
 //
 // Summaries are redacted at the source: only short scalar fields are kept, and any field whose name or value looks
 // like a credential, a token or message content is dropped, so secret values and reply bodies never enter the trail.
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
 
-// SQLite: migrateAuth (lib/auth-db.ts); PG: 0028_audit_events.sql.
+// SQLite: migrateAuth (lib/auth-db.ts); PG: 0025_audit_events.sql.
 export const AUDIT_DDL = `
   CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,
@@ -112,11 +113,29 @@ export async function searchAudit(db: Db, tenantId: string, q: { action?: string
   return rows.map(r => ({ ...r, at: Number(r.at), seq: Number(r.seq), summary: (() => { try { return JSON.parse(r.summary) as Record<string, unknown> } catch { return {} } })() }))
 }
 
-// Events older than `retainS` (default 400 days), at most `limit` per call, inside the only transaction the delete
-// trigger allows. Run from the scheduled tick, fenced by its lease.
-export const AUDIT_RETAIN_S = 400 * 24 * 60 * 60
-export async function purgeAudit(db: Db, o: { now?: number; retainS?: number; limit?: number; fence?: (t: Tx) => TxBody<void> } = {}): Promise<number> {
-  const cutoff = (o.now ?? nowS()) - (o.retainS ?? AUDIT_RETAIN_S), limit = Math.max(1, Math.min(o.limit ?? 1000, 10000))
+// Retention policy. Automatic deletion is OFF until the owner chooses a period: a deployment never picks one on its own
+// (the rule lib/account-retention.ts follows for sessions). AUDIT_RETENTION_DAYS is that choice, a whole number of days
+// of at least AUDIT_RETENTION_MIN_DAYS. Unset, empty, 'off' and '0' are off; anything else ('abc', '-5', '1.5', '29',
+// '400d') is invalid. Off and invalid both purge nothing; the tick reports invalid, so a typo never quietly deletes
+// and never quietly passes for a policy.
+export const AUDIT_RETENTION_MIN_DAYS = 30
+export type AuditRetention = { state: 'off' } | { state: 'invalid' } | { state: 'on'; days: number; retainS: number }
+export function auditRetention(env: Record<string, string | undefined> = process.env): AuditRetention {
+  const raw = (env.AUDIT_RETENTION_DAYS ?? '').trim()
+  if (raw === '' || raw === '0' || raw.toLowerCase() === 'off') return { state: 'off' }
+  if (!/^[1-9]\d{0,4}$/.test(raw) || Number(raw) < AUDIT_RETENTION_MIN_DAYS) return { state: 'invalid' }
+  const days = Number(raw)
+  return { state: 'on', days, retainS: days * 24 * 60 * 60 }
+}
+
+// The purge path for an explicit policy: events older than `retainS`, at most `limit` per call (1000 by default, never
+// more than 10000), inside the only transaction the delete trigger allows. `retainS` is required and must be a period
+// auditRetention would accept: there is no default, so nothing can purge by omission. Run from the scheduled tick,
+// fenced by its lease (`fence` runs first in the same transaction: a lost lease refuses the whole purge, and the gate
+// row is never left behind).
+export async function purgeAudit(db: Db, o: { retainS: number; now?: number; limit?: number; fence?: (t: Tx) => TxBody<void> }): Promise<number> {
+  if (!Number.isInteger(o.retainS) || o.retainS < AUDIT_RETENTION_MIN_DAYS * 24 * 60 * 60) throw new Error('audit purge needs an explicit retention period')
+  const cutoff = (o.now ?? nowS()) - o.retainS, limit = Math.max(1, Math.min(o.limit ?? 1000, 10000))
   return db.tx(function* (t) {
     if (o.fence) yield* o.fence(t)
     yield* t.run('INSERT INTO audit_purge_gate (id) VALUES (1)')

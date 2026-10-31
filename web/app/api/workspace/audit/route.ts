@@ -17,7 +17,8 @@ const csvCell = (v: unknown) => {
   const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s
   return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe
 }
-// Retention keeps at most 400 days; this bounds one download's memory all the same, and says so when it stops short.
+// Nothing bounds the trail's size until the owner chooses a retention period (lib/audit.ts auditRetention), so this
+// bounds one download's memory, and says so when it stops short.
 const CSV_MAX = 100_000
 const COLUMNS = ['at', 'actor_id', 'actor_kind', 'action', 'resource_type', 'resource_id', 'decision', 'summary', 'correlation_id'] as const
 

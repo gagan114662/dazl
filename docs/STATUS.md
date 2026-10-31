@@ -111,10 +111,10 @@ Updated by the builder on every branch. Newest first.
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review; next: #371.
-- Audit trail (#371): design in docs/design/audit.md. Append-only `audit_events` (PG 0028), events for credential,
-  billing, Stripe plan, sending, CRM, pipeline, consent, export and deletion actions, Settings > Audit trail and
-  `GET /api/workspace/audit` (owners and admins; CSV), 400-day retention on the tick. Support access needs an owner
-  decision.
+- Audit trail (#371, part): design in docs/design/audit.md. Append-only `audit_events` (PG 0025), events for
+  credential, billing, Stripe plan, sending, CRM, pipeline, consent, export and deletion actions, Settings > Audit
+  trail and `GET /api/workspace/audit` (owners and admins; CSV). Automatic deletion is off: the tick purges nothing
+  until the owner chooses a retention period (`AUDIT_RETENTION_DAYS`). Support access needs an owner decision.
 
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)

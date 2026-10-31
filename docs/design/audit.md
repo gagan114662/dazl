@@ -1,11 +1,12 @@
 # Durable actor audit trail (#371)
 
-Status: contract, database enforcement, route and webhook events, the owners' and admins' view, search, export and
-retention built on main. Time-bounded support access needs an owner decision; see the end of this note.
+Status: contract, database enforcement, route and webhook events, the owners' and admins' view, search and export built
+on main. Automatic deletion is OFF until the owner chooses a retention period (below). Time-bounded support access
+needs an owner decision; see the end of this note.
 
 ## Contract
 
-`audit_events`, one row per attributable action (`lib/audit.ts`; SQLite in `migrateAuth`, PG `0028_audit_events.sql`):
+`audit_events`, one row per attributable action (`lib/audit.ts`; SQLite in `migrateAuth`, PG `0025_audit_events.sql`):
 
 | field | meaning |
 |---|---|
@@ -36,7 +37,18 @@ retention built on main. Time-bounded support access needs an owner decision; se
   `x-audit-truncated` beyond that), with cells guarded against formula injection, and the download is itself an
   `export.audit` event. A refused read is a `denied` `audit.read` event in the workspace that was asked for, at most
   once a minute per member. Settings shows the card to owners and admins only, so nobody else's page load asks.
-- **Retention.** The tick purges events older than 400 days, at most 1000 per run, fenced by its lease.
+- **Retention is an owner decision, and off until made.** No retention period is chosen yet, so the deployed default
+  deletes nothing: the tick calls the purge only when `AUDIT_RETENTION_DAYS` is set to a whole number of days of at
+  least 30 (`lib/audit.ts auditRetention`, the same rule `ACCOUNT_RETENTION_ENABLED` follows for sessions). Unset,
+  empty, `off` and `0` are off; anything else (`abc`, `-5`, `1.5`, `29`, `400d`) is invalid. Off and invalid both
+  purge nothing, and invalid is reported through `captureError` (`where: tick:audit-retention`) on every tick, so a
+  typo is an alert, not a policy. The purge itself (`purgeAudit`) has no default period and refuses one it would not
+  accept from the environment. With a valid period, each tick deletes events older than it, at most 1000 per run,
+  inside the only transaction the delete trigger allows, after the tick's lease fence: a lost lease refuses the whole
+  purge and leaves no gate row behind. The tick's response says which (`audit_retention`: `off`, `invalid` or the
+  days; `audit_purged`). Tested through the real tick route (`test/audit-retention-tick.test.ts`): unset, off and
+  every invalid form delete nothing; a valid period deletes only older events, in bounded batches, and the table is
+  still append-only afterwards.
 
 ## When an event is written
 
@@ -77,8 +89,10 @@ nothing on record, a no-op stop) records nothing.
   owner decision; it is a behaviour change for every audited route.
 - **Refusals other than the audit read leave no event.** Role refusals (`denied()`, 403) and policy refusals of a
   send or approve (suppressed address, held lead, uncertain-send gate) answer as before, without a `denied` event.
-- **Member, role and invitation actions** (#437, not on main) are not recorded yet. Whichever of #437 and this PR
-  lands second wires them.
+- **Member, role, invitation and session actions** (#437, #358, now on main) are not recorded yet: this PR keeps to
+  the action list above; wiring the Team and Devices routes is the next increment of #371.
+- **The retention period itself.** Nothing is deleted until the owner chooses one and sets `AUDIT_RETENTION_DAYS`
+  explicitly; the 30-day floor and the 1000-per-tick batch are the only bounds built in.
 - **Time-bounded support access** is not built (below), so this PR is part of #371, not its close.
 - The CSV's 100,000-event bound has no test of its own.
 

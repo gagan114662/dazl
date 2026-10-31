@@ -3,31 +3,59 @@
 // Synthetic rows only; nothing is fetched or sent.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { AUDIT_RETAIN_S, cursorOf, parseCursor, purgeAudit, record, redact, searchAudit } from '../lib/audit.ts'
+import { AUDIT_RETENTION_MIN_DAYS, auditRetention, cursorOf, parseCursor, purgeAudit, record, redact, searchAudit } from '../lib/audit.ts'
 import { applyStripeEvent, type StripeEvent } from '../lib/billing/stripe.ts'
 import { readPlan } from '../lib/plans.ts'
 import type { Db } from '../lib/db/client.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const NOW = Math.floor(Date.now() / 1000)
+const DAY = 24 * 60 * 60
 const all = (db: Db) => db.all<Record<string, unknown>>('SELECT * FROM audit_events')
 const T = 'a'.repeat(32)
 const ev = (id: string, type: string, created: number, object: StripeEvent['data']['object']): StripeEvent => ({ id, type, created, data: { object } })
 
 bothEngines('events are append-only in the database; only the retention purge deletes, and only old events', async ({ db }) => {
-  await record(db, { tenantId: 'A', actorId: 'A', action: 'x.old', resourceType: 't' }, NOW - AUDIT_RETAIN_S - 10)
+  await record(db, { tenantId: 'A', actorId: 'A', action: 'x.old', resourceType: 't' }, NOW - 400 * DAY - 10)
   await record(db, { tenantId: 'A', actorId: 'A', action: 'x.new', resourceType: 't' }, NOW)
   await assert.rejects(db.run("UPDATE audit_events SET action = 'tampered'"))
   await assert.rejects(db.run("UPDATE audit_events SET tenant_id = 'B'"))
   await assert.rejects(db.run('DELETE FROM audit_events'))
   assert.equal((await all(db)).length, 2)
-  assert.equal(await purgeAudit(db, { now: NOW }), 1)
+  assert.equal(await purgeAudit(db, { now: NOW, retainS: 400 * DAY }), 1)
   assert.deepEqual((await searchAudit(db, 'A')).map(e => e.action), ['x.new'])
   assert.equal((await db.all('SELECT * FROM audit_purge_gate')).length, 0, 'the gate exists only inside the purge')
   await assert.rejects(db.run('DELETE FROM audit_events'), 'still append-only after a purge')
   // Postgres row triggers do not see TRUNCATE; its own statement trigger refuses it (SQLite has no TRUNCATE)
   if (db.kind === 'pg') await assert.rejects(db.run('TRUNCATE audit_events'), /append-only/)
   assert.equal((await all(db)).length, 1)
+})
+
+test('automatic deletion is off until the owner sets an explicit period; off and invalid never purge', () => {
+  // unset, empty, off and 0 are off: the deployed default
+  for (const v of [undefined, '', '  ', 'off', 'OFF', 'Off', '0']) assert.deepEqual(auditRetention({ AUDIT_RETENTION_DAYS: v }), { state: 'off' }, JSON.stringify(v))
+  assert.deepEqual(auditRetention({}), { state: 'off' })
+  // not a whole number of days of at least the floor: invalid, which purges nothing either (the tick reports it)
+  for (const v of ['abc', '-5', '1.5', '400d', '0x10', '1e3', ' 29', String(AUDIT_RETENTION_MIN_DAYS - 1), '00', '007', '123456', 'true', 'null']) assert.deepEqual(auditRetention({ AUDIT_RETENTION_DAYS: v }), { state: 'invalid' }, v)
+  // an explicit choice
+  assert.deepEqual(auditRetention({ AUDIT_RETENTION_DAYS: String(AUDIT_RETENTION_MIN_DAYS) }), { state: 'on', days: AUDIT_RETENTION_MIN_DAYS, retainS: AUDIT_RETENTION_MIN_DAYS * DAY })
+  assert.deepEqual(auditRetention({ AUDIT_RETENTION_DAYS: ' 400 ' }), { state: 'on', days: 400, retainS: 400 * DAY })
+})
+
+bothEngines('the purge refuses a missing or too-short period, and a lost lease fence inside its transaction deletes nothing and leaves no gate', async ({ db }) => {
+  await record(db, { tenantId: 'A', actorId: 'A', action: 'x.old', resourceType: 't' }, NOW - 1000 * DAY)
+  await record(db, { tenantId: 'A', actorId: 'A', action: 'x.new', resourceType: 't' }, NOW)
+  for (const retainS of [undefined, 0, -1, 1.5, NaN, (AUDIT_RETENTION_MIN_DAYS - 1) * DAY]) {
+    await assert.rejects(purgeAudit(db, { now: NOW, retainS: retainS as number }), /explicit retention period/, String(retainS))
+  }
+  // the fence runs first, in the purge's own transaction: a refused fence rolls the whole purge back
+  await assert.rejects(purgeAudit(db, { now: NOW, retainS: 400 * DAY, fence: function* () { throw new Error('lost lease') } }), /lost lease/)
+  assert.deepEqual((await searchAudit(db, 'A')).map(e => e.action), ['x.new', 'x.old'])
+  assert.equal((await db.all('SELECT * FROM audit_purge_gate')).length, 0, 'no gate row left behind by the refused purge')
+  await assert.rejects(db.run('DELETE FROM audit_events'), 'still append-only')
+  // the same period with a passing fence is the fenced, bounded path a future policy uses
+  assert.equal(await purgeAudit(db, { now: NOW, retainS: 400 * DAY, fence: function* () { /* lease held */ } }), 1)
+  assert.deepEqual((await searchAudit(db, 'A')).map(e => e.action), ['x.new'])
 })
 
 test('summaries keep short scalars only: no secrets, tokens, hashes or message content', () => {
