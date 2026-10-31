@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { handedKeys } from './icp-from-site-stub.ts'
+import { handedKeys, next } from './icp-from-site-stub.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 import { admitTrialScan } from '../../lib/billing/trial-budget.ts'
@@ -73,4 +73,33 @@ test('the site read trial is the workspace founder\'s own account, acting itself
     assert.deepEqual(await post(), { trial: 'workspace_not_eligible', operatorKey: false }, `team workspace, actor ${email}`)
   }
   console.log('SITE_READ_ROUTE ok')
+})
+
+test('#444 restack: the route keeps both refusals apart: the owner pool\'s spend_limit (429, main\'s message, no trial reason), a failed trial read (502), a refused trial (400 with its reason)', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
+  const db = sqliteDb(raw)
+  const FOUNDER = uid(21)
+  await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, 'f@gmail.com', 'n', 'b', 'x', 'y')", [FOUNDER])
+  await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [FOUNDER, FOUNDER])
+  setUser({ id: FOUNDER, business_name: 'F', email: 'f@gmail.com' })
+  const call = async () => {
+    const req = new NextRequest('http://localhost/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `198.51.100.${ip++}` }, body: JSON.stringify({ url: 'https://acme.example' }) })
+    const r = await POST(req)
+    return { status: r.status, body: await r.json() as { error?: string; message?: string; trial?: string } }
+  }
+  // 1. The owner's workspace spend limit (an own-key read the pool refused): main's 429 and message, and no trial reason.
+  next.error = 'spend_limit'
+  const limit = await call()
+  assert.equal(limit.status, 429)
+  assert.equal(limit.body.error, 'spend_limit')
+  assert.match(limit.body.message ?? '', /workspace AI spend limit/)
+  assert.equal(limit.body.trial, undefined)
+  // 2. A trial read that failed on dazl's side: 502 with trial_read_failed, never the owner's spend_limit, no trial reason.
+  next.error = 'trial_read_failed'
+  assert.deepEqual(await call(), { status: 502, body: { error: 'trial_read_failed' } })
+  // 3. A refused trial (this founder has no Google sign-in): 400 with no_api_key and the reason, nothing handed to a read.
+  const before = handedKeys.length
+  assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'google_required' } })
+  assert.equal(handedKeys.length, before)
+  console.log('SITE_READ_ROUTE_ERRORS ok')
 })
