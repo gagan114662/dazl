@@ -189,6 +189,20 @@ punctuation the verifier normalises away.
 - a person named **only in page text**, never extracted as a lead or contact name, is not found;
 - free-text identifiers the patterns do not know (street addresses, account numbers, handles other than LinkedIn) are kept.
 
+Credentials (`[secret]`, never a hash) are found by **field name** at any nesting (token, secret, key, password, passcode,
+otp, cookie, session, authorization, signature, ...: strings under such a key always go; numbers go too unless the name is a
+token/key count or limit such as `max_tokens`, `token_count`, `tokens: 5`), by **family** (provider and GitHub/GitLab/npm
+keys, Slack, AWS, Google, JWTs, Bearer/Basic values, PEM blocks, cookie header lines, the password of a URL's
+`scheme://user:password@` userinfo), and as **assignments in text** (`name: value`, `name=value`, `name => value`,
+`"name": "value"`, JSON-escaped `\"name\": \"value\"`, HTML `name=.../value=...` attribute pairs, percent-encoded
+query values): the whole assigned value goes - a quoted value to its closing quote, an object or array to its matching
+bracket (or the end of a cut body), an authorization or cookie value to the end of the line, anything else to the next
+delimiter. People named in a model reply are pseudonymised even when the reply is fenced, prefaced or cut short.
+Documented limits, by design: an **unquoted value with spaces** (`password: correct horse battery`) keeps everything after
+its first word; **prose** (`the password is X`, `password - X`) is not an assignment; names that are not credential words
+(`verification_code`, `pin` as a key outside a credential object) are not credential names; an **opaque value with no
+name and no known prefix** (a bare hex string in page text) is kept.
+
 **Recorded Worlds are private and unpublished**: tenant-scoped, never committed to this repository, never shared across
 tenants. None has been captured or stored yet; every World in `web/test/fixtures/evals/` is synthetic.
 

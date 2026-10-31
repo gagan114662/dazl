@@ -108,13 +108,13 @@ const errorKind = (e: unknown): string => {
 
 const parseIcp = (s: string | null | undefined): unknown => { try { return s ? JSON.parse(s) : undefined } catch { return undefined } }
 
-// This run's leads, read through the job's own tenant. Empty when the leads live in another store (the scan still runs on
-// SQLite while DATABASE_URL points the Db layer at Postgres before cutover).
-async function jobLeads(db: Db, job: TraceJob): Promise<TraceLead[]> {
-  try {
-    return await db.all<TraceLead>(`SELECT l.name, l.company, l.contact, l.source_url, l.evidence_excerpt AS excerpt, l.event_date, l.review_reason, l.confidence
-      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.id = ? AND j.user_id = ? ORDER BY l.company`, [job.id, job.user_id])
-  } catch { return [] }
+// This run's leads, read through the job's own tenant. A failed read FAILS the store (the error reaches store()'s catch:
+// logged by class, nothing kept): a trace stored with an empty lead list and complete: true would replay as a complete
+// zero-lead run. Legitimately empty when the leads live in another store (the scan still runs on SQLite while
+// DATABASE_URL points the Db layer at Postgres before cutover): the table exists there and has no rows.
+function jobLeads(db: Db, job: TraceJob): Promise<TraceLead[]> {
+  return db.all<TraceLead>(`SELECT l.name, l.company, l.contact, l.source_url, l.evidence_excerpt AS excerpt, l.event_date, l.review_reason, l.confidence
+    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.id = ? AND j.user_id = ? ORDER BY l.company`, [job.id, job.user_id])
 }
 
 // Fits a trace into `maxBytes` of UTF-8 JSON - the exact bytes stored - dropping content in stages, each recorded in
