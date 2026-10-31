@@ -74,7 +74,8 @@ test('numbers in a policy are numbers: a boolean is not a cap of 1; the spend ca
 test('R3-9: an over-long list is refused by name, never truncated: entry 501 of an exclusion list is never silently dropped', () => {
   const domains = (n: number) => Array.from({ length: n }, (_, i) => `x${i}.t`)
   const over = parsePolicy({ ...policy(), exclusions: { domains: domains(MAX_EXCLUSIONS + 1), emails: [] } })
-  assert.equal(over.exclusions.domains.length, MAX_EXCLUSIONS + 1, 'the parser keeps every entry')
+  assert.equal(over.exclusions.domains.length, MAX_EXCLUSIONS + 1, 'the parser keeps one past the limit, enough to refuse')
+  assert.equal(parsePolicy({ ...policy(), exclusions: { domains: domains(5000), emails: [] } }).exclusions.domains.length, MAX_EXCLUSIONS + 1, 'and reads no more than that of an oversize list')
   assert.deepEqual(policyProblems(over), ['exclusions_too_many'])
   assert.deepEqual(policyProblems(parsePolicy({ ...policy(), exclusions: { domains: domains(MAX_EXCLUSIONS), emails: [] } })), [])
   assert.deepEqual(policyProblems(parsePolicy({ ...policy(), exclusions: { domains: [], emails: Array.from({ length: MAX_EXCLUSIONS + 1 }, (_, i) => `e${i}@x.t`) } })), ['exclusions_too_many'])

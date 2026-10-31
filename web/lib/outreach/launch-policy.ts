@@ -144,9 +144,10 @@ export function migrateLaunchPolicy(db: Database.Database): void {
   )`)
 }
 
-// every string entry, kept whole: the list limits are policyProblems' to refuse (MAX_*), not this parser's to cut. An
-// oversize list is parsed in full first; that is bounded by the request body the route accepts (Next.js body limit).
-const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean) : []
+// Every string entry up to one past the list's limit, kept whole: the limits are policyProblems' to refuse (MAX_*),
+// never this parser's to cut silently. Reading stops at max + 1 entries, enough for the refusal to fire and no more
+// work than that for an oversize list; an accepted list is always complete.
+const strs = (v: unknown, max: number) => Array.isArray(v) ? v.slice(0, max + 1).filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean) : []
 const num = (v: unknown) => typeof v === 'number' ? v : NaN // a number is a number: no coercion (true is not a cap of 1)
 // A policy from untrusted input, with every field typed; anything missing becomes a problem policyProblems reports.
 export function parsePolicy(v: unknown): LaunchPolicy {
@@ -154,10 +155,10 @@ export function parsePolicy(v: unknown): LaunchPolicy {
   return {
     version: typeof o.version === 'string' ? o.version : '',
     sender: typeof o.sender === 'string' ? o.sender.trim().toLowerCase() : '',
-    audience: { playIds: strs(o.audience?.playIds) },
-    exclusions: { domains: strs(o.exclusions?.domains).map(d => d.toLowerCase()), emails: strs(o.exclusions?.emails).map(e => e.toLowerCase()) },
+    audience: { playIds: strs(o.audience?.playIds, MAX_AUDIENCE_PLAYS) },
+    exclusions: { domains: strs(o.exclusions?.domains, MAX_EXCLUSIONS).map(d => d.toLowerCase()), emails: strs(o.exclusions?.emails, MAX_EXCLUSIONS).map(e => e.toLowerCase()) },
     dailyCap: num(o.dailyCap), spendCapUsd: num(o.spendCapUsd),
-    claims: { mayStatePrice: o.claims?.mayStatePrice === true, benchmarkUrls: strs(o.claims?.benchmarkUrls) },
+    claims: { mayStatePrice: o.claims?.mayStatePrice === true, benchmarkUrls: strs(o.claims?.benchmarkUrls, MAX_BENCHMARKS) },
     stops: { pauseOnAnyReply: o.stops?.pauseOnAnyReply !== false, maxBounceRate: num(o.stops?.maxBounceRate) },
     testInbox: typeof o.testInbox === 'string' ? o.testInbox.trim().toLowerCase() : '',
   }

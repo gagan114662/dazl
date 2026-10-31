@@ -479,6 +479,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   // else releases with stop_check_unavailable.
   const guarded = <T,>(f: () => T): T => { try { return f() } catch (e) { if (e instanceof OutreachError) throw e; return release('stop_check_unavailable') } }
   const m = getMsg(db, tenantId, id)!
+  // the tenant's autopilot switches, if this install has them: a table that was there at the claim and is gone at the
+  // handoff is unreadable, not absent, and the paused recheck must then refuse rather than be skipped
+  const hadSettings = tableExists(db, 'autopilot_settings')
   const { settings, acct } = guarded(() => {
   if (isSuppressed(db, tenantId, m.to_email)) {
     db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL, claimed_at = NULL WHERE id = ?").run(id)
@@ -530,6 +533,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
+  if (hadSettings && !tableExists(db,'autopilot_settings')) release('stop_check_unavailable')
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
   const authorityAtHandoff = authority()
   if (authorityAtHandoff) release(authorityAtHandoff)

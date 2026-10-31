@@ -254,34 +254,42 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     let gate: LaunchGate
     try { gate = launchGate(db, tenantId, mailbox(), now) } catch { return ended('stop_check_unavailable', l.id) }
     const before = stopNow(db, tenantId, env, now, gate, l, null)
-    if (before === 'not_in_audience' || before === 'excluded') { out.skipped++; audit(db, tenantId, 'skipped', before, l.id); continue }
+    if (before === 'not_in_audience' || before === 'excluded') { out.skipped++; attempt(() => audit(db, tenantId, 'skipped', before, l.id)); continue }
     if (before) return ended(before, l.id)
-    let id: string
+    let id: string, drafted: string | undefined
     try {
-      id = createDraft(db, tenantId, l.id, businessName)
+      id = drafted = createDraft(db, tenantId, l.id, businessName)
       // under a calibrated launch every model call reserves its worst case against the launch's spend cap first
       let refused: SpendStop | null = null
       const pd = gate.calibrated ? { ...d, providers: launchProviders((d as LlmDeps).providers ?? defaultProviders, db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, now, why => { refused = why }) } : d
       try { await polishDraft(db, tenantId, id, businessName, pd) } catch { /* template stays */ }
-      if (refused) { audit(db, tenantId, 'held_spend', refused, l.id, id); pause(db, tenantId, refused); return { ...out, held: out.held + 1, stopped: refused } }
+      if (refused) { const why: SpendStop = refused; attempt(() => audit(db, tenantId, 'held_spend', why, l.id, id)); attempt(() => pause(db, tenantId, why)); return { ...out, held: out.held + 1, stopped: why } }
     } catch (e) {
-      out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
+      // createDraft's own refusal skips this lead; anything else while drafting (a store unreadable or locked) is a stop
+      if (!(e instanceof OutreachError)) { captureError(e, { source: 'worker', where: 'autopilot:draft', tenantId }); return ended('stop_check_unavailable', l.id, drafted) }
+      out.skipped++; attempt(() => audit(db, tenantId, 'skipped', e.code, l.id)); continue
     }
     // Drafting awaited a model: every stop again, on the final words. The accepted policy's claim authority on those words
     // (a price, an unlisted link) holds this draft for the tenant and goes on; any other stop ends the run.
     const after = stopNow(db, tenantId, env, now, gate, l, id)
-    if (after === 'claims') { out.held++; audit(db, tenantId, 'held_claims', 'outside the launch policy', l.id, id); continue }
+    if (after === 'claims') { out.held++; attempt(() => audit(db, tenantId, 'held_claims', 'outside the launch policy', l.id, id)); continue }
     if (after === 'not_in_audience' || after === 'excluded') return ended('launch_policy_changed', l.id, id)
     if (after) return ended(after, l.id, id)
-    const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
-    if (!gate.calibrated && sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
-    const domain = to.split('@')[1]
-    if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
-    if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }
-    // The cap reservation: in ONE transaction, every stop is re-read (the cap counting every other live autopilot claim)
-    // and this message is recorded as claimed, so no two passes can take the same last slot, whatever order they drafted
-    // or claim in. A refusal here ends the run like any other stop and the message stays the tenant's draft.
-    const reserved = db.transaction(() => { const c = stopNow(db, tenantId, env, now, gate, l, id); if (!c) audit(db, tenantId, 'claimed', undefined, l.id, id); return c }).immediate()
+    // The loop's own reads and the cap reservation fail closed like every other check: a store that cannot be read
+    // (renamed under the run) or a reservation that cannot be taken (the database locked by another connection,
+    // SQLITE_BUSY) ends the run with stop_check_unavailable and pauses; the draft stays the tenant's. Never a rejection.
+    let reserved: Stop | null
+    try {
+      const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
+      if (!gate.calibrated && sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
+      const domain = to.split('@')[1]
+      if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
+      if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }
+      // The cap reservation: in ONE transaction, every stop is re-read (the cap counting every other live autopilot claim)
+      // and this message is recorded as claimed, so no two passes can take the same last slot, whatever order they drafted
+      // or claim in. A refusal here ends the run like any other stop and the message stays the tenant's draft.
+      reserved = db.transaction(() => { const c = stopNow(db, tenantId, env, now, gate, l, id); if (!c) audit(db, tenantId, 'claimed', undefined, l.id, id); return c }).immediate()
+    } catch (e) { captureError(e, { source: 'worker', where: 'autopilot:reserve', tenantId }); return ended('stop_check_unavailable', l.id, id) }
     if (reserved) return ended(reserved === 'not_in_audience' || reserved === 'excluded' || reserved === 'claims' ? 'launch_policy_changed' : reserved, l.id, id)
     // The send service runs the same stops as its sendAuthority: at its claim, and again after its token refresh
     // immediately before Gmail. Scope or claim authority failing there means the launch changed under the send.
@@ -293,7 +301,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       approve(db, tenantId, id)
       const r = await sendMessage(db, tenantId, id, { ...d, sendAuthority })
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id) }
-      else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
+      else { attempt(() => audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id)); attempt(() => pause(db, tenantId, 'uncertain_send')); return stop('uncertain_send') }
     } catch (e) {
       // anything but the service's own refusal code (a store the service could not read, an unexpected fault) is a
       // stop: autopilot does not carry on past a send whose outcome it cannot name

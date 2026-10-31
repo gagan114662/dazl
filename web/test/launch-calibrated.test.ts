@@ -2,6 +2,9 @@ import { seedOffers } from './helpers/seed-offer.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -30,8 +33,8 @@ async function connect(db: Database.Database, email: string, read = true) {
   const scope = ['https://www.googleapis.com/auth/gmail.send', ...(read ? [GMAIL_READ_SCOPE] : [])].join(' ')
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope, id_token: idToken(email) })) as unknown as typeof fetch })
 }
-async function setup() {
-  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateReplies(db); seedOffers(db)
+async function setup(file = ':memory:') {
+  const db = new Database(file, file === ':memory:' ? {} : { timeout: 50 }); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateReplies(db); seedOffers(db)
   await connect(db, 'me@acme.example')
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 20 })
@@ -761,6 +764,57 @@ test('R13: when the service cannot even release its claim, autopilot releases th
   // inside the refresh: the opt-out store goes (the recheck throws) AND the service's release (status back to approved) is refused
   const got = await duringRefresh(db, () => { db.exec('ALTER TABLE suppressions RENAME TO suppressions_x'); db.exec("CREATE TRIGGER no_release BEFORE UPDATE OF status ON outreach_messages WHEN NEW.status = 'approved' BEGIN SELECT RAISE(ABORT, 'synthetic release failure'); END") })
   assert.deepEqual(got, { sent: 0, run: [0, 'stop_check_unavailable'], msg: ['draft', 'stop_check_unavailable'], pause: 'stop_check_unavailable', warmup: false, next: 'paused' })
+})
+
+test('F8: a store renamed or the database locked during the model await: the run ends with stop_check_unavailable, never rejects', async () => {
+  // the opt-out store goes while the model is drafting: the loop's own isSuppressed read fails -> stop, pause, draft kept
+  {
+    const { db, job } = await launchedWithKey(5); lead(db, job, 'd@four.example')
+    const renaming = model('claude-sonnet-4-5', () => { db.exec('ALTER TABLE suppressions RENAME TO suppressions_x'); return { input_tokens: 10, output_tokens: 10 } })
+    const g = gmail()
+    const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, providers: renaming.providers } as never)
+    assert.deepEqual([g.sent.length, r.sent, r.stopped, getState(db, 'A').pause_reason], [0, 0, 'stop_check_unavailable', 'stop_check_unavailable'])
+    assert.deepEqual(db.prepare("SELECT status, error FROM outreach_messages WHERE to_email = 'd@four.example'").get(), { status: 'draft', error: 'stop_check_unavailable' })
+  }
+  // another connection holds the write lock (BEGIN IMMEDIATE) while the model drafts: the cap reservation cannot be
+  // taken (SQLITE_BUSY) -> stop with the reason, nothing sent; the pause itself cannot be written while the lock is held
+  {
+    const file = join(tmpdir(), `dazl-467-${randomBytes(6).toString('hex')}.sqlite`)
+    const db = await setup(file); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-synthetic-0000', master)
+    const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
+    acceptLaunchPolicy(db, 'A', policy([job], { spendCapUsd: 5 }), NOW)
+    assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
+    lead(db, job, 'd@four.example')
+    const other = new Database(file, { timeout: 50 })
+    const locking = model('claude-sonnet-4-5', () => { other.exec('BEGIN IMMEDIATE'); return { input_tokens: 10, output_tokens: 10 } })
+    const g = gmail()
+    let r: Awaited<ReturnType<typeof runAutopilot>> | undefined, err: unknown = null
+    try { r = await runAutopilot(db, 'A', 'Acme', { ...g.d, providers: locking.providers } as never) } catch (e) { err = e } finally { other.exec('ROLLBACK'); other.close() }
+    assert.equal(err, null, 'the locked database is a stop, not a rejection')
+    // the first write after the await is the launch's spend settlement, which names its own stop; the reservation is next
+    assert.deepEqual([g.sent.length, r!.sent, ['spend_check_unavailable', 'stop_check_unavailable'].includes(r!.stopped ?? '')], [0, 0, true], String(r!.stopped))
+    assert.equal((db.prepare("SELECT status FROM outreach_messages WHERE to_email = 'd@four.example'").get() as { status: string }).status, 'draft', 'never approved, never claimed')
+    db.close(); rmSync(file, { force: true }); rmSync(file + '-journal', { force: true })
+  }
+  // the reservation itself refused (the claimed row cannot be written) with everything else readable: the precise stop
+  {
+    const { db, job } = await launchedWithKey(5); lead(db, job, 'd@four.example')
+    const refusing = model('claude-sonnet-4-5', () => { db.exec("CREATE TRIGGER no_claim BEFORE INSERT ON autopilot_audit WHEN NEW.action = 'claimed' BEGIN SELECT RAISE(ABORT, 'synthetic reservation failure'); END"); return { input_tokens: 10, output_tokens: 10 } })
+    const g = gmail()
+    const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, providers: refusing.providers } as never)
+    assert.deepEqual([g.sent.length, r.sent, r.stopped, getState(db, 'A').pause_reason], [0, 0, 'stop_check_unavailable', 'stop_check_unavailable'])
+    assert.deepEqual(db.prepare("SELECT status, error FROM outreach_messages WHERE to_email = 'd@four.example'").get(), { status: 'draft', error: 'stop_check_unavailable' })
+  }
+})
+
+test('F9: a hand send paused inside the refresh is refused even when the switches table vanishes right after: an unreadable table fails the check', async () => {
+  const { db } = await launched()
+  const leadId = (db.prepare("SELECT id FROM leads WHERE contact = 'd@four.example'").get() as { id: string }).id
+  const id = createDraft(db, 'A', leadId, 'Acme'); approve(db, 'A', id)
+  const g = gmail()
+  const fetchImpl = (async (url: string, init?: RequestInit) => { if (String(url).includes('token')) { pause(db, 'A'); db.exec('ALTER TABLE autopilot_settings RENAME TO autopilot_settings_x') }; return (g.d.fetchImpl as typeof fetch)(url, init) }) as typeof fetch
+  await assert.rejects(sendMessage(db, 'A', id, { ...g.d, fetchImpl, now: NOW + 2 }), (e: unknown) => e instanceof OutreachError && e.code === 'stop_check_unavailable')
+  assert.deepEqual([g.sent.length, db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id)], [0, { status: 'approved', error: 'stop_check_unavailable' }])
 })
 
 test('R3-6: calibration needs autopilot on under the current consent: otherwise no draft, no message, no launch', async () => {
