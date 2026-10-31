@@ -37,7 +37,20 @@ export const OVERDUE_ALERT_S = 60 * 60
 export const BLOCKED_AFTER_FAILURES = 3
 const KEEP_RUNS = 2000
 
-export type Kind = 'reply_sync' | 'followups' | 'sequences'
+export type Kind = 'reply_sync' | 'followups' | 'sequences' | 'autopilot'
+// The kinds of work the tick records per tenant. 'autopilot' (#411, #448): the first-touch drain.
+const KINDS = "('reply_sync','followups','sequences','autopilot')"
+const PROGRESS_COLUMNS = `
+      tenant_id            TEXT NOT NULL,
+      kind                 TEXT NOT NULL CHECK (kind IN ${KINDS}),
+      last_attempt_at      INTEGER NOT NULL,
+      last_success_at      INTEGER,
+      last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
+      last_outcome         TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure')),
+      last_hold            TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40),
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_run_id          TEXT,
+      PRIMARY KEY (tenant_id, kind)`
 export function migrateSchedulerRuns(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS scheduler_runs (
@@ -52,23 +65,28 @@ export function migrateSchedulerRuns(db: Database.Database): void {
       error             TEXT CHECK (error IS NULL OR length(error) <= 200)
     );
     CREATE INDEX IF NOT EXISTS scheduler_runs_started ON scheduler_runs (started_at);
-    CREATE TABLE IF NOT EXISTS scheduler_progress (
-      tenant_id            TEXT NOT NULL,
-      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
-      last_attempt_at      INTEGER NOT NULL,
-      last_success_at      INTEGER,
-      last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
-      last_outcome         TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure')),
-      last_hold            TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40),
-      consecutive_failures INTEGER NOT NULL DEFAULT 0,
-      last_run_id          TEXT,
-      PRIMARY KEY (tenant_id, kind)
+    CREATE TABLE IF NOT EXISTS scheduler_progress (${PROGRESS_COLUMNS}
     );
   `)
   // Stores created before the outcome columns existed (earlier heads of #447; never a released schema).
   const cols = new Set((db.prepare('PRAGMA table_info(scheduler_progress)').all() as { name: string }[]).map(c => c.name))
   if (!cols.has('last_outcome')) db.exec("ALTER TABLE scheduler_progress ADD COLUMN last_outcome TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure'))")
   if (!cols.has('last_hold')) db.exec('ALTER TABLE scheduler_progress ADD COLUMN last_hold TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40)')
+  // Stores created before the autopilot kind (#448): the kind check is part of the table, so it is rebuilt once, rows kept.
+  // Whether the check already allows 'autopilot' is learned from a probe row under a savepoint that is always rolled back
+  // (SQLite keeps the check only in the table's SQL text; schema setup, SQLite only). Postgres: migration 0026 re-creates
+  // the constraint.
+  const widened = (() => {
+    try { db.exec("SAVEPOINT kind_probe; INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at) VALUES ('', 'autopilot', 0); ROLLBACK TO kind_probe; RELEASE kind_probe"); return true }
+    catch (e) { db.exec('ROLLBACK TO kind_probe; RELEASE kind_probe'); if (e instanceof Error && /CHECK constraint failed/.test(e.message)) return false; throw e }
+  })()
+  if (!widened) db.transaction(() => db.exec(`
+    CREATE TABLE scheduler_progress_v2 (${PROGRESS_COLUMNS}
+    );
+    INSERT INTO scheduler_progress_v2 SELECT tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id FROM scheduler_progress;
+    DROP TABLE scheduler_progress;
+    ALTER TABLE scheduler_progress_v2 RENAME TO scheduler_progress;
+  `))()
 }
 
 // What the tick records for one tenant and kind of work, from what the worker returned.
@@ -78,9 +96,13 @@ export type Outcome = { outcome: 'success' } | { outcome: 'hold'; reason: string
 // scheduler must never read an unknown refusal as progress.
 export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval'])
 export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'uncertain_send', 'gmail_or_identity'])
-export function classifyWork(r: { stopped?: string; sent?: number; started?: number }): Outcome {
+// The autopilot drain's own holds (lib/outreach/autopilot.ts stop reasons that are the tenant's state, not a failure):
+// off or consent to renew (the tenant's switch), Gmail to reconnect or connect (the tenant's mailbox). Its uncertain send,
+// unreadable authority, lost reservation and the operator switch are failures, as for the other kinds.
+export const DRAIN_HOLD_REASONS: ReadonlySet<string> = new Set([...HOLD_REASONS, 'off', 'consent_required', 'gmail_not_connected', 'gmail_reconnect_needed'])
+export function classifyWork(r: { stopped?: string; sent?: number; started?: number }, holds: ReadonlySet<string> = HOLD_REASONS): Outcome {
   if (r.stopped === undefined) return { outcome: 'success' }
-  if (HOLD_REASONS.has(r.stopped)) return (r.sent ?? 0) > 0 || (r.started ?? 0) > 0 ? { outcome: 'success' } : { outcome: 'hold', reason: r.stopped } // held after work was done: progress
+  if (holds.has(r.stopped)) return (r.sent ?? 0) > 0 || (r.started ?? 0) > 0 ? { outcome: 'success' } : { outcome: 'hold', reason: r.stopped } // held after work was done: progress
   return { outcome: 'failure', error: new Error(r.stopped || 'unknown_stop') } // an empty reason is as unknown as a new one
 }
 // syncReplies reports errors, never a hold: without reply reading the tenant's follow-up work cannot run.

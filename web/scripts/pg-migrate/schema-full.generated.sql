@@ -525,7 +525,7 @@ CREATE TABLE scan_source_stats (
 
 CREATE TABLE scheduler_progress (
       tenant_id            TEXT NOT NULL,
-      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences','autopilot')),
       last_attempt_at      BIGINT NOT NULL,
       last_success_at      BIGINT,
       last_error           TEXT CHECK (last_error IS NULL OR char_length(last_error) <= 200),

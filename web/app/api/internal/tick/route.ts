@@ -15,7 +15,7 @@ import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
-import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Outcome } from '@/lib/ops/scheduler-runs'
+import { DRAIN_HOLD_REASONS, classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
@@ -60,7 +60,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // workers report refusals as a result, not an exception, so what came back is classified (lib/ops/scheduler-runs.ts):
   // success, a hold (the tenant's own configuration or idle state) or a failure. Only failures make the run partial.
   let failures = 0, holds = 0
-  const progress = async (tenant: string, kind: 'reply_sync' | 'followups' | 'sequences', o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
+  const progress = async (tenant: string, kind: Kind, o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
   const failed = (e: unknown): Outcome => ({ outcome: 'failure', error: e })
   const tenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   let done = 0
@@ -78,11 +78,16 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
     } catch (e) { fenced(e); await progress(t.tenant_id, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId: t.tenant_id, requestId }) }
   }
   // #411: first touches no longer wait for the next scan to finish. A pass drains held drafts that are due (a cap lifted,
-  // Gmail back after a reconnect and resume) and then new verified leads, within every autopilot and send check.
+  // Gmail back after a reconnect and resume) and then new verified leads, within every autopilot and send check. Its
+  // outcome is recorded per tenant like the others' (kind 'autopilot'); the lease is kept alive between its messages.
   let firstTouches = 0
   for (const t of db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0').all() as { tenant_id: string; business_name: string | null }[]) {
     await lease.keep()
-    try { firstTouches += (await runAutopilot(db, t.tenant_id, t.business_name ?? '')).sent } catch (e) { fenced(e); failures++; captureError(e, { source: 'worker', where: 'tick:autopilot', tenantId: t.tenant_id, requestId }) }
+    try {
+      const r = await runAutopilot(db, t.tenant_id, t.business_name ?? '', { keep: () => lease.keep() })
+      firstTouches += r.sent
+      await progress(t.tenant_id, 'autopilot', classifyWork(r, DRAIN_HOLD_REASONS))
+    } catch (e) { fenced(e); await progress(t.tenant_id, 'autopilot', failed(e)); captureError(e, { source: 'worker', where: 'tick:autopilot', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
