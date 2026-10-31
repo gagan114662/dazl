@@ -226,7 +226,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // auth: the authority fingerprint the hold is kept under. Inside deliver this is the one autopilot checked (expected),
   // never a fresh read: a change during the Gmail request must not be stamped in as the authority the retry compares to.
   const hold = (id: string, leadId: string, reason: string, nextAt: number | null, attempts = 0, auth: string | null = draftAuthority(db, tenantId, id)) => {
-    if (!auth) return
+    // No authority to hold it under (the message or its play is gone): nothing to keep, but say so rather than nothing.
+    if (!auth) { audit(db, tenantId, 'not_held', `${reason}: message or play missing`, leadId, id); return }
     db.prepare(`INSERT INTO autopilot_work (message_id, tenant_id, lead_id, reason, next_at, authority, attempts, claimed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
       ON CONFLICT (message_id) DO UPDATE SET reason = excluded.reason, next_at = excluded.next_at, attempts = excluded.attempts, claimed_at = NULL`).run(id, tenantId, leadId, reason, nextAt, auth, attempts, now)
   }
