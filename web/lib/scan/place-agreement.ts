@@ -81,9 +81,17 @@ const NOT_UK_LONDON = /\blondon,?\s*(?:ontario|on|canada|kentucky|ky|ohio|oh|ct|
 // not a customer list, byline or supplier address. Keep the city grammar independent
 // of a town allowlist and never let an incidental London mention cancel that address.
 const OTHER_UK_STREET = /\b\d{1,5}[A-Za-z]?\s+[\p{L}0-9'’.-]+(?:[ \t]+[\p{L}0-9'’.-]+){0,8}[ \t]+(?:Street|St|Road|Rd|Lane|Ln|Avenue|Ave|Way|Drive|Dr|Close|Crescent|Square|Sq|Place|Pl|Highway|Terrace|Court|Ct|Boulevard|Blvd),[ \t]*([\p{L}][\p{L}'’.-]*(?:[ \t]+[\p{L}][\p{L}'’.-]*){0,3}),[ \t]*(?:England|Scotland|Wales|Northern Ireland|UK|U\.K\.|United Kingdom)\b/giu
+// Standalone address labels are the source company's address, even without repeating
+// its name. The label must start its sentence: supplier/customer labels cannot bind.
+const OWN_UK_LABEL = /^(?:headquarters|hq|registered office|registered address|office address|company address|address)\s*:\s*([\p{L}][\p{L}'’.-]*(?:[ \t]+[\p{L}][\p{L}'’.-]*){0,3}),[ \t]*(?:England|Scotland|Wales|Northern Ireland|UK|U\.K\.|United Kingdom)\b/iu
 function ownOtherUkStreet(text: string, company?: string): boolean {
-  return sentences(text).some(sn => [...sn.matchAll(OTHER_UK_STREET)].some(m =>
-    !LONDON_TERMS.includes(clean(m[1])) && bindsToCompany(sn.slice(0, m.index), company, true)))
+  return sentences(text).some(sn => {
+    const label = OWN_UK_LABEL.exec(sn.trim())
+    if (label && !LONDON_TERMS.includes(clean(label[1]))) return true
+    return [...sn.matchAll(OTHER_UK_STREET)].some(m =>
+      !LONDON_TERMS.includes(clean(m[1])) && (bindsToCompany(sn.slice(0, m.index), company, true) ||
+        /^(?:headquarters|hq|registered office|registered address|office address|company address|address)\s*:\s*$/i.test(sn.slice(0, m.index).trim())))
+  })
 }
 function londonVerdict(text: string, company?: string): PlaceVerdict {
   const t = clean(text)

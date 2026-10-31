@@ -47,3 +47,20 @@ test('an unknown-town street belongs to its named company, not a supplier or a n
  for(const text of ['synthetic co, 14 market street, salisbury, uk. News from London.', 'SYNTHETIC CO, 22 HIGH ROAD, BURY ST EDMUNDS, ENGLAND. News from London.'])
   assert.equal(placeAgreement(text,where,'Synthetic Co'),'mismatch',text)
 })
+
+test('standalone own address labels preserve unknown-town conflicts without treating supplier labels as ours',()=>{
+ for(const label of ['Headquarters','HQ','Registered office','Registered address','Office address','Company address','Address'])
+  for(const town of ['Salisbury','Bury St Edmunds','salisbury','SALISBURY'])
+   for(const street of ['', '14 Market Street, ']){
+    const text=`Synthetic Co. ${label}: ${street}${town}, UK. Market news: London startups raised more.`
+    assert.equal(placeAgreement(text,where,'Synthetic Co'),'mismatch',text)
+    assert.equal(ownPlaceAgreement({title:'Synthetic Co',text},where,'Synthetic Co'),'mismatch',text)
+   }
+ for(const label of ['Supplier headquarters','Customer address','News headquarters','Investor registered office','Our supplier headquarters','Synthetic Co supplier headquarters'])
+  assert.equal(placeAgreement(`Synthetic Co is based in London. ${label}: Salisbury, UK.`,where,'Synthetic Co'),'agrees',label)
+ assert.equal(placeAgreement('Synthetic Co. Headquarters: Salisbury, UK. Our UK office: 1 Old Street, London EC1V 9HX.',where,'Synthetic Co'),'agrees')
+ assert.equal(placeAgreement('Synthetic Co. Headquarters: London, UK.',where,'Synthetic Co'),'agrees')
+ for(const text of ['Synthetic Co is based in London. Supplier Co is based in Salisbury, UK. Headquarters: Salisbury, UK.', 'Synthetic Co is based in London. Another business operates elsewhere. Registered office: Salisbury, UK.'])
+  assert.equal(ownPlaceAgreement({title:'Directory of companies',text},where,'Synthetic Co'),'agrees',text)
+ assert.equal(ownPlaceAgreement({title:'Other Co',text:'Other Co is based in Salisbury, UK. Headquarters: Salisbury, UK. News from London.'},where,'Synthetic Co'),'unconfirmed')
+})
