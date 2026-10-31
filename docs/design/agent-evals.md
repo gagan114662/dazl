@@ -215,7 +215,7 @@ and spans are dropped until it fits, and the insert refuses anything over it. `c
 `complete: false`, and `worldFromTrace` refuses an incomplete capture. A response body the recorder itself cut (its
 body cap, a failed read, or the settle bound) counts as a drop (`bodies_truncated`), and `worldFromTrace` also refuses any
 span marked `truncated`, whatever `capture` says. It is written to `scan_traces` in the app's own store: tenant-scoped, one row per attempt, PG
-`0026_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
+`0025_scan_traces.sql`. There is no third-party trace store. Reads (`listTraces`, `getTrace`) always take the tenant; another
 tenant's trace id answers like an unknown one. Recording or storing never reaches the run: a failure is logged as
 `{"trace_capture":"failed"}` with the error's class and code only (never its message, which can quote the row), and the scan's outcome stands. Response bodies are read from a clone in the
 background (capped), so no caller waits on capture; a model provider's own API records no request or response body.
