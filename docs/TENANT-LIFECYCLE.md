@@ -49,12 +49,14 @@ Each step is one transaction and moves the tombstone (`tenant_tombstones`) to th
 
 **The invariant: ownership and parent keys can never be moved under a tombstoned tenant or a deleted parent.** A scan still running when the deletion starts, a late scheduler tick, a stale request or an ownership reassignment therefore cannot bring erased data back or put another tenant's row under the deleted one. It holds from the moment the tombstone is written (`requested`), through every staged state, after completion, and on retained tables: nothing new is added or moved in for a deleted tenant. A parent key is refused when the parent row was deleted (`tenant_tombstone_keys`), and also while the parent still exists but its own chain belongs to a tombstoned tenant (a deletion in progress, or a retained parent), so the window before `cancelled` records the keys is covered too.
 
+The shared-workspace check (decision 9) runs in the same `SERIALIZABLE` transaction that writes the tombstone: a membership inserted concurrently reads `tenant_tombstones` through its guard trigger, so one of the two is refused rather than a shared workspace being tombstoned. The policy and retention checks read only the schema, so they run before it.
+
 Allowed, by design: updates to other columns (a retained suppression's reason, a workspace's name), an update that keeps the same owner or parent, and a move between two parents of the same tenant. Only the tenant and parent-key columns are guarded; `tenant_tombstones` and `tenant_tombstone_keys` are the lifecycle's own records and are not guarded. A deleted account's id can still appear as a reference that is not tenant data (`memberships.member_id`, no foreign key), which the guard does not cover; the shared-workspace refusal (decision 9) keeps such a membership from existing at deletion time.
 
 **Restored backups.**
 - A restore brings back rows deleted after the backup and loses tombstones written since.
 - `tombstoneLedgerEntry` is one JSON line per deletion (tenant id, time, who, policy; no data). It is kept **off the database**, next to the backup manifests (`docs/RECOVERY.md`).
-- `reapplyTombstones` runs every ledgered deletion on a restored store. Run it **before the restored store serves traffic**: add it to the recovery plan's step 5, after the drill and before sending is re-enabled.
+- `reapplyTombstones` runs every ledgered deletion on a restored store, each with its original policy and request time. Run it **before the restored store serves traffic**: add it to the recovery plan's step 5, after the drill and before sending is re-enabled. A line the restored store now refuses (a tenant that became a shared workspace since the backup, a malformed line) does not stop the later lines: every line is attempted, then the refused ones are thrown together as `TombstoneReapplyError` (which tenants, why, and what was re-applied). The store must not serve until each refused tenant is resolved by the operator.
 
 **Outside the database (operator steps, not automated):**
 - revoking the Gmail grant at Google;

@@ -13,7 +13,7 @@ import path from 'node:path'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { createQueryJob, finishJob } from '../lib/scan/store-db.ts'
-import { deleteTenant, exportTenant, reapplyTombstones, retentionProblems, tenantScope, tombstone, tombstoneLedgerEntry, EXPORT_EXCLUDED } from '../lib/tenant/lifecycle.ts'
+import { deleteTenant, exportTenant, reapplyTombstones, retentionProblems, tenantScope, tombstone, tombstoneLedgerEntry, EXPORT_EXCLUDED, TombstoneReapplyError } from '../lib/tenant/lifecycle.ts'
 import { marker, seedTenantSqlite, snapshotSqlite, tenantTablesSqlite } from './helpers/tenant-seed-sqlite.ts'
 
 const A = 'tenant-aaaa', B = 'tenant-bbbb', NOW = 1_900_000_000
@@ -148,11 +148,44 @@ test('restored backup: the deletion is re-applied from the off-database ledger b
   // the other tenant as the restored store holds it (its migrations ran again on open), before the re-application
   const bRestored = snapshotSqlite(restored, B)
   assert.deepEqual(await reapplyTombstones(sqliteDb(restored), ledger, NOW + 3600), [{ tenant: A, state: 'completed' }])
+  const re = (await tombstone(sqliteDb(restored), A))!
+  assert.equal(Number(re.requested_at), NOW, 'the re-applied tombstone keeps the original request time')
+  assert.equal(Number(re.completed_at), NOW + 3600)
+  assert.equal(re.requested_by, 'operator (synthetic test) (re-applied after restore)')
   assert.deepEqual(emptyExcept(snapshotSqlite(restored, A), ['suppressions']), [])
   assert.deepEqual(leftovers(restored, 'ta', ['suppressions']), [])
   assert.deepEqual(snapshotSqlite(restored, B), bRestored, 'the re-applied deletion did not touch the other tenant')
   assert.deepEqual(Object.keys(snapshotSqlite(restored, B)), Object.keys(bBefore))
   assert.throws(() => restored.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('x', ?, 'x', 'y', 'z')").run(A), /tenant deleted/)
+  restored.close()
+})
+
+// Review (R2-1): a ledgered deletion the restored store now refuses must not stop the later lines, or the store could
+// serve with those tenants undeleted and nobody told.
+test('restored backup: a refused ledger line does not stop the later ones; every refusal is reported and nothing of that tenant changes', async () => {
+  const file = path.join(T, 'live2.db'), backup = path.join(T, 'backup2.db')
+  const db = fixture(file)
+  await db.backup(backup)
+  const ledger = [
+    tombstoneLedgerEntry(await deleteTenant(sqliteDb(db), A, { policy: POLICY, requestedBy: 'operator (synthetic test)', now: NOW })),
+    'not json at all',
+    tombstoneLedgerEntry(await deleteTenant(sqliteDb(db), B, { policy: { suppressions: 'erase' }, requestedBy: 'operator (synthetic test)', now: NOW + 1 })),
+  ]
+  db.close()
+  const restored = new Database(backup); migrateAllSqlite(restored)
+  // since the backup, someone else joined A's workspace: A's deletion is now refused (decision 9), B's is not
+  restored.prepare("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, 'tenant-cccc', 'viewer', 1)").run(A)
+  const aBefore = snapshotSqlite(restored, A)
+  const err = await reapplyTombstones(sqliteDb(restored), ledger, NOW + 3600).then(() => assert.fail('expected a refusal'), (e: unknown) => e)
+  assert.ok(err instanceof TombstoneReapplyError, String(err))
+  assert.match(err.message, /2 ledgered deletion\(s\) not re-applied, the restored store must not serve traffic/)
+  assert.deepEqual(err.failed.map(f => f.tenant), [A, 'ledger line 2'])
+  assert.match(err.failed[0].reason, /other members/)
+  assert.deepEqual(err.applied, [{ tenant: B, state: 'completed' }], 'the later line was still re-applied')
+  assert.equal((await tombstone(sqliteDb(restored), B))?.state, 'completed')
+  assert.deepEqual(emptyExcept(snapshotSqlite(restored, B), []), [])
+  assert.equal(await tombstone(sqliteDb(restored), A), undefined, 'the refused tenant has no tombstone')
+  assert.deepEqual(snapshotSqlite(restored, A), aBefore, 'and nothing of it changed')
   restored.close()
 })
 

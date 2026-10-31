@@ -98,13 +98,15 @@ export function tombstoneLedgerEntry(t: Tombstone): string {
 // whose row also holds the workspace profile. Deleting a workspace that is shared (a team workspace, other members in
 // it, or a founder who belongs to another workspace) would either delete a person still using dazl elsewhere or leave
 // this workspace's profile on their account. Until the owner decides how that works, it is refused, never guessed.
-async function refuseSharedWorkspace(db: ReturnType<typeof asDb>, tenant: string): Promise<void> {
-  const cols = await tableColumns(db)
+// Runs inside the transaction that writes the tombstone (deleteTenant), so a membership added between the check and
+// the tombstone cannot slip through: the insert of a membership reads tenant_tombstones through its guard trigger, so
+// under SERIALIZABLE one of the two transactions is refused.
+function* refuseSharedWorkspace(tx: Tx, cols: Map<string, string[]>, tenant: string): TxBody<void> {
   if (!cols.has('organizations') || !cols.has('memberships')) return
-  const org = await db.get<{ kind: string }>('SELECT kind FROM organizations WHERE id = ?', [tenant])
+  const org = yield* tx.get<{ kind: string }>('SELECT kind FROM organizations WHERE id = ?', [tenant])
   if (org && org.kind !== 'personal') throw new Error('team workspaces cannot be deleted yet (docs/TENANT-LIFECYCLE.md, decision 9)')
-  if (await db.get('SELECT 1 FROM memberships WHERE tenant_id = ? AND member_id <> ?', [tenant, tenant])) throw new Error('the workspace has other members: deletion refused (docs/TENANT-LIFECYCLE.md, decision 9)')
-  if (await db.get('SELECT 1 FROM memberships WHERE member_id = ? AND tenant_id <> ?', [tenant, tenant])) throw new Error('the founder belongs to another workspace: deletion refused (docs/TENANT-LIFECYCLE.md, decision 9)')
+  if (yield* tx.get('SELECT 1 FROM memberships WHERE tenant_id = ? AND member_id <> ?', [tenant, tenant])) throw new Error('the workspace has other members: deletion refused (docs/TENANT-LIFECYCLE.md, decision 9)')
+  if (yield* tx.get('SELECT 1 FROM memberships WHERE member_id = ? AND tenant_id <> ?', [tenant, tenant])) throw new Error('the founder belongs to another workspace: deletion refused (docs/TENANT-LIFECYCLE.md, decision 9)')
 }
 
 // What a retention policy cannot keep, because deleting something else removes or rewrites the retained rows: a
@@ -138,21 +140,27 @@ function validPolicy(p: DeletionPolicy | undefined, scope: Map<string, Scope>): 
 }
 
 // Delete (or resume deleting) one tenant. `until` stops after a given state (staged deletion, and the tests' crash
-// points). Returns the tombstone after the run.
-export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: DeletionPolicy; requestedBy?: string; now?: number; until?: DeletionState } = {}): Promise<Tombstone> {
+// points). `requestedAt` is the time of the original request when a deletion is re-applied from the ledger (default:
+// now). Returns the tombstone after the run.
+export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: DeletionPolicy; requestedBy?: string; now?: number; requestedAt?: number; until?: DeletionState } = {}): Promise<Tombstone> {
   const db = asDb(d)
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   let t = await tombstone(db, tenant)
   if (!t) {
-    await refuseSharedWorkspace(db, tenant)
+    // the policy and retention checks read the schema only; the shared-workspace check reads data, so it runs in the
+    // tombstone's own transaction below
     const policy = validPolicy(o.policy, scope)
     const keep = new Set([...(policy.retainTables ?? []), ...(policy.suppressions === 'retain' ? ['suppressions'] : []), ...Object.keys(ALWAYS_RETAINED)].filter(x => scope.has(x)))
     const unsatisfiable = retentionProblems(scope, await foreignKeys(db), keep)
     if (unsatisfiable.length) throw new Error(`retention policy cannot be honoured: ${unsatisfiable.join('; ')}`)
     if (!o.requestedBy) throw new Error('requestedBy is required (who asked, for the audit record)')
-    await db.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
-      [tenant, now, o.requestedBy.slice(0, 200), JSON.stringify(policy)])
+    const cols = await tableColumns(db), requestedBy = o.requestedBy.slice(0, 200), requestedAt = o.requestedAt ?? now
+    await db.tx(function* (tx) {
+      yield* refuseSharedWorkspace(tx, cols, tenant)
+      yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
+        [tenant, requestedAt, requestedBy, JSON.stringify(policy)])
+    }, 'serializable')
     t = (await tombstone(db, tenant))!
   }
   const policy = JSON.parse(t.policy) as DeletionPolicy
@@ -203,16 +211,36 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
 }
 
 // After a restore: re-apply every ledgered deletion (lines from tombstoneLedgerEntry). A restored store has the rows
-// back and may lack the tombstone; each deletion is re-recorded with its original policy and run to completion.
-export async function reapplyTombstones(d: DbLike, ledgerLines: string[], now?: number): Promise<{ tenant: string; state: DeletionState }[]> {
-  const out: { tenant: string; state: DeletionState }[] = []
-  for (const line of ledgerLines.map(l => l.trim()).filter(Boolean)) {
-    const e = JSON.parse(line) as { kind: string; deleted_tenant: string; requested_at: number; requested_by: string; policy: DeletionPolicy }
-    if (e.kind !== 'dazl-tenant-tombstone') throw new Error('not a tenant tombstone ledger line')
-    const t = await deleteTenant(d, e.deleted_tenant, { policy: e.policy, requestedBy: `${e.requested_by} (re-applied after restore)`, now })
-    out.push({ tenant: e.deleted_tenant, state: t.state })
+// back and may lack the tombstone; each deletion is re-recorded with its original policy and request time and run to
+// completion. A line that is refused (a malformed line, or a tenant the restored store now shows as a shared workspace)
+// does not stop the others: every line is attempted, then the refused ones are reported together as a
+// TombstoneReapplyError, and the operator must not let the store serve until each is resolved.
+export class TombstoneReapplyError extends Error {
+  readonly failed: { tenant: string; reason: string }[]
+  readonly applied: { tenant: string; state: DeletionState }[]
+  constructor(failed: { tenant: string; reason: string }[], applied: { tenant: string; state: DeletionState }[]) {
+    super(`${failed.length} ledgered deletion(s) not re-applied, the restored store must not serve traffic: ${failed.map(f => `${f.tenant}: ${f.reason}`).join('; ')}`)
+    this.name = 'TombstoneReapplyError'
+    this.failed = failed; this.applied = applied
   }
-  return out
+}
+export async function reapplyTombstones(d: DbLike, ledgerLines: string[], now?: number): Promise<{ tenant: string; state: DeletionState }[]> {
+  const applied: { tenant: string; state: DeletionState }[] = [], failed: { tenant: string; reason: string }[] = []
+  const lines = ledgerLines.map(l => l.trim()).filter(Boolean)
+  for (const [i, line] of lines.entries()) {
+    let tenant = `ledger line ${i + 1}`
+    try {
+      const e = JSON.parse(line) as { kind: string; deleted_tenant: string; requested_at: number; requested_by: string; policy: DeletionPolicy }
+      if (e.kind !== 'dazl-tenant-tombstone' || typeof e.deleted_tenant !== 'string') throw new Error('not a tenant tombstone ledger line')
+      tenant = e.deleted_tenant
+      const t = await deleteTenant(d, e.deleted_tenant, { policy: e.policy, requestedBy: `${e.requested_by} (re-applied after restore)`, requestedAt: Number(e.requested_at) || undefined, now })
+      applied.push({ tenant: e.deleted_tenant, state: t.state })
+    } catch (err) {
+      failed.push({ tenant, reason: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  if (failed.length) throw new TombstoneReapplyError(failed, applied)
+  return applied
 }
 
 export type { Scope }
