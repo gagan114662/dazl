@@ -32,9 +32,17 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const CASES = [
   ['not-configured', 400, { error: 'no_api_key', trial: 'not_configured' }, "The free trial isn't available here right now. Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
-  ['reads-used', 400, { error: 'no_api_key', trial: 'site_reads_used' }, 'You have used your 3 free website reads for now; they come back 30 days after each read. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['reads-used', 400, { error: 'no_api_key', trial: 'site_reads_used' }, 'You have used your three free website reads for now; each comes back 30 days after it was used. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['busy', 400, { error: 'no_api_key', trial: 'site_reads_busy' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['google', 400, { error: 'no_api_key', trial: 'google_required' }, 'The free trial needs an account that signs in with Google. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  // #444 council R3-3/R3-4: the domain rule names the other account; every cap and throttle reason has its own honest line.
+  ['domain-used', 400, { error: 'no_api_key', trial: 'domain_used' }, "Another account at your company's email domain has already started the free trial, and it belongs to that account. Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
+  ['attempts-cap', 400, { error: 'no_api_key', trial: 'attempts_cap' }, 'Your free trial is used up. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['account-total-cap', 400, { error: 'no_api_key', trial: 'account_total_cap' }, 'Your free trial is used up. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['global-daily-cap', 400, { error: 'no_api_key', trial: 'global_daily_cap' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['ip-throttle', 400, { error: 'no_api_key', trial: 'ip_throttle' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['limit-unavailable', 400, { error: 'no_api_key', trial: 'limit_unavailable' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['workspace', 400, { error: 'no_api_key', trial: 'workspace_not_eligible' }, 'The free trial belongs to the account that created this workspace. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
 ]
 const b = await chromium.launch()
 async function open(width, height, answer) {
@@ -81,14 +89,18 @@ try {
       assert.deepEqual(writes, ['POST /api/scan/icp-from-url'], `${name}: only the one site-read request`)
       await ctx.close()
     }
-    // A failure on the trial side is dazl's, not the user's key.
+    // A failure on the trial side is dazl's, not the user's key, and the manual path is offered right there (R3-8).
     const { ctx, page } = await open(width, height, { status: 502, body: { error: 'trial_read_failed' } })
     await page.getByTestId('site-step').getByRole('alert').waitFor({ timeout: 15000 })
     assert.equal(await page.getByTestId('site-step').getByRole('alert').textContent(), "dazl's free trial could not read your site just now. Try again, or describe your business yourself.")
     assert.doesNotMatch(await page.getByTestId('site-step').innerText(), /your key/i)
+    assert.equal(await page.getByTestId('site-key').count(), 0, 'no key panel for a trial-side failure')
+    await page.getByTestId('site-manual').click()
+    await page.getByText("Here's what we think you sell and who buys it").waitFor({ timeout: 10000 })
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `trial-failed-manual-${tag}.png`) })
     await ctx.close()
   }
-  console.log('site trial UI check passed: real reason when the trial cannot read the site (not available, reads used, busy, Google), key + manual profile offered, trial failure not blamed on a key, desktop + 390px')
+  console.log(`site trial UI check passed: real reason for each of the ${CASES.length} refusals (not available, reads used, busy, Google, domain, caps, throttles, workspace), key + manual profile offered, trial failure not blamed on a key and offers the manual path, desktop + 390px`)
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

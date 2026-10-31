@@ -45,7 +45,7 @@ const provider = (seen: string[], o: { model?: string; usage?: typeof USAGE | nu
 const read = (db: Database.Database, p: Provider, trial?: () => Promise<SiteReadAdmission>) =>
   icpFromWebsite(db, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: page, providers: { anthropic: p }, ...(trial ? { trial } : {}) })
 // A trial admission that records how often it was asked and what the read settled into the wallet.
-const admitted = (calls: { n: number }, settled: (number | null)[] = []) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number | null) => { settled.push(usd) } } }
+const admitted = (calls: { n: number }, settled: (number | null)[] = [], released = { n: 0 }) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number | null) => { settled.push(usd) }, release: async () => { released.n++ } } }
 const neverTrial = async (): Promise<never> => { throw new Error('the trial must not be asked for an own-key read') }
 const round = (n: number) => Math.round(n * 1e6) / 1e6
 const pool = async (db: Database.Database) => (await poolRows(db, 'A')).map(r => [r.period.slice(0, 2), round(r.reserved_usd), round(r.reported_usd), r.calls])
@@ -110,8 +110,11 @@ test('the two refusals are distinct and never cross: owner pool -> spend_limit; 
     // Own key, pool refuses: spend_limit (and never trial_read_failed, which would blame dazl for the owner's limit).
     assert.deepEqual(await read(own, provider(seen), admitted({ n: 0 })), { error: 'spend_limit' })
     // Trial, the read's ceiling refuses an unpriced model: trial_read_failed (and never spend_limit, which would send the
-    // user to their workspace limit). The owner's pool for A stays empty.
-    assert.deepEqual(await read(trial, provider(seen, { model: 'some-new-model' }), admitted({ n: 0 })), { error: 'trial_read_failed' })
+    // user to their workspace limit). No call was made, so the admission is released, not settled. The owner's pool for A
+    // stays empty.
+    const unpriced = { settled: [] as (number | null)[], released: { n: 0 } }
+    assert.deepEqual(await read(trial, provider(seen, { model: 'some-new-model' }), admitted({ n: 0 }, unpriced.settled, unpriced.released)), { error: 'trial_read_failed' })
+    assert.deepEqual([unpriced.settled, unpriced.released.n], [[], 1], 'refused before any call: released, never settled')
     // Trial, the provider fails: trial_read_failed, never key_rejected (the user has no key to be rejected).
     const settled: (number | null)[] = []
     assert.deepEqual(await read(trial, provider(seen, { fail: true }), admitted({ n: 0 }, settled)), { error: 'trial_read_failed' })

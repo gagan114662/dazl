@@ -211,6 +211,66 @@ bothEngines('#444 R2-2: refusals for busy, throttle or money never use one of th
   })
 })
 
+// Council R1-3 on d6c89bf2: the shared counters (network, deployment ceiling) were taken before eligibility, so accounts the
+// trial would refuse anyway (no Google sign-in, used domain, caps) could drain the deployment's daily allowance spending
+// nothing. Now eligibility is checked first, reserving and counting nothing.
+bothEngines('#444 R1-3: an ineligible account (no Google, used domain, money cap) takes no slot of any counter and reserves nothing', async ({ db }) => {
+  await withKey(OP, async () => {
+    const counted: string[] = []
+    const lim = async (key: string, max: number) => { counted.push(key); return { ok: counted.filter(k => k === key).length <= max, retryAfterS: 60 } }
+    const noGoogle = await user(db, uid(490), 'ng@gmail.com', false)
+    assert.deepEqual(await admitTrialSiteRead(db, noGoogle, '203.0.113.100', { env: ENV, limit: lim }), { ok: false, reason: 'google_required' })
+    const first = await user(db, uid(491), 'one@firm.example'), second = await user(db, uid(492), 'two@firm.example')
+    assert.equal((await admitTrialScan(db, first, { env: ENV })).ok, true, 'fixture: firm.example used its trial')
+    assert.deepEqual(await admitTrialSiteRead(db, second, '203.0.113.101', { env: ENV, limit: lim }), { ok: false, reason: 'domain_used' })
+    const poor = await user(db, uid(493), 'poor2@gmail.com')
+    assert.deepEqual(await admitTrialSiteRead(db, poor, '203.0.113.102', { env: { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.01' }, limit: lim }), { ok: false, reason: 'account_total_cap' })
+    assert.deepEqual(counted, [], 'no counter was asked for any of them')
+    for (const u of [noGoogle, second, poor]) assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [u.id]))!.n), 0)
+  })
+})
+
+// Council R3-2 on d6c89bf2, decided and pinned (flagged for the owner in #444): a trial-funded website read is paid trial
+// work on dazl's key for that company, so it claims the company domain's one trial exactly as a scan does; the trial
+// then belongs to the account that started it, not to a colleague on the same domain. Consumer mailboxes count per account.
+bothEngines('#444 R3-2: a founder\'s website read claims the company domain\'s one trial; a colleague\'s scan and read are domain_used; the founder keeps both', async ({ db }) => {
+  await withKey(OP, async () => {
+    const founder = await user(db, uid(495), 'founder@corp2.example'), colleague = await user(db, uid(496), 'colleague@corp2.example')
+    const read = await admitTrialSiteRead(db, founder, '203.0.113.110', { env: ENV, limit: limiter() })
+    assert.ok(read.ok)
+    assert.deepEqual(await admitTrialScan(db, colleague, { env: ENV }), { ok: false, reason: 'domain_used' })
+    assert.deepEqual(await admitTrialSiteRead(db, colleague, '203.0.113.111', { env: ENV, limit: limiter() }), { ok: false, reason: 'domain_used' })
+    if (read.ok) await read.settle(null) // a failed read claims it too: money was committed for this company
+    assert.deepEqual(await admitTrialScan(db, colleague, { env: ENV }), { ok: false, reason: 'domain_used' })
+    assert.equal((await admitTrialScan(db, founder, { env: ENV })).ok, true, 'the founder\'s own scan is admitted')
+    // Two accounts on a consumer mailbox domain are separate trials, read or scan.
+    const g1 = await user(db, uid(497), 'g1@gmail.com'), g2 = await user(db, uid(498), 'g2@gmail.com')
+    assert.equal((await admitTrialSiteRead(db, g1, '203.0.113.112', { env: ENV, limit: limiter() })).ok, true)
+    assert.equal((await admitTrialScan(db, g2, { env: ENV })).ok, true)
+  })
+})
+
+// Council R1-1 on d6c89bf2: a read the guard refused before any call must not keep its reservation or the account's read.
+bothEngines('#444 R1-1: release() gives the reservation and the account\'s read back; settle(null) keeps the reserve on the account', async ({ db }) => {
+  await withKey(OP, async () => {
+    const a = await user(db, uid(499), 'rel@gmail.com')
+    const refunded: string[] = []
+    const n = new Map<string, number>()
+    const lim = async (key: string, max: number) => { const c = (n.get(key) ?? 0) + 1; n.set(key, c); return { ok: c <= max, retryAfterS: 60 } }
+    const refund = async (key: string) => { refunded.push(key); n.set(key, (n.get(key) ?? 1) - 1); return true }
+    const r = await admitTrialSiteRead(db, a, '203.0.113.120', { env: ENV, limit: lim, refund })
+    assert.ok(r.ok)
+    assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [a.id]))!.n), 1)
+    if (r.ok) await r.release()
+    assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [a.id]))!.n), 0, 'released: no reservation left')
+    assert.deepEqual(refunded, [`trial-site:${a.id}`], 'the account\'s read given back')
+    // Released reads do not count: three more are admitted, the fourth is refused.
+    for (let i = 0; i < TRIAL_SITE_READS_PER_ACCOUNT; i++) assert.equal((await admitTrialSiteRead(db, a, '203.0.113.120', { env: ENV, limit: lim, refund })).ok, true, `read ${i + 1}`)
+    assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.120', { env: ENV, limit: lim, refund }), { ok: false, reason: 'site_reads_used' })
+    assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [a.id]))!.n), TRIAL_SITE_READS_PER_ACCOUNT, 'the refused fourth read left nothing behind')
+  })
+})
+
 // Instinct's hold on 8cfcf7d: the read's reserve is dazl's own bound, not a vendor-enforced maximum. A reported cost
 // above it is what was spent, and later work is refused against it; a missing or unusable cost keeps the full reserve.
 bothEngines('#409 wallet: a reported read cost above its reserve counts in full (Instinct negative); unusable costs keep the reserve', async ({ db }) => {

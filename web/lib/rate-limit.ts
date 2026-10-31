@@ -105,6 +105,17 @@ export async function rateLimit(key: string, limit: number, windowMs: number, d?
   return decide(shared + b.offline, b.resetAt, limit, now)
 }
 
+// Gives one counted call of a key back: an admission that took its slot and then did nothing with it (lib/scan/
+// trial-site-read.ts: a read refused by its own spend guard before any call). Best effort, and never below zero or into
+// a closed window: if the store cannot answer the slot stays spent (an allowance is never handed back on a guess).
+// The per-process shadow is left alone: it only ever over-counts.
+export async function refundRateLimit(key: string, d?: Db, now = Date.now()): Promise<boolean> {
+  try {
+    const db = d ?? await getDb()
+    return (await db.run('UPDATE rate_limits SET count = count - 1 WHERE key = ? AND count > 0 AND reset_at > ?', [key.slice(0, 300), now])).changes > 0
+  } catch { return false }
+}
+
 export function clientIp(req: Request): string {
   const xff = req.headers.get('x-forwarded-for')
   return (xff ? xff.split(',')[0] : req.headers.get('x-real-ip') || 'unknown').trim()

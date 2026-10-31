@@ -103,3 +103,58 @@ test('#444 restack: the route keeps both refusals apart: the owner pool\'s spend
   assert.equal(handedKeys.length, before)
   console.log('SITE_READ_ROUTE_ERRORS ok')
 })
+
+// Council R3-4 on d6c89bf2: every refusal reason the route can return, through the real admission on the real store (the
+// read itself stubbed). limit_unavailable cannot be reached through the route: its own icpurl limiter fails closed first
+// (429) when the shared store is down; test/trial-site-read.test.ts covers it at the admission.
+test('#444 R3-4: not_configured, account_cap, account_total_cap, global_daily_cap and ip_throttle through the real admission; key_unreadable 400, js_only 422, key_rejected 502', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
+  const db = sqliteDb(raw)
+  const founder = async (n: number, email: string) => {
+    const id = uid(n)
+    await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])
+    await db.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [`sub-${id}`, id])
+    await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1)", [id, id])
+    setUser({ id, business_name: 'b', email })
+    return id
+  }
+  const call = async (fromIp = `198.51.100.${ip++}`) => {
+    const req = new NextRequest('http://localhost/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': fromIp }, body: JSON.stringify({ url: 'https://acme.example' }) })
+    const r = await POST(req)
+    return { status: r.status, body: await r.json() as { error?: string; trial?: string } }
+  }
+  const saved = { ...process.env }
+  const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {
+    for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+    try { await fn() } finally { for (const k of Object.keys(vars)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k] } }
+  }
+  const reservations = async (id: string) => Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [id]))!.n)
+  // 1. No daily ceiling set by the operator: the read is off, whatever else is configured.
+  const A = await founder(41, 'nc@gmail.com')
+  await withEnv({ DAZL_TRIAL_SITE_READS_PER_DAY: undefined }, async () => assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'not_configured' } }))
+  // 2. The trial's own per-account scan count is used up (lib/scan/trial.ts): account_cap, before any reservation.
+  const B = await founder(42, 'cap@gmail.com')
+  for (let i = 0; i < 3; i++) {
+    await db.run("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location) VALUES (?, ?, 'done', 'b', 'i', 'l')", [`job-${i}`, B])
+    await db.run("INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, 'h')", [B, `job-${i}`])
+  }
+  assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'account_cap' } })
+  assert.equal(await reservations(B), 0)
+  // 3. The wallet's ceilings against the read's reserve: account total, then the global day.
+  const C = await founder(43, 'poor@gmail.com')
+  await withEnv({ DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.01' }, async () => assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'account_total_cap' } }))
+  await withEnv({ DAZL_TRIAL_GLOBAL_DAILY_USD: '0.01' }, async () => assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'global_daily_cap' } }))
+  assert.equal(await reservations(C), 0, 'a refused read reserves nothing')
+  // 4. The network throttle: the seventh founder from one address today is refused, the first six admitted.
+  const NET = '203.0.113.77'
+  for (let i = 0; i < 6; i++) { await founder(50 + i, `net${i}@gmail.com`); const r = await call(NET); assert.equal(r.body.trial, undefined, `founder ${i} from ${NET}: admitted (${JSON.stringify(r)})`) }
+  await founder(56, 'net6@gmail.com')
+  assert.deepEqual(await call(NET), { status: 400, body: { error: 'no_api_key', trial: 'ip_throttle' } })
+  // 5. The read's own typed failures map as before: a stored key that cannot be read, a page without text, a bad answer.
+  setUser({ id: A, business_name: 'b', email: 'nc@gmail.com' })
+  for (const [error, status] of [['key_unreadable', 400], ['js_only', 422], ['key_rejected', 502]] as const) {
+    next.error = error
+    assert.deepEqual(await call(), { status, body: { error } }, error)
+  }
+  console.log('SITE_READ_ROUTE_REASONS ok')
+})

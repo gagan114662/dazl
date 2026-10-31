@@ -5,7 +5,7 @@ import { providers, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
 import { normalizeIcp, type Icp } from './icp.ts'
 import { pickVendor } from './runner.ts'
-import { guardProvider, researchCostUsd, SpendGuard } from '../llm/spend-guard.ts'
+import { guardProvider, researchCostUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { TRIAL_SITE_READ_RESERVE_USD } from '../billing/trial-budget.ts'
 import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
 
@@ -27,6 +27,16 @@ export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'ke
 // guard here, from the prompt's size and the output cap (lib/llm/spend-guard.ts). A page capped at 5000 characters plus
 // 700 output tokens fits well inside it.
 export const TRIAL_SITE_READ_MAX_USD = TRIAL_SITE_READ_RESERVE_USD
+// Bytes, not characters (council R1-1 on #444): the read's guard prices the prompt by its UTF-8 bytes (no token counter
+// here, lib/llm/spend-guard.ts), so a page of 3-byte text (CJK) at the 5000-character cap would be refused with the
+// reservation already taken. At the listed Sonnet price, 9000 bytes of page text plus the template, title and host (under
+// 1700 bytes) and 700 output tokens cost ((10700 + 1000) * 3 + 700 * 15) / 1e6 = $0.0456 < TRIAL_SITE_READ_MAX_USD.
+// Latin pages (one byte a character) are unaffected. Own-key reads keep the character cap: their pool is the owner's.
+export const TRIAL_SITE_READ_TEXT_BYTES = 9000
+export function trimToBytes(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s) <= maxBytes) return s
+  return Buffer.from(s).subarray(0, maxBytes).toString().replace(/\uFFFD+$/, '').trimEnd() // a cut multi-byte character is dropped
+}
 
 const ENTITIES: [RegExp, string][] = [[/&amp;/g, '&'], [/&lt;/g, '<'], [/&gt;/g, '>'], [/&quot;/g, '"'], [/&#0?39;|&apos;/g, "'"], [/&nbsp;/g, ' ']]
 const unescape = (s: string) => ENTITIES.reduce((t, [re, v]) => t.replace(re, v), s)
@@ -91,21 +101,21 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
 
   // The paid call: the tenant's key on the owner's pool, or (admitted only now, after a readable page) dazl's trial key
   // under the read's own ceiling. A trial read is dazl's money in the trial wallet: it never reserves in the owner's pool.
-  let call: { key: string; provider: Provider; funded: 'own' | 'trial'; settle?: (usd: number | null) => Promise<void> }
+  let call: { key: string; provider: Provider; funded: 'own' | 'trial'; settle?: (usd: number | null) => Promise<void>; release?: () => Promise<void> }
   if (own) {
     call = { ...own, funded: 'own' }
   } else {
     const a = await deps.trial!()
     if (!a.ok) return { error: 'no_api_key', trial: a.reason }
     const provider = (deps.providers ?? providers)[a.key.vendor]
-    if (!provider?.complete && !provider?.completeDetailed) return { error: 'trial_read_failed' }
-    call = { key: a.key.key, provider: guardProvider(provider, new SpendGuard(TRIAL_SITE_READ_MAX_USD)), funded: 'trial', settle: a.settle }
+    if (!provider?.complete && !provider?.completeDetailed) { await a.release(); return { error: 'trial_read_failed' } } // no call possible: nothing spent
+    call = { key: a.key.key, provider: guardProvider(provider, new SpendGuard(TRIAL_SITE_READ_MAX_USD)), funded: 'trial', settle: a.settle, release: a.release }
   }
 
   let icp: Icp | null = null
   let sells = ''
   try {
-    const prompt = PROMPT(new URL(page.finalUrl).hostname, title, text)
+    const prompt = PROMPT(new URL(page.finalUrl).hostname, title, call.funded === 'trial' ? trimToBytes(text, TRIAL_SITE_READ_TEXT_BYTES) : text)
     let out: string
     if (call.funded === 'trial' && call.provider.completeDetailed) {
       // On the trial key, the provider's reported usage settles the wallet reservation to what the read cost; without a
@@ -126,7 +136,12 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     // On the trial key a failure (refused by the read's ceiling, provider error, unreadable answer) is dazl's, never
     // "your key" and never the owner's spend limit. The read has ended: its wallet reservation settles at the full
     // reserve (the vendor may have billed the call), so it stops counting toward later days (lib/billing/trial-budget.ts).
-    if (call.funded === 'trial') { await call.settle?.(null); return { error: 'trial_read_failed' } }
+    if (call.funded === 'trial') {
+      // Refused by the read's own guard before any call (an unpriced or pricier operator model): nothing was spent, the
+      // reservation and the account's read go back. (With settle off, the guard throws SpendRefused only before the call.)
+      if (e instanceof SpendRefused) await call.release?.(); else await call.settle?.(null)
+      return { error: 'trial_read_failed' }
+    }
     if (spendRefused(e)) return { error: 'spend_limit' } // the owner's spend limit: no call was made
     return { error: 'key_rejected' }
   }

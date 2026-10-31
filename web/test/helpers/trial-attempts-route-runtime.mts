@@ -84,7 +84,7 @@ test('scan trial principal: founder only, its stored address decides; members an
     return id
   }
   const PRIOR = acct('p'.repeat(32), 'b@corp.example'), OWNER = acct('o'.repeat(32), 'a@corp.example'), FREE = acct('f'.repeat(32), 'solo@gmail.com')
-  const INVITED = acct('i'.repeat(32), 'invited@gmail.com'), TEAM = 't'.repeat(32)
+  const INVITED = acct('i'.repeat(32), 'invited@gmail.com'), TEAM = 't'.repeat(32), NOROW = acct('n'.repeat(32), 'norow@gmail.com', false)
   db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Team', 'team', ?, 1)").run(TEAM, FREE)
   assert.equal((await admitTrialScan(sqliteDb(db), { id: PRIOR, email: 'b@corp.example' })).ok, true, 'fixture: corp.example already used a trial')
   const jobs = () => (db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n
@@ -96,6 +96,8 @@ test('scan trial principal: founder only, its stored address decides; members an
     ['invited member with a free address', { id: OWNER, actorId: INVITED, role: 'operator', business_name: 'Acme', email: 'invited@gmail.com' }, 400, 'no_api_key', undefined],
     ['member in an eligible workspace', { id: FREE, actorId: INVITED, role: 'operator', business_name: 'Solo', email: 'invited@gmail.com' }, 400, 'no_api_key', undefined],
     ['team workspace', { id: TEAM, actorId: FREE, role: 'owner', business_name: 'Team', email: 'solo@gmail.com' }, 400, 'no_api_key', undefined],
+    // #444 council R3-9: a keyless account whose personal workspace row is missing has no trial principal: refused, fails closed
+    ['keyless account without its personal workspace row', { id: NOROW, business_name: 'X', email: 'norow@gmail.com' }, 400, 'no_api_key', undefined],
   ]
   for (const [name, u, status, error, reason] of cases) {
     setUser(u as never)

@@ -38,6 +38,7 @@
 // It is not one of the scan attempts.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
+import { captureError } from '../ops/errors.ts'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
 
@@ -153,7 +154,10 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialCaps, d
   if (!google) return 'google_required'
   const domain = emailDomain(user.email)
   if (domain && !CONSUMER_DOMAINS.has(domain)) {
-    // another account on this company domain already had a trial scan
+    // Another account on this company domain already drew on the trial: a scan, or a website read (#409). A read is paid
+    // trial work on dazl's key for that company, so it claims the company's one trial like a scan does; the trial then
+    // belongs to the account that started it (its reads and scans), not to a colleague. Flagged for the owner in #444.
+    // Pinned by test/trial-site-read.test.ts ("a founder's read claims the company domain").
     const other = yield* t.get(`SELECT 1 AS x FROM trial_reservations r JOIN users u ON u.id = r.tenant_id
       WHERE u.id <> ? AND lower(u.email) LIKE ? LIMIT 1`, [user.id, `%@${domain}`])
     if (other) return 'domain_used'
@@ -201,18 +205,21 @@ export async function admitTrialSiteReadBudget(db: Db, user: { id: string; email
 // A read's call has ended. With the cost the provider reported, it counts as that from now on, even above its reserve.
 // With null (the call failed, or reported no usable cost), or a non-finite or negative cost, it counts as its full
 // reserve from now on: the money stays on the account, but the read has ended, so it no longer counts toward later
-// days. Best effort: if this write fails the row stays unsettled (full reserve; READ_GRACE_S bounds its day count).
+// days. Best effort: if this write fails the row stays unsettled (full reserve; READ_GRACE_S bounds its day count), and
+// the failure is recorded (lib/ops/errors.ts), never swallowed.
 export async function settleTrialSiteRead(db: Db, tenantId: string, reservation: string, spentUsd: number | null, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
   const usd = spentUsd !== null && Number.isFinite(spentUsd) && spentUsd >= 0 ? spentUsd : TRIAL_SITE_READ_RESERVE_USD
-  try { await db.run("UPDATE trial_reservations SET settled_at = ?, spent_usd = ? WHERE id = ? AND tenant_id = ? AND kind = 'site_read' AND settled_at IS NULL", [nowS, usd, reservation, tenantId]) } catch { /* stays at its full reserve */ }
+  try { await db.run("UPDATE trial_reservations SET settled_at = ?, spent_usd = ? WHERE id = ? AND tenant_id = ? AND kind = 'site_read' AND settled_at IS NULL", [nowS, usd, reservation, tenantId]) }
+  catch (e) { captureError(e, { source: 'process', where: 'trial-budget:settleTrialSiteRead', tenantId }) }
 }
 
 // For the free-scans counter: why a trial scan would be refused right now (null = it would run), without reserving.
-export async function trialRefusal(db: Db, user: { id: string; email: string }, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<TrialRefusal | null> {
+// reserveUsd: the amount the admission would reserve (default: a scan's reserve; a website read passes its own).
+export async function trialRefusal(db: Db, user: { id: string; email: string }, o: { now?: number; env?: Record<string, string | undefined>; reserveUsd?: number } = {}): Promise<TrialRefusal | null> {
   const caps = trialCaps(o.env)
   if (!caps) return 'not_configured'
   const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
-  return db.tx(t => refusal(t, user, caps, day))
+  return db.tx(t => refusal(t, user, caps, day, o.reserveUsd))
 }
 
 // Called by the runner as the very last step of a trial scan's run (lib/scan/runner.ts), after the scan, its enrichment

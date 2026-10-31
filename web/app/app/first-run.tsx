@@ -65,6 +65,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [needKey, setNeedKey] = useState(false)
   // Why the free trial could not read the site (lib/scan/trial-site-read.ts), shown with the key form and the manual path.
   const [siteTrial, setSiteTrial] = useState<string | null>(null)
+  // A failure on the trial's side (trial_read_failed): the manual path is offered right there too (#409, #444 review).
+  const [siteManual, setSiteManual] = useState(false)
   // The brain: facts from the website read, revealed one by one while it builds.
   const [facts, setFacts] = useState<BrainFact[]>([])
   const [shown, setShown] = useState(0)
@@ -132,7 +134,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // Website only: dazl reads it, shows each inferred fact landing on the brain, saves the profile it inferred (the user
   // can edit it any time; nothing is asked up front) and opens the ready screen.
   async function readSite(e?: React.FormEvent) {
-    e?.preventDefault(); setError('')
+    e?.preventDefault(); setError(''); setSiteManual(false)
     const url = normalizeWebsite(website)
     if (!url) return setError('Enter your website, like acme.com.')
     setBusy(true); setFacts([]); setShown(0); setStep('building')
@@ -142,6 +144,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       if (!r.ok) {
         setStep('site')
         if (j.error === 'no_api_key') { setNeedKey(true); setSiteTrial(typeof j.trial === 'string' ? j.trial : null); return }
+        if (j.error === 'trial_read_failed') setSiteManual(true)
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
       if (j.sells) setSells(String(j.sells))
@@ -246,6 +249,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-[var(--ink)]">What&apos;s your website?</h1>
               <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first leads.</p>
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
+              {siteManual && !needKey && <button type="button" className="btn-ghost btn-sm mt-3" data-testid="site-manual" onClick={() => { setError(''); setSiteManual(false); setStep('brain') }}>Describe your business yourself instead</button>}
               {needKey && !hasKey && <div className="mt-5 text-left card p-4" data-testid="site-key">
                 <KeyInline reason={siteKeyReason(siteTrial)} onSaved={() => { setNeedKey(false); void loadUsage().then(() => readSite()) }} />
                 {/* The key-free way on: the profile by hand, then the first search (it runs on the trial when that is open). */}

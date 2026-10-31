@@ -16,4 +16,5 @@ test('#444 POST /api/scan/icp-from-url: the trial is the workspace founder\'s, n
   assert.match(r.stdout, /# fail 0\b/)
   assert.match(r.stdout, /SITE_READ_ROUTE ok/)
   assert.match(r.stdout, /SITE_READ_ROUTE_ERRORS ok/)
+  assert.match(r.stdout, /SITE_READ_ROUTE_REASONS ok/)
 })
