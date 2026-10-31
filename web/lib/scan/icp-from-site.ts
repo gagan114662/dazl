@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
+import { captureError } from '../ops/errors.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
@@ -137,8 +138,11 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     // "your key" and never the owner's spend limit. The read has ended: its wallet reservation settles at the full
     // reserve (the vendor may have billed the call), so it stops counting toward later days (lib/billing/trial-budget.ts).
     if (call.funded === 'trial') {
-      // Refused by the read's own guard before any call (an unpriced or pricier operator model): nothing was spent, the
-      // reservation and the account's read go back. (With settle off, the guard throws SpendRefused only before the call.)
+      // Recorded first (the operator's key, model or ceiling is what failed here, never the user's), then: refused by the
+      // read's own guard before any call (an unpriced or pricier operator model): nothing was spent, the reservation and
+      // the slots go back (with settle off, the guard throws SpendRefused only before the call); anything else ends the
+      // read at its full reserve.
+      captureError(e, { source: 'process', where: 'scan:icp-from-site:trial', tenantId })
       if (e instanceof SpendRefused) await call.release?.(); else await call.settle?.(null)
       return { error: 'trial_read_failed' }
     }

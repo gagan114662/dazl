@@ -32,12 +32,13 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const CASES = [
   ['not-configured', 400, { error: 'no_api_key', trial: 'not_configured' }, "The free trial isn't available here right now. Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
-  ['reads-used', 400, { error: 'no_api_key', trial: 'site_reads_used' }, 'You have used your three free website reads for now; each comes back 30 days after it was used. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['reads-used', 400, { error: 'no_api_key', trial: 'site_reads_used' }, 'You have used your three free website reads for now; they come back together, 30 days after the first. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['busy', 400, { error: 'no_api_key', trial: 'site_reads_busy' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['google', 400, { error: 'no_api_key', trial: 'google_required' }, 'The free trial needs an account that signs in with Google. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   // #444 council R3-3/R3-4: the domain rule names the other account; every cap and throttle reason has its own honest line.
   ['domain-used', 400, { error: 'no_api_key', trial: 'domain_used' }, "Another account at your company's email domain has already started the free trial, and it belongs to that account. Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
   ['attempts-cap', 400, { error: 'no_api_key', trial: 'attempts_cap' }, 'Your free trial is used up. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['account-cap', 400, { error: 'no_api_key', trial: 'account_cap' }, 'Your free trial is used up. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['account-total-cap', 400, { error: 'no_api_key', trial: 'account_total_cap' }, 'Your free trial is used up. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['global-daily-cap', 400, { error: 'no_api_key', trial: 'global_daily_cap' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
   ['ip-throttle', 400, { error: 'no_api_key', trial: 'ip_throttle' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],

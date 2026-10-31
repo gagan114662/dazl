@@ -5,6 +5,8 @@ import type { Db } from '../lib/db/client.ts'
 import { admitTrialScan, admitTrialSiteReadBudget, settleTrialSiteRead, trialPrincipal, trialRefusal, READ_GRACE_S, TRIAL_SITE_READ_RESERVE_USD, utcDay } from '../lib/billing/trial-budget.ts'
 import { admitTrialSiteRead, admitWorkspaceSiteRead, trialSiteReadsPerDay, TRIAL_SITE_READS_PER_ACCOUNT, TRIAL_SITE_READS_PER_IP_PER_DAY } from '../lib/scan/trial-site-read.ts'
 import { bothEngines } from './helpers/engines.ts'
+import { rateLimit, refundRateLimit } from '../lib/rate-limit.ts'
+import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 
 const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
 const ENV = { DAZL_TRIAL_ANTHROPIC_KEY: OP, DAZL_TRIAL_SITE_READS_PER_DAY: '5', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
@@ -186,27 +188,32 @@ bothEngines('#444 R2-2: refusals for busy, throttle or money never use one of th
   await withKey(OP, async () => {
     const a = await user(db, uid(480), 'r22a@gmail.com')
     // A limiter whose deployment ceiling is full for the first three calls, then has room; it records every key counted.
-    const counted: string[] = []
+    // A limiter with the real store's shape (count, refund) whose deployment ceiling is full for the first three calls.
+    const n = new Map<string, number>()
     let busy = 3
     const lim = async (key: string, max: number) => {
-      counted.push(key)
-      if (key === 'trial-site-day:all') return busy-- > 0 ? { ok: false, retryAfterS: 60 } : { ok: true, retryAfterS: 0 }
-      const n = counted.filter(k => k === key).length
-      return { ok: n <= max, retryAfterS: 60 }
+      if (key === 'trial-site-day:all' && busy-- > 0) { n.set(key, (n.get(key) ?? 0) + 1); return { ok: false, retryAfterS: 60 } }
+      const c = (n.get(key) ?? 0) + 1; n.set(key, c)
+      return { ok: c <= max, retryAfterS: 60 }
     }
-    for (let i = 0; i < 3; i++) assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.90', { env: ENV, limit: lim }), { ok: false, reason: 'site_reads_busy' })
-    assert.equal(counted.filter(k => k === `trial-site:${a.id}`).length, 0, 'three busy refusals: the account\'s own reads untouched')
+    const refund = async (key: string) => { n.set(key, Math.max(0, (n.get(key) ?? 0) - 1)); return true }
+    const net = (key: string) => n.get(key) ?? 0
+    for (let i = 0; i < 3; i++) assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.90', { env: ENV, limit: lim, refund }), { ok: false, reason: 'site_reads_busy' })
+    assert.deepEqual([net(`trial-site:${a.id}`), net('trial-site-day:all')], [0, 0], 'three busy refusals: the account\'s reads and the slots it took are given back')
     assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [a.id]))!.n), 0, 'nothing reserved for a refused read')
-    assert.equal((await admitTrialSiteRead(db, a, '203.0.113.90', { env: ENV, limit: lim })).ok, true, 'room again: admitted, and only now counted')
-    assert.equal(counted.filter(k => k === `trial-site:${a.id}`).length, 1)
-    // The wallet refuses (account total too small for a read): the account count is never reached.
+    assert.equal((await admitTrialSiteRead(db, a, '203.0.113.90', { env: ENV, limit: lim, refund })).ok, true, 'room again: admitted, and only now counted')
+    assert.equal(net(`trial-site:${a.id}`), 1)
+    // The wallet refuses (account total too small for a read): eligibility stops it before any counter.
     const poor = await user(db, uid(481), 'r22p@gmail.com')
-    assert.deepEqual(await admitTrialSiteRead(db, poor, '203.0.113.91', { env: { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.01' }, limit: lim }), { ok: false, reason: 'account_total_cap' })
-    assert.equal(counted.filter(k => k === `trial-site:${poor.id}`).length, 0, 'no money: the account\'s reads untouched')
-    // The account count itself refusing (three admitted reads already) gives the wallet reservation back.
+    assert.deepEqual(await admitTrialSiteRead(db, poor, '203.0.113.91', { env: { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.01' }, limit: lim, refund }), { ok: false, reason: 'account_total_cap' })
+    assert.equal(net(`trial-site:${poor.id}`), 0, 'no money: the account\'s reads untouched')
+    // An account at its own cap (three admitted reads): refused on its own counter, before the shared ones, and leaves
+    // no reservation behind.
     const full = await user(db, uid(482), 'r22f@gmail.com')
-    for (let i = 0; i < TRIAL_SITE_READS_PER_ACCOUNT; i++) assert.equal((await admitTrialSiteRead(db, full, '203.0.113.92', { env: ENV, limit: lim })).ok, true)
-    assert.deepEqual(await admitTrialSiteRead(db, full, '203.0.113.92', { env: ENV, limit: lim }), { ok: false, reason: 'site_reads_used' })
+    for (let i = 0; i < TRIAL_SITE_READS_PER_ACCOUNT; i++) assert.equal((await admitTrialSiteRead(db, full, '203.0.113.92', { env: ENV, limit: lim, refund })).ok, true)
+    const before = net('trial-site-day:all')
+    assert.deepEqual(await admitTrialSiteRead(db, full, '203.0.113.92', { env: ENV, limit: lim, refund }), { ok: false, reason: 'site_reads_used' })
+    assert.equal(net('trial-site-day:all'), before, 'a reads-used account burns no deployment slot')
     assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [full.id]))!.n), TRIAL_SITE_READS_PER_ACCOUNT, 'the refused fourth read left no reservation behind')
   })
 })
@@ -263,7 +270,8 @@ bothEngines('#444 R1-1: release() gives the reservation and the account\'s read 
     assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [a.id]))!.n), 1)
     if (r.ok) await r.release()
     assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [a.id]))!.n), 0, 'released: no reservation left')
-    assert.deepEqual(refunded, [`trial-site:${a.id}`], 'the account\'s read given back')
+    assert.equal(refunded[0], `trial-site:${a.id}`, 'the account\'s read given back')
+    assert.deepEqual(refunded.length, 3, 'and the network and deployment slots it took')
     // Released reads do not count: three more are admitted, the fourth is refused.
     for (let i = 0; i < TRIAL_SITE_READS_PER_ACCOUNT; i++) assert.equal((await admitTrialSiteRead(db, a, '203.0.113.120', { env: ENV, limit: lim, refund })).ok, true, `read ${i + 1}`)
     assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.120', { env: ENV, limit: lim, refund }), { ok: false, reason: 'site_reads_used' })
@@ -310,4 +318,59 @@ bothEngines('#444 the trial principal is the workspace founder\'s account, read 
     assert.deepEqual(await admitWorkspaceSiteRead(db, { tenantId: owner.id, actorId: uid(950) }, '203.0.113.202', { env: ENV, limit: limiter() }), { ok: false, reason: 'workspace_not_eligible' })
     assert.equal((await admitWorkspaceSiteRead(db, me, '203.0.113.201', { env: ENV, limit: limiter() })).ok, true, 'the founder acting: admitted')
   })
+})
+
+// Council round 2 R1-3 (repro drain.test.ts): an account at its read cap pressed from many addresses must not drain the
+// deployment's daily allowance: its own counter is checked first, and a refused admission gives back every slot it took.
+bothEngines('#444 R1-3: a reads-used account pressing from 20 addresses leaves the deployment counter where it was; a fresh account is admitted', async ({ db }) => {
+  await withKey(OP, async () => {
+    const env = { ...ENV, DAZL_TRIAL_SITE_READS_PER_DAY: '20' }
+    const n = new Map<string, number>()
+    const lim = async (key: string, max: number) => { const c = (n.get(key) ?? 0) + 1; n.set(key, c); return { ok: c <= max, retryAfterS: 60 } }
+    const refund = async (key: string) => { n.set(key, Math.max(0, (n.get(key) ?? 0) - 1)); return true }
+    const a = await user(db, uid(520), 'drain@gmail.com')
+    const res: string[] = []
+    for (let i = 0; i < 20; i++) { const r = await admitTrialSiteRead(db, a, `198.51.100.${i}`, { env, limit: lim, refund }); res.push(r.ok ? 'ok' : r.reason) }
+    assert.deepEqual(res.slice(0, 3), ['ok', 'ok', 'ok'])
+    assert.ok(res.slice(3).every(r => r === 'site_reads_used'), res.join(','))
+    assert.equal(n.get('trial-site-day:all'), 3, 'only the three admitted reads count toward the deployment ceiling')
+    assert.equal([...n.keys()].filter(k => k.startsWith('trial-site-ip:')).reduce((t, k) => t + (n.get(k) ?? 0), 0), 3, 'and toward the network throttles')
+    const b = await user(db, uid(521), 'fresh@gmail.com')
+    assert.equal((await admitTrialSiteRead(db, b, '203.0.113.9', { env, limit: lim, refund })).ok, true, 'a fresh eligible account is admitted')
+  })
+})
+
+// Council round 2 R4-1: a release that fails is recorded, not swallowed, and the reservation then stays on the account at
+// its full reserve (READ_GRACE_S ends only its day count).
+bothEngines('#444 R4-1: a failed release is captured and leaves the reservation counting on the account', async ({ db }) => {
+  await withKey(OP, async () => {
+    const a = await user(db, uid(530), 'relfail@gmail.com')
+    const records: ErrorRecord[] = []
+    const restore = setErrorSinks([r => { records.push(r) }])
+    try {
+      const broken: Db = Object.create(db, { run: { value: async (sql: string, params?: Parameters<Db['run']>[1]) => { if (/^DELETE FROM trial_reservations/.test(sql)) throw new Error('store write failed'); return db.run(sql, params) } } })
+      const r = await admitTrialSiteRead(broken, a, '203.0.113.130', { env: ENV, limit: limiter(), refund: async () => true })
+      assert.ok(r.ok)
+      if (r.ok) await r.release()
+      assert.deepEqual(records.map(x => [x.source, x.where]), [['process', 'trial-site-read:release']], 'the failure is recorded')
+      assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ? AND settled_at IS NULL', [a.id]))!.n), 1, 'the reservation stays, unsettled')
+      assert.deepEqual(await admitTrialScan(db, a, { env: { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.34' }, now: Math.floor(Date.now() / 1000) + 400 * 86400 }), { ok: false, reason: 'account_total_cap' }, 'the account keeps paying its reserve, days later too')
+    } finally { restore() }
+  })
+})
+
+// Council round 2 R5: refundRateLimit against the real rate_limits store.
+bothEngines('#444 R5: refundRateLimit gives one counted call back in the real store, never below zero, never into a closed window', async ({ db }) => {
+  const key = `trial-site:${uid(540)}`, now = 1_800_000_000_000, win = 60_000
+  assert.equal((await rateLimit(key, 2, win, db, now)).ok, true)
+  assert.equal((await rateLimit(key, 2, win, db, now)).ok, true)
+  assert.equal((await rateLimit(key, 2, win, db, now)).ok, false, 'third call: over the limit (count 3)')
+  assert.equal(await refundRateLimit(key, db, now), true)
+  assert.equal(await refundRateLimit(key, db, now), true)
+  assert.equal(Number((await db.get<{ c: number }>('SELECT count AS c FROM rate_limits WHERE key = ?', [key]))!.c), 1)
+  assert.equal((await rateLimit(key, 2, win, db, now)).ok, true, 'a slot is free again (count 2)')
+  assert.equal(await refundRateLimit('trial-site:never-counted', db, now), false, 'nothing to give back')
+  await db.run('UPDATE rate_limits SET count = 0 WHERE key = ?', [key])
+  assert.equal(await refundRateLimit(key, db, now), false, 'never below zero')
+  assert.equal(await refundRateLimit(key, db, now + win + 1), false, 'a closed window is left alone')
 })

@@ -6,7 +6,8 @@ export function siteKeyReason(why: string | null): string {
   if (why === 'not_configured') return `The free trial isn't available here right now. ${own}`
   // Only an admitted read counts (lib/scan/trial-site-read.ts): three per 30 days, done or failed on dazl's side after
   // the call; a refusal (ineligible, busy, throttled, no money) or a read its guard refused before any call never uses one.
-  if (why === 'site_reads_used') return `You have used your three free website reads for now; each comes back 30 days after it was used. ${own}`
+  // The limiter is a fixed window (lib/rate-limit.ts): all three come back together, 30 days after the first.
+  if (why === 'site_reads_used') return `You have used your three free website reads for now; they come back together, 30 days after the first. ${own}`
   if (why === 'workspace_not_eligible') return `The free trial belongs to the account that created this workspace. ${own}`
   if (why === 'google_required') return `The free trial needs an account that signs in with Google. ${own}`
   // Another account on the same company email domain started the trial: this account's own trial is not "used up".

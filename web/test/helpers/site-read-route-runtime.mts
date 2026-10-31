@@ -148,7 +148,7 @@ test('#444 R3-4: not_configured, account_cap, account_total_cap, global_daily_ca
   assert.equal(await reservations(C), 0, 'a refused read reserves nothing')
   // 4. The network throttle: the seventh founder from one address today is refused, the first six admitted.
   const NET = '203.0.113.77'
-  for (let i = 0; i < 6; i++) { await founder(50 + i, `net${i}@gmail.com`); const r = await call(NET); assert.equal(r.body.trial, undefined, `founder ${i} from ${NET}: admitted (${JSON.stringify(r)})`) }
+  for (let i = 0; i < 6; i++) { await founder(50 + i, `net${i}@gmail.com`); next.outcome = 'call_failed'; const r = await call(NET); assert.equal(r.body.trial, undefined, `founder ${i} from ${NET}: admitted (${JSON.stringify(r)})`) }
   await founder(56, 'net6@gmail.com')
   assert.deepEqual(await call(NET), { status: 400, body: { error: 'no_api_key', trial: 'ip_throttle' } })
   // 5. The read's own typed failures map as before: a stored key that cannot be read, a page without text, a bad answer.
@@ -157,6 +157,24 @@ test('#444 R3-4: not_configured, account_cap, account_total_cap, global_daily_ca
     next.error = error
     assert.deepEqual(await call(), { status, body: { error } }, error)
   }
+  // 6. Council round 2 R4-3: the account's own cap, the deployment ceiling, and the trial's attempt cap.
+  const D = await founder(70, 'used@gmail.com')
+  for (let i = 0; i < 3; i++) { next.outcome = 'call_failed'; assert.deepEqual(await call(), { status: 502, body: { error: 'trial_read_failed' } }, `read ${i + 1}`) }
+  assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'site_reads_used' } })
+  const dayBefore = Number((await db.get<{ c: number }>("SELECT count AS c FROM rate_limits WHERE key = 'trial-site-day:all'"))!.c)
+  assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'site_reads_used' } })
+  assert.equal(Number((await db.get<{ c: number }>("SELECT count AS c FROM rate_limits WHERE key = 'trial-site-day:all'"))!.c), dayBefore, 'a reads-used account burns no deployment slot (R1-3)')
+  await withEnv({ DAZL_TRIAL_SITE_READS_PER_DAY: '1' }, async () => {
+    await db.run("DELETE FROM rate_limits WHERE key = 'trial-site-day:all'")
+    await founder(71, 'busy1@gmail.com'); next.outcome = 'call_failed'
+    assert.deepEqual(await call(), { status: 502, body: { error: 'trial_read_failed' } }, 'the day\'s one read')
+    await founder(72, 'busy2@gmail.com')
+    assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'site_reads_busy' } })
+  })
+  const E = await founder(73, 'attempts@gmail.com')
+  for (let i = 0; i < 3; i++) assert.equal((await admitTrialScan(db, { id: E, email: 'attempts@gmail.com' })).ok, true)
+  assert.deepEqual(await call(), { status: 400, body: { error: 'no_api_key', trial: 'attempts_cap' } })
+  void D
   console.log('SITE_READ_ROUTE_REASONS ok')
 })
 

@@ -9,7 +9,7 @@ import { TRIAL_SITE_READS_PER_ACCOUNT } from '../lib/scan/trial-site-read.ts'
 const OWN = 'Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'
 test('site read reason copy: each refusal says the real reason, the account count only after admitted reads, and always offers the key and the manual profile', () => {
   assert.equal(TRIAL_SITE_READS_PER_ACCOUNT, 3)
-  assert.equal(siteKeyReason('site_reads_used'), `You have used your three free website reads for now; each comes back 30 days after it was used. ${OWN}`)
+  assert.equal(siteKeyReason('site_reads_used'), `You have used your three free website reads for now; they come back together, 30 days after the first. ${OWN}`)
   // domain_used is not "your trial is used up": another account on the company domain started it (council R3-3).
   assert.equal(siteKeyReason('domain_used'), `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${OWN}`)
   assert.doesNotMatch(siteKeyReason('domain_used'), /used up/)

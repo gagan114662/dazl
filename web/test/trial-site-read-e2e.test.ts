@@ -83,6 +83,11 @@ test('#444 R1-4 end to end: reported cost settles the wallet; a failed call ends
   assert.deepEqual(await read(f, counting), { error: 'no_api_key', trial: 'google_required' })
   assert.deepEqual([await rows(f.id), reads(f.id), calls], [[], 0, 0])
 
+  // 5b. An unreadable page (JS only): no admission is asked for, nothing in the wallet, no read counted.
+  const h = await account(8, 'h@gmail.com')
+  assert.deepEqual(await read(h, provider(), page('<script>app()</script>')), { error: 'js_only' })
+  assert.deepEqual([await rows(h.id), reads(h.id)], [[], 0])
+
   // 6. No usage reported: the read ends at its reserve (never left pending).
   const g = await account(7, 'g@gmail.com')
   assert.ok('icp' in await read(g, provider({ usage: false })))

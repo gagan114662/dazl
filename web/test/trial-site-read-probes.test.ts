@@ -72,18 +72,19 @@ bothEngines('probe B3/B3b: refusals by the wallet (day full) or the deployment c
   const lim = limiter()
   const filler = await user(db, uid(31), 'b3f@gmail.com')
   assert.equal((await admitTrialScan(db, filler, { env: wallet('10', '0.30') })).ok, true, 'another account\'s scan fills the day')
-  for (let i = 0; i < 3; i++) assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.30', { env: wallet('10', '0.30'), limit: lim }), { ok: false, reason: 'global_daily_cap' })
-  assert.deepEqual([...lim.counts], [], 'wallet refusals: no counter touched at all')
-  assert.equal((await admitTrialSiteRead(db, a, '203.0.113.30', { env: wallet('10', '100'), limit: lim })).ok, true, 'room again: admitted')
+  for (let i = 0; i < 3; i++) assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.30', { env: wallet('10', '0.30'), limit: lim, refund: lim.refund }), { ok: false, reason: 'global_daily_cap' })
+  assert.deepEqual([...lim.counts], [], 'wallet refusals (eligibility): no counter touched at all')
+  assert.equal((await admitTrialSiteRead(db, a, '203.0.113.30', { env: wallet('10', '100'), limit: lim, refund: lim.refund })).ok, true, 'room again: admitted')
   // busy: the deployment's one read of the day is taken by someone else
   const lim2 = limiter()
   const busyEnv = { ...ENV, DAZL_TRIAL_SITE_READS_PER_DAY: '1' }
   const other = await user(db, uid(40), 'b3b-o@gmail.com'), c = await user(db, uid(41), 'b3b@gmail.com')
-  assert.equal((await admitTrialSiteRead(db, other, '203.0.113.40', { env: busyEnv, limit: lim2 })).ok, true)
-  for (let i = 0; i < 3; i++) assert.deepEqual(await admitTrialSiteRead(db, c, '203.0.113.41', { env: busyEnv, limit: lim2 }), { ok: false, reason: 'site_reads_busy' })
-  assert.equal(lim2.counts.get(`trial-site:${c.id}`) ?? 0, 0, 'busy refusals: the account\'s reads untouched')
+  assert.equal((await admitTrialSiteRead(db, other, '203.0.113.40', { env: busyEnv, limit: lim2, refund: lim2.refund })).ok, true)
+  for (let i = 0; i < 3; i++) assert.deepEqual(await admitTrialSiteRead(db, c, '203.0.113.41', { env: busyEnv, limit: lim2, refund: lim2.refund }), { ok: false, reason: 'site_reads_busy' })
+  assert.equal(lim2.counts.get(`trial-site:${c.id}`) ?? 0, 0, 'busy refusals: the account\'s reads given back')
+  assert.equal(lim2.counts.get('trial-site-day:all'), 1, 'and the deployment count stays at the one real read')
   lim2.counts.delete('trial-site-day:all') // the next day
-  assert.equal((await admitTrialSiteRead(db, c, '203.0.113.41', { env: busyEnv, limit: lim2 })).ok, true)
+  assert.equal((await admitTrialSiteRead(db, c, '203.0.113.41', { env: busyEnv, limit: lim2, refund: lim2.refund })).ok, true)
 })
 
 bothEngines('probe B8: the daily ceiling is a plain positive integer or the read is off', async () => {
