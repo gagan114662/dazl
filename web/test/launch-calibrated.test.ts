@@ -42,9 +42,9 @@ const play = (db: Database.Database) => {
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   return job
 }
-function lead(db: Database.Database, job: string, contact: string) {
+function lead(db: Database.Database, job: string, contact: string, score = 80) {
   const id = randomBytes(12).toString('hex')
-  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, job, 'Co ' + id.slice(0, 4), contact, 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, 80)
+  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, job, 'Co ' + id.slice(0, 4), contact, 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, score)
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE id = ?").run(id)
   return id
 }
@@ -154,8 +154,10 @@ test('a calibrated launch only sends inside the policy, under the first-week rol
   assert.ok(!g.to().includes('x@outside.example') && !g.to().includes('boss@customer.example'))
   const msgs = db.prepare('SELECT lead_id FROM outreach_messages WHERE lead_id IN (?, ?)').all(outside, excluded)
   assert.equal(msgs.length, 0, 'no draft is even written outside the policy')
-  const skipped = recentAutopilotAudit(db, 'A').filter(a => a.action === 'skipped').map(a => a.detail).sort()
-  assert.deepEqual(skipped, ['excluded', 'not_in_audience'])
+  // leads outside the policy are not candidates at all under a calibrated launch (the query is scoped to the audience,
+  // see F1), so they are neither drafted nor counted as skipped and never crowd the audience out
+  assert.equal(r.skipped, 0)
+  assert.ok(!recentAutopilotAudit(db, 'A').some(a => a.action === 'skipped'))
   // after the first week the policy's own cap applies (still under the tenant's daily cap)
   const gate = launchGate(db, 'A', 'me@acme.example', NOW + ROLLOUT_DAYS * 86400)
   assert.ok(gate.calibrated && gate.cap === 20)
@@ -231,6 +233,27 @@ test('the preflight\'s stop flags are observed, not declared: a stop whose store
   assert.equal(r.ok, false)
   assert.ok(r.failures.includes('stop_not_enforced'), r.failures.join(','))
   assert.equal(launchGate(db, 'A', 'me@acme.example', NOW).calibrated, false)
+})
+
+test('F1 (probe P1): a calibrated launch reaches its audience behind 25 higher-scoring out-of-audience or excluded leads, on the first run', async () => {
+  const db = await setup(); const job = play(db); const other = play(db)
+  for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
+  acceptLaunchPolicy(db, 'A', policy([job], { exclusions: { domains: ['customer.example'], emails: ['vip@partner.example'] } }), NOW)
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
+  for (let i = 0; i < 25; i++) lead(db, other, `o${i}@other${i}.example`, 95)   // another play, higher score
+  for (let i = 0; i < 25; i++) lead(db, job, `c${i}@customer.example`, 94)       // the audience, but an excluded domain
+  lead(db, job, 'vip@partner.example', 93)                                      // an excluded address
+  lead(db, job, 'd@four.example', 80)                                           // the one lead the policy targets
+  const g = gmail()
+  const r1 = await runAutopilot(db, 'A', 'Acme', { ...g.d, now: NOW + 2 })
+  assert.deepEqual([g.to(), r1.sent, r1.skipped], [['d@four.example'], 1, 0], 'the audience lead is sent on run 1; nothing outside the policy is even a candidate')
+  assert.equal((db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE to_email <> 'd@four.example' AND status <> 'draft'").get() as { n: number }).n, 0)
+  const r2 = await runAutopilot(db, 'A', 'Acme', { ...g.d, now: NOW + 3 })
+  assert.deepEqual([r2.sent, r2.skipped, g.sent.length], [0, 0, 1], 'nothing left in the audience: a quiet run, not 25 skips')
+  // without a launch the warmup still sees every lead (unchanged)
+  db.exec('DELETE FROM autopilot_launch_policy')
+  const w = await runAutopilot(db, 'A', 'Acme', { ...gmail().d, now: NOW + 4 })
+  assert.equal(w.held, 25, 'warmup: the 25 best leads are drafted and held for approval')
 })
 
 test('HOLD: provider acceptance is not receipt: the integration message must be found in the INBOX, with read access', async () => {

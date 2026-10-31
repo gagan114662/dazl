@@ -171,12 +171,31 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   const uncertain = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId)
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
 
+  // Under a calibrated launch the candidates are the policy's audience only (its plays, minus its excluded addresses and
+  // domains), selected in the query itself: a skipped lead writes no row, so if the 25 best unmessaged leads were out of
+  // the policy they would come back every tick and the audience would never be reached. The per-lead check below still
+  // runs on every candidate (the policy is re-read each time). An unreadable launch store here is a stop, not a warmup run.
+  const mailbox = () => { const g = gmailStatus(db, tenantId); return g?.status === 'active' ? g.email : null }
+  let scope: { sql: string; args: (string | number)[] } = { sql: '', args: [] }
+  try {
+    const g0 = launchGate(db, tenantId, mailbox(), now)
+    if (g0.calibrated) {
+      const { audience, exclusions } = g0.policy
+      const like = (d: string) => '%@' + d.replace(/[\\%_]/g, c => '\\' + c)
+      scope = {
+        sql: ` AND j.id IN (${audience.playIds.map(() => '?').join(', ')})`
+          + (exclusions.emails.length ? ` AND lower(l.contact) NOT IN (${exclusions.emails.map(() => '?').join(', ')})` : '')
+          + exclusions.domains.map(() => " AND lower(l.contact) NOT LIKE ? ESCAPE '\\'").join(''),
+        args: [...audience.playIds, ...exclusions.emails, ...exclusions.domains.map(like)],
+      }
+    }
+  } catch { pause(db, tenantId, 'stop_check_unavailable'); return stop('stop_check_unavailable') }
   const leads = db.prepare(
     `SELECT l.id, l.contact, l.source_url, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
+       AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)${scope.sql}
      ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId) as Lead[]
+  ).all(tenantId, MIN_CONFIDENCE, tenantId, ...scope.args) as Lead[]
   // A calibrated launch (#405): an accepted, current policy launched by a passing preflight, from the policy's own
   // mailbox. It replaces only the hand-approval warmup; it narrows every send to the policy and adds its stops and
   // rollout cap. Without one, the warmup, consent, pause, uncertain-send, per-domain and suppression rules are as
@@ -184,7 +203,6 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // drafting and at the send boundary, so a cap reached before drafting writes no draft, and one reached at the boundary
   // releases the message to the tenant and ends the run (previously the cap was checked once, after drafting, and
   // ended the run leaving the draft held).
-  const mailbox = () => { const g = gmailStatus(db, tenantId); return g?.status === 'active' ? g.email : null }
   // A stop ends the run. With a message already drafted it is held, and when the stop is autopilot's own authority
   // lapsing, the message goes back to a draft for the tenant (its approval, if any, was autopilot's). The stop may be
   // that a store is unreadable, so each step stands on its own: release the message first, pause second, record last;
