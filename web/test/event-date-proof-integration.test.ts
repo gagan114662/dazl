@@ -59,9 +59,11 @@ test('seam: a persisted page_bound row backs qualified only with a satisfied req
   // window requested and NOT satisfied: the same proof does not count
   assert.equal(proofBackedTiming(lead, 1, NOW), false)
   assert.equal(scoreLeadV2(lead, { who: 'Founder', windowDays: 1, timingRequired: true, now: NOW }).qualified, false)
-  // no window requested: a recognized non-future proof is enough - no invented gate
+  // no window requested and no timing requirement: a recognized non-future proof is enough - no invented gate
   assert.equal(proofBackedTiming(lead, null, NOW), true)
-  assert.equal(scoreLeadV2(lead, { who: 'Founder', windowDays: null, timingRequired: true, now: NOW }).qualified, true)
+  assert.equal(scoreLeadV2(lead, { who: 'Founder', windowDays: null, timingRequired: false, now: NOW }).qualified, true)
+  // a recency requirement with no numeric window is an UNRESOLVED bound: not qualified on an unbounded age check
+  assert.equal(scoreLeadV2(lead, { who: 'Founder', windowDays: null, timingRequired: true, now: NOW }).qualified, false)
 })
 
 test('seam: an unproven (NULL proof) row never backs qualified when timing is required', async () => {
