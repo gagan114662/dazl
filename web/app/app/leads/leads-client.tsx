@@ -16,6 +16,7 @@ import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
+import PlayResearch from './play-research'
 import HiringFeed from './hiring-feed'
 import QualifyPreview from './qualify-preview'
 import EvidenceRecheck from './evidence-recheck'
@@ -608,6 +609,7 @@ export default function LeadsClient() {
         {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads runs with your reviewed profile: {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
         </div>
       </form>
+      {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}
       {/* Everything that tunes a play lives in one drawer, closed by default: sources, imports, past source results and
           warm paths. The play box above stays the only thing asking for attention. */}
       <details className={`drawer card ${jobId ? 'order-last' : 'mb-6'}`} data-testid="play-settings">
