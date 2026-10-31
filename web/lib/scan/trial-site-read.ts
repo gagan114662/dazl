@@ -85,11 +85,14 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
     ok: true, key,
     settle: (spentUsd: number | null) => settleTrialSiteRead(db, user.id, a.reservation, spentUsd),
     // The read's own guard refused before any call (lib/scan/icp-from-site.ts): nothing was spent, so the reservation and
-    // every slot go back. Best effort: a release that fails is recorded (lib/ops/errors.ts) and leaves the reservation
-    // unsettled, which the account keeps paying at its full reserve (READ_GRACE_S ends only its day count).
+    // every slot go back. Once only: the slots are given back only when this call deleted the reservation (a second
+    // release, or one after a settle, changes nothing). A release that fails is recorded (lib/ops/errors.ts) and leaves
+    // the reservation unsettled, which the account keeps paying at its full reserve (READ_GRACE_S ends only its day
+    // count); its slots stay spent with it.
     release: async () => {
-      await releaseTrialReservation(db, user.id, a.reservation).catch(e => captureError(e, { source: 'process', where: 'trial-site-read:release', tenantId: user.id }))
-      await giveBack()
+      let gone = false
+      try { gone = await releaseTrialReservation(db, user.id, a.reservation) } catch (e) { captureError(e, { source: 'process', where: 'trial-site-read:release', tenantId: user.id }) }
+      if (gone) await giveBack()
     },
   }
 }

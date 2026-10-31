@@ -374,3 +374,25 @@ bothEngines('#444 R5: refundRateLimit gives one counted call back in the real st
   assert.equal(await refundRateLimit(key, db, now), false, 'never below zero')
   assert.equal(await refundRateLimit(key, db, now + win + 1), false, 'a closed window is left alone')
 })
+
+// Probe round 2 on ab05d740 (G1, G2): release() is once-only on the real store, and never deletes a settled row.
+bothEngines('#444 G1/G2: a second release() refunds nothing; release() after settle() keeps the settled money row and its slots', async ({ db }) => {
+  await withKey(OP, async () => {
+    const now = 1_800_000_000_000
+    const limit = (k: string, max: number, win: number) => rateLimit(k, max, win, db, now)
+    const refund = (k: string) => refundRateLimit(k, db, now)
+    const a = await user(db, uid(550), 'g1@gmail.com')
+    const count = async (k: string) => Number((await db.get<{ c: number }>('SELECT count AS c FROM rate_limits WHERE key = ?', [k]))?.c ?? 0)
+    const rows = async () => Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ? AND kind = 'site_read'", [a.id]))!.n)
+    const first = await admitTrialSiteRead(db, a, '203.0.113.140', { env: ENV, limit, refund })
+    const second = await admitTrialSiteRead(db, a, '203.0.113.140', { env: ENV, limit, refund })
+    assert.ok(first.ok && second.ok)
+    assert.deepEqual([await count(`trial-site:${a.id}`), await rows()], [2, 2])
+    if (first.ok) { await first.release(); await first.release() }
+    assert.deepEqual([await count(`trial-site:${a.id}`), await count('trial-site-day:all'), await rows()], [1, 1, 1], 'G1: released once, refunded once')
+    if (second.ok) { await second.settle(0.01); await second.release() }
+    assert.equal(await rows(), 1, 'G2: a settled row is never deleted')
+    assert.equal(await count(`trial-site:${a.id}`), 1, 'and its slot stays spent')
+    assert.equal(Number((await db.get<{ s: number }>("SELECT spent_usd AS s FROM trial_reservations WHERE tenant_id = ? AND kind = 'site_read'", [a.id]))!.s), 0.01)
+  })
+})
