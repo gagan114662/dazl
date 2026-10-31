@@ -8,6 +8,9 @@ import argparse
 import json
 import subprocess
 import re
+import os
+import stat
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -24,7 +27,19 @@ REQUIRED_CI = frozenset({'browser', 'migrations', 'test-sqlite', 'test-postgres'
 def require_ci(repository, commit, token_file):
     if repository != 'gagan114662/dazl' or not re.fullmatch(r'[a-f0-9]{40}', commit or ''):
         raise ValueError('ci_identity')
-    token = Path(token_file).read_text().strip()
+    path = Path(token_file)
+    # Anonymous descriptors are allowed only for an owned, private regular file.
+    # They let an encrypted stdin transport avoid persisting a host credential.
+    anonymous = re.fullmatch(r'/proc/self/fd/[0-9]+', str(path))
+    if not anonymous and any(x.is_symlink() for x in [path, *path.parents]):
+        raise ValueError('ci_credentials')
+    with path.open() as source:
+        meta = os.fstat(source.fileno())
+        if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or meta.st_mode & 0o077 or (anonymous and meta.st_nlink != 0):
+            raise ValueError('ci_credentials')
+        token = source.read(16385).strip()
+    if len(token) > 16384 or any(c.isspace() for c in token):
+        raise ValueError('ci_credentials')
     if not token:
         raise ValueError('ci_credentials')
     def get(path):
@@ -52,12 +67,25 @@ def require_ci(repository, commit, token_file):
 
 def bind_launch(launch, commit):
     # The CI proof is for the commit the only supported mutation command will launch.
-    if len(launch) < 3 or Path(launch[1]).resolve() != Path(__file__).with_name('safe_launch.py').resolve():
+    if len(launch) < 3 or Path(launch[0]).resolve() != Path(sys.executable).resolve() or Path(launch[1]).resolve() != Path(__file__).with_name('safe_launch.py').resolve():
         raise ValueError('launch_entrypoint')
-    if launch.count('--commit') != 1 or launch.count('--execute') != 1:
-        raise ValueError('launch_identity')
-    at = launch.index('--commit')
-    if at + 1 >= len(launch) or launch[at + 1] != commit:
+    values = {'--stage', '--commit', '--rollback-stage', '--rollback-commit', '--env-file', '--pid', '--port', '--backup', '--backup-db'}
+    switches = {'--execute', '--backup-verified'}
+    parsed = {}
+    i = 2
+    while i < len(launch):
+        flag = launch[i]
+        if flag in parsed or flag not in values | switches:
+            raise ValueError('launch_options')
+        if flag in switches:
+            parsed[flag] = True
+            i += 1
+        else:
+            if i + 1 >= len(launch) or launch[i + 1].startswith('--'):
+                raise ValueError('launch_options')
+            parsed[flag] = launch[i + 1]
+            i += 2
+    if parsed.get('--commit') != commit or parsed.get('--execute') is not True:
         raise ValueError('launch_commit')
 
 
@@ -89,16 +117,34 @@ def run(preflights, launch, timeout=120, *, repository=None, commit=None, token_
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--repository', required=True)
     parser.add_argument('--commit', required=True)
-    parser.add_argument('--ci-token-file', required=True)
+    credentials = parser.add_mutually_exclusive_group(required=True)
+    credentials.add_argument('--ci-token-file')
+    credentials.add_argument('--ci-token-stdin', action='store_true')
     parser.add_argument('--preflight', type=command, action='append', required=True)
     parser.add_argument('--launch', type=command, required=True)
     parser.add_argument('--timeout', type=float, default=120)
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error('timeout must be positive')
-    report, code = run(args.preflight, args.launch, args.timeout, repository=args.repository, commit=args.commit, token_file=args.ci_token_file)
+    credential_fd = None
+    try:
+        if args.ci_token_stdin:
+            token = sys.stdin.buffer.read(16385)
+            if not token or len(token) > 16384:
+                raise ValueError('ci_credentials')
+            credential_fd = os.memfd_create('release-ci', os.MFD_CLOEXEC)
+            os.fchmod(credential_fd, 0o600)
+            os.write(credential_fd, token)
+            del token
+            args.ci_token_file = '/proc/self/fd/' + str(credential_fd)
+        report, code = run(args.preflight, args.launch, args.timeout, repository=args.repository, commit=args.commit, token_file=args.ci_token_file)
+    except Exception:
+        report, code = {'status': 'ci_refused', 'launch_reached': False}, 1
+    finally:
+        if credential_fd is not None:
+            os.close(credential_fd)
     print(json.dumps(report))
     raise SystemExit(code)

@@ -110,3 +110,19 @@ The test suite exercises this with an attempted sentinel mutation and a caller d
 2026-10-30 incident: a shell assertion refused pending exact-main PG, but a separate following checked-launch still
 ran. Live health/static and all88 DB tables were preserved, and that PG suite later passed. Never record this as
 all CI green at cutover. The fix moves evidence validation inside the mutation entrypoint.
+
+## Anonymous stdin credential transport and strict launch binding
+
+For a remote host use `--ci-token-stdin` instead of `--ci-token-file`. Stream the already-authorized credential
+through encrypted SSH stdin to this single command. The entrypoint reads at most16KiB into an owned private
+anonymous Linux memory file, uses it for its own read-only GitHub checks, and closes it in a finally block.
+No credential pathname persists on disk, the descriptor is close-on-exec and is not passed to preflights or
+launch children. No credential is included in argv, reports, application environment or output. Do not use
+shell tracing or echo the stream. Empty, oversized, whitespace-bearing or unavailable credentials refuse
+before preflight. Disk-file mode requires owned private regular non-symlink files, including parent paths.
+
+The launch interpreter must resolve to the entrypoint's Python executable. Only exact safe_launch option
+names in separate-token form are accepted, each at most once; alternate interpreters, unknown flags,
+abbreviated flags, equals-form flags and duplicate options are refused. safe_launch itself disables argparse
+abbreviations. These are accidental-sequencing controls, not a sandbox against an actor who can edit code
+or issue a separate host command. No pending CI check can be made safe by ignoring this command's exit.
