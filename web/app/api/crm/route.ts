@@ -7,7 +7,7 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
-import { denied } from '@/lib/workspace-access'
+import { denied, stale } from '@/lib/workspace-access'
 
 export async function GET() {
   const user = await requireUser()
@@ -29,6 +29,8 @@ export async function POST(req: NextRequest) {
   switch (body?.action) {
     case 'save': {
       const cannot = denied(user, 'configure'); if (cannot) return cannot
+      const old = stale(user); if (old) return old
+
       const provider = body?.provider
       if (!['hubspot', 'pipedrive', 'webhook'].includes(provider)) return NextResponse.json({ error: 'Pick HubSpot, Pipedrive or webhook' }, { status: 400 })
       const key = typeof body?.key === 'string' ? body.key.trim() : ''
@@ -48,6 +50,7 @@ export async function POST(req: NextRequest) {
     }
     case 'disconnect': {
       const cannot = denied(user, 'configure'); if (cannot) return cannot
+      const old = stale(user); if (old) return old
       if (disconnectCrm(db, user.tenantId)) await audit(user, req, { action: 'credential.removed', resource: 'crm' })
       return NextResponse.json({ ok: true })
     }
@@ -71,6 +74,7 @@ export async function POST(req: NextRequest) {
         auditPush(db, user.tenantId, cfg.provider, lead, body.created ? 'resolved_created' : 'resolved_not_created')
         await audit(user, req, { action: 'crm.resolved', resource: 'lead', id: lead.id, summary: { provider: cfg.provider, created: body.created } })
         return NextResponse.json({ ok: true })
+
       }
       let attemptId = ''
       if (dest) {

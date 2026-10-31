@@ -17,6 +17,7 @@ export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: st
   watch_seen: { via: ['watch_id', 'watches'] },
   stripe_events: { global: 'Stripe event ids for dedupe; the tenant comes from the event payload' },
   work_queue_meta: { global: 'queue counters (claim-token sequence), no tenant data' },
+  scheduler_runs: { global: 'one row per scheduler tick: times, status, lease generation and tenant counts; per-tenant progress is scheduler_progress (tenant_id)' },
   rate_limits: { global: 'counters keyed by caller (tenant id, account or IP inside the key); holds no tenant data and no route reads it back' },
   app_leases: { global: 'named locks for platform jobs (the scheduled tick); no tenant data' },
   audit_purge_gate: { global: 'one row that exists only inside the audit retention purge transaction (lib/audit.ts); no tenant data' },

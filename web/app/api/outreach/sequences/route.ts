@@ -1,4 +1,5 @@
 import { schedulerReadiness } from '@/lib/outreach/scheduler-readiness'
+import { tenantFreshness } from '@/lib/ops/scheduler-runs'
 import {currentnessHeld} from '@/lib/outreach/currentness'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
@@ -18,7 +19,9 @@ export async function GET(req: NextRequest) {
   const sequences = rows.map(s => ({ ...s, evidence_state: leadEvidenceState(db, user.tenantId, s.lead_id), currentness_held: (()=>{const m=db.prepare('SELECT to_email,test FROM outreach_messages WHERE id=? AND tenant_id=?').get(s.message_id,user.tenantId) as {to_email:string;test:number}|undefined;return !(m&&testFixtureSend(db,user.tenantId,m))&&currentnessHeld(db,user.tenantId,s.lead_id)})(), steps: sequenceStepsView(db, user.tenantId, s as { id: string; message_id: string; status: string }) }))
   const campaigns = db.prepare('SELECT DISTINCT j.id,j.query FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id JOIN outreach_messages m ON m.lead_id = l.id AND m.tenant_id = j.user_id WHERE j.user_id = ? ORDER BY j.created_at DESC LIMIT 50').all(user.tenantId) as { id: string; query: string }[]
   const { scheduler, gates } = schedulerReadiness(db, user.tenantId)
-  return NextResponse.json({ scheduler, gates, sequences, test_addresses: testAddresses(db,user.tenantId), test_fixture_available: fixtureAvailable(db,user.tenantId), status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
+  // scheduler/gates: configuration. freshness: whether the scheduler is actually making progress for this tenant (its own rows only).
+  return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), test_fixture_available: fixtureAvailable(db,user.tenantId), status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
+
 }
 export async function POST(req: NextRequest) {
   const user = await requireUser()

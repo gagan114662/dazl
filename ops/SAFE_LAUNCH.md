@@ -84,3 +84,49 @@ rejection. Parser accepts quote-free values literally including spaces, matching
 known legacy Python split semantics. $/backticks/backslash/NUL remain refused;
 quoted values still strict single-token parsing. No shell, source, interpolation,
 secret output or env rewriting. Existing env content itself was never displayed.
+
+## Required outer preflights must stop the launch
+
+The October30,2026 release used a shell sequence where an extra required SQL check failed but a later launch command still ran. The internal launch checks passed and later health/no-work checks were good, but neither makes that outer check a preflight success.
+
+For every future cutover, invoke `ops/checked_launch.py` as the single outer command. Pass each required check as a `--preflight` JSON argv array, followed by the one `--launch` argv array for `safe_launch.py --execute`. Include disk, live identity/config, pending-work, backup, release-gate and internal dry-run checks. Do not execute a launch in a following shell line. A missing command, nonzero exit or timeout stops the sequence before launch. Child output is suppressed to avoid credential logging; inspect nonsecret preflight reports separately when needed. Never put secrets in argv.
+
+`python3 -m unittest ops/test_checked_launch.py` independently runs the CLI with a deliberately failing command, nonexistent command and timeout, and proves neither a later preflight nor a sentinel launch is reached. A positive control proves successful preflights launch once. This wrapper does not create deployment permission and does not replace any required check.
+
+## Exact-main CI is part of the entrypoint
+
+`checked_launch.py` now requires `--repository gagan114662/dazl --commit <full SHA> --ci-token-file <protected file>`.
+It reads GitHub directly inside the same process before any preflight and again before launch. Current main must
+match the full launch commit. Exactly one GitHub Actions result each for browser, migrations, test-sqlite and
+test-postgres and fail-closed must be completed/success for that SHA. Pending, failed, missing, duplicate, wrong-SHA, malformed,
+truncated or unreadable evidence refuses the launch. There is no bypass flag or cached green report.
+The launch argv must call the sibling safe_launch.py with the same single --commit and --execute.
+The token file contains the credential, never an argv credential or logged value. Do not leave a credential on a host
+for a release check. Use an already-authorized protected file or a securely passed ephemeral file descriptor for
+the entrypoint; never echo its contents or put them in logs. The checker makes read-only requests only.
+
+The shell is not a gate. Even `checked_launch.py ...; true` cannot run its launch or preflight when CI is refused.
+The test suite exercises this with an attempted sentinel mutation and a caller deliberately ignoring failure.
+2026-10-30 incident: a shell assertion refused pending exact-main PG, but a separate following checked-launch still
+ran. Live health/static and all88 DB tables were preserved, and that PG suite later passed. Never record this as
+all CI green at cutover. The fix moves evidence validation inside the mutation entrypoint.
+
+## Anonymous stdin credential transport and strict launch binding
+
+For a remote host use `--ci-token-stdin` instead of `--ci-token-file`. Stream the already-authorized credential
+through encrypted SSH stdin to this single command. The entrypoint reads at most16KiB into an owned private
+anonymous Linux memory file, uses it for its own read-only GitHub checks, and closes it in a finally block.
+No credential pathname persists on disk, the descriptor is close-on-exec and is not passed to preflights or
+launch children. No credential is included in argv, reports, application environment or output. Do not use
+shell tracing or echo the stream. Empty, oversized, whitespace-bearing or unavailable credentials refuse
+before preflight. Disk-file mode requires owned private regular non-symlink files, including parent paths.
+
+The launch interpreter must resolve to the entrypoint's Python executable. Only exact safe_launch option
+names in separate-token form are accepted, each at most once; alternate interpreters, unknown flags,
+abbreviated flags, equals-form flags and duplicate options are refused. safe_launch itself disables argparse
+abbreviations. These are accidental-sequencing controls, not a sandbox against an actor who can edit code
+or issue a separate host command. No pending CI check can be made safe by ignoring this command's exit.
+
+GitHub evidence requests use a no-redirect opener. Any redirect refuses the release instead of forwarding
+a bearer credential to another origin. A two-origin HTTP regression exercises the production transport and
+proves the destination receives no request. Timeouts must be finite and positive, both via CLI and run().

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
@@ -141,7 +142,7 @@ export async function gradeBuyerIntent(
   if (!key) return null
   let out: string
   try {
-    out = (await providers[vendor].complete!(key, INTENT_PROMPT(deps.sells ?? '', deps.website ?? '', candidate), deps.fetchImpl ?? fetch, 200)).trim().toLowerCase()
+    out = (await ownerGuarded(db, tenantId, providers[vendor]).complete!(key, INTENT_PROMPT(deps.sells ?? '', deps.website ?? '', candidate), deps.fetchImpl ?? fetch, 200)).trim().toLowerCase()
   } catch { return null }
   const word = out.split(/[^a-z]+/)[0]
   return word === 'yes' ? 'yes' : word === 'no' ? 'no' : word === 'uncertain' ? 'uncertain' : null
@@ -277,7 +278,7 @@ The person you are writing for sells: ${sells || '(not specified)'}${website ? `
 Rules: answer the question first; do not invent features, prices, customers or statistics; mention the product only when it directly fits the question; at most one link; never claim to be a customer.
 Return only the reply text, 120 words maximum.`
 
-export type DraftResult = { draft: string; status: 'draft' } | { error: 'no_key' | 'not_found' | 'upstream' | 'key_unreadable' | 'key_rejected' }
+export type DraftResult = { draft: string; status: 'draft' } | { error: 'no_key' | 'not_found' | 'upstream' | 'key_unreadable' | 'key_rejected' | 'spend_limit' }
 
 export async function draftReply(db: Database.Database, tenantId: string, threadId: string, profile: { sells: string; website: string }, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<DraftResult> {
   const t = getThread(db, tenantId, threadId)
@@ -290,8 +291,9 @@ export async function draftReply(db: Database.Database, tenantId: string, thread
   if (!key) return { error: 'no_key' }
   let draft: string
   try {
-    draft = (await providers[vendor].complete!(key, PROMPT(t.platform, t, profile.sells, profile.website), deps.fetchImpl ?? fetch, 800)).trim()
+    draft = (await ownerGuarded(db, tenantId, providers[vendor]).complete!(key, PROMPT(t.platform, t, profile.sells, profile.website), deps.fetchImpl ?? fetch, 800)).trim()
   } catch (e) {
+    if (spendRefused(e)) return { error: 'spend_limit' }
     if (e instanceof ProviderError && e.kind === 'auth') return { error: 'key_rejected' }
     return { error: 'upstream' }
   }

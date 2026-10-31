@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import type { Db } from '../db/client.ts'
 import { fetchKey, readKeyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
@@ -35,7 +36,7 @@ Rules: no hype words, no invented statistics, no claims about specific companies
 
 export type BriefResult = { id: string; topic: string; brief: string; created_at: number }
 
-export async function generateBrief(db: Db, tenantId: string, rawTopic: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<BriefResult | { error: 'no_key' | 'invalid' | 'upstream' }> {
+export async function generateBrief(db: Db, tenantId: string, rawTopic: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<BriefResult | { error: 'no_key' | 'invalid' | 'upstream' | 'spend_limit' }> {
   const topic = rawTopic.trim().replace(/\s+/g, ' ').slice(0, 300)
   if (topic.length < 3) return { error: 'invalid' }
   const vendor = ((await readKeyStatus(db, tenantId))[0]?.vendor ?? null) as Vendor | null
@@ -44,8 +45,9 @@ export async function generateBrief(db: Db, tenantId: string, rawTopic: string, 
   if (!key) return { error: 'no_key' }
   let brief: string
   try {
-    brief = (await providers[vendor].complete!(key, PROMPT(topic), deps.fetchImpl ?? fetch, 1500)).trim()
+    brief = (await ownerGuarded(db, tenantId, providers[vendor]).complete!(key, PROMPT(topic), deps.fetchImpl ?? fetch, 1500)).trim()
   } catch (e) {
+    if (spendRefused(e)) return { error: 'spend_limit' }
     if (e instanceof ProviderError && e.kind === 'auth') throw e // a bad key surfaces as auth, like scans
     return { error: 'upstream' }
   }

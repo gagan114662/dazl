@@ -146,7 +146,7 @@ test('seed-only and hiring-only requests are not touched, and review / human-con
 const NEWS = 'https://sifted.example/brightloop-raises-seed'
 const pad = (s: string) => `${s} ${'More about the company and its people. '.repeat(15)}`
 function london(boardJson: Record<string, unknown>, quote = QUOTE): Fixture {
-  const page = { title: 'Brightloop raises seed round', text: pad(`Published ${daysAgo(12)}. ${quote}.`) }
+  const page = { title: 'Brightloop raises seed round', text: pad(`On ${daysAgo(12)}, ${quote}.`) }
   const crawl = async (url: string) => {
     const u = new URL(url)
     if (u.hostname === 'sifted.example') return { status: 200, body: `<html><body><a href="https://brightloop.io/">Brightloop</a> ${page.text}</body></html>`, finalUrl: url }
