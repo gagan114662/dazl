@@ -11,10 +11,12 @@
 // Alerts go to OPS_ALERT_WEBHOOK_URL (https only; e.g. a Slack incoming webhook) or, for tests, BACKUP_ALERT_CMD (run
 // with the JSON as its one argument). The same set of problems alerts at most once per BACKUP_ALERT_EVERY_S (3600),
 // counted from a delivered alert (command exit 0, webhook 2xx): a failed delivery or no destination leaves no stamp, so
-// the next run retries. Stamps live in --state-dir (default BACKUP_DIR/.backup-check; when it is unusable the alert
-// still goes out, unthrottled). When everything is ok the stamps are removed and nothing is sent: there is deliberately
+// the next run retries. Stamps (backup-alert-*) live in --state-dir (default BACKUP_DIR/.backup-check; when it is
+// unusable the alert still goes out, unthrottled; the directory may be shared with scheduler-check, only this script's
+// stamps are ever removed). Runs are not locked against each other: two concurrent runs can both deliver (the systemd
+// timer never overlaps its own job; a manual start during one can). When everything is ok the stamps are removed and nothing is sent: there is deliberately
 // no recovery announcement (scheduler-check.mts has one). The alert names problems, ages and file names only: no data,
-// no directory paths. The webhook is https only and redirects are not followed. Age limits must be numbers of seconds
+// no directory paths (I/O errors are forwarded by code and syscall). The webhook is https only and redirects are not followed. Age limits must be numbers of seconds
 // (else exit 2); an invalid BACKUP_ALERT_EVERY_S falls back to 3600 with a log line, never to "no throttle" and never
 // to "no alert". Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable); 2 = usage.
 //   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --max-age-s 7200 \
@@ -42,6 +44,9 @@ const problems: string[] = []
 const facts: Record<string, unknown> = {}
 const sha256 = (f: string) => new Promise<string>((res, rej) => { const h = createHash('sha256'); createReadStream(f).on('data', d => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej) })
 const ageS = (iso: string | undefined | null) => iso && !Number.isNaN(Date.parse(iso)) ? Math.round((now - Date.parse(iso)) / 1000) : null
+// an error as the alert may name it: our own messages verbatim, a filesystem error by code and syscall (never its
+// message, which carries a full path)
+const reason = (e: unknown) => { const x = e as NodeJS.ErrnoException; return x?.code ? `${x.code}${x.syscall ? ' on ' + x.syscall : ''}` : e instanceof Error ? e.message : 'error' }
 const readJson = (f: string) => { try { return JSON.parse(readFileSync(f, 'utf8')) } catch { return null } }
 
 // local backups: newest by sidecar createdAt. A sidecar that exists but does not parse is a problem (a newer backup
@@ -128,7 +133,7 @@ if (!offSpec) {
         else facts.newest_offhost_verified = true
       }
     }
-  } catch (e) { problems.push(`off-host destination ${dest.label} unreadable: ${e instanceof Error ? e.message : 'error'}`) }
+  } catch (e) { problems.push(`off-host destination ${dest.label} unreadable: ${reason(e)}`) }
 }
 
 const drill = arg('--drill-report')
@@ -146,13 +151,20 @@ if (drill) {
 const state = arg('--state-dir') ?? path.join(dir, '.backup-check')
 const body = { level: problems.length ? 'error' : 'info', type: 'backup_check', ok: problems.length === 0, host: os.hostname(), at: new Date(now).toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))
-if (!problems.length) { try { rmSync(state, { recursive: true, force: true }) } catch { /* a stale stamp only delays the next alert of the same kind */ } process.exit(0) }
+// Stamps are backup-alert-<hash of the problem kinds>. A healthy run removes only them: the state dir may be shared with
+// scheduler-check (alert-*) or hold other tools' files, and an operator-supplied directory is never deleted.
+const STAMP = 'backup-alert-'
+if (!problems.length) {
+  try { if (existsSync(state)) for (const f of readdirSync(state)) if (f.startsWith(STAMP)) rmSync(path.join(state, f), { force: true }) }
+  catch { /* a stale stamp only delays the next alert of the same kind */ }
+  process.exit(0)
+}
 
 // A throttle stamp is a delivery receipt, never an attempted-send receipt (the same contract as scripts/ops/scheduler-check.mts).
 const send = async (b: object): Promise<boolean> => {
   const cmd = process.env.BACKUP_ALERT_CMD, hook = process.env.OPS_ALERT_WEBHOOK_URL
   if (cmd) {
-    const result = spawnSync(cmd, [JSON.stringify(b)], { stdio: 'inherit', timeout: 10_000 })
+    const result = spawnSync(cmd, [JSON.stringify(b)], { stdio: 'inherit', timeout: 10_000, killSignal: 'SIGKILL' })
     if (result.error || result.status !== 0) { console.error('backup-check: alert command failed'); return false }
     return true
   }
@@ -169,8 +181,8 @@ const send = async (b: object): Promise<boolean> => {
 let stamp: string | null = null
 try {
   mkdirSync(state, { recursive: true, mode: 0o700 })
-  stamp = path.join(state, 'alert-' + createHash('sha256').update(problems.map(p => p.replace(/\d+s old/, 'Ns old')).join('\n')).digest('hex').slice(0, 16))
+  stamp = path.join(state, STAMP + createHash('sha256').update(problems.map(p => p.replace(/\d+s old/, 'Ns old')).join('\n')).digest('hex').slice(0, 16))
   if (existsSync(stamp) && now - statSync(stamp).mtimeMs < every * 1000) { console.error('backup-check: alert already sent for these problems within the interval'); process.exit(1) }
 } catch (e) { console.error(`backup-check: state dir ${state} unusable (${(e as NodeJS.ErrnoException).code ?? 'error'}); alerting without throttle`); stamp = null }
-if (await send(body) && stamp) { try { writeFileSync(stamp, '') } catch (e) { console.error(`backup-check: could not write the throttle stamp (${(e as NodeJS.ErrnoException).code ?? 'error'})`) } }
+if (await send(body) && stamp) { try { writeFileSync(stamp, '') } catch (e) { console.error(`backup-check: alert delivered, throttle stamp not written (${(e as NodeJS.ErrnoException).code ?? 'error'}); the next run alerts again`) } }
 process.exit(1)

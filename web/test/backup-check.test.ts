@@ -35,7 +35,7 @@ const recorder = (name: string) => {
 }
 const root = process.getuid?.() === 0
 const firstJson = (out: string) => JSON.parse(out.split('\n').find(l => l.startsWith('{"level"')) ?? '{}') as Record<string, unknown>
-const stamps = (state: string) => existsSync(state) ? readdirSync(state).filter(f => f.startsWith('alert-')) : []
+const stamps = (state: string) => existsSync(state) ? readdirSync(state).filter(f => f.startsWith('backup-alert-')) : []
 
 test('alert command exits 1, then works: the retry inside the interval delivers; only a delivered alert is throttled', async () => {
   const fx = await fixtureBackup(path.join(T, 'cmd')), dir = path.dirname(fx.backup), state = path.join(T, 'cmd-state')
@@ -64,6 +64,12 @@ test('alert command exits 1, then works: the retry inside the interval delivers;
   r = await check(dir, hung, { BACKUP_ALERT_CMD: hang })
   assert.equal(r.code, 1); assert.match(r.out, /alert command failed/); assert.deepEqual(stamps(hung), [])
   assert.ok(Date.now() - t0 < 25_000, 'the command timeout is bounded well under the hang')
+  // and one that ignores SIGTERM (probe P2): still bounded, the timeout kills
+  const deaf = path.join(T, 'deaf.sh'); writeFileSync(deaf, "#!/bin/sh\ntrap '' TERM\nexec sleep 30\n"); chmodSync(deaf, 0o755)
+  const deafState = path.join(T, 'cmd-state-deaf'), t1 = Date.now()
+  r = await check(dir, deafState, { BACKUP_ALERT_CMD: deaf })
+  assert.equal(r.code, 1); assert.match(r.out, /alert command failed/); assert.deepEqual(stamps(deafState), [])
+  assert.ok(Date.now() - t1 < 20_000, 'a command that ignores SIGTERM is still bounded (SIGKILL)')
 })
 
 // a self-signed loopback certificate the child trusts through NODE_EXTRA_CA_CERTS: the https-only webhook control stays
@@ -236,4 +242,51 @@ test('webhook that never answers: TimeoutError and no stamp; command and webhook
     r = await run(['--dir', dir, '--state-dir', state2, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd, OPS_ALERT_WEBHOOK_URL: hook, NODE_EXTRA_CA_CERTS: certPath })
     assert.equal(r.code, 1); assert.equal(delivered().length, 1); assert.equal(stamps(state2).length, 1); assert.equal(hits, 1, 'the webhook was never tried')
   } finally { server.closeAllConnections(); server.close() }
+})
+
+// Adversarial probe on 3d855fc1 (scratchpad/attack-438.md): paths in the alert body, the state dir shared with
+// scheduler-check, a stamp that cannot be written after delivery.
+test('alert body carries file names and error codes only: no directory path, even from a forwarded I/O error', async () => {
+  const fx = await fixtureBackup(path.join(T, 'paths')), dir = path.dirname(fx.backup), state = path.join(T, 'paths-state')
+  const dest = path.join(T, 'paths-dest-secret-name'); mkdirSync(dest)
+  const ct = Buffer.from('ciphertext stand-in'); writeFileSync(path.join(dest, 'x.db.age'), ct); chmodSync(path.join(dest, 'x.db.age'), 0o000)
+  writeFileSync(path.join(dest, 'x.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date().toISOString(), ciphertext: 'x.db.age', ciphertext_sha256: createHash('sha256').update(ct).digest('hex'), bytes: ct.length }))
+  const { cmd, delivered } = recorder('paths-alert')
+  try {
+    const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', dest], { BACKUP_ALERT_CMD: cmd })
+    assert.equal(r.code, 1, r.out); assert.equal(delivered().length, 1)
+    const body = JSON.stringify(delivered()[0])
+    if (!root) assert.match(body, /off-host destination paths-dest-secret-name unreadable: EACCES on open/)
+    assert.ok(!body.includes(T), `no directory path in the alert body: ${body}`)
+    assert.ok(!body.includes(path.dirname(dir)), 'not the backup dir path either')
+  } finally { chmodSync(path.join(dest, 'x.db.age'), 0o600) }
+  // the no-backup message names the directory by its base name only
+  const empty = path.join(T, 'paths-empty-dir'); mkdirSync(empty)
+  const r2 = await run(['--dir', empty, '--state-dir', state], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r2.code, 1); assert.match(delivered()[1].problems.join(), /^no backup with a sidecar in paths-empty-dir$/); assert.ok(!JSON.stringify(delivered()[1]).includes(T))
+})
+
+test('a healthy run removes only its own stamps: another tool\'s files in a shared --state-dir survive; a recurring problem alerts at once', async () => {
+  const fx = await fixtureBackup(path.join(T, 'shared')), dir = path.dirname(fx.backup), state = path.join(T, 'shared-state'); mkdirSync(state)
+  writeFileSync(path.join(state, 'alert-0123456789abcdef'), ''); writeFileSync(path.join(state, 'other-tool.json'), '{}')
+  const { cmd, delivered } = recorder('shared-alert')
+  let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1); assert.equal(delivered().length, 1); assert.equal(stamps(state).length, 1)
+  r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200'], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 0, r.out); assert.deepEqual(stamps(state), [], 'its own stamp is gone')
+  assert.deepEqual(readdirSync(state).sort(), ['alert-0123456789abcdef', 'other-tool.json'], "scheduler-check's stamp and another tool's file are untouched, the directory stays")
+  r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 2, 'resolved then recurring: alerted again at once')
+})
+
+test('stamp not writable after a delivered alert (read-only state dir): delivered, logged, exit 1, no crash; the next run alerts again', { skip: root ? 'root writes everything' : false }, async () => {
+  const fx = await fixtureBackup(path.join(T, 'rostate')), dir = path.dirname(fx.backup), state = path.join(T, 'rostate-state'); mkdirSync(state); chmodSync(state, 0o500)
+  const { cmd, delivered } = recorder('rostate-alert')
+  try {
+    let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd })
+    assert.equal(r.code, 1, r.out); assert.equal(delivered().length, 1); assert.doesNotMatch(r.out, /at .*backup-check\.mts/, 'no stack trace')
+    assert.match(r.out, /alert delivered, throttle stamp not written \(EACCES\)/); assert.deepEqual(stamps(state), [])
+    r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd })
+    assert.equal(r.code, 1); assert.equal(delivered().length, 2, 're-alert over silence')
+  } finally { chmodSync(state, 0o700) }
 })
