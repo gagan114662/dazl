@@ -81,7 +81,7 @@ The fixture is two tenants with a marked row in **every** tenant-scoped table (8
   - a retained parent chain (`scan_jobs`, `leads`, `lead_sources` kept): a lead moved to A's kept scan and a source to A's kept lead are refused, as is re-owning a retained table's row; a retained row's other columns stay editable;
   - a staged deletion stopped at `requested`, `revoked` and `cancelled`: moves under A and under A's still-existing scan, lead and batch are refused at every stage, the deletion resumes to `completed`, and they are refused again;
   - allowed: B's other-column updates, same-owner and same-parent updates, and a move between two of B's own scans;
-  - the guard count on each engine equals the generator's: two per guarded table plus `users`, `organizations` and `memberships.member_id` (166);
+  - the guard count on each engine equals the generator's: two per guarded table plus `users`, `organizations` and `memberships.member_id` (166, 83 of them `BEFORE UPDATE OF`);
   - decision 9 during a held deletion: the account cannot join another workspace or have a membership moved onto it; with that guard dropped, the erase step finds the membership and stops at `cancelled` with the account and its data intact, and completes once it is removed.
 - **Retryable:** staged to `revoked` (credentials gone, data still there), a failure injected into the erase step rolls the step back (state stays `cancelled`), and the resume completes.
 - **Restored backup:** a backup taken before deletion is restored, the deletion is re-applied from the ledger line, the target's data is gone again, and the other tenant is untouched.
