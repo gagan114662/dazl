@@ -128,7 +128,7 @@ type Lead = { id: string; contact: string; source_url: string | null; play: stri
 // before drafting, after drafting (the model await) and, as the send service's sendAuthority, at the claim and again
 // after the Gmail token refresh immediately before the bytes leave. Null means send. A check that cannot be read (any
 // store it needs unreadable, the launch store included) is a stop: stop_check_unavailable, never "no launch" or "no cap".
-type Stop = 'not_available' | 'off' | 'paused' | 'consent_required' | 'uncertain_send' | 'launch_policy_changed' | 'reply_received' | 'bounce_rate' | 'stop_check_unavailable' | 'not_in_audience' | 'excluded' | 'claims' | 'daily_cap'
+type Stop = 'not_available' | 'off' | 'paused' | 'consent_required' | 'uncertain_send' | 'launch_policy_changed' | 'launch_not_calibrated' | 'reply_received' | 'bounce_rate' | 'stop_check_unavailable' | 'not_in_audience' | 'excluded' | 'claims' | 'daily_cap'
 function stopNow(db: Database.Database, tenantId: string, env: Record<string, string | undefined>, now: number, started: LaunchGate, l: Lead, messageId: string | null): Stop | null {
   try { return stopNowUnguarded(db, tenantId, env, now, started, l, messageId) } catch { return 'stop_check_unavailable' }
 }
@@ -142,6 +142,9 @@ function stopNowUnguarded(db: Database.Database, tenantId: string, env: Record<s
   const g = gmailStatus(db, tenantId)
   const gate = launchGate(db, tenantId, g?.status === 'active' ? g.email : null, now)
   if (gate.calibrated !== started.calibrated || (gate.calibrated && started.calibrated && gate.acceptanceId !== started.acceptanceId)) return 'launch_policy_changed'
+  // a policy the tenant accepted that is not a launch right now (not yet calibrated, re-accepted, stale version, invalid,
+  // other mailbox): nothing is sent until a preflight passes; never the warmup's rules
+  if (!gate.calibrated && gate.accepted) return 'launch_not_calibrated'
   if (gate.calibrated) {
     const halt = calibratedStop(db, tenantId, gate)
     if (halt) return halt
@@ -160,7 +163,7 @@ const PAUSES: ReadonlySet<string> = new Set(['reply_received', 'bounce_rate', 's
 const runOutcome = (code: string) => code === 'launch_policy_changed' ? 'policy_changed' : code === 'already_uncertain' ? 'uncertain_send' : code
 // Codes that mean autopilot's OWN authority to send lapsed (every stopNow code, however it surfaced). A message autopilot
 // approved under that authority goes back to being the tenant's draft, never left approved with autopilot's hash on it.
-const AUTHORITY_CODES: ReadonlySet<string> = new Set(['not_available', 'off', 'paused', 'consent_required', 'uncertain_send', 'already_uncertain', 'launch_policy_changed', 'reply_received', 'bounce_rate', 'stop_check_unavailable', 'daily_cap'])
+const AUTHORITY_CODES: ReadonlySet<string> = new Set(['not_available', 'off', 'paused', 'consent_required', 'uncertain_send', 'already_uncertain', 'launch_policy_changed', 'launch_not_calibrated', 'reply_received', 'bounce_rate', 'stop_check_unavailable', 'daily_cap'])
 
 // One pass over this tenant's verified leads that have no message yet. Safe to call repeatedly.
 export async function runAutopilot(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<RunResult> {
@@ -185,6 +188,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   let scope: { sql: string; args: (string | number)[] } = { sql: '', args: [] }
   try {
     const g0 = launchGate(db, tenantId, mailbox(), now)
+    if (!g0.calibrated && g0.accepted) { audit(db, tenantId, 'stopped', 'launch_not_calibrated'); return stop('launch_not_calibrated') }
     if (g0.calibrated) {
       const { audience, exclusions } = g0.policy
       const like = (d: string) => '%@' + d.replace(/[\\%_]/g, c => '\\' + c)
@@ -272,7 +276,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id) }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
-      const code = e instanceof OutreachError ? e.code : 'error'
+      // anything but the service's own refusal code (a store the service could not read, an unexpected fault) is a
+      // stop: autopilot does not carry on past a send whose outcome it cannot name
+      const code = e instanceof OutreachError ? e.code : 'stop_check_unavailable'
       attempt(() => audit(db, tenantId, 'send_failed', code, l.id, id))
       // a stop surfaced at the send boundary (the service's own final checks or autopilot's sendAuthority): same outcome as
       // anywhere else, the message released back to the tenant when it was autopilot's authority that lapsed

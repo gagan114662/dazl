@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parsePolicy, policyProblems, preflight, calibratedDailyCap, LAUNCH_POLICY_VERSION, MAX_LAUNCH_SPEND_USD, ROLLOUT_DAILY_CAP, type LaunchPolicy, type PreflightInput, type SampleDraft } from '../lib/outreach/launch-policy.ts'
+import { parsePolicy, policyProblems, preflight, calibratedDailyCap, LAUNCH_POLICY_VERSION, MAX_AUDIENCE_PLAYS, MAX_BENCHMARKS, MAX_EXCLUSIONS, MAX_LAUNCH_SPEND_USD, ROLLOUT_DAILY_CAP, type LaunchPolicy, type PreflightInput, type SampleDraft } from '../lib/outreach/launch-policy.ts'
 import { WARMUP_SENDS } from '../lib/outreach/autopilot.ts'
 
 // Synthetic sender, prospects and plays.
@@ -69,6 +69,17 @@ test('numbers in a policy are numbers: a boolean is not a cap of 1; the spend ca
   assert.deepEqual(policyProblems(parsePolicy({ ...policy(), spendCapUsd: MAX_LAUNCH_SPEND_USD + 1 })), ['spend_cap_invalid'])
   assert.deepEqual(policyProblems(parsePolicy({ ...policy(), spendCapUsd: MAX_LAUNCH_SPEND_USD })), [])
   assert.deepEqual(policyProblems(parsePolicy(policy())), [])
+})
+
+test('R3-9: an over-long list is refused by name, never truncated: entry 501 of an exclusion list is never silently dropped', () => {
+  const domains = (n: number) => Array.from({ length: n }, (_, i) => `x${i}.t`)
+  const over = parsePolicy({ ...policy(), exclusions: { domains: domains(MAX_EXCLUSIONS + 1), emails: [] } })
+  assert.equal(over.exclusions.domains.length, MAX_EXCLUSIONS + 1, 'the parser keeps every entry')
+  assert.deepEqual(policyProblems(over), ['exclusions_too_many'])
+  assert.deepEqual(policyProblems(parsePolicy({ ...policy(), exclusions: { domains: domains(MAX_EXCLUSIONS), emails: [] } })), [])
+  assert.deepEqual(policyProblems(parsePolicy({ ...policy(), exclusions: { domains: [], emails: Array.from({ length: MAX_EXCLUSIONS + 1 }, (_, i) => `e${i}@x.t`) } })), ['exclusions_too_many'])
+  assert.deepEqual(policyProblems(parsePolicy({ ...policy(), audience: { playIds: Array.from({ length: MAX_AUDIENCE_PLAYS + 1 }, (_, i) => `p${i}`) } })), ['audience_too_many'])
+  assert.deepEqual(policyProblems(parsePolicy({ ...policy(), claims: { mayStatePrice: true, benchmarkUrls: Array.from({ length: MAX_BENCHMARKS + 1 }, (_, i) => `https://b${i}.t/`) } })), ['benchmarks_too_many'])
 })
 
 test('every stop must be enforced; a missing one holds the launch', () => {

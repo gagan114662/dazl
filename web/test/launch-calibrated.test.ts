@@ -73,14 +73,19 @@ const gmail = (fail = false, delivered = true) => {
 }
 const statuses = (db: Database.Database) => db.prepare('SELECT status FROM outreach_messages ORDER BY created_at, rowid').all().map(r => (r as { status: string }).status)
 
-test('without a calibrated launch the hand-approval warmup is unchanged; accepting a policy alone changes nothing', async () => {
+test('without a launch policy the hand-approval warmup is unchanged; an accepted policy that is not calibrated stops autopilot, nothing drafted or sent', async () => {
   const db = await setup(); const job = play(db); lead(db, job, 'a@one.example'); lead(db, job, 'b@two.example')
   const g = gmail()
-  assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([job]), NOW), { ok: true })
-  assert.equal(launchGate(db, 'A', 'me@acme.example', NOW).calibrated, false, 'accepted but no passing preflight')
-  const r = await runAutopilot(db, 'A', 'Acme', g.d)
-  assert.deepEqual([r.sent, r.held], [0, 2]); assert.equal(g.sent.length, 0)
-  assert.ok(recentAutopilotAudit(db, 'A').every(a => a.action !== 'sent'))
+  // no policy row at all: the warmup as before
+  const w = await runAutopilot(db, 'A', 'Acme', g.d)
+  assert.deepEqual([w.sent, w.held, w.stopped ?? null], [0, 2, null]); assert.equal(g.sent.length, 0)
+  // accepted, not yet calibrated: the tenant's last word is a policy, so nothing goes out under any other rules (F4)
+  const db2 = await setup(); const job2 = play(db2); lead(db2, job2, 'a@one.example'); lead(db2, job2, 'b@two.example')
+  assert.deepEqual(acceptLaunchPolicy(db2, 'A', policy([job2]), NOW), { ok: true })
+  assert.deepEqual(launchGate(db2, 'A', 'me@acme.example', NOW), { calibrated: false, accepted: true }, 'accepted but no passing preflight')
+  const r = await runAutopilot(db2, 'A', 'Acme', gmail().d)
+  assert.deepEqual([r.sent, r.held, r.stopped, statuses(db2)], [0, 0, 'launch_not_calibrated', []])
+  assert.ok(recentAutopilotAudit(db2, 'A').every(a => a.action !== 'sent'))
 })
 
 test('calibration: samples stay drafts, the only message goes to the owned test inbox, and a passing run launches', async () => {
@@ -125,7 +130,7 @@ test('failed checks hold the launch: test inbox not reached, too few samples, a 
   lead(db, job, 'd@four.example')
   const g = gmail()
   const run = await runAutopilot(db, 'A', 'Acme', g.d)
-  assert.equal(g.sent.length, 0); assert.ok(run.held >= 1)
+  assert.equal(g.sent.length, 0); assert.equal(run.stopped, 'launch_not_calibrated', 'a policy for another mailbox is not a launch, and not the warmup either')
 })
 
 test('a new acceptance or a stale version clears the launch: changed authority needs a new passing preflight', async () => {
@@ -631,6 +636,31 @@ test('R1-3 (round 2): the earlier-drafted message claimed after a later one is i
   assert.deepEqual([(await runAutopilot(b.db, 'A', 'Acme', { ...gb.d, now: NOW + 2 })).sent, gb.to()], [1, ['d@four.example']])
 })
 
+test('F4: a launched tenant past the warmup whose policy is re-accepted, stale or invalid stops; nothing is sent under the warmup rules', async () => {
+  const got: Record<string, unknown> = {}
+  for (const how of ['reaccept_narrower', 'stale_version', 'invalid_row', 'empty_row'] as const) {
+    const { db, job } = await launched(); const other = play(db)
+    for (let i = 0; i < 10; i++) db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, created_at) VALUES (?, 'A', ?, ?, 's', 'bodybodybodybodybodybody', 'sent', ?, ?)").run(randomBytes(12).toString('hex'), 'l' + i, `w${i}@w${i}.example`, NOW - 2 * 86400, NOW - 2 * 86400)
+    lead(db, other, 'outside@elsewhere.example', 95)   // in no accepted audience
+    lead(db, job, 'boss@customer.example', 94)          // excluded by every policy here
+    if (how === 'reaccept_narrower') assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([job], { exclusions: { domains: ['customer.example', 'elsewhere.example'], emails: [] } }), NOW + 1), { ok: true })
+    if (how === 'stale_version') db.prepare("UPDATE autopilot_launch_policy SET version = '2026-01-01'").run()
+    if (how === 'invalid_row') db.prepare("UPDATE autopilot_launch_policy SET policy = ?").run(JSON.stringify({ ...readLaunchPolicy(db, 'A')!.policy, dailyCap: 0 }))
+    if (how === 'empty_row') db.prepare("UPDATE autopilot_launch_policy SET policy = '{}'").run()
+    assert.deepEqual(launchGate(db, 'A', 'me@acme.example', NOW + 2), { calibrated: false, accepted: true }, how)
+    const g = gmail(); const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, now: NOW + 2 })
+    got[how] = { to: g.to(), sent: r.sent, held: r.held, stopped: r.stopped, drafts: statuses(db).filter(x => x !== 'sent').length }
+  }
+  const want = { to: [], sent: 0, held: 0, stopped: 'launch_not_calibrated', drafts: 3 } // the 3 sample drafts from calibration, nothing new
+  assert.deepEqual(got, { reaccept_narrower: want, stale_version: want, invalid_row: want, empty_row: want })
+  // positive: the same tenant with NO policy row is on the warmup, and past 10 sends the warmup sends (as on main)
+  const { db, job } = await launched()
+  for (let i = 0; i < 10; i++) db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, created_at) VALUES (?, 'A', ?, ?, 's', 'bodybodybodybodybodybody', 'sent', ?, ?)").run(randomBytes(12).toString('hex'), 'l' + i, `w${i}@w${i}.example`, NOW - 2 * 86400, NOW - 2 * 86400)
+  db.exec('DELETE FROM autopilot_launch_policy'); lead(db, job, 'x@plain.example', 70)
+  const g = gmail(); const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, now: NOW + 2 })
+  assert.deepEqual([g.to().sort(), r.stopped ?? null], [['d@four.example', 'x@plain.example'], null])
+})
+
 test('R3-6: calibration needs autopilot on under the current consent: otherwise no draft, no message, no launch', async () => {
   const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
   acceptLaunchPolicy(db, 'A', policy([job]), NOW)
@@ -653,6 +683,8 @@ test('R3-4: under a calibrated launch the per-company cap and the opt-out list s
   assert.deepEqual([g.to(), r.sent, r.held, r.skipped, r.stopped ?? null], [['d@four.example'], 1, 1, 1, null])
   const audit = recentAutopilotAudit(db, 'A').map(a => [a.action, a.detail])
   assert.ok(audit.some(([a]) => a === 'held_domain_cap'), 'second address at the same company is held')
+  // the opt-out arm is not isolated to the send boundary: createDraft refuses a suppressed recipient first (its own
+  // gate), which is the earliest of the three suppression checks (draft, claim, handoff) and the one this run hits
   assert.ok(audit.some(([a, d]) => a === 'skipped' && d === 'suppressed'), 'the opted-out recipient is skipped')
 })
 

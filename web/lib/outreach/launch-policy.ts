@@ -31,6 +31,8 @@ export interface LaunchPolicy {
 export type PolicyProblem =
   | 'version_not_current' | 'sender_missing' | 'audience_empty' | 'daily_cap_invalid' | 'spend_cap_invalid'
   | 'bounce_stop_invalid' | 'test_inbox_not_owned' | 'benchmark_not_https' | 'policy_too_large'
+  | 'audience_too_many' | 'exclusions_too_many' | 'benchmarks_too_many'
+export const MAX_AUDIENCE_PLAYS = 50, MAX_EXCLUSIONS = 500, MAX_BENCHMARKS = 20 // list limits: refused by name, never truncated
 export const MAX_POLICY_JSON = 8000     // the store's CHECK on the policy column; refused by name before any write
 export const MAX_LAUNCH_SPEND_USD = 500 // model and enrichment spend ceiling any one launch may set
 
@@ -53,6 +55,10 @@ export function policyProblems(p: LaunchPolicy): PolicyProblem[] {
   const inbox = p.testInbox.trim().toLowerCase()
   if (!senderDomain || inbox !== p.sender.trim().toLowerCase()) out.push('test_inbox_not_owned')
   if (p.claims.benchmarkUrls.some(u => !/^https:\/\/\S+$/.test(u))) out.push('benchmark_not_https')
+  // over-long lists are refused, never cut: a truncated exclusion list would send to the addresses that fell off it
+  if (p.audience.playIds.length > MAX_AUDIENCE_PLAYS) out.push('audience_too_many')
+  if (p.exclusions.domains.length > MAX_EXCLUSIONS || p.exclusions.emails.length > MAX_EXCLUSIONS) out.push('exclusions_too_many')
+  if (p.claims.benchmarkUrls.length > MAX_BENCHMARKS) out.push('benchmarks_too_many')
   if (JSON.stringify(p).length > MAX_POLICY_JSON) out.push('policy_too_large')
   return out
 }
@@ -132,7 +138,8 @@ export function migrateLaunchPolicy(db: Database.Database): void {
   )`)
 }
 
-const strs = (v: unknown, max: number) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean).slice(0, max) : []
+// every string entry, kept whole: the list limits are policyProblems' to refuse (MAX_*), not this parser's to cut
+const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean) : []
 const num = (v: unknown) => typeof v === 'number' ? v : NaN // a number is a number: no coercion (true is not a cap of 1)
 // A policy from untrusted input, with every field typed; anything missing becomes a problem policyProblems reports.
 export function parsePolicy(v: unknown): LaunchPolicy {
@@ -140,10 +147,10 @@ export function parsePolicy(v: unknown): LaunchPolicy {
   return {
     version: typeof o.version === 'string' ? o.version : '',
     sender: typeof o.sender === 'string' ? o.sender.trim().toLowerCase() : '',
-    audience: { playIds: strs(o.audience?.playIds, 50) },
-    exclusions: { domains: strs(o.exclusions?.domains, 500).map(d => d.toLowerCase()), emails: strs(o.exclusions?.emails, 500).map(e => e.toLowerCase()) },
+    audience: { playIds: strs(o.audience?.playIds) },
+    exclusions: { domains: strs(o.exclusions?.domains).map(d => d.toLowerCase()), emails: strs(o.exclusions?.emails).map(e => e.toLowerCase()) },
     dailyCap: num(o.dailyCap), spendCapUsd: num(o.spendCapUsd),
-    claims: { mayStatePrice: o.claims?.mayStatePrice === true, benchmarkUrls: strs(o.claims?.benchmarkUrls, 20) },
+    claims: { mayStatePrice: o.claims?.mayStatePrice === true, benchmarkUrls: strs(o.claims?.benchmarkUrls) },
     stops: { pauseOnAnyReply: o.stops?.pauseOnAnyReply !== false, maxBounceRate: num(o.stops?.maxBounceRate) },
     testInbox: typeof o.testInbox === 'string' ? o.testInbox.trim().toLowerCase() : '',
   }
@@ -199,13 +206,17 @@ export function recordPreflight(db: Database.Database, tenantId: string, accepte
 // What autopilot reads before each send. Calibrated only while the accepted policy is the current version, still valid,
 // launched by a passing preflight, and the connected mailbox is the policy's sender; otherwise the hand-approval warmup
 // applies exactly as before.
-export type LaunchGate = { calibrated: false } | { calibrated: true; policy: LaunchPolicy; cap: number; launchedAt: number; acceptanceId: string }
+// accepted: a launch policy row exists for the tenant (accepted, stale, re-accepted, invalid) but is not a launch right now.
+// Autopilot must then STOP, not run the warmup: past the warmup's first sends the warmup is unrestricted, and the tenant's
+// last word was a policy. Only a tenant with no row at all is on the warmup.
+export type LaunchGate = { calibrated: false; accepted: boolean } | { calibrated: true; policy: LaunchPolicy; cap: number; launchedAt: number; acceptanceId: string }
 // Throws when the launch store cannot be read: the caller must treat that as a stop (autopilot: stop_check_unavailable),
 // never as "no launch", which would send under the warmup's wider rules while the policy is unknown.
 export function launchGate(db: Database.Database, tenantId: string, connectedMailbox: string | null, nowS: number): LaunchGate {
   const s = readLaunchPolicy(db, tenantId)
-  if (!s || s.launchedAt === null || s.version !== LAUNCH_POLICY_VERSION || policyProblems(s.policy).length) return { calibrated: false }
-  if (!connectedMailbox || connectedMailbox.trim().toLowerCase() !== s.policy.sender) return { calibrated: false }
+  if (!s) return { calibrated: false, accepted: false }
+  if (s.launchedAt === null || s.version !== LAUNCH_POLICY_VERSION || policyProblems(s.policy).length) return { calibrated: false, accepted: true }
+  if (!connectedMailbox || connectedMailbox.trim().toLowerCase() !== s.policy.sender) return { calibrated: false, accepted: true }
   return { calibrated: true, policy: s.policy, cap: calibratedDailyCap(s.policy, s.launchedAt, nowS), launchedAt: s.launchedAt, acceptanceId: s.acceptanceId }
 }
 
