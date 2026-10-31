@@ -100,11 +100,12 @@ the default path is tokenless: the entrypoint makes read-only unauthenticated Gi
 needed, requested or stored. `--ci-token-file <protected file>` remains supported for private mirrors.
 It reads GitHub directly inside the same process before any preflight and again before launch. Current main must
 match the full launch commit. Each required name (browser, migrations, test-sqlite, test-postgres, fail-closed) must
-have at least one GitHub Actions result for that SHA, and duplicates resolve deterministically: any run not
-completed refuses the launch (a newer in-flight evaluation can never be overridden by an older success); among
-completed runs the newest (completed_at, run id) is authoritative, so a newer failure defeats an older success and
-a rerun success supersedes the attempt it replaced. Missing, wrong-SHA, non-Actions, malformed, truncated or
-unreadable evidence refuses the launch. There is no bypass flag or cached green report.
+have at least one GitHub Actions result for that SHA, grouped per check suite (push and pull_request tracks are
+independent suites; a rerun replaces its attempt inside one suite). Any run not completed refuses the launch, and
+every suite's newest completed run must be a success: an independent track's failure refuses the launch no matter
+how green another track is, while a rerun success supersedes only the failed attempt inside its own suite. Missing,
+wrong-SHA, non-Actions, missing or malformed suite identity, truncated or unreadable evidence refuses the launch.
+There is no bypass flag or cached green report.
 The launch argv must call the sibling safe_launch.py with the same single --commit and --execute.
 The token file contains the credential, never an argv credential or logged value. Do not leave a credential on a host
 for a release check. Use an already-authorized protected file or a securely passed ephemeral file descriptor for

@@ -9,12 +9,14 @@ the default path is tokenless and read-only: no credential is requested,
 stored, or sent. A token remains supported for private mirrors through
 --ci-token-file / --ci-token-stdin, validated with the same ownership rules.
 
-Duplicate check-runs (push and pull_request tracks, reruns) resolve
-deterministically per check name: any run not completed fails closed
-(a newer in-flight evaluation can never be overridden by an older success);
-among completed runs the one with the newest (completed_at, id) wins, so a
-newer failure defeats an older success and a rerun success supersedes the
-failure it replaced.
+Duplicate check-runs resolve deterministically per (check name,
+check_suite.id): push and pull_request tracks are independent suites, and a
+rerun replaces its attempt inside one suite. Any run not completed fails
+closed, and every suite's newest completed run must be a success: an
+independent track's failure refuses the launch no matter how green another
+track is, while a rerun success supersedes only the failed attempt inside
+its own suite. Runs without an intact check_suite identity are refused
+rather than grouped.
 """
 import argparse
 import json
@@ -73,21 +75,29 @@ def github_get(repository, path, token=None):
 
 def effective_run(matches, commit):
     # Fail-closed resolution of duplicate and rerun check-runs for one name.
-    # Every run must belong to this commit and to GitHub Actions.
+    # Every run must belong to this commit, to GitHub Actions, and to an
+    # intact check suite: without suite identity, rerun and independent-track
+    # semantics cannot be told apart, so the evidence is refused.
     for c in matches:
         if c.get('head_sha') != commit or c.get('app', {}).get('slug') != 'github-actions':
             raise ValueError('ci_not_passed')
+        suite = c.get('check_suite')
+        if not isinstance(suite, dict) or not isinstance(suite.get('id'), int):
+            raise ValueError('ci_suite_identity')
     # A newer in-flight evaluation defeats any older completed evidence.
     if any(c.get('status') != 'completed' for c in matches):
         raise ValueError('ci_pending')
-    # Among completed runs the newest (completed_at, id) is authoritative:
-    # a newer failure overrides an older success, and a rerun success
-    # supersedes the failed attempt it replaced. Ties break on run id.
+    # Each suite is an independent track of truth: its newest completed run
+    # must be a success. A rerun supersedes only the attempt inside its own
+    # suite; another suite's newer success never masks this suite's failure.
     def key(c):
         return (str(c.get('completed_at') or ''), int(c.get('id') or 0))
-    latest = max(matches, key=key)
-    if latest.get('conclusion') != 'success':
-        raise ValueError('ci_not_passed')
+    suites = {}
+    for c in matches:
+        suites.setdefault(c['check_suite']['id'], []).append(c)
+    for suite_runs in suites.values():
+        if max(suite_runs, key=key).get('conclusion') != 'success':
+            raise ValueError('ci_not_passed')
 
 
 def require_ci(repository, commit, token_file=None, *, get=None):

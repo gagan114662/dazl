@@ -13,10 +13,13 @@ COMMIT = 'a' * 40
 NAMES = sorted(checked.REQUIRED_CI)
 
 
-def run_obj(name, conclusion='success', status='completed', completed_at='2026-10-31T21:00:00Z', rid=1, head_sha=COMMIT, slug='github-actions'):
-    return {'name': name, 'status': status, 'conclusion': conclusion,
-            'completed_at': completed_at, 'id': rid, 'head_sha': head_sha,
-            'app': {'slug': slug}}
+def run_obj(name, conclusion='success', status='completed', completed_at='2026-10-31T21:00:00Z', rid=1, head_sha=COMMIT, slug='github-actions', suite=1):
+    run = {'name': name, 'status': status, 'conclusion': conclusion,
+           'completed_at': completed_at, 'id': rid, 'head_sha': head_sha,
+           'app': {'slug': slug}}
+    if suite is not None:
+        run['check_suite'] = {'id': suite}
+    return run
 
 
 def all_green(**overrides):
@@ -58,7 +61,7 @@ class RequireCiFixtures(unittest.TestCase):
     def test_duplicate_successes_pass(self):
         # push + pull_request tracks both completed success on the same SHA.
         checks = all_green()
-        extra = run_obj('browser', rid=900, completed_at='2026-10-31T21:05:00Z')
+        extra = run_obj('browser', rid=900, completed_at='2026-10-31T21:05:00Z', suite=2)
         checks.append(extra)
         checked.require_ci('gagan114662/dazl', COMMIT, get=stub_get(checks))
 
@@ -67,6 +70,26 @@ class RequireCiFixtures(unittest.TestCase):
         checks.append(run_obj('browser', conclusion='failure', rid=901,
                               completed_at='2026-10-31T21:06:00Z'))
         self.expect(checks, 'ci_not_passed')
+
+    def test_independent_track_failure_refused_despite_newer_other_track_success(self):
+        # suite 2 failed earlier; suite 1's newer success must not mask it
+        checks = all_green()
+        checks.append(run_obj('browser', conclusion='failure', rid=50,
+                              completed_at='2026-10-31T20:00:00Z', suite=2))
+        self.expect(checks, 'ci_not_passed')
+
+    def test_missing_suite_identity_rejected(self):
+        checks = all_green()
+        checks.append(run_obj('browser', rid=910,
+                              completed_at='2026-10-31T21:06:00Z', suite=None))
+        self.expect(checks, 'ci_suite_identity')
+
+    def test_malformed_suite_identity_rejected(self):
+        checks = all_green()
+        bad = run_obj('browser', rid=911, completed_at='2026-10-31T21:06:00Z', suite=2)
+        bad['check_suite'] = {'id': 'not-an-int'}
+        checks.append(bad)
+        self.expect(checks, 'ci_suite_identity')
 
     def test_older_failure_newer_success_passes(self):
         # rerun supersedes the failed attempt it replaced
