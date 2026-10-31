@@ -483,6 +483,8 @@ const COUNCIL: [string, string, string][] = [
   ['R2-F3 userinfo with @', 'GET https://user:p@SECRETXK5@host.example/path?x=1', 'GET https://user:[secret]@host.example/path?x=1'],
   ['probe apostrophe in brackets', "credentials: [Bob's SECRETXK9] tail-KEEP; session: {\"id\": \"SECRETXL1\"} tail-KEEP", "credentials: [secret] tail-KEEP; session: [secret] tail-KEEP"],
   ['R2-F3 userinfo with slash', 'https://user:ab/SECRETXL2@host/x and https://host.example:8080/path?u=a@b.example', 'https://user:[secret]@host/x and https://host.example:8080/path?u=p[0-9a-f]{10}@b.example'],
+  ['R3-F1 form body', 'user=bob&password=a%26SECRETXM1%3Dc&page=2', 'user=bob&password=[secret]&page=2'],
+  ['R3-F1 form body in json', '{"form":"user=bob&password=a%26SECRETXM2%3Dc&page=2","next":"%2Fl%3Fpassword%3DSECRETXM3%26a%3D1"}', '{"form":"user=bob&password=[secret]&page=2","next":"%2Fl%3Fpassword%3D[secret]%26a%3D1"}'],
   ['R2-F5 escaped backslash', 'payload: {\\"password\\":\\"abc\\\\\\"SECRETXK6\\"} tail', 'payload: {\\"password\\":\\"[secret]\\"} tail'],
   // control: ordinary text with counts, dates, a port, a plan name and a non-credential code is untouched
   ['control', 'the keynote: London; Basic plan from 2026-10-10; tokens: 5; max_tokens=300; expires_in: 3600; https://host.example:8080/p?page=2&q=a+b; verification_code=493827', 'the keynote: London; Basic plan from 2026-10-10; tokens: 5; max_tokens=300; expires_in: 3600; https://host.example:8080/p?page=2&q=a+b; verification_code=493827'],
@@ -505,7 +507,7 @@ bothEngines('council matrix: every reviewer case is redacted as stated in a prom
   const t = (await getTrace(db, 'tenant-C', (await c.finish('done'))!))!
   assert.equal(t.capture?.complete, true); assert.equal(t.spans.length, COUNCIL.length * 3)
   const stored = JSON.stringify(t)
-  assert.ok(!/SECRETX[A-L]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-L]\d.{0,20}/)?.[0])
+  assert.ok(!/SECRETX[A-M]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-M]\d.{0,20}/)?.[0])
   for (let i = 0; i < COUNCIL.length; i++) {
     const [label, , want] = COUNCIL[i]
     const check = (got: string, where: string) => want.includes('[0-9a-f]') ? assert.match(got, new RegExp(`^${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/p\\\[0-9a-f\\\]\\\{10\\\}/g, 'p[0-9a-f]{10}')}$`), `${label}: ${where}`) : assert.equal(got, want, `${label}: ${where}`)
@@ -583,14 +585,20 @@ test('a body cut by the recorder cap keeps no nested credential value: the objec
 
 // R8: the HTML attribute pass is bounded per tag, so one enormous tag (attacker-controlled page content; redaction runs
 // synchronously inside finish) cannot make redaction quadratic. A pair inside the bound is still found.
-test('a 1M-character single HTML tag redacts in well under a second; a credential attribute pair inside the bound is still found', () => {
+test('a 1M-character single HTML tag, and a 4M-character page of repeated attributes, redact in well under a second; a credential attribute pair inside the bound is still found', () => {
   const tag = `<input name="csrf_token" value="SECRETXP1" ${'data-a="1" '.repeat(100_000)}>`
   assert.ok(tag.length > 1_000_000)
-  const t0 = performance.now()
-  const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: {}, output: { text: tag, inner: `<form ${'x '.repeat(400_000)} name="password" value="SECRETXP2">` } }] }), Buffer.alloc(16, 5))
-  const ms = performance.now() - t0
-  assert.ok(ms < 1_000, `took ${ms.toFixed(0)} ms`)
-  const o = r.spans[0].output as { text: string; inner: string }
+  const hostile = `<div ${'name="a" name="b" name="c" '.repeat(100)}>`.repeat(1_500)   // ~4M chars, hundreds of name= per tag
+  assert.ok(hostile.length > 4_000_000)
+  // each string on its own, timed: the whole pass is linear in the text (about 0.25 us per character on this machine)
+  const timed = (text: string, budgetMs: number, label: string) => {
+    const t0 = performance.now()
+    const out = (redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: {}, output: { text } }] }), Buffer.alloc(16, 5)).spans[0].output as { text: string }).text
+    const ms = performance.now() - t0
+    assert.ok(ms < budgetMs, `${label}: took ${ms.toFixed(0)} ms`)
+    return out
+  }
+  const o = { text: timed(tag, 1_000, '1M-char tag'), inner: timed(`<form ${'x '.repeat(400_000)} name="password" value="SECRETXP2">`, 1_000, '800k-char tag'), hostile: timed(hostile, 2_500, '4M-char hostile page') }
   assert.ok(o.text.startsWith('<input name="csrf_token" value="[secret]" '), o.text.slice(0, 60))
   // the documented bound: a pair more than 2,000 characters from the tag start is not found (and the scan stays linear)
   assert.ok(o.inner.endsWith('name="password" value="SECRETXP2">'), o.inner.slice(-60))

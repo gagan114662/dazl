@@ -103,8 +103,13 @@ const FAMILIES: [RegExp, string][] = [
 const ATTR_VALUE = String.raw`(?:(["'])([^"'<>]*)\2|([^\s"'<>]+))`
 const HTML_NAME_VALUE = new RegExp(String.raw`(<[a-z][^<>]{0,2000}?\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)(["']?[^<>]{0,2000}?\b(?:value|content)\s*=\s*)` + ATTR_VALUE.replace('\\2', '\\4'), 'gi')
 const HTML_VALUE_NAME = new RegExp(String.raw`(<[a-z][^<>]{0,2000}?\b(?:value|content)\s*=\s*)` + ATTR_VALUE + String.raw`([^<>]{0,2000}?\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)`, 'gi')
+// The HTML pass covers the first HTML_SCAN_CHARS characters of a string: capture stores at most MAX_STRING_CHARS
+// (50,000) of any string (lib/evals/capture.ts capTrace), so nothing past this bound is ever kept, and a multi-megabyte
+// hostile page (4M chars of repeated attributes took 12 s of blocked event loop) costs at most the bound's share.
+const HTML_SCAN_CHARS = 60_000
 function redactHtmlAttributes(s: string): string {
   if (!s.includes('<')) return s
+  if (s.length > HTML_SCAN_CHARS) return redactHtmlAttributes(s.slice(0, HTML_SCAN_CHARS)) + s.slice(HTML_SCAN_CHARS)
   return s.replace(HTML_NAME_VALUE, (m, a: string, name: string, b: string, q: string | undefined, qv: string | undefined, bare: string | undefined) =>
     !isCredentialKey(name) || (qv ?? bare) === SECRET ? m : q ? `${a}${name}${b}${q}${SECRET}${q}` : `${a}${name}${b}${SECRET}`)
     .replace(HTML_VALUE_NAME, (m, a: string, q: string | undefined, qv: string | undefined, bare: string | undefined, b: string, name: string) =>
@@ -158,6 +163,8 @@ function redactEncoded(s: string): string {
 // every character, the greedy name would be rescanned once per character of a long word, quadratic on a big body.
 //   - A name that ends its line (`credentials:` then an indented block, `password:` then the value on the next line)
 //     takes the whole indented block below it.
+// The HTML attribute pass reads only the first 60,000 characters of a string (capture keeps at most 50,000): a pair
+// further in is never stored anyway.
 // COVERED, to be explicit: names starting with or glued to digits (2fa_token, token2, api_key2), percent-encoded names
 // and separators (refresh%5Ftoken, password%3D, &%70assword=), double-encoded values, JSON-escaped quotes (\\"), values
 // in a URL's path or fragment, count-word CHILD keys under a credential object ({"auth": {"time": 1}} goes whole; a
@@ -171,8 +178,10 @@ function redactEncoded(s: string): string {
 // Authorization/Cookie name the rest of its line (fail closed); a company given under a reply's "name" field is
 // pseudonymised like a person; JSON nested ~20k levels deep throws and nothing is stored (fail closed).
 // A name may start with a digit (2fa_token) and carry a percent-encoded underscore (refresh%5Ftoken); `=` and `:` may be
-// percent-encoded too (password%3Dx). A percent-encoded `&` (%26) ends an unquoted value like a plain one.
-const NAME_SEP = /(?<![\p{L}\p{N}_.-])((?:[\p{L}\p{N}]|%5[Ff])(?:[\p{L}\p{N}_.-]|%5[Ff])*)\\?["']?\s*(?:=>|[:=]|%3[DdAa])\s*(\\?["']?)/gu
+// percent-encoded too (password%3Dx). A percent-encoded `&` (%26) ends an unquoted value only when the separator was
+// encoded as well (an encoded query carried inside a value: %3Fpassword%3Dx%26a%3D1); after a raw `=` it is part of the
+// value - in a form-urlencoded body (`password=a%26b&page=2`) only the raw `&` separates fields.
+const NAME_SEP = /(?<![\p{L}\p{N}_.-])((?:[\p{L}\p{N}]|%5[Ff])(?:[\p{L}\p{N}_.-]|%5[Ff])*)\\?["']?\s*(=>|[:=]|%3[DdAa])\s*(\\?["']?)/gu
 const ENCODED_AMP = /%26/i
 // An authorization scheme other than Bearer/Basic has its own syntax after the word: the value runs to the end of the
 // line under ANY credential-named header (x-auth-token: Token x, access_token: Token x, Digest username=...).
@@ -235,7 +244,7 @@ function findAssigned(s: string): Hit[] {
   for (let m = NAME_SEP.exec(s); m; m = NAME_SEP.exec(s)) {
     const name = m[1].replace(/%5[Ff]/g, '_')
     if (!isCredentialKey(name)) continue
-    const quote = m[2], from = NAME_SEP.lastIndex
+    const encodedSep = m[2].startsWith('%'), quote = m[3], from = NAME_SEP.lastIndex
     let end: number
     if (quote) {
       const close = closingQuote(s, from, quote)
@@ -249,7 +258,7 @@ function findAssigned(s: string): Hit[] {
       else if (start === from && (lineValued(name) || OTHER_SCHEME.test(s.slice(from, from + 24)))) end = lineEnd(s, from)
       else {
         UNQUOTED.lastIndex = start; if (!UNQUOTED.exec(s)) continue; end = UNQUOTED.lastIndex
-        const amp = s.slice(start, end).search(ENCODED_AMP); if (amp >= 0) end = start + amp
+        if (encodedSep) { const amp = s.slice(start, end).search(ENCODED_AMP); if (amp >= 0) end = start + amp }
       }
     }
     const value = s.slice(from, end)
