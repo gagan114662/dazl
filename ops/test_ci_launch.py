@@ -16,8 +16,8 @@ class Response:
  def read(self):return json.dumps(self.value).encode()
 class CiGateTests(unittest.TestCase):
  def test_live_evidence_rejects_every_incomplete_or_wrong_result(self):
-  good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'})for n in m.REQUIRED_CI]
-  variants=[[],good[:-1],good+[good[0]],'malformed']
+  good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'},check_suite={'id':7000+i})for i,n in enumerate(m.REQUIRED_CI)]
+  variants=[[],good[:-1],[{k:v for k,v in x.items() if k!='check_suite'} for x in good],'malformed']
   for field,value in [('status','in_progress'),('conclusion','failure'),('conclusion',None),('head_sha','b'*40),('app',{'slug':'other'})]:
    rows=[dict(x)for x in good];rows[0][field]=value;variants.append(rows)
   with tempfile.TemporaryDirectory()as tmp:
@@ -54,7 +54,7 @@ class CiGateTests(unittest.TestCase):
    fixture=tmp/'sitecustomize.py'
    for state in ['in_progress','malformed','missing','failure','network']:
     # HTTPS fixture is a separate process: production CLI, parsing, checks and binding are unchanged.
-    fixture.write_text('import urllib.request,json\nSTATE='+repr(state)+'\nSHA='+repr(SHA)+'\nclass R:\n def __enter__(self):return self\n def __exit__(self,*a):pass\n def read(self):\n  if "git/ref" in self.u:return json.dumps({"object":{"sha":SHA}}).encode()\n  if STATE=="malformed":return b"not json"\n  rows=[dict(name=n,head_sha=SHA,status="completed",conclusion="success",app={"slug":"github-actions"})for n in ["browser","migrations","test-sqlite","test-postgres","fail-closed"]]\n  if STATE=="missing":rows.pop()\n  if STATE=="in_progress":rows[0]["status"]="in_progress"\n  if STATE=="failure":rows[0]["conclusion"]="failure"\n  return json.dumps({"total_count":len(rows),"check_runs":rows}).encode()\ndef get(req,**kw):\n if STATE=="network":raise OSError("unavailable")\n r=R();r.u=req.full_url;return r\nurllib.request.OpenerDirector.open=lambda self,req,**kw:get(req,**kw)\n')
+    fixture.write_text('import urllib.request,json\nSTATE='+repr(state)+'\nSHA='+repr(SHA)+'\nclass R:\n def __enter__(self):return self\n def __exit__(self,*a):pass\n def read(self):\n  if "git/ref" in self.u:return json.dumps({"object":{"sha":SHA}}).encode()\n  if STATE=="malformed":return b"not json"\n  rows=[dict(name=n,head_sha=SHA,status="completed",conclusion="success",app={"slug":"github-actions"},check_suite={"id":8000+i})for i,n in enumerate(["browser","migrations","test-sqlite","test-postgres","fail-closed"])]\n  if STATE=="missing":rows.pop()\n  if STATE=="in_progress":rows[0]["status"]="in_progress"\n  if STATE=="failure":rows[0]["conclusion"]="failure"\n  return json.dumps({"total_count":len(rows),"check_runs":rows}).encode()\ndef get(req,**kw):\n if STATE=="network":raise OSError("unavailable")\n r=R();r.u=req.full_url;return r\nurllib.request.OpenerDirector.open=lambda self,req,**kw:get(req,**kw)\n')
     import os,shlex
     pre=[sys.executable,'-c','from pathlib import Path;Path('+repr(str(sentinel))+').touch()']
     args=[sys.executable,script,'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-stdin','--preflight',json.dumps(pre),'--launch',json.dumps([sys.executable,str(Path(m.__file__).with_name('safe_launch.py')),'--commit',SHA,'--execute'])]
@@ -62,7 +62,7 @@ class CiGateTests(unittest.TestCase):
     self.assertEqual(r.returncode,0);self.assertFalse(sentinel.exists());self.assertIn('ci_refused',r.stdout)
 
  def test_main_movement_truncated_results_and_wrong_repo_refuse(self):
-  good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'})for n in m.REQUIRED_CI]
+  good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'},check_suite={'id':7000+i})for i,n in enumerate(m.REQUIRED_CI)]
   with tempfile.TemporaryDirectory() as tmp:
    token=Path(tmp)/'token';token.write_text('synthetic');token.chmod(0o600)
    for values in [
@@ -95,7 +95,7 @@ class BindingAdversarialTests(unittest.TestCase):
  def test_private_anonymous_credential_works_without_disk_persistence(self):
   import os
   fd=os.memfd_create('ci',0);os.fchmod(fd,0o600);os.write(fd,b'synthetic');os.lseek(fd,0,0)
-  good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'})for n in m.REQUIRED_CI]
+  good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'},check_suite={'id':7000+i})for i,n in enumerate(m.REQUIRED_CI)]
   def get(req,**kw):return Response({'object':{'sha':SHA}}if'git/ref'in req.full_url else {'total_count':len(good),'check_runs':good})
   try:
    with patch.object(m.urllib.request.OpenerDirector,'open',side_effect=get):m.require_ci('gagan114662/dazl',SHA,'/proc/self/fd/'+str(fd))
