@@ -46,9 +46,9 @@ needs an owner decision; see the end of this note.
   accept from the environment. With a valid period, each tick deletes events older than it, at most 1000 per run,
   inside the only transaction the delete trigger allows, after the tick's lease fence: a lost lease refuses the whole
   purge and leaves no gate row behind. The tick's response says which (`audit_retention`: `off`, `invalid` or the
-  days; `audit_purged`). Tested through the real tick route (`test/audit-retention-tick.test.ts`): unset, off and
-  every invalid form delete nothing; a valid period deletes only older events, in bounded batches, and the table is
-  still append-only afterwards.
+  days; `audit_purged`). Tested through the real tick route (`test/audit-retention-tick.test.ts`), on SQLite and on
+  a fresh Postgres schema: unset, off and every invalid form delete nothing; a valid period deletes only older
+  events, in bounded batches, and the table is still append-only afterwards.
 
 ## When an event is written
 
@@ -77,10 +77,15 @@ needs an owner decision; see the end of this note.
 | deletion | warm connections deleted (rows) |
 | policy | refused audit reads |
 
-Every row above is tested through its real route (`test/audit-routes.test.ts`, `test/audit-coverage.test.ts`): each
-test names the exact events one request adds, and fails if that route's audit call is removed. A request that
-changes nothing (a repeat send, a disconnect with nothing connected, a toggle to the current state, a revoke with
-nothing on record, a no-op stop) records nothing.
+Every route row above is tested through its real route (`test/audit-routes.test.ts`, `test/audit-coverage.test.ts`):
+each test names the exact events one request adds, and fails if that route's audit call is removed. Stripe's rows are
+tested through `applyStripeEvent` (`test/audit.test.ts`, both engines) and through the real webhook route
+(`test/billing-events.test.ts`, both engines). A request that changes nothing (a repeat send, a disconnect with
+nothing connected, a toggle to the current state, a pause, resume or disable to the current state, a consent accepted
+again at the current version, follow-ups turned on again, a release of a lead that is not quarantined, a revoke with
+nothing on record, a no-op stop or resume) records nothing, and so does a refused or failed request (a key that is
+not a key, a bad website, invalid memory, a monitor interval under the plan's minimum, a delete of an unknown id, a
+checkout while already on Pro): each has a route-level negative.
 
 ## Open decisions (not built in this PR)
 

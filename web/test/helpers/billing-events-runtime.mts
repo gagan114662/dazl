@@ -133,6 +133,13 @@ async function scenario(engine: 'sqlite' | 'pg') {
   ]) assert.deepEqual(await deliver(body), { status: 200, result: 'applied' })
   assert.deepEqual(await view(B), FREE('canceled'))
   assert.deepEqual(await row(A), aRow, "tenant B's events changed tenant A's row")
+  // the audit trail (#371) through the real webhook route: Stripe's plan changes, held reconciliations and failed
+  // payments are the Stripe service's events in each tenant's own workspace, and nowhere else
+  const trail = await (await getDb()).all<{ tenant_id: string; actor_id: string; actor_kind: string; action: string }>("SELECT tenant_id, actor_id, actor_kind, action FROM audit_events ORDER BY at, seq")
+  assert.ok(trail.length > 0, 'webhook events reach the audit trail')
+  assert.ok(trail.every(e => e.actor_id === 'stripe' && e.actor_kind === 'service' && e.action.startsWith('billing.')), JSON.stringify(trail))
+  assert.deepEqual([...new Set(trail.map(e => e.tenant_id))].sort(), [A.TENANT, B.TENANT].sort())
+  for (const a of ['billing.plan_changed', 'billing.payment_failed']) assert.ok(trail.some(e => e.action === a && e.tenant_id === B.TENANT), a)
   console.log('STRIPE_EVENTS', engine)
 }
 

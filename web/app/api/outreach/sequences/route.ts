@@ -10,6 +10,7 @@ import { createSequence, editSequenceStep, approveSequence, sequenceAnalytics, s
 import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
+import { getState } from '@/lib/outreach/autopilot'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
@@ -41,7 +42,13 @@ export async function POST(req: NextRequest) {
     }
     if (b?.action === 'create_test_fixture') return NextResponse.json(createSequenceTestFixture(db,user.tenantId))
     if (b?.action === 'create_reply_stop_fixture') return NextResponse.json(createReplyStopTestFixture(db,user.tenantId))
-    if (b?.action === 'resume') { resumeSequences(db,user.tenantId); await audit(user, req, { action: 'sequence.resumed', resource: 'sequences' }); return NextResponse.json({ ok: true }) }
+    if (b?.action === 'resume') {
+      // resuming an account that is not paused changes nothing, so it records nothing
+      const before = getState(db, user.tenantId)
+      resumeSequences(db,user.tenantId)
+      if (before.paused || before.pause_reason !== null) await audit(user, req, { action: 'sequence.resumed', resource: 'sequences' })
+      return NextResponse.json({ ok: true })
+    }
     if (typeof b?.id !== 'string') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     if (b.action === 'approve') approveSequence(db,user.tenantId,b.id,id => approve(db,user.tenantId,id,true))
     else if (b.action === 'edit' && typeof b.subject === 'string' && typeof b.body === 'string') editSequenceStep(db,user.tenantId,b.id,b.step,{ subject: b.subject, body: b.body })

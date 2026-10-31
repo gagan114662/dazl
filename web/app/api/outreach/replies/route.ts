@@ -24,11 +24,14 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const db = getScanDb()
   switch (body?.action) {
-    case 'consent':
+    case 'consent': {
       if (body.accept !== true || body.version !== READ_CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
+      // accepting the version already on record changes nothing, so it records nothing
+      const had = hasReadConsent(db, user.tenantId)
       acceptReadConsent(db, user.tenantId)
-      await audit(user, req, { action: 'consent.accepted', resource: 'reply_reading', summary: { version: READ_CONSENT_VERSION } })
+      if (!had) await audit(user, req, { action: 'consent.accepted', resource: 'reply_reading', summary: { version: READ_CONSENT_VERSION } })
       return NextResponse.json({ ok: true })
+    }
     case 'revoke': {
       // revoking consent that is not on record (any version) changes nothing, so it records nothing; follow-ups being on
       // without consent cannot happen (followups_on requires it)
@@ -45,8 +48,9 @@ export async function POST(req: NextRequest) {
       const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
       if (!hasReadConsent(db, user.tenantId) || acc?.read_granted !== 1) return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })
       if (!getState(db, user.tenantId).enabled || !getState(db, user.tenantId).consent_current) return NextResponse.json({ error: 'Turn on autopilot first' }, { status: 400 })
+      const was = followupsEnabled(db, user.tenantId)
       setFollowups(db, user.tenantId, true)
-      await audit(user, req, { action: 'followups.enabled', resource: 'followups' })
+      if (!was) await audit(user, req, { action: 'followups.enabled', resource: 'followups' })
       return NextResponse.json({ ok: true })
     }
     case 'sync': {

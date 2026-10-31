@@ -8,6 +8,7 @@
 // like a credential, a token or message content is dropped, so secret values and reply bodies never enter the trail.
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
+import { captureError } from './ops/errors.ts'
 
 // SQLite: migrateAuth (lib/auth-db.ts); PG: 0025_audit_events.sql.
 export const AUDIT_DDL = `
@@ -110,7 +111,11 @@ export async function searchAudit(db: Db, tenantId: string, q: { action?: string
   const rows = await db.all<Omit<AuditRow, 'summary'> & { summary: string }>(
     `SELECT id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, correlation_id, at, seq FROM audit_events
      WHERE ${where.join(' AND ')} ORDER BY at DESC, seq DESC, id DESC LIMIT ${limit}`, params)
-  return rows.map(r => ({ ...r, at: Number(r.at), seq: Number(r.seq), summary: (() => { try { return JSON.parse(r.summary) as Record<string, unknown> } catch { return {} } })() }))
+  // a summary that does not parse (the column is written by this module only, so this is corruption) is reported and
+  // shown as unreadable rather than silently empty
+  return rows.map(r => ({ ...r, at: Number(r.at), seq: Number(r.seq), summary: (() => {
+    try { return JSON.parse(r.summary) as Record<string, unknown> } catch (e) { captureError(e, { source: 'route', where: 'audit:summary', tenantId }); return { unreadable: true } }
+  })() }))
 }
 
 // Retention policy. Automatic deletion is OFF until the owner chooses a period: a deployment never picks one on its own

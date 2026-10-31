@@ -79,6 +79,19 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
     corr[name] = lastId.v
     return r
   }
+  // refused or failed requests record nothing: each of these is refused before the change (the exact event list
+  // below has none of them, and would have if an audit call moved above its route's validation)
+  await step('llm key refused (not a key)', t.A, () => llmKey.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', api_key: 'short' })), 400)
+  await step('enrichment key refused (too short)', t.D, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: 'short' })), 400)
+  await step('crm key refused (too short)', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'save', provider: 'hubspot', key: 'short' })), 400)
+  await step('profile refused (bad website)', t.A, () => profile.POST(req('/api/settings/profile', 'POST', { website: 'not-a-url' })), 400)
+  await step('memory refused (exclusions not a list)', t.A, () => memory.PUT(req('/api/settings/memory', 'PUT', { exclusions: 'nope' })), 400)
+  await step('monitor refused (interval too short)', t.O, () => monitors.POST(req('/api/monitors', 'POST', { query: 'dentists in Toronto', interval_hours: 0 })), 400)
+  await step('monitor delete of an unknown id', t.A, () => monitor.DELETE(req('/api/monitors/ffffffffffffffffffffffff', 'DELETE'), { params: Promise.resolve({ id: 'ffffffffffffffffffffffff' }) }), 404)
+  await step('connections deleted, none there', t.A, () => warm.DELETE(req('/api/warm/connections', 'DELETE')))
+  raw.prepare("INSERT INTO tenant_plans (tenant_id, plan) VALUES ('A', 'pro') ON CONFLICT(tenant_id) DO UPDATE SET plan = 'pro'").run()
+  await step('checkout refused (already Pro)', t.A, () => checkout.POST(req('/api/billing/checkout', 'POST')), 409)
+  raw.prepare("UPDATE tenant_plans SET plan = 'free' WHERE tenant_id = 'A'").run()
   await step('llm key saved', t.A, () => llmKey.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', api_key: MARK.modelKey })))
   await step('llm key removed', t.A, () => llmKey.DELETE(req('/api/settings/llm-key?vendor=anthropic', 'DELETE')))
   await step('enrichment saved', t.D, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: MARK.enrichKey })))

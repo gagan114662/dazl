@@ -183,7 +183,9 @@ test('every audited route in the Covered table records its event, with the redac
   await step('autopilot enabled, cap 7 asked', t.A, ap({ action: 'enable', ...consent, daily_cap: 7 }), [['A', 'autopilot.enable', 'autopilot', null, { daily_cap: 7 }]])
 
   // ---- follow-ups on and off; off again changes nothing
+  await step('reply reading accepted again: already current, nothing recorded', t.A, () => replies.POST(post('/api/outreach/replies', { action: 'consent', accept: true, version: READ_CONSENT_VERSION })), [])
   await step('follow-ups on', t.A, () => replies.POST(post('/api/outreach/replies', { action: 'followups_on' })), [['A', 'followups.enabled', 'followups', null, {}]])
+  await step('follow-ups on again: already on, nothing recorded', t.A, () => replies.POST(post('/api/outreach/replies', { action: 'followups_on' })), [])
   await step('follow-ups off', t.A, () => replies.POST(post('/api/outreach/replies', { action: 'followups_off' })), [['A', 'followups.disabled', 'followups', null, {}]])
   await step('follow-ups off again', t.A, () => replies.POST(post('/api/outreach/replies', { action: 'followups_off' })), [])
   // ---- reply reading revoked once given; then given again for the sequences below
@@ -205,6 +207,7 @@ test('every audited route in the Covered table records its event, with the redac
   await step('sequence step retried', t.O, sq({ action: 'retry', id: seq, step: 3 }), [['O', 'sequence.retry', 'sequence', seq, { step: 3 }]])
   raw.prepare("UPDATE autopilot_settings SET paused = 1, pause_reason = 'uncertain_send' WHERE tenant_id = 'A'").run()
   await step('sequences resumed', t.A, sq({ action: 'resume' }), [['A', 'sequence.resumed', 'sequences', null, {}]])
+  await step('sequences resumed again: not paused, nothing recorded', t.A, sq({ action: 'resume' }), [])
   assert.equal((raw.prepare("SELECT paused FROM autopilot_settings WHERE tenant_id = 'A'").get() as { paused: number }).paused, 0)
   await step('sequence stopped', t.O, sq({ action: 'stop', id: seq }), [['O', 'sequence.stop', 'sequence', seq, {}]])
   await step('sequence stopped twice', t.O, sq({ action: 'stop', id: seq }), [])

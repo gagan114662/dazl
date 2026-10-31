@@ -8,6 +8,7 @@ import { applyStripeEvent, type StripeEvent } from '../lib/billing/stripe.ts'
 import { readPlan } from '../lib/plans.ts'
 import type { Db } from '../lib/db/client.ts'
 import { bothEngines } from './helpers/engines.ts'
+import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 
 const NOW = Math.floor(Date.now() / 1000)
 const DAY = 24 * 60 * 60
@@ -56,6 +57,17 @@ bothEngines('the purge refuses a missing or too-short period, and a lost lease f
   // the same period with a passing fence is the fenced, bounded path a future policy uses
   assert.equal(await purgeAudit(db, { now: NOW, retainS: 400 * DAY, fence: function* () { /* lease held */ } }), 1)
   assert.deepEqual((await searchAudit(db, 'A')).map(e => e.action), ['x.new'])
+})
+
+bothEngines('a summary that does not parse is reported and read as unreadable, never silently empty', async ({ db }) => {
+  await record(db, { tenantId: 'A', actorId: 'A', action: 'x.fine', resourceType: 't', summary: { n: 1 } }, NOW - 1)
+  await db.run("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, decision, summary, at, seq) VALUES (?, 'A', 'A', 'user', 'x.corrupt', 't', 'allowed', 'not json', ?, 1)", ['c'.repeat(24), NOW])
+  const caught: ErrorRecord[] = []
+  const restore = setErrorSinks([r => { caught.push(r) }])
+  try {
+    assert.deepEqual((await searchAudit(db, 'A')).map(e => [e.action, e.summary]), [['x.corrupt', { unreadable: true }], ['x.fine', { n: 1 }]])
+  } finally { restore() }
+  assert.deepEqual(caught.map(r => r.where), ['audit:summary'])
 })
 
 test('summaries keep short scalars only: no secrets, tokens, hashes or message content', () => {
