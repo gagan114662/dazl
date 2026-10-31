@@ -4,6 +4,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import importlib.util
+spec=importlib.util.spec_from_file_location("checked",Path(__file__).with_name("checked_launch.py")); checked=importlib.util.module_from_spec(spec);spec.loader.exec_module(checked)
 
 SCRIPT = str(Path(__file__).with_name('checked_launch.py'))
 
@@ -16,7 +19,9 @@ class CheckedLaunchTests(unittest.TestCase):
             launch = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(sentinel)]
             second = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(later)]
             for first in [[sys.executable, '-c', 'raise SystemExit(23)'], ['/nonexistent/preflight'], [sys.executable, '-c', 'import time; time.sleep(5)']]:
-                p = subprocess.run([sys.executable, SCRIPT, '--timeout', '0.2', '--preflight', json.dumps(first), '--preflight', json.dumps(second), '--launch', json.dumps(launch)], capture_output=True, text=True)
+                with patch.object(checked, 'require_ci'), patch.object(checked, 'bind_launch'):
+                    report, code = checked.run([first,second],launch,timeout=0.2)
+                p = subprocess.CompletedProcess([],code,json.dumps(report))
                 self.assertEqual(p.returncode, 1, p.stdout)
                 self.assertFalse(json.loads(p.stdout)['launch_reached'])
                 self.assertFalse(sentinel.exists())
@@ -27,10 +32,14 @@ class CheckedLaunchTests(unittest.TestCase):
             target = Path(tmp) / 'count'
             launch = [sys.executable, '-c', 'from pathlib import Path; p=Path(__import__("sys").argv[1]); p.write_text(p.read_text()+"x" if p.exists() else "x")', str(target)]
             good = [sys.executable, '-c', 'pass']
-            p = subprocess.run([sys.executable, SCRIPT, '--preflight', json.dumps(good), '--preflight', json.dumps(good), '--launch', json.dumps(launch)], capture_output=True, text=True)
+            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'):
+                report,code=checked.run([good,good],launch)
+            p=subprocess.CompletedProcess([],code,json.dumps(report))
             self.assertEqual(p.returncode, 0)
             self.assertEqual(target.read_text(), 'x')
-            p = subprocess.run([sys.executable, SCRIPT, '--preflight', json.dumps(good), '--launch', json.dumps([sys.executable, '-c', 'raise SystemExit(3)'])], capture_output=True, text=True)
+            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'):
+                report,code=checked.run([good],[sys.executable,'-c','raise SystemExit(3)'])
+            p=subprocess.CompletedProcess([],code,json.dumps(report))
             self.assertEqual(p.returncode, 1)
             self.assertTrue(json.loads(p.stdout)['launch_reached'])
 
