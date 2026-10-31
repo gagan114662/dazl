@@ -17,6 +17,7 @@ import { migrateSpendPools, poolRows, sharedPool } from '../lib/llm/spend-pool.t
 import type { Provider } from '../lib/llm/provider.ts'
 import type { Lookup } from '../lib/net/public-fetch.ts'
 import type { SiteReadAdmission } from '../lib/scan/trial-site-read.ts'
+import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 
 const master = randomBytes(32)
 const KEY = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
@@ -124,7 +125,10 @@ test('the two refusals are distinct and never cross: owner pool -> spend_limit; 
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:5' }, async () => {
     // Own key, the provider fails: key_rejected, as on main; the pool's reservation stands (the vendor may have billed it).
     seen.length = 0
-    assert.deepEqual(await read(own, provider(seen, { fail: true }), neverTrial), { error: 'key_rejected' })
+    const records: ErrorRecord[] = []
+    const restore = setErrorSinks([r => { records.push(r) }])
+    try { assert.deepEqual(await read(own, provider(seen, { fail: true }), neverTrial), { error: 'key_rejected' }) } finally { restore() }
+    assert.deepEqual(records.map(r => [r.source, r.where]), [['process', 'scan:icp-from-site:own']], 'the own-key failure is recorded (R4-8)')
     assert.deepEqual(seen, [KEY])
     // Only a day limit is set here: one window row, holding the failed call's worst-case reservation, nothing reported.
     const rows = await pool(own)

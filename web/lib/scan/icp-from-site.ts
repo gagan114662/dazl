@@ -147,6 +147,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
       return { error: 'trial_read_failed' }
     }
     if (spendRefused(e)) return { error: 'spend_limit' } // the owner's spend limit: no call was made
+    captureError(e, { source: 'process', where: 'scan:icp-from-site:own', tenantId }) // the key, the provider or its answer failed: recorded (was silent on main)
     return { error: 'key_rejected' }
   }
   if (!icp) return { error: call.funded === 'trial' ? 'trial_read_failed' : 'key_rejected' }

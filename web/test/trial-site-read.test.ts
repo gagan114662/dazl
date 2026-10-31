@@ -373,6 +373,14 @@ bothEngines('#444 R5: refundRateLimit gives one counted call back in the real st
   await db.run('UPDATE rate_limits SET count = 0 WHERE key = ?', [key])
   assert.equal(await refundRateLimit(key, db, now), false, 'never below zero')
   assert.equal(await refundRateLimit(key, db, now + win + 1), false, 'a closed window is left alone')
+  // A store that cannot answer: false, and recorded (R4-7), never a silent false.
+  const records: ErrorRecord[] = []
+  const restore = setErrorSinks([r => { records.push(r) }])
+  try {
+    const broken: Db = Object.create(db, { run: { value: async () => { throw new Error('store down') } } })
+    assert.equal(await refundRateLimit(key, broken, now), false)
+    assert.deepEqual(records.map(r => [r.source, r.where]), [['process', 'rate-limit:refund:trial-site']])
+  } finally { restore() }
 })
 
 // Probe round 2 on ab05d740 (G1, G2): release() is once-only on the real store, and never deletes a settled row.

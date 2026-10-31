@@ -6,6 +6,7 @@
 // per-process shadow. Protection is never removed or reset.
 import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
+import { captureError } from './ops/errors.ts'
 
 // unavailable: refused only because the shared store could not answer (the caller may say so instead of "too many")
 export interface Limit { ok: boolean; retryAfterS: number; unavailable?: true }
@@ -113,7 +114,7 @@ export async function refundRateLimit(key: string, d?: Db, now = Date.now()): Pr
   try {
     const db = d ?? await getDb()
     return (await db.run('UPDATE rate_limits SET count = count - 1 WHERE key = ? AND count > 0 AND reset_at > ?', [key.slice(0, 300), now])).changes > 0
-  } catch { return false }
+  } catch (e) { captureError(e, { source: 'process', where: `rate-limit:refund:${key.split(':')[0]}` }); return false } // the slot stays spent; recorded
 }
 
 export function clientIp(req: Request): string {
