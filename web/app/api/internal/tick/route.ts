@@ -15,6 +15,7 @@ import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Outcome } from '@/lib/ops/scheduler-runs'
+import { purgeExpiredTraces } from '@/lib/evals/capture'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -103,7 +104,13 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   await lease.keep()
   let sessionsReaped = 0
   try { sessionsReaped = (await reapAccountHistory(shared, { fence })).sessions } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
+  // Captured scan traces (lib/evals/capture.ts): every tenant's rows older than DAZL_TRACE_RETENTION_DAYS are deleted,
+  // but only when capture is on or a retention was set explicitly; with capture unset, off or misconfigured nothing is
+  // deleted (traces_purged: 0). At most PURGE_LIMIT (500) rows per tick, oldest first, under the lease's fence like the
+  // session reap: a lost lease deletes nothing and stops the tick. Otherwise best-effort: a failure never stops the tick.
+  let tracesPurged = 0
+  await lease.keep()
+  try { tracesPurged = await purgeExpiredTraces(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:trace-purge', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked })
-
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged })
 }

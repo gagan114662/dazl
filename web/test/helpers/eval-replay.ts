@@ -127,13 +127,14 @@ export async function replayCase(c: Case, worldIn: World, opts: { agentLabel?: s
   const s = worldStubs(w, misses)
   const providers = rec.providers({ anthropic: s.provider, openai: { research: async () => { misses.push({ kind: 'model', key: 'openai.research' }); return { text: '', citedUrls: [] } } } as Provider })
   let autopilotCalls = 0
-  const env = { TINYFISH_API_KEY: process.env.TINYFISH_API_KEY, SITECRAWL_ENABLED: process.env.SITECRAWL_ENABLED, NEWS_SEARCH_ENABLED: process.env.NEWS_SEARCH_ENABLED, DAZL_MASTER_KEY: process.env.DAZL_MASTER_KEY }
+  const env = { TINYFISH_API_KEY: process.env.TINYFISH_API_KEY, SITECRAWL_ENABLED: process.env.SITECRAWL_ENABLED, NEWS_SEARCH_ENABLED: process.env.NEWS_SEARCH_ENABLED, DAZL_MASTER_KEY: process.env.DAZL_MASTER_KEY, DAZL_TRACE_CAPTURE: process.env.DAZL_TRACE_CAPTURE }
   const master = randomBytes(32)
   const realFetch = globalThis.fetch
   const restoreClock = freezeClock(Date.parse(w.as_of))
   try {
     // Stub TinyFish key (the World answers, nothing is sent); sitecrawl and news are not in World v1, so they are off.
     process.env.TINYFISH_API_KEY = 'tf-world-replay'; process.env.SITECRAWL_ENABLED = '0'; process.env.NEWS_SEARCH_ENABLED = '0'; process.env.DAZL_MASTER_KEY = master.toString('base64')
+    process.env.DAZL_TRACE_CAPTURE = '0' // a replay records its own trace; it is never captured into the app store
     const fetchImpl = rec.fetch(s.fetchImpl)
     globalThis.fetch = fetchImpl // code that reaches global fetch instead of deps.fetchImpl meets the World too
     resetTinyfishState()
@@ -150,6 +151,7 @@ export async function replayCase(c: Case, worldIn: World, opts: { agentLabel?: s
       score: c.input.score ?? false, ground: c.input.ground ?? false, judge: null,
       autopilot: (async () => { autopilotCalls++ }) as never,
     })
+    await rec.settled() // background body reads of the recorded HTTP responses
     const jobRow = db.prepare('SELECT status, error, candidates, verified, needs_review, drop_reasons FROM scan_jobs WHERE id = ?').get(job.id) as ReplayResult['job']
     const leads = (db.prepare(`SELECT j.user_id AS tenant, l.name, l.company, l.contact, l.source_url, l.evidence_excerpt AS excerpt, l.event_date, l.review_reason, l.confidence, l.company_domain, l.date_status
       FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.id = ? ORDER BY l.company`).all(job.id)) as ReplayLead[]
