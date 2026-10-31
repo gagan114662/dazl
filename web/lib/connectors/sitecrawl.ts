@@ -548,6 +548,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // the block is known, re-hitting it is pressure on a refusing site, and the answer would be the same. Identity is
       // probed from the company name + place instead (strict agreement checks below apply unchanged).
       const ev = (deps.skipEvidenceFetch || l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? null : await get(l.source_url)
+      // The blocked-host guard covers EVERY path to a site, not just the evidence URL: when the company name resolves to
+      // the very host that refused this lead's fetch (its own blog/docs were the evidence), probing it would re-hit a
+      // refusing site by another path. Such candidates are excluded and the skip is audited.
+      const blockedHost = (l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? (() => { try { return new URL(l.source_url).hostname.toLowerCase() } catch { return null } })() : null
+      const notBlockedHost = (d: string) => { const h = d.toLowerCase(); return !blockedHost || (h !== blockedHost && !h.endsWith('.' + blockedHost) && !blockedHost.endsWith('.' + h)) }
       const basisOf = new Map<string, DomainBasis>()
       let sites: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { sites.push(o.site); basisOf.set(o.site, o.basis) }
@@ -558,6 +563,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         probed++
         sites = probeDomains(l.company)
         for (const d of sites) basisOf.set(d, 'name_probe')
+        if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]

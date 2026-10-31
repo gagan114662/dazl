@@ -37,6 +37,16 @@ test('EMBEDD-type: no event date -> unresolved with the specific reason, and wha
   const r = resolveFacts(db, job, new Map([['L1', ['https://embedd.example/', 'https://embedd.example/events']]]))[0]
   assert.equal(r.date, 'missing'); assert.equal(r.resolved, false); assert.match(r.reasons[0], /^no dated evidence on 2 sources tried: https:\/\/embedd\.example\/, https:\/\/embedd\.example\/events$/)
 })
+test('site-crawl attempts are reported in tried: a held lead never reads "nothing tried" when the crawl DID try', () => {
+  const { db, job, lead } = seed(); lead({ company: 'Clera', reason: 'blocked_by_site' })
+  db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES ('a1','u1','sitecrawl',?,'clera.com','name_mismatch',0),('a2','u1','sitecrawl',?,'Clera','no_site_linked',0),('a3','u1','sitecrawl',?,'otherco.com','ok',3)").run(job.id, job.id, job.id)
+  const [r] = resolveFacts(db, job)
+  assert.equal(r.identity, 'unconfirmed')
+  assert.ok(r.tried.some(t => t.includes('clera.com: name_mismatch')), JSON.stringify(r.tried))
+  assert.ok(r.tried.some(t => t.includes('Clera: no_site_linked')), JSON.stringify(r.tried))
+  assert.ok(!r.tried.some(t => t.includes('otherco.com')), 'another company\'s audit rows are never attributed to this lead')
+})
+
 test('wrong company / contact / stale each carry their own specific reason', () => {
   const { db, job, lead, enr } = seed()
   const a = lead({ company: 'Querio', reason: 'no_sales_hiring_evidence', date: daysAgo(10) }); enr(a, 'contact_rejected', 'contact rejected: location mismatch', 'contact_location_mismatch')
