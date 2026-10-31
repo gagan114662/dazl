@@ -101,9 +101,9 @@ match the full launch commit. Exactly one GitHub Actions result each for browser
 test-postgres and fail-closed must be completed/success for that SHA. Pending, failed, missing, duplicate, wrong-SHA, malformed,
 truncated or unreadable evidence refuses the launch. There is no bypass flag or cached green report.
 The launch argv must call the sibling safe_launch.py with the same single --commit and --execute.
-The token file contains the credential, never an argv credential or logged value. Do not copy credentials to a host
-merely for a release check; use this entrypoint from the environment already authorized to access the credential,
-or arrange a restricted read-only credential through the secure vault workflow.
+The token file contains the credential, never an argv credential or logged value. Do not leave a credential on a host
+for a release check. Use an already-authorized protected file or a securely passed ephemeral file descriptor for
+the entrypoint; never echo its contents or put them in logs. The checker makes read-only requests only.
 
 The shell is not a gate. Even `checked_launch.py ...; true` cannot run its launch or preflight when CI is refused.
 The test suite exercises this with an attempted sentinel mutation and a caller deliberately ignoring failure.
