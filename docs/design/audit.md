@@ -34,7 +34,7 @@ needs an owner decision; see the end of this note.
   a tenant in the query is ignored. Filters: `action` prefix (matched literally), `actor`, `limit` (up to 1000) and
   `cursor` (the previous page's `next`: the last row's time, sequence and id, so a page ending inside one second
   neither skips nor repeats events). `format=csv` downloads every matching event (up to 100,000, flagged with
-  `x-audit-truncated` beyond that), with cells guarded against formula injection, and the download is itself an
+  `x-audit-truncated` beyond that; the bound is reached for real in `test/audit-routes.test.ts`), with cells guarded against formula injection, and the download is itself an
   `export.audit` event. A refused read is a `denied` `audit.read` event in the workspace that was asked for, at most
   once a minute per member. Settings shows the card to owners and admins only, so nobody else's page load asks.
 - **Retention is an owner decision, and off until made.** No retention period is chosen yet, so the deployed default
@@ -94,7 +94,6 @@ nothing on record, a no-op stop) records nothing.
 - **The retention period itself.** Nothing is deleted until the owner chooses one and sets `AUDIT_RETENTION_DAYS`
   explicitly; the 30-day floor and the 1000-per-tick batch are the only bounds built in.
 - **Time-bounded support access** is not built (below), so this PR is part of #371, not its close.
-- The CSV's 100,000-event bound has no test of its own.
 
 ## Support access: needs an owner decision
 

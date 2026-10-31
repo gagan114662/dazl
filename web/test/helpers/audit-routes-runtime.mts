@@ -212,6 +212,22 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   assert.equal((await bulk.text()).trim().split('\n').length, 1 + 1001)
   assert.equal(bulk.headers.get('x-audit-truncated'), null)
 
+  // the download's bound is the route's CSV_MAX, 100,000 events, reached for real: exactly that many come out whole and
+  // unflagged; one more and the download stops at the bound, says so in x-audit-truncated, and its own export.audit
+  // event records the rows and the truncation
+  const CSV_MAX = 100_000
+  const cap = raw.prepare("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, decision, summary, at, seq) VALUES (?, 'A', 'A', 'user', 'cap.row', 't', 'allowed', '{}', ?, ?)")
+  raw.transaction(() => { for (let i = 0; i < CSV_MAX; i++) cap.run(randomBytes(12).toString('hex'), 500_000 + i, 1) })()
+  const whole = await read(t.A, '?format=csv&action=cap.')
+  assert.equal((await whole.text()).trim().split('\n').length, 1 + CSV_MAX)
+  assert.equal(whole.headers.get('x-audit-truncated'), null)
+  cap.run(randomBytes(12).toString('hex'), 500_000 + CSV_MAX, 1)
+  const capped = await read(t.A, '?format=csv&action=cap.')
+  assert.equal(capped.headers.get('x-audit-truncated'), '1')
+  assert.equal((await capped.text()).trim().split('\n').length, 1 + CSV_MAX)
+  const exports = (await (await read(t.A, '?action=export.audit&limit=2')).json()) as { events: (Ev & { summary: { rows: number; truncated: boolean } })[] }
+  assert.deepEqual(exports.events.map(e => [e.summary.rows, e.summary.truncated]), [[CSV_MAX, true], [CSV_MAX, false]])
+
   // a failed audit write is reported and never undoes or fails the change it describes
   const caught: ErrorRecord[] = []
   const restore = setErrorSinks([r => { caught.push(r) }])
