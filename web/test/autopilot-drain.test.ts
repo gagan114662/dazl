@@ -687,6 +687,13 @@ test('#448 a lead refused for a reason the user can clear is tried again an hour
   const r3 = await runAutopilot(db, 'A', 'Acme', at(d, NOW + 3601))
   assert.deepEqual([r3.sent, sent.length, r3.skipped, skipped().length], [1, 1, 0, 2], 'an hour on: the graded lead is drafted and sent; the personal address is not retried')
   await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY)); assert.equal(skipped().length, 2, 'the personal address: never again')
+  // The other refusals that never clear: a failed required sales/hiring check, unverified evidence.
+  for (const code of ['sales_hiring_check_failed', 'lead_not_verified']) {
+    const l = lead(db, `${code}@never.example`)
+    db.prepare("INSERT INTO autopilot_audit (id, tenant_id, lead_id, action, detail, created_at) VALUES (?, 'A', ?, 'skipped', ?, ?)").run(code.slice(0, 24).padEnd(24, '0'), l, code, NOW - 30 * DAY)
+    const n = sent.length; await runAutopilot(db, 'A', 'Acme', at(d, NOW + 2 * DAY + 1))
+    assert.deepEqual([sent.length - n, skipped().filter(x => x === code).length], [0, 1], `${code}: never retried`)
+  }
   // Still refused an hour later, and the hour after: the same skipped row moves, no new one (the audit view is not buried).
   const db4 = await setup(); ok(db4); pastWarmup(db4); const four = sends(); const still = lead(db4, 'u@ungraded.example'); db4.prepare('UPDATE leads SET fit = 0, intent = NULL, human_confirmed_at = ? WHERE id = ?').run(NOW - 1, still)
   for (const t of [NOW, NOW + 3601, NOW + 7202]) await runAutopilot(db4, 'A', 'Acme', at(four.d, t))

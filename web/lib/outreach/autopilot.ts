@@ -214,13 +214,15 @@ export const NEW_LEADS_SQL = `SELECT l.id, l.contact FROM leads l JOIN scan_jobs
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
-         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
-           OR (a.detail = 'error' AND a.created_at > ?)
+         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact','sales_hiring_check_failed','lead_not_verified')
+           OR (a.detail IN ('error','offer_unreadable') AND a.created_at > ?)
            OR (a.detail <> 'error' AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
      ORDER BY l.score DESC LIMIT 25`
-// Refusals of the draft path that never change for a lead: recorded once, the lead is the user's from then on. Every
-// other refusal is tried again: a gate the user can clear after SKIP_RETRY_S, or at once when the lead was confirmed by
-// the user at or after the refusal; a store error ('error') after SKIP_ERROR_S (the next tick).
+// Refusals of the draft path that never change for a lead (createDraft's draftChecks: a personal address, not a sales
+// contact, suppressed, no address, a failed required sales/hiring check, evidence that is not verified): recorded once,
+// the lead is the user's from then on. Every other refusal (currentness or domain to confirm, ungraded, an offer
+// conflict) is tried again: after SKIP_RETRY_S, or at once when the lead was confirmed by the user at or after the
+// refusal; a store error ('error') or an unreadable offer after SKIP_ERROR_S (the next tick).
 const SKIP_RETRY_S = 3600, SKIP_ERROR_S = 600
 // The authority could not be read at the send commitment (the store failed): fail closed, as if it had ended. Known not
 // sent, the slot released, the draft held and unapproved; the next pass reads it again.
