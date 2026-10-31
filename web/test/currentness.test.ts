@@ -27,5 +27,5 @@ test('legacy verified label and present-tense quote cannot bypass deterministic 
  // #377: the deterministic NOW guard is intent held at 0 with the timing status appended; the
  // model's fit rationale is preserved, never replaced, and a legacy 'verified' label is not proof.
  assert.match(grades?.[0].why??'',/timing is unconfirmed/)
- assert.match(grades?.[0].why??'',/need this NOW/)
+ assert.match(grades?.[0].why??'',/Model rationale, unverified:/) // urgency prose survives only as a labelled unverified claim, never as a recommendation
 })

@@ -167,7 +167,9 @@ export async function scoreLeads(provider: Provider, apiKey: string, icpText: st
       const src = leads[i]
       if (proofBackedTiming({ event_date: src?.event_date ?? null, event_date_proof: src?.event_date_proof ?? null, signal: src?.signal, signal_kind: src?.signal_kind }, opts.windowDays ?? null, opts.now ?? new Date())) return
       g.intent = 0
-      if (!g.why.includes(TIMING_UNCONFIRMED_NOTE)) g.why = `${g.why} ${TIMING_UNCONFIRMED_NOTE}`.slice(0, WHY_MAX)
+      // The deterministic zero is not enough when the model's prose still asserts an unsupported NOW:
+      // the rationale survives only as an explicitly unverified claim, never as a recommendation.
+      if (!g.why.includes(TIMING_UNCONFIRMED_NOTE)) g.why = `${TIMING_UNCONFIRMED_NOTE} Model rationale, unverified: ${g.why}`.slice(0, WHY_MAX)
     })
     return parsed
   } catch (e) {

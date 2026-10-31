@@ -82,7 +82,11 @@ for (const s of searches) {
   let icpWindow: number | null = null
   try { const j = jobRow.icp ? JSON.parse(jobRow.icp) as { window_days?: unknown } : null; icpWindow = typeof j?.window_days === 'number' ? j.window_days : null } catch { icpWindow = null }
   const windowDays = parseWindowDays(jobRow.query ?? '') ?? icpWindow
-  const opts = { who, windowDays, timingRequired: windowDays != null }
+  // Timing is mandatory when the request truly asks for it: an explicit window OR recency intent
+  // (recent/currently/newly/latest/just-verb/verb-now). A windowless request invents no gate; it still
+  // requires recognized, non-future proof before timing counts (semantics ruling 15:42).
+  const TIMING_REQUESTED = /\b(?:recent(?:ly)?|currently|newly|latest|just\s+(?:raised|announced|opened|launched|hired|posted)|(?:hiring|hired|raised|announced|opened|launched|posted)\s+(?:now|recently))\b/i
+  const opts = { who, windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(jobRow.query ?? '') }
   let memory: ReturnType<typeof getMemory> | null = null
   try { memory = getMemory(db, TENANT) } catch { memory = null }
   const raw = db.prepare('SELECT id, name, company, contact, review_reason, confidence, event_date, event_date_proof, signal, signal_kind, fit, source_url, quarantined_at, company_domain FROM leads WHERE scan_job_id = ?').all(id) as { id: string; name: string; company: string; contact: string | null; review_reason: string | null; confidence: number | null; event_date: string | null; event_date_proof: string | null; signal: string | null; signal_kind: string | null; fit: number | null; source_url: string; quarantined_at: number | null; company_domain: string | null }[]

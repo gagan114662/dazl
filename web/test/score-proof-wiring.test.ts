@@ -37,3 +37,26 @@ test('a page that binds the claimed date to this company and this event persists
   assert.equal(beta.event_date_proof, null, 'a publication stamp dates the page, never the event')
   assert.equal(beta.event_date, null, 'the unbound claim is treated as undated (existing honest behavior preserved)')
 })
+
+// ACCEPTED CONTRACT GAP, documented honestly (finding (a), pending contract decision - binder NOT extended):
+// a restating sentence that names the company and describes the same event with an inflected verb ("opens")
+// is NOT bound today; the claimed day and the proof are dropped and the lead goes the undated way. This test
+// pins the current conservative behavior so the gap is covered, not masked. If the contract later extends
+// eventDateBound, this test is the one to flip.
+test('gap coverage: a second-sentence restatement with an inflected verb stays unbound (fail-closed)', async () => {
+  const day = daysAgo(5)
+  const RESTATED = `Acme Dental said it will open a second clinic in Toronto. Acme Dental confirmed the Toronto clinic opens on ${day}, adding six chairs.`
+  const x = await runFixture({
+    request: 'Dental clinics in Toronto opening a new location',
+    modelIcp: { summary: 'Toronto dental clinics expanding', who: ['Practice owner'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['opening a new location'], exclude: [], country: 'CA', language: 'en' },
+    modelQueries: ['dental clinic second location Toronto'],
+    hits: [{ url: 'https://news.example.com/acme2', title: 'Acme Dental expansion', snippet: 'Acme Dental said it will open a second clinic in Toronto', date: day }],
+    tfPages: {},
+    own: { 'https://news.example.com/acme2': { title: 'Acme Dental', text: RESTATED } },
+    extraction: [{ company: 'Acme Dental', signal: 'Opening a second Toronto clinic', source_url: 'https://news.example.com/acme2', excerpt: 'Acme Dental said it will open a second clinic in Toronto', event_date: day }],
+  })
+  const rows = x.db.prepare('SELECT company, event_date, event_date_proof FROM leads').all() as { company: string; event_date: string | null; event_date_proof: string | null }[]
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].event_date_proof, null, 'restated inflected phrasing is not bound today (accepted gap)')
+  assert.equal(rows[0].event_date, null, 'the unbound claimed day never survives')
+})
