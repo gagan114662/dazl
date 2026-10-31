@@ -18,7 +18,8 @@ export interface Rejection {
   named_page_truncated: boolean | null // whether the page the model named was cut off; null when no sent page was named
   model_note: string             // model-authored, untrusted, bounded; never evidence
 }
-export interface Judgment<V> { verdict: V; quote: string | null; quote_url: string | null; quote_role: PageRole | null; note: string; rejected?: Rejection }
+export interface AssessmentConflict {kind:'customer_sector_not_target_business';note:string}
+export interface Judgment<V> { verdict: V; quote: string | null; quote_url: string | null; quote_role: PageRole | null; note: string; rejected?: Rejection; assessment_conflict?:AssessmentConflict }
 export interface EvidenceScope { pages_included: { url: string; role?: PageRole; chars_sent: number; chars_available: number; truncated: boolean }[]; pages_omitted: string[]; any_truncated: boolean }
 export interface Qualification {
   company_fit: Judgment<FitVerdict>
@@ -111,7 +112,7 @@ function norm(s: string) { return s.replace(/\s+/g, ' ').trim() }
 
 // Parse, then keep a verdict only if its quote is verbatim inside ONE page that was actually sent, and
 // quote_url names that page. Literal presence only: it does not prove the quote means what the verdict says.
-export function parseQualification(raw: string, included: { url: string; text: string; role?: PageRole }[], scope: EvidenceScope): Qualification {
+export function parseQualification(raw: string, included: { url: string; text: string; role?: PageRole }[], scope: EvidenceScope, targetCriteria?:string): Qualification {
   const m = /\{[\s\S]*\}/.exec(raw)
   if (!m) return NONE_SCOPE(scope, 'model output was not readable')
   let j: Record<string, { verdict?: unknown; quote?: unknown; quote_url?: unknown; note?: unknown }>
@@ -133,13 +134,23 @@ export function parseQualification(raw: string, included: { url: string; text: s
     }
     return { verdict: v, quote: q, quote_url: page.url, quote_role: included.find(x => x.url === page.url)?.role ?? null, note }
   }
-  return {
+  const result:Qualification = {
     company_fit: one<FitVerdict>('company_fit', ['yes', 'no', 'unknown'], 'unknown'),
     use_case: one<FitVerdict>('use_case', ['yes', 'no', 'unknown'], 'unknown'),
     buying_evidence: one<BuyVerdict>('buying_evidence', ['stated', 'none_seen', 'unknown'], 'unknown'),
     evidence_scope: scope,
     caveat: LITERAL_CAVEAT,
   }
+  // A warning about an explicit reasoning premise, not a business-model classifier or a new verdict.
+  // Never infer SaaS from customers, or infer a target's fit from this diagnostic.
+  const fit=result.company_fit
+  const requiresSoftwareCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+to|customers?\s+(?:must\s+be|are|include)|target(?:s|ing)?)\s+(?:only\s+)?software\s+companies\b/i.test(targetCriteria)
+  if(fit.verdict==='no'&&targetCriteria&&!requiresSoftwareCustomers&&/\bb2b\s+(?:saas|software)\b/i.test(targetCriteria)){
+   const rationale=fit.note
+   const customerExclusion=/\bcustomers?\s+(?:are|is)\s+[^.!?]{1,100},?\s*(?:not|rather than)\s+(?:software companies|businesses buying software services)\b/i.exec(rationale)
+   if(customerExclusion)fit.assessment_conflict={kind:'customer_sector_not_target_business',note:'Disputed model reasoning: this no uses the customer sector to reject the target business model. B2B software can sell to non-software businesses. This does not settle the target business model or any other targeting condition; do not use this assessment as a fit conclusion.'}
+  }
+  return result
 }
 
 // Approval must name the exact model and the estimate it was shown. Booleans alone are not accepted.
@@ -167,5 +178,5 @@ export async function qualifyLead(provider: Provider, apiKey: string, input: Qua
   if (!Number.isFinite(a.max_usd_estimate) || a.max_usd_estimate < 0 || cost.usd_estimate_max > a.max_usd_estimate) return { status: 'blocked', reason: 'over_estimate', cost }
   if (!provider.completeDetailed) return { status: 'blocked', reason: 'no_provider', cost }
   const r = await provider.completeDetailed(apiKey, prep.prompt, opts.fetchImpl, limits.max_output_tokens)
-  return { status: 'done', qualification: parseQualification(r.text, prep.included, prep.scope), cost, usage: r.usage, served_model: r.model }
+  return { status: 'done', qualification: parseQualification(r.text, prep.included, prep.scope,input.seller_icp), cost, usage: r.usage, served_model: r.model }
 }
