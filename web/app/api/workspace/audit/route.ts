@@ -21,7 +21,7 @@ const csvCell = (v: unknown) => {
 // Nothing bounds the trail's size until the owner chooses a retention period (lib/audit.ts auditRetention), so this
 // bounds one download's memory, and says so when it stops short.
 const CSV_MAX = 100_000
-const COLUMNS = ['at', 'actor_id', 'actor_kind', 'action', 'resource_type', 'resource_id', 'decision', 'summary', 'correlation_id'] as const
+const COLUMNS = ['at', 'actor_id', 'actor_kind', 'action', 'resource_type', 'resource_id', 'decision', 'summary', 'summary_unreadable', 'correlation_id'] as const
 
 // seq is an ordering detail of the cursor, not part of the event
 const publicRow = (e: AuditRow): Omit<AuditRow, 'seq'> => { const r: Partial<AuditRow> = { ...e }; delete r.seq; return r as Omit<AuditRow, 'seq'> }
@@ -60,6 +60,6 @@ export async function GET(req: NextRequest) {
   const truncated = events.length > CSV_MAX
   if (truncated) events.length = CSV_MAX
   await audit(user, req, { action: 'export.audit', resource: 'audit', summary: { rows: events.length, truncated } })
-  const body = [COLUMNS.join(','), ...events.map(e => COLUMNS.map(c => csvCell(c === 'at' ? new Date(e.at * 1000).toISOString() : e[c])).join(','))].join('\n') + '\n'
+  const body = [COLUMNS.join(','), ...events.map(e => COLUMNS.map(c => csvCell(c === 'at' ? new Date(e.at * 1000).toISOString() : c === 'summary_unreadable' ? (e.summary_unreadable ? 1 : '') : e[c])).join(','))].join('\n') + '\n'
   return new NextResponse(body, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="dazl-audit.csv"', 'cache-control': 'no-store', ...(truncated ? { 'x-audit-truncated': '1' } : {}) } })
 }

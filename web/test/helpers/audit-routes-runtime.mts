@@ -162,7 +162,7 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   const csv = await read(t.A, '?format=csv')
   assert.equal(csv.headers.get('content-type'), 'text/csv; charset=utf-8')
   const lines = (await csv.text()).trim().split('\n')
-  assert.equal(lines[0], 'at,actor_id,actor_kind,action,resource_type,resource_id,decision,summary,correlation_id')
+  assert.equal(lines[0], 'at,actor_id,actor_kind,action,resource_type,resource_id,decision,summary,summary_unreadable,correlation_id')
   assert.equal(lines.length, 1 + events.length)
   assert.equal(((await (await read(t.A, '?action=export.audit')).json()) as { events: Ev[] }).events.length, 1)
 

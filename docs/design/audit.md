@@ -28,7 +28,9 @@ needs an owner decision; see the end of this note.
   or content (`secret|token|key|password|hash|salt|cookie|authorization|credential|body|text|content|html|message|
   reply|snippet`), when its value looks like a key (`sk_…`, 32+ base64 or hex characters), or when it is longer than
   120 characters. Fields past what the 2000-character column holds are dropped, so a large summary never fails the
-  event's own write. Routes pass facts only (a vendor, an outcome, a row count, whether a reason was typed), never the
+  event's own write. A stored summary that does not parse is reported through `captureError` on every read of that
+  row and comes back as `{}` with `summary_unreadable: true` beside it (also a CSV column), a field no route can
+  write. Routes pass facts only (a vendor, an outcome, a row count, whether a reason was typed), never the
   value: secret values, sender details, typed reasons and reply bodies never enter the trail.
 - **Scoped reads.** `GET /api/workspace/audit` needs admin or owner (`members`) and reads only the session's workspace;
   a tenant in the query is ignored. Filters: `action` prefix (matched literally), `actor`, `limit` (up to 1000) and
@@ -68,7 +70,9 @@ identifiers and redacted scalars today, so the guard is defence in depth.
 - **Stripe's plan changes** (`lib/billing/stripe.ts`: applied, reconciled, held, payment failed) are written inside
   the transaction that applies them, so the change and its event commit together or not at all. A duplicate or stale
   event changes nothing and records nothing.
-- **Route actions** are written after the change succeeded (`lib/audit-route.ts`). A failed audit write does not undo
+- **Route actions** are written after the change succeeded (`lib/audit-route.ts`). For the on/off toggles (monitors,
+  social channels) "changed" is decided in the `UPDATE` itself (`... AND enabled <> ?`), so of two interleaved toggles
+  each records exactly the flip it made and the trail's last event matches the row. A failed audit write does not undo
   the change; it is reported through `captureError` (`where: audit:<action>`, tested), so a gap is an alert rather
   than silent. Whether a failed audit write should instead refuse the change is an owner decision.
 - The event's workspace is the one the route acted in (`user.tenantId`, #424), its actor the account acting

@@ -16,10 +16,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const body = await req.json().catch(() => null)
   if (typeof body?.enabled !== 'boolean') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const db = await getDb()
-  const was = (await db.get<{ enabled: number }>('SELECT enabled FROM monitors WHERE id = ? AND user_id = ?', [id, user.tenantId]))?.enabled === 1
-  if (!(await setMonitorEnabled(db, user.tenantId, id, body.enabled))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  // a toggle to the state the monitor is already in changes nothing, so it records nothing
-  if (was !== body.enabled) await audit(user, req, { action: body.enabled ? 'monitor.enabled' : 'monitor.disabled', resource: 'monitor', id })
+  if (!(await db.get('SELECT 1 FROM monitors WHERE id = ? AND user_id = ?', [id, user.tenantId]))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  // a toggle to the state the monitor is already in changes nothing, so it records nothing; "changed" is decided in the
+  // UPDATE itself (lib/monitors.ts), so of two interleaved toggles the one that flipped the row is the one recorded
+  if (await setMonitorEnabled(db, user.tenantId, id, body.enabled)) await audit(user, req, { action: body.enabled ? 'monitor.enabled' : 'monitor.disabled', resource: 'monitor', id })
   return NextResponse.json({ ok: true })
 }
 

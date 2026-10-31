@@ -84,8 +84,10 @@ export async function connectorStatus(db: Db, tenantId: string) {
     .map(r => ({ connector: r.connector, last4: r.last4, enabled: Number(r.enabled) === 1 }))
 }
 
+// true when the connector was in the other state and is now `enabled`; false when it is missing or already there. The
+// decision is made in the statement, so interleaved toggles each record exactly the flip they made (lib/monitors.ts).
 export async function setEnabled(db: Db, tenantId: string, connector: string, enabled: boolean): Promise<boolean> {
-  return (await db.run('UPDATE tenant_connectors SET enabled = ? WHERE tenant_id = ? AND connector = ?', [enabled ? 1 : 0, tenantId, connector])).changes === 1
+  return (await db.run('UPDATE tenant_connectors SET enabled = ? WHERE tenant_id = ? AND connector = ? AND enabled <> ?', [enabled ? 1 : 0, tenantId, connector, enabled ? 1 : 0])).changes === 1
 }
 
 const DELETE_CREDENTIAL_SQL = 'DELETE FROM tenant_connectors WHERE tenant_id = ? AND connector = ?'

@@ -51,18 +51,17 @@ export async function POST(req: NextRequest) {
   if (body.action === 'revoke') {
     // each change revoke makes is recorded on its own: the notice removed (any version; several platforms share one),
     // and this platform's channel turned off if it was on. A revoke that changes neither records nothing.
-    const on = (await db.get<{ enabled: number }>('SELECT enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [user.tenantId, connectorId(p)]))?.enabled === 1
     const removed = await removeConsent(db, user.tenantId, scopeFor(p))
-    await setEnabled(db, user.tenantId, connectorId(p), false)
+    const turnedOff = await setEnabled(db, user.tenantId, connectorId(p), false)
     if (removed) await audit(user, req, { action: 'consent.revoked', resource: 'social', id: p, summary: { platform: p } })
-    if (on) await audit(user, req, { action: 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
+    if (turnedOff) await audit(user, req, { action: 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok: true })
   }
   if (body.action === 'toggle' && typeof body.enabled === 'boolean') {
-    // a toggle to the state the channel is already in changes nothing, so it records nothing
-    const was = (await db.get<{ enabled: number }>('SELECT enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [user.tenantId, connectorId(p)]))?.enabled === 1
-    const ok = await setEnabled(db, user.tenantId, connectorId(p), body.enabled)
-    if (ok && was !== body.enabled) await audit(user, req, { action: body.enabled ? 'connector.enabled' : 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
+    // a toggle to the state the channel is already in changes nothing, so it records nothing; "changed" is decided in
+    // the UPDATE itself (lib/connectors/store.ts), so interleaved toggles each record exactly the flip they made
+    const ok = !!(await db.get('SELECT 1 FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [user.tenantId, connectorId(p)]))
+    if (ok && await setEnabled(db, user.tenantId, connectorId(p), body.enabled)) await audit(user, req, { action: body.enabled ? 'connector.enabled' : 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok })
   }
   if (body.action === 'save') {

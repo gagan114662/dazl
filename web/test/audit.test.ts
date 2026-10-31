@@ -67,7 +67,7 @@ bothEngines('a summary that does not parse is reported and read as unreadable, n
   const caught: ErrorRecord[] = []
   const restore = setErrorSinks([r => { caught.push(r) }])
   try {
-    assert.deepEqual((await searchAudit(db, 'A')).map(e => [e.action, e.summary]), [['x.corrupt', { unreadable: true }], ['x.fine', { n: 1 }]])
+    assert.deepEqual((await searchAudit(db, 'A')).map(e => [e.action, e.summary, e.summary_unreadable]), [['x.corrupt', {}, true], ['x.fine', { n: 1 }, undefined]])
   } finally { restore() }
   assert.deepEqual(caught.map(r => r.where), ['audit:summary'])
 })

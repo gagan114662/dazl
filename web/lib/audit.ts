@@ -86,7 +86,9 @@ export async function record(db: Db, e: AuditEvent, now = nowS()): Promise<void>
   await db.run(INSERT, row(e, now))
 }
 
-export type AuditRow = { id: string; actor_id: string; actor_kind: string; action: string; resource_type: string; resource_id: string | null; decision: string; summary: Record<string, unknown>; correlation_id: string | null; at: number; seq: number }
+// summary_unreadable is set (and summary is {}) when the stored summary did not parse: a field of its own, so it can
+// never be confused with data a route wrote.
+export type AuditRow = { id: string; actor_id: string; actor_kind: string; action: string; resource_type: string; resource_id: string | null; decision: string; summary: Record<string, unknown>; summary_unreadable?: true; correlation_id: string | null; at: number; seq: number }
 
 // A page boundary is the last row's (at, seq, id), the same order the query sorts by, so the next page starts exactly
 // after it: events written in the same second as the boundary are neither skipped nor repeated.
@@ -111,11 +113,13 @@ export async function searchAudit(db: Db, tenantId: string, q: { action?: string
   const rows = await db.all<Omit<AuditRow, 'summary'> & { summary: string }>(
     `SELECT id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, correlation_id, at, seq FROM audit_events
      WHERE ${where.join(' AND ')} ORDER BY at DESC, seq DESC, id DESC LIMIT ${limit}`, params)
-  // a summary that does not parse (the column is written by this module only, so this is corruption) is reported and
-  // shown as unreadable rather than silently empty
-  return rows.map(r => ({ ...r, at: Number(r.at), seq: Number(r.seq), summary: (() => {
-    try { return JSON.parse(r.summary) as Record<string, unknown> } catch (e) { captureError(e, { source: 'route', where: 'audit:summary', tenantId }); return { unreadable: true } }
-  })() }))
+  // a summary that does not parse (the column is written by this module only, so this is corruption) is reported on
+  // every read of that row (deliberately loud: it should not happen) and marked unreadable rather than silently empty
+  return rows.map(r => {
+    const out: AuditRow = { ...r, at: Number(r.at), seq: Number(r.seq), summary: {} }
+    try { out.summary = JSON.parse(r.summary) as Record<string, unknown> } catch (e) { captureError(e, { source: 'route', where: 'audit:summary', tenantId }); out.summary_unreadable = true }
+    return out
+  })
 }
 
 // Retention policy. Automatic deletion is OFF until the owner chooses a period: a deployment never picks one on its own
