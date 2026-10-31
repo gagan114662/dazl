@@ -88,7 +88,7 @@ test('readiness: opening the store failing, or the SQLite file failing, is not r
 // Review repro: synchronous SQLite work cannot be preempted by the timer. The probe waits for it (measured here), and
 // reports the check failed once it returns over budget, instead of {ok:true, ms:100}.
 test('readiness: a synchronous SQLite check over budget blocks the probe until it returns, then reports timeout', () => capturing(async got => {
-  const sqliteDb = { kind: 'sqlite', get: async () => ({ x: 1 }) } as unknown as Db
+  const sqliteDb = { kind: 'sqlite', get: async () => ({ x: 1 }), all: async () => [] } as unknown as Db
   const slow = () => ({ prepare: () => ({ get: () => { const end = Date.now() + 100; while (Date.now() < end) { /* busy: holds the thread like a locked SQLite call */ } return 1 } }) })
   const t0 = Date.now()
   const r = await readiness({ db: async () => sqliteDb, sqlite: slow, migrations: shipped, timeoutMs: 10 })
@@ -98,6 +98,83 @@ test('readiness: a synchronous SQLite check over budget blocks the probe until i
   assert.ok(r.checks.sqlite.ms >= 100)
   assert.equal(r.checks.store.ok, true)
   assert.deepEqual(got.map(g => g.where), ['readiness:sqlite'])
+}))
+
+// Review repro (#430 HOLD): the queue reachability SELECT is mandatory; the alert statistics (DbQueue.stats, a GROUP BY
+// over work_queue) are informational and read under their own budget. Dependency-isolated: Db.get answers for the
+// store and queue SELECTs and the SQLite probe answers; only Db.all (the statistics) is varied. Thrown, hanging and
+// over-budget statistics leave the instance ready with alerts null and the reason; the mandatory SELECT failing or
+// hanging does not, and the statistics are never read then.
+const statsDb = (all: () => Promise<unknown[]>, get: (sql: string) => Promise<unknown> = async () => ({ x: 1 })) => ({ kind: 'sqlite', get, all } as unknown as Db)
+const hang = () => new Promise<never>(() => {})
+const later = <T,>(ms: number, v: T) => new Promise<T>(res => setTimeout(() => res(v), ms))
+const oneOldReplyCheck = () => [{ kind: 'reply-check', pending: 1, claimed: 0, failed: 0, oldest: Math.floor(Date.now() / 1000) - 3600, expired: 0 }]
+
+test('readiness boundary: statistics that throw leave a reachable queue ready; the body says alerts null, reason error', () => capturing(async got => {
+  const r = await readiness({ db: async () => statsDb(async () => { throw new Error('stats exploded') }), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: true, ms: 0 })
+  assert.deepEqual(r.queue, { alerts: null, reason: 'error' })
+  assert.ok(!JSON.stringify(r).includes('stats exploded'), 'no error text in the response')
+  assert.deepEqual(got.map(g => g.where), ['readiness:queue:stats'], 'the cause went to the reporter')
+}))
+
+test('readiness boundary: statistics that hang leave a reachable queue ready; the probe returns within budget, alerts null, reason timeout', () => capturing(async got => {
+  const t0 = Date.now()
+  const r = await readiness({ db: async () => statsDb(hang), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  assert.ok(Date.now() - t0 < 1000, 'the hanging read did not hold the probe')
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: true, ms: 0 }, 'the mandatory check is not the one that timed out')
+  assert.deepEqual(r.queue, { alerts: null, reason: 'timeout' })
+  assert.deepEqual(got.map(g => [g.where, g.error.name]), [['readiness:queue:stats', 'Timeout']])
+}))
+
+test('readiness boundary: statistics over their own budget but under the readiness deadline: ready, alerts null, reason timeout', () => capturing(async got => {
+  const r = await readiness({ db: async () => statsDb(() => later(60, oneOldReplyCheck())), sqlite: okSqlite, migrations: shipped, timeoutMs: 2000, statsTimeoutMs: 20 })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.checks.queue.ok, true)
+  assert.deepEqual(r.queue, { alerts: null, reason: 'timeout' })
+  assert.deepEqual(got.map(g => [g.where, g.error.name]), [['readiness:queue:stats', 'Timeout']])
+  // the same read within its budget is reported
+  const ok = await readiness({ db: async () => statsDb(() => later(5, oneOldReplyCheck())), sqlite: okSqlite, migrations: shipped, timeoutMs: 2000, statsTimeoutMs: 1000 })
+  assert.deepEqual(ok.queue?.alerts?.map(a => [a.kind, a.alert]), [['reply-check', 'queue_age']])
+}))
+
+test('readiness boundary: statistics read in time: the alerts are in the body and the instance is ready', () => capturing(async got => {
+  const r = await readiness({ db: async () => statsDb(async () => oneOldReplyCheck()), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.checks.queue.ok, true)
+  assert.deepEqual(r.queue?.alerts?.map(a => [a.kind, a.alert, a.limit]), [['reply-check', 'queue_age', 15 * 60]])
+  assert.ok((r.queue?.alerts?.[0].value ?? 0) >= 3600)
+  assert.ok(got.every(g => g.where === 'readiness:queue'), 'at most the alert set change is reported, never a statistics failure')
+  const none = await readiness({ db: async () => statsDb(async () => []), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  assert.deepEqual([none.ok, none.queue], [true, { alerts: [] }])
+}))
+
+test('readiness boundary: the mandatory queue SELECT failing is not ready (error) and the statistics are never read', () => capturing(async got => {
+  let statsReads = 0
+  const get = async (sql: string) => { if (/work_queue/.test(sql)) throw new Error('relation "work_queue" does not exist'); return { x: 1 } }
+  const r = await readiness({ db: async () => statsDb(async () => { statsReads++; return [] }, get), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  assert.equal(r.ok, false)
+  assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: false, ms: 0, reason: 'error' })
+  assert.equal(r.checks.store.ok, true, 'the store itself answers')
+  assert.equal(r.queue, null)
+  assert.equal(statsReads, 0)
+  assert.ok(!/work_queue|does not exist/.test(JSON.stringify(r)))
+  assert.deepEqual(got.map(g => g.where), ['readiness:queue'])
+}))
+
+test('readiness boundary: the mandatory queue SELECT hanging is not ready (timeout) and the statistics are never read', () => capturing(async got => {
+  let statsReads = 0
+  const get = (sql: string) => /work_queue/.test(sql) ? hang() : Promise.resolve({ x: 1 })
+  const t0 = Date.now()
+  const r = await readiness({ db: async () => statsDb(async () => { statsReads++; return [] }, get), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  assert.ok(Date.now() - t0 < 1000)
+  assert.equal(r.ok, false)
+  assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: false, ms: 0, reason: 'timeout' })
+  assert.equal(r.queue, null)
+  assert.equal(statsReads, 0)
+  assert.deepEqual(got.map(g => [g.where, g.error.name]), [['readiness:queue', 'Timeout']])
 }))
 
 // The store summary a deploy is verified with (docs/PLATFORM.md "Postgres cutover"), and the split-store guard.
