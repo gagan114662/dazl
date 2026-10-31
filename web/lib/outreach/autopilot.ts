@@ -5,6 +5,7 @@ import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMes
 import { polishDraft, type LlmDeps } from './draft-llm.ts'
 import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
 import { providers as defaultProviders } from '../llm/provider.ts'
+import { captureError } from '../ops/errors.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -99,7 +100,19 @@ export function recordBounce(db: Database.Database, tenantId: string, email: str
 }
 
 const sentTotal = (db: Database.Database, tenantId: string) => (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status = 'sent'").get(tenantId) as { n: number }).n
-const autoSent24h = (db: Database.Database, tenantId: string, now: number) => (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'sent' AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
+// Autopilot's sends in the last 24h, for the daily and rollout caps: its 'sent' audit rows, plus every OTHER autopilot
+// message it has claimed for sending ('claimed' audit row, written in the cap reservation below) that is still live
+// (approved, sending, uncertain or sent), each message counted once. Hand sends have no claim row and are not counted
+// (the account-wide cap in the send service counts those). A send in flight in another pass therefore already counts,
+// so two passes cannot both see room for the last send; the reservation itself is taken in one transaction with this
+// count, so neither can two passes reserve the same slot. (#448 adds a committed-reservation counter for the daily cap;
+// when it lands the two are unified in that merge.)
+const autoCount24h = (db: Database.Database, tenantId: string, now: number, exceptMessageId: string | null) => (db.prepare(
+  `SELECT (SELECT count(*) FROM autopilot_audit WHERE tenant_id = ? AND action = 'sent' AND created_at >= ? AND message_id IS NULL)
+        + (SELECT count(DISTINCT a.message_id) FROM autopilot_audit a LEFT JOIN outreach_messages m ON m.id = a.message_id
+             WHERE a.tenant_id = ? AND a.created_at >= ? AND a.message_id IS NOT NULL AND a.message_id <> ?
+               AND (a.action = 'sent' OR (a.action = 'claimed' AND m.status IN ('approved', 'sending', 'uncertain', 'sent')))) AS n`,
+).get(tenantId, now - 86400, tenantId, now - 86400, exceptMessageId ?? '') as { n: number }).n
 const domainSentRecently = (db: Database.Database, tenantId: string, domain: string, now: number) =>
   !!db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400)
 
@@ -119,13 +132,6 @@ type Stop = 'not_available' | 'off' | 'paused' | 'consent_required' | 'uncertain
 function stopNow(db: Database.Database, tenantId: string, env: Record<string, string | undefined>, now: number, started: LaunchGate, l: Lead, messageId: string | null): Stop | null {
   try { return stopNowUnguarded(db, tenantId, env, now, started, l, messageId) } catch { return 'stop_check_unavailable' }
 }
-// Autopilot sends in flight right now count against the cap as if sent: another pass's claimed ('sending') or unresolved
-// ('uncertain') message in the window, when it was drafted before this one (insert_seq, the portable insertion order),
-// so two concurrent passes cannot both see room for the last send. (#448 adds a committed-reservation counter for the
-// daily cap; when it lands, the two counts are unified in that merge.)
-const inFlight24h = (db: Database.Database, tenantId: string, now: number, messageId: string | null) => (messageId
-  ? db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND claimed_at >= ? AND insert_seq < (SELECT insert_seq FROM outreach_messages WHERE id = ?)").get(tenantId, now - 86400, messageId) as { n: number }
-  : db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND claimed_at >= ?").get(tenantId, now - 86400) as { n: number }).n
 function stopNowUnguarded(db: Database.Database, tenantId: string, env: Record<string, string | undefined>, now: number, started: LaunchGate, l: Lead, messageId: string | null): Stop | null {
   if (!autopilotAvailable(env)) return 'not_available'
   const st = getState(db, tenantId)
@@ -145,7 +151,7 @@ function stopNowUnguarded(db: Database.Database, tenantId: string, env: Record<s
     if (m && claimIssuesFor(gate.policy, `${m.subject}\n${m.body}`, l.source_url ? [l.source_url] : []).length) return 'claims'
   }
   const cap = gate.calibrated ? Math.min(st.daily_cap, gate.cap) : st.daily_cap
-  if (autoSent24h(db, tenantId, now) + inFlight24h(db, tenantId, now, messageId) >= cap) return 'daily_cap'
+  if (autoCount24h(db, tenantId, now, messageId) >= cap) return 'daily_cap'
   return null
 }
 // What a stop means for the run: the policy's own stops and an uncertain send pause autopilot; the launch changing is
@@ -207,7 +213,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   // lapsing, the message goes back to a draft for the tenant (its approval, if any, was autopilot's). The stop may be
   // that a store is unreadable, so each step stands on its own: release the message first, pause second, record last;
   // a step that fails is not allowed to leave the message approved or the run thrown.
-  const attempt = (f: () => void) => { try { f() } catch { /* an unreadable store is itself the stop; the run still ends with the reason */ } }
+  const attempt = (f: () => void) => { try { f() } catch (e) { captureError(e, { source: 'worker', where: 'autopilot:ended', tenantId }) } } // an unreadable store is itself the stop; the run still ends with the reason, and the failed step is recorded
   const ended = (code: string, leadId: string, id?: string): RunResult => {
     if (id) {
       out.held++
@@ -249,6 +255,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const domain = to.split('@')[1]
     if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
     if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }
+    // The cap reservation: in ONE transaction, every stop is re-read (the cap counting every other live autopilot claim)
+    // and this message is recorded as claimed, so no two passes can take the same last slot, whatever order they drafted
+    // or claim in. A refusal here ends the run like any other stop and the message stays the tenant's draft.
+    const reserved = db.transaction(() => { const c = stopNow(db, tenantId, env, now, gate, l, id); if (!c) audit(db, tenantId, 'claimed', undefined, l.id, id); return c }).immediate()
+    if (reserved) return ended(reserved === 'not_in_audience' || reserved === 'excluded' || reserved === 'claims' ? 'launch_policy_changed' : reserved, l.id, id)
     // The send service runs the same stops as its sendAuthority: at its claim, and again after its token refresh
     // immediately before Gmail. Scope or claim authority failing there means the launch changed under the send.
     const sendAuthority = () => {

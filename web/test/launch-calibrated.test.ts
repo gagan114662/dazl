@@ -600,6 +600,37 @@ test('R1-3: two concurrent passes share the rollout cap: with room for one send,
   assert.deepEqual(rest, [{ status: 'draft', error: 'daily_cap' }], 'the lead that lost the race is the tenant\'s draft again')
 })
 
+test('R1-3 (round 2): the earlier-drafted message claimed after a later one is in flight still respects the cap; exactly one send', async () => {
+  // run 1 drafts d (higher score) and waits on a slow model polish; run 2 drafts e, claims it and is at Gmail when run 1
+  // resumes. Drafting order is not claim order: run 1 must see run 2's live claim and refuse.
+  const { db, job } = await launchedWithKey(5)
+  for (let i = 0; i < ROLLOUT_DAILY_CAP - 1; i++) auditAt(db, 'A', 'sent', undefined, undefined, undefined, NOW - 100)
+  lead(db, job, 'd@four.example', 90); lead(db, job, 'e@five.example', 80)
+  let releaseRun1!: () => void; const run1Gate = new Promise<void>(r => { releaseRun1 = r })
+  let run1Sent!: () => void; const run1SentP = new Promise<void>(r => { run1Sent = r })
+  const slow: Provider = { research: async () => { throw new Error('x') }, configuredModel: () => 'claude-sonnet-4-5',
+    completeDetailed: async () => { await run1Gate; return { text: 'not a draft', model: 'claude-sonnet-4-5', usage: { input_tokens: 10, output_tokens: 10 } } } }
+  const fast = model('claude-sonnet-4-5', () => ({ input_tokens: 10, output_tokens: 10 }))
+  const g1 = gmail(), g2 = gmail()
+  const send1 = g1.d.sendFn as (t: string, r: string) => Promise<{ id: string }>, send2 = g2.d.sendFn as (t: string, r: string) => Promise<{ id: string }>
+  const d1 = { ...g1.d, now: NOW + 2, providers: { anthropic: slow, openai: slow }, sendFn: (async (t: string, raw: string) => { run1Sent(); return send1(t, raw) }) as never }
+  const d2 = { ...g2.d, now: NOW + 2, providers: fast.providers, sendFn: (async (t: string, raw: string) => {
+    releaseRun1() // e is now 'sending'; let run 1 continue with d
+    await Promise.race([run1SentP, new Promise(r => setTimeout(r, 300))])
+    return send2(t, raw) }) as never }
+  const [r1, r2] = await Promise.all([runAutopilot(db, 'A', 'Acme', d1 as never), runAutopilot(db, 'A', 'Acme', d2 as never)])
+  assert.equal(g1.sent.length + g2.sent.length, 1, 'cap 5 with 4 sent allows one')
+  // run 1 (d) is refused by the reservation and ends with daily_cap; run 2 sent e and finished its list (d was already drafted)
+  assert.deepEqual([g1.to(), g2.to(), r1.sent + r2.sent, r1.stopped, r2.stopped ?? null], [[], ['e@five.example'], 1, 'daily_cap', null])
+  assert.deepEqual(db.prepare("SELECT status, error FROM outreach_messages WHERE to_email = 'd@four.example'").get(), { status: 'draft', error: 'daily_cap' })
+  // a hand send in flight is not autopilot's: it does not consume the rollout cap (the account cap in the send service does that)
+  const b = await launched()
+  for (let i = 0; i < ROLLOUT_DAILY_CAP - 1; i++) auditAt(b.db, 'A', 'sent', undefined, undefined, undefined, NOW - 100)
+  b.db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES ('h1a2b3c4d5e6f7a8b9c0d1e2', 'A', 'xh', 'h@hand.example', 's', 'bodybodybodybodybodybody', 'sending', ?)").run(NOW + 1)
+  const gb = gmail()
+  assert.deepEqual([(await runAutopilot(b.db, 'A', 'Acme', { ...gb.d, now: NOW + 2 })).sent, gb.to()], [1, ['d@four.example']])
+})
+
 test('R3-6: calibration needs autopilot on under the current consent: otherwise no draft, no message, no launch', async () => {
   const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
   acceptLaunchPolicy(db, 'A', policy([job]), NOW)

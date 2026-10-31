@@ -6,6 +6,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { denied } from '@/lib/workspace-access'
 import { acceptLaunchPolicy, LAUNCH_POLICY_VERSION, launchPolicyView } from '@/lib/outreach/launch-policy'
 import { runCalibration } from '@/lib/outreach/calibration'
+import { captureError } from '@/lib/ops/errors'
 
 export async function GET() {
   const user = await requireUser()
@@ -41,7 +42,11 @@ export async function POST(req: NextRequest) {
       if (!r.ok) return NextResponse.json({ error: 'The launch policy is incomplete', problems: r.problems }, { status: 400 })
     }
     else if (body?.action === 'launch_calibrated') {
-      const r = await runCalibration(db, user.tenantId, user.business_name)
+      // a stored policy row that cannot be read, or a store fault while drafting a sample, is a failed calibration (the
+      // launch is not on), reported by code and recorded; never a 500 and never the input echoed back
+      let r: Awaited<ReturnType<typeof runCalibration>>
+      try { r = await runCalibration(db, user.tenantId, user.business_name) }
+      catch (e) { captureError(e, { source: 'route', where: '/api/outreach/autopilot', method: 'POST', tenantId: user.tenantId }); return NextResponse.json({ error: 'The calibration could not run', code: 'calibration_failed' }, { status: 409 }) }
       return NextResponse.json({ ok: r.ok, preflight: r, state: getState(db, user.tenantId) }, { status: r.ok ? 200 : 409 })
     }
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })

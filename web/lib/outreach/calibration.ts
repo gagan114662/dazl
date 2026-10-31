@@ -40,7 +40,9 @@ async function receivedInInbox(token: string, messageId: string, fetchImpl: type
 // (calibratedStop, and the reply sync that stops cold sequences), opt-out reads suppressions (isSuppressed at the claim
 // and the handoff), the bounce rate reads autopilot_audit, the uncertain-send pause and the per-company cap read
 // outreach_messages (stopNow, domainSentRecently). What the preflight can observe is that each of those stores answers
-// right now for this tenant; a store that cannot be read is a stop that cannot fire, so its flag is false.
+// right now for this tenant; a store that cannot be read is a stop that cannot fire, so its flag is false. It proves the
+// store answers, not that the stop fires: the reply and bounce stops also depend on the inbound sync (replies.ts) running
+// and writing those rows; the behavioural tests in test/launch-calibrated.test.ts cover the firing.
 export function observedStops(db: Database.Database, tenantId: string): Record<(typeof REQUIRED_STOPS)[number], boolean> {
   const readable = (sql: string) => { try { db.prepare(sql).get(tenantId); return true } catch { return false } }
   return {
