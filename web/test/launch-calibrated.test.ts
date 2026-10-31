@@ -8,7 +8,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { approve, createDraft, OutreachError, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
+import { approve, createDraft, OutreachError, saveSettings, sendMessage, suppress, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, pause, recentAutopilotAudit, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { acceptLaunchPolicy, calibratedStop, launchGate, launchPolicyView, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
@@ -200,6 +200,16 @@ test('a bounce is decided by the bounce-rate rule, never mislabelled as a reply;
   assert.equal(calibratedStop(db, 'A', gate), null, 'the bounce row alone does not trip the reply stop')
   inbound('r1', 'positive')
   assert.equal(calibratedStop(db, 'A', gate), 'reply_received')
+  // positive controls (#405 council R3-5): a reply from before the launch is not this launch's reply; one bounce in
+  // twenty sends is exactly the 5% limit and still sends (the rule is strictly over)
+  db.exec('DELETE FROM inbound_messages')
+  db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES ('old', 'A', 't0', NULL, 'p@old.example', 'earlier', 'positive', ?)").run(gate.launchedAt - 1)
+  assert.equal(calibratedStop(db, 'A', gate), null, 'a reply received before launchedAt does not pause')
+  for (let i = 0; i < 20; i++) auditAt(db, 'A', 'sent', undefined, undefined, undefined, NOW + 1)
+  auditAt(db, 'A', 'bounce', 'one@co.example', undefined, undefined, NOW + 1)
+  assert.equal(calibratedStop(db, 'A', gate), null, '1 bounce of 20 at 0.05 still sends')
+  auditAt(db, 'A', 'bounce', 'two@co.example', undefined, undefined, NOW + 1)
+  assert.equal(calibratedStop(db, 'A', gate), 'bounce_rate', '2 of 20 is over the limit')
 })
 
 test('a corrupt stored policy is reported as unreadable to the settings page and is not a launch (#405 council R2-5)', async () => {
@@ -208,7 +218,9 @@ test('a corrupt stored policy is reported as unreadable to the settings page and
   db.prepare("UPDATE autopilot_launch_policy SET policy = '{not json' WHERE tenant_id = 'A'").run()
   assert.throws(() => readLaunchPolicy(db, 'A'))
   assert.deepEqual(launchPolicyView(db, 'A'), { accepted: null, problem: 'policy_unreadable' })
-  assert.equal(launchGate(db, 'A', 'me@acme.example', NOW + 2).calibrated, false)
+  // the gate does not answer "no launch" for a row it cannot read: it throws, and autopilot turns that into
+  // stop_check_unavailable (the boundary matrix's launch_store_unreadable case), never the warmup's wider rules
+  assert.throws(() => launchGate(db, 'A', 'me@acme.example', NOW + 2))
 })
 
 test('the preflight\'s stop flags are observed, not declared: a stop whose store cannot be read holds the launch (#405 council R2-3)', async () => {
@@ -465,6 +477,8 @@ const boundaryCases: Record<string, Case> = {
   policy_reaccepted: { change: db => { assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([(db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id]), NOW + 1), { ok: true }) }, stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
   mailbox_changed: { change: db => db.prepare("UPDATE gmail_accounts SET email = 'other@acme.example' WHERE tenant_id = 'A'").run(), stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
   mailbox_disconnected: { change: db => db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(), stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'] },
+  // the launch store itself unreadable (#405 council R3-1): a stop, never "no launch" and the warmup's wider rules
+  launch_store_unreadable: { change: db => db.exec('DROP TABLE autopilot_launch_policy'), stopped: 'stop_check_unavailable', pause: 'stop_check_unavailable', msg: ['draft', 'stop_check_unavailable'] },
 }
 
 test('HOLD: every stop is re-read after the token refresh, right before Gmail: no send, the specific reason, the message released', async () => {
@@ -502,6 +516,78 @@ test('HOLD: a sendAuthority that cannot answer is a refusal: the claim is releas
     assert.equal(g.sent.length, 0)
     assert.deepEqual(db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id), { status: 'approved', error: 'stop_check_unavailable' })
   }
+})
+
+// ---------- unreadable stores at the boundary (#405 council R3-1, R3-2, R1-1) ----------
+const warmDone = (db: Database.Database) => { for (let i = 0; i < 10; i++) db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, 'A', ?, ?, 's', 'bodybodybodybodybodybody', 'sent')").run(randomBytes(12).toString('hex'), 'old' + i, 'old' + i + '@done.example') }
+
+test('BLOCKER R3-1: the launch store unreadable at run start is a stop, not a fallback to the warmup: a lead outside the audience is never sent', async () => {
+  const { db } = await launched()
+  warmDone(db); const other = play(db); lead(db, other, 'x@outside.example')
+  // control: store readable, warmup satisfied, the out-of-audience lead is skipped and the in-audience one sent
+  const c = gmail()
+  const rc = await runAutopilot(db, 'A', 'Acme', { ...c.d, flags: { ...ON, AUTOPILOT_WARMUP: '0' }, now: NOW + 2 })
+  assert.deepEqual([c.to(), rc.stopped ?? null], [['d@four.example'], null])
+  // the store gone: nothing goes out, under either rule set
+  const { db: db2 } = await launched()
+  warmDone(db2); const other2 = play(db2); lead(db2, other2, 'x@outside.example')
+  db2.exec('DROP TABLE autopilot_launch_policy')
+  const g = gmail()
+  const r = await runAutopilot(db2, 'A', 'Acme', { ...g.d, flags: { ...ON, AUTOPILOT_WARMUP: '0' }, now: NOW + 2 })
+  assert.deepEqual([g.to(), r.sent, r.stopped], [[], 0, 'stop_check_unavailable'])
+  assert.equal(getState(db2, 'A').pause_reason, 'stop_check_unavailable')
+  assert.equal((db2.prepare("SELECT count(*) AS n FROM outreach_messages WHERE to_email IN ('x@outside.example', 'd@four.example')").get() as { n: number }).n, 0, 'no draft is written either')
+})
+
+test('R3-2: a stop store that becomes unreadable at the handoff: no send, the message released to draft, the run ends with the reason, never throws', async () => {
+  // the tenant's switches (autopilot_settings) gone during the token refresh: the state cannot be re-read, so no send.
+  // The pause cannot be recorded either (same store); the message is still released and the run still ends with the reason.
+  {
+    const { db } = await launched()
+    const g = gmail(); let changed = false
+    const fetchImpl = (async (url: string, init?: RequestInit) => { if (String(url).includes('token') && !changed) { changed = true; db.exec('DROP TABLE autopilot_settings') }; return (g.d.fetchImpl as typeof fetch)(url, init) }) as typeof fetch
+    const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, fetchImpl, now: NOW + 2 })
+    assert.ok(changed)
+    assert.deepEqual([g.sent.length, r.sent, r.stopped], [0, 0, 'stop_check_unavailable'])
+    assert.deepEqual(db.prepare("SELECT status, error, approved_hash IS NOT NULL AS hashed FROM outreach_messages WHERE to_email = 'd@four.example'").get(), { status: 'draft', error: 'stop_check_unavailable', hashed: 0 })
+  }
+  // the bounce/cap store (autopilot_audit) renamed during the token refresh (reviewer probe R-bouncestore)
+  {
+    const { db } = await launched()
+    const g = gmail(); let changed = false
+    const fetchImpl = (async (url: string, init?: RequestInit) => { if (String(url).includes('token') && !changed) { changed = true; db.exec('ALTER TABLE autopilot_audit RENAME TO autopilot_audit_x') }; return (g.d.fetchImpl as typeof fetch)(url, init) }) as typeof fetch
+    const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, fetchImpl, now: NOW + 2 })
+    assert.ok(changed)
+    assert.deepEqual([g.sent.length, r.sent, r.stopped], [0, 0, 'stop_check_unavailable'])
+    assert.deepEqual(db.prepare("SELECT status, error, approved_hash IS NOT NULL AS hashed FROM outreach_messages WHERE to_email = 'd@four.example'").get(), { status: 'draft', error: 'stop_check_unavailable', hashed: 0 })
+    assert.equal(getState(db, 'A').pause_reason, 'stop_check_unavailable', 'paused, even though the audit of the stop could not be written')
+  }
+})
+
+test('R1-3: two concurrent passes share the rollout cap: with room for one send, exactly one goes out (reviewer probe R-cap)', async () => {
+  const { db, job } = await launched()
+  for (let i = 0; i < ROLLOUT_DAILY_CAP - 1; i++) auditAt(db, 'A', 'sent', undefined, undefined, undefined, NOW - 100)
+  lead(db, job, 'e@five.example')
+  const g1 = gmail(), g2 = gmail()
+  const [r1, r2] = await Promise.all([runAutopilot(db, 'A', 'Acme', { ...g1.d, now: NOW + 2 }), runAutopilot(db, 'A', 'Acme', { ...g2.d, now: NOW + 2 })])
+  assert.equal(g1.sent.length + g2.sent.length, 1, 'cap 5 with 4 already sent: one send across both passes')
+  assert.equal(r1.sent + r2.sent, 1)
+  assert.deepEqual([r1.stopped, r2.stopped].sort(), ['daily_cap', 'daily_cap'])
+  const rest = db.prepare("SELECT status, error FROM outreach_messages WHERE to_email IN ('d@four.example', 'e@five.example') AND status <> 'sent'").all()
+  assert.deepEqual(rest, [{ status: 'draft', error: 'daily_cap' }], 'the lead that lost the race is the tenant\'s draft again')
+})
+
+test('R3-4: under a calibrated launch the per-company cap and the opt-out list still apply', async () => {
+  const { db, job } = await launched()
+  lead(db, job, 'second@four.example') // same company as d@four.example
+  const opted = lead(db, job, 'no@optout.example'); suppress(db, 'A', 'no@optout.example', 'unsubscribe')
+  db.prepare('UPDATE leads SET score = 70 WHERE id = ?').run(opted)
+  const g = gmail()
+  const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, now: NOW + 2 })
+  assert.deepEqual([g.to(), r.sent, r.held, r.skipped, r.stopped ?? null], [['d@four.example'], 1, 1, 1, null])
+  const audit = recentAutopilotAudit(db, 'A').map(a => [a.action, a.detail])
+  assert.ok(audit.some(([a]) => a === 'held_domain_cap'), 'second address at the same company is held')
+  assert.ok(audit.some(([a, d]) => a === 'skipped' && d === 'suppressed'), 'the opted-out recipient is skipped')
 })
 
 test('HOLD: unchanged state at the same boundary sends exactly once; two competing passes never send a lead twice', async () => {

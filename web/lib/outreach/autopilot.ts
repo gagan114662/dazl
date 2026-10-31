@@ -113,9 +113,20 @@ type Lead = { id: string; contact: string; source_url: string | null; play: stri
 // (a reply, the bounce rate, an unreadable stop store), its scope for this recipient and its claim authority on the
 // final words; and the daily cap (the tenant's, and the rollout's). This is the final-handoff contract (#405): it runs
 // before drafting, after drafting (the model await) and, as the send service's sendAuthority, at the claim and again
-// after the Gmail token refresh immediately before the bytes leave. Null means send.
+// after the Gmail token refresh immediately before the bytes leave. Null means send. A check that cannot be read (any
+// store it needs unreadable, the launch store included) is a stop: stop_check_unavailable, never "no launch" or "no cap".
 type Stop = 'not_available' | 'off' | 'paused' | 'consent_required' | 'uncertain_send' | 'launch_policy_changed' | 'reply_received' | 'bounce_rate' | 'stop_check_unavailable' | 'not_in_audience' | 'excluded' | 'claims' | 'daily_cap'
 function stopNow(db: Database.Database, tenantId: string, env: Record<string, string | undefined>, now: number, started: LaunchGate, l: Lead, messageId: string | null): Stop | null {
+  try { return stopNowUnguarded(db, tenantId, env, now, started, l, messageId) } catch { return 'stop_check_unavailable' }
+}
+// Autopilot sends in flight right now count against the cap as if sent: another pass's claimed ('sending') or unresolved
+// ('uncertain') message in the window, when it was drafted before this one (rowid order), so two concurrent passes
+// cannot both see room for the last send. (#448 adds a committed-reservation counter for the daily cap; when it lands,
+// the two counts are unified in that merge.)
+const inFlight24h = (db: Database.Database, tenantId: string, now: number, messageId: string | null) => (db.prepare(
+  `SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND claimed_at >= ?
+     AND (? IS NULL OR rowid < (SELECT rowid FROM outreach_messages WHERE id = ?))`).get(tenantId, now - 86400, messageId, messageId) as { n: number }).n
+function stopNowUnguarded(db: Database.Database, tenantId: string, env: Record<string, string | undefined>, now: number, started: LaunchGate, l: Lead, messageId: string | null): Stop | null {
   if (!autopilotAvailable(env)) return 'not_available'
   const st = getState(db, tenantId)
   if (!st.enabled) return 'off'
@@ -134,7 +145,7 @@ function stopNow(db: Database.Database, tenantId: string, env: Record<string, st
     if (m && claimIssuesFor(gate.policy, `${m.subject}\n${m.body}`, l.source_url ? [l.source_url] : []).length) return 'claims'
   }
   const cap = gate.calibrated ? Math.min(st.daily_cap, gate.cap) : st.daily_cap
-  if (autoSent24h(db, tenantId, now) >= cap) return 'daily_cap'
+  if (autoSent24h(db, tenantId, now) + inFlight24h(db, tenantId, now, messageId) >= cap) return 'daily_cap'
   return null
 }
 // What a stop means for the run: the policy's own stops and an uncertain send pause autopilot; the launch changing is
@@ -168,23 +179,33 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   ).all(tenantId, MIN_CONFIDENCE, tenantId) as Lead[]
   // A calibrated launch (#405): an accepted, current policy launched by a passing preflight, from the policy's own
   // mailbox. It replaces only the hand-approval warmup; it narrows every send to the policy and adds its stops and
-  // rollout cap. Without one, everything below is exactly as before.
+  // rollout cap. Without one, the warmup, consent, pause, uncertain-send, per-domain and suppression rules are as
+  // before; what changed for every run is that each stop (the daily cap included) is re-read before drafting, after
+  // drafting and at the send boundary, so a cap reached before drafting writes no draft, and one reached at the boundary
+  // releases the message to the tenant and ends the run (previously the cap was checked once, after drafting, and
+  // ended the run leaving the draft held).
   const mailbox = () => { const g = gmailStatus(db, tenantId); return g?.status === 'active' ? g.email : null }
   // A stop ends the run. With a message already drafted it is held, and when the stop is autopilot's own authority
-  // lapsing, the message goes back to a draft for the tenant (its approval, if any, was autopilot's).
+  // lapsing, the message goes back to a draft for the tenant (its approval, if any, was autopilot's). The stop may be
+  // that a store is unreadable, so each step stands on its own: release the message first, pause second, record last;
+  // a step that fails is not allowed to leave the message approved or the run thrown.
+  const attempt = (f: () => void) => { try { f() } catch { /* an unreadable store is itself the stop; the run still ends with the reason */ } }
   const ended = (code: string, leadId: string, id?: string): RunResult => {
     if (id) {
       out.held++
-      audit(db, tenantId, `held_${runOutcome(code)}`, code === 'launch_policy_changed' ? 'the launch policy changed' : code, leadId, id)
-      if (AUTHORITY_CODES.has(code)) db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, claimed_at = NULL, error = ? WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(code, id, tenantId)
-    } else audit(db, tenantId, 'stopped', runOutcome(code), leadId) // nothing drafted yet: the lead is picked up again next run
-    if (PAUSES.has(code)) pause(db, tenantId, runOutcome(code))
+      if (AUTHORITY_CODES.has(code)) attempt(() => db.prepare("UPDATE outreach_messages SET status = 'draft', approved_hash = NULL, claimed_at = NULL, error = ? WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(code, id, tenantId))
+    }
+    if (PAUSES.has(code)) attempt(() => pause(db, tenantId, runOutcome(code)))
+    if (id) attempt(() => audit(db, tenantId, `held_${runOutcome(code)}`, code === 'launch_policy_changed' ? 'the launch policy changed' : code, leadId, id))
+    else attempt(() => audit(db, tenantId, 'stopped', runOutcome(code), leadId)) // nothing drafted yet: the lead is picked up again next run
     return stop(runOutcome(code))
   }
 
   for (const l of leads) {
-    // re-read every stop before each lead, so a pause, a kill, a stop or a changed launch takes effect between sends
-    const gate = launchGate(db, tenantId, mailbox(), now)
+    // re-read every stop before each lead, so a pause, a kill, a stop or a changed launch takes effect between sends.
+    // The launch store being unreadable is a stop, never "no launch" (that would fall back to the warmup's wider rules).
+    let gate: LaunchGate
+    try { gate = launchGate(db, tenantId, mailbox(), now) } catch { return ended('stop_check_unavailable', l.id) }
     const before = stopNow(db, tenantId, env, now, gate, l, null)
     if (before === 'not_in_audience' || before === 'excluded') { out.skipped++; audit(db, tenantId, 'skipped', before, l.id); continue }
     if (before) return ended(before, l.id)
@@ -223,7 +244,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
       const code = e instanceof OutreachError ? e.code : 'error'
-      audit(db, tenantId, 'send_failed', code, l.id, id)
+      attempt(() => audit(db, tenantId, 'send_failed', code, l.id, id))
       // a stop surfaced at the send boundary (the service's own final checks or autopilot's sendAuthority): same outcome as
       // anywhere else, the message released back to the tenant when it was autopilot's authority that lapsed
       if (AUTHORITY_CODES.has(code) || PAUSES.has(code)) return ended(code, l.id, id)

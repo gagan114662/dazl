@@ -67,7 +67,7 @@ export interface PreflightInput {
   stopsEnforced: { reply: boolean; optOut: boolean; bounce: boolean; uncertainPause: boolean; domainCap: boolean }
 }
 
-export type PreflightFailure = PolicyProblem | 'policy_not_accepted' | 'mailbox_mismatch' | 'test_inbox_failed' | 'too_few_samples'
+export type PreflightFailure = PolicyProblem | 'policy_not_accepted' | 'mailbox_mismatch' | 'test_inbox_failed' | 'too_few_samples' | 'autopilot_off' | 'consent_required'
   | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced' | 'policy_changed'
 
 export const REQUIRED_STOPS = ['reply', 'optOut', 'bounce', 'uncertainPause', 'domainCap'] as const
@@ -165,7 +165,7 @@ export function readLaunchPolicy(db: Database.Database, tenantId: string): Store
   return r ? { acceptanceId: r.acceptance_id, policy: parsePolicy(JSON.parse(r.policy)), version: r.version, acceptedAt: r.accepted_at, launchedAt: r.launched_at } : null
 }
 // What the settings page shows: the accepted policy, or that the stored row cannot be read (it is not a launch either:
-// launchGate treats the same failure as not calibrated). The page never fails because one row is corrupt.
+// launchGate throws on the same failure and autopilot stops). The page never fails because one row is corrupt.
 export function launchPolicyView(db: Database.Database, tenantId: string): { accepted: StoredPolicy | null; problem?: 'policy_unreadable' } {
   try { return { accepted: readLaunchPolicy(db, tenantId) } } catch { return { accepted: null, problem: 'policy_unreadable' } }
 }
@@ -200,9 +200,10 @@ export function recordPreflight(db: Database.Database, tenantId: string, accepte
 // launched by a passing preflight, and the connected mailbox is the policy's sender; otherwise the hand-approval warmup
 // applies exactly as before.
 export type LaunchGate = { calibrated: false } | { calibrated: true; policy: LaunchPolicy; cap: number; launchedAt: number; acceptanceId: string }
+// Throws when the launch store cannot be read: the caller must treat that as a stop (autopilot: stop_check_unavailable),
+// never as "no launch", which would send under the warmup's wider rules while the policy is unknown.
 export function launchGate(db: Database.Database, tenantId: string, connectedMailbox: string | null, nowS: number): LaunchGate {
-  let s: StoredPolicy | null = null
-  try { s = readLaunchPolicy(db, tenantId) } catch { return { calibrated: false } }
+  const s = readLaunchPolicy(db, tenantId)
   if (!s || s.launchedAt === null || s.version !== LAUNCH_POLICY_VERSION || policyProblems(s.policy).length) return { calibrated: false }
   if (!connectedMailbox || connectedMailbox.trim().toLowerCase() !== s.policy.sender) return { calibrated: false }
   return { calibrated: true, policy: s.policy, cap: calibratedDailyCap(s.policy, s.launchedAt, nowS), launchedAt: s.launchedAt, acceptanceId: s.acceptanceId }
@@ -225,6 +226,9 @@ const NOT_A_REPLY = ['bounce', 'soft_bounce', 'auto'] as const
 export function calibratedStop(db: Database.Database, tenantId: string, gate: Extract<LaunchGate, { calibrated: true }>): 'reply_received' | 'bounce_rate' | 'stop_check_unavailable' | null {
   try {
     if (gate.policy.stops.pauseOnAnyReply && db.prepare(`SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND received_at >= ? AND classification NOT IN (${NOT_A_REPLY.map(() => '?').join(', ')}) LIMIT 1`).get(tenantId, gate.launchedAt, ...NOT_A_REPLY)) return 'reply_received'
+    // bounces: every bounce recorded for this tenant since launch (recordBounce, from any thread, hand-sent included)
+    // over autopilot's own sends since launch. Deliberately conservative: a mailbox bouncing anywhere is a reason to
+    // stop a calibrated launch early, never a reason to keep going; the tenant resumes after looking.
     const n = (action: string) => (db.prepare('SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = ? AND created_at >= ?').get(tenantId, action, gate.launchedAt) as { n: number }).n
     const sent = n('sent'), bounced = n('bounce')
     if (bounced > 0 && bounced / Math.max(sent, 1) > gate.policy.stops.maxBounceRate) return 'bounce_rate'
