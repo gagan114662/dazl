@@ -217,10 +217,13 @@ const AUTHORITY_ENDED = new Set(['autopilot_unavailable', 'reservation_lost', 'a
 // now - SKIP_ERROR_S, now - SKIP_RETRY_S. Only leads of finished scans whose post-finish enrichment (buyer fit, the
 // required sales/hiring gate) is not running: the runner marks the scan done before that stage and records the gate in
 // it, so a tick during a running scan or its enrichment must not read a gate not yet run as a refusal. An enrichment
-// that never finished (a crash) stops holding its leads after ENRICH_STALE_S, the store's own staleness rule. Its
+// that never finished (a crash) stops holding its leads after ENRICH_STALE_S, the store's own staleness rule. Never a
+// scan that carries a run budget or is trial-funded: the runner does not start autopilot for those (its drafting and
+// sends are outside the budget; lib/scan/runner.ts jobStartsAutopilot, the same rule), so the drain must not either. Its
 // skipped-row check is by lead on autopilot_audit_lead (test: the query plan).
 export const NEW_LEADS_SQL = `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND j.status = 'done' AND (j.enrich_started_at IS NULL OR j.enrich_finished_at IS NOT NULL OR j.enrich_started_at < ?)
+       AND j.run_budget IS NULL AND j.funded_by <> 'trial'
        AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'

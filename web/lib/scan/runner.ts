@@ -801,6 +801,13 @@ export function parseRunBudget(raw: string | null | undefined): RunBudget | null
     return Object.keys(out).length ? out : null
   } catch { return null }
 }
+// Whether a finished scan's leads are autopilot's to draft: a job that carries a budget never starts autopilot (its
+// model drafting and sends are outside the budget, run-budget.ts), nor does a free-trial scan (dazl's keys). The same
+// rule in SQL, for the scheduler's drain: lib/outreach/autopilot.ts NEW_LEADS_SQL (run_budget IS NULL, which is
+// stricter than parseRunBudget for a budget string that parses to nothing; funded_by <> 'trial').
+export function jobStartsAutopilot(job: { run_budget?: string | null; funded_by?: string | null }): boolean {
+  return !parseRunBudget(job.run_budget) && job.funded_by !== 'trial'
+}
 function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
   if (!budget) return deps
   return {
@@ -1303,7 +1310,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
-    if (!parseRunBudget(job.run_budget) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    if (jobStartsAutopilot(job) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }

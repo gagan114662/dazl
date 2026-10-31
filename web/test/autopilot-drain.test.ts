@@ -832,3 +832,18 @@ test('#448 disable() writes one autopilot progress hold row (off, nothing failin
   assert.deepEqual(row, { last_outcome: 'hold', last_hold: 'off', consecutive_failures: 0, last_error: null })
   assert.equal(db.prepare("SELECT count(*) AS n FROM scheduler_progress WHERE tenant_id = 'A'").pluck().get(), 1)
 })
+
+// Reviewer 2 (final): a scan that carries a run budget, or a free-trial scan, never starts autopilot (its drafting and
+// sends are outside the budget): the drain must not draft their leads either. Same rule as the runner's own call.
+test('#448 leads of a budgeted scan or a trial-funded scan are never drafted by the drain; an ordinary scan\'s are', async () => {
+  const db = await setup(); ok(db); pastWarmup(db); const { sent, d } = sends()
+  const jobOf = (id: string) => (db.prepare('SELECT scan_job_id FROM leads WHERE id = ?').get(id) as { scan_job_id: string }).scan_job_id
+  const budgeted = lead(db, 'b@budget.example'); db.prepare('UPDATE scan_jobs SET run_budget = ? WHERE id = ?').run(JSON.stringify({ max_usd: 5 }), jobOf(budgeted))
+  const trial = lead(db, 't@trial.example'); db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(jobOf(trial))
+  lead(db, 'p@plain.example')
+  const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
+  assert.deepEqual([r.sent, r.skipped, sent.length, db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE action = 'skipped'").pluck().get()], [1, 0, 1, 0], 'only the ordinary scan\'s lead: no draft, no try, no record for the other two')
+  assert.deepEqual(db.prepare('SELECT to_email FROM outreach_messages WHERE tenant_id = ? AND sent_at IS NOT NULL AND to_email LIKE ?').all('A', '%.example').map(m => (m as { to_email: string }).to_email).filter(e => !e.startsWith('o')), ['p@plain.example'])
+  const { jobStartsAutopilot } = await import('../lib/scan/runner.ts')
+  assert.deepEqual([jobStartsAutopilot({ run_budget: null, funded_by: 'user' }), jobStartsAutopilot({ run_budget: JSON.stringify({ max_usd: 5 }), funded_by: 'user' }), jobStartsAutopilot({ run_budget: null, funded_by: 'trial' })], [true, false, false], 'the runner\'s rule, which the query mirrors')
+})
