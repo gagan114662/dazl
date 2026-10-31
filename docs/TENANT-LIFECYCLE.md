@@ -56,6 +56,7 @@ Allowed, by design: updates to other columns (a retained suppression's reason, a
 **Restored backups.**
 - A restore brings back rows deleted after the backup and loses tombstones written since.
 - `tombstoneLedgerEntry` is one JSON line per deletion (tenant id, time, who, policy; no data). It is kept **off the database**, next to the backup manifests (`docs/RECOVERY.md`).
+- **Not wired in this part.** Nothing in the application writes the ledger line yet and nothing calls `reapplyTombstones`: both are library functions, tested on synthetic stores. The request flow of part 2 writes the line when the tombstone is written (the `requested` step), and the recovery runbook (`docs/RECOVERY.md`, step 5) gains the re-application step then. Until that lands, a restored backup is not protected against bringing a deleted tenant back; this part does not claim it is.
 - `reapplyTombstones` runs every ledgered deletion on a restored store, each with its original policy and request time. Run it **before the restored store serves traffic**: add it to the recovery plan's step 5, after the drill and before sending is re-enabled. A line the restored store now refuses (a tenant that became a shared workspace since the backup, a malformed line) does not stop the later lines: every line is attempted, then the refused ones are thrown together as `TombstoneReapplyError` (which tenants, why, and what was re-applied). The store must not serve until each refused tenant is resolved by the operator.
 
 **Outside the database (operator steps, not automated):**
