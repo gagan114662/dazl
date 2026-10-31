@@ -21,8 +21,9 @@ const run = promisify(execFile)
 // Keys carry the engine: the per-process shadow is shared by both engines' runs in this one test process.
 bothEngines('rate limit: fixed window per key, retry-after, then a fresh window', async ({ db, kind }) => {
   const t0 = 1_800_000_000_000
-  for (let i = 1; i <= 3; i++) assert.deepEqual(await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + i), { ok: true, retryAfterS: 0 })
-  assert.deepEqual(await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + 10), { ok: false, retryAfterS: 60 })
+  // resetAt (#444): the end of the window the call was counted in, opened by the first call; a refund names it.
+  for (let i = 1; i <= 3; i++) assert.deepEqual(await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + i), { ok: true, retryAfterS: 0, resetAt: t0 + 1 + 60_000 })
+  assert.deepEqual(await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + 10), { ok: false, retryAfterS: 60, resetAt: t0 + 1 + 60_000 })
   assert.equal((await rateLimit(`${kind}:other`, 3, 60_000, db, t0 + 10)).ok, true) // keys are independent
   assert.equal((await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + 60_001)).ok, true) // window over
   assert.equal((await rateLimit(`${kind}:k`, 3, 60_000, db, t0 + 60_002)).ok, true)
