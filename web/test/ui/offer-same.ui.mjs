@@ -97,6 +97,12 @@ try {
   assert.equal(now, before, 'viewing chose no offer and rewrote nothing')
   // The original audit acceptance continues after an explicit choice. Never touch production records here.
   const CRM = 'CRM setup and outbound sales consulting'
+  const beforeChoice = new Database(DB, { readonly: true })
+  const dentalBefore = beforeChoice.prepare('SELECT * FROM scan_jobs WHERE id = ?').get(LIVE_DENTAL)
+  const londonBefore = beforeChoice.prepare('SELECT query, seller FROM scan_jobs WHERE id = ?').get(LIVE_LONDON)
+  const profileBefore = beforeChoice.prepare("SELECT sells, website FROM users WHERE id = 'u1'").get()
+  assert.equal(beforeChoice.prepare("SELECT count(*) n FROM tenant_memory WHERE tenant_id = 'u1'").get().n, 0)
+  beforeChoice.close()
   const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const p = await ctx.newPage(); await p.route(u => u.origin !== base, r => r.abort())
@@ -104,7 +110,9 @@ try {
   await p.getByTestId('play-offer-use-stated').click()
   await p.getByTestId('play-offer-text').filter({ hasText: CRM }).waitFor()
   const d = new Database(DB)
-  const dentalBefore = d.prepare('SELECT query,seller,offer,offer_set_at FROM scan_jobs WHERE id = ?').get(LIVE_DENTAL)
+  assert.deepEqual(d.prepare('SELECT * FROM scan_jobs WHERE id = ?').get(LIVE_DENTAL), dentalBefore)
+  assert.deepEqual(d.prepare('SELECT query, seller FROM scan_jobs WHERE id = ?').get(LIVE_LONDON), londonBefore)
+  assert.deepEqual(d.prepare("SELECT sells, website FROM users WHERE id = 'u1'").get(), profileBefore)
   assert.equal(d.prepare('SELECT offer FROM scan_jobs WHERE id = ?').get(LIVE_LONDON).offer, CRM)
   assert.equal(dentalBefore.offer,null);assert.equal(dentalBefore.seller,SAVED)
   assert.equal(d.prepare("SELECT sells FROM users WHERE id='u1'").get().sells,SAVED)
@@ -138,7 +146,12 @@ try {
       }
     }
   }
-  const final = new Database(DB);assert.deepEqual(final.prepare('SELECT query,seller,offer,offer_set_at FROM scan_jobs WHERE id = ?').get(LIVE_DENTAL),dentalBefore);assert.equal(final.prepare("SELECT sells FROM users WHERE id='u1'").get().sells,SAVED);final.close();await ctx.close()
+  const final = new Database(DB, { readonly: true })
+  assert.deepEqual(final.prepare('SELECT * FROM scan_jobs WHERE id = ?').get(LIVE_DENTAL), dentalBefore)
+  assert.deepEqual(final.prepare('SELECT query, seller FROM scan_jobs WHERE id = ?').get(LIVE_LONDON), londonBefore)
+  assert.deepEqual(final.prepare("SELECT sells, website FROM users WHERE id = 'u1'").get(), profileBefore)
+  final.close()
+  await ctx.close()
   console.log('EXACT ORIGINAL349 records: explicit London choice, Home/campaign/draft preview agree at1280/390+reload; dental snapshot and profile unchanged. Synthetic DB only, no provider/scan/send.')
 
   console.log('same-offer UI check passed at 1280 and 390: read-only views preserve every offer; an explicit London-only choice is consistent across Home, Campaign and a synthetic template draft after reload; dental/profile remain unchanged')
