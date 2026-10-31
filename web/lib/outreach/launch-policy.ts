@@ -147,8 +147,8 @@ export function migrateLaunchPolicy(db: Database.Database): void {
 // Every real entry (a non-blank string, trimmed) up to one past the list's limit: the limits are policyProblems' to
 // refuse (MAX_*), never this parser's to cut silently. Blanks and non-strings are dropped from the WHOLE array first, so
 // a pasted list with blank lines keeps every real entry; only then is the list capped at max + 1, enough for the refusal
-// to fire. The full pass over an oversize array is linear and bounded by the request body the route accepts. An
-// accepted list is always complete.
+// to fire. The full pass over an oversize array is linear (a million blank entries parse in well under a second); no
+// route-level body limit is relied on. An accepted list is always complete.
 const strs = (v: unknown, max: number) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean).slice(0, max + 1) : []
 const num = (v: unknown) => typeof v === 'number' ? v : NaN // a number is a number: no coercion (true is not a cap of 1)
 // A policy from untrusted input, with every field typed; anything missing becomes a problem policyProblems reports.
