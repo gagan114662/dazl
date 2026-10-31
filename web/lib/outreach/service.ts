@@ -471,6 +471,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     db.prepare("UPDATE outreach_messages SET status = 'approved', claimed_at = NULL, error = ? WHERE id = ? AND status = 'sending'").run(code, id)
     throw new OutreachError(code)
   }
+  // The caller's sendAuthority answers with a refusal code or null. One that cannot answer (its own store unreadable)
+  // is a refusal too: fail closed with a specific code, so a claimed message never stays 'sending' for the stale reaper.
+  const authority = (): string | null => { try { return d.sendAuthority?.() ?? null } catch { return 'stop_check_unavailable' } }
   const m = getMsg(db, tenantId, id)!
   if (isSuppressed(db, tenantId, m.to_email)) {
     db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL, claimed_at = NULL WHERE id = ?").run(id)
@@ -494,7 +497,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
   if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
-  const authorityAtClaim = d.sendAuthority?.() ?? null
+  const authorityAtClaim = authority()
   if (authorityAtClaim) release(authorityAtClaim)
 
   let token: string
@@ -520,7 +523,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
-  const authorityAtHandoff = d.sendAuthority?.() ?? null
+  const authorityAtHandoff = authority()
   if (authorityAtHandoff) release(authorityAtHandoff)
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`

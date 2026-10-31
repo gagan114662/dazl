@@ -453,6 +453,21 @@ test('HOLD: a hand send is refused at the same boundary when autopilot is paused
   assert.deepEqual(db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id), { status: 'approved', error: 'paused' }, 'a hand approval stays the tenant\'s, released with the reason')
 })
 
+test('HOLD: a sendAuthority that cannot answer is a refusal: the claim is released with stop_check_unavailable, nothing sent', async () => {
+  // at the claim, and separately only at the handoff after the token refresh: either way the message never stays 'sending'
+  for (const failAt of [1, 2]) {
+    const { db } = await launched()
+    const leadId = (db.prepare("SELECT id FROM leads WHERE contact = 'd@four.example'").get() as { id: string }).id
+    const id = createDraft(db, 'A', leadId, 'Acme'); approve(db, 'A', id)
+    const g = gmail(); let calls = 0
+    const sendAuthority = () => { calls++; if (calls === failAt) throw new Error('stop store unreadable'); return null }
+    await assert.rejects(sendMessage(db, 'A', id, { ...g.d, sendAuthority, now: NOW + 2 }), (e: unknown) => e instanceof OutreachError && e.code === 'stop_check_unavailable', `throws at call ${failAt}`)
+    assert.equal(calls, failAt)
+    assert.equal(g.sent.length, 0)
+    assert.deepEqual(db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id), { status: 'approved', error: 'stop_check_unavailable' })
+  }
+})
+
 test('HOLD: unchanged state at the same boundary sends exactly once; two competing passes never send a lead twice', async () => {
   const { db } = await launched()
   const got = await duringRefresh(db, () => {})
