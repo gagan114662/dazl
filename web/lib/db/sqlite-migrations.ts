@@ -1,4 +1,4 @@
-import {migratePlayResearch} from '../scan/play-research.ts'
+import {migratePlayResearch} from './play-research-schema.ts'
 // Every sqlite migrate*() the app runs, in one place: the schema extractor (scripts/pg-migrate/extract-schema.ts) and the
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'

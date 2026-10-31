@@ -6,7 +6,6 @@ import {NextRequest} from 'next/server'
 import {setScanDb,setUser} from './play-research-route-db.ts'
 import {calls,resetCalls} from './play-research-fetch.ts'
 import {migrateAllSqlite} from '../../lib/db/sqlite-migrations.ts'
-import {getAuthDb} from '../../lib/auth-db.ts'
 import {POST,GET} from '../../app/api/leads/play-research/route.ts'
 const job='a'.repeat(24),body={job_id:job,company:'Epoch',signal:'First sales job claim',source_url:'https://epoch.example/jobs',excerpt:'Epoch is hiring a first sales representative in London.'}
 const request=(body:string,extra:Record<string,string>={})=>new NextRequest('https://dazl.test/api/leads/play-research',{method:'POST',headers:{'content-type':'application/json',host:'dazl.test',...extra},body})
@@ -14,7 +13,7 @@ const GET_ROUTE = 'GET /api/leads/play-research', POST_ROUTE = 'POST /api/leads/
 assert.ok(GET_ROUTE&&POST_ROUTE)
 const read=()=>GET(new NextRequest('https://dazl.test/api/leads/play-research?job_id='+job))
 test('GET /api/leads/play-research and POST /api/leads/play-research persist/reload with auth/role/tenant/rate/origin/validation/error boundaries',async()=>{
- const db=new Database(':memory:');migrateAllSqlite(db);setScanDb(db);resetCalls();const limiter=getAuthDb()
+ const db=new Database(':memory:');migrateAllSqlite(db);setScanDb(db);resetCalls();const limiter=db
  try{
  db.prepare("INSERT INTO users(id,email,password_hash,salt) VALUES('A','a@example.test','test','test')").run()
  db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status,query,offer) VALUES(?,'A','Original','SaaS','London','running','London SaaS first sales in 90 days','CRM setup')").run(job)

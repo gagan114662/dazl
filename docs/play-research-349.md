@@ -6,7 +6,7 @@ Small supplemental record for an existing completed play. It does not reopen the
 
 One insert into `play_research_sources`, scoped to tenant and existing job. Identical input plus query and offer is deduplicated. No update/delete/promotion endpoint. No production Epoch record is authorized by preparing this code.
 
-Saved context: original query, generated ICP snapshot (not user-approved criteria), original play creation time, effective offer and its source. The original search-window anchor is not reset. Context is rechecked after source fetching and inside the synchronous write transaction. Changes require reload.
+Saved context: original query, generated ICP snapshot (not user-approved criteria), original play creation time, effective offer and its source. The original search-window anchor is not reset. Context is rechecked after source fetching and inside the write transaction. Application reads/writes use async Db on both stores. SQLite runs the transaction synchronously; PG uses serializable transactions and context-row locks with bounded serialization retries. No network work occurs inside a transaction. Schema-only startup migration is separate. Changes require reload.
 
 Saved research: supplied company, signal claim, exact quote, source URL and claimed announcement/event date; optional person name, role, professional source URL and exact quote; optional email claim stored separately, never as a recipient. Source and professional checks retain URL, title, retrieval time, page SHA-256 and literal quote result. The page body is not retained. Fetch failure or quote mismatch is visible unconfirmed research, never evidence verification. Current role, company association, fit, timing and buying intent remain unverified.
 
@@ -18,6 +18,7 @@ Research cards are visible on the original Leads page, outside closed Settings. 
 
 ## Verification
 
+- `test/play-research-db.test.ts`: real SQLite/PG contract for persistence/reload, tenant isolation, duplicate saves, changed offer/missing fallback-row conflicts, finished-job triggers and unchanged original rows.
 - `test/play-research.test.ts`: finished-job/lead/outreach preservation, immutable triggers, tenant isolation, pending/unknown job refusal before network, optional professional route separate from email, context races, duplicate save, blocked/thrown fetches and validation.
 - `test/play-research-route.test.ts`: actual route malformed/oversized/cross-origin/unknown job input, no writes.
 - Existing source-review/play-offer and schema drift tests run with these tests. Real PG parity requires CI's PG service.

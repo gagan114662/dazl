@@ -1,4 +1,4 @@
-import {migratePlayResearch} from './play-research.ts'
+import {migratePlayResearch} from '../db/play-research-schema.ts'
 import { migrateSourceReview } from './source-review.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'

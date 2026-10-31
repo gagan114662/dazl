@@ -22,6 +22,6 @@ input.excerpt=announcement.page.text.slice(announcement.page.text.indexOf('The l
 assert.ok(input.excerpt.length<=400)
 const saved=await savePlayResearch(d,tenant,j.id,input,async url=>pages.find((p:{url:string})=>p.url===url).page)
 assert.equal(snapshot(),before);assert.deepEqual(refusals(),beforeRefusals)
-const card=playResearchCards(d,tenant,j.id)[0];assert.equal(card.source_check.quote_match,true);assert.equal(card.person_check?.quote_match,true);assert.equal(card.query_snapshot,j.query);assert.equal(card.offer_snapshot,j.offer);assert.equal(card.email_claim,null)
+const card=(await playResearchCards(d,tenant,j.id))[0];assert.equal(card.source_check.quote_match,true);assert.equal(card.person_check?.quote_match,true);assert.equal(card.query_snapshot,j.query);assert.equal(card.offer_snapshot,j.offer);assert.equal(card.email_claim,null)
 const proof={scratch_only:true,live_changes:false,paid_calls:0,original_control_as_of:control.checked_at,job_id:j.id,original_jobs_leads_drafts_unchanged:true,original_anchor:j.created_at,original_draft_refusals:beforeRefusals,after_draft_refusals:refusals(),saved,card}
 fs.writeFileSync('/tmp/dazl-review/play-research-original-proof.json',JSON.stringify(proof,null,2));console.log(JSON.stringify(proof,null,2));d.close()
