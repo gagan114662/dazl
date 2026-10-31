@@ -25,7 +25,7 @@
 // (fromScoreboardResult) are a self-report; no release threshold can be met by a self-report, by synthetic data, or by
 // a historical aggregate (counts with no per-result verdicts). Thresholds are proposals for the owner: this module
 // reports whether a run meets them, it never accepts anything.
-import { isReachable, RECENT_DAYS, FIT_MIN } from '../scan/scoreboard.ts'
+import { isReachable, RECENT_DAYS, FIT_MIN, isEventDateProof, isHiringTrigger, isCalendarDay, type RouteInput } from '../scan/scoreboard.ts'
 
 export type Verdict = 'pass' | 'fail' | 'unknown' | 'contradicted'
 export const FIELDS = ['identity', 'constraints', 'event_date', 'contact'] as const
@@ -276,15 +276,30 @@ export function regressions(before: Scorecard, after: Scorecard, tolerance = 0):
 
 // ---------- recorded scoreboard runs (web/scripts/scoreboard.mts output) as benchmark runs ----------
 // Verdicts from the pipeline's own fields: a SELF-REPORT (evaluator.independent = false), never release evidence.
-type SbLead = { name: string; company: string; contact: string | null; review_reason: string | null; event_date: string | null; fit: number | null; contacts: string[]; source_url?: string }
+// v2 recordings add the proof and route fields the stricter verdicts need. A recording that predates
+// them keeps the v1 verdicts below (it is a self-report either way, never release evidence).
+type SbLead = { name: string; company: string; contact: string | null; review_reason: string | null; event_date: string | null; fit: number | null; contacts: string[]; source_url?: string; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null; routes?: RouteInput[] }
 type SbResult = { commit: string; date: string; model?: string; rubric?: string; budgetUsdTotal?: number; rows: { id: string; status: string; error: string | null; complete: boolean; seconds: number; leads: SbLead[] }[] }
-export function selfReportVerdicts(l: SbLead, asOf: Date): Record<Field, Verdict> {
+export function selfReportVerdicts(l: SbLead, asOf: Date, windowDays: number = RECENT_DAYS): Record<Field, Verdict> {
   const r = l.review_reason ?? ''
   const identity: Verdict = !r ? 'pass' : /mismatch|wrong (company|entity)|someone else|other company/i.test(r) ? 'contradicted' : 'unknown'
-  const age = l.event_date && /^\d{4}-\d{2}-\d{2}$/.test(l.event_date) ? (asOf.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000 : null
-  const event_date: Verdict = age === null ? 'unknown' : age >= -1 && age <= RECENT_DAYS ? 'pass' : 'fail'
+  const age = l.event_date && isCalendarDay(l.event_date) ? (asOf.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000 : null
+  // v2: a recorded proof field (even null) means the run is judged by proof: a date 'pass'es only
+  // when a recognized proof, compatible with the claimed trigger, puts it inside the task window.
+  // Publication and model dates alone are never a pass. v1 recordings (no proof field) keep the
+  // legacy date-window verdict so historical self-reports stay comparable.
+  const hasV2Timing = 'event_date_proof' in l
+  const proofOk = isEventDateProof(l.event_date_proof) && (l.event_date_proof !== 'ats_structured' || isHiringTrigger(l.signal, l.signal_kind))
+  const event_date: Verdict = hasV2Timing
+    ? (!proofOk || age === null ? 'unknown' : age >= -1 && age <= windowDays ? 'pass' : 'fail')
+    : (age === null ? 'unknown' : age >= -1 && age <= windowDays ? 'pass' : 'fail')
   const constraints: Verdict = typeof l.fit !== 'number' ? 'unknown' : l.fit >= FIT_MIN ? 'pass' : l.fit <= 2 ? 'fail' : 'unknown'
-  const contact: Verdict = /contact unconfirmed/i.test(r) ? 'unknown' : isReachable(l.contact) || (l.contacts ?? []).some(isReachable) ? 'pass' : 'fail'
+  // v2: when routes are recorded, a contact 'pass'es only on a role-appropriate company-published
+  // route (recruiting inboxes excluded). v1 recordings keep the any-email/phone verdict.
+  const contact: Verdict = /contact unconfirmed/i.test(r) ? 'unknown'
+    : l.routes !== undefined
+      ? (l.routes.some(rt => rt.role_ok && (rt.kind === 'phone' || !/^(?:careers?|jobs?|recruit\w*|hiring|talent|hr|people)$/i.test(rt.value.split('@')[0] ?? ''))) ? 'pass' : 'fail')
+      : (isReachable(l.contact) || (l.contacts ?? []).some(isReachable) ? 'pass' : 'fail')
   return { identity, constraints, event_date, contact }
 }
 export function fromScoreboardResult(sb: SbResult, set: TaskSet, source: string): BenchmarkRun {
@@ -293,7 +308,7 @@ export function fromScoreboardResult(sb: SbResult, set: TaskSet, source: string)
   return {
     format: 'dazl-benchmark-run', version: 1, system: 'dazl', system_version: sb.commit, origin: 'recorded', task_set_version: set.version, commit: sb.commit,
     config: { model: sb.model ?? null, rubric: sb.rubric ?? null, budget_usd_total: sb.budgetUsdTotal ?? null, harness: 'web/scripts/scoreboard.mts' },
-    evaluator: { name: 'pipeline-self-report', version: '1', independent: false }, started_at: asOf.toISOString(), source,
+    evaluator: { name: 'pipeline-self-report', version: '2', independent: false }, started_at: asOf.toISOString(), source,
     tasks: sb.rows.map(r => ({
       task_id: r.id, status: r.complete ? 'complete' : 'incomplete', reason: r.error, seconds: r.seconds, cost_usd: null,
       results: r.leads.map((l, i) => ({ rank: i + 1, entity_key: l.company, verdicts: selfReportVerdicts(l, asOf), evidence: l.source_url ? [l.source_url] : [] })),
