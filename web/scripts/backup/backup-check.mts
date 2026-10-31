@@ -122,10 +122,20 @@ function rcloneDest(spec: string): Dest {
     read: async n => run(['cat', `${remote}/${n}`]),
     digest: n => new Promise((res, rej) => {
       if (!run(['lsf', '--files-only', remote]).split('\n').map(l => l.trim()).includes(n)) return res(null)
-      const p = spawn(bin, ['cat', `${remote}/${n}`], { timeout: limitS * 1000, killSignal: 'SIGKILL' }); const h = createHash('sha256'); let bytes = 0
+      // Its own process group, killed whole on exit and on timeout: a wrapper that forks without exec must not leave a
+      // grandchild holding the stdout pipe past the bound. Bytes are hashed until the stream ends, so nothing is lost.
+      const p = spawn(bin, ['cat', `${remote}/${n}`], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }); const h = createHash('sha256'); let bytes = 0
+      let timedOut = false, exit: { code: number | null; signal: NodeJS.Signals | null } | null = null
+      const killGroup = () => { try { if (p.pid) process.kill(-p.pid, 'SIGKILL') } catch { /* already gone */ } }
+      const timer = setTimeout(() => { timedOut = true; killGroup() }, limitS * 1000)
       p.stdout.on('data', (b: Buffer) => { bytes += b.length; h.update(b) })
-      p.on('error', e => rej(new Error(`rclone not runnable (${(e as NodeJS.ErrnoException).code ?? e.name})`)))
-      p.on('close', (code, signal) => code === 0 ? res({ bytes, sha256: h.digest('hex') }) : rej(new Error(signal ? `rclone cat timed out (${limitS}s)` : `rclone cat failed (exit ${code})`)))
+      p.on('error', e => { clearTimeout(timer); rej(new Error(`rclone not runnable (${(e as NodeJS.ErrnoException).code ?? e.name})`)) })
+      p.on('exit', (code, signal) => { exit = { code, signal }; killGroup() })
+      p.on('close', (code, signal) => {
+        clearTimeout(timer); const c = exit?.code ?? code, s = exit?.signal ?? signal
+        if (timedOut) return rej(new Error(`rclone cat timed out (${limitS}s)`))
+        if (c === 0) res({ bytes, sha256: h.digest('hex') }); else rej(new Error(s ? `rclone cat killed (${s})` : `rclone cat failed (exit ${c})`))
+      })
     }),
   }
 }

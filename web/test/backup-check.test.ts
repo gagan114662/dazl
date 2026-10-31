@@ -335,6 +335,17 @@ test('rclone that hangs on cat is bounded by RCLONE_TIMEOUT_S: a named problem, 
   for (const p of ps) assert.doesNotMatch(p, /\//, `no "/" in any problem string: ${p}`)
   // 0 is not "no bound" (spawnSync would take it as none): it and every other non-positive form fall back to 120, logged
   const quick = path.join(T, 'quick-rclone'); writeFileSync(quick, `#!/bin/sh\ncase "$1" in lsf) ls -1 ${store} ;; cat) cat ${store}/x.db.age.json ;; *) exit 9 ;; esac\n`); chmodSync(quick, 0o755)
+  // a wrapper that forks without exec (probe V1): the orphan must not hold the pipe past the bound, in either path
+  const forking = path.join(T, 'forking-rclone'); writeFileSync(forking, `#!/bin/sh\np=\${2#remote:bucket/}\ncase "$1" in lsf) ls -1 ${store} ;; cat) case "$p" in *.json) ;; *) sleep 30 & ;; esac; cat "${store}/$p" ;; *) exit 9 ;; esac\n`); chmodSync(forking, 0o755)
+  const good = Buffer.from('ciphertext stand-in'); writeFileSync(path.join(store, 'y.db.age'), good)
+  writeFileSync(path.join(store, 'y.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date().toISOString(), ciphertext: 'y.db.age', ciphertext_sha256: createHash('sha256').update(good).digest('hex'), bytes: good.length }))
+  rmSync(path.join(store, 'x.db.age.json'))
+  let t1 = Date.now(); let r3 = await run(['--dir', dir, '--state-dir', path.join(T, 'rc-fork-ok'), '--max-age-s', '7200', '--offhost', 'rclone:remote:bucket'], { BACKUP_ALERT_CMD: 'true', RCLONE_BIN: forking, RCLONE_TIMEOUT_S: '2' })
+  assert.equal(r3.code, 0, r3.out); assert.equal(firstJson(r3.out).newest_offhost_verified, true, 'the bytes the wrapper wrote are all hashed'); assert.ok(Date.now() - t1 < 15_000, `a forked orphan does not hold the check: ${Date.now() - t1} ms`)
+  const forkHang = path.join(T, 'forkhang-rclone'); writeFileSync(forkHang, `#!/bin/sh\np=\${2#remote:bucket/}\ncase "$1" in lsf) ls -1 ${store} ;; cat) case "$p" in *.json) cat "${store}/$p" ;; *) sleep 30 & sleep 30 ;; esac ;; *) exit 9 ;; esac\n`); chmodSync(forkHang, 0o755)
+  t1 = Date.now(); r3 = await run(['--dir', dir, '--state-dir', path.join(T, 'rc-fork-hang'), '--max-age-s', '7200', '--offhost', 'rclone:remote:bucket'], { BACKUP_ALERT_CMD: cmd, RCLONE_BIN: forkHang, RCLONE_TIMEOUT_S: '2' })
+  assert.equal(r3.code, 1); assert.match(delivered().at(-1)!.problems.join(), /rclone cat timed out \(2s\)/); assert.ok(Date.now() - t1 < 15_000, `the whole process group is killed at the bound: ${Date.now() - t1} ms`)
+  writeFileSync(path.join(store, 'x.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date().toISOString(), ciphertext: 'x.db.age', ciphertext_sha256: '0'.repeat(64), bytes: 1 })); rmSync(path.join(store, 'y.db.age')); rmSync(path.join(store, 'y.db.age.json'))
   for (const v of ['0', '-1', 'abc', '1.5']) {
     const r2 = await run(['--dir', dir, '--state-dir', path.join(T, 'rc-limit-' + v), '--max-age-s', '7200', '--offhost', 'rclone:remote:bucket'], { BACKUP_ALERT_CMD: 'true', RCLONE_BIN: quick, RCLONE_TIMEOUT_S: v })
     assert.match(r2.out, new RegExp(`RCLONE_TIMEOUT_S must be a positive number of seconds \\(${JSON.stringify(v).replace(/[.]/g, '\\$&')}\\); using 120`), r2.out)
