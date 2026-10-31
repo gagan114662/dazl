@@ -79,9 +79,9 @@ export type Outcome = { outcome: 'success' } | { outcome: 'hold'; reason: string
 export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval'])
 export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'uncertain_send', 'gmail_or_identity'])
 export function classifyWork(r: { stopped?: string; sent?: number; started?: number }): Outcome {
-  if (!r.stopped) return { outcome: 'success' }
+  if (r.stopped === undefined) return { outcome: 'success' }
   if (HOLD_REASONS.has(r.stopped)) return (r.sent ?? 0) > 0 || (r.started ?? 0) > 0 ? { outcome: 'success' } : { outcome: 'hold', reason: r.stopped } // held after work was done: progress
-  return { outcome: 'failure', error: new Error(r.stopped) }
+  return { outcome: 'failure', error: new Error(r.stopped || 'unknown_stop') } // an empty reason is as unknown as a new one
 }
 // syncReplies reports errors, never a hold: without reply reading the tenant's follow-up work cannot run.
 export function classifySync(r: { error?: string }): Outcome {
@@ -210,7 +210,7 @@ export async function tenantFreshness(d: DbLike, tenantId: string, now = nowS(),
     else if (w.kind === 'reply_sync' && w.last_attempt_at > (w.last_success_at ?? 0) && now - (w.last_success_at ?? w.last_attempt_at) > REPLY_SYNC_STALE_S) reasons.push('reply_sync_stale')
   }
   if (due && due.overdue_s > OVERDUE_ALERT_S) reasons.push('due_work_overdue')
-  const holds = work.filter(w => w.last_outcome === 'hold').map(w => `${w.kind}:${w.last_hold}`)
+  const holds = work.filter(w => w.last_outcome === 'hold').map(w => `${w.kind}:${w.last_hold ?? 'unknown'}`)
   const state: TenantState = reasons.some(r => r.endsWith('_failing')) ? 'blocked' : reasons.length ? 'stale' : holds.length ? 'held' : work.length || due ? 'healthy' : 'idle'
   return { scheduler: op.state, state, reasons, holds, work, oldest_due: due }
 }

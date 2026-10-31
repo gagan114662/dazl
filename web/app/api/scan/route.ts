@@ -17,6 +17,7 @@ import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { connectorStatus } from '@/lib/connectors/store'
 import { estimateForBody } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation } from '@/lib/billing/trial-budget'
+
 import { denied } from '@/lib/workspace-access'
 import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { readTenantOffer } from '@/lib/outreach/play-memory'
@@ -146,5 +147,6 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation, job_id ?? undefined).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
     throw e
+
   }
 }

@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
   const { scheduler, gates } = schedulerReadiness(db, user.tenantId)
   // scheduler/gates: configuration. freshness: whether the scheduler is actually making progress for this tenant (its own rows only).
   return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), test_fixture_available: fixtureAvailable(db,user.tenantId), status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
+
 }
 export async function POST(req: NextRequest) {
   const user = await requireUser()

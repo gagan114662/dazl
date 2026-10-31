@@ -1,3 +1,4 @@
+import { isRecruitingInbox } from '../recruiting-inbox.ts'
 // "Qualified / actionable" yield, measured separately from "source-checked". A lead is ACTIONABLE only when, at the END of enrichment, it has
 //   - a company domain the crawl confirmed (the homepage named the company and agreed on the place),
 //   - when the request needs sales hiring: the sales-hiring proof (it is still verified after the gate: own quote, dated ATS posting, or a careers-page vacancy),
@@ -49,7 +50,7 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
     const people = rows.filter(r => r.kind === 'person' && r.connector === 'sitecrawl')
     const person = people.find(p => personMatchesRole(p.value, who))
     if (!person) missing.push('no_contact_person')
-    const route = rows.find(r => r.connector === 'sitecrawl' && (r.kind === 'phone' || (r.kind === 'email' && !NOT_A_FOUNDER_ROUTE.test(r.value.split('@')[0].replace(/[._-]/g, '')))))
+    const route = rows.find(r => r.connector === 'sitecrawl' && (r.kind === 'phone' || (r.kind === 'email' && !isRecruitingInbox(r.value) && !NOT_A_FOUNDER_ROUTE.test(r.value.split('@')[0].replace(/[._-]/g, '')))))
     if (!route) missing.push('no_published_contact')
     return { lead_id: l.id, company: l.company, actionable: missing.length === 0, missing, person: person?.value ?? null, route: route ? `${route.kind}: ${route.value}` : null }
   })

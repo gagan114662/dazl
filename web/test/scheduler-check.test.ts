@@ -33,3 +33,24 @@ test('scheduler-check: alerts on problems (throttled), on an app that does not a
     assert.equal(await run('http://127.0.0.1:1/api/health/scheduler'), 1); assert.match(sent().at(-1).problems[0], /not answering/)
   } finally { server.close(); rmSync(T, { recursive: true, force: true }) }
 })
+
+test('failed alert delivery is retried, and failed recovery delivery keeps the original receipt', async () => {
+  const t = mkdtempSync(path.join(tmpdir(), 'sched-retry-'))
+  let healthy = false
+  const server = http.createServer((_q, r) => { r.statusCode = healthy ? 200 : 503; r.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : ['scheduler stale 3000s'], operational: { state: healthy ? 'fresh' : 'stale' }, tenants: { tracked: 1 } })) })
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  const cmd = path.join(t, 'alert.sh'), log = path.join(t, 'sent'), state = path.join(t, 'state')
+  const command = (ok: boolean) => { writeFileSync(cmd, ok ? `#!/bin/sh\necho delivered >> ${log}\n` : '#!/bin/sh\nexit 1\n'); chmodSync(cmd, 0o755) }
+  const run = (destination = cmd) => new Promise<number>(r => spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/ops/scheduler-check.mts', '--url', `http://127.0.0.1:${(server.address() as { port: number }).port}/api/health/scheduler`, '--state-dir', state], { cwd: web, env: { ...process.env, SCHEDULER_ALERT_CMD: destination, OPS_ALERT_WEBHOOK_URL: '' }, stdio: 'ignore' }).on('exit', c => r(c ?? -1)))
+  const count = () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').length : 0
+  try {
+    assert.equal(await run(''), 1); assert.equal(count(), 0)
+    assert.equal(await run(path.join(t, 'absent-command')), 1); assert.equal(count(), 0)
+    command(false); assert.equal(await run(), 1); assert.equal(count(), 0)
+    command(true); assert.equal(await run(), 1); assert.equal(count(), 1, 'retry immediately delivers, not throttled')
+    assert.equal(await run(), 1); assert.equal(count(), 1, 'successful delivery is throttled')
+    healthy = true; command(false); assert.equal(await run(), 1); assert.equal(count(), 1, 'recovery failure is not success')
+    command(true); assert.equal(await run(), 0); assert.equal(count(), 2, 'recovery retried until delivered')
+    assert.equal(await run(), 0); assert.equal(count(), 2, 'delivered recovery clears receipt')
+  } finally { server.close(); rmSync(t, { recursive: true, force: true }) }
+})

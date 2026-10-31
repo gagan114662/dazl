@@ -139,7 +139,7 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
   const scope = await guarded(c)
   const want = guardTriggers(scope).map(g => g.name).sort()
   assert.equal(want.length, 2 * (scope.length + 2), `${scope.length} guarded tables, users and organizations: two guards each`)
-  assert.equal(want.length, 156)
+  assert.equal(want.length, 164)
   const live = c.kind === 'sqlite'
     ? (await c.db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'tomb_%'")).map(r => r.name)
     : (await c.db.all<{ name: string }>("SELECT DISTINCT trigger_name AS name FROM information_schema.triggers WHERE trigger_schema = current_schema() AND trigger_name LIKE 'tomb_%'")).map(r => r.name)

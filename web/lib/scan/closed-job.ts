@@ -12,6 +12,7 @@ export function closedJobEvidence(candidate: Pick<Candidate, 'signal' | 'source_
   const isJob = (host.endsWith('linkedin.com') && url.pathname.startsWith('/jobs/view/')) ||
     (host === 'jobs.lever.co' && url.pathname.split('/').filter(Boolean).length >= 2) ||
     (host === 'jobs.ashbyhq.com' && url.pathname.split('/').filter(Boolean).length >= 2) ||
+    (host === 'startup.jobs' && /^\/[a-z0-9]+(?:-[a-z0-9]+)*-\d+\/?$/.test(url.pathname)) ||
     (host === 'job-boards.greenhouse.io' && /\/jobs\/\d+/.test(url.pathname)) ||
     (/^www\.builtin[a-z]*\.com$/.test(host) && url.pathname.startsWith('/job/'))
   if (!isJob || !/\b(hir(?:ing|e)|job|role|position|recruit(?:ing|ment))\b/i.test(candidate.signal)) return null

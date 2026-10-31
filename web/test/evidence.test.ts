@@ -49,7 +49,7 @@ test('undated or unverified dates lower confidence but can still pass; contacts 
   if (undated.ok) { assert.equal(undated.dateStatus, 'undated'); assert.equal(undated.confidence, 55) }
   const withContact = verifyEvidence(cand({ contact: 'jobs@northside.example' }), good, NOW)
   const fakeContact = verifyEvidence(cand({ contact: 'ceo@northside.example' }), good, NOW)
-  assert.equal(withContact.ok && withContact.contact, 'jobs@northside.example')
+  assert.equal(withContact.ok && withContact.contact, null, '#461 hiring inbox is not a sales contact')
   assert.equal(fakeContact.ok && fakeContact.contact, null)
   const phone = verifyEvidence(cand({ contact: '(416) 555-0199' }), good, NOW)
   assert.equal(phone.ok && phone.contact, '(416) 555-0199')

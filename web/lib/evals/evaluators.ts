@@ -93,6 +93,51 @@ export const placeOnPage: Evaluator = {
   },
 }
 
+// A verified lead's event date is stated in the cited page's TEXT (#395: an old article with a fresh publication date). A date
+// that is only the page's publication metadata says when the page was (re)published, not when the event happened: unknown, never
+// pass. Recognised forms: 2026-10-08, October 8, 2026 / Oct 8, 2026, 8 October 2026. No date on the lead: no verdict here
+// (event_date_in_window already holds it unknown).
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
+function dateForms(iso: string): string[] {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!m) return [iso.toLowerCase()]
+  const [y, mo, d] = [m[1], MONTHS[+m[2] - 1], String(+m[3])]
+  if (!mo) return [iso]
+  return [iso, `${mo} ${d}, ${y}`, `${mo.slice(0, 3)} ${d}, ${y}`, `${mo.slice(0, 3)}. ${d}, ${y}`, `${d} ${mo} ${y}`, `${d} ${mo.slice(0, 3)} ${y}`]
+}
+// A date form counts only as a whole token: "2026-10-080123", "x2026-10-08x" and "18 october 2026" do not state 2026-10-08.
+const statesToken = (text: string, form: string) => new RegExp(`(?<![\\p{L}\\p{N}])${form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'u').test(text)
+export const eventDateOnPage: Evaluator = {
+  id: 'event_date_on_page', version: 2, kind: 'deterministic', critical: true,
+  evaluate({ world, result }) {
+    return verified(result).filter(l => l.event_date).map(l => {
+      const own = world.pages[l.source_url]
+      const text = squash(`${own && 'text' in own ? `${own.title} ${own.text}` : ''} ${world.tinyfish_pages[l.source_url]?.text ?? ''}`)
+      if (dateForms(l.event_date!).some(f => statesToken(text, f))) return v(this, subj(l), 'pass', `the page text states ${l.event_date}`, [l.source_url])
+      const published = own && 'published' in own ? own.published : null
+      return published === l.event_date
+        ? v(this, subj(l), 'unknown', `${l.event_date} is only the page's publication date; the text never dates the event`, [l.source_url])
+        : v(this, subj(l), 'unknown', `${l.event_date} does not appear on the page`, [l.source_url])
+    })
+  },
+}
+
+// A verified lead's email contact is not a recruiting inbox (#395): careers@, jobs@, hr@ and the like route to hiring, not to a
+// buyer. A phone or no contact gets no verdict here.
+const RECRUITING_LOCAL = /^(?:jobs?|careers?|recruit(?:ing|ment|er|ers)?|talent(?:acquisition)?|hr|humanresources|hiring|apply|applications?|cv|cvs|resumes?|joinus|join|work(?:withus)?)$/
+export const contactNotRecruitingInbox: Evaluator = {
+  id: 'contact_not_recruiting_inbox', version: 2, kind: 'deterministic', critical: true,
+  evaluate({ result }) {
+    return verified(result).filter(l => l.contact && l.contact.includes('@')).map(l => {
+      // the mailbox stem before any +tag: careers+toronto@ is still the careers inbox
+      const local = l.contact!.trim().split('@')[0].split('+')[0].toLowerCase().replace(/[._-]/g, '')
+      return RECRUITING_LOCAL.test(local)
+        ? v(this, subj(l), 'fail', `contact ${l.contact} is a recruiting inbox, not a route to a buyer`, [l.source_url])
+        : v(this, subj(l), 'pass', 'contact is not a recruiting inbox')
+    })
+  },
+}
+
 // A verified lead's email contact is at a domain that belongs to the company (case ground truth). No ground truth for the
 // company, or a phone-only contact, is unknown, not pass. A lead with no contact gets no verdict here (nothing to check).
 export const contactDomainMatchesCompany: Evaluator = {
@@ -151,7 +196,7 @@ export const expectedOutcomes: Evaluator = {
   },
 }
 
-export const SCAN_EVALUATORS: Evaluator[] = [worldClosed, eventDateInWindow, evidenceInWorld, placeOnPage, contactDomainMatchesCompany, noTenantLeak, expectedOutcomes]
+export const SCAN_EVALUATORS: Evaluator[] = [worldClosed, eventDateInWindow, eventDateOnPage, evidenceInWorld, placeOnPage, contactDomainMatchesCompany, contactNotRecruitingInbox, noTenantLeak, expectedOutcomes]
 
 export interface CaseScore {
   contract: typeof EVAL_CONTRACT; case: string; status: VerdictStatus

@@ -47,9 +47,11 @@ const MATRIX: [string, Work, string][] = [
   ['sequences', seqIdle('reply_sync_failed'), 'failure:reply_sync_failed'],
   ['sequences', seqIdle('uncertain_send'), 'failure:uncertain_send'],
   ['sequences', seqIdle('gmail_or_identity'), 'failure:gmail_or_identity'],
-  // a stop reason the tick does not know is never read as progress
+  // a stop reason the tick does not know, or an empty one, is never read as progress
   ['sequences', seqIdle('something_new'), 'failure:something_new'],
   ['followups', { sent: 1, skipped: 0, stopped: 'something_new' }, 'failure:something_new'],
+  ['followups', { sent: 0, skipped: 0, stopped: '' }, 'failure:unknown_stop'],
+  ['followups', { sent: 0, skipped: 0, stopped: 'PAUSED' }, 'failure:PAUSED'],                // reasons are exact: no case folding
 ]
 
 test('classification table: every worker result maps to success, hold or failure', () => {
@@ -63,7 +65,7 @@ test('classification table: every worker result maps to success, hold or failure
 // reason has to be classified deliberately (an unnamed one is a failure either way).
 test('the table covers every stop reason runFollowups and runSequences return', () => {
   const known = new Set([...HOLD_REASONS, ...FAILURE_REASONS])
-  const inTable = new Set(MATRIX.map(([, r]) => r.stopped).filter((x): x is string => !!x && x !== 'something_new'))
+  const inTable = new Set(MATRIX.map(([, r]) => r.stopped).filter((x): x is string => !!x && !['something_new', 'PAUSED'].includes(x)))
   for (const file of ['followups.ts', 'sequences.ts']) {
     const src = readFileSync(new URL(`../lib/outreach/${file}`, import.meta.url), 'utf8')
     const reasons = [...src.matchAll(/\bstop\('([a-z_]+)'\)/g)].map(m => m[1])
@@ -158,3 +160,35 @@ bothEngines('cross-tenant isolation: one tenant\'s failures, holds and recovery 
   assert.deepEqual(h.problems, ['1 tenant(s) blocked by repeated failures'])
   assert.equal((await tenantFreshness(db, 'B', N + 20)).state, 'healthy')
 })
+
+bothEngines('boundaries: a long hold reason is capped, a hold row without a reason still reads as a hold, outcomes never mix', async ({ db }) => {
+  const r = await startRun(db, lease, N - 10)
+  await finishRun(db, r, 'ok', undefined, N - 5) // a completed run, so the scheduler itself reads fresh
+  await recordProgress(db, r, 'L', 'sequences', hold('x'.repeat(100)), N)
+  assert.equal((await row(db, 'L', 'sequences')).last_hold, 'x'.repeat(40))
+  await db.run("UPDATE scheduler_progress SET last_hold = NULL WHERE tenant_id = 'L'")
+  const f = await tenantFreshness(db, 'L', N + 1)
+  assert.equal(f.state, 'held'); assert.deepEqual(f.holds, ['sequences:unknown'])
+  // the store refuses an outcome outside the three
+  await assert.rejects(db.run("UPDATE scheduler_progress SET last_outcome = 'maybe' WHERE tenant_id = 'L'"))
+  // a hold recorded on a row that never existed: an attempt with nothing else
+  await recordProgress(db, r, 'M', 'followups', hold('paused'), N + 2)
+  assert.deepEqual(await row(db, 'M', 'followups'), { last_attempt_at: N + 2, last_success_at: null, last_error: null, last_outcome: 'hold', last_hold: 'paused', consecutive_failures: 0, last_run_id: r })
+  // a failure on a fresh row starts the count at 1
+  await recordProgress(db, r, 'M', 'sequences', failure('gmail_unavailable'), N + 2)
+  assert.equal((await row(db, 'M', 'sequences')).consecutive_failures, 1)
+  assert.deepEqual(await runRow(db, r), { attempted: 2, failed: 1 })
+})
+
+// Two tenants recorded at the same moment on two connections (Postgres) or interleaved (SQLite): each row is its own,
+// and the run's counts see both.
+bothEngines('concurrent records for two tenants land in their own rows and both count on the run', async ({ db }) => {
+  const r = await startRun(db, lease, N)
+  await Promise.all([
+    recordProgress(db, r, 'A', 'sequences', failure('reading_not_enabled'), N),
+    recordProgress(db, r, 'B', 'sequences', hold('paused'), N),
+    recordProgress(db, r, 'A', 'followups', success, N),
+  ])
+  assert.equal((await row(db, 'A', 'sequences')).last_outcome, 'failure'); assert.equal((await row(db, 'A', 'followups')).last_outcome, 'success'); assert.equal((await row(db, 'B', 'sequences')).last_outcome, 'hold')
+  assert.deepEqual(await runRow(db, r), { attempted: 2, failed: 1 })
+}, { pgMax: 3 })

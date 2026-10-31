@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
   for (let i = 0; ; i++) {
     try { await fetch(`${base}/sign-in`); break } catch { if (i > 150 || server.exitCode !== null) { stop(); throw new Error(`server did not start\n${log}`) } await new Promise(r => setTimeout(r, 200)) }
   }
-  return { base, token, stop, log: () => log }
+  return { base, token, dbPath: DB_PATH, stop, log: () => log }
 }
 
 export async function newContext(browser, { base, token }) {

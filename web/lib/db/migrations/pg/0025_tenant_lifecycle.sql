@@ -3,7 +3,7 @@
 -- BEFORE UPDATE OF the tenant column or parent key, that refuse a row for a deleted tenant (or under one of its deleted
 -- parents) whether it is inserted or moved there, so in-flight work or a late write cannot recreate erased data and no
 -- row can change hands into a deleted tenant. Generated from lib/db/tenant-guard.ts through scripts/pg-migrate
--- (translate-schema.ts): 156 guard triggers. Do not edit by hand; regenerate.
+-- (translate-schema.ts): 164 guard triggers. Do not edit by hand; regenerate.
 CREATE TABLE tenant_tombstone_keys (
       deleted_tenant TEXT NOT NULL,
       tbl            TEXT NOT NULL,
@@ -141,6 +141,14 @@ END $$;
 DROP TRIGGER IF EXISTS tomb_email_patterns ON email_patterns;
 CREATE TRIGGER tomb_email_patterns BEFORE INSERT ON email_patterns FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_email_patterns();
 
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_email_tokens() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_email_tokens ON email_tokens;
+CREATE TRIGGER tomb_email_tokens BEFORE INSERT ON email_tokens FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_email_tokens();
+
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_evidence_purge_audit() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
@@ -196,6 +204,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_inbox_thread_reads ON inbox_thread_reads;
 CREATE TRIGGER tomb_inbox_thread_reads BEFORE INSERT ON inbox_thread_reads FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_inbox_thread_reads();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_invitations() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_invitations ON invitations;
+CREATE TRIGGER tomb_invitations BEFORE INSERT ON invitations FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_invitations();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_lead_enrichments() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -340,6 +356,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_outreach_signal_context ON outreach_signal_context;
 CREATE TRIGGER tomb_outreach_signal_context BEFORE INSERT ON outreach_signal_context FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_outreach_signal_context();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_play_research_sources() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_play_research_sources ON play_research_sources;
+CREATE TRIGGER tomb_play_research_sources BEFORE INSERT ON play_research_sources FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_play_research_sources();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_reopen_messages() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -524,6 +548,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_suppressions ON suppressions;
 CREATE TRIGGER tomb_suppressions BEFORE INSERT ON suppressions FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_suppressions();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_system_mail_outbox() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_system_mail_outbox ON system_mail_outbox;
+CREATE TRIGGER tomb_system_mail_outbox BEFORE INSERT ON system_mail_outbox FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_system_mail_outbox();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_tenant_competitors() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -725,6 +757,14 @@ END $$;
 DROP TRIGGER IF EXISTS tomb_upd_email_patterns ON email_patterns;
 CREATE TRIGGER tomb_upd_email_patterns BEFORE UPDATE OF tenant_id ON email_patterns FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_email_patterns();
 
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_email_tokens() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_email_tokens ON email_tokens;
+CREATE TRIGGER tomb_upd_email_tokens BEFORE UPDATE OF user_id ON email_tokens FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_email_tokens();
+
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_evidence_purge_audit() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
@@ -780,6 +820,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_inbox_thread_reads ON inbox_thread_reads;
 CREATE TRIGGER tomb_upd_inbox_thread_reads BEFORE UPDATE OF tenant_id ON inbox_thread_reads FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_inbox_thread_reads();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_invitations() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_invitations ON invitations;
+CREATE TRIGGER tomb_upd_invitations BEFORE UPDATE OF tenant_id ON invitations FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_invitations();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_lead_enrichments() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -924,6 +972,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_outreach_signal_context ON outreach_signal_context;
 CREATE TRIGGER tomb_upd_outreach_signal_context BEFORE UPDATE OF tenant_id ON outreach_signal_context FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_outreach_signal_context();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_play_research_sources() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_play_research_sources ON play_research_sources;
+CREATE TRIGGER tomb_upd_play_research_sources BEFORE UPDATE OF tenant_id ON play_research_sources FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_play_research_sources();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_reopen_messages() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -1108,6 +1164,14 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_suppressions ON suppressions;
 CREATE TRIGGER tomb_upd_suppressions BEFORE UPDATE OF tenant_id ON suppressions FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_suppressions();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_system_mail_outbox() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_system_mail_outbox ON system_mail_outbox;
+CREATE TRIGGER tomb_upd_system_mail_outbox BEFORE UPDATE OF user_id ON system_mail_outbox FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_system_mail_outbox();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_tenant_competitors() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

@@ -2,7 +2,7 @@
 // the tombstone tables, and on every tenant-scoped table that exists when it runs (it runs after every other migration)
 // a BEFORE INSERT guard and a BEFORE UPDATE OF <tenant column or parent key> guard. They refuse a row for a deleted
 // tenant, or under one of its deleted parent rows, whether inserted or moved there by an update, so in-flight work or
-// a late write cannot recreate erased data and no row can change hands into a deleted tenant. Postgres: lib/db/migrations/pg/0020_tenant_lifecycle.sql.
+// a late write cannot recreate erased data and no row can change hands into a deleted tenant. Postgres: lib/db/migrations/pg/0025_tenant_lifecycle.sql.
 import type Database from 'better-sqlite3'
 import type { Db } from './client.ts'
 import { classify, type Scope } from '../tenant/scope.ts'

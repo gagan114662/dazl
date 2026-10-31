@@ -1,3 +1,4 @@
+import {migratePlayResearch} from '../db/play-research-schema.ts'
 import { migrateSourceReview } from './source-review.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
 import { migrateTenantLifecycle } from '../db/tenant-guard.ts'
@@ -35,6 +36,7 @@ export function getScanDb() {
     migrateSchedulerRuns(db)
     migrateScan(db)
     migrateSourceReview(db)
+    migratePlayResearch(db)
     migrateWatch(db)
     migrateKeys(db)
     migratePlans(db)
