@@ -50,6 +50,19 @@ needs an owner decision; see the end of this note.
   a fresh Postgres schema: unset, off and every invalid form delete nothing; a valid period deletes only older
   events, in bounded batches, and the table is still append-only afterwards.
 
+### What append-only does and does not hold against
+
+The triggers hold against application code: no statement the app runs can update, delete (outside the purge's own
+transaction) or truncate an event. They do not hold against the database role itself: a role that can run DDL can
+drop or disable the triggers, and a committed `audit_purge_gate` row (someone with database access, or a crash in a
+path that wrote the gate outside a transaction, which no code path does) silently makes `DELETE` allowed and makes
+every tick's purge fail loudly on its own gate insert. Protection from the database role is an operational matter
+(backups, restricted roles), not something this table can provide for itself. On the other side, the Stripe webhook
+writes its events in the transaction that applies the plan change, so while `audit_events` is unavailable plan
+changes are refused rather than applied unrecorded, by design. The CSV guard prefixes a cell that starts, after any
+leading spaces, with `=`, `+`, `-`, `@` or `|`, or with a tab or carriage return; values in the trail are server-side
+identifiers and redacted scalars today, so the guard is defence in depth.
+
 ## When an event is written
 
 - **Stripe's plan changes** (`lib/billing/stripe.ts`: applied, reconciled, held, payment failed) are written inside

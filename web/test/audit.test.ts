@@ -9,6 +9,8 @@ import { readPlan } from '../lib/plans.ts'
 import type { Db } from '../lib/db/client.ts'
 import { bothEngines } from './helpers/engines.ts'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
+import { StaleLeaseWrite, tryLease } from '../lib/shared/lease.ts'
+import { randomBytes } from 'node:crypto'
 
 const NOW = Math.floor(Date.now() / 1000)
 const DAY = 24 * 60 * 60
@@ -68,6 +70,56 @@ bothEngines('a summary that does not parse is reported and read as unreadable, n
     assert.deepEqual((await searchAudit(db, 'A')).map(e => [e.action, e.summary]), [['x.corrupt', { unreadable: true }], ['x.fine', { n: 1 }]])
   } finally { restore() }
   assert.deepEqual(caught.map(r => r.where), ['audit:summary'])
+})
+
+// From the adversarial probe of the PR (kept as permanent tests): the purge under the REAL lease, as the tick runs it.
+const count = async (db: Db) => Number((await db.get<{ n: number | string }>('SELECT count(*) AS n FROM audit_events'))!.n)
+const gateRows = async (db: Db) => Number((await db.get<{ n: number | string }>('SELECT count(*) AS n FROM audit_purge_gate'))!.n)
+const bulk = (db: Db, tenant: string, n: number, at: (i: number) => number) => db.tx(function* (t) {
+  for (let i = 0; i < n; i++) yield* t.run("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, decision, summary, at, seq) VALUES (?, ?, ?, 'user', 'x.bulk', 't', 'allowed', '{}', ?, 0)", [randomBytes(12).toString('hex'), tenant, tenant, at(i)])
+})
+const LEASE = { ttlMs: 60_000, stepBudgetMs: 1000, heartbeat: false as const }
+
+bothEngines('two purges at once under one real lease: each bounded to 1000, no gate row left, still append-only, fresh events untouched', async ({ db }) => {
+  await bulk(db, 'A', 2500, i => NOW - 500 * DAY + i)
+  await record(db, { tenantId: 'A', actorId: 'A', action: 'x.fresh', resourceType: 't' }, NOW)
+  const lease = (await tryLease(db, 'internal-tick', LEASE))!
+  try {
+    const fence = (t: Parameters<typeof lease.fence>[0]) => lease.fence(t)
+    const results = await Promise.allSettled([purgeAudit(db, { now: NOW, retainS: 400 * DAY, fence }), purgeAudit(db, { now: NOW, retainS: 400 * DAY, fence })])
+    // one may be refused by the engine's locking; whichever ran deleted at most its bound, and the rows gone match
+    for (const r of results) if (r.status === 'fulfilled') assert.ok(r.value <= 1000, 'bounded')
+    const total = results.reduce((n, r) => n + (r.status === 'fulfilled' ? r.value : 0), 0)
+    assert.ok(total >= 1000 && total <= 2000, `deleted ${total}`)
+    assert.equal(await count(db), 2501 - total, 'the deleted count matches the rows gone')
+    assert.equal(await gateRows(db), 0)
+    await assert.rejects(db.run('DELETE FROM audit_events'), /append-only/)
+    assert.deepEqual((await searchAudit(db, 'A', { limit: 1 })).map(e => e.action), ['x.fresh'])
+  } finally { await lease.release() }
+})
+
+bothEngines('the lease taken over before the purge: the old holder is refused inside the transaction, nothing deleted, no gate; the new holder purges once', async ({ db }) => {
+  await bulk(db, 'A', 5, i => NOW - 500 * DAY + i)
+  let clock = 1_000_000
+  const l1 = (await tryLease(db, 'internal-tick', { ...LEASE, clock: () => clock }))!
+  clock += LEASE.ttlMs + 1 // l1 expired; a second tick takes over
+  const l2 = (await tryLease(db, 'internal-tick', { ...LEASE, clock: () => clock }))!
+  try {
+    assert.equal(l2.generation, l1.generation + 1)
+    await assert.rejects(purgeAudit(db, { now: NOW, retainS: 400 * DAY, fence: t => l1.fence(t) }), (e: unknown) => e instanceof StaleLeaseWrite)
+    assert.equal(await count(db), 5)
+    assert.equal(await gateRows(db), 0)
+    assert.equal(await purgeAudit(db, { now: NOW, retainS: 400 * DAY, fence: t => l2.fence(t) }), 5)
+  } finally { await l2.release() }
+})
+
+bothEngines('the gate table gone: the purge is refused and deletes nothing, and a plain DELETE is still refused (fails closed)', async ({ db }) => {
+  await bulk(db, 'A', 3, i => NOW - 500 * DAY + i)
+  await db.run('DROP TABLE audit_purge_gate')
+  await assert.rejects(purgeAudit(db, { now: NOW, retainS: 400 * DAY }))
+  assert.equal(await count(db), 3)
+  await assert.rejects(db.run('DELETE FROM audit_events'))
+  assert.equal(await count(db), 3)
 })
 
 test('summaries keep short scalars only: no secrets, tokens, hashes or message content', () => {

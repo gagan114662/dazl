@@ -13,8 +13,9 @@ import { denied } from '@/lib/workspace-access'
 // deletes events.
 const csvCell = (v: unknown) => {
   const s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
-  // a cell a spreadsheet would run as a formula is kept as text
-  const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s
+  // a cell a spreadsheet would run as a formula is kept as text: a leading =, +, -, @, | (DDE), tab or CR, also after
+  // leading spaces (some spreadsheets trim before deciding)
+  const safe = /^\s*[=+\-@|]|^[\t\r]/.test(s) ? `'${s}` : s
   return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe
 }
 // Nothing bounds the trail's size until the owner chooses a retention period (lib/audit.ts auditRetention), so this

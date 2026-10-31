@@ -217,8 +217,12 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   // the CSV keeps a cell a spreadsheet would run as a formula as text, and quotes what needs quoting
   raw.prepare("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, at, seq) VALUES (?, 'A', 'A', 'user', 'x.formula', 't', ?, 'allowed', '{}', ?, 999999)")
     .run('f'.repeat(24), '=HYPERLINK("http://x.example")', Math.floor(Date.now() / 1000) + 5)
+  for (const [id, v] of [['1'.repeat(24), ' =1+1'], ['2'.repeat(24), '|cmd'], ['3'.repeat(24), '  @SUM(A1)']] as const)
+    raw.prepare("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, at, seq) VALUES (?, 'A', 'A', 'user', 'x.formula', 't', ?, 'allowed', '{}', ?, 999999)").run(id, v, Math.floor(Date.now() / 1000) + 5)
   const csvAll = await (await read(t.A, '?format=csv&action=x.')).text()
   assert.ok(csvAll.includes(`,"'=HYPERLINK(""http://x.example"")",`), csvAll)
+  // a leading space before the formula character, and a leading pipe (DDE), are guarded too
+  for (const v of [`,' =1+1,`, `,'|cmd,`, `,'  @SUM(A1),`]) assert.ok(csvAll.includes(v), `${v} in ${csvAll}`)
 
   // the CSV is the whole trail, not one page: 1001 more events all come out, and nothing says truncated
   const ins = raw.prepare("INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, decision, summary, at, seq) VALUES (?, 'A', 'A', 'user', 'bulk.row', 't', 'allowed', '{}', ?, ?)")
