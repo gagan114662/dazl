@@ -7,15 +7,15 @@
 //     only accepts when it is exactly the authenticated sender; never to anyone else. Gmail accepting it is not proof:
 //     delivery counts only when the message is then found in that mailbox's INBOX by its Message-ID (Gmail read
 //     access). Without read access, or if it is not there, the check fails and the launch holds.
-//   - stops: the guards autopilot enforces on every send, as implemented (reply/opt-out/bounce suppression, the
-//     uncertain-send pause, the per-company cap).
+//   - stops: the guards autopilot enforces on every send, each observed on this tenant's store at the moment of the
+//     run (the stop's table is readable on this handle), not declared: an unreadable store holds the launch.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, gmailSend, gmailStatus, confirmedSendResult } from '../gmail/oauth.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { approveBlockReason, createDraft, getSettings, type Deps } from './service.ts'
 import { MIN_CONFIDENCE } from './autopilot.ts'
-import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
+import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, REQUIRED_STOPS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
 
 // Receipt evidence: the message with this Message-ID is in the mailbox's INBOX. Any error or absence is "not received".
 async function receivedInInbox(token: string, messageId: string, fetchImpl: typeof fetch): Promise<boolean> {
@@ -36,7 +36,21 @@ async function receivedInInbox(token: string, messageId: string, fetchImpl: type
   } catch { return false }
 }
 
-export const AUTOPILOT_STOPS = { reply: true, optOut: true, bounce: true, uncertainPause: true, domainCap: true } as const
+// Each required stop (REQUIRED_STOPS) is wired into every autopilot send: the reply stop reads inbound_messages
+// (calibratedStop, and the reply sync that stops cold sequences), opt-out reads suppressions (isSuppressed at the claim
+// and the handoff), the bounce rate reads autopilot_audit, the uncertain-send pause and the per-company cap read
+// outreach_messages (stopNow, domainSentRecently). What the preflight can observe is that each of those stores answers
+// right now for this tenant; a store that cannot be read is a stop that cannot fire, so its flag is false.
+export function observedStops(db: Database.Database, tenantId: string): Record<(typeof REQUIRED_STOPS)[number], boolean> {
+  const readable = (sql: string) => { try { db.prepare(sql).get(tenantId); return true } catch { return false } }
+  return {
+    reply: readable('SELECT 1 FROM inbound_messages WHERE tenant_id = ? LIMIT 1'),
+    optOut: readable('SELECT 1 FROM suppressions WHERE tenant_id = ? LIMIT 1'),
+    bounce: readable("SELECT 1 FROM autopilot_audit WHERE tenant_id = ? AND action = 'bounce' LIMIT 1"),
+    uncertainPause: readable("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain' LIMIT 1"),
+    domainCap: readable("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') LIMIT 1"),
+  }
+}
 
 // a pre-approval refusal, sorted into the preflight's three sample checks
 function sampleOf(db: Database.Database, tenantId: string, leadId: string, id: string, claimIssues: string[]): SampleDraft {
@@ -90,5 +104,5 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
     } catch { testInboxDelivered = false }
   }
 
-  return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: { ...AUTOPILOT_STOPS } }, now)
+  return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
 }

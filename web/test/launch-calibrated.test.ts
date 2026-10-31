@@ -211,6 +211,16 @@ test('a corrupt stored policy is reported as unreadable to the settings page and
   assert.equal(launchGate(db, 'A', 'me@acme.example', NOW + 2).calibrated, false)
 })
 
+test('the preflight\'s stop flags are observed, not declared: a stop whose store cannot be read holds the launch (#405 council R2-3)', async () => {
+  const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
+  acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+  db.exec('DROP TABLE inbound_messages') // the reply stop's store
+  const r = await runCalibration(db, 'A', 'Acme', gmail().d)
+  assert.equal(r.ok, false)
+  assert.ok(r.failures.includes('stop_not_enforced'), r.failures.join(','))
+  assert.equal(launchGate(db, 'A', 'me@acme.example', NOW).calibrated, false)
+})
+
 test('HOLD: provider acceptance is not receipt: the integration message must be found in the INBOX, with read access', async () => {
   const db = await setup(); const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
   acceptLaunchPolicy(db, 'A', policy([job]), NOW)
