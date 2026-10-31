@@ -84,8 +84,15 @@ test('without a launch policy the hand-approval warmup is unchanged; an accepted
   assert.deepEqual(acceptLaunchPolicy(db2, 'A', policy([job2]), NOW), { ok: true })
   assert.deepEqual(launchGate(db2, 'A', 'me@acme.example', NOW), { calibrated: false, accepted: true }, 'accepted but no passing preflight')
   const r = await runAutopilot(db2, 'A', 'Acme', gmail().d)
-  assert.deepEqual([r.sent, r.held, r.stopped, statuses(db2)], [0, 0, 'launch_not_calibrated', []])
+  assert.deepEqual([r.sent, r.held, r.stopped, statuses(db2), getState(db2, 'A').pause_reason], [0, 0, 'launch_not_calibrated', [], 'launch_not_calibrated'])
   assert.ok(recentAutopilotAudit(db2, 'A').every(a => a.action !== 'sent'))
+  // the passing preflight lifts exactly that pause; a tenant's own pause stays
+  lead(db2, job2, 'c@three.example')
+  assert.equal((await runCalibration(db2, 'A', 'Acme', gmail().d)).ok, true)
+  assert.equal(getState(db2, 'A').paused, false)
+  pause(db2, 'A'); acceptLaunchPolicy(db2, 'A', policy([job2]), NOW + 5)
+  assert.equal((await runCalibration(db2, 'A', 'Acme', gmail().d)).ok, true)
+  assert.equal(getState(db2, 'A').pause_reason, 'paused_by_user', 'the tenant\'s own pause is not lifted by a calibration')
 })
 
 test('calibration: samples stay drafts, the only message goes to the owned test inbox, and a passing run launches', async () => {
@@ -649,9 +656,9 @@ test('F4: a launched tenant past the warmup whose policy is re-accepted, stale o
     if (how === 'empty_row') db.prepare("UPDATE autopilot_launch_policy SET policy = '{}'").run()
     assert.deepEqual(launchGate(db, 'A', 'me@acme.example', NOW + 2), { calibrated: false, accepted: true }, how)
     const g = gmail(); const r = await runAutopilot(db, 'A', 'Acme', { ...g.d, now: NOW + 2 })
-    got[how] = { to: g.to(), sent: r.sent, held: r.held, stopped: r.stopped, drafts: statuses(db).filter(x => x !== 'sent').length }
+    got[how] = { to: g.to(), sent: r.sent, held: r.held, stopped: r.stopped, pause: getState(db, 'A').pause_reason, drafts: statuses(db).filter(x => x !== 'sent').length }
   }
-  const want = { to: [], sent: 0, held: 0, stopped: 'launch_not_calibrated', drafts: 3 } // the 3 sample drafts from calibration, nothing new
+  const want = { to: [], sent: 0, held: 0, stopped: 'launch_not_calibrated', pause: 'launch_not_calibrated', drafts: 3 } // the 3 sample drafts from calibration, nothing new
   assert.deepEqual(got, { reaccept_narrower: want, stale_version: want, invalid_row: want, empty_row: want })
   // positive: the same tenant with NO policy row is on the warmup, and past 10 sends the warmup sends (as on main)
   const { db, job } = await launched()

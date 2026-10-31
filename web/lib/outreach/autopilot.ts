@@ -143,7 +143,7 @@ function stopNowUnguarded(db: Database.Database, tenantId: string, env: Record<s
   const gate = launchGate(db, tenantId, g?.status === 'active' ? g.email : null, now)
   if (gate.calibrated !== started.calibrated || (gate.calibrated && started.calibrated && gate.acceptanceId !== started.acceptanceId)) return 'launch_policy_changed'
   // a policy the tenant accepted that is not a launch right now (not yet calibrated, re-accepted, stale version, invalid,
-  // other mailbox): nothing is sent until a preflight passes; never the warmup's rules
+  // other mailbox): nothing is sent until a preflight passes (a pause, lifted by that preflight); never the warmup's rules
   if (!gate.calibrated && gate.accepted) return 'launch_not_calibrated'
   if (gate.calibrated) {
     const halt = calibratedStop(db, tenantId, gate)
@@ -159,7 +159,9 @@ function stopNowUnguarded(db: Database.Database, tenantId: string, env: Record<s
 }
 // What a stop means for the run: the policy's own stops and an uncertain send pause autopilot; the launch changing is
 // reported as policy_changed; the rest stop this run under their own name.
-const PAUSES: ReadonlySet<string> = new Set(['reply_received', 'bounce_rate', 'stop_check_unavailable', 'uncertain_send', 'already_uncertain', 'gmail_reconnect_needed', 'gmail_not_connected'])
+// launch_not_calibrated pauses too: the tenant's last word is a policy that is not a launch, so nothing goes out until a
+// preflight passes; that passing calibration lifts this one pause itself (runCalibration), so the tenant is not stranded.
+const PAUSES: ReadonlySet<string> = new Set(['reply_received', 'bounce_rate', 'stop_check_unavailable', 'uncertain_send', 'already_uncertain', 'gmail_reconnect_needed', 'gmail_not_connected', 'launch_not_calibrated'])
 const runOutcome = (code: string) => code === 'launch_policy_changed' ? 'policy_changed' : code === 'already_uncertain' ? 'uncertain_send' : code
 // Codes that mean autopilot's OWN authority to send lapsed (every stopNow code, however it surfaced). A message autopilot
 // approved under that authority goes back to being the tenant's draft, never left approved with autopilot's hash on it.
@@ -188,7 +190,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   let scope: { sql: string; args: (string | number)[] } = { sql: '', args: [] }
   try {
     const g0 = launchGate(db, tenantId, mailbox(), now)
-    if (!g0.calibrated && g0.accepted) { audit(db, tenantId, 'stopped', 'launch_not_calibrated'); return stop('launch_not_calibrated') }
+    if (!g0.calibrated && g0.accepted) { pause(db, tenantId, 'launch_not_calibrated'); audit(db, tenantId, 'stopped', 'launch_not_calibrated'); return stop('launch_not_calibrated') }
     if (g0.calibrated) {
       const { audience, exclusions } = g0.policy
       const like = (d: string) => '%@' + d.replace(/[\\%_]/g, c => '\\' + c)
