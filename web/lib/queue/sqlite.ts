@@ -82,6 +82,7 @@ export class SqliteQueue implements QueueAdapter {
   }
 
   enqueue(input: EnqueueInput): EnqueueResult {
+    if (input.maxBacklog !== undefined) throw new Error('maxBacklog admission is DbQueue only')
     const now = input.now ?? Math.floor(Date.now() / 1000)
     // No SELECT-first: the INSERT itself is the atomic dedupe check (partial
     // unique index), so the check-then-insert race window does not exist.
@@ -138,6 +139,8 @@ export class SqliteQueue implements QueueAdapter {
   }
 
   claim(opts?: ClaimOptions): Claim | null {
+    // Lanes and round-robin order are the shared adapter's (DbQueue); refuse rather than silently ignore them.
+    if (opts?.lane || (opts?.order && opts.order !== 'fifo')) throw new Error('lane / round_robin claims are DbQueue only')
     const now = opts?.now ?? Math.floor(Date.now() / 1000)
     const perTenant = opts?.perTenantInFlight ?? 1
     const maxInFlight = opts?.maxInFlight ?? 3
