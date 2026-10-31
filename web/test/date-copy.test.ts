@@ -26,10 +26,10 @@ test('export read preserves raw event date status with tenant isolation and no i
 })
 test('lead UI and CSV both expose date context alongside raw date fields', () => {
   const read = (p:string) => readFileSync(new URL(`../${p}`,import.meta.url),'utf8')
-  assert.match(read('app/app/leads/leads-client.tsx'), /eventDateCopy\(l.event_date, l.date_status, l.timing, l.day_verified\)/)
+  assert.match(read('app/app/leads/leads-client.tsx'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
   const route = read('app/api/leads/export/route.ts')
   assert.match(route, /key: 'date_status'/); assert.match(route, /key: 'date_context'/)
-  assert.match(route, /date_context: eventDateCopy/)
+  assert.match(route, /date_context: \(\(\) => .*eventDateCopy\(lead\.event_date/); assert.match(route, /windowMissed: timingUnconfirmedReason\(lead, o\) === 'out_of_window'/)
 })
 import { savedGradeWhy } from '../lib/scan/leads-view.ts'
 test('saved-grade copy never says "no saved grade" next to a saved fit/intent/action', () => {
@@ -41,7 +41,7 @@ test('saved-grade copy never says "no saved grade" next to a saved fit/intent/ac
 })
 
 test('event day verified but recency window unresolved: never "claimed" or "association unconfirmed"; window and current need stay open', () => {
-  const line = eventDateCopy('2026-01-06', 'verified', 'unconfirmed', true)
+  const line = eventDateCopy('2026-01-06', 'verified', 'unconfirmed', { dayVerified: true })
   assert.match(line, /event day verified on the cited source/); assert.match(line, /recency window unresolved/); assert.match(line, /current need unconfirmed/)
   assert.doesNotMatch(line, /claimed/); assert.doesNotMatch(line, /association unconfirmed/)
   // Reason alone is not proof: without the day-verified signal the same unresolved run keeps the claimed wording.

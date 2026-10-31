@@ -27,6 +27,9 @@ export interface CardLead {
   // if the requested recency window is unresolved. Never derived from timing_reason (unresolved_recency precedes
   // no_proof in the predicate order, so the reason alone cannot imply proof).
   day_verified?: boolean
+  // True when the requested recency window is known and the verified event day falls outside it (the canonical
+  // reason 'out_of_window'). Distinct from an unresolved window - copy must not call a known miss "unresolved".
+  window_missed?: boolean
   currentness_held?: boolean; window_held?: boolean
   enrichments?: { connector: string; kind: string; value: string; label: string | null; source_url: string; retrieved_at?: number | null }[]
 }
@@ -95,7 +98,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const ageDays = l.event_date ? Math.floor((now.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000) : null
   // date_status 'verified' is a legacy nearby-year verdict, not proof the page dates the EVENT; same wording as the lead
   // list and CSV (date-copy.ts). Never "confirmed on the page" (#198 live acceptance finding).
-  const dateNote = !l.event_date ? 'event date unknown' : `${eventDateCopy(l.event_date, l.date_status, l.timing, l.day_verified)}, ${ageDays} days ago`
+  const dateNote = !l.event_date ? 'event date unknown' : `${eventDateCopy(l.event_date, l.date_status, l.timing, { dayVerified: l.day_verified, windowMissed: l.window_missed })}, ${ageDays} days ago`
 
   const people: PersonContact[] = rows.filter(r => r.kind === 'contact' || r.kind === 'person').map(r => {
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)
@@ -131,6 +134,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
   else if (l.timing === 'proof_backed') facts.push(`The cited source dates the event to ${l.event_date}.`)
+  else if (l.day_verified && l.window_missed) facts.push(`The cited source dates the event to ${l.event_date}, outside the requested recency window.`)
   else if (l.day_verified) facts.push(`The cited source dates the event to ${l.event_date}; whether it sits inside the requested recency window is unresolved.`)
   else assumptions.push(`The date ${l.event_date} is the event day as claimed; the page was not shown to date the event itself.`)
   const history = people.filter(p => p.historical)

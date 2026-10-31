@@ -62,7 +62,7 @@ test('headline: proof_backed never claims timing unconfirmed, and never claims n
 test('headline: unconfirmed states name the gap; need stays unconfirmed', () => {
   assert.match(savedGradeWhy({ why: 'x' }, { timing: 'unconfirmed', reason: 'bad_date' }), /^The claimed event date is invalid\./)
   assert.match(savedGradeWhy({ why: 'x' }, { timing: 'unconfirmed', reason: 'future_date' }), /^The claimed event date is in the future\./)
-  assert.match(savedGradeWhy({ why: 'x' }, { timing: 'unconfirmed', reason: 'out_of_window' }), /^The claimed event date is outside the freshness window\./)
+  assert.match(savedGradeWhy({ why: 'x' }, { timing: 'unconfirmed', reason: 'out_of_window' }), /^The event day is verified on the cited source and falls outside the requested freshness window\./) // out_of_window is only reachable after every proof predicate passes
   const u = savedGradeWhy({ why: 'x' }, { timing: 'unconfirmed', reason: 'unresolved_recency_bound' })
   assert.match(u, /^The request asks for a recent event but sets no time window/)
   assert.doesNotMatch(u, /proof-backed/i)
@@ -106,14 +106,14 @@ test('unresolved recency window with valid event-day proof: association stays pr
   assert.equal(eventDayVerified(l, { now: NOW }), true) // the page DID date the event
   const t = surfaceStoredIntent(l as never, o)
   assert.equal(t.timing, 'unconfirmed'); assert.equal(t.intent, 0) // intent held: no positive qualification for an unresolved window
-  const copy = eventDateCopy(l.event_date, 'verified', t.timing, eventDayVerified(l))
+  const copy = eventDateCopy(l.event_date, 'verified', t.timing, { dayVerified: eventDayVerified(l) })
   assert.match(copy, /event day verified/); assert.match(copy, /recency window unresolved/)
   assert.doesNotMatch(copy, /claimed|association unconfirmed/)
   // Same reason, NO proof: reason alone must not verify anything (unresolved_recency precedes no_proof in rule order).
   const noProof = { ...graded, event_date_proof: null }
   assert.equal(timingUnconfirmedReason(noProof as never, o), 'unresolved_recency_bound')
   assert.equal(eventDayVerified(noProof, { now: NOW }), false)
-  assert.match(eventDateCopy(noProof.event_date, null, 'unconfirmed', eventDayVerified(noProof)), /claimed event day; event association and current need unconfirmed/)
+  assert.match(eventDateCopy(noProof.event_date, null, 'unconfirmed', { dayVerified: eventDayVerified(noProof) }), /claimed event day; event association and current need unconfirmed/)
 })
 
 test('opportunity card: proven event day with unresolved window is a fact about the source, never "not shown to date the event"', () => {
@@ -127,4 +127,24 @@ test('opportunity card: proven event day with unresolved window is a fact about 
   const unproven = opportunityCard({ ...base, day_verified: false } as never)
   assert.match(JSON.stringify(unproven), /not shown to date the event itself/)
   assert.match(JSON.stringify(unproven), /confirm the timing/)
+})
+
+test('proven day OUT OF A KNOWN WINDOW: verified + outside, never "claimed", never "unresolved"; no-proof control stays claimed', () => {
+  const l = { ...graded, event_date_proof: 'page_bound' }
+  const o = { now: NOW, windowDays: 5 } // event is 16 days old: window known and missed
+  const reason = timingUnconfirmedReason(l as never, o)
+  assert.equal(reason, 'out_of_window')
+  assert.equal(eventDayVerified(l, { now: NOW }), true) // implied by the predicate order, and checked explicitly by callers
+  const head = timingHeadline({ timing: 'unconfirmed', reason })
+  assert.match(head, /verified on the cited source/); assert.match(head, /outside the requested freshness window/)
+  assert.doesNotMatch(head, /claimed|unresolved/)
+  const line = eventDateCopy(l.event_date, 'verified', 'unconfirmed', { dayVerified: true, windowMissed: true })
+  assert.match(line, /event day verified on the cited source; outside the requested recency window/)
+  assert.doesNotMatch(line, /claimed|unresolved/)
+  const why = savedGradeWhy({ why: 'x' }, { timing: 'unconfirmed', reason })
+  assert.doesNotMatch(why, /claimed/)
+  // No-proof control: a window set but no proof is 'no_proof' with the claimed wording, never verified/outside.
+  const noProof = { ...graded, event_date_proof: null }
+  assert.equal(timingUnconfirmedReason(noProof as never, o), 'no_proof')
+  assert.match(eventDateCopy(noProof.event_date, null, 'unconfirmed', { dayVerified: eventDayVerified(noProof), windowMissed: false }), /claimed event day; event association and current need unconfirmed/)
 })

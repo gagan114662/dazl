@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
   const windowDays = jobWindowDays(job)
   const timingOpts = { windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(job.query ?? '') }
   const safeLeads = leads.map(l => { const t = surfaceStoredIntent(l, timingOpts); const tr = timingUnconfirmedReason(l, timingOpts)
-    return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l),
+    return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), window_missed:tr === 'out_of_window',
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
     currentness_held:currentnessHeld(getScanDb(),user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id)} })

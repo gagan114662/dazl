@@ -46,7 +46,7 @@ export function timingHeadline(t?: { timing: 'proof_backed' | 'unconfirmed'; rea
   switch (t?.reason) {
     case 'bad_date': return 'The claimed event date is invalid. Event timing and current need are unconfirmed.'
     case 'future_date': return 'The claimed event date is in the future. Event timing and current need are unconfirmed.'
-    case 'out_of_window': return 'The claimed event date is outside the freshness window. Event timing and current need are unconfirmed.'
+    case 'out_of_window': return 'The event day is verified on the cited source and falls outside the requested freshness window. Current need is unconfirmed.' // reason order proves the day here
     case 'unresolved_recency_bound': return 'The request asks for a recent event but sets no time window, so event timing is unresolved. Current need is unconfirmed.'
     case 'proof_kind_mismatch': return 'The saved date proof does not belong to this kind of signal. Event timing and current need are unconfirmed.'
     default: return 'Event timing and current need are unconfirmed.'
