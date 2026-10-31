@@ -9,6 +9,10 @@
 //   2. the London CRM/outbound play, and the same product sold explicitly to veterinary practices, are still shown as a
 //      choice on both pages;
 //   3. viewing writes nothing: no offer is chosen for a play and the saved offer is not rewritten.
+//   4. choosing CRM for the original full London request changes that play only. Home, campaign and a template
+//      draft preview agree at both widths and after reload. The draft uses a synthetic eligible lead with a
+//      synthetic passed hiring-gate precondition, not a promotion of either production play's research-only leads.
+//      No provider, scan or send. The original dental snapshot and global profile remain unchanged.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -35,7 +39,7 @@ const LIVE_DENTAL_REQUEST = 'Find independent dental practices in New York City 
 const LIVE_LONDON_REQUEST = 'Find B2B SaaS startups in London, UK that raised seed funding or are hiring their first sales representative in the last 90 days. We sell CRM setup and outbound sales consulting. Exclude agencies, directories and companies outside the UK. Show dated source evidence and founder or head of sales contacts.'
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-offersame-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 migrateAllSqlite(db)
-db.prepare("INSERT INTO users (id, email, password_hash, salt, sells, website) VALUES ('u1', 's@example.test', 'x', 'y', ?, '')").run(SAVED)
+db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells, website) VALUES ('u1', 's@example.test', 'x', 'y', 'Synthetic Co', ?, '')").run(SAVED)
 for (const [id, query, industry, location] of [[LIVE_DENTAL, LIVE_DENTAL_REQUEST, 'Dental', 'New York City'], [LIVE_LONDON, LIVE_LONDON_REQUEST, 'SaaS', 'London, UK']]) {
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller, icp, icp_inferred, offer, offer_set_at) VALUES (?, 'u1', 'Dental Seller', ?, ?, 'running', ?, ?, '{\"summary\":\"synthetic\"}', 1, NULL, NULL)").run(id, industry, location, query, SAVED)
   db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, 'Synthetic Buyer', 'Pat', 'pat@buyer.example', 'Hiring', 'https://news.example/a', 'Synthetic Buyer is hiring.', 80)").run(`lead-${id}`, id)
@@ -51,6 +55,7 @@ for (const [id, query] of [[DENTAL, 'Independent dental practices in New York Ci
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, 'u1', ?, 'pat@buyer.example', 'Hello', 'A synthetic draft body.', 'draft')").run(`m-${id}`, `lead-${id}`)
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
 }
+db.prepare('UPDATE scan_jobs SET created_at = created_at + 1000 WHERE id = ?').run(LIVE_LONDON)
 const before = JSON.stringify([db.prepare('SELECT id, offer, seller, query FROM scan_jobs ORDER BY id').all(), db.prepare('SELECT sells FROM users').all()]); db.close()
 const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
@@ -90,7 +95,53 @@ try {
   }
   const after = new Database(DB); const now = JSON.stringify([after.prepare('SELECT id, offer, seller, query FROM scan_jobs ORDER BY id').all(), after.prepare('SELECT sells FROM users').all()]); after.close()
   assert.equal(now, before, 'viewing chose no offer and rewrote nothing')
-  console.log('same-offer UI check passed at 1280 and 390: Campaign and Outreach show the saved dental offer with no choice; the London CRM play is still a choice; nothing written')
+  // The original audit acceptance continues after an explicit choice. Never touch production records here.
+  const CRM = 'CRM setup and outbound sales consulting'
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+  await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+  const p = await ctx.newPage(); await p.route(u => u.origin !== base, r => r.abort())
+  await p.goto(base + `/app/campaigns/${LIVE_LONDON}`, { waitUntil: 'networkidle' })
+  await p.getByTestId('play-offer-use-stated').click()
+  await p.getByTestId('play-offer-text').filter({ hasText: CRM }).waitFor()
+  const d = new Database(DB)
+  const dentalBefore = d.prepare('SELECT query,seller,offer,offer_set_at FROM scan_jobs WHERE id = ?').get(LIVE_DENTAL)
+  assert.equal(d.prepare('SELECT offer FROM scan_jobs WHERE id = ?').get(LIVE_LONDON).offer, CRM)
+  assert.equal(dentalBefore.offer,null);assert.equal(dentalBefore.seller,SAVED)
+  assert.equal(d.prepare("SELECT sells FROM users WHERE id='u1'").get().sells,SAVED)
+  // New synthetic dated/source-confirmed lead only. No claim about either live play's existing research-only leads.
+  d.prepare('DELETE FROM outreach_messages WHERE lead_id = ?').run(`lead-${LIVE_LONDON}`)
+  d.prepare('UPDATE leads SET human_confirmed_at = ?, human_confirmed_from = ?, event_date = ? WHERE id = ?').run(Math.floor(Date.now()/1000),'synthetic_source_review',new Date(Date.now()-3*86400000).toISOString().slice(0,10),`lead-${LIVE_LONDON}`)
+  d.prepare('UPDATE leads SET id = ? WHERE id = ?').run('a'.repeat(24),`lead-${LIVE_LONDON}`)
+  d.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,label,source_url,source_date,retrieved_at) VALUES (? ,?,'u1','scan:gate','gate_passed','sales_hiring','Synthetic test precondition','https://news.example/a',?,?)").run('b'.repeat(24),'a'.repeat(24),new Date().toISOString().slice(0,10),Math.floor(Date.now()/1000))
+  d.close()
+  const made = await p.evaluate(async id => {const r=await fetch('/api/outreach',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lead_id:id})});return {status:r.status,body:await r.json()}},'a'.repeat(24))
+  assert.ok(made.status===200||made.status===201,JSON.stringify(made))
+  for (const width of [1280,390]) {
+    await p.setViewportSize({width,height:900})
+    for (let reload=0;reload<2;reload++) {
+      for(const [url,wrap,name,want] of [[`/app/campaigns/${LIVE_LONDON}`,'campaign-offer','exact-chosen-campaign',CRM],[`/app/outreach?job_id=${LIVE_LONDON}`,'outreach-play-offer','exact-chosen-drafts',CRM],['/app','journey-play-offer','exact-chosen-home',CRM],[`/app/campaigns/${LIVE_DENTAL}`,'campaign-offer','exact-preserved-dental',SAVED]]) {
+        await p.goto(base+url,{waitUntil:'networkidle'}); const card=p.getByTestId(wrap);await card.waitFor();await card.scrollIntoViewIfNeeded()
+        assert.equal(await card.getByTestId('play-offer-conflict').count(),0)
+        assert.equal((await card.getByTestId('play-offer-text').innerText()).trim(),want)
+        assert.ok(await p.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth))
+        if(!reload&&process.env.SHOTS) await p.screenshot({path:path.join(process.env.SHOTS,`${name}-${width}.png`),fullPage:false})
+        if (name === 'exact-chosen-drafts') {
+          const preview = p.locator('pre').first()
+          const body = await preview.innerText()
+          assert.match(body, /CRM setup and outbound sales consulting/)
+          assert.doesNotMatch(body, /appointment booking/)
+          if (!reload && process.env.SHOTS) {
+            await preview.scrollIntoViewIfNeeded()
+            await p.screenshot({ path: path.join(process.env.SHOTS, `exact-template-preview-${width}.png`), fullPage: false })
+          }
+        }
+      }
+    }
+  }
+  const final = new Database(DB);assert.deepEqual(final.prepare('SELECT query,seller,offer,offer_set_at FROM scan_jobs WHERE id = ?').get(LIVE_DENTAL),dentalBefore);assert.equal(final.prepare("SELECT sells FROM users WHERE id='u1'").get().sells,SAVED);final.close();await ctx.close()
+  console.log('EXACT ORIGINAL349 records: explicit London choice, Home/campaign/draft preview agree at1280/390+reload; dental snapshot and profile unchanged. Synthetic DB only, no provider/scan/send.')
+
+  console.log('same-offer UI check passed at 1280 and 390: read-only views preserve every offer; an explicit London-only choice is consistent across Home, Campaign and a synthetic template draft after reload; dental/profile remain unchanged')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
