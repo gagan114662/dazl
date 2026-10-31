@@ -1,0 +1,64 @@
+{
+  "status": "proposed",
+  "version": "1",
+  "note": "PROPOSALS for the owner to calibrate (issue #372; the #393 suggestions made concrete). Nothing has been measured against them; set the exact values and sample sizes before looking at any result.",
+  "thresholds": [
+    {
+      "id": "precision-at-10",
+      "metric": "precision_at_10",
+      "op": ">=",
+      "value": 0.9,
+      "min_complete_tasks": 10,
+      "why": "#393: at least 90% of the top results meet every required filter and identity, unknown counting as not validated"
+    },
+    {
+      "id": "no-false-alerts",
+      "metric": "false_alerts",
+      "op": "<=",
+      "value": 0,
+      "min_complete_tasks": 10,
+      "why": "a negative task (no such market) must return no validated result; every negative task must have completed, or the result is insufficient_sample",
+      "sample": "negative"
+    },
+    {
+      "id": "no-contradicted",
+      "metric": "contradicted_results",
+      "op": "<=",
+      "value": 0,
+      "min_complete_tasks": 10,
+      "why": "#393: no known wrong-company or wrong-contact promotion"
+    },
+    {
+      "id": "unknown-rate",
+      "metric": "unknown_rate",
+      "op": "<=",
+      "value": 0.25,
+      "min_complete_tasks": 10,
+      "why": "most returned results are decided either way; unknowns are reported, never counted as wins"
+    },
+    {
+      "id": "coverage",
+      "metric": "complete",
+      "op": ">=",
+      "value": 12,
+      "min_complete_tasks": 0,
+      "why": "12 of 14 tasks run to completion within budget (incomplete is unknown, not zero)"
+    },
+    {
+      "id": "unique-yield",
+      "metric": "unique_validated_entities",
+      "op": ">=",
+      "value": 20,
+      "min_complete_tasks": 10,
+      "why": "at least 20 distinct validated companies across the set; the owner sets the real target against competitors on the same tasks"
+    },
+    {
+      "id": "cost-per-validated",
+      "metric": "cost_per_validated_usd",
+      "op": "<=",
+      "value": 2,
+      "min_complete_tasks": 10,
+      "why": "cost per usable opportunity, not per extracted row, counting every attempted task (failed and incomplete included); unknown cost cannot meet it"
+    }
+  ]
+}

@@ -23,7 +23,7 @@ export interface EstimateRow {
   capped: boolean                    // counted against max_usd by the spend guard
   note: string
 }
-export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | null; message: string; change: string[]; warning: string | null }
+export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | null; message: string; change: string[]; warning: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
   payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
@@ -40,6 +40,9 @@ export interface EstimateInput {
   ownerMonthCapUsd?: number | null   // the operator's monthly cap for this owner (DAZL_OWNER_MONTH_MAX_USD_USERS); the room left is the tighter of the day's and the month's
   reservedMonthUsd?: number          // already reserved against the owner's monthly pool
   poolUnknown?: boolean              // the shared pool could not be read: the reserved amounts above are NOT known (never treated as zero)
+  // An earlier paid call of this owner was never accounted (its pending-settlement marker is stale or marked failed,
+  // lib/llm/spend-pool.ts): the pool refuses every reservation until an operator clears it, so the run cannot start.
+  poolUnsettled?: boolean
   env?: Record<string, string | undefined>
 }
 
@@ -103,7 +106,12 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const shownLimit = monthBinds ? (monthCap as number) : limit, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null
-  if (capped && unknown) {
+  if (i.poolUnsettled) {
+    // The same rule the pool enforces: no reservation while an earlier call's cost is unaccounted.
+    ok = false; reason = 'accounting_unsettled'
+    message = 'Blocked: the cost of an earlier paid request could not be recorded, so paid requests are paused until it is reviewed. Nothing was started or reserved.'
+    change.push('Ask the operator to review the unrecorded request; the run can start once it is cleared.')
+  } else if (capped && unknown) {
     // The reserved amount is unknown, so the room left is unknown: refuse to confirm. It is never read as zero reserved.
     ok = false; reason = 'budget_unknown'
     message = 'Blocked: your shared spend limit could not be read right now, so what is left of it is unknown. Nothing was started or reserved. Try again in a moment.'

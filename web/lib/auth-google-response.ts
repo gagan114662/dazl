@@ -17,3 +17,8 @@ export const setOauthCookie = (res: NextResponse, base: string, value: string) =
 // cleared with the attributes it was set with, so the browser drops that same cookie
 export const clearOauthCookie = (res: NextResponse, base: string) => res.cookies.set(OAUTH_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
 export const setSessionCookie = (res: NextResponse, base: string, value: string, maxAge: number) => res.cookies.set('dazl_session', value, cookieOpts(base, maxAge, '/'))
+// What the callback does after Google: 'settings' (a re-authentication started there: sign in, land back there) or
+// 'link' (add this Google identity to the signed-in account). Only these two values are honoured.
+export const RETURN_COOKIE = 'dazl_return'
+export const setReturnCookie = (res: NextResponse, base: string, value: 'settings' | 'link' = 'settings') => res.cookies.set(RETURN_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
+export const clearReturnCookie = (res: NextResponse, base: string) => res.cookies.set(RETURN_COOKIE, '', cookieOpts(base, 0, '/api/auth'))

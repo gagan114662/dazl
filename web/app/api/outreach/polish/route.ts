@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
   if (!r.rewritten) {
     const note = {
       no_key: 'No AI key on file - add one in Settings to use the rewrite.',
+      spend_limit: 'Your workspace AI spend limit for today or this month is reached, so the draft was not rewritten (nothing was charged). The template draft is unchanged.',
       no_profile: 'Add what you sell (positioning) in Settings first - without it the rewrite would have to invent an offer.',
       offer_unreadable: 'What this play sells could not be read just now, so the draft was not rewritten. Try again in a moment.',
       offer_conflict: 'This play\'s request names a different offer than the one it was created with. Choose what this play sells on its campaign page first.',

@@ -196,6 +196,28 @@ test('monthly limit: with the owner month pool exhausted the estimate does not a
   } finally { delete process.env.DAZL_OWNER_MONTH_MAX_USD_USERS }
 })
 
+test('an unaccounted paid call (failed or stale pending marker): estimate blocked with the reason, POST /api/scan 409 and no job; a fresh marker (a call in flight) does not block', async () => {
+  const db = setup(); as(db)
+  const tenant = `E${n}`, now = Math.floor(Date.now() / 1000)
+  const body = { query: Q, budget: { max_usd: 2, judge: false } }
+  // In flight: the run would wait for it, as the pool does; not blocked.
+  db.prepare("INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, 'p:aaaaaaaaaa', 0.01, 0, 0, ?)").run(tenant, now)
+  const live = await (await est(body)).json() as { estimate: { verdict: { ok: boolean; reason: string | null } } }
+  assert.deepEqual([live.estimate.verdict.ok, live.estimate.verdict.reason], [true, null])
+  // Marked failed (updated_at 0): the pool refuses every reservation, and so does the estimate and the start.
+  db.prepare("UPDATE tenant_spend_pools SET updated_at = 0 WHERE tenant_id = ? AND period = 'p:aaaaaaaaaa'").run(tenant)
+  const e = await (await est(body)).json() as { estimate: { verdict: { ok: boolean; reason: string; message: string } } }
+  assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'accounting_unsettled'])
+  assert.match(e.estimate.verdict.message, /could not be recorded/); assert.doesNotMatch(e.estimate.verdict.message, /Within your limit/)
+  const r = await scan(body); const j = await r.json() as { error: string }
+  assert.deepEqual([r.status, j.error], [409, 'accounting_unsettled']); assert.equal(jobs(db).length, 0)
+  // Cleared by an operator: the reservation stays in the windows, the run can start.
+  db.prepare("DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'p:%'").run(tenant)
+  const ok = await (await est(body)).json() as { estimate: { ack: string; verdict: { ok: boolean } } }
+  assert.equal(ok.estimate.verdict.ok, true)
+  assert.equal((await scan({ ...body, estimate_ack: ok.estimate.ack })).status, 202)
+})
+
 // ---- no partial job: a failure at ANY step of starting a scan leaves no job a worker could claim, no consumed attempt, and a clean retry ----
 const STEPS: [string, string][] = [
   ['linking the reservation', "CREATE TRIGGER boom BEFORE UPDATE ON trial_reservations BEGIN SELECT RAISE(ABORT, 'boom'); END"],

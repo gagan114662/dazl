@@ -77,13 +77,32 @@ const LONDON_ADDRESS = /\blondon\s+(?:(?:EC|WC|SE|SW|NW|N|E|W)\d{1,2}[A-Z]?(?:\s
 // With its street part when there is one, so the words in front of the street number (not the street name) are what is judged.
 const LONDON_STREET = new RegExp(`(?:\\b\\d{1,4}[A-Za-z]?\\s+[\\p{L}'\\- ]{2,40}?,\\s*)?${LONDON_ADDRESS.source}`, 'iu')
 const NOT_UK_LONDON = /\blondon,?\s*(?:ontario|on|canada|kentucky|ky|ohio|oh|ct|connecticut|south africa|eastern cape|za)\b|\blondon\s*\(\s*(?:ontario|canada|kentucky|ohio|south africa)/i
+// Unknown UK towns still count when a real street address is explicitly this company's,
+// not a customer list, byline or supplier address. Keep the city grammar independent
+// of a town allowlist and never let an incidental London mention cancel that address.
+const OTHER_UK_STREET = /\b\d{1,5}[A-Za-z]?\s+[\p{L}0-9'’.-]+(?:[ \t]+[\p{L}0-9'’.-]+){0,8}[ \t]+(?:Street|St|Road|Rd|Lane|Ln|Avenue|Ave|Way|Drive|Dr|Close|Crescent|Square|Sq|Place|Pl|Highway|Terrace|Court|Ct|Boulevard|Blvd),[ \t]*([\p{L}][\p{L}'’.-]*(?:[ \t]+[\p{L}][\p{L}'’.-]*){0,3}),[ \t]*(?:England|Scotland|Wales|Northern Ireland|UK|U\.K\.|United Kingdom)\b/giu
+// Standalone address labels are the source company's address, even without repeating
+// its name. The label must start its sentence: supplier/customer labels cannot bind.
+const OWN_UK_LABEL = /^(?:headquarters|hq|registered office|registered address|office address|company address|address)\s*:\s*([\p{L}][\p{L}'’.-]*(?:[ \t]+[\p{L}][\p{L}'’.-]*){0,3}),[ \t]*(?:England|Scotland|Wales|Northern Ireland|UK|U\.K\.|United Kingdom)\b/iu
+function ownOtherUkStreet(text: string, company?: string): boolean {
+  return sentences(text).some(sn => {
+    const label = OWN_UK_LABEL.exec(sn.trim())
+    if (label && !LONDON_TERMS.includes(clean(label[1]))) return true
+    return [...sn.matchAll(OTHER_UK_STREET)].some(m =>
+      !LONDON_TERMS.includes(clean(m[1])) && (bindsToCompany(sn.slice(0, m.index), company, true) ||
+        /^(?:headquarters|hq|registered office|registered address|office address|company address|address)\s*:\s*$/i.test(sn.slice(0, m.index).trim())))
+  })
+}
 function londonVerdict(text: string, company?: string): PlaceVerdict {
   const t = clean(text)
   // Another UK city named as a place ("Manchester, England", "Leeds, UK") or a UK city on an address line.
   let other = UK_CITIES.find(c => new RegExp(`(?<![a-z0-9])${esc(c)},?\\s*(?:england|scotland|wales|northern ireland|uk|u\\.k\\.|united kingdom)(?![a-z0-9])`).test(t)) ?? null
-  if (!other) for (const m of text.matchAll(/\b([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*(?:England|Scotland|Wales|Northern Ireland|UK|U\.K\.|United Kingdom)\b/gu)) if (clean(m[1]) !== 'london') { other = m[1]; break }
+  // Do not guess a UK city from any capitalised words before ', UK': flattened
+  // bylines, country lists and customer names have this shape too. Unknown cities
+  // bound to this company are handled by boundElsewhere before this function.
+  // Known UK cities retain the existing conservative competing-address check.
   if (NOT_UK_LONDON.test(text) && !ownAddress(text, LONDON_STREET, company)) return 'mismatch' // London, Ontario / East London, South Africa is not London, UK; an unrelated "London, UK" or UK news line does not bind the company, only a London postcode address does
-  if (other && !ownAddress(text, LONDON_STREET, company)) return 'mismatch'
+  if ((other || ownOtherUkStreet(text, company)) && !ownAddress(text, LONDON_STREET, company)) return 'mismatch'
   if (LONDON_TERMS.some(x => has(t, x))) return 'agrees'
   return otherPlace(text, ['London, United Kingdom']) ? 'mismatch' : 'unconfirmed' // Paris, Berlin, Toronto ... and no London at all
 }

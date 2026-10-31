@@ -1,12 +1,14 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { afterSignIn, keepInvite } from '@/lib/invite-return'
 
 export default function SignIn() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
+    keepInvite()
     const e = new URLSearchParams(window.location.search).get('error')
     const m: Record<string, string> = {
       google_failed: 'Google sign-in did not work. Try again.', google_unavailable: 'Google sign-in is not available right now.',
@@ -14,6 +16,7 @@ export default function SignIn() {
       google_email_exists: 'An account with this email already exists. Sign in with your password.', too_many: 'Too many attempts. Try again later.', unavailable: 'Sign-in is briefly unavailable. Try again in a moment.',
     }
     if (e && m[e]) setError(m[e])
+    if (new URLSearchParams(window.location.search).get('reset') === '1') setError('Your password is changed and every device was signed out. Sign in with the new password.')
   }, [])
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -27,7 +30,7 @@ export default function SignIn() {
     })
     const data = await res.json()
     if (!res.ok) { setError(data.error || 'Sign in failed'); setLoading(false); return }
-    router.push('/app')
+    router.push(afterSignIn())
   }
 
   return (
@@ -49,7 +52,8 @@ export default function SignIn() {
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-        <p className="mt-4 text-sm text-[#666] text-center">
+        <p className="mt-3 text-sm text-center"><a href="/reset" className="text-[#666] underline underline-offset-2">Forgot password?</a></p>
+        <p className="mt-2 text-sm text-[#666] text-center">
           No account? <a href="/sign-up" className="text-[#111] underline underline-offset-2 hover:underline">Create an account</a>
         </p>
       </div>

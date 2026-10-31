@@ -48,8 +48,12 @@ test('no event date at all: undated, held, not draftable', async () => {
   const q = 'Smile Studio has opened a new Manhattan dental office and welcomes patients'
   mustHold(await held(fx(q, `${q}.`, null).f), 'outside_window_undated')
 })
-test('control: a candidate that DOES carry an in-window event date from its source still qualifies and is not held', async () => {
+test('control: a candidate whose event date the FETCHED PAGE states still qualifies and is not held', async () => {
   const q = 'Smile Studio opened a second Manhattan dental office on Court Street this month'
-  const r = await held(fx(q, `Published ${NEW}. ${q}.`, NEW, daysAgo(10)).f)
+  const r = await held(fx(q, `Published ${NEW}. Opened ${daysAgo(10)}: ${q}.`, NEW, daysAgo(10)).f)
   assert.equal(r.row.review_reason, null); assert.equal(r.row.event_date, daysAgo(10)); assert.equal(r.win, false)
+})
+test('a date only the search result or the model supplied (the page text never states it) is undated and held, even though it is inside the window', async () => {
+  const q = 'Smile Studio opened a second Manhattan dental office on Court Street this month'
+  mustHold(await held(fx(q, `${q}.`, null, daysAgo(10)).f), 'outside_window_undated')
 })
