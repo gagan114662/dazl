@@ -120,12 +120,12 @@ function stopNow(db: Database.Database, tenantId: string, env: Record<string, st
   try { return stopNowUnguarded(db, tenantId, env, now, started, l, messageId) } catch { return 'stop_check_unavailable' }
 }
 // Autopilot sends in flight right now count against the cap as if sent: another pass's claimed ('sending') or unresolved
-// ('uncertain') message in the window, when it was drafted before this one (rowid order), so two concurrent passes
-// cannot both see room for the last send. (#448 adds a committed-reservation counter for the daily cap; when it lands,
-// the two counts are unified in that merge.)
-const inFlight24h = (db: Database.Database, tenantId: string, now: number, messageId: string | null) => (db.prepare(
-  `SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND claimed_at >= ?
-     AND (? IS NULL OR rowid < (SELECT rowid FROM outreach_messages WHERE id = ?))`).get(tenantId, now - 86400, messageId, messageId) as { n: number }).n
+// ('uncertain') message in the window, when it was drafted before this one (insert_seq, the portable insertion order),
+// so two concurrent passes cannot both see room for the last send. (#448 adds a committed-reservation counter for the
+// daily cap; when it lands, the two counts are unified in that merge.)
+const inFlight24h = (db: Database.Database, tenantId: string, now: number, messageId: string | null) => (messageId
+  ? db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND claimed_at >= ? AND insert_seq < (SELECT insert_seq FROM outreach_messages WHERE id = ?)").get(tenantId, now - 86400, messageId) as { n: number }
+  : db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND claimed_at >= ?").get(tenantId, now - 86400) as { n: number }).n
 function stopNowUnguarded(db: Database.Database, tenantId: string, env: Record<string, string | undefined>, now: number, started: LaunchGate, l: Lead, messageId: string | null): Stop | null {
   if (!autopilotAvailable(env)) return 'not_available'
   const st = getState(db, tenantId)
