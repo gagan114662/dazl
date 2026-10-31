@@ -14,8 +14,10 @@ export async function GET(req:NextRequest){
 export async function POST(req:NextRequest){
  const user=await requireUser();if(!user)return NextResponse.json({error:'Not signed in'},{status:401})
  const no=denied(user,'operate');if(no)return no
- if(!sameOriginJson(req))return NextResponse.json({error:'Bad request'},{status:400})
- if(!(await rateLimit(`play-research:${user.tenantId}`,10,60*60*1000)).ok)return NextResponse.json({error:'Too many source checks. Try again later.'},{status:429})
+ let sameOrigin=false;try{sameOrigin=sameOriginJson(req)}catch{}
+ if(!sameOrigin)return NextResponse.json({error:'Bad request'},{status:400})
+ const limit=await rateLimit(`play-research:${user.tenantId}`,10,60*60*1000)
+ if(!limit.ok)return NextResponse.json({error:limit.unavailable?'Source check limit is temporarily unavailable. Try again later.':'Too many source checks. Try again later.'},{status:limit.unavailable?503:429,headers:{'Retry-After':String(limit.retryAfterS)}})
  const text=await req.text();if(text.length>10000)return NextResponse.json({error:'That research is too large.'},{status:400})
  let raw:Record<string,unknown>;try{raw=JSON.parse(text);if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error()}catch{return NextResponse.json({error:'Bad request'},{status:400})}
  if(typeof raw.job_id!=='string'||!/^[a-f0-9]{24}$/.test(raw.job_id))return NextResponse.json({error:'Play not found'},{status:404})

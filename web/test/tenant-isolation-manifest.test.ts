@@ -80,7 +80,7 @@ const FRESH = SESSION.filter(r => r.fresh).length
 
 // The route runtimes load route modules through a resolver hook, so each runs in its own process.
 for (const [name, file, expect] of [
-  ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', /UNAUTH 127/],
+  ['every session route refuses an unauthenticated caller and changes nothing', 'tenant-route-unauth-runtime.mts', new RegExp(`UNAUTH ${ROUTES.filter(r => r.auth === 'session').length}\\b`)],
   ['a member whose role does not allow a route is refused with 403 and changes nothing; viewers still read', 'tenant-route-roles-runtime.mts',
     new RegExp(`ROLES ${REFUSED} ${VIEWER_READS} STALE ${FRESH}\\b`)],
 

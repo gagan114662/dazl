@@ -84,6 +84,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/ranking-fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'leads', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'leads/source-metrics', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'leads/play-research', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/play-research-route-runtime.mts' }, role: 'read' },
+  { path: 'leads/play-research', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/play-research-route-runtime.mts' }, role: 'operate' },
   { path: 'leads/source-review', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'leads/verification-fixture', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'leads/verification-fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
