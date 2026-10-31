@@ -75,7 +75,14 @@ test('R3-9: an over-long list is refused by name, never truncated: entry 501 of 
   const domains = (n: number) => Array.from({ length: n }, (_, i) => `x${i}.t`)
   const over = parsePolicy({ ...policy(), exclusions: { domains: domains(MAX_EXCLUSIONS + 1), emails: [] } })
   assert.equal(over.exclusions.domains.length, MAX_EXCLUSIONS + 1, 'the parser keeps one past the limit, enough to refuse')
-  assert.equal(parsePolicy({ ...policy(), exclusions: { domains: domains(5000), emails: [] } }).exclusions.domains.length, MAX_EXCLUSIONS + 1, 'and reads no more than that of an oversize list')
+  assert.equal(parsePolicy({ ...policy(), exclusions: { domains: domains(5000), emails: [] } }).exclusions.domains.length, MAX_EXCLUSIONS + 1, 'and keeps no more than that of an oversize list')
+  // R15: blanks never push a real entry past the cut: a pasted list with blank lines keeps every real entry
+  const blanks = parsePolicy({ ...policy(), exclusions: { domains: [...Array(MAX_EXCLUSIONS + 1).fill(''), 'customer.example'], emails: [] } })
+  assert.deepEqual([blanks.exclusions.domains, policyProblems(blanks)], [['customer.example'], []])
+  const pasted = domains(450).flatMap(d => [d, '', '  ']) // 450 real entries, each followed by blank lines
+  const kept = parsePolicy({ ...policy(), exclusions: { domains: pasted, emails: [] } })
+  assert.deepEqual([kept.exclusions.domains.length, kept.exclusions.domains[449], policyProblems(kept)], [450, 'x449.t', []])
+  assert.deepEqual(policyProblems(parsePolicy({ ...policy(), exclusions: { domains: [...domains(MAX_EXCLUSIONS + 1), '', ''], emails: [] } })), ['exclusions_too_many'], 'blanks do not hide an oversize list either')
   assert.deepEqual(policyProblems(over), ['exclusions_too_many'])
   assert.deepEqual(policyProblems(parsePolicy({ ...policy(), exclusions: { domains: domains(MAX_EXCLUSIONS), emails: [] } })), [])
   assert.deepEqual(policyProblems(parsePolicy({ ...policy(), exclusions: { domains: [], emails: Array.from({ length: MAX_EXCLUSIONS + 1 }, (_, i) => `e${i}@x.t`) } })), ['exclusions_too_many'])

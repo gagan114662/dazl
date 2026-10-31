@@ -29,9 +29,13 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const db = getScanDb()
   try {
-    // Pause and turn off always work, even when the operator has switched autopilot off.
+    // Pause, turn off and withdrawing the launch policy always work, even when the operator has switched autopilot off.
     if (body?.action === 'pause') pause(db, user.tenantId)
     else if (body?.action === 'disable') disable(db, user.tenantId)
+    // Withdrawing the policy ends the launch (and the launch pause) and puts the tenant back on the hand-approval warmup.
+    else if (body?.action === 'withdraw_launch_policy') {
+      if (!withdrawLaunch(db, user.tenantId)) return NextResponse.json({ error: 'No launch policy to withdraw', code: 'no_launch_policy' }, { status: 404 })
+    }
     else if (!autopilotAvailable()) return NextResponse.json({ error: 'Autopilot is not available right now' }, { status: 404 })
     else if (body?.action === 'enable') enable(db, user.tenantId, { version: String(body.version ?? ''), attestations: Array.isArray(body.attestations) ? body.attestations.map(String) : [], daily_cap: Number(body.daily_cap) || undefined })
     else if (body?.action === 'resume') resume(db, user.tenantId)
@@ -40,10 +44,6 @@ export async function POST(req: NextRequest) {
     else if (body?.action === 'accept_launch_policy') {
       const r = acceptLaunchPolicy(db, user.tenantId, body.policy, Math.floor(Date.now() / 1000))
       if (!r.ok) return NextResponse.json({ error: 'The launch policy is incomplete', problems: r.problems }, { status: 400 })
-    }
-    // Withdrawing the policy ends the launch (and the launch pause) and puts the tenant back on the hand-approval warmup.
-    else if (body?.action === 'withdraw_launch_policy') {
-      if (!withdrawLaunch(db, user.tenantId)) return NextResponse.json({ error: 'No launch policy to withdraw', code: 'no_launch_policy' }, { status: 404 })
     }
     else if (body?.action === 'launch_calibrated') {
       // a stored policy row that cannot be read, or a store fault while drafting a sample, is a failed calibration (the
