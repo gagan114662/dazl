@@ -12,7 +12,9 @@ export function siteKeyReason(why: string | null): string {
   if (why === 'google_required') return `The free trial needs an account that signs in with Google. ${own}`
   // Another account on the same company email domain started the trial: this account's own trial is not "used up".
   if (why === 'domain_used') return `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${own}`
-  if (why === 'attempts_cap' || why === 'account_cap' || why === 'account_total_cap') return `Your free trial is used up. ${own}`
+  // The money ceiling: website reads on the trial draw on the same allowance as scans (lib/trial-copy.ts says the same).
+  if (why === 'account_total_cap') return `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${own}`
+  if (why === 'attempts_cap' || why === 'account_cap') return `Your free trial is used up. ${own}`
   if (why === 'ip_throttle' || why === 'global_daily_cap' || why === 'site_reads_busy' || why === 'limit_unavailable') return `The free trial is busy right now. Try again later. ${own}`
   return 'Reading your site runs on your own Anthropic or OpenAI key.'
 }
