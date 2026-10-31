@@ -1,5 +1,5 @@
 // One free, read-only check of the original saved source. Never promotes a lead or calls a model/search.
-import type Database from 'better-sqlite3'
+import {asDb,type DbLike} from '../db/client.ts'
 import {fetchPageDetailed,isFail,type Page,type FetchFail} from './fetch-page.ts'
 import {readPlayOffer} from './play-offer.ts'
 import {parseIcp} from './icp.ts'
@@ -10,9 +10,10 @@ import {verifyEvidence,type Candidate} from './evidence.ts'
 import {eventDateBound} from './event-date-binding.ts'
 import {counterpartySignal} from './counterparty.ts'
 interface Saved {id:string;scan_job_id:string;company:string;name:string;signal:string;source_url:string;evidence_excerpt:string|null;event_date:string|null;query:string|null;icp:string|null;review_reason:string|null;company_domain:string|null;contact:string|null;human_confirmed_at:number|null}
-export async function evidenceRecheck(db:Database.Database,tenant:string,id:string,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=new Date()){
- const read=()=>db.prepare(`SELECT l.id,l.scan_job_id,l.company,l.name,l.signal,l.source_url,l.evidence_excerpt,l.event_date,l.review_reason,l.company_domain,l.contact,l.human_confirmed_at,j.query,j.icp FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?`).get(id,tenant) as Saved|undefined
- const lead=read();if(!lead)return null
+export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=new Date()){
+ const d=asDb(db)
+ const read=()=>d.get<Saved>(`SELECT l.id,l.scan_job_id,l.company,l.name,l.signal,l.source_url,l.evidence_excerpt,l.event_date,l.review_reason,l.company_domain,l.contact,l.human_confirmed_at,j.query,j.icp FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?`,[id,tenant])
+ const lead=await read();if(!lead)return null
  const offer=await readPlayOffer(db,tenant,lead.scan_job_id)
  const base={lead_id:id,job_id:lead.scan_job_id,company:lead.company,source_url:lead.source_url,checked_at:Math.floor(now.getTime()/1000),offer:offer?.offer??null,query:lead.query,model_call:false,search_call:false,eligibility_changed:false,can_draft:false}
  const blocked=(reason:string)=>({...base,status:'not_checked' as const,reasons:[reason],checks:null})
@@ -20,7 +21,7 @@ export async function evidenceRecheck(db:Database.Database,tenant:string,id:stri
  const icp=lead.icp?parseIcp(lead.icp):null
  if(!icp)return blocked('The saved reviewed targeting is unavailable. No geography or time window was guessed.')
  const page=await fetcher(lead.source_url).catch(()=>({fail:'error' as const}))
- if(JSON.stringify(read())!==JSON.stringify(lead)||JSON.stringify(await readPlayOffer(db,tenant,lead.scan_job_id))!==JSON.stringify(offer))return blocked('The saved lead or play context changed during the check. Reload before checking again.')
+ if(JSON.stringify(await read())!==JSON.stringify(lead)||JSON.stringify(await readPlayOffer(db,tenant,lead.scan_job_id))!==JSON.stringify(offer))return blocked('The saved lead or play context changed during the check. Reload before checking again.')
  if(isFail(page))return {...base,status:'unreadable' as const,reasons:[`The saved source could not be read (${page.fail}). Its evidence is unknown.`],checks:null}
  const candidate:Candidate={name:lead.name??'',company:lead.company,signal:lead.signal,source_url:lead.source_url,excerpt:lead.evidence_excerpt??'',event_date:lead.event_date,contact:null,score:0}
  const closed=closedJobEvidence(candidate,page),place=ownPlaceAgreement(page,icp.where,lead.company,candidate.excerpt),literal=verifyEvidence(candidate,page,now)

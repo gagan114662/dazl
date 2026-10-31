@@ -78,6 +78,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/hiring-feed', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'leads/hiring-feed', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'leads/page-signals', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
+  { path: 'leads/evidence-recheck', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
   { path: 'leads/qualify-preview', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
   { path: 'leads/qualify', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'leads/ranking-fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
