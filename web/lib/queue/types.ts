@@ -70,12 +70,18 @@ export interface EnqueueInput {
   notBefore?: number
   maxAttempts?: number
   now?: number
+  // Per-tenant admission (#355): refuse new work when this tenant already has this many active (pending or claimed)
+  // items of this kind, so one tenant's backlog is bounded. The refusal is returned, never thrown, and nothing is written.
+  // A dedupe hit on an active item still answers with that item (it adds no backlog).
+  maxBacklog?: number
 }
 
 export interface EnqueueResult {
   id: string
-  // false when an active item with the same dedupe key already existed.
+  // false when an active item with the same dedupe key already existed, or the tenant's backlog was full.
   created: boolean
+  // Set (with id '') when maxBacklog refused the item.
+  refused?: 'backlog'
 }
 
 export interface ClaimOptions {
@@ -94,6 +100,32 @@ export interface ClaimOptions {
   // other tenants stay queued but are never claimed - including ids removed
   // from the list after enqueue.
   tenants?: string[]
+  // A lane (#355): maxInFlight and perTenantInFlight count only items of `kinds`, so work in another lane (expensive
+  // research) holding its slots never blocks this one (reply checks, suppression). Requires `kinds`. Default: the caps
+  // count every claimed item (the original behaviour).
+  lane?: boolean
+  // 'fifo' (default): the tenant whose oldest eligible item is oldest wins. 'round_robin': the tenant served longest
+  // ago wins (never served counts as oldest), then its oldest item - a tenant's backlog cannot hold the lane while
+  // another tenant waits.
+  order?: 'fifo' | 'round_robin'
+}
+
+// The lanes background work runs in (#355). Cheap, time-sensitive work keeps its own slots so expensive research can
+// never starve it. Kinds not listed here run in no lane (global caps).
+export const LANES = {
+  replies: { kinds: ['reply-check', 'suppression', 'followup', 'sequence'], maxInFlight: 4 },
+  research: { kinds: ['scan', 'enrich', 'monitor', 'watch', 'index-check'], maxInFlight: 3 },
+} as const
+
+export interface QueueKindStats {
+  kind: string
+  pending: number
+  claimed: number
+  failed: number
+  // Seconds the oldest claimable pending item has waited past its not_before; 0 when none.
+  oldestPendingAgeS: number
+  // Claims whose lease ran out and are not reaped yet (a worker died or hung).
+  expiredClaims: number
 }
 
 export interface Claim {
