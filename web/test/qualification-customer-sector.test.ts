@@ -21,7 +21,7 @@ test('diagnostic is sector-generic but only explicit flawed negative premise, no
  for(const note of ['They sell only bread, not software.','The company headquarters is outside the UK.','Customers include insurers; the target itself is an insurance carrier, not a software seller.','The target sells software but its subscription model is not shown.','The evidence is about another company.','They do not sell a hosted software product.'])assert.equal(grade(note).assessment_conflict,undefined,note)
  assert.equal(grade('Their customers are insurance companies, not software companies.','yes').assessment_conflict,undefined)
  assert.equal(grade('Their customers are insurance companies, not software companies.','unknown').assessment_conflict,undefined)
- for(const criteria of ['Companies selling to software companies only','B2B SaaS startups selling to software companies only','B2B SaaS; customers must be software companies','B2B software targeting software companies'])assert.equal(grade('Their customers are insurance companies, not software companies.','no',criteria).assessment_conflict,undefined)
+ for(const criteria of ['Companies selling to software companies only','B2B SaaS startups selling to software companies only','B2B SaaS; customers must be software companies','B2B software targeting software companies','B2B SaaS serving software companies','B2B SaaS sells to B2B software businesses','B2B SaaS serves only software vendors'])assert.equal(grade('Their customers are insurance companies, not software companies.','no',criteria).assessment_conflict,undefined)
 })
 
 test('synthetic provider replay and stored pipeline return diagnostic without new request or lead eligibility mutation',async()=>{

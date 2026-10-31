@@ -144,7 +144,7 @@ export function parseQualification(raw: string, included: { url: string; text: s
   // A warning about an explicit reasoning premise, not a business-model classifier or a new verdict.
   // Never infer SaaS from customers, or infer a target's fit from this diagnostic.
   const fit=result.company_fit
-  const requiresSoftwareCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+to|customers?\s+(?:must\s+be|are|include)|target(?:s|ing)?)\s+(?:only\s+)?software\s+companies\b/i.test(targetCriteria)
+  const requiresSoftwareCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+to|serv(?:e|es|ing)|customers?\s+(?:must\s+be|are|include)|target(?:s|ing)?)\s+(?:only\s+)?(?:b2b\s+)?software\s+(?:companies|businesses|vendors)\b/i.test(targetCriteria)
   if(fit.verdict==='no'&&targetCriteria&&!requiresSoftwareCustomers&&/\bb2b\s+(?:saas|software)\b/i.test(targetCriteria)){
    const rationale=fit.note
    const customerExclusion=/\bcustomers?\s+(?:are|is)\s+[^.!?]{1,100},?\s*(?:not|rather than)\s+(?:software companies|businesses buying software services)\b/i.exec(rationale)
