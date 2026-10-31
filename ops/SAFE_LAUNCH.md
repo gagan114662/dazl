@@ -126,3 +126,7 @@ names in separate-token form are accepted, each at most once; alternate interpre
 abbreviated flags, equals-form flags and duplicate options are refused. safe_launch itself disables argparse
 abbreviations. These are accidental-sequencing controls, not a sandbox against an actor who can edit code
 or issue a separate host command. No pending CI check can be made safe by ignoring this command's exit.
+
+GitHub evidence requests use a no-redirect opener. Any redirect refuses the release instead of forwarding
+a bearer credential to another origin. A two-origin HTTP regression exercises the production transport and
+proves the destination receives no request. Timeouts must be finite and positive, both via CLI and run().

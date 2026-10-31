@@ -11,6 +11,7 @@ import re
 import os
 import stat
 import sys
+import math
 import urllib.request
 from pathlib import Path
 
@@ -20,6 +21,11 @@ def command(value):
     if not isinstance(result, list) or not result or any(not isinstance(x, str) or not x or '\0' in x for x in result):
         raise argparse.ArgumentTypeError('expected a nonempty JSON argv array')
     return result
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 REQUIRED_CI = frozenset({'browser', 'migrations', 'test-sqlite', 'test-postgres', 'fail-closed'})
@@ -45,7 +51,7 @@ def require_ci(repository, commit, token_file):
     def get(path):
         req = urllib.request.Request('https://api.github.com/repos/' + repository + '/' + path,
             headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json'})
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=20) as response:
             return json.load(response)
     if get('git/ref/heads/main')['object']['sha'] != commit:
         raise ValueError('ci_main_changed')
@@ -90,6 +96,8 @@ def bind_launch(launch, commit):
 
 
 def run(preflights, launch, timeout=120, *, repository=None, commit=None, token_file=None):
+    if not math.isfinite(timeout) or timeout <= 0:
+        return {'status': 'timeout_invalid', 'launch_reached': False}, 2
     try:
         bind_launch(launch, commit)
         require_ci(repository, commit, token_file)
@@ -127,8 +135,8 @@ if __name__ == '__main__':
     parser.add_argument('--launch', type=command, required=True)
     parser.add_argument('--timeout', type=float, default=120)
     args = parser.parse_args()
-    if args.timeout <= 0:
-        parser.error('timeout must be positive')
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error('timeout must be finite and positive')
     credential_fd = None
     try:
         if args.ci_token_stdin:
