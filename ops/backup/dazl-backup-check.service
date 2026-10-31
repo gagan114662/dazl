@@ -9,6 +9,8 @@ Description=dazl backup freshness check
 
 [Service]
 Type=oneshot
+# the check itself bounds every command, webhook and rclone call; this is the backstop for the whole job
+TimeoutStartSec=5min
 User=CHANGE-ME-app-user
 EnvironmentFile=/etc/dazl-backup/env
 WorkingDirectory=CHANGE-ME-release/web

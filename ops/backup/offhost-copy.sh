@@ -47,7 +47,7 @@ case "$DEST" in
     [ -d "$DEST" ] || die "OFFHOST_DEST $DEST is not a directory" 2
     [ "$(realpath -- "$DEST")" != "$(realpath -- "$(dirname -- "$B")")" ] || die "OFFHOST_DEST is the backup directory itself: not off-host" 2
     install -m 600 "$tmp/$name" "$DEST/$name.partial" && mv -f "$DEST/$name.partial" "$DEST/$name"
-    install -m 600 "$tmp/$name.json" "$DEST/$name.json"
+    install -m 600 "$tmp/$name.json" "$DEST/$name.json.partial" && mv -f "$DEST/$name.json.partial" "$DEST/$name.json"
     back=$(sha256sum -- "$DEST/$name" | cut -d' ' -f1)
     where="$DEST/$name" ;;
 esac

@@ -19,6 +19,9 @@
 // no directory paths (I/O errors are forwarded by code and syscall). The webhook is https only and redirects are not followed. Age limits must be numbers of seconds
 // (else exit 2); an invalid BACKUP_ALERT_EVERY_S falls back to 3600 with a log line, never to "no throttle" and never
 // to "no alert". Exit 0 = ok; 1 = problem (alerted, throttled or undeliverable); 2 = usage.
+// Known one-off: create-backup writes its sidecar in place (lib.ts), so a check that reads it at that instant can see a
+// partial file and alert "unreadable sidecar" once; the next run clears it. offhost-copy.sh writes its manifest via a
+// .partial rename, so the off-host side has no such window.
 //   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --max-age-s 7200 \
 //     [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s 7200] [--drill-report FILE --drill-max-age-s 691200] [--state-dir DIR]
 import { createHash } from 'node:crypto'
@@ -84,17 +87,25 @@ function localDest(d: string): Dest {
 function rcloneDest(spec: string): Dest {
   const remote = spec.slice('rclone:'.length).replace(/\/+$/, '')
   const bin = process.env.RCLONE_BIN || 'rclone'
-  const run = (args: string[]) => { const r = spawnSync(bin, args, { encoding: 'utf8', timeout: 120_000 }); if (r.error) throw new Error(`rclone not runnable (${(r.error as NodeJS.ErrnoException).code ?? r.error.name})`); if (r.status !== 0) throw new Error(`rclone ${args[0]} failed (exit ${r.status})`); return r.stdout }
+  // every rclone call is bounded by RCLONE_TIMEOUT_S (120): a hung remote is a problem, never a hung check
+  const limitS = seconds('RCLONE_TIMEOUT_S', process.env.RCLONE_TIMEOUT_S, 120)
+  const run = (args: string[]) => {
+    const r = spawnSync(bin, args, { encoding: 'utf8', timeout: limitS * 1000, killSignal: 'SIGKILL' })
+    if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') throw new Error(`rclone ${args[0]} timed out (${limitS}s)`)
+    if (r.error) throw new Error(`rclone not runnable (${(r.error as NodeJS.ErrnoException).code ?? r.error.name})`)
+    if (r.status !== 0) throw new Error(`rclone ${args[0]} failed (exit ${r.status})`)
+    return r.stdout
+  }
   return {
     label: remote.split(':')[0] + ':',
     list: async () => run(['lsf', '--files-only', remote]).split('\n').map(l => l.trim()).filter(Boolean),
     read: async n => run(['cat', `${remote}/${n}`]),
     digest: n => new Promise((res, rej) => {
       if (!run(['lsf', '--files-only', remote]).split('\n').map(l => l.trim()).includes(n)) return res(null)
-      const p = spawn(bin, ['cat', `${remote}/${n}`]); const h = createHash('sha256'); let bytes = 0
+      const p = spawn(bin, ['cat', `${remote}/${n}`], { timeout: limitS * 1000, killSignal: 'SIGKILL' }); const h = createHash('sha256'); let bytes = 0
       p.stdout.on('data', (b: Buffer) => { bytes += b.length; h.update(b) })
       p.on('error', e => rej(new Error(`rclone not runnable (${(e as NodeJS.ErrnoException).code ?? e.name})`)))
-      p.on('close', code => code === 0 ? res({ bytes, sha256: h.digest('hex') }) : rej(new Error(`rclone cat failed (exit ${code})`)))
+      p.on('close', (code, signal) => code === 0 ? res({ bytes, sha256: h.digest('hex') }) : rej(new Error(signal ? `rclone cat timed out (${limitS}s)` : `rclone cat failed (exit ${code})`)))
     }),
   }
 }
@@ -109,9 +120,12 @@ if (!offSpec) {
   try {
     const manifests: Record<string, unknown>[] = []
     for (const f of (await dest.list()).filter(f => f.endsWith('.age.json') && plainName(f))) {
-      // unreadable or truncated: a problem, never a silent skip that lets an older copy stand in for the newer one
+      // unreadable or truncated: a problem, never a silent skip that lets an older copy stand in for the newer one.
+      // A filesystem error names this manifest; a transport error (rclone failed, timed out) is the destination's.
+      let text: string
+      try { text = await dest.read(f) } catch (e) { if (!(e as NodeJS.ErrnoException)?.code) throw e; problems.push(`off-host manifest ${f} unreadable (${reason(e)})`); continue }
       let m: Record<string, unknown> | null = null
-      try { m = JSON.parse(await dest.read(f)) } catch { problems.push(`off-host manifest ${f} unreadable`); continue }
+      try { m = JSON.parse(text) } catch { problems.push(`off-host manifest ${f} unreadable (not JSON)`); continue }
       if (m?.tool !== 'dazl-offhost-copy') continue // another tool's file
       if (!m.copied_at || Number.isNaN(Date.parse(String(m.copied_at)))) { problems.push(`off-host manifest ${f} has no copied_at`); continue }
       manifests.push(m)

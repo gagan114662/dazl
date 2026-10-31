@@ -190,8 +190,8 @@ test('an unreadable or truncated off-host manifest is a problem, not silently re
   try {
     const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', dest], { BACKUP_ALERT_CMD: cmd })
     assert.equal(r.code, 1, r.out); assert.equal(delivered().length, 1); const p = delivered()[0].problems.join('\n')
-    assert.match(p, /off-host manifest new\.db\.age\.json unreadable/)
-    if (!root) assert.match(p, /off-host manifest locked\.db\.age\.json unreadable/)
+    assert.match(p, /off-host manifest new\.db\.age\.json unreadable \(not JSON\)/)
+    if (!root) assert.match(p, /off-host manifest locked\.db\.age\.json unreadable \(EACCES on open\)/)
     assert.doesNotMatch(p, /other-tool/, "another tool's file is not ours and not a problem")
     assert.equal(firstJson(r.out).newest_offhost_verified, true, 'the readable copy is still verified'); assert.equal(firstJson(r.out).offhost_copies, 1)
   } finally { chmodSync(locked, 0o600) }
@@ -259,22 +259,33 @@ test('alert body carries file names and error codes only: no directory path, eve
     if (!root) assert.match(body, /off-host destination paths-dest-secret-name unreadable: EACCES on open/)
     assert.ok(!body.includes(T), `no directory path in the alert body: ${body}`)
     assert.ok(!body.includes(path.dirname(dir)), 'not the backup dir path either')
+    for (const p of delivered()[0].problems) assert.doesNotMatch(p, /\//, `no "/" in any problem string: ${p}`)
   } finally { chmodSync(path.join(dest, 'x.db.age'), 0o600) }
+  // the destination directory itself unreadable (scandir): code and syscall, no path
+  if (!root) {
+    const shut = path.join(T, 'paths-dest-shut'); mkdirSync(shut); chmodSync(shut, 0o000)
+    try {
+      const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', shut], { BACKUP_ALERT_CMD: cmd })
+      assert.equal(r.code, 1); const ps = delivered().at(-1)!.problems
+      assert.match(ps.join(), /off-host destination paths-dest-shut unreadable: EACCES on scandir/)
+      for (const p of ps) assert.doesNotMatch(p, /\//, `no "/" in any problem string: ${p}`)
+    } finally { chmodSync(shut, 0o700) }
+  }
   // the no-backup message names the directory by its base name only
   const empty = path.join(T, 'paths-empty-dir'); mkdirSync(empty)
   const r2 = await run(['--dir', empty, '--state-dir', state], { BACKUP_ALERT_CMD: cmd })
-  assert.equal(r2.code, 1); assert.match(delivered()[1].problems.join(), /^no backup with a sidecar in paths-empty-dir$/); assert.ok(!JSON.stringify(delivered()[1]).includes(T))
+  assert.equal(r2.code, 1); assert.match(delivered().at(-1)!.problems.join(), /^no backup with a sidecar in paths-empty-dir$/); assert.ok(!JSON.stringify(delivered().at(-1)).includes(T))
 })
 
 test('a healthy run removes only its own stamps: another tool\'s files in a shared --state-dir survive; a recurring problem alerts at once', async () => {
   const fx = await fixtureBackup(path.join(T, 'shared')), dir = path.dirname(fx.backup), state = path.join(T, 'shared-state'); mkdirSync(state)
-  writeFileSync(path.join(state, 'alert-0123456789abcdef'), ''); writeFileSync(path.join(state, 'other-tool.json'), '{}')
+  writeFileSync(path.join(state, 'alert-0123456789abcdef'), ''); writeFileSync(path.join(state, 'other-tool.json'), '{}'); writeFileSync(path.join(state, 'latest.json'), '{}')
   const { cmd, delivered } = recorder('shared-alert')
   let r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 1); assert.equal(delivered().length, 1); assert.equal(stamps(state).length, 1)
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200'], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 0, r.out); assert.deepEqual(stamps(state), [], 'its own stamp is gone')
-  assert.deepEqual(readdirSync(state).sort(), ['alert-0123456789abcdef', 'other-tool.json'], "scheduler-check's stamp and another tool's file are untouched, the directory stays")
+  assert.deepEqual(readdirSync(state).sort(), ['alert-0123456789abcdef', 'latest.json', 'other-tool.json'], "scheduler-check's stamp and other tools' files are untouched, the directory stays")
   r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd })
   assert.equal(r.code, 1); assert.doesNotMatch(r.out, /already sent/); assert.equal(delivered().length, 2, 'resolved then recurring: alerted again at once')
 })
@@ -289,4 +300,16 @@ test('stamp not writable after a delivered alert (read-only state dir): delivere
     r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1'], { BACKUP_ALERT_CMD: cmd })
     assert.equal(r.code, 1); assert.equal(delivered().length, 2, 're-alert over silence')
   } finally { chmodSync(state, 0o700) }
+})
+
+test('rclone that hangs on cat is bounded by RCLONE_TIMEOUT_S: a named problem, no path, not a hung check', async () => {
+  const fx = await fixtureBackup(path.join(T, 'rchang')), dir = path.dirname(fx.backup), state = path.join(T, 'rchang-state')
+  const store = path.join(T, 'rchang-remote'); mkdirSync(store)
+  writeFileSync(path.join(store, 'x.db.age.json'), JSON.stringify({ tool: 'dazl-offhost-copy', copied_at: new Date().toISOString(), ciphertext: 'x.db.age', ciphertext_sha256: '0'.repeat(64), bytes: 1 }))
+  const slow = path.join(T, 'slow-rclone'); writeFileSync(slow, `#!/bin/sh\ncase "$1" in lsf) ls -1 ${store} ;; cat) sleep 30 ;; *) exit 9 ;; esac\n`); chmodSync(slow, 0o755)
+  const { cmd, delivered } = recorder('rchang-alert'); const t0 = Date.now()
+  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '7200', '--offhost', 'rclone:remote:bucket'], { BACKUP_ALERT_CMD: cmd, RCLONE_BIN: slow, RCLONE_TIMEOUT_S: '1' })
+  assert.equal(r.code, 1, r.out); assert.ok(Date.now() - t0 < 20_000, 'bounded'); assert.equal(delivered().length, 1)
+  const ps = delivered()[0].problems; assert.match(ps.join(), /off-host destination remote: unreadable: rclone cat timed out \(1s\)/)
+  for (const p of ps) assert.doesNotMatch(p, /\//, `no "/" in any problem string: ${p}`)
 })
