@@ -63,3 +63,34 @@ test('health response: an unmigrated store reads as never ran (200), not an erro
   const r = await schedulerHealthResponse(new Database(':memory:'), NOW)
   assert.equal(r.status, 200); assert.equal((await r.json()).operational.state, 'never_ran')
 })
+
+// #448: a store created before the autopilot kind of work existed is rebuilt once by migrateSchedulerRuns, rows kept.
+test('migrateSchedulerRuns widens the kind check of an older store (rebuilt once, rows kept); a second connection finds nothing to rebuild', async () => {
+  const { default: Database } = await import('better-sqlite3')
+  const { migrateSchedulerRuns } = await import('../lib/ops/scheduler-runs.ts')
+  const { mkdtempSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const path = await import('node:path')
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'sched-')), 'old.db')
+  const db = new Database(file)
+  db.exec(`CREATE TABLE scheduler_progress (
+      tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')), last_attempt_at INTEGER NOT NULL,
+      last_success_at INTEGER, last_error TEXT, last_outcome TEXT NOT NULL DEFAULT 'success', last_hold TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_run_id TEXT,
+      PRIMARY KEY (tenant_id, kind));
+    INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_outcome, consecutive_failures, last_run_id) VALUES ('t1', 'followups', 100, 90, 'failure', 2, 'r1')`)
+  assert.throws(() => db.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at) VALUES ('t1', 'autopilot', 1)").run(), /CHECK constraint failed/, 'the old check')
+  migrateSchedulerRuns(db)
+  assert.deepEqual(db.prepare('SELECT tenant_id, kind, last_attempt_at, last_success_at, last_outcome, consecutive_failures, last_run_id FROM scheduler_progress').all(), [{ tenant_id: 't1', kind: 'followups', last_attempt_at: 100, last_success_at: 90, last_outcome: 'failure', consecutive_failures: 2, last_run_id: 'r1' }], 'rows kept')
+  db.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at) VALUES ('t1', 'autopilot', 1)").run()
+  assert.throws(() => db.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at) VALUES ('t1', 'other', 1)").run(), /CHECK constraint failed/, 'still a check')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM scheduler_progress').pluck().get(), 2, 'the probe row never stays')
+  const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get() as string
+  migrateSchedulerRuns(db)
+  assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get(), ddl, 'a second run on this connection does not rebuild (and does not probe again)')
+  // A fresh connection (another process starting) probes again and finds the check widened: no rebuild, rows as they are.
+  const other = new Database(file)
+  try {
+    migrateSchedulerRuns(other)
+    assert.equal(other.prepare("SELECT sql FROM sqlite_master WHERE name = 'scheduler_progress'").pluck().get(), ddl, 'idempotent across connections')
+    assert.deepEqual(other.prepare('SELECT tenant_id, kind FROM scheduler_progress ORDER BY kind').all(), [{ tenant_id: 't1', kind: 'autopilot' }, { tenant_id: 't1', kind: 'followups' }])
+    assert.equal(other.prepare("SELECT count(*) AS n FROM scheduler_progress WHERE tenant_id = ''").pluck().get(), 0, 'the probe row never stays')
+  } finally { other.close(); db.close() }
+})
