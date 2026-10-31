@@ -102,7 +102,9 @@ export function recordBounce(db: Database.Database, tenantId: string, email: str
 const sentTotal = (db: Database.Database, tenantId: string) => (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status = 'sent'").get(tenantId) as { n: number }).n
 // Autopilot's sends in the last 24h, for the daily and rollout caps: its 'sent' audit rows, plus every OTHER autopilot
 // message it has claimed for sending ('claimed' audit row, written in the cap reservation below) that is still live
-// (approved, sending, uncertain or sent), each message counted once. Hand sends have no claim row and are not counted
+// (sending, uncertain or sent), each message counted once. A claimed message the service refused and put back to
+// 'approved' (or that autopilot released to draft) is not live: it never left, so it holds no slot. Hand sends have no
+// claim row and are not counted
 // (the account-wide cap in the send service counts those). A send in flight in another pass therefore already counts,
 // so two passes cannot both see room for the last send; the reservation itself is taken in one transaction with this
 // count, so neither can two passes reserve the same slot. (#448 adds a committed-reservation counter for the daily cap;
@@ -111,7 +113,7 @@ const autoCount24h = (db: Database.Database, tenantId: string, now: number, exce
   `SELECT (SELECT count(*) FROM autopilot_audit WHERE tenant_id = ? AND action = 'sent' AND created_at >= ? AND message_id IS NULL)
         + (SELECT count(DISTINCT a.message_id) FROM autopilot_audit a LEFT JOIN outreach_messages m ON m.id = a.message_id
              WHERE a.tenant_id = ? AND a.created_at >= ? AND a.message_id IS NOT NULL AND a.message_id <> ?
-               AND (a.action = 'sent' OR (a.action = 'claimed' AND m.status IN ('approved', 'sending', 'uncertain', 'sent')))) AS n`,
+               AND (a.action = 'sent' OR (a.action = 'claimed' AND m.status IN ('sending', 'uncertain', 'sent')))) AS n`,
 ).get(tenantId, now - 86400, tenantId, now - 86400, exceptMessageId ?? '') as { n: number }).n
 const domainSentRecently = (db: Database.Database, tenantId: string, domain: string, now: number) =>
   !!db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400)

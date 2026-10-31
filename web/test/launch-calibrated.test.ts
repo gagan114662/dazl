@@ -695,6 +695,27 @@ test('R3-10: the tenant switches unreadable during the model await: the run ends
   assert.deepEqual(db.prepare("SELECT status, error FROM outreach_messages WHERE to_email = 'd@four.example'").get(), { status: 'draft', error: 'stop_check_unavailable' })
 })
 
+test('R2-12: messages the send service refused (back to approved, claim row kept) do not consume the rollout cap; in-flight ones do', async () => {
+  const { db } = await launched()
+  // five earlier autopilot claims this tenant's send service refused today (e.g. lead_ungraded, gmail_rejected): approved, never sent
+  for (let i = 0; i < ROLLOUT_DAILY_CAP; i++) {
+    const id = randomBytes(12).toString('hex')
+    db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, approved_hash, error) VALUES (?, 'A', ?, ?, 's', 'bodybodybodybodybodybody', 'approved', 'h', 'gmail_rejected')").run(id, 'r' + i, `r${i}@refused${i}.example`)
+    auditAt(db, 'A', 'claimed', undefined, 'r' + i, id, NOW - 100)
+  }
+  const g = gmail()
+  assert.deepEqual([(await runAutopilot(db, 'A', 'Acme', { ...g.d, now: NOW + 2 })).sent, g.to()], [1, ['d@four.example']], 'refused claims hold no slot')
+  // the same five as in-flight claims ('sending') do hold their slots
+  const b = await launched()
+  for (let i = 0; i < ROLLOUT_DAILY_CAP; i++) {
+    const id = randomBytes(12).toString('hex')
+    b.db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES (?, 'A', ?, ?, 's', 'bodybodybodybodybodybody', 'sending', ?)").run(id, 'f' + i, `f${i}@flight${i}.example`, NOW + 1)
+    auditAt(b.db, 'A', 'claimed', undefined, 'f' + i, id, NOW + 1)
+  }
+  const gb = gmail(); const rb = await runAutopilot(b.db, 'A', 'Acme', { ...gb.d, now: NOW + 2 })
+  assert.deepEqual([rb.sent, rb.stopped, gb.to()], [0, 'daily_cap', []])
+})
+
 test('R3-6: calibration needs autopilot on under the current consent: otherwise no draft, no message, no launch', async () => {
   const db = await setup(); const job = play(db); for (let i = 0; i < 3; i++) lead(db, job, `s${i}@cal${i}.example`)
   acceptLaunchPolicy(db, 'A', policy([job]), NOW)
