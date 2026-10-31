@@ -295,3 +295,27 @@ bothEngines('losing authority (demoted or removed) while changing a role, inviti
     for (const r of [role, inv, rev]) if (r.status === 'rejected') assert.ok(code('forbidden')(r.reason), `${loss} ${i}: ${String(r.reason)}`)
   }
 }, { pgMax: 6 })
+
+bothEngines('invitation variants: email case and lookalikes, tampered tokens, another workspace, the expiry second, the pending cap', async ({ db }) => {
+  await users(db, 'A', 'B')
+  const now = Math.floor(Date.now() / 1000)
+  // the invited email matches whatever case the account uses; a lookalike address never does
+  const inv = await createInvitation(db, OWNER_A, 'q.mixed@example.test', 'viewer', now)
+  for (const email of ['q.mixed@example.test.evil', 'q.mixed+x@example.test', 'qmixed@example.test', 'q.mixed@example.tes', ' q.mixed@exampIe.test'])
+    await assert.rejects(acceptInvitation(db, { actorId: 'B', email }, inv.token, now), code('wrong_account'), email)
+  // a tampered or malformed token is the same 410 as an unknown one, and uses nothing up
+  for (const t of [inv.token.toUpperCase(), inv.token + '0', inv.token.slice(1), '', ' '.repeat(64), inv.token.replace(/^./, c => (c === 'a' ? 'b' : 'a'))])
+    await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'q.mixed@example.test' }, t, now), code('invalid_invite'), JSON.stringify(t))
+  // another workspace's owner cannot revoke or list A's invitation
+  await assert.rejects(revokeInvitation(db, act('B', 'B', 'owner'), inv.id), code('not_found'))
+  assert.deepEqual(await listInvitations(db, 'B', now), [])
+  await db.run('UPDATE users SET email=? WHERE id=?',['Q.Mixed@Example.TEST','B'])
+  assert.deepEqual(await acceptInvitation(db, { actorId: 'B', email: 'Q.Mixed@Example.TEST' }, inv.token, now), { tenantId: 'A', role: 'viewer' })
+  // a link is dead at its expiry second, not one second later
+  const edge = await createInvitation(db, OWNER_A, 'edge@example.test', 'viewer', now - INVITE_TTL_S)
+  await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'edge@example.test' }, edge.token, now), code('invalid_invite'))
+  // at most 50 pending
+  for (let i = 0; i < 50; i++) await createInvitation(db, OWNER_A, `p${i}@example.test`, 'viewer', now)
+  assert.equal((await listInvitations(db, 'A', now)).length, 50)
+  await assert.rejects(createInvitation(db, OWNER_A, 'p51@example.test', 'viewer', now), code('too_many_invites'))
+})
