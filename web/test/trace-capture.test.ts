@@ -470,6 +470,20 @@ const COUNCIL: [string, string, string][] = [
   // R3-10 / R3-11: a name starting with a digit; percent-encoded separators and underscores; %26 ends the value
   ['R3-10 digit name', '2fa_token: 123456; 2fa_code: 123456', '2fa_token: [secret]; 2fa_code: 123456'],
   ['R3-11 encoded', 'https://x.example/cb?password%3DSECRETXH6%26a%3D1&refresh%5Ftoken=SECRETXH7&page=2', 'https://x.example/cb?password%3D[secret]%26a%3D1&refresh%5Ftoken=[secret]&page=2'],
+  // round 3 (Reviewer 1 R9-R12, probe round 2 F1-F5): tolerant and repeated decoding anywhere in a string, other scheme words,
+  // bare HTML attribute values and id=, digits glued to a word, userinfo passwords with @, a doubly escaped quote
+  ['R9 malformed escape', 'https://x.example/r?next=%2Flogin%3Fpassword%3DSECRETXJ1%zz&page=2', 'https://x.example/r?next=%2Flogin%3Fpassword%3D[secret]&page=2'],
+  ['R9 double encoded', 'https://x.example/r?u=%252Flogin%253Fpassword%253DSECRETXJ2%2526a%253D1', 'https://x.example/r?u=%252Flogin%253Fpassword%253D[secret]%2526a%253D1'],
+  ['R2-F2 encoded name', 'https://x.example/r?a=1&%70assword=SECRETXJ3&page=2', 'https://x.example/r?a=1&%70assword=[secret]&page=2'],
+  ['R10 path', 'https://x.example/go/https%3A%2F%2Fy.example%2F%3Ftoken%3DSECRETXJ4%26x%3D1', 'https://x.example/go/https%3A%2F%2Fy.example%2F%3Ftoken%3D[secret]%26x%3D1'],
+  ['R10 fragment', 'https://x.example/cb#d=%7B%22access_token%22%3A%22SECRETXJ5%22%7D', 'https://x.example/cb#d=%7B%22access_token%22%3A%22[secret]%22%7D'],
+  ['R11 other scheme', 'x-auth-token: Token SECRETXJ6 9944\naccess_token: Token SECRETXJ7\nnext: kept', 'x-auth-token: [secret]\naccess_token: [secret]\nnext: kept'],
+  ['R12 bare attr and id', '<input name=csrf_token value=SECRETXJ8> <input id="csrf_token" value="SECRETXJ9"> <meta content=SECRETXK1 name=api-key>', '<input name=csrf_token value=[secret]> <input id="csrf_token" value="[secret]"> <meta content=[secret] name=api-key>'],
+  ['R2-F1 glued digits', 'token2=SECRETXK2; api_key2: SECRETXK3; session2=SECRETXK4; sha256: kept', 'token2=[secret]; api_key2: [secret]; session2=[secret]; sha256: kept'],
+  ['R2-F3 userinfo with @', 'GET https://user:p@SECRETXK5@host.example/path?x=1', 'GET https://user:[secret]@host.example/path?x=1'],
+  ['probe apostrophe in brackets', "credentials: [Bob's SECRETXK9] tail-KEEP; session: {\"id\": \"SECRETXL1\"} tail-KEEP", "credentials: [secret] tail-KEEP; session: [secret] tail-KEEP"],
+  ['R2-F3 userinfo with slash', 'https://user:ab/SECRETXL2@host/x and https://host.example:8080/path?u=a@b.example', 'https://user:[secret]@host/x and https://host.example:8080/path?u=p[0-9a-f]{10}@b.example'],
+  ['R2-F5 escaped backslash', 'payload: {\\"password\\":\\"abc\\\\\\"SECRETXK6\\"} tail', 'payload: {\\"password\\":\\"[secret]\\"} tail'],
   // control: ordinary text with counts, dates, a port, a plan name and a non-credential code is untouched
   ['control', 'the keynote: London; Basic plan from 2026-10-10; tokens: 5; max_tokens=300; expires_in: 3600; https://host.example:8080/p?page=2&q=a+b; verification_code=493827', 'the keynote: London; Basic plan from 2026-10-10; tokens: 5; max_tokens=300; expires_in: 3600; https://host.example:8080/p?page=2&q=a+b; verification_code=493827'],
 ]
@@ -491,12 +505,13 @@ bothEngines('council matrix: every reviewer case is redacted as stated in a prom
   const t = (await getTrace(db, 'tenant-C', (await c.finish('done'))!))!
   assert.equal(t.capture?.complete, true); assert.equal(t.spans.length, COUNCIL.length * 3)
   const stored = JSON.stringify(t)
-  assert.ok(!/SECRETX[A-H]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-H]\d.{0,20}/)?.[0])
+  assert.ok(!/SECRETX[A-L]\d/.test(stored), stored.match(/.{0,60}SECRETX[A-L]\d.{0,20}/)?.[0])
   for (let i = 0; i < COUNCIL.length; i++) {
     const [label, , want] = COUNCIL[i]
-    assert.equal((t.spans[3 * i].output as { body: string }).body, want, `${label}: body`)
-    assert.equal(t.spans[3 * i + 1].error, want, `${label}: error`)
-    assert.equal((t.spans[3 * i + 2].input as { prompt: string }).prompt, want, `${label}: prompt`)
+    const check = (got: string, where: string) => want.includes('[0-9a-f]') ? assert.match(got, new RegExp(`^${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/p\\\[0-9a-f\\\]\\\{10\\\}/g, 'p[0-9a-f]{10}')}$`), `${label}: ${where}`) : assert.equal(got, want, `${label}: ${where}`)
+    check((t.spans[3 * i].output as { body: string }).body, 'body')
+    check(t.spans[3 * i + 1].error ?? '', 'error')
+    check((t.spans[3 * i + 2].input as { prompt: string }).prompt, 'prompt')
   }
 })
 
@@ -566,6 +581,32 @@ test('a body cut by the recorder cap keeps no nested credential value: the objec
   assert.match(stored, /\{\\"session\\":\[secret\],\\"credentials\\":\[secret\],/)
 })
 
+// R8: the HTML attribute pass is bounded per tag, so one enormous tag (attacker-controlled page content; redaction runs
+// synchronously inside finish) cannot make redaction quadratic. A pair inside the bound is still found.
+test('a 1M-character single HTML tag redacts in well under a second; a credential attribute pair inside the bound is still found', () => {
+  const tag = `<input name="csrf_token" value="SECRETXP1" ${'data-a="1" '.repeat(100_000)}>`
+  assert.ok(tag.length > 1_000_000)
+  const t0 = performance.now()
+  const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: {}, output: { text: tag, inner: `<form ${'x '.repeat(400_000)} name="password" value="SECRETXP2">` } }] }), Buffer.alloc(16, 5))
+  const ms = performance.now() - t0
+  assert.ok(ms < 1_000, `took ${ms.toFixed(0)} ms`)
+  const o = r.spans[0].output as { text: string; inner: string }
+  assert.ok(o.text.startsWith('<input name="csrf_token" value="[secret]" '), o.text.slice(0, 60))
+  // the documented bound: a pair more than 2,000 characters from the tag start is not found (and the scan stays linear)
+  assert.ok(o.inner.endsWith('name="password" value="SECRETXP2">'), o.inner.slice(-60))
+})
+
+// A "name" that is a placeholder or a role ("the", "unknown", "N/A", "Founder") is not a person: pseudonymising it would
+// rewrite every such word in the trace.
+test('placeholder and role "name" values from a model reply are not pseudonymised; real names still are', () => {
+  const reply = '[{"name": "the", "company": "Querix"}, {"name": "unknown"}, {"name": "N/A"}, {"name": "Founder"}, {"name": "Ada Synthetic"}]'
+  const page = 'the unknown founder, N/A for now; Ada Synthetic spoke'
+  const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'model', name: 'anthropic.complete', start_ms: 0, duration_ms: 1, input: { prompt: 'extract' }, output: { text: reply } }, { id: 's1', seq: 1, kind: 'page', name: 'verifier.fetch', start_ms: 0, duration_ms: 1, input: {}, output: { text: page } }] }), Buffer.alloc(16, 6))
+  assert.match((r.spans[1].output as { text: string }).text, /^the unknown founder, N\/A for now; Person-[0-9a-f]{6} spoke$/)
+  // (the reply parses as JSON, so it is re-serialised compactly once a name in it changed)
+  assert.match((r.spans[0].output as { text: string }).text, /^\[\{"name":"the","company":"Querix"\},\{"name":"unknown"\},\{"name":"N\/A"\},\{"name":"Founder"\},\{"name":"Person-[0-9a-f]{6}"\}\]$/)
+})
+
 // Every key form the structural rule must recognise, with the ordinary keys it must leave alone. Values are all strings:
 // a credential travels as a string; numbers and booleans (counts, limits, flags) are never redacted.
 const CREDENTIAL_KEYS = ['refresh_token', 'refreshToken', 'REFRESH-TOKEN', 'Refresh.Token', 'refresh token', 'access_token', 'id_token', 'token', 'TOKEN', 'tokens',
@@ -629,11 +670,13 @@ test('credential values are redacted whole: quoted values with spaces, numeric v
   // JSON-carried: a numeric string or a number under a credential name is a secret; a count or limit, a boolean, null and a
   // number under an ordinary name are kept, at any nesting and inside JSON carried in a string
   const body = { password: '493827', otp: 493827, token: 112233, api_key: 7, max_tokens: 300, tokens: 5, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }, token_count: 4, key_count: 2, page: 2, expires_in: 3600, session: true, secret: null,
-    auth: { session: { id: 'syntheticnestedsessionmarker', expires_in: 3600 } }, credentials: [{ pin: 1234, token: 5, max_tokens: 7 }], cookie: { name: 'sid', value: 12345 }, secrets: [493827], otp_number: 493827, input_password: 493827 }
+    auth: { session: { id: 'syntheticnestedsessionmarker', expires_in: 3600 } }, credentials: [{ pin: 1234, token: 5, max_tokens: 7 }], cookie: { name: 'sid', value: 12345 }, secrets: [493827], otp_number: 493827, input_password: 493827,
+    secret2: 'syntheticglueddigitmarker', key1: 'syntheticglueddigitmarker', otp2: 493827, auth2: { time: 493827 }, keys: { count: 2, master: 99, nested: { total: 3, id: 4 } }, sha256: 'kept-hash-like', time: 493827 }
   const r = redactTrace(synth({ spans: [{ id: 's0', seq: 0, kind: 'http', name: 'http', start_ms: 0, duration_ms: 1, input: { url: 'https://x.example/' }, output: { body: JSON.stringify(body), direct: body } }] }), Buffer.alloc(16, 4))
   // numbers inside a credential-named object or array go too (cookie value, secrets list, a pin under auth), except under a count/limit/lifetime key
   const want = { password: '[secret]', otp: '[secret]', token: '[secret]', api_key: '[secret]', max_tokens: 300, tokens: 5, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 }, token_count: 4, key_count: 2, page: 2, expires_in: 3600, session: true, secret: null,
-    auth: '[secret]', credentials: '[secret]', cookie: '[secret]', secrets: '[secret]', otp_number: '[secret]', input_password: '[secret]' }
+    auth: '[secret]', credentials: '[secret]', cookie: '[secret]', secrets: '[secret]', otp_number: '[secret]', input_password: '[secret]',
+    secret2: '[secret]', key1: '[secret]', otp2: '[secret]', auth2: '[secret]', keys: { count: 2, master: '[secret]', nested: { total: 3, id: '[secret]' } }, sha256: 'kept-hash-like', time: 493827 }
   assert.deepEqual(JSON.parse((r.spans[0].output as { body: string }).body), want)
   assert.deepEqual((r.spans[0].output as { direct: unknown }).direct, want)
 })

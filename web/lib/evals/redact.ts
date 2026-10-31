@@ -51,9 +51,10 @@ const CREDENTIAL_WORDS = new Set(['token', 'tokens', 'secret', 'secrets', 'key',
 const GLUED_END = ['token', 'tokens', 'secret', 'secrets', 'password', 'passwd', 'passphrase', 'apikey', 'cookie', 'cookies', 'credential', 'credentials', 'privatekey', 'accesskey', 'secretkey', 'signingkey', 'sessionid', 'jwt', 'csrf']
 const GLUED_ANY = ['passw', 'authoriz', 'authentication']
 const fold = (k: string): string => k.normalize('NFKD').replace(/[̀-ͯ]/g, '')
-const keyWords = (k: string): string[] => fold(k).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+// Digits glued to a word are not part of it: token2, api_key2, key1, otp2, session2, 2fa_token.
+const keyWords = (k: string): string[] => fold(k).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).map(w => w.replace(/^\d+|\d+$/g, '')).filter(Boolean)
 export function isCredentialKey(k: string): boolean {
-  const compact = fold(k).toLowerCase().replace(/[^a-z0-9]/g, '')
+  const compact = fold(k).toLowerCase().replace(/[^a-z0-9]/g, '').replace(/\d+$/, '')
   return keyWords(k).some(w => CREDENTIAL_WORDS.has(w)) || GLUED_END.some(g => compact.endsWith(g)) || GLUED_ANY.some(g => compact.includes(g))
 }
 // A credential-named key under which a bare NUMBER is a count, a limit or a lifetime, not a secret. ONLY token/key names
@@ -64,6 +65,7 @@ const COUNT_WORDS = new Set(['max', 'min', 'limit', 'limits', 'count', 'counts',
   'prompt', 'completion', 'reasoning', 'budget', 'size', 'len', 'length', 'bytes', 'chars', 'per', 'rate',
   'expires', 'expiry', 'expire', 'expiration', 'ttl', 'age', 'maxage', 'timeout', 'iat', 'exp', 'nbf', 'issued', 'created', 'updated', 'time', 'timestamp', 'ms', 'seconds', 'secs', 'duration', 'version'])
 const COUNTABLE = new Set(['token', 'tokens', 'key', 'keys'])
+const hasCountWord = (k: string): boolean => keyWords(k).some(w => COUNT_WORDS.has(w))
 export function isCountKey(k: string): boolean {
   const ws = keyWords(k), cw = ws.filter(w => CREDENTIAL_WORDS.has(w))
   return cw.length > 0 && cw.every(w => COUNTABLE.has(w)) && (ws.some(w => COUNT_WORDS.has(w)) || cw.every(w => w === 'tokens' || w === 'keys'))
@@ -87,30 +89,56 @@ const FAMILIES: [RegExp, string][] = [
   [/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, `Bearer ${SECRET}`],
   [/\bBasic\s+[A-Za-z0-9+\/]{8,}=*/g, `Basic ${SECRET}`],
   // the password of a URL's userinfo: scheme://user:password@host (a connection string, a proxied URL, a database DSN)
-  [/\b([a-z][a-z0-9+.-]*:\/\/[^\s\/:@"'<>]+:)([^\s\/@"'<>]+)@/gi, `$1${SECRET}@`],
+  // (the password may contain `@` and `/`; it ends at the last `@` before the host; a `?`, `#`, `&` or `=` ends the
+  // authority, so `https://host:8080/path?u=a@b.example` has no password)
+  [/\b([a-z][a-z0-9+.-]*:\/\/[^\s\/:@"'<>]+:)([^\s"'<>@?#&=]+(?:@[^\s"'<>@\/?#&=]+)*)@/gi, `$1${SECRET}@`],
   // a cookie header line, whole: every pair, quoted or not, to the end of the line
   [/\b(Set-Cookie|Cookie)\s*:\s*[^\n]+/gi, `$1: ${SECRET}`],
 ]
 // HTML attribute pairs: <input name="csrf_token" value="..."> and <meta name="csrf-token" content="...">, in either
-// attribute order. The attribute's name decides, exactly as a key does.
-const HTML_NAME_VALUE = /(<[a-z][^<>]*?\bname\s*=\s*["']?)([^"'\s<>]+)(["']?[^<>]*?\b(?:value|content)\s*=\s*)(["'])([^"'<>]*)\4/gi
-const HTML_VALUE_NAME = /(<[a-z][^<>]*?\b(?:value|content)\s*=\s*)(["'])([^"'<>]*)\2([^<>]*?\bname\s*=\s*["']?)([^"'\s<>]+)/gi
+// attribute order, the attribute named by `name` or `id`, its value quoted or bare. The attribute's name decides, exactly
+// as a key does. Each scan inside a tag is BOUNDED (2,000 characters): a page is attacker-controlled and this pass runs
+// synchronously inside finish(), so an unbounded lazy scan would be quadratic in the length of one tag (a 400k-char tag
+// took 12 s). A pair further apart than the bound is not found - documented.
+const ATTR_VALUE = String.raw`(?:(["'])([^"'<>]*)\2|([^\s"'<>]+))`
+const HTML_NAME_VALUE = new RegExp(String.raw`(<[a-z][^<>]{0,2000}?\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)(["']?[^<>]{0,2000}?\b(?:value|content)\s*=\s*)` + ATTR_VALUE.replace('\\2', '\\4'), 'gi')
+const HTML_VALUE_NAME = new RegExp(String.raw`(<[a-z][^<>]{0,2000}?\b(?:value|content)\s*=\s*)` + ATTR_VALUE + String.raw`([^<>]{0,2000}?\b(?:name|id)\s*=\s*["']?)([^"'\s<>]+)`, 'gi')
 function redactHtmlAttributes(s: string): string {
   if (!s.includes('<')) return s
-  return s.replace(HTML_NAME_VALUE, (m, a: string, name: string, b: string, q: string, v: string) => isCredentialKey(name) && v !== SECRET ? `${a}${name}${b}${q}${SECRET}${q}` : m)
-    .replace(HTML_VALUE_NAME, (m, a: string, q: string, v: string, b: string, name: string) => isCredentialKey(name) && v !== SECRET ? `${a}${q}${SECRET}${q}${b}${name}` : m)
+  return s.replace(HTML_NAME_VALUE, (m, a: string, name: string, b: string, q: string | undefined, qv: string | undefined, bare: string | undefined) =>
+    !isCredentialKey(name) || (qv ?? bare) === SECRET ? m : q ? `${a}${name}${b}${q}${SECRET}${q}` : `${a}${name}${b}${SECRET}`)
+    .replace(HTML_VALUE_NAME, (m, a: string, q: string | undefined, qv: string | undefined, bare: string | undefined, b: string, name: string) =>
+      !isCredentialKey(name) || (qv ?? bare) === SECRET ? m : q ? `${a}${q}${SECRET}${q}${b}${name}` : `${a}${SECRET}${b}${name}`)
 }
-// A URL query value that is percent-encoded can carry its own assignments (?next=%2Flogin%3Fpassword%3D...) or a JSON
-// document (?d=%7B%22api_key%22...): it is decoded, redacted by the same rules and re-encoded (the marker stays readable).
-const QUERY_VALUE = /([?&][^=&\s"'<>#?]+=)([^&\s"'<>]*%[0-9A-Fa-f]{2}[^&\s"'<>]*)/g
-function redactEncodedQueryValues(s: string, core: (x: string) => string): string {
-  if (!s.includes('%')) return s
-  return s.replace(QUERY_VALUE, (m, k: string, v: string) => {
-    let d: string
-    try { d = decodeURIComponent(v) } catch { return m }
-    const r = core(d)
-    return r === d ? m : k + encodeURIComponent(r).replace(/%5Bsecret%5D/g, SECRET)
-  })
+// Percent-encoded text anywhere in a string - a URL's query, path or fragment, a redirect target, an encoded JSON
+// document - can hide an assignment (%3Fpassword%3D..., %22api_key%22%3A..., &%70assword=) from the pass above. The
+// string is decoded tolerantly (only valid %XX sequences; a malformed %zz never throws and never fails open), the
+// assignment pass runs on the decoded shadow, and each hit is mapped back to the original and replaced there, so the
+// surrounding encoding is kept. Repeated until the text stops changing, at most 3 times: a double-encoded value
+// (%2522password%2522) is reached on the second pass.
+const PCT = /%[0-9A-Fa-f]{2}/
+function tolerantDecode(s: string): { text: string; map: number[] } | null {
+  if (!PCT.test(s)) return null
+  const map: number[] = []; let out = ''
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (c === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3))) { map.push(i); out += String.fromCharCode(parseInt(s.slice(i + 1, i + 3), 16)); i += 2 }
+    else { map.push(i); out += c }
+  }
+  map.push(s.length)
+  return { text: out, map }
+}
+function redactEncoded(s: string): string {
+  let dec = s, toOrig: number[] | null = null
+  const hits: Hit[] = []
+  for (let pass = 0; pass < 3; pass++) {
+    const d = tolerantDecode(dec)
+    if (!d) break
+    const map: number[] = toOrig ? d.map.map(i => toOrig![i]) : d.map
+    dec = d.text; toOrig = map
+    for (const h of findAssigned(dec)) hits.push({ from: map[h.from], end: map[h.end] })
+  }
+  return applyHits(s, hits)
 }
 // `name: value`, `name=value`, `name => value`, `"name": "value"` in prose, a URL query, an error message or a JSON
 // fragment, when the name is credential-named: the WHOLE assigned value goes.
@@ -130,23 +158,41 @@ function redactEncodedQueryValues(s: string, core: (x: string) => string): strin
 // every character, the greedy name would be rescanned once per character of a long word, quadratic on a big body.
 //   - A name that ends its line (`credentials:` then an indented block, `password:` then the value on the next line)
 //     takes the whole indented block below it.
+// COVERED, to be explicit: names starting with or glued to digits (2fa_token, token2, api_key2), percent-encoded names
+// and separators (refresh%5Ftoken, password%3D, &%70assword=), double-encoded values, JSON-escaped quotes (\\"), values
+// in a URL's path or fragment, count-word CHILD keys under a credential object ({"auth": {"time": 1}} goes whole; a
+// count word exempts a number only under a count-shaped token/key parent: {"tokens": {"input": 5}}).
 // NOT covered, by design (documented limits): an unquoted value with spaces (`password: correct horse battery`) keeps
 // everything after its first word; prose (`the password is X`, `password - X`, `password → X`) and names that are not
 // credential words (verification_code, pin as a key) are not assignments to a credential name; a bare `Basic xxxx`
-// shorter than 8 characters with no name next to it is kept.
+// shorter than 8 characters with no name next to it is kept; an HTML attribute pair more than 2,000 characters apart
+// inside one tag, or an apostrophe inside a quoted attribute value, is not found; a userinfo password containing `/`
+// (`user:ab/x@host`) is not a URL password; an unbalanced `password: {` takes the rest of the string and an
+// Authorization/Cookie name the rest of its line (fail closed); a company given under a reply's "name" field is
+// pseudonymised like a person; JSON nested ~20k levels deep throws and nothing is stored (fail closed).
 // A name may start with a digit (2fa_token) and carry a percent-encoded underscore (refresh%5Ftoken); `=` and `:` may be
 // percent-encoded too (password%3Dx). A percent-encoded `&` (%26) ends an unquoted value like a plain one.
 const NAME_SEP = /(?<![\p{L}\p{N}_.-])((?:[\p{L}\p{N}]|%5[Ff])(?:[\p{L}\p{N}_.-]|%5[Ff])*)\\?["']?\s*(?:=>|[:=]|%3[DdAa])\s*(\\?["']?)/gu
 const ENCODED_AMP = /%26/i
+// An authorization scheme other than Bearer/Basic has its own syntax after the word: the value runs to the end of the
+// line under ANY credential-named header (x-auth-token: Token x, access_token: Token x, Digest username=...).
+const OTHER_SCHEME = /^(?:Token|Digest|OAuth|Hawk|Negotiate|NTLM|AWS4-HMAC-SHA256|SSWS|ApiKey|Api-Key|Zoho-oauthtoken|Splunk)\s/i
 const UNQUOTED = /[^\s"'&,;})]+/y
 const SCHEME = /^(?:Bearer|Basic)\s+/i
 const SCHEME_AT = /(?:Bearer|Basic)\s+/iy
 // Index of the quote that closes a value opened by `q` (`"`, `'` or the JSON-escaped `\"`), or -1 when the line ends first.
+// In the escaped form the inner document's own escapes are doubled: `\\\"` is an escaped quote INSIDE the value and `\\\\` an
+// escaped backslash; only a bare `\"` closes.
 function closingQuote(s: string, from: number, q: string): number {
   const escaped = q.length === 2
   for (let i = from; i < s.length; i++) {
     if (s[i] === '\n') return -1
-    if (escaped) { if (s[i] === '\\' && s[i + 1] === q[1]) return i; if (s[i] === '\\') i++; continue }
+    if (escaped) {
+      if (s[i] !== '\\') continue
+      if (s[i + 1] === '\\') { i += s[i + 2] === '\\' && s[i + 3] === q[1] ? 3 : 1; continue }   // \\\" inner quote, \\\\ inner backslash
+      if (s[i + 1] === q[1]) return i
+      i++; continue
+    }
     if (s[i] === '\\') { i++; continue }
     if (s[i] === q) return i
   }
@@ -158,7 +204,7 @@ function closingBracket(s: string, at: number): number {
   for (let i = at; i < s.length; i++) {
     const c = s[i]
     if (quote) { if (c === '\\') i++; else if (c === quote) quote = ''; continue }
-    if (c === '"' || c === "'") quote = c
+    if (c === '"' || (c === "'" && !/[\p{L}\p{N}]/u.test(s[i - 1] ?? ''))) quote = c   // an apostrophe inside a word (Bob's) opens no string
     else if (c === '{' || c === '[') depth++
     else if (c === '}' || c === ']') { depth--; if (depth === 0) return i + 1 }
   }
@@ -181,8 +227,10 @@ function blockEnd(s: string, nameAt: number, from: number): number {
   }
   return end
 }
-function redactAssigned(s: string): string {
-  let out = '', last = 0
+// The ranges [from, end) of assigned credential values in `s` (a kept scheme word is outside the range).
+interface Hit { from: number; end: number }
+function findAssigned(s: string): Hit[] {
+  const hits: Hit[] = []
   NAME_SEP.lastIndex = 0
   for (let m = NAME_SEP.exec(s); m; m = NAME_SEP.exec(s)) {
     const name = m[1].replace(/%5[Ff]/g, '_')
@@ -198,7 +246,7 @@ function redactAssigned(s: string): string {
       const start = SCHEME_AT.exec(s) ? SCHEME_AT.lastIndex : from
       if (s[start] === '{' || s[start] === '[') { const close = closingBracket(s, start); end = close >= 0 ? close : s.length }
       else if (start === from && s.slice(m.index! + m[1].length, from).includes('\n')) end = blockEnd(s, m.index!, from)
-      else if (start === from && lineValued(name)) end = lineEnd(s, from)
+      else if (start === from && (lineValued(name) || OTHER_SCHEME.test(s.slice(from, from + 24)))) end = lineEnd(s, from)
       else {
         UNQUOTED.lastIndex = start; if (!UNQUOTED.exec(s)) continue; end = UNQUOTED.lastIndex
         const amp = s.slice(start, end).search(ENCODED_AMP); if (amp >= 0) end = start + amp
@@ -209,24 +257,40 @@ function redactAssigned(s: string): string {
     const body = value.slice(scheme.length).replace(/\s+$/, '')
     if (body === '' || body === SECRET) continue
     if (!quote && NUMBER.test(body) && !numberIsSecret(name)) continue
-    out += s.slice(last, from) + scheme + SECRET
-    last = NAME_SEP.lastIndex = from + scheme.length + body.length
+    hits.push({ from: from + scheme.length, end: from + scheme.length + body.length })
+    NAME_SEP.lastIndex = from + scheme.length + body.length
+  }
+  return hits
+}
+// Replaces each range by the marker; overlapping or touching ranges (the same value found through two decodings) merge.
+function applyHits(s: string, hits: Hit[]): string {
+  if (!hits.length) return s
+  const sorted = [...hits].sort((a, b) => a.from - b.from)
+  let out = '', last = 0
+  for (const h of sorted) {
+    if (h.from < last) { continue }
+    out += s.slice(last, h.from) + SECRET
+    last = h.end
   }
   return out + s.slice(last)
 }
+const redactAssigned = (s: string): string => applyHits(s, findAssigned(s))
 
 // Every `"name": "..."` a string carries, whether or not the string parses as JSON as a whole: a fenced reply
 // ("```json\n[...]\n```"), a reply with a preamble ("Here you go: [...]") or a reply cut short still names people.
 const NAME_FIELD = /"name"\s*:\s*"((?:[^"\\]|\\.)+)"/g
+// A "name" that is a placeholder or a role, not a person: replacing every "the" or "unknown" in a trace would wreck it.
+const NOT_A_NAME = new Set(['the', 'and', 'for', 'with', 'from', 'that', 'this', 'not', 'none', 'null', 'unknown', 'n/a', 'na', 'name', 'test', 'user', 'admin', 'person', 'company', 'contact', 'unnamed', 'anonymous', 'various', 'multiple', 'team', 'staff', 'founder', 'founders', 'ceo', 'cto', 'cfo', 'coo', 'owner', 'director', 'manager', 'partner', 'member', 'spokesperson', 'representative', 'undefined', 'string', 'tbd', 'tba'])
+export const isPersonName = (n: string): boolean => n.length >= 3 && /\p{L}/u.test(n) && !NOT_A_NAME.has(n.toLowerCase())
 function collectNames(v: unknown, out: Set<string>): void {
   if (typeof v === 'string') {
     if (v.trim().startsWith('[') || v.trim().startsWith('{')) { try { collectNames(JSON.parse(v), out) } catch { /* not JSON as a whole */ } }
-    if (v.includes('"name"')) for (const m of v.matchAll(NAME_FIELD)) { try { const n = (JSON.parse(`"${m[1]}"`) as string).trim(); if (n.length >= 3) out.add(n) } catch { /* not a JSON string */ } }
+    if (v.includes('"name"')) for (const m of v.matchAll(NAME_FIELD)) { try { const n = (JSON.parse(`"${m[1]}"`) as string).trim(); if (isPersonName(n)) out.add(n) } catch { /* not a JSON string */ } }
     return
   }
   if (Array.isArray(v)) { for (const x of v) collectNames(x, out); return }
   if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) {
-    if (k === 'name' && typeof x === 'string' && x.trim().length >= 3) out.add(x.trim())
+    if (k === 'name' && typeof x === 'string' && isPersonName(x.trim())) out.add(x.trim())
     else collectNames(x, out)
   }
 }
@@ -237,15 +301,14 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
   const h = (s: string) => createHmac('sha256', salt).update(s).digest('hex')
   const names = new Set<string>()
   for (const s of t.spans) if (s.kind === 'model') collectNames(s.output, names)
-  for (const l of t.output?.leads ?? []) if (l.name.trim().length >= 3) names.add(l.name.trim())
+  for (const l of t.output?.leads ?? []) if (isPersonName(l.name.trim())) names.add(l.name.trim())
   const nameList = [...names].sort((a, b) => b.length - a.length) // longest first: "Ada Lovelace" before "Ada"
   // Credentials: families, then assignments by name, then HTML attribute pairs, then the same inside percent-encoded
   // URL query values.
   const core = (x: string): string => {
     let r = x
     for (const [re, to] of FAMILIES) r = r.replace(re, to)
-    r = redactHtmlAttributes(redactAssigned(r))
-    return redactEncodedQueryValues(r, core)
+    return redactEncoded(redactHtmlAttributes(redactAssigned(r)))
   }
   const text = (s: string): string => {
     let r = core(s)
@@ -264,7 +327,7 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
     if (secret) return SECRET
     const parsed = parseJson(s)
     if (parsed === undefined || parsed === null || typeof parsed !== 'object') return text(s)
-    const before = JSON.stringify(parsed), after = JSON.stringify(deep(parsed, false))
+    const before = JSON.stringify(parsed), after = JSON.stringify(deep(parsed, false, false))
     return after === before ? s : after
   }
   // Object keys too: a World keys pages and HTTP answers by URL, and a URL can carry an email, a profile slug or a token.
@@ -274,18 +337,22 @@ export function redactTrace(t: Trace, salt: Buffer = randomBytes(16)): Trace {
   // token/key name (max_tokens, tokens, num_keys) keeps its numbers and is descended into - with `secret` set, so every
   // string below it still goes. A key that is a URL or path (a page map keyed by URL whose query says `?key=london`) is
   // not a credential name for its subtree: its own text is redacted, its value is descended into normally.
-  const deep = (v: unknown, secret: boolean): unknown =>
+  // `countTree`: below a count-shaped token/key name (`tokens: {...}`): a number there keeps only under a key that
+  // itself names a count (input, output, total, max); `tokens: {refresh: 12345678}` goes.
+  const deep = (v: unknown, secret: boolean, countTree: boolean): unknown =>
     typeof v === 'string' ? str(v, secret)
-      : Array.isArray(v) ? v.map(x => deep(x, secret))
-        : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => {
-          const cred = isCredentialKey(k) && !/[/?&=]/.test(k)
-          if (cred && !isCountKey(k) && x !== null && typeof x !== 'boolean') return [text(k), SECRET]
-          return [text(k), deep(x, secret || cred)]
-        }))
-          : v
+      : typeof v === 'number' ? (countTree ? SECRET : v)
+        : Array.isArray(v) ? v.map(x => deep(x, secret, countTree))
+          : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => {
+            const cred = isCredentialKey(k) && !/[/?&=]/.test(k)
+            if (cred && !isCountKey(k) && x !== null && typeof x !== 'boolean') return [text(k), SECRET]
+            if (typeof x === 'number') return [text(k), !cred && countTree && !hasCountWord(k) ? SECRET : x]
+            return [text(k), deep(x, secret || cred, countTree || cred)]
+          }))
+            : v
   // EVERY string of the trace goes through the pass - span errors (an inner call's error message can quote a URL, a
   // header or an address), names, the agent label, metadata - except the structural identifiers this module's own code
   // wrote (trace and span ids, kinds, the path), which are put back as they were.
-  const all = deep(t, false) as Trace
+  const all = deep(t, false, false) as Trace
   return { ...all, v: t.v, kind: t.kind, id: t.id, path: t.path, redacted: true, spans: all.spans.map((s, i) => ({ ...s, id: t.spans[i].id, kind: t.spans[i].kind })) }
 }
