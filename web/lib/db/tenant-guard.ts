@@ -75,8 +75,10 @@ export function migrateTenantLifecycle(db: Database.Database): void {
 // tenant or under a deleted parent, nor moved there by re-pointing its ownership (the invariant: ownership and parent
 // keys never move under a tombstoned tenant or deleted parent). A parent key is refused when the parent row was
 // deleted (tenant_tombstone_keys) and, while the deletion is still in progress or the parent is retained, when the
-// parent row's own chain belongs to a tombstoned tenant. Each trigger is dropped and recreated (as the translator does
-// on Postgres), so a change to a guard's body reaches an existing store at its next start.
+// parent row's own chain belongs to a tombstoned tenant. The UPDATE guard tests the row's old value too: a tombstoned
+// tenant's row can no more be moved out to another tenant (its data would survive the erase under a new owner) than
+// another tenant's row can be moved in. Each trigger is dropped and recreated (as the translator does on Postgres), so
+// a change to a guard's body reaches an existing store at its next start.
 export function guardTriggers(scope: Scope[]): { name: string; table: string; sql: string }[] {
   const byTable = new Map(scope.map(s => [s.table, s]))
   // rows of `table` that belong to a tombstoned tenant, as a WHERE clause over that table (through its parent chain)
@@ -88,16 +90,20 @@ export function guardTriggers(scope: Scope[]): { name: string; table: string; sq
     return up && `${s.col} IN (SELECT id FROM ${s.parent} WHERE ${up})`
   }
   const out: { name: string; table: string; sql: string }[] = []
-  const guard = (table: string, col: string, when: string, suffix = '') => {
-    for (const [name, event] of [[`tomb_${table}${suffix}`, 'INSERT'], [`tomb_upd_${table}${suffix}`, `UPDATE OF ${col}`]])
-      out.push({ name, table, sql: `DROP TRIGGER IF EXISTS ${name}; CREATE TRIGGER ${name} BEFORE ${event} ON ${table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;` })
+  const ddl = (name: string, event: string, table: string, when: string) =>
+    `DROP TRIGGER IF EXISTS ${name}; CREATE TRIGGER ${name} BEFORE ${event} ON ${table} WHEN ${when} BEGIN SELECT RAISE(ABORT, 'tenant deleted'); END;`
+  // `deleted(row)` says whether the row's value of `col` (NEW or OLD) belongs to a tombstoned tenant
+  const guard = (table: string, col: string, deleted: (row: 'NEW' | 'OLD') => string, suffix = '') => {
+    out.push({ name: `tomb_${table}${suffix}`, table, sql: ddl(`tomb_${table}${suffix}`, 'INSERT', table, deleted('NEW')) })
+    out.push({ name: `tomb_upd_${table}${suffix}`, table, sql: ddl(`tomb_upd_${table}${suffix}`, `UPDATE OF ${col}`, table, `(${deleted('NEW')}) OR (${deleted('OLD')})`) })
   }
+  const tenantOf = (col: string) => (row: string) => `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = ${row}.${col})`
   for (const s of scope) {
-    if (s.how === 'direct') { guard(s.table, s.col, `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.${s.col})`); continue }
+    if (s.how === 'direct') { guard(s.table, s.col, tenantOf(s.col)); continue }
     const live = tombstoned(s.parent)
-    guard(s.table, s.col, `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = NEW.${s.col})${live ? ` OR NEW.${s.col} IN (SELECT id FROM ${s.parent} WHERE ${live})` : ''}`)
+    guard(s.table, s.col, row => `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = ${row}.${s.col})${live ? ` OR ${row}.${s.col} IN (SELECT id FROM ${s.parent} WHERE ${live})` : ''}`)
   }
-  for (const t of ['organizations', 'users']) guard(t, 'id', `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id)`)
-  for (const [table, cols] of Object.entries(ACCOUNT_COLUMNS)) if (byTable.has(table)) for (const col of cols) guard(table, col, `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.${col})`, `_${col}`)
+  for (const t of ['organizations', 'users']) guard(t, 'id', tenantOf('id'))
+  for (const [table, cols] of Object.entries(ACCOUNT_COLUMNS)) if (byTable.has(table)) for (const col of cols) guard(table, col, tenantOf(col), `_${col}`)
   return out
 }

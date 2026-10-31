@@ -38,7 +38,7 @@ const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', '
 export const CREDENTIAL_TABLES = ['sessions', 'oauth_states', 'oauth_identities', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']
 // Left out of an export entirely (token material, no value to the tenant) and redacted columns.
 export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session tokens (hashed); never exported', oauth_states: 'one-time OAuth state and PKCE verifiers; never exported' }
-export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct)$|secret/
+export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash)$|secret/
 // Kept whatever the policy: append-only audit records that hold no tenant content (lib/scan/evidence-copies.ts: who
 // purged evidence, why, and counts). Reported on the tombstone as retained, like any policy retention.
 export const ALWAYS_RETAINED: Record<string, string> = { evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content' }
@@ -77,6 +77,9 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
   }))
   const profile = await db.get<Record<string, unknown>>('SELECT * FROM users WHERE id = ?', [tenant])
   if (profile) tables.users = [clean('users', profile)]
+  // the workspace row (organizations.id is the tenant id; classified global because the id is the tenant, not a column)
+  const org = (await tableColumns(db)).has('organizations') ? await db.get<Record<string, unknown>>('SELECT * FROM organizations WHERE id = ?', [tenant]) : undefined
+  if (org) tables.organizations = [clean('organizations', org)]
   for (const t of [...scope.keys()].sort()) {
     if (EXPORT_EXCLUDED[t]) continue
     const w = owned(scope, t, tenant)
@@ -148,6 +151,12 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   const cols = await tableColumns(db)
   let t = await tombstone(db, tenant)
+  if (t && o.policy) {
+    // a second request must not silently resolve to the first one's policy: resume without a policy, or decide first
+    const asked = JSON.stringify(validPolicy(o.policy, scope)), recorded = JSON.parse(t.policy) as DeletionPolicy
+    if (asked !== JSON.stringify({ suppressions: recorded.suppressions, retainTables: [...(recorded.retainTables ?? [])].sort() }))
+      throw new Error(`a deletion of this tenant is already recorded (state ${t.state}, requested by ${t.requested_by}) with a different policy: recorded ${t.policy}, asked ${asked}; resume it without a policy, or decide which one holds first`)
+  }
   if (!t) {
     // the policy and retention checks read the schema only; the shared-workspace check reads data, so it runs in the
     // tombstone's own transaction below
@@ -210,6 +219,8 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     if (gate) yield* tx.run('INSERT INTO evidence_purge_gate (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenant])
     for (const x of erase) yield* del(tx, x)
     if (gate) yield* del(tx, 'evidence_purge_gate')
+    // rate-limit counters are global, but a key can embed the tenant id: those go too
+    if (cols.has('rate_limits')) yield* tx.run("DELETE FROM rate_limits WHERE key LIKE '%' || ? || '%'", [tenant])
     yield* tx.run('DELETE FROM users WHERE id = ?', [tenant])
     if (has('memberships')) yield* tx.run('DELETE FROM organizations WHERE id = ?', [tenant])
   })) return t
