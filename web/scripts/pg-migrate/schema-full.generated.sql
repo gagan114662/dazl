@@ -1058,7 +1058,7 @@ CREATE TRIGGER tomb_commenter_batches BEFORE INSERT ON commenter_batches FOR EAC
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_commenter_rows() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM commenter_batches WHERE id = NEW.batch_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM commenter_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) OR EXISTS (SELECT 1 FROM commenter_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.batch_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_commenter_rows ON commenter_rows;
@@ -1112,7 +1112,7 @@ CREATE TRIGGER tomb_csv_batches BEFORE INSERT ON csv_batches FOR EACH ROW EXECUT
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_csv_rows() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM csv_batches WHERE id = NEW.batch_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM csv_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR EXISTS (SELECT 1 FROM csv_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.batch_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_csv_rows ON csv_rows;
@@ -1247,7 +1247,7 @@ CREATE TRIGGER tomb_lead_qualifications BEFORE INSERT ON lead_qualifications FOR
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_lead_sources() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT (SELECT user_id FROM scan_jobs WHERE id = scan_job_id) FROM leads WHERE id = NEW.lead_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR NEW.lead_id IN (SELECT id FROM leads WHERE scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR EXISTS (SELECT 1 FROM leads p0 WHERE p0.id = NEW.lead_id AND EXISTS (SELECT 1 FROM scan_jobs p1 JOIN tenant_tombstones t1 ON t1.deleted_tenant = p1.user_id WHERE p1.id = p0.scan_job_id))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_lead_sources ON lead_sources;
@@ -1256,7 +1256,7 @@ CREATE TRIGGER tomb_lead_sources BEFORE INSERT ON lead_sources FOR EACH ROW EXEC
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_leads() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.scan_job_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id) OR NEW.scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.scan_job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_leads ON leads;
@@ -1292,7 +1292,7 @@ CREATE TRIGGER tomb_memberships_member_id BEFORE INSERT ON memberships FOR EACH 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_monitor_runs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM monitors WHERE id = NEW.monitor_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_monitor_runs ON monitor_runs;
@@ -1301,7 +1301,7 @@ CREATE TRIGGER tomb_monitor_runs BEFORE INSERT ON monitor_runs FOR EACH ROW EXEC
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_monitor_seen() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM monitors WHERE id = NEW.monitor_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_monitor_seen ON monitor_seen;
@@ -1454,7 +1454,7 @@ CREATE TRIGGER tomb_scan_model_calls BEFORE INSERT ON scan_model_calls FOR EACH 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_run_report() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.job_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_scan_run_report ON scan_run_report;
@@ -1463,7 +1463,7 @@ CREATE TRIGGER tomb_scan_run_report BEFORE INSERT ON scan_run_report FOR EACH RO
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_source_runs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.job_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_scan_source_runs ON scan_source_runs;
@@ -1472,7 +1472,7 @@ CREATE TRIGGER tomb_scan_source_runs BEFORE INSERT ON scan_source_runs FOR EACH 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_scan_source_stats() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.job_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_scan_source_stats ON scan_source_stats;
@@ -1767,7 +1767,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_commenter_rows() RETURNS trigger 
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM commenter_batches WHERE id = NEW.batch_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM commenter_batches WHERE id = OLD.batch_id)));
-  IF (NEW.batch_id IS DISTINCT FROM OLD.batch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM commenter_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = OLD.batch_id) OR OLD.batch_id IN (SELECT id FROM commenter_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.batch_id IS DISTINCT FROM OLD.batch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) OR EXISTS (SELECT 1 FROM commenter_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.batch_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = OLD.batch_id) OR EXISTS (SELECT 1 FROM commenter_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.batch_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_commenter_rows ON commenter_rows;
@@ -1827,7 +1827,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_csv_rows() RETURNS trigger LANGUA
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM csv_batches WHERE id = NEW.batch_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM csv_batches WHERE id = OLD.batch_id)));
-  IF (NEW.batch_id IS DISTINCT FROM OLD.batch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR NEW.batch_id IN (SELECT id FROM csv_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = OLD.batch_id) OR OLD.batch_id IN (SELECT id FROM csv_batches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.batch_id IS DISTINCT FROM OLD.batch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR EXISTS (SELECT 1 FROM csv_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.batch_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = OLD.batch_id) OR EXISTS (SELECT 1 FROM csv_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.batch_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_csv_rows ON csv_rows;
@@ -1977,7 +1977,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_lead_sources() RETURNS trigger LA
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT (SELECT user_id FROM scan_jobs WHERE id = scan_job_id) FROM leads WHERE id = NEW.lead_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT (SELECT user_id FROM scan_jobs WHERE id = scan_job_id) FROM leads WHERE id = OLD.lead_id)));
-  IF (NEW.lead_id IS DISTINCT FROM OLD.lead_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR NEW.lead_id IN (SELECT id FROM leads WHERE scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = OLD.lead_id) OR OLD.lead_id IN (SELECT id FROM leads WHERE scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones)))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.lead_id IS DISTINCT FROM OLD.lead_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR EXISTS (SELECT 1 FROM leads p0 WHERE p0.id = NEW.lead_id AND EXISTS (SELECT 1 FROM scan_jobs p1 JOIN tenant_tombstones t1 ON t1.deleted_tenant = p1.user_id WHERE p1.id = p0.scan_job_id))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = OLD.lead_id) OR EXISTS (SELECT 1 FROM leads p0 WHERE p0.id = OLD.lead_id AND EXISTS (SELECT 1 FROM scan_jobs p1 JOIN tenant_tombstones t1 ON t1.deleted_tenant = p1.user_id WHERE p1.id = p0.scan_job_id))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_lead_sources ON lead_sources;
@@ -1987,7 +1987,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_leads() RETURNS trigger LANGUAGE 
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.scan_job_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = OLD.scan_job_id)));
-  IF (NEW.scan_job_id IS DISTINCT FROM OLD.scan_job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id) OR NEW.scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.scan_job_id) OR OLD.scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.scan_job_id IS DISTINCT FROM OLD.scan_job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.scan_job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.scan_job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.scan_job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.scan_job_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_leads ON leads;
@@ -2027,7 +2027,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_monitor_runs() RETURNS trigger LA
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM monitors WHERE id = NEW.monitor_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM monitors WHERE id = OLD.monitor_id)));
-  IF (NEW.monitor_id IS DISTINCT FROM OLD.monitor_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = OLD.monitor_id) OR OLD.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.monitor_id IS DISTINCT FROM OLD.monitor_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = OLD.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.monitor_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_monitor_runs ON monitor_runs;
@@ -2037,7 +2037,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_monitor_seen() RETURNS trigger LA
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM monitors WHERE id = NEW.monitor_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM monitors WHERE id = OLD.monitor_id)));
-  IF (NEW.monitor_id IS DISTINCT FROM OLD.monitor_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR NEW.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = OLD.monitor_id) OR OLD.monitor_id IN (SELECT id FROM monitors WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.monitor_id IS DISTINCT FROM OLD.monitor_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = OLD.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.monitor_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_monitor_seen ON monitor_seen;
@@ -2207,7 +2207,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_scan_run_report() RETURNS trigger
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.job_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = OLD.job_id)));
-  IF (NEW.job_id IS DISTINCT FROM OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR OLD.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.job_id IS DISTINCT FROM OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_scan_run_report ON scan_run_report;
@@ -2217,7 +2217,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_scan_source_runs() RETURNS trigge
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.job_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = OLD.job_id)));
-  IF (NEW.job_id IS DISTINCT FROM OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR OLD.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.job_id IS DISTINCT FROM OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_scan_source_runs ON scan_source_runs;
@@ -2227,7 +2227,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_scan_source_stats() RETURNS trigg
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = NEW.job_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM scan_jobs WHERE id = OLD.job_id)));
-  IF (NEW.job_id IS DISTINCT FROM OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR NEW.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR OLD.job_id IN (SELECT id FROM scan_jobs WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.job_id IS DISTINCT FROM OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_scan_source_stats ON scan_source_stats;
@@ -2507,7 +2507,7 @@ CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_watch_seen() RETURNS trigger LANG
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM watches WHERE id = NEW.watch_id)));
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM watches WHERE id = OLD.watch_id)));
-  IF (NEW.watch_id IS DISTINCT FROM OLD.watch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR NEW.watch_id IN (SELECT id FROM watches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = OLD.watch_id) OR OLD.watch_id IN (SELECT id FROM watches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (NEW.watch_id IS DISTINCT FROM OLD.watch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR EXISTS (SELECT 1 FROM watches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.watch_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = OLD.watch_id) OR EXISTS (SELECT 1 FROM watches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.watch_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_watch_seen ON watch_seen;
@@ -2554,7 +2554,7 @@ CREATE TRIGGER tomb_warm_user_paths BEFORE INSERT ON warm_user_paths FOR EACH RO
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_watch_seen() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext((SELECT user_id FROM watches WHERE id = NEW.watch_id)));
-  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR NEW.watch_id IN (SELECT id FROM watches WHERE user_id IN (SELECT deleted_tenant FROM tenant_tombstones))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  IF (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR EXISTS (SELECT 1 FROM watches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.watch_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS tomb_watch_seen ON watch_seen;

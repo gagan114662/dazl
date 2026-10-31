@@ -88,13 +88,16 @@ export function migrateTenantLifecycle(db: Database.Database): void {
 // that tenant's in-flight writers only, and never for or against any other tenant's.
 export function guardTriggers(scope: Scope[]): { name: string; table: string; sql: string }[] {
   const byTable = new Map(scope.map(s => [s.table, s]))
-  // rows of `table` that belong to a tombstoned tenant, as a WHERE clause over that table (through its parent chain)
-  const tombstoned = (table: string): string | undefined => {
+  // whether the row of `table` whose id is `ref` belongs to a tombstoned tenant, through its parent chain: one primary
+  // key lookup per level joined to tenant_tombstones (an `IN (SELECT id FROM parent WHERE ...)` form scanned the whole
+  // parent table per written row on Postgres; review of PR #455)
+  const tombstonedRow = (table: string, ref: string, depth = 0): string | undefined => {
     const s = byTable.get(table)
     if (!s) return undefined
-    if (s.how === 'direct') return `${s.col} IN (SELECT deleted_tenant FROM tenant_tombstones)`
-    const up = tombstoned(s.parent)
-    return up && `${s.col} IN (SELECT id FROM ${s.parent} WHERE ${up})`
+    const p = `p${depth}`
+    if (s.how === 'direct') return `EXISTS (SELECT 1 FROM ${table} ${p} JOIN tenant_tombstones t${depth} ON t${depth}.deleted_tenant = ${p}.${s.col} WHERE ${p}.id = ${ref})`
+    const up = tombstonedRow(s.parent, `${p}.${s.col}`, depth + 1)
+    return up && `EXISTS (SELECT 1 FROM ${table} ${p} WHERE ${p}.id = ${ref} AND ${up})`
   }
   // the tenant id a row of `table` belongs to, as an expression over its columns prefixed by `pre` ('NEW.', 'OLD.', or
   // '' for a row of the parent table inside a subquery), through the parent chain
@@ -118,8 +121,7 @@ export function guardTriggers(scope: Scope[]): { name: string; table: string; sq
   const own = (col: string) => (row: string) => `${row}.${col}`
   for (const s of scope) {
     if (s.how === 'direct') { guard(s.table, s.col, tenantOf(s.col), own(s.col)); continue }
-    const live = tombstoned(s.parent)
-    guard(s.table, s.col, row => `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = ${row}.${s.col})${live ? ` OR ${row}.${s.col} IN (SELECT id FROM ${s.parent} WHERE ${live})` : ''}`,
+    guard(s.table, s.col, row => { const live = tombstonedRow(s.parent, `${row}.${s.col}`); return `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = ${row}.${s.col})${live ? ` OR ${live}` : ''}` },
       row => tenantId(s.table, `${row}.`) ?? `${row}.${s.col}`)
   }
   for (const t of ['organizations', 'users']) guard(t, 'id', tenantOf('id'), own('id'))

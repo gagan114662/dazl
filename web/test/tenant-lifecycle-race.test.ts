@@ -17,9 +17,15 @@ import { pgDb, sqliteDb } from '../lib/db/client.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { deleteTenant, tombstone } from '../lib/tenant/lifecycle.ts'
+import { randomBytes } from 'node:crypto'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 
-const A = 'race-tenant-aaaa', B = 'race-tenant-bbbb', C = 'race-tenant-cccc', BY = 'operator (synthetic race test)'
+// Advisory locks are keyed per database, not per schema: unique ids per run, so a concurrent run of this file against
+// the same test server (another checkout, a reviewer) does not share lock keys with this one.
+const RUN = randomBytes(3).toString('hex')
+const A = `race-${RUN}-aaaa`, B = `race-${RUN}-bbbb`, C = `race-${RUN}-cccc`, BY = 'operator (synthetic race test)'
+// an ungranted exclusive advisory lock on this tenant's key: a deletion step waiting for the tenant's open writers
+const WAITING_ON = "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND mode = 'ExclusiveLock' AND objid = (hashtext(?)::bigint & 4294967295)"
 const POLICY = { suppressions: 'erase' as const }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -39,7 +45,7 @@ test('postgres: a write open since before the tombstone is waited for by the del
     let waiting = false
     for (let i = 0; i < 300 && !waiting; i++) { // up to 15 s: the suite runs many files at once on a loaded machine
       await sleep(50)
-      waiting = Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND mode = 'ExclusiveLock' AND objid = hashtext(?)::oid", [A]))!.n) > 0
+      waiting = Number((await db.get<{ n: number }>(WAITING_ON, [A]))!.n) > 0
     }
     const during = (await tombstone(db, A))?.state
     await writer.query('COMMIT')
@@ -65,10 +71,10 @@ test('postgres: another tenant\'s open write neither delays the deletion nor is 
     await db.run("INSERT INTO tenant_memory (tenant_id, tone) VALUES (?, 'mine')", [A])
     for (const w of [bWriter, cWriter]) { await w.connect(); await w.query(`SET search_path TO ${s.schema}`) }
     await bWriter.query('BEGIN'); await bWriter.query("INSERT INTO tenant_memory (tenant_id, tone) VALUES ($1, 'busy')", [B]) // B: open, unrelated
-    const started = Date.now()
+    // with table locks this call never returned while B was open (the test timeout was the failure); now it completes
     const t = await deleteTenant(db, A, { policy: POLICY, requestedBy: BY })
     assert.equal(t.state, 'completed', "A's deletion completed while B's transaction was still open")
-    assert.ok(Date.now() - started < 4000, `did not wait on B (${Date.now() - started} ms)`)
+    assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = (hashtext(?)::bigint & 4294967295)", [B]))!.n), 0, 'nothing of ours waited on B')
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM tenant_memory WHERE tenant_id = ?', [A]))!.n), 0)
     // and while a deletion of A is in progress (its advisory lock held by an open step), C's writes go through at once
     const hold = new pg.Client({ connectionString: PG_URL }); await hold.connect(); await hold.query(`SET search_path TO ${s.schema}`)
@@ -100,6 +106,63 @@ test('postgres: a step that waits longer than the lock timeout gives up with the
     assert.equal((await deleteTenant(db, A)).state, 'completed', 'resumed with the default timeout')
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM tenant_memory WHERE tenant_id = ?', [A]))!.n), 0, 'the late row went with the rest')
   } finally { await writer.end().catch(() => {}); await db.close(); await s.drop() }
+})
+
+// Review (PR #455, R2-4): a membership for the account, inserted in a transaction open across the tombstone write.
+// Its guard holds A's advisory key (member_id = A), so the first step waits for it, then finds it and refuses before
+// anything is revoked; once the operator removes it the deletion resumes.
+test('postgres: a membership insert racing the tombstone is waited for, then refused by the first step with nothing revoked', { skip: pgSkip }, async () => {
+  const s = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: s.schema })
+  const joiner = new pg.Client({ connectionString: PG_URL })
+  try {
+    await runPgMigrations(db.pool)
+    await db.run("INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'race@example.test', 'x', 'y')", [A])
+    await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'a', 'personal', ?, 1)", [A, A])
+    await db.run("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, 'owner', 1)", [A, A])
+    await db.run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'team c', 'team', 'someone', 1)", [C])
+    await db.run("INSERT INTO sessions (id, user_id, expires_at) VALUES ('sess-a', ?, 4102444800)", [A])
+    await joiner.connect(); await joiner.query(`SET search_path TO ${s.schema}`)
+    await joiner.query('BEGIN')
+    await joiner.query("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES ($1, $2, 'viewer', 2)", [C, A]) // no tombstone yet: the guard passes, A's key is held shared
+    const deletion = deleteTenant(db, A, { policy: POLICY, requestedBy: BY })
+    deletion.catch(() => {})
+    let waiting = false
+    for (let i = 0; i < 300 && !waiting; i++) {
+      await sleep(50)
+      waiting = Number((await db.get<{ n: number }>(WAITING_ON, [A]))!.n) > 0
+    }
+    assert.ok(waiting, 'the first step waits for the open membership insert')
+    assert.equal((await tombstone(db, A))?.state, 'requested')
+    await joiner.query('COMMIT')
+    await assert.rejects(deletion, /founder belongs to another workspace/)
+    assert.equal((await tombstone(db, A))?.state, 'requested', 'refused before revoking')
+    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM sessions WHERE user_id = ?', [A]))!.n), 1, 'credentials intact')
+    await db.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [C, A])
+    assert.equal((await deleteTenant(db, A)).state, 'completed')
+    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM memberships WHERE member_id = ?', [A]))!.n), 0)
+  } finally { await joiner.end().catch(() => {}); await db.close(); await s.drop() }
+})
+
+// Probe (PR #455, F1): the parent-chain predicate must be a primary-key lookup joined to tenant_tombstones, not a scan
+// of the parent table per written row.
+test('postgres: the parent-key guard resolves the parent by primary key (indexed), not by scanning the parent table', { skip: pgSkip }, async () => {
+  const s = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: s.schema })
+  try {
+    await runPgMigrations(db.pool)
+    for (const name of ['tomb_leads', 'tomb_upd_lead_sources']) {
+      const def = (await db.get<{ d: string }>('SELECT pg_get_functiondef(?::regproc) AS d', [`dazl_guard_${name}`]))!.d
+      assert.match(def, /JOIN tenant_tombstones t\d+ ON t\d+\.deleted_tenant = p\d+\.user_id WHERE p\d+\.id = /, `${name}: primary-key lookup joined to the tombstones`)
+      assert.doesNotMatch(def, /IN \(SELECT id FROM scan_jobs WHERE/, `${name}: no per-row scan of scan_jobs`)
+    }
+    // with a populated parent table, the planner uses the primary key for the guard's lookup
+    await db.run("INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'race@example.test', 'x', 'y')", [B])
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) SELECT 'plan-' || g, ?, 'x', 'y', 'z' FROM generate_series(1, 3000) g", [B])
+    await db.run('ANALYZE scan_jobs'); await db.run('ANALYZE tenant_tombstones')
+    const plan = (await db.all<Record<string, string>>("EXPLAIN SELECT 1 WHERE EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = 'plan-77')")).map(r => Object.values(r)[0]).join('\n')
+    assert.match(plan, /Index (Only )?Scan using scan_jobs_pkey/, plan)
+  } finally { await db.close(); await s.drop() }
 })
 
 test('sqlite: one writer at a time: the deletion fails while another connection holds a write open and completes once it committed; no row is lost', async () => {

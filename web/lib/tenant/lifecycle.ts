@@ -22,9 +22,10 @@
 // back or move another tenant's row under the deleted one. Retained tables are guarded too: nothing new is added or
 // moved in for a deleted tenant.
 //
-// Backups: a restore brings back rows deleted after the backup was taken, and loses tombstones written since. The
-// tombstone is also appended to an off-database ledger (tombstoneLedgerEntry; the operator stores it with the backups'
-// manifests), and reapplyTombstones() re-runs every ledgered deletion on a restored store before it serves traffic.
+// Backups: a restore brings back rows deleted after the backup was taken, and loses tombstones written since.
+// tombstoneLedgerEntry() is the off-database record of a deletion and reapplyTombstones() re-runs every ledgered
+// deletion on a restored store; both are library functions in this part: nothing writes the line or calls the
+// re-application yet (the request flow and the recovery runbook of part 2 do; docs/TENANT-LIFECYCLE.md).
 //
 // No retention policy is decided here: deleteTenant() takes the policy as an argument and refuses to run without an
 // explicit decision on opt-outs (suppressions). The owner's decisions are listed in docs/TENANT-LIFECYCLE.md.
@@ -234,8 +235,9 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     if (gate) yield* tx.run('INSERT INTO evidence_purge_gate (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenant])
     for (const x of erase) yield* del(tx, x)
     if (gate) yield* del(tx, 'evidence_purge_gate')
-    // rate-limit counters are global, but a key can embed the tenant id: those go too
-    if (cols.has('rate_limits')) yield* tx.run("DELETE FROM rate_limits WHERE key LIKE '%' || ? || '%'", [tenant])
+    // rate-limit counters are global, but a key can carry the tenant id as one of its ':'-separated parts (lib/rate-limit.ts):
+    // those go too, matched as a whole part, so another tenant whose id extends this one keeps its counters
+    if (cols.has('rate_limits')) yield* tx.run("DELETE FROM rate_limits WHERE (':' || key || ':') LIKE ? ESCAPE '\\'", [`%:${tenant.replace(/[\\%_]/g, m => `\\${m}`)}:%`])
     yield* tx.run('DELETE FROM users WHERE id = ?', [tenant])
     if (has('memberships')) yield* tx.run('DELETE FROM organizations WHERE id = ?', [tenant])
   })) return t
