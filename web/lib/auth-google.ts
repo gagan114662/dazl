@@ -2,6 +2,8 @@ import { createHash, createPublicKey, createVerify, randomBytes, timingSafeEqual
 import type Database from 'better-sqlite3'
 import type { Db, TxBody } from './db/client.ts'
 import { createPersonalWorkspace } from './workspaces.ts'
+import { VERIFIED_BACKFILL_SQL } from './email-ownership.ts'
+
 
 // Sign in with Google: authorization code + PKCE + state + nonce, identity only
 // (openid email profile). The ID token is checked here before anyone is signed in.
@@ -131,6 +133,8 @@ export function migrateOauth(db: Database.Database): void {
     provider TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (strftime('%s','now')),
     PRIMARY KEY (provider, subject)
   )`)
+  // Google verified these addresses (verifyIdToken requires email_verified); after migrateAuth adds the column.
+  db.exec(VERIFIED_BACKFILL_SQL)
 }
 
 export type Resolved = { user_id: string; created: boolean } | { error: 'email_exists' }
@@ -156,8 +160,9 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
           return late ? { user_id: late.user_id, created: false } : { error: 'email_exists' }
         }
         const uid = randomBytes(16).toString('hex')
-        const u = yield* t.run('INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
-          [uid, id.email, id.name, '', randomBytes(64).toString('hex'), randomBytes(16).toString('hex')])
+        // Google verified this address (verifyIdToken requires email_verified)
+        const u = yield* t.run('INSERT INTO users (id, email, name, business_name, password_hash, salt, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
+          [uid, id.email, id.name, '', randomBytes(64).toString('hex'), randomBytes(16).toString('hex'), Math.floor(Date.now() / 1000)])
         if (u.changes !== 1) throw new RaceLost()
         const o = yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?) ON CONFLICT (provider, subject) DO NOTHING", [id.sub, uid])
         if (o.changes !== 1) throw new RaceLost()
@@ -169,4 +174,30 @@ export async function resolveUser(db: Db, id: GoogleIdentity): Promise<Resolved>
     }
   }
   throw new Error('google sign-in: identity kept changing while resolving it')
+}
+
+export type LinkResult = 'linked' | 'already' | 'taken' | 'mismatch' | 'unverified' | 'signed_out' | 'reauth_required'
+
+// Adds a Google identity to the signed-in account, never by email alone. The caller has already checked that the
+// request comes from that account's own session, signed in within the last hour (lib/workspace-access.ts stale). Here:
+// the account's email must be verified and be the Google identity's (verified by Google) email, and that Google
+// identity must not belong to another account. Then Google sign-in reaches this account.
+export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity, sessionToken?: string): Promise<LinkResult> {
+  return db.tx(function* (t): TxBody<LinkResult> {
+    // Match recovery's account lock; route admission alone can precede revocation.
+    yield* t.run('UPDATE users SET email = email WHERE id = ?', [userId])
+    if (sessionToken !== undefined) {
+      const now = Math.floor(Date.now() / 1000)
+      const session = yield* t.get<{ authed_at: number }>('SELECT authed_at FROM sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?', [createHash('sha256').update(sessionToken).digest('hex'), userId, now])
+      if (!session) return 'signed_out'
+      if (Number(session.authed_at) < now - 3600) return 'reauth_required'
+    }
+    const hit = yield* t.get<{ user_id: string }>("SELECT user_id FROM oauth_identities WHERE provider = 'google' AND subject = ?", [id.sub])
+    if (hit) return hit.user_id === userId ? 'already' : 'taken'
+    const u = yield* t.get<{ email: string; v: number | null }>('SELECT email, email_verified_at AS v FROM users WHERE id = ?', [userId])
+    if (!u || u.email !== id.email) return 'mismatch'
+    if (u.v === null) return 'unverified'
+    yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [id.sub, userId])
+    return 'linked'
+  })
 }

@@ -26,6 +26,7 @@ import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { resolveTiming } from './page-timing.ts'
+import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -272,7 +273,10 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = []): Promise<VerifyOutcome> {
+// The verifier's date rejections (verifyEvidence): a held copy whose claimed day is one of these stays held.
+const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
+
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
@@ -297,7 +301,21 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
-  for (const { c: c0, page } of fetched) {
+  for (const { c: cIn, page } of fetched) {
+    // #460: an event day counts only when the FETCHED page states it for THIS company and THIS event (the same sentence as the quote, or a sentence naming the company and
+    // describing the same event), or when a public job board's own structured publish date for exactly this posting URL was collected (structuredDates: Greenhouse
+    // first_published / Lever createdAt / Ashby publishedAt from the job-board source - an ATS hostname alone proves no date exists). The model's date, a search-hit day,
+    // the page's publication metadata, a "Published/Posted/Updated" line and another company's or an unrelated event's day on the page are not evidence of when THIS
+    // event happened: the candidate goes the undated way below (a publication day stays a label) and the window gate holds it.
+    let undatedWhy: string | null = null
+    let c0 = cIn
+    // A claimed day the verifier's date rules reject (stale, future, malformed) is left as it is: verifyEvidence below sends it to review,
+    // exactly as before. Unbinding it first would launder it into a verified undated lead.
+    const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
+    if (page && !isFail(page) && cIn.event_date && !claimedRejected && structuredDates?.get(canonUrl(cIn.source_url)) !== cIn.event_date) {
+      const b = eventDateBound(cIn.event_date, page.text, cIn.excerpt, cIn.company)
+      if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
+    }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
     if (page && !isFail(page) && !c0.event_date) {
@@ -310,7 +328,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         else drop('duplicate')
         note(c0, 'review', why); continue
       }
-      if (t.published || t.note) c = { ...c0, published_at: t.published, timing_note: t.note }
+      if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
     }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
@@ -321,8 +339,17 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       const copy = why && held ? held.text.copyFor(held.attempt, c.source_url, why) : null
       if (copy?.ok) {
         const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
-        const v2 = !closedJobEvidence(c, cp) ? verifyEvidence(c, cp, now) : null
-        if (v2?.ok && !counterpartySignal(c, cp, '') && ownPlaceAgreement(cp, geo, c.company, c.excerpt) !== 'mismatch') { passed.push({ c, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        // The same date binding as a fetched page (#460 review): the held copy must tie the claimed day to this company and event, or the candidate is undated.
+        let cc = c
+        const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
+        if (cc.event_date && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && structuredDates?.get(canonUrl(cc.source_url)) !== cc.event_date) {
+          const b = eventDateBound(cc.event_date, cp.text, cc.excerpt, cc.company)
+          if (!b.bound) cc = { ...cc, event_date: null, timing_note: `the claimed event date ${cc.event_date} is not tied to this company and event by the held copy (${b.why}); treated as undated`.slice(0, 300) }
+        }
+        // ...and the quote naming an old year keeps it held too, as on a fetched page (resolveTiming): an undated copy is not a fresh one
+        const oldYear = resolveTiming(cp.text, cc.excerpt, null, now.getFullYear()).olderYear
+        const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && oldYear === null ? verifyEvidence(cc, cp, now) : null
+        if (v2?.ok && !counterpartySignal(cc, cp, '') && ownPlaceAgreement(cp, geo, cc.company, cc.excerpt) !== 'mismatch') { passed.push({ c: cc, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
@@ -979,6 +1006,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
+    const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (from the job-board source only)
     const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
@@ -986,6 +1014,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
         assertOwned(db, job)
         const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
+        for (const it of items) if (it.source === 'jobboards' && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
@@ -1061,7 +1090,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [])
+    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
