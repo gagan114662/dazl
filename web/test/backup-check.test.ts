@@ -377,6 +377,10 @@ test('two manifests with the same copied_at: every one of them is judged, whiche
 test('the problem set is order-independent: the same problems in another discovery order share one stamp', async () => {
   const fx = await fixtureBackup(path.join(T, 'order')), dir = path.dirname(fx.backup), state = path.join(T, 'order-state')
   const { cmd, delivered } = recorder('order-alert')
-  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1', '--offhost', path.join(T, 'nowhere')], { BACKUP_ALERT_CMD: cmd })
-  assert.equal(r.code, 1); const ps = delivered()[0].problems; assert.equal(ps.length, 2); assert.deepEqual(ps, [...ps].sort(), 'problems are emitted sorted')
+  // discovery order is local, off-host, drill; the drill problem sorts first ("last recovery drill" < "newest backup")
+  const report = path.join(T, 'order-drill.json'); writeFileSync(report, JSON.stringify({ ok: true, started_at: new Date(Date.now() - 30 * 86_400_000).toISOString(), steps: [] }))
+  const r = await run(['--dir', dir, '--state-dir', state, '--max-age-s', '-1', '--offhost', path.join(T, 'nowhere'), '--drill-report', report], { BACKUP_ALERT_CMD: cmd })
+  assert.equal(r.code, 1); const ps = delivered()[0].problems; assert.equal(ps.length, 3)
+  assert.match(ps[0], /^last recovery drill is \d+s old/); assert.match(ps[1], /^newest backup is/); assert.match(ps[2], /^off-host destination nowhere unreadable/)
+  assert.deepEqual(ps, [...ps].sort(), 'problems are emitted sorted, not in discovery order')
 })
