@@ -74,20 +74,23 @@ export function migrateSchedulerRuns(db: Database.Database): void {
   if (!cols.has('last_hold')) db.exec('ALTER TABLE scheduler_progress ADD COLUMN last_hold TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40)')
   // Stores created before the autopilot kind (#448): the kind check is part of the table, so it is rebuilt once, rows kept.
   // Whether the check already allows 'autopilot' is learned from a probe row under a savepoint that is always rolled back
-  // (SQLite keeps the check only in the table's SQL text; schema setup, SQLite only), once per connection: the tick runs
-  // this on every request. Postgres: migration 0026 re-creates the constraint.
+  // (SQLite keeps the check only in the table's SQL text; schema setup, SQLite only). Probe and rebuild are one write
+  // transaction (BEGIN IMMEDIATE): two processes starting together take turns, the second finds the check widened. Once
+  // per connection: the tick runs this on every request. Postgres: migration 0026 re-creates the constraint.
   if (KIND_CHECKED.has(db)) return
-  const widened = (() => {
-    try { db.exec("SAVEPOINT kind_probe; INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at) VALUES ('', 'autopilot', 0); ROLLBACK TO kind_probe; RELEASE kind_probe"); return true }
-    catch (e) { db.exec('ROLLBACK TO kind_probe; RELEASE kind_probe'); if (e instanceof Error && /CHECK constraint failed/.test(e.message)) return false; throw e }
-  })()
-  if (!widened) db.transaction(() => db.exec(`
-    CREATE TABLE scheduler_progress_v2 (${PROGRESS_COLUMNS}
-    );
-    INSERT INTO scheduler_progress_v2 SELECT tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id FROM scheduler_progress;
-    DROP TABLE scheduler_progress;
-    ALTER TABLE scheduler_progress_v2 RENAME TO scheduler_progress;
-  `))()
+  db.transaction(() => {
+    const widened = (() => {
+      try { db.exec("SAVEPOINT kind_probe; INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at) VALUES ('', 'autopilot', 0); ROLLBACK TO kind_probe; RELEASE kind_probe"); return true }
+      catch (e) { db.exec('ROLLBACK TO kind_probe; RELEASE kind_probe'); if (e instanceof Error && /CHECK constraint failed/.test(e.message)) return false; throw e }
+    })()
+    if (!widened) db.exec(`
+      CREATE TABLE IF NOT EXISTS scheduler_progress_v2 (${PROGRESS_COLUMNS}
+      );
+      INSERT INTO scheduler_progress_v2 SELECT tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id FROM scheduler_progress;
+      DROP TABLE scheduler_progress;
+      ALTER TABLE scheduler_progress_v2 RENAME TO scheduler_progress;
+    `)
+  }).immediate()
   KIND_CHECKED.add(db)
 }
 const KIND_CHECKED = new WeakSet<Database.Database>()

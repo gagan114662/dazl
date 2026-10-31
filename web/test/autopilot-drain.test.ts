@@ -176,7 +176,7 @@ test('#411 two passes at once (a tick and a finishing scan): one claim, one send
 // per-company 7-day rule are checked and the send reserved in one write transaction before any await, so the second pass
 // sees the first's reservation. A known-not-sent refusal releases it; an unknown outcome keeps counting.
 const slowSends = () => { const sent: string[] = []; const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { await new Promise(r => setTimeout(r, 20)); sent.push(raw); return { id: 'g' + sent.length } }) as never }; return { sent, d } }
-const counted = (db: Database.Database) => db.prepare("SELECT action, detail FROM autopilot_audit WHERE action IN ('sent','send_reserved','send_uncertain') ORDER BY created_at, rowid").all() as { action: string; detail: string }[]
+const counted = (db: Database.Database) => db.prepare("SELECT action, detail FROM autopilot_audit WHERE action IN ('sent','send_reserved','send_committed','send_uncertain') ORDER BY created_at, rowid").all() as { action: string; detail: string }[]
 
 test('#448 daily cap across two simultaneous passes on different held drafts: one send in the window (Instinct negative)', async () => {
   const db = await setup(); cap1(db); pastWarmup(db); const { sent, d } = slowSends()
@@ -728,13 +728,18 @@ test('#448 disable then re-enable during a held draft\'s token refresh: not sent
 
 // Reviewer 1 round 2 (R1-6): disable() landing after the commitment, the Gmail request in flight: that send completes
 // and is recorded as sent; no "released" row is written for it.
-test('#448 disable() during the Gmail request (after the commitment): the send completes, recorded as sent, nothing released for it', async () => {
-  const db = await setup(); cap1(db); pastWarmup(db); const sent: string[] = []
-  const d: Deps & { flags: Record<string, string> } = { ...sends().d, sendFn: (async (_t: string, raw: string) => { disable(db, 'A'); sent.push(raw); return { id: 'g' } }) as never }
-  lead(db, 'a@one.example')
-  const r = await runAutopilot(db, 'A', 'Acme', at(d, NOW))
-  assert.deepEqual([r.sent, sent.length, msgStatus(db, 'a@one.example'), counted(db).map(c => c.action), work(db).length], [1, 1, 'sent', ['sent'], 0])
-  assert.equal(recentAutopilotAudit(db, 'A').filter(a => a.action === 'released').length, 0)
+test('#448 disable() while the Gmail request is open (after the commitment): the held draft stays sending and unreleased until the send completes, then recorded as sent', async () => {
+  const { db, sent, d } = await heldAfterOneSend() // b held on the daily cap: a queued (held) draft, due the next day
+  const released = () => recentAutopilotAudit(db, 'A').filter(a => a.action === 'released').length
+  let during: unknown[] = []
+  const sendFn = (async (_t: string, raw: string) => {
+    disable(db, 'A') // lands with the request open
+    during = [msgStatus(db, 'b@two.example'), released(), work(db).map(w => w.reason), counted(db).map(c => c.action), getState(db, 'A').enabled]
+    sent.push(raw); return { id: 'g' }
+  }) as never
+  const r = await runAutopilot(db, 'A', 'Acme', { ...at(d, NOW + DAY + 1), sendFn })
+  assert.deepEqual(during, ['sending', 0, ['daily_cap'], ['sent', 'send_committed'], false], 'with the request open: still sending, its work row kept, nothing "released", the slot committed')
+  assert.deepEqual([r.sent, sent.length, msgStatus(db, 'b@two.example'), counted(db).map(c => c.action), work(db).length, released()], [1, 2, 'sent', ['sent', 'sent'], 0, 0], 'completed: recorded as sent, no released row')
 })
 
 // Reviewer 2 round 2 (R2-7): disable() leaves warm-up holds alone (the user's already) and releases only the due ones.
