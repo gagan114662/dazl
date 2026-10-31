@@ -23,6 +23,7 @@ const HANDED_A_GUARDED_PROVIDER: Record<string, string> = {
   'lib/scan/model-usage.ts': 'records usage around the runner\'s guarded provider',
   'lib/scan/lead-qualify.ts': 'qualifyLead(provider, ...) is called only by qualify-run.ts with ownerGuarded',
   'lib/evals/trace.ts': 'offline eval tooling: wraps a provider it is handed, never in the app',
+  'lib/outreach/launch-policy.ts': 'launchProviders wraps the provider autopilot hands it (the launch spend cap, #405); draft-llm then calls the wrapped provider through ownerGuarded, so every call is inside the owner guard',
 }
 // Not call sites: the providers themselves, the guard, and the queue's own complete(token).
 const NOT_A_CALL_SITE = new Set(['lib/llm/provider.ts', 'lib/llm/vendors.ts', 'lib/llm/spend-guard.ts', 'lib/queue/db.ts', 'lib/queue/sqlite.ts', 'lib/queue/memory.ts', 'lib/queue/scan-claimer.ts', 'lib/queue/types.ts', 'lib/scan/queue-runner.ts'])
