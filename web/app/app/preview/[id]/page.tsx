@@ -1,14 +1,14 @@
 import { notFound, redirect } from 'next/navigation'
+import { connection } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { readClaimedPreview } from '@/lib/scan/preview-claim'
-
-export const dynamic = 'force-dynamic'
 
 // The stable private home of a claimed preview (#416): only the workspace that claimed it can read it; any other
 // workspace's id reads as not found. Reading never consumes or mutates. Expiry is consistent with the public page:
 // past the evidence expiry the preview is gone here too.
 export default async function ClaimedPreviewPage({ params }: { params: Promise<{ id: string }> }) {
+  await connection() // request-time rendering (cacheComponents: no force-dynamic segment config)
   const user = await requireUser()
   if (!user) redirect('/sign-in')
   const { id } = await params

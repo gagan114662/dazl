@@ -1,14 +1,14 @@
 import { notFound } from 'next/navigation'
+import { connection } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { getMasterKey } from '@/lib/secrets'
 import { isClaimToken, readPublicClaim, type ClaimSnapshot } from '@/lib/scan/preview-claim'
 import PreviewCta from './cta'
 
-export const dynamic = 'force-dynamic'
-
 // The public proof page a prospect's link opens (#416). It serves only the stored stripped artifact of its own run:
 // no contacts, no spend, no seller tenant data. Claimed and expired claims are terminal and show no content.
 export default async function PreviewPage({ params, searchParams }: { params: Promise<{ token: string }>; searchParams: Promise<{ e?: string }> }) {
+  await connection() // request-time rendering (cacheComponents: no force-dynamic segment config)
   const { token } = await params
   const { e } = await searchParams
   if (!isClaimToken(token)) notFound()
