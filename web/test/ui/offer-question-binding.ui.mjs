@@ -79,6 +79,8 @@ try {
   const sells = page.getByLabel('What you sell')
   for (let i = 0; i < 50 && (await sells.inputValue()) !== 'Acme Reminders'; i++) await page.waitForTimeout(100)
   assert.equal(await sells.inputValue(), 'Acme Reminders', 'first-run: the offer pick lands in the visible What you sell field')
+  await sells.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(200)
   await shot('offer-question-first-run')
 
   // B) Leads draft editor: the pick lands in #play-offer and the confirmed run POSTs it, with the answer in the block.
@@ -93,6 +95,8 @@ try {
   const offerInput = page.locator('#play-offer')
   for (let i = 0; i < 50 && (await offerInput.inputValue()) !== 'Acme Reminders'; i++) await page.waitForTimeout(100)
   assert.equal(await offerInput.inputValue(), 'Acme Reminders', 'leads: the offer pick lands in the play offer field')
+  await offerInput.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(200)
   await shot('offer-question-leads')
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   await page.getByTestId('estimate-confirm').waitFor()
