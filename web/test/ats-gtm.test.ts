@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow } from '../lib/signals/ats-gtm.ts'
+import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, postingEvidence } from '../lib/signals/ats-gtm.ts'
 import { enrichJobSignals } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
@@ -287,9 +287,9 @@ test('#533 audit: every listed title beyond the dated postings is stored as a hi
   const cov = all.filter(r => r.kind === 'hiring-board-coverage')
   assert.equal(cov.length, 2)
   const gtmCov = cov.find(r => r.connector === 'signals:greenhouse-gtm')!
-  assert.match(gtmCov.value, /3 sales\/GTM-role titles only, 1 stored as audit rows/); assert.ok(!gtmCov.value.includes('TRUNCATED'))
+  assert.match(gtmCov.value, /3 sales\/GTM-role titles only: 2 dated posting rows \+ 1 more as audit rows/); assert.ok(!gtmCov.value.includes('TRUNCATED'))
   const genCov = cov.find(r => r.connector === 'signals:greenhouse')!
-  assert.match(genCov.value, /4 all listed titles, 1 stored as audit rows/)
+  assert.match(genCov.value, /4 all listed titles: 3 named in the aggregate row \+ 1 more as audit rows/)
   assert.match(gtmCov.label, /not a hiring signal/); assert.equal(gtmCov.confidence, null)
   for (const r of all.filter(r => r.kind === 'hiring-role')) assert.ok(['SDR'].includes(r.value))
 })
@@ -300,9 +300,15 @@ test('#533 truncation: a 60-title board stores at most 50 audit titles and the c
   const g = (await atsGtmBoard('Brightloop', 'brightloop.io', route(many), { now: NOW })).hiring
   assert.ok(g); assert.equal(g!.listedCount, 60); assert.equal(g!.allTitles.length, 50)
   const auditRows = boardTitleAudit(g!, NOW / 1000, '2026-10-28', null)
-  assert.equal(auditRows.length, 46)
-  const cov = boardCoverageRow(g!, auditRows.length, NOW / 1000, '2026-10-28')
-  assert.match(cov.value, /60 sales\/GTM-role titles only, 46 stored as audit rows/)
+  assert.equal(auditRows.length, 47, 'F-A: the 4th detailed posting has no dated row (only the top 3 are stored), so its title MUST get an audit row')
+  const datedTitles = postingEvidence(g!, NOW / 1000, null).map(r => r.value.split(' - posted ')[0])
+  assert.equal(datedTitles.length, 3)
+  const dropped = ['Account Executive 01', 'Account Executive 02', 'Account Executive 03', 'Account Executive 04'].filter(t => !datedTitles.includes(t))
+  assert.equal(dropped.length, 1, 'exactly one of the 4 detailed postings has no dated row')
+  assert.ok(auditRows.some(r => r.value === dropped[0]), 'F-A regression: the exact 4th detailed title is in the audit store, not lost from both stores')
+  assert.ok(!auditRows.some(r => datedTitles.includes(r.value)), 'the 3 titles with dated rows stay out of the audit store')
+  const cov = boardCoverageRow(g!, auditRows.length, Math.min(g!.postings.length, 3), NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /60 sales\/GTM-role titles only: 3 dated posting rows \+ 47 more as audit rows/)
   assert.match(cov.value, /TRUNCATED at 50 - a title beyond the sample is not disproved/)
   assert.ok(!cov.value.includes('complete'))
 })
@@ -312,7 +318,7 @@ test('#533 filtered pass: a requested-role-filtered board labels its audit and c
   assert.ok(g); assert.equal(g!.titleFilter, 'role-match')
   assert.deepEqual(g!.allTitles, ['Account Executive'])
   for (const r of boardTitleAudit(g!, NOW / 1000, '2026-10-28', null)) assert.match(r.label, /requested-role matches only/)
-  const cov = boardCoverageRow(g!, 0, NOW / 1000, '2026-10-28')
+  const cov = boardCoverageRow(g!, 0, Math.min(g!.postings.length, 3), NOW / 1000, '2026-10-28')
   assert.match(cov.value, /requested-role-matching titles only/)
 })
 
@@ -322,6 +328,60 @@ test('#533 unconfirmed: the heuristic note propagates to audit rows, which stay 
   const rows = boardTitleAudit(g!, NOW / 1000, '2026-10-28', 'entity matched by name only (heuristic, not independently confirmed)')
   assert.ok(rows.length > 0)
   for (const r of rows) { assert.match(r.value, /^Unconfirmed: /); assert.match(r.label, /entity matched by name only/); assert.equal(r.confidence, null) }
+})
+
+test('#533 F-B zero-match: an attributed board with no fresh matching posting leaves an audit + coverage trail instead of looking unchecked', async () => {
+  const stale = { [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'SDR', updated_at: d(1) }, { id: 2, title: 'Backend Engineer', updated_at: d(1) }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'SDR', first_published: d(400), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: 'old' } }
+  const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(stale), { now: NOW })
+  assert.equal(board.hiring, null, 'no fresh GTM posting: no signal, as before')
+  assert.ok(board.checked, 'F-B: the fetched listing outcome is reported')
+  assert.equal(board.checked!.listedCount, 1); assert.deepEqual(board.checked!.allTitles, ['SDR'])
+  const audits = checkedAuditRows(board.checked!, 90, NOW / 1000, '2026-10-28', null)
+  assert.equal(audits.length, 1); assert.equal(audits[0].value, 'SDR')
+  assert.match(audits[0].label, /no fresh matching posting in the last 90 days, so no dated row was stored/)
+  assert.equal(audits[0].confidence, null)
+  const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /0 fresh postings in the last 90 days; 1 sales\/GTM-role titles only listed, 1 stored as audit rows/)
+  assert.ok(!cov.value.includes('TRUNCATED'))
+  // fetch failure still stores nothing - the remaining gap is explicit, not papered over
+  const failed = await atsGtmBoard('Brightloop', 'brightloop.io', route({}), { now: NOW })
+  assert.equal(failed.hiring, null); assert.equal(failed.checked, null)
+})
+
+test('#533 F-B zero-match integration: enrichJobSignals stores the zero-match trail for an attributed stale board', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Brightloop', 'brightloop.io', 'raised a seed round', 'https://news.example/1')").run(jobId)
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', 'brightloop.io|evidence_own_domain', 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
+  const stale = { [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'SDR', updated_at: d(1) }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'SDR', first_published: d(400), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: 'old' } }
+  const realNow = Date.now; Date.now = () => NOW
+  try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(stale), creditEnrichment: false }) } finally { Date.now = realNow }
+  const audits = db.prepare("SELECT value, label, confidence FROM lead_enrichments WHERE kind = 'hiring-role'").all() as { value: string; label: string; confidence: number | null }[]
+  assert.deepEqual(audits.map(r => r.value), ['SDR'])
+  assert.match(audits[0].label, /no fresh matching posting in the last 90 days/)
+  const cov = db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'hiring-board-coverage'").all() as { value: string }[]
+  assert.ok(cov.some(r => /0 fresh postings in the last 90 days/.test(r.value)), 'gtm zero-match coverage row stored')
+  assert.ok(cov.some(r => /1 all listed titles/.test(r.value) || /Board listing: 1/.test(r.value)), 'generic pass still records its own listing coverage')
+  db.close()
+})
+
+test('#533 F-B empty board: an attributed listing with zero titles stores a complete-listing coverage row (not a sample)', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Brightloop', 'brightloop.io', 'raised a seed round', 'https://news.example/1')").run(jobId)
+  const empty = { [`${GH}/jobs`]: { jobs: [] } }
+  const realNow = Date.now; Date.now = () => NOW
+  try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(empty), creditEnrichment: false }) } finally { Date.now = realNow }
+  const cov = db.prepare("SELECT connector, value FROM lead_enrichments WHERE kind = 'hiring-board-coverage'").all() as { connector: string; value: string }[]
+  const gen = cov.find(r => r.connector === 'signals:greenhouse')!
+  assert.ok(gen); assert.match(gen.value, /0 titles listed \(all listed titles\) - the listing itself was empty/)
+  const gtm = cov.find(r => r.connector === 'signals:greenhouse-gtm')!
+  assert.ok(gtm, 'gtm pass also records its zero on the empty attributed board'); assert.match(gtm.value, /0 sales\/GTM-role titles only listed/)
+  db.close()
 })
 
 test('#533 dedupeTitles: case-insensitive distinct, each capped at 120 chars, the list capped at 50', () => {

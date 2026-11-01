@@ -9,7 +9,7 @@ import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from '.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
-import { atsGtmHiring, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, BOARD_LABEL } from '../signals/ats-gtm.ts'
+import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
@@ -197,7 +197,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         continue
       }
       if (l.company_domain) lookups++
-      const g = l.company_domain ? await atsGtmHiring(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => null) : null
+      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => null) : null
+      const g = gbz?.hiring ?? null
       // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
       // by company name (a probe, a link label) could belong to a larger same-name company: its roles are not this lead's hiring.
       // The board is bound to the lead's domain when the cited page is hosted on it / the user confirmed it, or when the board's OWN postings name that same
@@ -213,8 +214,17 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         { const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
           const auditRows = boardTitleAudit(g, now, checkedDay, null)
           for (const e of auditRows) addEnrichment(db, job.user_id, l.id, e) // #533: board-title audit sample
-          addEnrichment(db, job.user_id, l.id, boardCoverageRow(g, auditRows.length, now, checkedDay)) }
+          addEnrichment(db, job.user_id, l.id, boardCoverageRow(g, auditRows.length, Math.min(g.postings.length, 3), now, checkedDay)) }
         passed++; passedIds.push(l.id); continue
+      }
+      if (!g && gbz?.checked && !gbz.contradictory) {
+        const c = gbz.checked
+        const heuristicC = c.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(c.domain && l.company_domain && c.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
+        if (c.via === 'domain' && !heuristicC) {
+          const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
+          for (const e of checkedAuditRows(c, windowDays, now, checkedDay, null)) addEnrichment(db, job.user_id, l.id, e) // #533 F-B: zero-match audit trail
+          addEnrichment(db, job.user_id, l.id, checkedCoverageRow(c, windowDays, now, checkedDay))
+        }
       }
       // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers
       // page itself must name the company and agree on the requested place (a same-name company elsewhere does not). Saved: URL, quote, retrieval time (not a posting date).

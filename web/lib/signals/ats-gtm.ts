@@ -8,7 +8,7 @@
 import { classifyEntityMatch, domainSlug } from './entity-match.ts'
 
 const TIMEOUT = 8000
-const WINDOW_DAYS = 90
+export const WINDOW_DAYS = 90
 const MAX_DETAIL = 4
 const GTM = /\b(?:account\s+(?:executive|manager|director)s?|sales|business\s+development|bdrs?|sdrs?|revenue|go[-\s]to[-\s]market|gtm|growth|demand\s+gen(?:eration)?|customer\s+success|partnerships?|solutions?\s+(?:engineer|consultant)s?|head\s+of\s+(?:sales|growth|revenue|marketing)|vp\s+(?:of\s+)?(?:sales|revenue|growth|marketing))\b/i
 const NOT_GTM = /\b(?:salesforce\s+(?:developer|engineer|architect|admin(?:istrator)?)|sales\s*tax|software\s+engineer|backend|front[-\s]?end|devops|data\s+scientist)\b/i
@@ -77,7 +77,11 @@ export async function atsGtmHiring(company: string, domain: string | null, fetch
 }
 // Same lookup, but says when the board's included postings name contradictory company domains: the caller must then not use ANY board evidence for the
 // company (including the older open-role count), not just this one.
-export async function atsGtmBoard(company: string, domain: string | null, fetchImpl: typeof fetch = fetch, opts: { now?: number; windowDays?: number; roleMatch?: (title: string) => boolean } = {}): Promise<{ hiring: GtmHiring | null; contradictory: boolean }> {
+// #533 review (F-B): a successfully fetched, attributed board LISTING whose titles pass no freshness/role filter
+// used to collapse to the same null as "fetch failed" or "no board", leaving zero-match checks with no stored trace.
+// `checked` carries that listing outcome so callers can store an honest zero-match audit + coverage trail.
+export interface CheckedListing { board: GtmHiring['board']; boardUrl: string; allTitles: string[]; listedCount: number; titleFilter: GtmHiring['titleFilter']; via: 'domain' | 'board_name'; domain: string | null }
+export async function atsGtmBoard(company: string, domain: string | null, fetchImpl: typeof fetch = fetch, opts: { now?: number; windowDays?: number; roleMatch?: (title: string) => boolean } = {}): Promise<{ hiring: GtmHiring | null; contradictory: boolean; checked?: CheckedListing | null }> {
   const roleOk = opts.roleMatch ?? isGtmRole
   const titleFilter: GtmHiring['titleFilter'] = opts.roleMatch ? 'role-match' : 'gtm'
   const now = opts.now ?? Date.now(), win = (opts.windowDays ?? WINDOW_DAYS) * 86_400_000
@@ -85,14 +89,16 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
   const slug = domainSlug(domain)
   const bareName = company.toLowerCase().replace(/[^a-z0-9]/g, '')
   const slugs = [...new Set([slug, bareName.length >= 3 ? bareName : null].filter((x): x is string => !!x))].slice(0, 2)
+  let checked: CheckedListing | null = null // first attributed listing fetched this lookup; probe order and signal paths unchanged
   for (const token of slugs) {
     const viaDomain = !!slug && token === slug
     // --- Greenhouse: list (titles) -> detail for the GTM ones (the date lives only on the detail) ---
     const gh = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs`, fetchImpl)
-    if (Array.isArray(gh?.jobs) && gh.jobs.length > 0) {
+    if (Array.isArray(gh?.jobs)) {
       let nameOk = viaDomain
       if (!nameOk) { const b = await get(`https://boards-api.greenhouse.io/v1/boards/${token}`, fetchImpl); nameOk = typeof b?.name === 'string' && classifyEntityMatch(company, b.name) === 'heuristic' }
-      if (nameOk) {
+      if (nameOk && gh.jobs.length === 0 && !checked) checked = { board: 'greenhouse', boardUrl: `https://boards.greenhouse.io/${token}`, allTitles: [], listedCount: 0, titleFilter, via: viaDomain ? 'domain' : 'board_name', domain: null }
+      if (nameOk && gh.jobs.length > 0) {
         const ghTitles = gh.jobs.filter((x: { title?: unknown }) => typeof x?.title === 'string' && roleOk(x.title as string)).map((x: { title: string }) => x.title)
         const listTitles = dedupeTitles(ghTitles)
         const postings: GtmPosting[] = []; const seen = new Set<string>()
@@ -104,12 +110,14 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
           postings.push({ title: String(det.title ?? j.title).slice(0, 120), date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null, updated: day(det?.updated_at) })
         }
         const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true } // the postings name more than one company site, or another company's: contradictory, fail closed
-        if (postings.length) return { hiring: build('greenhouse', postings, `https://boards.greenhouse.io/${token}`, found, viaDomain ? 'domain' : 'board_name', listTitles, new Set(ghTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false }
+        if (postings.length) return { hiring: build('greenhouse', postings, `https://boards.greenhouse.io/${token}`, found, viaDomain ? 'domain' : 'board_name', listTitles, new Set(ghTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false, checked: null }
+        if (!checked) checked = { board: 'greenhouse', boardUrl: `https://boards.greenhouse.io/${token}`, allTitles: listTitles, listedCount: new Set(ghTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: viaDomain ? 'domain' : 'board_name', domain: found }
       }
     }
     // Lever and Ashby carry no company name in the payload: only a domain-derived token counts.
     if (!viaDomain) continue
     const lever = await get(`https://api.lever.co/v0/postings/${token}?mode=json`, fetchImpl)
+    if (Array.isArray(lever) && lever.length === 0 && !checked) checked = { board: 'lever', boardUrl: `https://jobs.lever.co/${token}`, allTitles: [], listedCount: 0, titleFilter, via: 'domain', domain: null }
     if (Array.isArray(lever) && lever.length > 0) {
       const seen = new Set<string>()
       const leverTitles = lever.filter((j: LeverPosting) => typeof j?.text === 'string' && roleOk(j.text)).map((j: { text: string }) => j.text)
@@ -117,9 +125,11 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
       const postings = dedupe(lever.filter((j: LeverPosting): j is LeverPosting & { text: string; hostedUrl: string } => typeof j?.text === 'string' && roleOk(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)) && !postingClosed(j.descriptionPlain ?? j.description))
         .slice(0, MAX_DETAIL).map((j: LeverPosting & { text: string; hostedUrl: string }) => { for (const d of fieldDomains([j.descriptionPlain, j.description, j.additionalPlain, j.additional, ...(Array.isArray(j.lists) ? (j.lists as { text?: unknown; content?: unknown }[]).flatMap((l) => [l?.text, l?.content]) : [])], token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
-      if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain', listTitles, new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false }
+      if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain', listTitles, new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false, checked: null }
+      if (!checked) checked = { board: 'lever', boardUrl: `https://jobs.lever.co/${token}`, allTitles: listTitles, listedCount: new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`, fetchImpl)
+    if (Array.isArray(ashby?.jobs) && ashby.jobs.length === 0 && !checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: [], listedCount: 0, titleFilter, via: 'domain', domain: null }
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const seen = new Set<string>()
       const ashbyTitles = ashby.jobs.filter((j: AshbyPosting) => j?.isListed === true && typeof j.title === 'string' && roleOk(j.title)).map((j: { title: string }) => j.title)
@@ -127,10 +137,11 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
       const postings = dedupe(ashby.jobs.filter((j: AshbyPosting): j is AshbyPosting & { title: string; jobUrl: string } => j?.isListed === true && typeof j.title === 'string' && roleOk(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)) && !postingClosed(j.descriptionPlain ?? j.descriptionHtml))
         .slice(0, MAX_DETAIL).map((j: AshbyPosting & { title: string; jobUrl: string }) => { for (const d of fieldDomains([j.descriptionPlain, j.descriptionHtml, j.description], token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
-      if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain', listTitles, new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false }
+      if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain', listTitles, new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false, checked: null }
+      if (!checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: listTitles, listedCount: new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found }
     }
   }
-  return { hiring: null, contradictory: false }
+  return { hiring: null, contradictory: false, checked }
 }
 
 function build(board: GtmHiring['board'], postings: GtmPosting[], boardUrl: string, domain: string | null, via: GtmHiring['via'], allTitles: string[] = [], listedCount = allTitles.length, titleFilter: GtmHiring['titleFilter'] = 'gtm'): GtmHiring {
@@ -153,24 +164,50 @@ export function dedupeTitles(titles: string[], cap = 50): string[] {
 // carry no confidence and no posting date (the listing does not give one); they are an audit trail, not a signal.
 // One coverage row per pass: how many titles the listing held vs how many audit rows were stored, and which filter
 // was applied. A truncated or filtered sample can NEVER prove a role absent from the whole board (#533 review note).
-export function boardCoverageRow(g: GtmHiring, stored: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
+export const COVERAGE_LABEL = 'Coverage of the stored hiring audit sample; not a hiring signal; audit rows are per-pass - the same title can appear once under each pass connector'
+export function boardCoverageRow(g: GtmHiring, stored: number, dated: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
   const truncated = g.listedCount > g.allTitles.length
   const filterText = g.titleFilter === 'all' ? 'all listed titles' : g.titleFilter === 'gtm' ? 'sales/GTM-role titles only' : 'requested-role-matching titles only'
   return {
     connector: `signals:${g.board}-gtm`, kind: 'hiring-board-coverage',
-    value: `Board listing: ${g.listedCount} ${filterText}, ${stored} stored as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),
-    label: 'Coverage of the stored hiring audit sample; not a hiring signal'.slice(0, 200),
+    value: `Board listing: ${g.listedCount} ${filterText}: ${dated} dated posting rows + ${stored} more as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),
+    label: COVERAGE_LABEL.slice(0, 200),
     confidence: null, source_url: g.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }
 }
 export function boardTitleAudit(g: GtmHiring, retrievedAt: number, checkedDate: string, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
-  const covered = new Set(g.postings.map(p => p.title.trim().toLowerCase()))
+  // F-A (review): postingEvidence stores only the top 3 dated rows, so only those titles are "covered";
+  // a 4th detailed posting has no dated row and must get an audit row rather than vanish from both stores.
+  const covered = new Set(g.postings.slice(0, 3).map(p => p.title.trim().toLowerCase()))
   return g.allTitles.filter(t => !covered.has(t.trim().toLowerCase())).map(t => ({
     connector: `signals:${g.board}-gtm`, kind: 'hiring-role',
     value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${t}`.slice(0, 254),
     label: [unconfirmedNote, `Board listing audit (${g.titleFilter === 'all' ? 'all listed titles' : g.titleFilter === 'gtm' ? 'sales/GTM titles only' : 'requested-role matches only'}): title listed on the board; its posting date was not read`].filter(Boolean).join('; ').slice(0, 200),
     confidence: null, source_url: g.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }))
+}
+// Zero-match trail (F-B): the listing was fetched and attributed, but nothing passed the freshness/role filter.
+// Audit rows say exactly that - listed when checked, no fresh matching posting in the window, no dated row stored -
+// and the coverage row records the zero so "board checked, nothing matching" is distinguishable from "never checked"
+// (a fetch failure still stores nothing; that remaining gap is stated on the PR, not papered over).
+export function checkedAuditRows(c: CheckedListing, windowDays: number, retrievedAt: number, checkedDate: string, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
+  const filterText = c.titleFilter === 'gtm' ? 'sales/GTM titles only' : 'requested-role matches only'
+  return c.allTitles.map(t => ({
+    connector: `signals:${c.board}-gtm`, kind: 'hiring-role',
+    value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${t}`.slice(0, 254),
+    label: [unconfirmedNote, `Board listing audit (${filterText}): title listed on the board when checked; no fresh matching posting in the last ${windowDays} days, so no dated row was stored`].filter(Boolean).join('; ').slice(0, 200),
+    confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
+  }))
+}
+export function checkedCoverageRow(c: CheckedListing, windowDays: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
+  const truncated = c.listedCount > c.allTitles.length
+  const filterText = c.titleFilter === 'gtm' ? 'sales/GTM-role titles only' : 'requested-role-matching titles only'
+  return {
+    connector: `signals:${c.board}-gtm`, kind: 'hiring-board-coverage',
+    value: `Board checked: 0 fresh postings in the last ${windowDays} days; ${c.listedCount} ${filterText} listed, ${c.allTitles.length} stored as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),
+    label: COVERAGE_LABEL.slice(0, 200),
+    confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
+  }
 }
 export function postingEvidence(g: GtmHiring, retrievedAt: number, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
   return g.postings.slice(0, 3).map(p => ({
