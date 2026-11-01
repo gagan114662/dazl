@@ -11,7 +11,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
-import { atsGtmBoard, postingEvidence } from './ats-gtm.ts'
+import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
 import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
@@ -25,7 +25,7 @@ export function nameTokens(name: string): string[] {
 }
 
 export interface FundingSignal { date: string; entity: string; url: string }
-export interface HiringSignal { board: string; openRoles: number; titles: string[]; url: string; via: 'domain' | 'name' }
+export interface HiringSignal { board: string; openRoles: number; titles: string[]; url: string; via: 'domain' | 'name'; allTitles: string[]; listedCount: number } // allTitles: a BOUNDED SAMPLE (cap 50) of every listed title; listedCount is the full deduped count before the cap, so listedCount > allTitles.length marks a truncated sample that cannot prove absence (#533)
 
 // Latest Form D (or D/A) filing for the company within the last 18 months, but only
 // when the filing entity IS the company (exact name after suffix stripping - the search
@@ -94,27 +94,37 @@ const get = async (url: string, fetchImpl: typeof fetch) => {
 // single-role board links that role.
 // Public job boards. Board slug guessed from the company domain (then name): a 404
 // just means "no board under that slug" - no signal is recorded, nothing is faked.
-export async function atsHiring(company: string, domain: string | null, fetchImpl: typeof fetch = fetch): Promise<HiringSignal | null> {
+// #533 review (F-B): the listing fetch outcome is reported beside the signal, so an attributed but EMPTY board
+// leaves a stored trace ("the listing held 0 titles" is a complete listing, not a sample) instead of looking unchecked.
+export interface CheckedBoard { board: HiringSignal['board']; url: string; via: 'domain' | 'name'; listedCount: number }
+export async function atsHiringBoard(company: string, domain: string | null, fetchImpl: typeof fetch = fetch): Promise<{ signal: HiringSignal | null; checked: CheckedBoard | null }> {
   const dom = domainSlug(domain)
+  let checked: CheckedBoard | null = null
   for (const slug of slugCandidates(company, domain)) {
     const via: 'domain' | 'name' = dom && slug === dom ? 'domain' : 'name'
     const gh = await get(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, fetchImpl)
-    if (Array.isArray(gh?.jobs) && gh.jobs.length > 0) {
+    if (Array.isArray(gh?.jobs)) {
       const jobs = gh.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs.length === 1 && jobs[0].absolute_url ? jobs[0].absolute_url : `https://boards.greenhouse.io/${slug}`, via }
+      if (jobs.length) return { signal: { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), allTitles: dedupeTitles(jobs.map((j: { title: string }) => j.title)), listedCount: new Set(jobs.map((j: { title: string }) => j.title.trim().toLowerCase())).size, url: jobs.length === 1 && jobs[0].absolute_url ? jobs[0].absolute_url : `https://boards.greenhouse.io/${slug}`, via }, checked: null }
+      if (!checked) checked = { board: 'greenhouse', url: `https://boards.greenhouse.io/${slug}`, via, listedCount: 0 }
     }
     const lever = await get(`https://api.lever.co/v0/postings/${slug}?mode=json`, fetchImpl)
-    if (Array.isArray(lever) && lever.length > 0) {
+    if (Array.isArray(lever)) {
       const jobs = lever.filter((j: { text?: string }) => typeof j?.text === 'string')
-      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), url: jobs.length === 1 && jobs[0].hostedUrl ? jobs[0].hostedUrl : `https://jobs.lever.co/${slug}`, via }
+      if (jobs.length) return { signal: { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), allTitles: dedupeTitles(jobs.map((j: { text: string }) => j.text)), listedCount: new Set(jobs.map((j: { text: string }) => j.text.trim().toLowerCase())).size, url: jobs.length === 1 && jobs[0].hostedUrl ? jobs[0].hostedUrl : `https://jobs.lever.co/${slug}`, via }, checked: null }
+      if (!checked) checked = { board: 'lever', url: `https://jobs.lever.co/${slug}`, via, listedCount: 0 }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${slug}`, fetchImpl)
-    if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
+    if (Array.isArray(ashby?.jobs)) {
       const jobs = ashby.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), url: jobs.length === 1 && jobs[0].jobUrl ? jobs[0].jobUrl : `https://jobs.ashbyhq.com/${slug}`, via }
+      if (jobs.length) return { signal: { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), allTitles: dedupeTitles(jobs.map((j: { title: string }) => j.title)), listedCount: new Set(jobs.map((j: { title: string }) => j.title.trim().toLowerCase())).size, url: jobs.length === 1 && jobs[0].jobUrl ? jobs[0].jobUrl : `https://jobs.ashbyhq.com/${slug}`, via }, checked: null }
+      if (!checked) checked = { board: 'ashby', url: `https://jobs.ashbyhq.com/${slug}`, via, listedCount: 0 }
     }
   }
-  return null
+  return { signal: null, checked }
+}
+export async function atsHiring(company: string, domain: string | null, fetchImpl: typeof fetch = fetch): Promise<HiringSignal | null> {
+  return (await atsHiringBoard(company, domain, fetchImpl)).signal
 }
 
 // Post-scan pass over a job's verified leads. Bounded, parallel within a lead,
@@ -135,12 +145,13 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     // Company event write-through: the same fact, stored once per company for account-level
     // history. Skipped when no reliable company key exists - never guessed.
     const ck = companyKey(lead.company_domain, lead.id)
-    const [f0, h] = await Promise.all([
+    const [f0, hb] = await Promise.all([
       edgarFunding(lead.company, fetchImpl).catch(() => null),
-      atsHiring(lead.company, lead.company_domain, fetchImpl).catch(() => null),
+      atsHiringBoard(lead.company, lead.company_domain, fetchImpl).catch(() => null),
     ])
+    const h = hb?.signal ?? null
     // Postings naming contradictory company domains cannot corroborate this company: neither the dated sales / GTM roles nor the older open-role count.
-    const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false }))
+    const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false, checked: null }))
     // A filing far from the claimed round date is a real fact about the entity but not
     // corroboration of THIS raise (fund filings and stale filings both collide here).
     // People named in the entity-matched filing (executive officers/directors): a fact about the entity, so it uses f0, not the round-date-gated f.
@@ -158,7 +169,16 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       const est = rel === 'established'
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${h.openRoles} open role${h.openRoles === 1 ? '' : 's'} (generic hiring; posting date unknown)`, label: (est ? (h.titles.join('; ') || '') : `${h.titles.join('; ')} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: h.url, source_date: today, retrieved_at: now })
       if (ck && est) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: null, retrievedAt: now, confidence: 70 })
+      // #533: store every listed title as an audit row, so 'the requested role was not on this board' is provable later.
+      const covered = new Set(h.titles.map(t => t.trim().toLowerCase()))
+      for (const t of h.allTitles.filter(t => !covered.has(t.trim().toLowerCase()))) addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring-role', value: `${est ? '' : 'Unconfirmed: '}${t}`.slice(0, 254), label: (est ? 'Board listing audit (all listed titles): title listed on the board; its posting date was not read' : `Board listing audit (all listed titles): title listed on the board; its posting date was not read (${HEURISTIC_NOTE})`).slice(0, 200), confidence: null, source_url: h.url.slice(0, 500), source_date: today, retrieved_at: now })
+      { const auditRows = h.allTitles.filter(t => !covered.has(t.trim().toLowerCase())).length
+        addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring-board-coverage', value: `Board listing: ${h.listedCount} all listed titles: ${covered.size} named in the aggregate row + ${auditRows} more as audit rows${h.listedCount > h.allTitles.length ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254), label: COVERAGE_LABEL.slice(0, 200), confidence: null, source_url: h.url.slice(0, 500), source_date: today, retrieved_at: now }) }
       hiring++
+    }
+    if (!h && hb?.checked && hb.checked.via === 'domain' && !gb.contradictory) {
+      const c = hb.checked
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${c.board}`, kind: 'hiring-board-coverage', value: `Board checked: 0 titles listed (all listed titles) - the listing itself was empty when read, a complete listing rather than a sample`.slice(0, 254), label: COVERAGE_LABEL.slice(0, 200), confidence: null, source_url: c.url.slice(0, 500), source_date: today, retrieved_at: now })
     }
     // Dated sales / go-to-market postings from the company's own public board: the "hiring sales" half of a seed + sales request, with the
     // posting's own date. An enrichment beside the lead; it never changes the lead, its date or any verdict.
@@ -171,15 +191,38 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       for (const e of postingEvidence(g, now, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
+      { const auditRows = boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE)
+        for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
+        addEnrichment(db, tenantId, lead.id, boardCoverageRow(g, auditRows.length, Math.min(g.postings.length, 3), now, today)) }
       gtm++
     }
+    if (!g && gb.checked && !gb.contradictory) {
+      // Mirrors the nonzero path exactly: rows are written for any attributed board, Unconfirmed unless the board is bound to the lead's domain.
+      const c = gb.checked
+      const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && !!lead.company_domain && c.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
+      for (const e of checkedAuditRows(c, WINDOW_DAYS, now, today, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
+      addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
+    }
     if (requestedRoles.length) {
-      const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false }))
+      const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false, checked: null }))
       const matched = specific.hiring
       const bound = matched && !specific.contradictory && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!matched.domain && matched.domain === lead.company_domain))
-      if (matched && bound) for (const e of postingEvidence(matched, now, null)) {
-        const role = matchedHiringRole(e.value.split(' - posted ')[0], requestedRoles)
-        if (role) addEnrichment(db, tenantId, lead.id, { ...e, label: `Requested role: ${role.term}; ${e.label}`.slice(0, 200) })
+      if (matched && bound) {
+        for (const e of postingEvidence(matched, now, null)) {
+          const role = matchedHiringRole(e.value.split(' - posted ')[0], requestedRoles)
+          if (role) addEnrichment(db, tenantId, lead.id, { ...e, label: `Requested role: ${role.term}; ${e.label}`.slice(0, 200) })
+        }
+        { const auditRows = boardTitleAudit(matched, now, today, null)
+          for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
+          addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, Math.min(matched.postings.length, 3), now, today)) }
+      }
+      if (!matched && specific.checked && !specific.contradictory) {
+        const c = specific.checked
+        const boundC = c.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && !!lead.company_domain && c.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')))
+        if (boundC) {
+          for (const e of checkedAuditRows(c, WINDOW_DAYS, now, today, null)) addEnrichment(db, tenantId, lead.id, e)
+          addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
+        }
       }
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
