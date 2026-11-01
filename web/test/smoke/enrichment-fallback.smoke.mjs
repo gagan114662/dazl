@@ -36,10 +36,21 @@ try {
   browser = await chromium.launch()
   const ctx = await newContext(browser, srv)
   const page = await ctx.newPage()
+  // Diagnostics whitelist: only the fields a refusal can carry. The route never returns stored keys (status exposes
+  // last4 of the FIXTURE key only), but scrub the fixture values anyway and never log request payloads.
+  const FIXTURES = ['smoke-apollo-key-0000000000000000', 'smoke-pdl-key-00000000000000000000']
+  const scrub = t => FIXTURES.reduce((acc, k) => acc.split(k).join('<fixture-key>'), t)
+  page.on('request', r => { if (r.url().includes('/api/settings/enrichment') && r.method() === 'POST') console.log(`[enrichment-api] POST -> ${JSON.stringify(Object.keys(JSON.parse(r.postData() ?? '{}')))}`) })
   page.on('response', async r => {
     if (!r.url().includes('/api/settings/enrichment')) return
-    const body = await r.text().catch(() => '?')
-    console.log(`[enrichment-api] ${r.request().method()} ${r.status()} ${body.slice(0, 300)}`)
+    let safe = '?'
+    try {
+      const j = JSON.parse(await r.text())
+      if (Array.isArray(j.connectors)) j.connectors = j.connectors.map(c => ({ connector: c.connector, enabled: c.enabled, last4: c.last4 }))
+      if (Array.isArray(j.audit)) j.audit = j.audit.map(a => ({ connector: a.connector, lookup: a.lookup, status: a.status }))
+      safe = JSON.stringify({ ok: j.ok, error: j.error, fallback: j.fallback, connectors: j.connectors, audit: j.audit?.slice(0, 5) })
+    } catch { safe = '<unparseable body withheld>' }
+    console.log(scrub(`[enrichment-api] ${r.request().method()} ${r.status()} ${safe.slice(0, 400)}`))
   })
   page.on('console', m => { if (m.type() === 'error') console.log(`[page-console-error] ${m.text().slice(0, 300)}`) })
   page.on('pageerror', e => console.log(`[pageerror] ${String(e).slice(0, 300)}`))
