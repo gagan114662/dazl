@@ -11,7 +11,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
-import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, withRepostHistory, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
+import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
 import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
@@ -215,7 +215,11 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
         }
         { const auditRows = withRepostHistory(boardTitleAudit(matched, now, today, null), matched.board, existingEvidence)
           for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
-          addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, Math.min(matched.postings.length, 3), now, today)) }
+          addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, Math.min(matched.postings.length, 3), now, today))
+          const covered = new Set(matched.postings.slice(0, 3).map(x => x.title.trim().toLowerCase()))
+          const full = withRepostHistory(fullListingAuditRows(matched.board, matched.boardUrl, matched.allListed, covered, now, today, null), matched.board, existingEvidence)
+          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: whole listing, so requested-role presence/absence is auditable
+          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(matched.board, matched.boardUrl, matched.listedCountAll, matched.allListed, Math.min(matched.postings.length, 3), full.length, now, today)) }
       }
       if (!matched && specific.checked && !specific.contradictory) {
         const c = specific.checked
@@ -223,6 +227,9 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
         if (boundC) {
           for (const e of withRepostHistory(checkedAuditRows(c, WINDOW_DAYS, now, today, null), c.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
           addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
+          const full = withRepostHistory(fullListingAuditRows(c.board, c.boardUrl, c.allListed, new Set(), now, today, null), c.board, existingEvidence)
+          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: whole listing - the actual absence evidence
+          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(c.board, c.boardUrl, c.listedCountAll, c.allListed, 0, full.length, now, today))
         }
       }
     }

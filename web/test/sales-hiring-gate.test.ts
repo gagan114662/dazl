@@ -405,3 +405,19 @@ test('named hiring role cannot use model signal, unrelated quote, undated post o
   assert.equal(requiredGateHeld(db, 'u1', 'L1'), 'sales_hiring_check_failed')
   db.close()
 })
+
+test('#533 breadth: a requested role absent from the board leaves full-listing audit rows, so absence is provable from storage', async () => {
+  const { db, job } = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const r = await applySalesHiringGate(db, job, serve(board({
+    [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'Account Executive' }, { id: 2, title: 'Backend Engineer' }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: d(12), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', location: { name: 'London' }, content: 'x https://brightloop.io' },
+  })), { now: NOW })
+  assert.equal(r.required, true); assert.equal(r.passed, 0); assert.equal(r.demoted, 1)
+  const rows = enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []
+  const audit = rows.filter(x => x.kind === 'hiring-role' && /all listed titles/.test(x.label ?? ''))
+  assert.deepEqual(audit.map(x => x.value).sort(), ['Account Executive', 'Backend Engineer'], 'every title on the listing gets an audit row, matching or not')
+  for (const x of audit) assert.equal(x.confidence, null)
+  const cov = rows.filter(x => x.kind === 'hiring-board-coverage' && /all listed titles/.test(x.value))
+  assert.equal(cov.length, 1); assert.match(cov[0].value, /2 all listed titles: 0 dated posting rows \+ 2 more as audit rows/)
+  db.close()
+})

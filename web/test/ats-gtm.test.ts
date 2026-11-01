@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, postingEvidence, withRepostHistory } from '../lib/signals/ats-gtm.ts'
+import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, postingEvidence, withRepostHistory } from '../lib/signals/ats-gtm.ts'
 import { enrichJobSignals } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
@@ -436,7 +436,7 @@ test('#533 F-E fresh-but-closed is outside the 0-fresh claim: a closed fresh pos
 })
 
 test('#533 AC4 repost labeling: a board re-dating a previously stored title is labeled repost-unknown, never renewed demand; stored history is untouched', () => {
-  const rows = postingEvidence({ board: 'greenhouse', postings: [{ title: 'Account Executive', date: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', location: 'London', updated: null }], newest: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', domain: 'brightloop.io', via: 'domain', allTitles: ['Account Executive'], boardUrl: 'https://boards.greenhouse.io/brightloop', listedCount: 1, titleFilter: 'gtm' }, NOW / 1000, null)
+  const rows = postingEvidence({ board: 'greenhouse', postings: [{ title: 'Account Executive', date: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', location: 'London', updated: null }], newest: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', domain: 'brightloop.io', via: 'domain', allTitles: ['Account Executive'], boardUrl: 'https://boards.greenhouse.io/brightloop', listedCount: 1, titleFilter: 'gtm', allListed: ['Account Executive'], listedCountAll: 1 }, NOW / 1000, null)
   const existing = [
     { kind: 'hiring', connector: 'signals:greenhouse-gtm', value: 'Account Executive - posted 2026-08-01', source_date: '2026-08-01', retrieved_at: Date.parse('2026-08-02T00:00:00Z') / 1000 },
     { kind: 'hiring-role', connector: 'signals:lever-gtm', value: 'Account Executive', source_date: '2026-09-01', retrieved_at: Date.parse('2026-09-01T00:00:00Z') / 1000 },
@@ -510,4 +510,25 @@ test('#533 dedupeTitles: case-insensitive distinct, each capped at 120 chars, th
   assert.equal(out.length, 50)
   assert.deepEqual(out.slice(0, 2), ['Account Executive', 'Head of Sales'])
   assert.equal(dedupeTitles(['x'.repeat(200)])[0].length, 120)
+})
+
+test('#533 breadth: the UNFILTERED listing is captured beside any filtered sample, on hiring and checked captures', async () => {
+  const g = (await atsGtmBoard('Brightloop', 'brightloop.io', route(ghBoard), { now: NOW, roleMatch: t => /account executive/i.test(t) })).hiring
+  assert.ok(g); assert.equal(g!.titleFilter, 'role-match')
+  assert.deepEqual(g!.allTitles, ['Account Executive'], 'the filtered sample is unchanged')
+  assert.deepEqual([...g!.allListed].sort(), ['Account Executive', 'Backend Engineer', 'Head of Sales', 'SDR'], 'the full listing keeps every title, filtered or not')
+  assert.equal(g!.listedCountAll, 4)
+  const c = (await atsGtmBoard('Brightloop', 'brightloop.io', route(ghBoard), { now: NOW, roleMatch: () => false })).checked
+  assert.ok(c); assert.equal(c!.listedCountAll, 4); assert.deepEqual([...c!.allListed].sort(), ['Account Executive', 'Backend Engineer', 'Head of Sales', 'SDR'])
+})
+
+test('#533 breadth: full-listing audit rows skip titles already covered by dated rows; coverage names both stores and truncation', () => {
+  const rows = fullListingAuditRows('greenhouse', 'https://boards.greenhouse.io/brightloop', ['Account Executive', 'Backend Engineer', 'SDR'], new Set(['account executive']), NOW / 1000, '2026-10-28', null)
+  assert.deepEqual(rows.map(r => r.value).sort(), ['Backend Engineer', 'SDR'])
+  for (const r of rows) { assert.match(r.label, /Board listing audit \(all listed titles\)/); assert.equal(r.confidence, null); assert.equal(r.kind, 'hiring-role') }
+  const cov = fullListingCoverageRow('greenhouse', 'https://boards.greenhouse.io/brightloop', 3, ['Account Executive', 'Backend Engineer', 'SDR'], 1, 2, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /3 all listed titles: 1 dated posting rows \+ 2 more as audit rows/)
+  assert.ok(!cov.value.includes('TRUNCATED'))
+  const trunc = fullListingCoverageRow('greenhouse', 'https://boards.greenhouse.io/brightloop', 60, Array.from({ length: 50 }, (_, i) => `Title ${i}`), 0, 50, NOW / 1000, '2026-10-28')
+  assert.match(trunc.value, /sample TRUNCATED at 50 - a title beyond the sample is not disproved/)
 })
