@@ -47,6 +47,18 @@ test('connector_claims: two PG connections racing one lookup - exactly one claim
       await writeSettleClaim(a, key5, (w5 as { id: string }).id, 'ok', 1, JSON.stringify({ v: 1, domain: 'other.example' }))
       const got2 = await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, { legacyAudit: false })
       assert.equal(got2?.memo, memo, 'a terminal memo is immutable (the settle guards on reserved + memo IS NULL)')
+
+      // releaseHeldClaimAsync (the PG twin the retry route needs at cutover): a held claim releases with its
+      // lineage audit row; a terminal memo claim refuses and survives.
+      const { releaseHeldClaimAsync } = await import('../lib/connectors/store.ts')
+      const key6 = { ...key, lookup: 'step:people Memo Co (memo.example)' }
+      const w6 = await writeTryReserve(a, key6)
+      assert.ok('id' in w6)
+      assert.equal(await releaseHeldClaimAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key6.lookup }, 'owner retry: test'), true, 'the held claim releases')
+      assert.equal(await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key6.lookup }, { legacyAudit: false }), null, 'the released claim row is gone')
+      assert.equal(await releaseHeldClaimAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, 'owner retry: test'), false, 'a terminal memo claim refuses release')
+      const still = await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, { legacyAudit: false })
+      assert.equal(still?.memo, memo, 'the memo survives the refused release')
     }
   } finally { await a.close(); await b.close(); await s.drop() }
 })

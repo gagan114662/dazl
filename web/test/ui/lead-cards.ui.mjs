@@ -77,7 +77,7 @@ await ctx.route('**/*', async route => {
   if (q) { quarantineCalls.push({ method: m, lead: q[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ quarantined: m === 'POST' }) }
   if (u.pathname === '/api/enrich/held') return json(heldMode ? { held: [{ leadId: 'a'.repeat(24), company: 'Bright Dental', provider: 'apollo', step: 'people', since: 1762000000, costText: 'Retry the contact search: the saved company data is reused (not re-charged) and Apollo people search is a 0-credit endpoint. Rate limits may apply.' }] } : { held: [] })
   const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
-  if (er && m === 'POST') { retryCalls.push(er[1]); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
+  if (er && m === 'POST') { retryCalls.push({ lead: er[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
   return json({}, 404)
 })
 const page = await ctx.newPage()
@@ -193,8 +193,8 @@ try {
   assert.match(await heldSection.textContent(), /Bright Dental/)
   assert.equal(await heldSection.getByTestId('enrich-held-cost').textContent(), 'Retry the contact search: the saved company data is reused (not re-charged) and Apollo people search is a 0-credit endpoint. Rate limits may apply.')
   await heldSection.scrollIntoViewIfNeeded(); await shot('enrich-held')
-  await heldSection.getByTestId(`enrich-retry-${'a'.repeat(24)}`).click()
-  assert.deepEqual(retryCalls, ['a'.repeat(24)], 'the owner action posts the retry for that lead')
+  await heldSection.getByTestId(`enrich-retry-${'a'.repeat(24)}-apollo-people`).click()
+  assert.deepEqual(retryCalls, [{ lead: 'a'.repeat(24), body: { provider: 'apollo', step: 'people' } }], 'the owner action posts exactly the held provider+step it was shown for')
   heldMode = false // the retry cleared it
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal(await page.getByTestId('enrich-held').count(), 0, 'the notice clears once nothing is held')

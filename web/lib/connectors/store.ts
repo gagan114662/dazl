@@ -285,13 +285,36 @@ export async function readOutcomeAsync(db: Db, a: { tenantId: string; connector:
   return { prior: claimPrior(legacy.status), status: legacy.status, memo: null }
 }
 
-// OWNER-EXPLICIT release of a held claim (the retry route's one write): never called by any automatic path. The
-// status='reserved' guard refuses to touch a terminal memo, and the release is audit-rowed with its disclosure.
+// OWNER-EXPLICIT release of a held claim (the retry route's one write): never called by any automatic path. A
+// 'reserved' claim NEVER carries a memo - memos are written only by the terminal settle, and the settle and the
+// release both gate on status - so the guarded delete can touch only a crash remnant with no outcome attached;
+// a settled memo (a paid org outcome, including a rejection verdict) is never released out from under its
+// audit lineage. The release audit row names the released claim's claimed_at, keeping the lineage link from
+// the original reservation through the owner's release to the next attempt's fresh claim row.
+const CLAIM_READ_CLAIMED_AT_SQL = 'SELECT claimed_at FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?'
+const CLAIM_DELETE_HELD_SQL = "DELETE FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved'"
+const releaseStatus = (claimedAt: number | undefined, disclosure: string) => `owner released held claim of ${new Date((claimedAt ?? 0) * 1000).toISOString()}: ${disclosure}`.slice(0, 200)
 export function releaseHeldClaim(db: Database.Database, a: { tenantId: string; connector: string; jobId: string; lookup: string }, disclosure: string): boolean {
   const key = claimKey(a as AuditEntry)
-  const gone = db.prepare("DELETE FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved'").run(key[0], key[1], key[2], key[3]).changes === 1
-  if (gone) audit(db, { tenantId: a.tenantId, connector: a.connector, jobId: a.jobId, lookup: a.lookup, status: `owner released: ${disclosure}`.slice(0, 200), results: 0 })
+  const row = db.prepare(CLAIM_READ_CLAIMED_AT_SQL).get(key[0], key[1], key[2], key[3]) as { claimed_at: number } | undefined
+  const gone = db.prepare(CLAIM_DELETE_HELD_SQL).run(key[0], key[1], key[2], key[3]).changes === 1
+  if (gone) audit(db, { tenantId: a.tenantId, connector: a.connector, jobId: a.jobId, lookup: a.lookup, status: releaseStatus(row?.claimed_at, disclosure), results: 0 })
   return gone
+}
+// PG twin: the same guarded delete + disclosure audit in one transaction (parity with the sync path above).
+export async function releaseHeldClaimAsync(db: Db, a: { tenantId: string; connector: string; jobId: string; lookup: string }, disclosure: string): Promise<boolean> {
+  const key = claimKey(a as AuditEntry)
+  return db.tx(function* (t) {
+    const row = yield* t.get<{ claimed_at: number }>(CLAIM_READ_CLAIMED_AT_SQL, [key[0], key[1], key[2], key[3]])
+    const gone = ((yield* t.run(CLAIM_DELETE_HELD_SQL, [key[0], key[1], key[2], key[3]]))).changes === 1
+    if (gone) yield* t.run(AUDIT_SQL, auditArgs({ tenantId: a.tenantId, connector: a.connector, jobId: a.jobId, lookup: a.lookup, status: releaseStatus(row?.claimed_at, disclosure), results: 0 }))
+    return gone
+  })
+}
+// The lookup's latest audit status (read-only): replay repair reads the recorded verdict behind a terminal claim.
+export function latestAuditStatus(db: Database.Database, a: { tenantId: string; connector: string; jobId: string; lookup: string }): string | null {
+  const r = db.prepare(RESERVE_STATUS_SQL).get(a.tenantId, a.connector, a.jobId, a.lookup.slice(0, 200)) as { status: string } | undefined
+  return r?.status ?? null
 }
 
 // Newest first; same-second rows newest-inserted first (insert_seq: the order rowid gave). Sync for the pipeline's

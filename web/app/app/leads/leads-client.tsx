@@ -491,9 +491,12 @@ export default function LeadsClient() {
   const [retryingEnrich, setRetryingEnrich] = useState<string | null>(null)
   const loadHeldEnrich = () => fetch('/api/enrich/held').then(r => r.ok ? r.json() : null).then(j => { if (j) setHeldEnrich(j.held ?? []) }).catch(() => {})
   useEffect(() => { void loadHeldEnrich() }, [])
-  const retryEnrich = async (leadId: string) => {
-    setRetryingEnrich(leadId)
-    const r = await fetch(`/api/leads/${leadId}/enrich-retry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null)
+  // One button per held item: the action is scoped to exactly that provider+step, whose cost/limits are the
+  // costText shown beside it - retrying Apollo never releases or runs a PDL lookup.
+  const retryEnrich = async (h: { leadId: string; provider: 'apollo' | 'pdl'; step: 'org' | 'people' | 'legacy' }) => {
+    const k = `${h.leadId}:${h.provider}:${h.step}`
+    setRetryingEnrich(k)
+    const r = await fetch(`/api/leads/${h.leadId}/enrich-retry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: h.provider, step: h.step }) }).catch(() => null)
     setRetryingEnrich(null)
     if (r?.ok) { void loadHeldEnrich(); void loadLeads() }
   }
@@ -971,7 +974,7 @@ export default function LeadsClient() {
                 <span className="font-semibold">{h.company}</span>
                 <span className="text-[var(--ink-3)]">{h.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} &middot; interrupted {new Date(h.since * 1000).toLocaleString()}</span>
                 <span className="basis-full text-[var(--ink-2)]" data-testid="enrich-held-cost">{h.costText}</span>
-                <button type="button" className="btn-primary btn-sm" disabled={retryingEnrich === h.leadId} onClick={() => void retryEnrich(h.leadId)} data-testid={`enrich-retry-${h.leadId}`}>{retryingEnrich === h.leadId ? 'Retrying…' : 'Retry lookup'}</button>
+                <button type="button" className="btn-primary btn-sm" disabled={retryingEnrich === `${h.leadId}:${h.provider}:${h.step}`} onClick={() => void retryEnrich(h)} data-testid={`enrich-retry-${h.leadId}-${h.provider}-${h.step}`}>{retryingEnrich === `${h.leadId}:${h.provider}:${h.step}` ? 'Retrying…' : 'Retry lookup'}</button>
               </li>
             ))}
           </ul>

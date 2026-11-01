@@ -369,7 +369,7 @@ test('OWNER RETRY: org paid + people held -> the owner action releases ONLY the 
   assert.deepEqual(held.map(h => `${h.provider}:${h.step}`), ['apollo:people'], 'the held people step surfaces for the owner')
   assert.match(heldCostText(held[0]), /0-credit/, 'the owner sees the free-endpoint cost wording')
   const calls: Calls = { apollo: 0, pdl: 0 }
-  const r = await retryHeldEnrichment(db, 'u1', 'lead1', { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'people' }, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
   assert.deepEqual(r, { status: 'retried', attached: 1, releases: ['apollo people'] })
   assert.equal(calls.apollo, 1, 'ONLY the people search re-runs: the org credit is never re-spent')
   assert.deepEqual(attached(db), ['enrich:apollo:Invented Manager - Practice Manager'])
@@ -389,7 +389,7 @@ test('OWNER RETRY: a LEGACY whole-attempt hold releases with the may-repay discl
   assert.deepEqual(held.map(h => h.step), ['legacy'])
   assert.match(heldCostText(held[0]), /1 Apollo credit/, 'the old row cannot prove its outcome: the possible re-charge is disclosed')
   const calls: Calls = { apollo: 0, pdl: 0 }
-  const r = await retryHeldEnrichment(db, 'u1', 'lead1', { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'legacy' }, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
   assert.deepEqual(r, { status: 'retried', attached: 1, releases: ['apollo legacy'] })
   assert.equal(calls.apollo, 2, 'the full attempt re-runs (org + people): the disclosed possible re-charge')
 })
@@ -402,8 +402,89 @@ test('OWNER RETRY: a FRESH claim (a live pass may be in flight) is never release
   const g = auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepOrg, status: 'reserved', results: 0 })
   assert.ok('id' in g) // claimed_at = now: possibly a LIVE call
   assert.deepEqual(heldEnrichments(db, 'u1'), [], 'too fresh to call held')
-  const r = await retryHeldEnrichment(db, 'u1', 'lead1', { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), { apollo: 0, pdl: 0 }), master })
+  const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'org' }, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), { apollo: 0, pdl: 0 }), master })
   assert.deepEqual(r, { status: 'nothing_held' })
   const still = db.prepare("SELECT status FROM connector_claims WHERE tenant_id = 'u1'").all() as { status: string }[]
   assert.deepEqual(still.map(x => x.status), ['reserved'], 'the live claim was NOT touched')
+})
+
+test('CRASH REGRESSION: org ok + rejection-verdict memo, people never settled -> the replay resumes the verdict with ZERO calls', async () => {
+  const { db, jobId, leads } = seed(1, false) // Apollo only
+  const { auditTryReserve, auditSettleClaim } = await import('../lib/connectors/store.ts')
+  const { claimKeysFor } = await import('../lib/enrich/index.ts')
+  const k = claimKeysFor(leads[0])
+  const g = auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepOrg, status: 'reserved', results: 0 })
+  const verdict = { v: 1, website: 'https://wrongco.example', domain: 'wrongco.example', name: 'Wrong Co', place: null, address: null, established: true, keyedOnLeadDomain: true, rejected: 'contact rejected: organization mismatch Wrong Co vs Harbor Dental' }
+  auditSettleClaim(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepOrg, status: 'ok', results: 1 }, (g as { id: string }).id, 'ok', 1, JSON.stringify(verdict))
+  // the crash: no people claim, no refusal card - the exact hole the reviewer named
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.apollo, 0, 'the verdict resumes from the memo: no provider call, no possible re-charge')
+  assert.ok(r.skipped.some(x => x.provider === 'apollo' && x.why === 'replayed'))
+  const people = db.prepare('SELECT status FROM connector_claims WHERE lookup = ?').get(k.stepPeople) as { status: string }
+  assert.equal(people.status, 'rejected', 'the people verdict settles durably')
+  const cards = enrichmentsForLeads(db, 'u1', ['lead1']).lead1 ?? []
+  assert.ok(cards.some(e => e.kind === 'contact_rejected' && /organization mismatch/.test(e.value)), 'the refusal card is written')
+  const calls2: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls2), master })
+  assert.equal(calls2.apollo, 0, 'a second replay converges: still zero calls')
+  assert.equal((enrichmentsForLeads(db, 'u1', ['lead1']).lead1 ?? []).filter(e => e.kind === 'contact_rejected').length, 1, 'idempotent: exactly one refusal card')
+})
+
+test('CRASH REGRESSION: terminal rejected people claim without its refusal card -> the replay repairs the card with zero calls', async () => {
+  const { db, jobId, leads } = seed(1, false)
+  const { auditTryReserve, auditSettleClaim } = await import('../lib/connectors/store.ts')
+  const { claimKeysFor } = await import('../lib/enrich/index.ts')
+  const k = claimKeysFor(leads[0])
+  const g = auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepPeople, status: 'reserved', results: 0 })
+  auditSettleClaim(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepPeople, status: 'contact rejected: organization mismatch Wrong Co vs Harbor Dental', results: 0 }, (g as { id: string }).id, 'contact rejected: organization mismatch Wrong Co vs Harbor Dental', 0)
+  // the crash: the claim is terminal but the card write never happened - the card would be invisible forever
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.apollo, 0, 'repair is free: no provider call')
+  assert.ok(r.skipped.some(x => x.why === 'replayed'))
+  assert.ok((enrichmentsForLeads(db, 'u1', ['lead1']).lead1 ?? []).some(e => e.kind === 'contact_rejected' && /organization mismatch/.test(e.value)), 'the missing refusal card self-heals on replay')
+})
+
+test('OWNER RETRY SCOPE: releasing one held claim never releases or runs the other provider', async () => {
+  const { db, jobId, leads } = seed(1, true) // both providers configured
+  const { auditTryReserve, auditSettleClaim } = await import('../lib/connectors/store.ts')
+  const { claimKeysFor, retryHeldEnrichment, heldEnrichments } = await import('../lib/enrich/index.ts')
+  const k = claimKeysFor(leads[0])
+  const g1 = auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepOrg, status: 'reserved', results: 0 })
+  const memo = { v: 1, website: 'https://harbordental.example', domain: 'harbordental.example', name: 'Harbor Dental', place: null, address: null, established: true, keyedOnLeadDomain: true }
+  auditSettleClaim(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepOrg, status: 'ok', results: 1 }, (g1 as { id: string }).id, 'ok', 1, JSON.stringify(memo))
+  auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepPeople, status: 'reserved', results: 0 })
+  auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:pdl', jobId, lookup: k.legacyPeople, status: 'reserved', results: 0 })
+  db.prepare('UPDATE connector_claims SET claimed_at = 0').run()
+  assert.equal(heldEnrichments(db, 'u1').length, 2, 'the lead holds one apollo step and one pdl attempt')
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'people' }, { fetchImpl: router(async () => ok({ people: [] }), async () => ok(PDL_OK), calls), master })
+  assert.deepEqual(r, { status: 'retried', attached: 0, releases: ['apollo people'] })
+  assert.equal(calls.apollo, 1, 'only the selected apollo people step re-ran')
+  assert.equal(calls.pdl, 0, 'PDL was neither released nor run by the apollo action')
+  const pdl = db.prepare("SELECT status FROM connector_claims WHERE connector = 'enrich:pdl'").get() as { status: string }
+  assert.equal(pdl.status, 'reserved', 'the PDL claim stays held for its own owner action')
+})
+
+test('OWNER RETRY SAFETY: a terminal memo claim refuses release, and a release keeps the full audit lineage', async () => {
+  const { db, jobId, leads } = seed(1, false)
+  const { auditTryReserve, auditSettleClaim, releaseHeldClaim } = await import('../lib/connectors/store.ts')
+  const { claimKeysFor } = await import('../lib/enrich/index.ts')
+  const k = claimKeysFor(leads[0])
+  const org = { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepOrg, status: 'reserved', results: 0 }
+  const g = auditTryReserve(db, org)
+  const memo = { v: 1, website: null, domain: 'harbordental.example', name: 'Harbor Dental', place: null, address: null, established: true, keyedOnLeadDomain: true }
+  auditSettleClaim(db, { ...org, status: 'ok', results: 1 }, (g as { id: string }).id, 'ok', 1, JSON.stringify(memo))
+  assert.equal(releaseHeldClaim(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepOrg }, 'owner retry: test'), false, 'a settled paid outcome (incl. its memo) can never be released')
+  const kept = db.prepare('SELECT status, memo FROM connector_claims WHERE lookup = ?').get(k.stepOrg) as { status: string; memo: string }
+  assert.equal(kept.status, 'ok')
+  assert.ok(kept.memo.includes('harbordental.example'), 'the memo survives untouched')
+  assert.equal((db.prepare("SELECT count(*) n FROM connector_audit WHERE lookup = ? AND status LIKE 'owner released%'").get(k.stepOrg) as { n: number }).n, 0, 'no release audit row for a refused release')
+  auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepPeople, status: 'reserved', results: 0 })
+  assert.equal(releaseHeldClaim(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepPeople }, 'owner retry: test'), true)
+  const rows = db.prepare('SELECT status FROM connector_audit WHERE lookup = ? ORDER BY created_at, insert_seq').all(k.stepPeople) as { status: string }[]
+  assert.equal(rows.length, 2, 'the original reservation and the release both survive on the audit record')
+  assert.equal(rows[0].status, 'reserved')
+  assert.match(rows[1].status, /^owner released held claim of \d{4}-\d{2}-\d{2}T.*: owner retry: test$/, 'the release names the released claim (lineage) and its disclosure')
 })

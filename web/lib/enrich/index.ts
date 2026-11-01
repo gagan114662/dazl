@@ -5,7 +5,7 @@
 // (an exhausted budget is a visible audit row, never a silent skip), no repeat charge for a lookup this job already made.
 // Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar).
 import type Database from 'better-sqlite3'
-import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
+import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, latestAuditStatus, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -55,7 +55,7 @@ export async function enrichLeadContacts(
   tenantId: string,
   jobId: string,
   leads: LeadRow[],
-  deps: { fetchImpl?: typeof fetch; master?: Buffer; budget?: Partial<Record<Prov, number>> } = {},
+  deps: { fetchImpl?: typeof fetch; master?: Buffer; budget?: Partial<Record<Prov, number>>; only?: Prov } = {},
 ): Promise<EnrichSummary> {
   const fetchImpl = deps.fetchImpl ?? fetch
   const summary: EnrichSummary = { attached: 0, byProvider: { apollo: 0, pdl: 0 }, skipped: [] }
@@ -125,6 +125,7 @@ export async function enrichLeadContacts(
     const src = lead.company_domain ? `https://${lead.company_domain}` : `https://www.linkedin.com/company/${encodeURIComponent(lead.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}`
     const ctx: Ctx = { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl }
     for (const prov of ['apollo', 'pdl'] as Prov[]) {
+      if (deps.only && prov !== deps.only) continue // an owner retry runs exactly the provider whose cost they saw
       if (!keys[prov]) continue
       if (open[prov]) { skip(prov, 'circuit_open', lead); continue }
       if (used[prov] >= budget[prov]) { skip(prov, 'budget_exhausted', lead); continue }
@@ -181,7 +182,7 @@ type AttemptOutcome =
 // The org claim's memo: everything the people step needs after the paid org lookup ran - the confirmed domain the
 // people search queries and the agreement basis bits the pass decided on. Written in the SAME transaction as the
 // org claim's terminal settle (store.ts); presence is authoritative: memo == "agreement passed; resume people".
-interface OrgMemo { v: 1; website: string | null; domain: string | null; name: string | null; place: unknown; address: unknown; established: boolean; keyedOnLeadDomain: boolean }
+interface OrgMemo { v: 1; website: string | null; domain: string | null; name: string | null; place: unknown; address: unknown; established: boolean; keyedOnLeadDomain: boolean; rejected?: string }
 const parseMemo = (raw: string | null): OrgMemo | null => {
   if (!raw) return null
   try { const m = JSON.parse(raw) as OrgMemo; return m && m.v === 1 ? m : null } catch { return null }
@@ -193,6 +194,14 @@ const parseMemo = (raw: string | null): OrgMemo | null => {
 // A crash between the steps leaves people UNCLAIMED (provably never called) and the replay spends nothing: it
 // loads the memo and runs only the free step. A HELD claim of either step is never released automatically -
 // resolution is the owner's explicit, disclosure-audited retry (retryHeldEnrichment below).
+// A crash between the terminal people settle and the rejection-card write leaves the claim terminal but the card
+// forever missing. The card write is idempotent (contact-agreement addEnrichment ON CONFLICT DO NOTHING), so every
+// terminal-'rejected' replay re-issues it from the claim's recorded audit verdict - the card self-heals next pass.
+const repairRejectionCard = (c: Ctx, peopleKey: string) => {
+  const verdict = latestAuditStatus(c.db, { tenantId: c.tenantId, connector: ENRICH_APOLLO, jobId: c.jobId, lookup: peopleKey })
+  if (verdict?.startsWith('contact rejected')) recordContactRejection(c.db, c.tenantId, c.lead.id, { connector: ENRICH_APOLLO, reason: verdict, sourceUrl: c.src })
+}
+
 async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number>; budget: Record<Prov, number> }): Promise<AttemptOutcome> {
   const { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl } = c
   const orgKey = stepKey('org', lead), peopleKey = stepKey('people', lead)
@@ -206,7 +215,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   const peoplePrior0 = readOutcome(db, peopleClaim, { legacyAudit: false })
   if (peoplePrior0) {
     if (peoplePrior0.prior === 'ok') return { kind: 'replayed-ok' }
-    if (peoplePrior0.prior === 'empty' || peoplePrior0.prior === 'rejected') return { kind: 'replayed-terminal' }
+    if (peoplePrior0.prior === 'empty' || peoplePrior0.prior === 'rejected') { if (peoplePrior0.prior === 'rejected') repairRejectionCard(c, peopleKey); return { kind: 'replayed-terminal' } }
     return { kind: 'uncertain' } // HELD people claim: owner-only - the endpoint is 0-credit, but rate/access risk is not ours to release
   }
 
@@ -231,9 +240,11 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
         org = await apolloOrgEnrich(key, { domain: normDomain(lead.company_domain), name: lead.company }, fetchImpl)
         const agree = org ? contactAgreement({ company_domain: lead.company_domain, where, evidence, domainEstablished: established }, { domain: domainOf(org.website), place: org.place, address: org.address, keyedOnLeadDomain: !!lead.company_domain }) : null
         if (org && agree && !agree.ok) {
-          // The org data returned (paid, terminal) but is NOT this company: the org claim settles 'ok' WITHOUT a
-          // memo (presence stays authoritative for "resume people") and the people step is terminally rejected.
-          auditSettleClaim(db, { ...orgClaim, status: 'ok', results: 1 }, gate.id, 'ok', 1)
+          // The org data returned (paid, terminal) but is NOT this company: the org claim settles 'ok' WITH a
+          // rejection-verdict memo in the SAME transaction, so a crash before the people verdict can never strand
+          // the lead at "org ok, no memo" - replay resumes the verdict below with zero provider calls.
+          const verdict: OrgMemo = { v: 1, website: org.website ?? null, domain: normDomain(org.website), name: org.name ?? null, place: org.place ?? null, address: org.address ?? null, established, keyedOnLeadDomain: !!lead.company_domain, rejected: agree.reason }
+          auditSettleClaim(db, { ...orgClaim, status: 'ok', results: 1 }, gate.id, 'ok', 1, JSON.stringify(verdict))
           orgAudit('ok', 1)
           const pg = auditTryReserve(db, peopleClaim)
           if ('id' in pg) auditSettleClaim(db, { ...peopleClaim, status: agree.reason, results: 0 }, pg.id, agree.reason, 0)
@@ -261,6 +272,16 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
     }
   }
 
+  // A rejection-verdict memo (a crash hit between the paid org settle and the people verdict): resume the verdict
+  // with ZERO calls - the people claim settles 'rejected' and the visible rejection card is repaired, both
+  // idempotent, so a double replay converges to the same terminal state.
+  if (memo?.rejected) {
+    const pg = auditTryReserve(db, peopleClaim)
+    if ('id' in pg) auditSettleClaim(db, { ...peopleClaim, status: memo.rejected, results: 0 }, pg.id, memo.rejected, 0)
+    recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: memo.rejected, sourceUrl: memo.website ?? src })
+    return { kind: 'replayed-terminal' }
+  }
+
   // STEP 2 - the people search (0-credit): the org memo alone authorizes skipping the paid org call.
   const orgDomain = normDomain(lead.company_domain) ?? memo?.domain ?? normDomain(org?.website)
   if (!orgDomain) {
@@ -275,7 +296,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   const pgate = auditTryReserve(db, peopleClaim)
   if ('prior' in pgate) {
     if (pgate.prior === 'ok') return { kind: 'replayed-ok' }
-    if (pgate.prior === 'empty' || pgate.prior === 'rejected') return { kind: 'replayed-terminal' }
+    if (pgate.prior === 'empty' || pgate.prior === 'rejected') { if (pgate.prior === 'rejected') repairRejectionCard(c, peopleKey); return { kind: 'replayed-terminal' } }
     return { kind: 'uncertain' }
   }
   let found: Awaited<ReturnType<typeof apolloPeopleSearch>>
@@ -346,21 +367,18 @@ export function heldCostText(h: HeldEnrichment): string {
   return `Retry the contact lookup: the earlier attempt could not prove its outcome, so this can use People Data Labs credits again (1 per profile returned, up to ${MAX_CONTACTS}).`
 }
 
-// The owner retry itself: release ONLY held claims (the release is guarded + disclosure-audited in store.ts),
-// then re-run the pass for this one lead - the memo makes an Apollo org-paid/people-held resume cost nothing.
-export async function retryHeldEnrichment(db: Database.Database, tenantId: string, leadId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<{ status: 'not_found' | 'nothing_held' } | { status: 'retried'; attached: number; releases: string[] }> {
+// The owner retry itself: releases ONLY the one held claim the owner selected. Consent and cost scope are
+// load-bearing: each retry action names the exact provider+step whose cost/limits were disclosed next to it, so
+// an Apollo action never releases a PDL claim and never runs a PDL call (the re-run is scoped to that provider).
+export async function retryHeldEnrichment(db: Database.Database, tenantId: string, leadId: string, selector: { provider: Prov; step: HeldEnrichment['step'] }, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<{ status: 'not_found' | 'nothing_held' } | { status: 'retried'; attached: number; releases: string[] }> {
   const lead = db.prepare('SELECT l.id, l.company, l.company_domain, l.scan_job_id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as (LeadRow & { scan_job_id: string }) | undefined
   if (!lead) return { status: 'not_found' }
-  const held = heldEnrichments(db, tenantId).filter(h => h.leadId === leadId)
-  if (!held.length) return { status: 'nothing_held' }
-  const releases: string[] = []
-  for (const h of held) {
-    const disclosure = h.provider === 'apollo' && h.step === 'people'
-      ? 'owner retry: people search resumed on the saved org memo; the 0-credit endpoint cannot re-bill'
-      : 'owner retry: the earlier attempt could not prove its outcome; the lookup may be charged again'
-    if (releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)) releases.push(`${h.provider} ${h.step}`)
-  }
-  if (!releases.length) return { status: 'nothing_held' }
-  const r = await enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], deps)
-  return { status: 'retried', attached: r.attached, releases }
+  const h = heldEnrichments(db, tenantId).find(h => h.leadId === leadId && h.provider === selector.provider && h.step === selector.step)
+  if (!h) return { status: 'nothing_held' }
+  const disclosure = h.provider === 'apollo' && h.step === 'people'
+    ? 'owner retry: people search resumed on the saved org memo; the 0-credit endpoint cannot re-bill'
+    : 'owner retry: the earlier attempt could not prove its outcome; the lookup may be charged again'
+  if (!releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)) return { status: 'nothing_held' }
+  const r = await enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider })
+  return { status: 'retried', attached: r.attached, releases: [`${h.provider} ${h.step}`] }
 }
