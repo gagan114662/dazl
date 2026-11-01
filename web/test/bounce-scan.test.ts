@@ -108,3 +108,80 @@ test('a follow-up step Message-ID (dazl.s2.<id>@domain) correlates to the origin
   const r = await syncBounceNotices(d, 'A', deps({ g1: dsnPayload({ auth: AUTH_OK, msgId: `dazl.s2.${SEND_ID}@sender.example` }) }, []), { apply: true })
   assert.deepEqual([r.matched, r.recorded], [1, 1])
 })
+
+// Revocation must stop the scan at every await stage, not only at the gate (review bar: token/list/fetch/DNS).
+test('a revocation during the token refresh stops the scan before the list call', async () => {
+  const d = db()
+  const { encryptSecret } = await import('../lib/secrets.ts')
+  const master = (await import('node:crypto')).randomBytes(32)
+  d.prepare("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES ('A', 'me@sender.example', ?, 'active', 1)").run(encryptSecret('rt', 'gmail-refresh:A', master))
+  acceptBounceScanConsent(d, 'A')
+  const calls: string[] = []
+  const f = (async (u: unknown) => {
+    const url = String(u); calls.push(url)
+    if (url.includes('oauth2.googleapis.com/token')) { revokeBounceScanConsent(d, 'A'); return json({ access_token: 'at' }) }
+    return json({}, 404)
+  }) as typeof fetch
+  const r = await syncBounceNotices(d, 'A', { env: { GOOGLE_CLIENT_ID: 'id', GOOGLE_CLIENT_SECRET: 's' }, fetchImpl: f, master }, { apply: true })
+  assert.equal(r.stopped, 'revoked')
+  assert.equal(calls.filter(u => u.includes('gmail.googleapis.com')).length, 0, 'no list or fetch after the token-stage revoke')
+})
+
+test('a revocation during the list call stops the scan before any candidate fetch', async () => {
+  const d = withAccount(db()); acceptBounceScanConsent(d, 'A')
+  const calls: string[] = []
+  const f = (async (u: unknown) => {
+    const url = String(u); calls.push(url)
+    if (url.includes('messages?')) { revokeBounceScanConsent(d, 'A'); return json({ messages: [{ id: 'g1' }] }) }
+    return json({ id: 'g1', payload: dsnPayload({ auth: AUTH_OK }) })
+  }) as typeof fetch
+  const r = await syncBounceNotices(d, 'A', { env, fetchImpl: f, resolveMxFor: async () => ['mx.prospect.example'] }, { apply: true })
+  assert.equal(r.stopped, 'revoked')
+  assert.equal(r.fetched, 0, 'no candidate was opened')
+  assert.equal(bounceCount(d, 'A'), 0)
+})
+
+test('a revocation while a candidate is open stops before the next fetch and before any write', async () => {
+  const d = withAccount(db()); acceptBounceScanConsent(d, 'A')
+  const calls: string[] = []
+  const two = { g1: dsnPayload({ msgId: 'dazl.ffffffffffffffffffffffff@sender.example' }), g2: dsnPayload({ auth: AUTH_OK }) }
+  const f = (async (u: unknown) => {
+    const url = String(u); calls.push(url)
+    if (url.includes('messages?')) return json({ messages: [{ id: 'g1' }, { id: 'g2' }] })
+    if (url.includes('messages/g1')) { revokeBounceScanConsent(d, 'A'); return json({ id: 'g1', payload: two.g1 }) }
+    if (url.includes('messages/g2')) return json({ id: 'g2', payload: two.g2 })
+    return json({}, 404)
+  }) as typeof fetch
+  const r = await syncBounceNotices(d, 'A', { env, fetchImpl: f, resolveMxFor: async () => ['mx.prospect.example'] }, { apply: true })
+  assert.equal(r.stopped, 'revoked')
+  assert.equal(r.fetched, 1, 'g2 was never opened')
+  assert.equal(r.matched, 0)
+  assert.equal(bounceCount(d, 'A'), 0)
+})
+
+test('a revocation during the DNS resolution stops before the verdict writes', async () => {
+  const d = withAccount(db()); acceptBounceScanConsent(d, 'A')
+  const r = await syncBounceNotices(d, 'A', { env, fetchImpl: gmail({ g1: dsnPayload({ auth: AUTH_OK }) }, []), resolveMxFor: async () => { revokeBounceScanConsent(d, 'A'); return ['mx.prospect.example'] } }, { apply: true })
+  assert.equal(r.stopped, 'revoked')
+  assert.equal(r.matched, 0)
+  assert.equal(bounceCount(d, 'A'), 0)
+  assert.ok(!d.prepare("SELECT 1 FROM suppressions WHERE tenant_id = 'A'").get())
+})
+
+// Origin/forgery at the scan level: only the receiving MX's FIRST Authentication-Results, aligned with the
+// recipient domain's MX evidence, may prove a bounce. Anything else is held, never written.
+test('an Authentication-Results from an untrusted authserv-id is held, even with a passing aligned domain', async () => {
+  const d = withAccount(db()); acceptBounceScanConsent(d, 'A')
+  const forged = dsnPayload({ auth: 'relay.attacker.example; spf=pass smtp.mailfrom=mx.prospect.example; dkim=pass header.d=prospect.example' })
+  const r = await syncBounceNotices(d, 'A', deps({ g1: forged }, []), { apply: true })
+  assert.deepEqual([r.held, r.recorded], [1, 0])
+  assert.equal(bounceCount(d, 'A'), 0)
+})
+
+test("an attacker-own-domain pass on the trusted authserv is not provenance and is held", async () => {
+  const d = withAccount(db()); acceptBounceScanConsent(d, 'A')
+  const evil = dsnPayload({ auth: 'mx.google.com; spf=pass smtp.mailfrom=evil.example; dkim=pass header.d=evil.example; dmarc=pass header.from=evil.example' })
+  const r = await syncBounceNotices(d, 'A', deps({ g1: evil }, []), { apply: true })
+  assert.deepEqual([r.held, r.recorded], [1, 0])
+  assert.equal(bounceCount(d, 'A'), 0)
+})

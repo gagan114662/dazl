@@ -50,7 +50,7 @@ const MAX_CANDIDATES = 25
 const defaultResolveMx = async (domain: string): Promise<string[]> => (await resolveMx(domain)).map(r => r.exchange.toLowerCase())
 
 export interface BounceScanDeps extends OAuthDeps { resolveMxFor?: (domain: string) => Promise<string[]> }
-export interface BounceScanResult { listed: number; fetched: number; matched: number; recorded: number; duplicate: number; held: number; discarded: number; applied: boolean; error?: string }
+export interface BounceScanResult { listed: number; fetched: number; matched: number; recorded: number; duplicate: number; held: number; discarded: number; applied: boolean; stopped?: string; error?: string }
 
 export async function syncBounceNotices(db: Database.Database, tenantId: string, d: BounceScanDeps = {}, opts: { apply?: boolean } = {}): Promise<BounceScanResult> {
   const out: BounceScanResult = { listed: 0, fetched: 0, matched: 0, recorded: 0, duplicate: 0, held: 0, discarded: 0, applied: opts.apply === true }
@@ -59,6 +59,10 @@ export async function syncBounceNotices(db: Database.Database, tenantId: string,
   const acct = db.prepare('SELECT email, read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; read_granted: number; status: string } | undefined
   if (!acct || acct.read_granted !== 1 || acct.status !== 'active') return { ...out, error: 'reading_not_enabled' }
   const token = await getAccessToken(db, tenantId, d)
+  // Consent is re-proven after every await stage (token, list, each fetch): a revocation landing mid-scan
+  // stops the scan where it stands - no further fetches, no writes. JS is single-threaded, so the awaits
+  // are the only interleave points; between the last check and a write there is no await.
+  if (!hasBounceScanConsent(db, tenantId)) return { ...out, stopped: 'revoked' }
   const f = d.fetchImpl ?? fetch
   const get = async (path: string) => {
     const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) })
@@ -66,6 +70,7 @@ export async function syncBounceNotices(db: Database.Database, tenantId: string,
     return r.json()
   }
   const list = (await get(`messages?q=${encodeURIComponent(DSN_LIST_QUERY)}&maxResults=${MAX_CANDIDATES}`)) as { messages?: { id: string }[] }
+  if (!hasBounceScanConsent(db, tenantId)) return { ...out, stopped: 'revoked' }
   const ids = (list.messages ?? []).map(m => m.id)
   out.listed = ids.length
   const lookup = (originalMessageId: string) => {
@@ -80,6 +85,7 @@ export async function syncBounceNotices(db: Database.Database, tenantId: string,
     return p
   }
   for (const id of ids) {
+    if (!hasBounceScanConsent(db, tenantId)) return { ...out, stopped: 'revoked' }
     const msg = (await get(`messages/${id}?format=full`)) as { payload?: GPart }
     out.fetched++
     const payload = msg.payload
@@ -94,6 +100,7 @@ export async function syncBounceNotices(db: Database.Database, tenantId: string,
       if (send) {
         const domain = send.to_email.split('@')[1]
         expected = [domain, ...(await mxOf(domain))]
+        if (!hasBounceScanConsent(db, tenantId)) return { ...out, stopped: 'revoked' }
       }
     }
     const verdict = decideDsn(payload, from, lookup, { trustedAuthservIds: TRUSTED_AUTHSERV_IDS, expectedBounceDomains: expected })
