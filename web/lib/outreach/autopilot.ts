@@ -502,6 +502,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
         if (AUTHORITY_RETURNS.has(code) || regranted()) { release(id, leadId, ENDED_WHY); out.stopped = AUTHORITY_RETURNS.has(code) ? code : 'autopilot_off'; ends = true; return }
         if (AUTHORITY_ENDED.has(code)) { keepHeld(id, leadId, code, attempts, now, expected); out.held++; out.stopped = code; ends = true; return }
         if (WAIT_FOR_USER.has(code)) { hold(id, leadId, code, now, attempts, expected); if (code !== 'paused') pause(db, tenantId, code); out.held++; out.stopped = code; ends = true; return }
+        // #413: safety ingest behind is a transient infrastructure condition, never the user's decision and never a
+        // retry: hold on the message row (the drain's own set, hold_until = the usual 15-minute window) exactly as the
+        // pre-merge holdSendFailure kept it. The send path re-checks freshness at every later commitment, so a draft
+        // the user sends by hand while stale is refused there too (fail closed).
+        if (code === 'reply_sync_stale') { setHold(db, tenantId, id, leadId, 'reply_sync_stale', now + TRANSIENT_RETRY_S); out.held++; return }
         if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1, expected); out.held++; return }
         // Any other refusal (a check now holds the lead or the address, the sending account changed, retries ran out):
         // the user decides.

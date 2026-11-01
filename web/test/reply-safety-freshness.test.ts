@@ -180,6 +180,9 @@ test('reply_sync_stale hold: drain avoids the send while stale, then selects the
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run('L9', (db.prepare("SELECT scan_job_id FROM leads WHERE id = 'L1'").get() as { scan_job_id: string }).scan_job_id, 'Delta', 'prospect@corp.example', 'Hiring', 'https://delta.example', 'Hiring', 90, 80)
   db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = 'L9'").run()
+  // The drain's candidate query only reads DONE scans: a running scan's leads are not final yet (same trigger-legal
+  // lifecycle as the real runner: pending -> running -> leads -> done).
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = (SELECT scan_job_id FROM leads WHERE id = 'L9')").run()
   const sent: string[] = []
   const d = (now: number, onToken?: () => void): Deps & { flags: Record<string, string> } => ({ flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '1' }, env: genv, master: mstr, now, baseUrl: 'https://app.test', fetchImpl: tokenFetch(onToken), sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never })
   syncRow(db, wall - REPLY_SAFETY_STALE_S - 10) // stale: the actual hold path
@@ -187,7 +190,9 @@ test('reply_sync_stale hold: drain avoids the send while stale, then selects the
   assert.equal(r1.sent, 0)
   assert.equal(sent.length, 0, 'no bytes went to Gmail')
   const held = db.prepare("SELECT status, hold_reason FROM outreach_messages WHERE lead_id = 'L9'").get() as { status: string; hold_reason: string | null }
-  assert.deepEqual(held, { status: 'approved', hold_reason: 'reply_sync_stale' }, 'held transient, never skipped, no retries consumed')
+  // Merged representation (#448 drain x #413 hold): autopilot's approval comes off a draft that is not going (the
+  // drain owns the retry and re-approves at its own commitment), and the transient hold lives on the message row.
+  assert.deepEqual(held, { status: 'draft', hold_reason: 'reply_sync_stale' }, 'held transient, never skipped, no retries consumed')
   // Still stale at the drain: the hold is selected but sendMessage's own pre-check re-refuses - no send, hold kept.
   const r2 = await drainFirstTouch(db, 'A', d(wall + 901))
   assert.equal(r2.sent, 0)
