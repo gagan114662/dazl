@@ -11,7 +11,7 @@ import { fullText, messageText, type GPart } from './reply-text.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens its outreach threads and bounded candidate delivery notices,
-// by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
+// by thread id. It searches only the consent-disclosed bounded daemon-notice window beyond its own threads, stores only a 200-character excerpt of a reply, and
 // reads nothing when the user has not consented or has turned it off.
 export { READ_CONSENT_VERSION }
 export { READ_CONSENT_TEXT } from './read-consent.ts'
