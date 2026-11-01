@@ -29,10 +29,10 @@ class CiGateTests(unittest.TestCase):
    with patch.object(m.urllib.request.OpenerDirector,'open',side_effect=get):m.require_ci('gagan114662/dazl',SHA,str(token))
  def test_ci_refusal_inside_run_cannot_reach_mutation(self):
   for error in [ValueError('pending'),ValueError('missing'),ValueError('malformed'),OSError('network')]:
-   with patch.object(m,'bind_launch'),patch.object(m,'require_ci',side_effect=error),patch.object(m.subprocess,'run')as child:
+   with patch.object(m,'bind_launch'),patch.object(m,'bind_target'),patch.object(m,'require_ci',side_effect=error),patch.object(m.subprocess,'run')as child:
     r,c=m.run([['preflight']],['launch']);self.assertEqual(c,1);self.assertFalse(r['launch_reached']);child.assert_not_called()
  def test_ci_rechecked_after_preflights(self):
-  with patch.object(m,'bind_launch'),patch.object(m,'require_ci',side_effect=[None,ValueError('changed')]),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0))as child:
+  with patch.object(m,'bind_launch'),patch.object(m,'bind_target'),patch.object(m,'require_ci',side_effect=[None,ValueError('changed')]),patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0))as child:
    r,c=m.run([['preflight']],['launch']);self.assertEqual(c,1);self.assertFalse(r['launch_reached']);self.assertEqual(child.call_count,1)
  def test_shell_ignoring_nonzero_cannot_launch_without_ci_contract(self):
   with tempfile.TemporaryDirectory()as tmp:
@@ -73,7 +73,7 @@ class CiGateTests(unittest.TestCase):
     with patch.object(m.urllib.request.OpenerDirector,'open',side_effect=[Response(v)for v in values]),self.assertRaises(Exception):m.require_ci('gagan114662/dazl',SHA,str(token))
    with self.assertRaises(ValueError):m.require_ci('other/repo',SHA,str(token))
  def test_positive_ci_launch_runs_exactly_once(self):
-  with patch.object(m,'bind_launch'),patch.object(m,'require_ci') as ci,patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0))as child:
+  with patch.object(m,'bind_launch'),patch.object(m,'bind_target'),patch.object(m,'require_ci') as ci,patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0))as child:
    result,code=m.run([['check']],['launch']);self.assertEqual(code,0);self.assertTrue(result['launch_reached']);self.assertEqual(ci.call_count,2);self.assertEqual(child.call_count,2);self.assertEqual(child.call_args.args[0],['launch'])
 
 class BindingAdversarialTests(unittest.TestCase):

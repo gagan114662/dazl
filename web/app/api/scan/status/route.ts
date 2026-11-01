@@ -1,5 +1,7 @@
 import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
+import { providerIssues } from '@/lib/scan/provider-issues'
+import { costPerVerificationPass, COST_PER_PASS_SCOPE } from '@/lib/scan/cost-per-verification-pass'
 import { getJob, jobCost, MAX_ATTEMPTS } from '@/lib/scan/store'
 import { compareActual, type RunEstimate } from '@/lib/scan/price-estimate'
 import { kickRunner } from '@/lib/scan/runner'
@@ -55,9 +57,14 @@ export async function GET(req: NextRequest) {
     const est = saved.estimate ? JSON.parse(saved.estimate) as Pick<RunEstimate, 'total' | 'rows' | 'payer' | 'cap'> : null
     if (est) {
       const ended = job.status === 'done' || job.status === 'failed'
-      cost = { estimate: { total: est.total, payer: est.payer, cap: est.cap, rows: est.rows }, actual: ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd }) : null }
+      const actual = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd }) : null
+      // Cost per verification pass: the scan's own verified counter as denominator, model cost as
+      // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead
+      // claim. Unknowns (running, unrecorded cost or count, zero passes) stay named, never 0/Infinity.
+      cost = { estimate: { total: est.total, payer: est.payer, cap: est.cap, rows: est.rows }, actual, per_verification_pass: costPerVerificationPass({ verified: job.verified, model_usd: actual?.model_usd ?? null, scanEnded: ended }), model_scope: COST_PER_PASS_SCOPE }
     }
   } catch { cost = null }
-  return NextResponse.json({ ...(first5 ? { first5 } : {}), cost, progress, outcome, resolution, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
+  const provider_issues = await providerIssues(user.tenantId, job.id)
+  return NextResponse.json({ ...(first5 ? { first5 } : {}), cost, provider_issues, progress, outcome, resolution, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 0 ? 'user' : null })
 
 }

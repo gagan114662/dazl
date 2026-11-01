@@ -147,11 +147,49 @@ def bind_launch(launch, commit):
         raise ValueError('launch_commit')
 
 
+def bind_target(launch, commit):
+    # Called only after strict argv validation. Not a boundary against an
+    # operator who can run immutable older scripts or edit code with sudo.
+    if launch.count('--stage') != 1:
+        raise ValueError('target_stage_missing')
+    stage_input = Path(launch[launch.index('--stage') + 1]).absolute()
+    if any(p.is_symlink() for p in [stage_input, *stage_input.parents]):
+        raise ValueError('target_stage_symlink')
+    stage = stage_input.resolve(strict=True)
+    if stage.name != 'web':
+        raise ValueError('target_stage_layout')
+    root = stage.parent
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(root), *args],
+            stderr=subprocess.DEVNULL, timeout=15)
+    if git('rev-parse', '--show-toplevel').decode().strip() != str(root):
+        raise ValueError('target_git_root')
+    if git('rev-parse', 'HEAD').decode().strip() != commit:
+        raise ValueError('target_head_mismatch')
+    # Untracked bytecode and build artifacts are normal. They are not sources
+    # of launcher identity. The explicitly used helper paths are checked below.
+    if git('status', '--porcelain', '--untracked-files=no').strip():
+        raise ValueError('target_tracked_dirty')
+    marker = stage / '.build-commit'
+    if marker.is_symlink() or not marker.is_file() or marker.read_text().strip() != commit:
+        raise ValueError('target_build_mismatch')
+    for name, actual in [('checked_launch.py', Path(__file__)),
+                         ('safe_launch.py', Path(launch[1]))]:
+        expected_path = root / 'ops' / name
+        if actual.absolute() != expected_path or any(p.is_symlink() for p in [actual, *actual.parents]):
+            raise ValueError('target_helper_path')
+        if not actual.is_file() or not stat.S_ISREG(actual.stat().st_mode) or actual.stat().st_mode & 0o022:
+            raise ValueError('target_helper_permissions')
+        if actual.read_bytes() != git('show', commit + ':ops/' + name):
+            raise ValueError('target_helper_bytes')
+
+
 def run(preflights, launch, timeout=120, *, repository=None, commit=None, token_file=None):
     if not math.isfinite(timeout) or timeout <= 0:
         return {'status': 'timeout_invalid', 'launch_reached': False}, 2
     try:
         bind_launch(launch, commit)
+        bind_target(launch, commit)
         require_ci(repository, commit, token_file)
     except Exception:
         return {'status': 'ci_refused', 'launch_reached': False}, 1
@@ -166,6 +204,8 @@ def run(preflights, launch, timeout=120, *, repository=None, commit=None, token_
         if code != 0:
             return {'status': 'preflight_failed', 'index': i, 'returncode': code, 'launch_reached': False}, 1
     try:
+        bind_launch(launch, commit)
+        bind_target(launch, commit)
         require_ci(repository, commit, token_file)
     except Exception:
         return {'status': 'ci_refused', 'launch_reached': False}, 1
