@@ -101,9 +101,17 @@ test('icpFromWebsite: returns a normalized draft ICP with the final source url',
   }
 })
 
-test('icpFromWebsite: no key, unreadable key, js-only page and bad model output are typed errors', async () => {
+test('icpFromWebsite: a keyless account gets the free read - extracted facts with sources, never a model call (#409)', async () => {
   const empty = new Database(':memory:'); migrateKeys(empty)
-  assert.deepEqual(await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: goodProvider } }), { error: 'no_api_key' })
+  let calls = 0
+  const counting: Provider = { research: async () => { calls++; throw new Error('unused') }, complete: async () => { calls++; return '{}' } }
+  const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: counting } })
+  assert.equal(calls, 0, 'no model call without a tenant key')
+  assert.deepEqual(out, {
+    free: true, site: 'acme.example', source: 'https://acme.example/',
+    facts: [{ kind: 'title', text: 'Acme', source: 'https://acme.example/' }],
+  })
+  assert.ok(!('icp' in out) && !('sells' in out) && !('research' in out), 'the free read carries no inferred draft')
   assert.deepEqual(await icpFromWebsite(setup(true), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: goodProvider } }), { error: 'key_unreadable' })
   const tiny = (async () => htmlResponse('<html><body><script>app()</script></body></html>')) as unknown as typeof fetch
   assert.deepEqual(await icpFromWebsite(setup(), 'A', 'https://spa.example', { master, lookup: pubLookup, fetchImpl: tiny, providers: { anthropic: goodProvider } }), { error: 'js_only' })
@@ -111,12 +119,31 @@ test('icpFromWebsite: no key, unreadable key, js-only page and bad model output 
   assert.deepEqual(await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: junk } }), { error: 'key_rejected' })
 })
 
-test('icpFromWebsite: the key is checked before any fetch (trial or operator keys never pay)', async () => {
-  let called = 0
-  const counting = (async () => { called++; return htmlResponse(HTML) }) as unknown as typeof fetch
+test('icpFromWebsite: the free read labels title and description with their source; a fetch failure stays a typed error (#409)', async () => {
+  const empty = () => { const d = new Database(':memory:'); migrateKeys(d); return d }
+  const withMeta = (async () => htmlResponse('<html><head><title>Acme Inc</title><meta name="description" content="CRM cleanup for sales teams."></head><body>' + 'we sell crm tools '.repeat(30) + '</body></html>')) as unknown as typeof fetch
+  const out = await icpFromWebsite(empty(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: withMeta, providers: { anthropic: goodProvider } })
+  assert.deepEqual(out, {
+    free: true, site: 'acme.example', source: 'https://acme.example/',
+    facts: [
+      { kind: 'title', text: 'Acme Inc', source: 'https://acme.example/' },
+      { kind: 'description', text: 'CRM cleanup for sales teams.', source: 'https://acme.example/' },
+    ],
+  })
+  // No inference leaked in: the body copy about selling to sales teams appears only as the stated description.
+  assert.deepEqual(await icpFromWebsite(empty(), 'A', 'https://internal.example', { master, lookup: privLookup, fetchImpl: withMeta, providers: { anthropic: goodProvider } }), { error: 'not_public' })
+})
+
+test('icpFromWebsite: keyless fetches the public page but never reaches a model (trial or operator keys never pay)', async () => {
+  let fetched = 0
+  const counting = (async () => { fetched++; return htmlResponse(HTML) }) as unknown as typeof fetch
+  let calls = 0
+  const countingProvider: Provider = { research: async () => { calls++; throw new Error('unused') }, complete: async () => { calls++; return '{}' } }
   const empty = new Database(':memory:'); migrateKeys(empty)
-  await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: counting, providers: { anthropic: goodProvider } })
-  assert.equal(called, 0, 'no outbound fetch without a tenant key')
+  const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: counting, providers: { anthropic: countingProvider } })
+  assert.equal(fetched, 1, 'the free path reads the one public page')
+  assert.equal(calls, 0, 'no model call without a tenant key')
+  assert.ok('free' in out, JSON.stringify(out))
 })
 
 

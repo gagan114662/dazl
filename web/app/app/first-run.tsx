@@ -64,6 +64,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [research, setResearch] = useState<unknown>(null)
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
+  // The free website read (#409): only facts the page itself states, each with its source URL. Set when the account
+  // has no AI key; the profile form below stays the user's to fill - nothing here is inferred.
+  const [freeRead, setFreeRead] = useState<{ site: string; source: string; facts: { kind: string; text: string; source: string }[] } | null>(null)
   // The brain: facts from the website read, revealed one by one while it builds.
   const [facts, setFacts] = useState<BrainFact[]>([])
   const [shown, setShown] = useState(0)
@@ -143,6 +146,16 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         if (j.error === 'no_api_key') { setNeedKey(true); return }
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
+      if (j.free === true) {
+        // Keyless free read: show the page's own facts, route to the reviewable manual profile. No brain facts, no
+        // inferred draft, no auto-save - and no promise of a free search (the ask step prices key/trial honestly).
+        setFreeRead({ site: String(j.site ?? ''), source: String(j.source ?? ''), facts: Array.isArray(j.facts) ? j.facts : [] })
+        try { setReadFrom(new URL(String(j.source ?? '')).hostname) } catch { setReadFrom('your website') }
+        setWebsite(url)
+        setStep('brain')
+        return
+      }
+      setFreeRead(null)
       if (j.sells) setSells(String(j.sells))
       fillBuyer(j.icp ?? {})
       const rb = asResearchBlock((j.icp as { research?: unknown })?.research)
@@ -390,8 +403,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {error && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="alert">{error}</p>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
-        <h2 className="text-xl font-semibold">Here&apos;s what we think you sell and who buys it</h2>
-        <p className="text-[#555]">{readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.</p>
+        <h2 className="text-xl font-semibold">{freeRead ? `We read ${freeRead.site} - here is what the page itself says` : 'Here\'s what we think you sell and who buys it'}</h2>
+        <p className="text-[#555]">{freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself, or add your AI key for the full automatic read.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.`}</p>
+        {freeRead && <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-3" data-testid="free-site-read">
+          {freeRead.facts.length === 0
+            ? <p className="text-[#555]">The page did not state a title or description in readable HTML.</p>
+            : <ul className="flex flex-col gap-2">{freeRead.facts.map((fact, i) => <li key={i}><span className="text-xs uppercase tracking-wide text-[#777]">{fact.kind === 'title' ? 'Page title' : 'Page description'}</span><br />{fact.text} <a className="underline text-xs" href={fact.source} target="_blank" rel="noreferrer">source</a></li>)}</ul>}
+        </div>}
+        {freeRead && !hasKey && <KeyInline reason="The full automatic read runs on your own Anthropic or OpenAI key." onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#777]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>

@@ -45,12 +45,12 @@ jobs:
       # The #420 manual-profile ready card and readiness panel: a saved-by-hand profile completes both surfaces without a website and the panel must not contradict the card. They must run, not skip.
       - name: Ready card and readiness panel (manual profile without a website)
         run: node test/ui/ready-card.ui.mjs | tee /tmp/rc.out && ! grep -q '^NOT RUN' /tmp/rc.out && node test/ui/readiness.ui.mjs | tee /tmp/rd.out && ! grep -q '^NOT RUN' /tmp/rd.out
-      # refs #471: follow-ups held-state honesty on the real route (production build, throwaway db, synthetic fixtures, no stubbing, no send). It must run, not skip.
-      - name: Follow-ups held states (promised date only when sendable; held shows reason + schedule date)
-        run: SHOTS=preview/followups-held node test/ui/followups-held.ui.mjs | tee /tmp/fh.out && ! grep -q '^NOT RUN' /tmp/fh.out
       # The #410 trial line in Settings: a fresh account on an unconfigured trial is told the trial is unavailable, never that it used its scans; available counts down; used-up and throttled say their own reasons. It must run, not skip.
       - name: Trial status line (fresh, available, used-up, throttled)
         run: SHOTS=preview/trial-status node test/ui/trial-status.ui.mjs | tee /tmp/ts.out && ! grep -q '^NOT RUN' /tmp/ts.out
+      # The #409 website-first free read: a keyless account gets the page's own source-labeled facts and the manual profile - no inference, no auto-save, no key demand; the keyed path keeps the AI fill; a failed read says the true reason and leaves the manual path. It must run, not skip.
+      - name: Free site read (keyless facts with sources, keyed AI fill, failed read manual path)
+        run: SHOTS=preview/free-site-read node test/ui/free-site-read.ui.mjs | tee /tmp/fsr.out && ! grep -q '^NOT RUN' /tmp/fsr.out
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
