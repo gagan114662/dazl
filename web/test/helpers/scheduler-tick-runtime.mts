@@ -30,6 +30,12 @@ for (const t of [A, B]) {
 }
 // B can read replies (stub Gmail + read consent); A has no mailbox connected, so its reply sync fails every tick
 startOAuth(db, B, { env: { DAZL_ENV: 'staging', PUBLIC_BASE_URL: 'https://staging.example.test' } as never }); acceptReadConsent(db, B)
+// C is first-touch-only with read consent: connected mailbox, no autopilot row, no follow-ups - replies must still be
+// ingested on tick (#413: read authority is not send authority). D has a mailbox but no read consent: never selected.
+const C = 'tenant-c-readonly', D = 'tenant-d-noconsent'
+for (const t of [C, D]) db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name) VALUES (?, ?, 'x', 'y', ?)").run(t, `${t}@example.test`, `${t} business`)
+startOAuth(db, C, { env: { DAZL_ENV: 'staging', PUBLIC_BASE_URL: 'https://staging.example.test' } as never }); acceptReadConsent(db, C)
+startOAuth(db, D, { env: { DAZL_ENV: 'staging', PUBLIC_BASE_URL: 'https://staging.example.test' } as never })
 const call = async (secret?: string) => tick(new NextRequest('http://localhost/api/internal/tick', { method: 'POST', headers: secret ? { authorization: `Bearer ${secret}` } : {} }))
 const runs = () => db.prepare('SELECT status, lease_generation, tenants_attempted, tenants_failed, finished_at FROM scheduler_runs ORDER BY started_at, rowid').all() as { status: string; lease_generation: number; tenants_attempted: number; tenants_failed: number; finished_at: number | null }[]
 const now = () => Math.floor(Date.now() / 1000)
@@ -45,10 +51,15 @@ test('tick heartbeats: cron off, a stalled tenant, a crashed tick, recovery; no 
   // one tick: recorded with its lease generation; A's reply sync failed, B's work succeeded
   const r1 = await (await call('test-tick-secret')).json()
   assert.equal(r1.ok, true); assert.equal(r1.tenant_failures, 1)
-  assert.deepEqual(runs().map(r => [r.status, r.lease_generation, r.tenants_attempted, r.tenants_failed]), [['partial', 1, 2, 1]])
+  assert.deepEqual(runs().map(r => [r.status, r.lease_generation, r.tenants_attempted, r.tenants_failed]), [['partial', 1, 3, 1]])
   const p = (t: string, k: string) => db.prepare('SELECT * FROM scheduler_progress WHERE tenant_id = ? AND kind = ?').get(t, k) as { last_success_at: number | null; consecutive_failures: number; last_error: string | null } | undefined
   assert.equal(p(A, 'reply_sync')?.consecutive_failures, 1); assert.match(p(A, 'reply_sync')!.last_error!, /reading_not_enabled/)
   assert.ok(p(B, 'reply_sync')?.last_success_at); assert.ok(p(B, 'followups')?.last_success_at)
+  // #413: C (read consent, sending never enabled) got its reply sync; follow-ups never ran for it; D (no read consent)
+  // was never selected, so nothing about it exists - and with consent absent syncReplies makes zero provider calls.
+  assert.ok(p(C, 'reply_sync')?.last_success_at, 'read-only tenant reply sync ran')
+  assert.equal(p(C, 'followups'), undefined, 'no follow-up run without send-side enablement')
+  assert.equal(p(D, 'reply_sync'), undefined, 'no consent, no read')
 
   // A stalls: after BLOCKED_AFTER_FAILURES ticks it is blocked; B stays healthy
   for (let i = 1; i < BLOCKED_AFTER_FAILURES; i++) await call('test-tick-secret')

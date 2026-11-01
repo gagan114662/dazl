@@ -120,6 +120,9 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   const n1 = p(N, 'sequences')!
   assert.equal(n1.last_outcome, 'success'); assert.ok(n1.last_success_at); assert.equal(n1.last_hold, null)
   // the run: R, F and U failed; P was held; S and N succeeded
+  // #413: reply sync is gated on read consent, not send flags: R has no mailbox yet, so no reply_sync row; every consenting tenant has one
+  assert.equal(p(R, 'reply_sync'), undefined)
+  for (const t of [F, P, S, U, N]) assert.ok(p(t, 'reply_sync'), `reply sync attempted for consenting ${t}`)
   assert.deepEqual(lastRun(), { status: 'partial', tenants_attempted: 6, tenants_failed: 3 })
 
   // --- tick 2: S hits the cap (one send today, cap 1): a hold that keeps its success time; U is now paused: a hold that keeps its failure
@@ -206,7 +209,9 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   assert.equal((await tenantFreshness(db, F)).state, 'healthy')
   // S's sequence is done and R's was stopped by a lead gate once its run could proceed: no scheduled work left for either
   assert.equal(db.prepare("SELECT count(*) AS n FROM sequences WHERE tenant_id IN (?, ?) AND status IN ('approved','active')").pluck().get(R, S), 0)
-  assert.deepEqual(lastRun(), { status: 'ok', tenants_attempted: 5, tenants_failed: 0 }, 'F, P, U, N, W')
+  // #413: reply sync runs for every tenant with read consent, independent of send-side state (R and S have no scheduled work left but still read)
+  for (const t of [R, S]) assert.equal(p(t, 'reply_sync')!.last_outcome, 'success', `reply sync attempted for ${t} despite no send-side work`)
+  assert.deepEqual(lastRun(), { status: 'ok', tenants_attempted: 7, tenants_failed: 0 }, 'F, P, R, S, U, N, W')
   const h6 = await schedulerHealth(db)
   assert.equal(h6.tenants.blocked, 0); assert.equal(h6.tenants.held, 1, 'U is still paused with its uncertain send')
   assert.equal(h6.problems.some(x => /blocked/.test(x)), false)
@@ -220,10 +225,11 @@ test('two ticks at once: one runs, one is skipped, one run row, one attempt per 
   const ran = [a, b].filter(r => r.run), skipped = [a, b].filter(r => r.skipped)
   assert.equal(ran.length, 1); assert.equal(skipped.length, 1); assert.equal(skipped[0].skipped, 'another tick is running')
   assert.equal(db.prepare('SELECT count(*) FROM scheduler_runs').pluck().get(), before + 1)
-  // every tenant with work has exactly one row per kind, all stamped with the one run (the primary key allows no second)
+  // every tenant with work has exactly one row per kind, all stamped with the one run (the primary key allows no second);
+  // #413: every consenting tenant also has its reply_sync row, independent of send-side work
   const rows = db.prepare('SELECT tenant_id, kind FROM scheduler_progress WHERE last_run_id = ? ORDER BY tenant_id, kind').all(ran[0].run) as { tenant_id: string; kind: string }[]
-  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/followups`, `${F}/reply_sync`, `${N}/sequences`, `${P}/sequences`, `${U}/sequences`, `${W}/followups`, `${W}/reply_sync`])
-  assert.deepEqual(lastRun(), { status: 'ok', tenants_attempted: 5, tenants_failed: 0 })
+  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/followups`, `${F}/reply_sync`, `${N}/reply_sync`, `${N}/sequences`, `${P}/reply_sync`, `${P}/sequences`, `${R}/reply_sync`, `${S}/reply_sync`, `${U}/reply_sync`, `${U}/sequences`, `${W}/followups`, `${W}/reply_sync`])
+  assert.deepEqual(lastRun(), { status: 'ok', tenants_attempted: 7, tenants_failed: 0 })
 })
 
 // A worker that throws (its table is gone for one tick) is a failure with the error's class, never a stop of the whole
