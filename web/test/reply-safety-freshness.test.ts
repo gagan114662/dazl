@@ -256,17 +256,27 @@ async function seedReopenTenant(withConsent: boolean) {
 
 test('re-open: revoked or never-granted read authority holds a thread-bound re-open; restored consent with a fresh sync sends it', async () => {
   const wall = Math.floor(Date.now() / 1000)
-  const attempt = async (db: Database.Database, mstr: Buffer) => {
+  const attempt = async (db: Database.Database, mstr: Buffer, onToken?: () => void) => {
     let sends = 0, err = ''
-    try { await sendReopen(db, 'A', 't1', { env: genv, now: wall, master: mstr, sendFn: (async () => { sends++; return { id: 'g' } }) as never, fetchImpl: tokenFetch() }) } catch (e) { err = e instanceof OutreachError ? e.code : String(e) }
+    try { await sendReopen(db, 'A', 't1', { env: genv, now: wall, master: mstr, sendFn: (async () => { sends++; return { id: 'g' } }) as never, fetchImpl: tokenFetch(onToken) }) } catch (e) { err = e instanceof OutreachError ? e.code : String(e) }
     return { sends, err }
   }
   const rev = await seedReopenTenant(false) // never granted (same gate as revoked: no current read authority)
   const r1 = await attempt(rev.db, rev.master)
   assert.deepEqual(r1, { sends: 0, err: 'reply_sync_stale' })
   assert.equal((rev.db.prepare("SELECT status FROM reopen_messages WHERE thread_id = 't1'").get() as { status: string }).status, 'draft', 'nothing claimed: the draft waits')
+  // Read authority present and fresh at the pre-check, rotting DURING the token await: the post-await
+  // re-check (reopen.ts) throws before the claim - nothing sends, the draft stays recoverable.
+  const mid = await seedReopenTenant(true)
+  syncRow(mid.db, wall)
+  const r2 = await attempt(mid.db, mid.master, () => syncRow(mid.db, wall - REPLY_SAFETY_STALE_S - 10))
+  assert.deepEqual(r2, { sends: 0, err: 'reply_sync_stale' })
+  assert.equal((mid.db.prepare("SELECT status FROM reopen_messages WHERE thread_id = 't1'").get() as { status: string }).status, 'draft', 'mid-await hold leaves the draft untouched')
+  syncRow(mid.db, wall)
+  const r2b = await attempt(mid.db, mid.master)
+  assert.deepEqual(r2b, { sends: 1, err: '' }, 'the same draft sends once the ingest is fresh again')
   const okT = await seedReopenTenant(true)
   syncRow(okT.db, wall)
-  const r2 = await attempt(okT.db, okT.master)
-  assert.deepEqual(r2, { sends: 1, err: '' }, 'restored read authority + fresh ingest lets the user-approved re-open send')
+  const r3 = await attempt(okT.db, okT.master)
+  assert.deepEqual(r3, { sends: 1, err: '' }, 'restored read authority + fresh ingest lets the user-approved re-open send')
 })
