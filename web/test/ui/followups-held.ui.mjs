@@ -39,6 +39,8 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 const shots = process.env.SHOTS ? path.resolve(process.env.SHOTS) : null
 if (shots) mkdirSync(shots, { recursive: true })
 const b = await chromium.launch()
+const RENDERED = '[data-testid=active-row], [data-testid=thread-held], [data-testid=stopped-row], [data-testid=followups-held]'
+const settle = pg => pg.waitForSelector(RENDERED, { timeout: 15000 }) // every hold state renders at least one of these
 try {
   for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
   // Real signup (verification mail has no SMTP under the fence and stays in the outbox table).
@@ -93,7 +95,7 @@ try {
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const page = await ctx.newPage()
   await page.goto(`${base}/app/follow-ups`, { waitUntil: 'load' })
-  await page.waitForTimeout(1500)
+  await settle(page)
   const body = await page.textContent('body') ?? ''
   assert.match(body, /next one/, 'control thread promises a date when nothing holds it')
   const held = await page.locator('[data-testid=thread-held]').allTextContents()
@@ -114,7 +116,7 @@ try {
   const snap = db2.prepare('SELECT consent_version, followups_enabled, paused FROM autopilot_settings WHERE tenant_id = ?').get(tenant)
   const banner = async (name, stmt, marker) => {
     db2.exec(stmt)
-    await page.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await page.waitForTimeout(1200)
+    await page.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await settle(page)
     const bb = await page.textContent('body') ?? ''
     if (name === 'followups_off') {
       const hr = await page.locator('[data-testid=thread-held]').allTextContents()
@@ -131,7 +133,7 @@ try {
   await banner('followups_off', `UPDATE autopilot_settings SET followups_enabled=0`, null)
   await banner('autopilot_paused', `UPDATE autopilot_settings SET paused=1`, 'paused')
   db2.exec(`UPDATE followup_messages SET status='uncertain' WHERE rowid=(SELECT min(rowid) FROM followup_messages)`)
-  await page.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await page.waitForTimeout(1200)
+  await page.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await settle(page)
   assert.match(await page.textContent('body') ?? '', /unknown result/, 'uncertain_send banner')
   db2.exec(`UPDATE followup_messages SET status='sent' WHERE status='uncertain'`)
   db2.close()
@@ -140,7 +142,7 @@ try {
   const mob = await b.newContext({ viewport: { width: 390, height: 844 } })
   await mob.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const mp = await mob.newPage()
-  await mp.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await mp.waitForTimeout(1200)
+  await mp.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await settle(mp)
   const mb = await mp.textContent('body') ?? ''
   assert.match(mb, /schedule said/, '390px: held rows show configuration date')
   assert.match(mb, /not confirmed as the right company/, '390px: stopped text present')
@@ -157,7 +159,7 @@ try {
   const nar = await b.newContext({ viewport: { width: 320, height: 700 } })
   await nar.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const np = await nar.newPage()
-  await np.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await np.waitForTimeout(1200)
+  await np.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await settle(np)
   const nb = await np.textContent('body') ?? ''
   assert.match(nb, /Nothing will be sent right now/, '320px: banner present under account hold')
   assert.match(nb, /schedule, not a promise/, '320px: schedule-not-promise wording')
