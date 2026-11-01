@@ -30,6 +30,7 @@ export default function AutopilotPanel() {
             {s.paused ? <button className="underline underline-offset-2" onClick={() => act({ action: 'resume' })}>Resume</button> : <button className="btn-primary" onClick={() => act({ action: 'pause' })}>Pause now</button>}
             <button className="underline underline-offset-2" onClick={() => act({ action: 'disable' })}>Turn off</button>
           </div>
+          <p className="text-xs text-[#555]">A first email confirmed sent can start an automatic 3-step follow-up sequence, but only after you accept that policy. You can review, accept or turn it off any time under Cold sequences on the <a className="underline underline-offset-2" href="/app/outreach">Outreach page</a>.</p>
         </div>
       ) : (
         <div className="text-sm space-y-2">

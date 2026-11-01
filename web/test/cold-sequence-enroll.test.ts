@@ -11,7 +11,7 @@ import { migrateAutopilot, enable, runAutopilot, ATTESTATIONS, CONSENT_VERSION }
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { saveSettings, suppress, approve, sendMessage, type Deps } from '../lib/outreach/service.ts'
-import { migrateSequences, acceptAutoSequencePolicy, autoSequencePolicyAccepted, AUTO_SEQUENCE_POLICY, AUTO_SEQUENCE_POLICY_TEXT, enrollColdSequence, createSequence, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
+import { migrateSequences, acceptAutoSequencePolicy, autoSequencePolicyAccepted, revokeAutoSequencePolicy, AUTO_SEQUENCE_POLICY, AUTO_SEQUENCE_POLICY_TEXT, enrollColdSequence, createSequence, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
 
 // #414: under a separately versioned one-time policy, a successful autopilot first touch enrolls a bounded
 // cold no-reply sequence (day 3 / day 7) without per-lead creation or approval. Manual mode is unchanged.
@@ -186,3 +186,32 @@ test('runAutopilot enrolls after a real send only when the policy is accepted; e
   assert.equal(getPaused(db), 0)
 })
 const getPaused = (db: Database.Database) => (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get('A') as { paused: number }).paused
+
+test('revocation: no new enrollment, in-flight auto sets stop at the next tick, manual sets unaffected, re-acceptance does not revive', async () => {
+  const db = await setup(); acceptAutoSequencePolicy(db, 'A', AUTO_SEQUENCE_POLICY)
+  const l = lead(db, 'a@one.example'), m = sentMessage(db, l, 'a@one.example')
+  const id = enrollColdSequence(db, 'A', m, { businessName: 'Acme' })!
+  // a manual set in flight at the same time proves revocation is scoped to auto sets
+  const l2 = lead(db, 'b@two.example', 'Beta')
+  const mid2 = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body) VALUES (?, 'A', ?, 'b@two.example', 'A quick question', 'This is a manual draft for review.')").run(mid2, l2)
+  const manual = createSequence(db, 'A', mid2)!
+  approveSequence(db, 'A', manual, x => approve(db, 'A', x, true), NOW)
+  const { sent, d } = sends()
+  await sendMessage(db, 'A', mid2, d)
+  revokeAutoSequencePolicy(db, 'A')
+  assert.equal(autoSequencePolicyAccepted(db, 'A'), false)
+  assert.equal(enrollColdSequence(db, 'A', m, { businessName: 'Acme' }), null, 'no enrollment while revoked')
+  const r = await runSequences(db, 'A', 'Acme', { ...d, now: NOW + 3 * DAY })
+  const rows = Object.fromEntries(seqRows(db).map(x => [x.id, x]))
+  assert.equal(rows[id].status, 'stopped', 'auto set stopped at the tick after revocation')
+  assert.equal(sent.filter(b => b.includes('b@two.example')).length, 2, 'manual step 1 + its due day-3 step both sent')
+  assert.ok(!sent.some(b => b.includes('a@one.example')), 'no auto step sends after revocation')
+  // re-accepting starts a clean slate: the stopped set stays stopped, only a new proven send enrolls again
+  acceptAutoSequencePolicy(db, 'A', AUTO_SEQUENCE_POLICY)
+  await runSequences(db, 'A', 'Acme', { ...d, now: NOW + 7 * DAY })
+  assert.ok(!sent.some(b => b.includes('a@one.example')), 'stopped sets never revive')
+  assert.equal(seqRows(db).find(x => x.id === id)!.status, 'stopped')
+  const acts = (db.prepare("SELECT action FROM autopilot_audit WHERE tenant_id = 'A' AND action LIKE 'sequence_policy%' ORDER BY rowid").all() as { action: string }[]).map(x => x.action)
+  assert.deepEqual(acts, ['sequence_policy_accepted', 'sequence_policy_revoked', 'sequence_policy_accepted'], 'accept/revoke decisions are audited')
+})

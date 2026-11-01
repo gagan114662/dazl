@@ -98,9 +98,17 @@ export const AUTO_SEQUENCE_POLICY_TEXT = [
 export function acceptAutoSequencePolicy(db: Database.Database, tenantId: string, version: string, now = Math.floor(Date.now() / 1000)): void {
   if (version !== AUTO_SEQUENCE_POLICY) throw new SequenceError('policy_unknown')
   db.prepare('INSERT INTO sequence_settings (tenant_id, auto_policy, auto_policy_at) VALUES (?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET auto_policy = excluded.auto_policy, auto_policy_at = excluded.auto_policy_at').run(tenantId, version, now)
+  auditAt(db, tenantId, 'sequence_policy_accepted', version, undefined, undefined, now)
 }
 export function autoSequencePolicyAccepted(db: Database.Database, tenantId: string): boolean {
   return (db.prepare('SELECT auto_policy FROM sequence_settings WHERE tenant_id = ?').get(tenantId) as { auto_policy: string | null } | undefined)?.auto_policy === AUTO_SEQUENCE_POLICY
+}
+// Revocation is the tenant's own off switch: no new auto enrollments, and every in-flight auto-enrolled set stops
+// at the next tick (the active loop re-proves the acceptance, below). Manual sets are untouched, and consent
+// already granted to a contact is not rewritten - it simply can never be used again while the policy is off.
+export function revokeAutoSequencePolicy(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): void {
+  db.prepare('UPDATE sequence_settings SET auto_policy = NULL, auto_policy_at = NULL WHERE tenant_id = ?').run(tenantId)
+  auditAt(db, tenantId, 'sequence_policy_revoked', AUTO_SEQUENCE_POLICY, undefined, undefined, now)
 }
 
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
@@ -409,6 +417,9 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     // change in the claims the words rely on (signal, source, business name, booking link) stops the set;
     // manual sequences (policy NULL) are untouched.
     if (s.policy !== null) {
+      // Revocation is proven per tick, not only at enrollment: once the tenant turns the policy off, no
+      // auto-enrolled step sends again (a re-acceptance does not revive a stopped set; a new send enrolls anew).
+      if (!autoSequencePolicyAccepted(db, tenantId)) { stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', 'policy_revoked', now); out.skipped++; continue }
       const basis = db.prepare('SELECT company, name, signal, source_url FROM leads WHERE id = ?').get(s.lead_id) as { company: string; name: string; signal: string; source_url: string } | undefined
       if (s.policy !== AUTO_SEQUENCE_POLICY || !basis || claimsHash(basis, businessName, settings?.booking_url) !== s.claims_hash) {
         stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', s.policy !== AUTO_SEQUENCE_POLICY ? 'policy_changed' : 'claims_changed', now)

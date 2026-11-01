@@ -6,7 +6,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { approve, leadEvidenceState, testFixtureSend, OutreachError } from '@/lib/outreach/service'
-import { createSequence, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, acceptAutoSequencePolicy, AUTO_SEQUENCE_POLICY, AUTO_SEQUENCE_POLICY_TEXT, autoSequencePolicyAccepted, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
+import { createSequence, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, acceptAutoSequencePolicy, revokeAutoSequencePolicy, AUTO_SEQUENCE_POLICY, AUTO_SEQUENCE_POLICY_TEXT, autoSequencePolicyAccepted, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
 import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 import { denied } from '@/lib/workspace-access'
 
@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
   const db = getScanDb()
   try {
     if (b?.action === 'accept_auto_policy' && typeof b.version === 'string') { acceptAutoSequencePolicy(db, user.tenantId, b.version); return NextResponse.json({ ok: true, version: AUTO_SEQUENCE_POLICY }) }
+    if (b?.action === 'revoke_auto_policy') { revokeAutoSequencePolicy(db, user.tenantId); return NextResponse.json({ ok: true, accepted: false }) }
     if (b?.action === 'test_addresses' && Array.isArray(b.addresses) && b.addresses.every((v: unknown) => typeof v === 'string')) return NextResponse.json({ addresses: setTestAddresses(db,user.tenantId,b.addresses) })
     if (b?.action === 'create' && typeof b.message_id === 'string') {
       const id = createSequence(db,user.tenantId,b.message_id,{ businessName: user.business_name })
