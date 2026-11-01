@@ -217,10 +217,11 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
           for (const e of auditRows) addEnrichment(db, job.user_id, l.id, e) // #533: board-title audit sample
           addEnrichment(db, job.user_id, l.id, boardCoverageRow(g, auditRows.length, Math.min(g.postings.length, 3), now, checkedDay)) }
         { const checkedDay2 = new Date(now * 1000).toISOString().slice(0, 10)
-          const covered = new Set(g.postings.slice(0, 3).map(x => x.title.trim().toLowerCase()))
+          const covered = new Set(g.allTitles.map(x => x.trim().toLowerCase())) // dated rows + filtered audit rows already cover the whole filtered sample
+          const coveredCount = g.allListed.filter(t => covered.has(t.trim().toLowerCase())).length
           const full = withRepostHistory(fullListingAuditRows(g.board, g.boardUrl, g.allListed, covered, now, checkedDay2, null), g.board, existingEvidence)
-          for (const e of full) addEnrichment(db, job.user_id, l.id, e) // #533 breadth: the whole listing, so requested-role absence is auditable
-          addEnrichment(db, job.user_id, l.id, fullListingCoverageRow(g.board, g.boardUrl, g.listedCountAll, g.allListed, Math.min(g.postings.length, 3), full.length, now, checkedDay2)) }
+          for (const e of full) addEnrichment(db, job.user_id, l.id, e) // #533 breadth: sampled titles in NEITHER dated nor filtered stores, so requested-role absence within the sample is auditable
+          addEnrichment(db, job.user_id, l.id, fullListingCoverageRow(g.board, g.boardUrl, g.listedCountAll, g.allListed, coveredCount, full.length, now, checkedDay2)) }
         passed++; passedIds.push(l.id); continue
       }
       if (!g && gbz?.checked && !gbz.contradictory) {

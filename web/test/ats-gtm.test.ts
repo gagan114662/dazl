@@ -527,7 +527,7 @@ test('#533 breadth: full-listing audit rows skip titles already covered by dated
   assert.deepEqual(rows.map(r => r.value).sort(), ['Backend Engineer', 'SDR'])
   for (const r of rows) { assert.match(r.label, /Board listing audit \(all listed titles\)/); assert.equal(r.confidence, null); assert.equal(r.kind, 'hiring-role') }
   const cov = fullListingCoverageRow('greenhouse', 'https://boards.greenhouse.io/brightloop', 3, ['Account Executive', 'Backend Engineer', 'SDR'], 1, 2, NOW / 1000, '2026-10-28')
-  assert.match(cov.value, /3 all listed titles: 1 dated posting rows \+ 2 more as audit rows/)
+  assert.match(cov.value, /3 all listed titles, 3 sampled: 1 already covered by dated posting or filtered audit rows \+ 2 more as audit rows/)
   assert.ok(!cov.value.includes('TRUNCATED'))
   const trunc = fullListingCoverageRow('greenhouse', 'https://boards.greenhouse.io/brightloop', 60, Array.from({ length: 50 }, (_, i) => `Title ${i}`), 0, 50, NOW / 1000, '2026-10-28')
   assert.match(trunc.value, /sample TRUNCATED at 50 - a title beyond the sample is not disproved/)

@@ -216,10 +216,11 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
         { const auditRows = withRepostHistory(boardTitleAudit(matched, now, today, null), matched.board, existingEvidence)
           for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
           addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, Math.min(matched.postings.length, 3), now, today))
-          const covered = new Set(matched.postings.slice(0, 3).map(x => x.title.trim().toLowerCase()))
+          const covered = new Set(matched.allTitles.map(x => x.trim().toLowerCase())) // dated rows + filtered audit rows already cover the whole filtered sample
+          const coveredCount = matched.allListed.filter(t => covered.has(t.trim().toLowerCase())).length
           const full = withRepostHistory(fullListingAuditRows(matched.board, matched.boardUrl, matched.allListed, covered, now, today, null), matched.board, existingEvidence)
-          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: whole listing, so requested-role presence/absence is auditable
-          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(matched.board, matched.boardUrl, matched.listedCountAll, matched.allListed, Math.min(matched.postings.length, 3), full.length, now, today)) }
+          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: sampled titles in NEITHER dated nor filtered stores, so requested-role absence within the sample is auditable
+          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(matched.board, matched.boardUrl, matched.listedCountAll, matched.allListed, coveredCount, full.length, now, today)) }
       }
       if (!matched && specific.checked && !specific.contradictory) {
         const c = specific.checked

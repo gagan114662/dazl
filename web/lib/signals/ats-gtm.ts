@@ -299,11 +299,13 @@ export function fullListingAuditRows(board: GtmHiring['board'], boardUrl: string
     confidence: null, source_url: boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }))
 }
-export function fullListingCoverageRow(board: GtmHiring['board'], boardUrl: string, listedCountAll: number, allListed: string[], dated: number, stored: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
+export function fullListingCoverageRow(board: GtmHiring['board'], boardUrl: string, listedCountAll: number, allListed: string[], covered: number, stored: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
   const truncated = listedCountAll > allListed.length
   return {
     connector: `signals:${board}-gtm`, kind: 'hiring-board-coverage',
-    value: `Board listing: ${listedCountAll} all listed titles: ${dated} dated posting rows + ${stored} more as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),
+    // covered + stored always sum to the SAMPLE size (allListed.length), never silently to listedCountAll: a title
+    // already covered by a dated posting row or the filtered audit is counted once, in 'covered', never double-counted here.
+    value: `Board listing: ${listedCountAll} all listed titles, ${allListed.length} sampled: ${covered} already covered by dated posting or filtered audit rows + ${stored} more as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),
     label: COVERAGE_LABEL.slice(0, 200),
     confidence: null, source_url: boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }

@@ -406,7 +406,7 @@ test('named hiring role cannot use model signal, unrelated quote, undated post o
   db.close()
 })
 
-test('#533 breadth: a requested role absent from the board leaves full-listing audit rows, so absence is provable from storage', async () => {
+test('#533 breadth: a requested role absent from the sampled listing leaves an audit row for every sampled title, so absence within the stored sample is provable', async () => {
   const { db, job } = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
   const r = await applySalesHiringGate(db, job, serve(board({
     [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'Account Executive' }, { id: 2, title: 'Backend Engineer' }] },
@@ -418,6 +418,6 @@ test('#533 breadth: a requested role absent from the board leaves full-listing a
   assert.deepEqual(audit.map(x => x.value).sort(), ['Account Executive', 'Backend Engineer'], 'every title on the listing gets an audit row, matching or not')
   for (const x of audit) assert.equal(x.confidence, null)
   const cov = rows.filter(x => x.kind === 'hiring-board-coverage' && /all listed titles/.test(x.value))
-  assert.equal(cov.length, 1); assert.match(cov[0].value, /2 all listed titles: 0 dated posting rows \+ 2 more as audit rows/)
+  assert.equal(cov.length, 1); assert.match(cov[0].value, /2 all listed titles, 2 sampled: 0 already covered by dated posting or filtered audit rows \+ 2 more as audit rows/)
   db.close()
 })
