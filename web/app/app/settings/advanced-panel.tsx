@@ -40,7 +40,7 @@ export default function AdvancedPanel() {
             </span>
           </div>
         ) : (
-          <form className="flex flex-col gap-2" autoComplete="off" onSubmit={async e => { e.preventDefault(); if (await post({ action: 'save', platform: p.platform, session: session[p.platform] ?? '' })) setSession({ ...session, [p.platform]: '' }) }}>
+          <form method="post" className="flex flex-col gap-2" autoComplete="off" onSubmit={async e => { e.preventDefault(); if (await post({ action: 'save', platform: p.platform, session: session[p.platform] ?? '' })) setSession({ ...session, [p.platform]: '' }) }}>
             <input className="field" type="password" autoComplete="off" placeholder="Paste the session cookie for the throwaway account" value={session[p.platform] ?? ''} onChange={e => setSession({ ...session, [p.platform]: e.target.value })} />
             <button className="btn-primary w-fit">Connect {c.name}</button>
           </form>

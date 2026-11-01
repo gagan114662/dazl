@@ -54,6 +54,9 @@ jobs:
       - name: Sign-in gate on every /app page
         if: success() || failure()
         run: npm run test:smoke:auth
+      - name: Credential forms never fall back to a native GET (JS disabled)
+        if: success() || failure()
+        run: npm run test:smoke:authforms
       - name: Two tenants, no cross-tenant data on any route or page
         if: success() || failure()
         run: npm run test:smoke:tenants

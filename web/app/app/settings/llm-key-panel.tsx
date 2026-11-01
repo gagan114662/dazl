@@ -41,7 +41,7 @@ export default function LlmKeyPanel() {
           <button onClick={() => remove(k.vendor)} className="text-[#111] underline underline-offset-2">Remove</button>
         </div>
       ))}
-      <form onSubmit={save} className="flex flex-col gap-3" autoComplete="off">
+      <form method="post" onSubmit={save} className="flex flex-col gap-3" autoComplete="off">
         <select className={field} value={vendor} onChange={e => setVendor(e.target.value as Vendor)}>
           <option value="anthropic">Anthropic</option>
           <option value="openai">OpenAI</option>
