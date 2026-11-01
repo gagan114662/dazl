@@ -5,7 +5,7 @@
 // (an exhausted budget is a visible audit row, never a silent skip), no repeat charge for a lookup this job already made.
 // Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar).
 import type Database from 'better-sqlite3'
-import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, NO_CHARGE_CODES } from '../connectors/store.ts'
+import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -160,7 +160,7 @@ async function runApollo(c: Ctx, key: string): Promise<number> {
     audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: orgKey, status: org ? 'ok' : 'empty', results: org ? 1 : 0 }) // org observability row; the gate row carries the replay contract
   } catch (e) {
     const code = e instanceof EnrichError ? e.code : 'error'
-    if (e instanceof EnrichError && e.code === 'auth') { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0, true); throw e } // the key is bad: no point asking Apollo for people (and nothing was returned, so nothing was charged)
+    if (e instanceof EnrichError && e.code === 'auth') { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e } // the key is bad: no point asking Apollo for people
     audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: orgKey, status: code, results: 0 })
     orgFailure = e    // any other org failure: still try the people search below (the domain may already be known); if it cannot run, this failure is the provider's
   }
@@ -169,14 +169,7 @@ async function runApollo(c: Ctx, key: string): Promise<number> {
   if (!orgDomain) { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: 'contact rejected: no domain to confirm the company', results: 0 }, reservationId, 'contact rejected: no domain to confirm the company', 0); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: 'contact rejected: no domain to confirm the company', sourceUrl: src }); if (orgFailure) throw orgFailure; return 0 }
   let found: Awaited<ReturnType<typeof apolloPeopleSearch>>
   try { found = await apolloPeopleSearch(key, { domain: orgDomain, name: lead.company }, fetchImpl, MAX_CONTACTS) }
-  catch (e) {
-    const code = e instanceof EnrichError ? e.code : 'error'
-    // The claim covers BOTH paid sub-steps. Release it only if the org step also returned nothing for certain:
-    // org data returned (org !== null) was already charged, and an uncertain org failure may have been.
-    const orgNoCharge = org === null && (!orgFailure || (orgFailure instanceof EnrichError && NO_CHARGE_CODES.has(orgFailure.code)))
-    auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0, orgNoCharge)
-    throw e
-  }
+  catch (e) { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: e instanceof EnrichError ? e.code : 'error', results: 0 }, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
   // A person whose own organization contradicts the requested company (another name, another domain) is not attached.
   const people = []
   for (const p of found) {
@@ -198,7 +191,7 @@ async function runPdl(c: Ctx, key: string, maxProfiles: number, charged: { n: nu
   const peopleKey = lookupKey('people', lead)
   let found: Awaited<ReturnType<typeof pdlPeopleSearch>>
   try { found = await pdlPeopleSearch(key, lead.company, fetchImpl, Math.max(1, maxProfiles)) }
-  catch (e) { auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: e instanceof EnrichError ? e.code : 'error', results: 0 }, reservationId, e instanceof EnrichError ? e.code : 'error', 0, true); throw e } // PDL is one paid call: a received non-2xx is the whole attempt's verdict
+  catch (e) { auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: e instanceof EnrichError ? e.code : 'error', results: 0 }, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
   charged.n += found.length
   // PDL matches on the company NAME only: each person's company must agree with the lead on its domain or place.
   const people = []

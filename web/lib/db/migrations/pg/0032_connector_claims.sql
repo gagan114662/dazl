@@ -1,7 +1,8 @@
 -- One self-enforcing claim per paid provider lookup (lib/connectors/store.ts, #382): the PRIMARY KEY decides the
 -- race on any engine - two workers, two PG connections, or a stale-lease double-run can never both pay for the same
 -- lookup. reserved -> ok/empty/rejected keeps the claim as the job's never-pay-twice memo; a transient settle
--- releases (deletes) it so a retriable failure may retry; a crash leaves 'reserved' and the replay fails closed
+-- HOLDS it (the tenant's plan is not verifiable, so no automatic release; recovery is a tracked follow-up);
+-- a crash leaves 'reserved' and the replay fails closed
 -- (uncertain, never a second payment). Audit history in connector_audit is never rewritten or deleted for this.
 CREATE TABLE connector_claims (
   tenant_id   TEXT NOT NULL,

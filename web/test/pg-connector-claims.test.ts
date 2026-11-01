@@ -8,7 +8,7 @@ import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 import { writeTryReserve, writeSettleClaim } from '../lib/connectors/store.ts'
 
-test('connector_claims: two PG connections racing one lookup - exactly one claim wins; terminal replays free; transient releases', { skip: pgSkip }, async () => {
+test('connector_claims: two PG connections racing one lookup - exactly one claim wins; terminal replays free; transient holds', { skip: pgSkip }, async () => {
   const s = await freshSchema()
   const a = pgDb({ connectionString: PG_URL!, searchPath: s.schema })
   const b = pgDb({ connectionString: PG_URL!, searchPath: s.schema })
@@ -26,7 +26,7 @@ test('connector_claims: two PG connections racing one lookup - exactly one claim
     const key2 = { ...key, lookup: 'people Retry (retry.example)' }
     const w = await writeTryReserve(a, key2)
     assert.ok('id' in w)
-    await writeSettleClaim(a, key2, (w as { id: string }).id, 'rate_limited', 0, true) // received 429 = no data returned = definitively no charge: the claim releases
+    await writeSettleClaim(a, key2, (w as { id: string }).id, 'rate_limited', 0) // even a received 429 HOLDS: the tenant's plan is not verifiable, so no outcome without data ever frees the lookup
     { // an UNCERTAIN settle (no known response) keeps the claim held on PG as on sqlite: the replay never re-bills
       const key3 = { ...key, lookup: 'people Held Co (held.example)' }
       const w3 = await writeTryReserve(a, key3)
@@ -35,6 +35,6 @@ test('connector_claims: two PG connections racing one lookup - exactly one claim
       assert.deepEqual(again, { prior: 'uncertain' }, 'a possibly-charged attempt stays held for review on PG')
     }
     const r4 = await writeTryReserve(b, key2)
-    assert.ok('id' in r4, 'a transient outcome releases the claim for a retry')
+    assert.deepEqual(r4, { prior: 'uncertain' }, 'a transient outcome HOLDS the claim: no automatic retry, never a rebill')
   } finally { await a.close(); await b.close(); await s.drop() }
 })

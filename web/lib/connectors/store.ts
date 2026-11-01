@@ -159,24 +159,19 @@ export function auditSettle(db: Database.Database, id: string, status: string, r
 // wins) - no reliance on job-claim leases or check-then-insert reads. A replayed job (stale-lease double-run,
 // resume, or a concurrent caller on a lease-less route) loses the race and reads the winner's outcome instead of
 // paying again. Terminal outcomes (ok/empty/rejected) keep the claim as the job's memo and replay free; a
-// TRANSIENT settle releases (deletes) the claim so a retriable failure may retry; a stale 'reserved' claim proves
+// A TRANSIENT settle HOLDS the claim: the tenant's actual provider plan is not verifiable from here, and a plan
+// that charges for errored requests would make ANY automatic release a rebill path - so no outcome without a
+// terminal, data-returned answer ever frees the lookup. Recovery (per-step memo + owner resolution) is a tracked
+// follow-up; until then a held lead replays fail-closed and surfaces as uncertain. A stale 'reserved' claim proves
 // the pass MAY have been charged, so the replay fails CLOSED (uncertain, never a second payment). The claim key
 // uses '' for a missing jobId because SQL NULL never equals NULL (callers always pass one today).
 export type ReserveOutcome = { id: string } | { prior: 'ok' | 'empty' | 'rejected' | 'uncertain' }
 const CLAIM_INSERT_SQL = "INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at) VALUES (?, ?, ?, ?, 'reserved', ?) ON CONFLICT DO NOTHING"
 const CLAIM_STATUS_SQL = "SELECT status FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?"
 const CLAIM_SETTLE_SQL = "UPDATE connector_claims SET status = ?, settled_at = ? WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved'"
-const CLAIM_RELEASE_SQL = "DELETE FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?"
 const RESERVE_STATUS_SQL = "SELECT status FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1"
 const claimKey = (a: AuditEntry) => [a.tenantId, a.connector, a.jobId ?? '', a.lookup.slice(0, 200)] as const
 const isTerminal = (status: string) => status === 'ok' || status === 'empty' || status.startsWith('contact rejected')
-// Definitively-not-charged outcomes (the claim may be released for a retry): a non-2xx RESPONSE was received, and
-// both providers tie charging to a successful response - PDL: "credits are consumed per successful match... (status
-// code = 200)" (support.peopledatalabs.com/hc/en-us/articles/25794271805211-Pricing-credits); Apollo: credits are
-// consumed "when qualifying data is returned" (docs.apollo.io/docs/api-pricing). A timeout/abort/network failure
-// after the request left is NOT in this set: the provider may have processed it (a 200 we never saw), so the claim
-// stays 'reserved' and the replay fails closed (uncertain, held for review) rather than risk a second charge.
-export const NO_CHARGE_CODES: ReadonlySet<string> = new Set(['rate_limited', 'auth', 'upstream'])
 const claimPrior = (status: string): 'ok' | 'empty' | 'rejected' | 'uncertain' =>
   status === 'ok' || status === 'empty' ? status : status === 'rejected' || status.startsWith('contact rejected') ? 'rejected' : 'uncertain'
 export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOutcome {
@@ -201,17 +196,13 @@ export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOu
   return { id }
 }
 // Settle a reserved lookup: the audit row and its claim move together in one transaction. Terminal outcomes mark
-// the claim (the durable never-pay-twice memo); transient outcomes release it so the lookup may retry.
-// noCharge: the caller's WHOLE-ATTEMPT verdict that no paid sub-step returned data or ended unknown. A claim covers
-// every paid call of one provider attempt (Apollo = org + people): org 200 (charged - data returned) then people 429
-// is NOT a no-charge attempt, and releasing the claim would let a replay re-bill the org call. Default false = hold.
-export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: string, status: string, results: number, noCharge = false): void {
+// the claim (the durable never-pay-twice memo); non-terminal outcomes hold it (no automatic release on an unverifiable plan).
+export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: string, status: string, results: number): void {
   const key = claimKey(a)
   db.transaction(() => {
     db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
     if (isTerminal(status)) db.prepare(CLAIM_SETTLE_SQL).run(status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3])
-    else if (noCharge && NO_CHARGE_CODES.has(status)) db.prepare(CLAIM_RELEASE_SQL).run(key[0], key[1], key[2], key[3])
-    // else: an uncertain paid attempt stays 'reserved' - held for review, never automatically re-billed
+    // else: a non-terminal outcome HOLDS the claim 'reserved' - held for review, never automatically re-billed
   }).immediate()
 }
 // Async twins for the Postgres port: the SAME statements, exercised against PG by the two-connection race test.
@@ -237,14 +228,13 @@ export async function writeTryReserve(db: Db, a: AuditEntry): Promise<ReserveOut
     return { id } as ReserveOutcome
   })
 }
-export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number, noCharge = false): Promise<void> {
+export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number): Promise<void> {
   const key = claimKey(a)
   // The claim transition and the audit-row settlement are ONE transaction (parity with the sync path): a crash can
   // never leave a settled audit row beside a live claim (or vice versa).
   await db.tx(function* (t) {
     if (isTerminal(status)) yield* t.run(CLAIM_SETTLE_SQL, [status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
-    else if (noCharge && NO_CHARGE_CODES.has(status)) yield* t.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
-    // else: uncertain paid attempt stays 'reserved' (see NO_CHARGE_CODES)
+    // else: a non-terminal outcome HOLDS the claim 'reserved' - held for review, never automatically re-billed
     yield* t.run("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'", [status, results, id])
   })
 }

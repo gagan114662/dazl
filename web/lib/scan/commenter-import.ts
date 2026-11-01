@@ -235,7 +235,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
         }
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: org ? 'ok' : 'empty', results: org ? 1 : 0 }, orgGate.id, org ? 'ok' : 'empty', org ? 1 : 0)
       } catch (e) {
-        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, orgGate.id, e instanceof EnrichError ? e.code : 'error', 0, true)
+        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, orgGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
       const peopleGate = auditTryReserve(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'reserved', results: 0 })
@@ -260,7 +260,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : 'empty', results: people.length }, peopleGate.id, people.length ? 'ok' : 'empty', people.length)
       } catch (e) {
-        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, peopleGate.id, e instanceof EnrichError ? e.code : 'error', 0, true)
+        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, peopleGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
     } else if (pdlKey) {
@@ -281,7 +281,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:pdl', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), results: people.length }, pdlGate.id, people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), people.length)
       } catch (e) {
-        auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, pdlGate.id, e instanceof EnrichError ? e.code : 'error', 0, true)
+        auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, pdlGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
     }
