@@ -11,7 +11,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
-import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
+import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, withRepostHistory, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
 import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
@@ -145,6 +145,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     // Company event write-through: the same fact, stored once per company for account-level
     // history. Skipped when no reliable company key exists - never guessed.
     const ck = companyKey(lead.company_domain, lead.id)
+    const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(lead.id) as import('./ats-gtm.ts').ExistingEvidenceRow[]
     const [f0, hb] = await Promise.all([
       edgarFunding(lead.company, fetchImpl).catch(() => null),
       atsHiringBoard(lead.company, lead.company_domain, fetchImpl).catch(() => null),
@@ -167,7 +168,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       // as unconfirmed, are not scored (no confidence) and are NOT written to the company's account history as hiring growth.
       const rel = domainRelationship(db, tenantId, lead.id, lead.company_domain)
       const est = rel === 'established'
-      addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${h.openRoles} open role${h.openRoles === 1 ? '' : 's'} (generic hiring; posting date unknown)`, label: (est ? (h.titles.join('; ') || '') : `${h.titles.join('; ')} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: h.url, source_date: today, retrieved_at: now })
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${h.openRoles} open role${h.openRoles === 1 ? '' : 's'} (generic hiring; posting date unknown - the row date is when the board was read, not a posting date)`, label: (est ? (h.titles.join('; ') || '') : `${h.titles.join('; ')} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: h.url, source_date: today, retrieved_at: now })
       if (ck && est) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: null, retrievedAt: now, confidence: 70 })
       // #533: store every listed title as an audit row, so 'the requested role was not on this board' is provable later.
       const covered = new Set(h.titles.map(t => t.trim().toLowerCase()))
@@ -190,8 +191,8 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
       const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
-      for (const e of postingEvidence(g, now, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
-      { const auditRows = boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE)
+      for (const e of withRepostHistory(postingEvidence(g, now, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
+      { const auditRows = withRepostHistory(boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)
         for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
         addEnrichment(db, tenantId, lead.id, boardCoverageRow(g, auditRows.length, Math.min(g.postings.length, 3), now, today)) }
       gtm++
@@ -200,7 +201,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       // Mirrors the nonzero path exactly: rows are written for any attributed board, Unconfirmed unless the board is bound to the lead's domain.
       const c = gb.checked
       const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && !!lead.company_domain && c.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
-      for (const e of checkedAuditRows(c, WINDOW_DAYS, now, today, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
+      for (const e of withRepostHistory(checkedAuditRows(c, WINDOW_DAYS, now, today, est ? null : HEURISTIC_NOTE), c.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
       addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
     }
     if (requestedRoles.length) {
@@ -208,11 +209,11 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       const matched = specific.hiring
       const bound = matched && !specific.contradictory && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!matched.domain && matched.domain === lead.company_domain))
       if (matched && bound) {
-        for (const e of postingEvidence(matched, now, null)) {
+        for (const e of withRepostHistory(postingEvidence(matched, now, null), matched.board, existingEvidence)) {
           const role = matchedHiringRole(e.value.split(' - posted ')[0], requestedRoles)
           if (role) addEnrichment(db, tenantId, lead.id, { ...e, label: `Requested role: ${role.term}; ${e.label}`.slice(0, 200) })
         }
-        { const auditRows = boardTitleAudit(matched, now, today, null)
+        { const auditRows = withRepostHistory(boardTitleAudit(matched, now, today, null), matched.board, existingEvidence)
           for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
           addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, Math.min(matched.postings.length, 3), now, today)) }
       }
@@ -220,7 +221,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
         const c = specific.checked
         const boundC = c.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && !!lead.company_domain && c.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')))
         if (boundC) {
-          for (const e of checkedAuditRows(c, WINDOW_DAYS, now, today, null)) addEnrichment(db, tenantId, lead.id, e)
+          for (const e of withRepostHistory(checkedAuditRows(c, WINDOW_DAYS, now, today, null), c.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
           addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
         }
       }

@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, postingEvidence } from '../lib/signals/ats-gtm.ts'
+import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, postingEvidence, withRepostHistory } from '../lib/signals/ats-gtm.ts'
 import { enrichJobSignals } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
@@ -339,7 +339,7 @@ test('#533 F-B zero-match: an attributed board with no fresh matching posting le
   assert.equal(board.checked!.listedCount, 1); assert.deepEqual(board.checked!.allTitles, ['SDR'])
   const audits = checkedAuditRows(board.checked!, 90, NOW / 1000, '2026-10-28', null)
   assert.equal(audits.length, 1); assert.equal(audits[0].value, 'SDR')
-  assert.match(audits[0].label, /posting date read as older than the last 90 days; no dated evidence row was stored/)
+  assert.match(audits[0].label, /posting date read as older than the last 90 days \(long-open; repost history unknown\); no dated evidence row was stored/)
   assert.equal(audits[0].confidence, null)
   const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
   assert.match(cov.value, /0 fresh postings in the last 90 days across the full listing \(1 sales\/GTM-role titles only, all posting dates read\); 1 stored as audit rows/)
@@ -407,7 +407,7 @@ test('#533 F-E GH beyond the detail cap: titles 5+ are never date-checked, get u
   assert.deepEqual(board.checked!.datedStale, ['SDR 1', 'SDR 2', 'SDR 3', 'SDR 4'])
   const audits = checkedAuditRows(board.checked!, 90, NOW / 1000, '2026-10-28', null)
   assert.equal(audits.length, 6)
-  for (const r of audits.filter(r => ['SDR 1', 'SDR 2', 'SDR 3', 'SDR 4'].includes(r.value))) assert.match(r.label, /posting date read as older than the last 90 days/)
+  for (const r of audits.filter(r => ['SDR 1', 'SDR 2', 'SDR 3', 'SDR 4'].includes(r.value))) assert.match(r.label, /posting date read as older than the last 90 days \(long-open; repost history unknown\)/)
   for (const r of audits.filter(r => ['SDR 5', 'SDR 6'].includes(r.value))) { assert.match(r.label, /posting date was not read - freshness unknown/); assert.doesNotMatch(r.label, /older than/) }
   const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
   assert.match(cov.value, /posting dates read for 4 of 6 listed postings \(4 older than the last 90 days\); the other 2 were never date-read, so absence is not proven/)
@@ -433,6 +433,55 @@ test('#533 F-E fresh-but-closed is outside the 0-fresh claim: a closed fresh pos
   const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
   assert.match(cov.value, /posting dates read for 1 of 1 listed postings \(1 fresh but closed or unusable\); the other 0 were never date-read, so absence is not proven/)
   assert.doesNotMatch(cov.value, /across the full listing/)
+})
+
+test('#533 AC4 repost labeling: a board re-dating a previously stored title is labeled repost-unknown, never renewed demand; stored history is untouched', () => {
+  const rows = postingEvidence({ board: 'greenhouse', postings: [{ title: 'Account Executive', date: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', location: 'London', updated: null }], newest: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', domain: 'brightloop.io', via: 'domain', allTitles: ['Account Executive'], boardUrl: 'https://boards.greenhouse.io/brightloop', listedCount: 1, titleFilter: 'gtm' }, NOW / 1000, null)
+  const existing = [
+    { kind: 'hiring', connector: 'signals:greenhouse-gtm', value: 'Account Executive - posted 2026-08-01', source_date: '2026-08-01', retrieved_at: Date.parse('2026-08-02T00:00:00Z') / 1000 },
+    { kind: 'hiring-role', connector: 'signals:lever-gtm', value: 'Account Executive', source_date: '2026-09-01', retrieved_at: Date.parse('2026-09-01T00:00:00Z') / 1000 },
+  ]
+  const out = withRepostHistory(rows, 'greenhouse', existing)
+  assert.match(out[0].label, /previously dated 2026-08-01 \(first seen 2026-08-02\); repost vs continued listing unknown, not renewed demand/)
+  assert.match(out[0].label, /also on lever; same posting unknown/)
+  assert.equal(out[0].value, 'Account Executive - posted 2026-10-20', 'value and dates are never rewritten')
+  assert.deepEqual(existing[0].value, 'Account Executive - posted 2026-08-01', 'stored history is untouched')
+  // same date on the same board: no repost note (that is the same observation, and ON CONFLICT would skip it anyway)
+  const same = withRepostHistory(rows, 'greenhouse', [{ kind: 'hiring', connector: 'signals:greenhouse-gtm', value: 'Account Executive - posted 2026-10-20', source_date: '2026-10-20', retrieved_at: NOW / 1000 }])
+  assert.equal(same[0].label, rows[0].label)
+  // non-hiring kinds are never annotated
+  const cov = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring-board-coverage', value: 'Board listing: x', label: 'y' }]
+  assert.equal(withRepostHistory(cov, 'greenhouse', existing)[0].label, 'y')
+})
+
+test('#533 AC4 updated-date never resets freshness: a stale first_published with a TODAY updated_at yields zero-match trail, not evidence', async () => {
+  const bumped = { [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'SDR', updated_at: d(0) }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'SDR', first_published: d(400), updated_at: d(0), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: 'old' } }
+  const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(bumped), { now: NOW })
+  assert.equal(board.hiring, null, 'first_published stale -> not fresh, however recent the board update')
+  assert.ok(board.checked); assert.equal(board.checked!.rawDatedStale, 1)
+  const audits = checkedAuditRows(board.checked!, 90, NOW / 1000, '2026-10-28', null)
+  assert.match(audits[0].label, /posting date read as older than the last 90 days \(long-open; repost history unknown\)/)
+})
+
+test('#533 AC4 integration: a repost observed on a later fetch keeps both dates and labels the new row repost-unknown', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Brightloop', 'brightloop.io', 'raised a seed round', 'https://news.example/1')").run(jobId)
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', 'brightloop.io|evidence_own_domain', 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('OLD1', 'lead1', 'u1', 'signals:greenhouse-gtm', 'hiring', 'Account Executive - posted 2026-08-01', 'old', 70, 'https://boards.greenhouse.io/brightloop/jobs/1', '2026-08-01', ?)").run(Date.parse('2026-08-02T00:00:00Z') / 1000)
+  const realNow = Date.now; Date.now = () => NOW
+  try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(ghBoard), creditEnrichment: false }) } finally { Date.now = realNow }
+  const rows = db.prepare("SELECT value, label FROM lead_enrichments WHERE kind = 'hiring' AND connector = 'signals:greenhouse-gtm' ORDER BY value").all() as { value: string; label: string }[]
+  const repost = rows.find(r => r.value === 'Account Executive - posted ' + d(12).slice(0, 10))!
+  assert.ok(repost, 'the new posting row exists beside the old one')
+  assert.match(repost.label, /previously dated 2026-08-01 \(first seen 2026-08-02\); repost vs continued listing unknown, not renewed demand/)
+  const old = rows.find(r => r.value === 'Account Executive - posted 2026-08-01')!
+  assert.equal(old.label, 'old', 'the earlier row is never rewritten')
+  const agg = db.prepare("SELECT value FROM lead_enrichments WHERE connector = 'signals:greenhouse' AND kind = 'hiring'").get() as { value: string }
+  assert.match(agg.value, /posting date unknown - the row date is when the board was read, not a posting date/)
+  db.close()
 })
 
 test('#533 dedupeTitles: case-insensitive distinct, each capped at 120 chars, the list capped at 50', () => {

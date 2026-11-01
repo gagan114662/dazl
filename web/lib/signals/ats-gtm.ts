@@ -216,7 +216,7 @@ export function checkedAuditRows(c: CheckedListing, windowDays: number, retrieve
     connector: `signals:${c.board}-gtm`, kind: 'hiring-role',
     value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${t}`.slice(0, 254),
     label: [unconfirmedNote, stale.has(t.trim().toLowerCase())
-      ? `Board listing audit (${filterText}): posting date read as older than the last ${windowDays} days; no dated evidence row was stored`
+      ? `Board listing audit (${filterText}): posting date read as older than the last ${windowDays} days (long-open; repost history unknown); no dated evidence row was stored`
       : `Board listing audit (${filterText}): title listed on the board when checked; its posting date was not read - freshness unknown`].filter(Boolean).join('; ').slice(0, 200),
     confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }))
@@ -235,6 +235,33 @@ export function checkedCoverageRow(c: CheckedListing, windowDays: number, retrie
     label: COVERAGE_LABEL.slice(0, 200),
     confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }
+}
+// --- Repost / history labeling (AC4) -----------------------------------------------------------------------
+// Without a stable employer posting ID or board-provided repost history, a changed posting date can NEVER prove a
+// repost or renewed demand, and the same title on two boards can NEVER be proven the same posting. So history is
+// attached as honest labels on the NEW rows; existing rows are never rewritten (the trail stays as recorded).
+export interface ExistingEvidenceRow { kind: string; connector: string; value: string; source_date: string; retrieved_at: number }
+const evidenceTitle = (value: string): string => value.replace(/^Unconfirmed: /, '').split(' - posted ')[0].trim().toLowerCase()
+const boardOf = (connector: string): string => connector.replace(/^signals:/, '').replace(/-gtm$/, '')
+export function withRepostHistory<T extends { connector: string; kind: string; value: string; label: string }>(rows: T[], board: GtmHiring['board'], existing: ExistingEvidenceRow[]): T[] {
+  const mine = `signals:${board}-gtm`
+  return rows.map(r => {
+    if (r.kind !== 'hiring' && r.kind !== 'hiring-role') return r
+    const t = evidenceTitle(r.value)
+    if (!t) return r
+    const notes: string[] = []
+    const thisDate = r.kind === 'hiring' ? r.value.split(' - posted ')[1] : undefined
+    const priors = existing.filter(e => e.connector === mine && e.kind === 'hiring' && evidenceTitle(e.value) === t && e.value.split(' - posted ')[1] && e.value.split(' - posted ')[1] !== thisDate)
+    if (priors.length) {
+      const dates = [...new Set(priors.map(e => e.value.split(' - posted ')[1]))].sort()
+      const firstSeen = new Date(Math.min(...priors.map(e => e.retrieved_at)) * 1000).toISOString().slice(0, 10)
+      notes.push(`previously dated ${dates.join(', ')} (first seen ${firstSeen}); repost vs continued listing unknown, not renewed demand`)
+    }
+    const otherBoards = [...new Set(existing.filter(e => (e.kind === 'hiring' || e.kind === 'hiring-role') && boardOf(e.connector) !== board && evidenceTitle(e.value) === t).map(e => boardOf(e.connector)))].sort()
+    if (otherBoards.length) notes.push(`also on ${otherBoards.join(', ')}; same posting unknown`)
+    if (!notes.length) return r
+    return { ...r, label: [r.label, ...notes].join('; ').slice(0, 200) }
+  })
 }
 export function postingEvidence(g: GtmHiring, retrievedAt: number, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
   return g.postings.slice(0, 3).map(p => ({
