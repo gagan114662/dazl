@@ -74,6 +74,68 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
+  # Runnable release artifact (infra 010 route, moved into CI): exact pinned toolchain, exact source, the
+  # original build gate (type/lint intact), production dependencies only, deterministic tarball, per-file
+  # sha256 manifest, and scans that refuse native binaries, key material or env files in the artifact.
+  package:
+    needs: browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Prune to production dependencies
+        run: npm prune --omit=dev
+      - name: Deterministic runnable tarball, sha256, per-file manifest
+        run: |
+          set -euo pipefail
+          node ../ops/release-manifest.mjs write . release.json
+          tar --sort=name --owner=0 --group=0 --numeric-owner -czf "../release-app-$GITHUB_SHA.tar.gz" package.json package-lock.json .next node_modules ops
+          cd ..
+          sha256sum "release-app-$GITHUB_SHA.tar.gz" > "release-app-$GITHUB_SHA.tar.gz.sha256"
+          python3 - <<'PYSCAN'
+          import hashlib, json, tarfile
+          entries = []
+          with tarfile.open(f"release-app-{__import__('os').environ['GITHUB_SHA']}.tar.gz") as tf:
+              for m in tf.getmembers():
+                  if m.isfile():
+                      entries.append({"path": m.name, "size": m.size, "sha256": hashlib.sha256(tf.extractfile(m).read()).hexdigest()})
+          json.dump({"files": entries, "file_count": len(entries)}, open("tarball-manifest.json", "w"), indent=1)
+          PYSCAN
+      - name: Artifact scans: no native binaries, no key material, no env files
+        working-directory: ..
+        run: |
+          set -euo pipefail
+          tar -tzf "release-app-$GITHUB_SHA.tar.gz" > tar-list.txt
+          if grep -E '(^|/)(\.env[^/]*|.*\.pem|id_rsa|.*\.key)$' tar-list.txt; then echo 'env/key file in artifact'; exit 1; fi
+          rm -rf /tmp/artifact-scan && mkdir -p /tmp/artifact-scan && tar -xzf "release-app-$GITHUB_SHA.tar.gz" -C /tmp/artifact-scan
+          if find /tmp/artifact-scan -type f \( -name '*.node' -o -name '*.so' -o -name '*.so.*' \) | grep .; then echo 'native binary in artifact'; exit 1; fi
+          if find /tmp/artifact-scan -type f -exec sh -c 'head -c 4 "$1" | grep -q "^.ELF"' _ {} \; -print | grep .; then echo 'ELF binary in artifact'; exit 1; fi
+          if grep -rIl 'BEGIN [A-Z ]*PRIVATE KEY' /tmp/artifact-scan | head -1 | grep .; then echo 'key material in artifact'; exit 1; fi
+      - name: Upload runnable release artifact
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: release-app-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            release-app-${{ github.event.pull_request.head.sha || github.sha }}.tar.gz
+            release-app-${{ github.event.pull_request.head.sha || github.sha }}.tar.gz.sha256
+            tarball-manifest.json
+            web/release.json
+          retention-days: 90
+          if-no-files-found: error
+
   migrations:
     runs-on: ubuntu-latest
     timeout-minutes: 15
