@@ -268,3 +268,18 @@ test('a TRANSIENT outcome releases the claim: the retried lookup pays once more 
   const claims = db.prepare("SELECT status FROM connector_claims WHERE tenant_id = 'u1'").all() as { status: string }[]
   assert.deepEqual(claims.map(c => c.status), ['ok'], 'the claim settled terminal exactly once')
 })
+
+test('an UNCERTAIN paid attempt (timeout/abort after the request left) stays held: the replay never re-bills, reports uncertain', async () => {
+  const { db, jobId, leads } = seed(1, false) // Apollo only
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const aborting = async () => { throw new DOMException('aborted', 'AbortError') }
+  const r1 = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(aborting, async () => ok(PDL_OK), calls), master })
+  assert.equal(r1.attached, 0)
+  const claims1 = db.prepare("SELECT status FROM connector_claims WHERE tenant_id = 'u1'").all() as { status: string }[]
+  assert.deepEqual(claims1.map(c => c.status), ['reserved'], 'a possibly-charged attempt keeps its claim')
+  const r2 = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  const callsAfter = { ...calls }
+  assert.equal(r2.attached, 0, 'the held lead is never re-billed automatically')
+  assert.ok(r2.skipped.some(x => x.why === 'uncertain'), 'the replay reports the lead uncertain (held for review)')
+  assert.equal(callsAfter.apollo, calls.apollo, 'no new provider call for the held lead')
+})

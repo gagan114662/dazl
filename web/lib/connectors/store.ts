@@ -170,6 +170,13 @@ const CLAIM_RELEASE_SQL = "DELETE FROM connector_claims WHERE tenant_id = ? AND 
 const RESERVE_STATUS_SQL = "SELECT status FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1"
 const claimKey = (a: AuditEntry) => [a.tenantId, a.connector, a.jobId ?? '', a.lookup.slice(0, 200)] as const
 const isTerminal = (status: string) => status === 'ok' || status === 'empty' || status.startsWith('contact rejected')
+// Definitively-not-charged outcomes (the claim may be released for a retry): a non-2xx RESPONSE was received, and
+// both providers tie charging to a successful response - PDL: "credits are consumed per successful match... (status
+// code = 200)" (support.peopledatalabs.com/hc/en-us/articles/25794271805211-Pricing-credits); Apollo: credits are
+// consumed "when qualifying data is returned" (docs.apollo.io/docs/api-pricing). A timeout/abort/network failure
+// after the request left is NOT in this set: the provider may have processed it (a 200 we never saw), so the claim
+// stays 'reserved' and the replay fails closed (uncertain, held for review) rather than risk a second charge.
+const NO_CHARGE_CODES: ReadonlySet<string> = new Set(['rate_limited', 'auth', 'upstream'])
 const claimPrior = (status: string): 'ok' | 'empty' | 'rejected' | 'uncertain' =>
   status === 'ok' || status === 'empty' ? status : status === 'rejected' || status.startsWith('contact rejected') ? 'rejected' : 'uncertain'
 export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOutcome {
@@ -200,7 +207,8 @@ export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: strin
   db.transaction(() => {
     db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
     if (isTerminal(status)) db.prepare(CLAIM_SETTLE_SQL).run(status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3])
-    else db.prepare(CLAIM_RELEASE_SQL).run(key[0], key[1], key[2], key[3])
+    else if (NO_CHARGE_CODES.has(status)) db.prepare(CLAIM_RELEASE_SQL).run(key[0], key[1], key[2], key[3])
+    // else: an uncertain paid attempt stays 'reserved' - held for review, never automatically re-billed
   }).immediate()
 }
 // Async twins for the Postgres port: the SAME statements, exercised against PG by the two-connection race test.
@@ -226,7 +234,8 @@ export async function writeTryReserve(db: Db, a: AuditEntry): Promise<ReserveOut
 export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number): Promise<void> {
   const key = claimKey(a)
   if (isTerminal(status)) await db.run(CLAIM_SETTLE_SQL, [status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
-  else await db.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
+  else if (NO_CHARGE_CODES.has(status)) await db.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
+  // else: uncertain paid attempt stays 'reserved' (see NO_CHARGE_CODES)
   await db.run("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'", [status, results, id])
 }
 export async function writeAudit(db: Db, a: AuditEntry): Promise<void> {
