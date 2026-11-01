@@ -12,7 +12,9 @@
 //   3. Approve is disabled with the reason on leads the existing gates hold (no email, window, timing);
 //   4. Reject opens an optional-reason step (presets, free text, Cancel/Escape writes nothing); Confirm reject sends the
 //      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none); the card leaves To review, the
-//      result line says so and the card shows its reason under Rejected; Undo (on the card or the result) sends its DELETE.
+//      result line says so and the card shows its reason under Rejected; Undo (on the card or the result) sends its DELETE;
+//   5. an interrupted (HELD) enrichment lookup surfaces with its exact cost wording; the owner's Retry posts
+//      /api/leads/<id>/enrich-retry once, and the notice clears when nothing is held.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -52,6 +54,7 @@ const LEADS = [
   lead('2'.repeat(24), 'Former Dental', { contact: 'hello@formerdental.example', enrichments: [row('person', 'Pat Lee, Former practice owner')] }),
 ]
 let outreachMode = 'ok'
+let heldMode = false; const retryCalls = []
 const writes = []; const outreachBodies = []; const quarantineCalls = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -72,6 +75,9 @@ await ctx.route('**/*', async route => {
   }
   const q = /^\/api\/leads\/([a-f0-9]{24})\/quarantine$/.exec(u.pathname)
   if (q) { quarantineCalls.push({ method: m, lead: q[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ quarantined: m === 'POST' }) }
+  if (u.pathname === '/api/enrich/held') return json(heldMode ? { held: [{ leadId: 'a'.repeat(24), company: 'Bright Dental', provider: 'apollo', step: 'people', since: 1762000000, costText: 'Retry the contact search: the saved company data is reused (not re-charged) and Apollo people search is a 0-credit endpoint. Rate limits may apply.' }] } : { held: [] })
+  const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
+  if (er && m === 'POST') { retryCalls.push(er[1]); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
   return json({}, 404)
 })
 const page = await ctx.newPage()
@@ -177,6 +183,21 @@ try {
   await page.getByTestId('tab-approved').click() // Bright Dental is under Approved now
   await page.locator('summary:not([data-testid=caveat] summary)', { hasText: 'Details' }).first().click() // a lead's Details, not a page caveat's
   assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), true, 'everything else is still there under Details')
+
+  // 5. A HELD (interrupted) enrichment lookup surfaces with its exact cost wording; the owner's Retry posts once and the notice clears.
+  heldMode = true
+  await page.reload({ waitUntil: 'networkidle' })
+  const heldSection = page.getByTestId('enrich-held')
+  await heldSection.waitFor()
+  assert.match(await heldSection.textContent(), /Contact enrichment needs attention/)
+  assert.match(await heldSection.textContent(), /Bright Dental/)
+  assert.equal(await heldSection.getByTestId('enrich-held-cost').textContent(), 'Retry the contact search: the saved company data is reused (not re-charged) and Apollo people search is a 0-credit endpoint. Rate limits may apply.')
+  await heldSection.scrollIntoViewIfNeeded(); await shot('enrich-held')
+  await heldSection.getByTestId(`enrich-retry-${'a'.repeat(24)}`).click()
+  assert.deepEqual(retryCalls, ['a'.repeat(24)], 'the owner action posts the retry for that lead')
+  heldMode = false // the retry cleared it
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal(await page.getByTestId('enrich-held').count(), 0, 'the notice clears once nothing is held')
   console.log('lead cards UI check passed:', writes.join(', '))
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

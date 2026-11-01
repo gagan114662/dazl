@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { pgDb } from '../lib/db/client.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
-import { writeTryReserve, writeSettleClaim } from '../lib/connectors/store.ts'
+import { writeTryReserve, writeSettleClaim, readOutcomeAsync } from '../lib/connectors/store.ts'
 
 test('connector_claims: two PG connections racing one lookup - exactly one claim wins; terminal replays free; transient holds', { skip: pgSkip }, async () => {
   const s = await freshSchema()
@@ -36,5 +36,17 @@ test('connector_claims: two PG connections racing one lookup - exactly one claim
     }
     const r4 = await writeTryReserve(b, key2)
     assert.deepEqual(r4, { prior: 'uncertain' }, 'a transient outcome HOLDS the claim: no automatic retry, never a rebill')
+    { // the recovery memo lands in the SAME settle as the terminal status, is read back by the replay, and no later settle rewrites it
+      const key5 = { ...key, lookup: 'step:org Memo Co (memo.example)' }
+      const w5 = await writeTryReserve(a, key5)
+      assert.ok('id' in w5)
+      const memo = JSON.stringify({ v: 1, domain: 'memo.example' })
+      await writeSettleClaim(a, key5, (w5 as { id: string }).id, 'ok', 1, memo)
+      const got = await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, { legacyAudit: false })
+      assert.deepEqual(got, { prior: 'ok', status: 'ok', memo }, 'memo present == agreement passed == resume allowed')
+      await writeSettleClaim(a, key5, (w5 as { id: string }).id, 'ok', 1, JSON.stringify({ v: 1, domain: 'other.example' }))
+      const got2 = await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, { legacyAudit: false })
+      assert.equal(got2?.memo, memo, 'a terminal memo is immutable (the settle guards on reserved + memo IS NULL)')
+    }
   } finally { await a.close(); await b.close(); await s.drop() }
 })
