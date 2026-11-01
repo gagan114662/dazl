@@ -429,6 +429,13 @@ CREATE TABLE play_research_sources (
  UNIQUE(tenant_id,job_id,fingerprint)
 );
 
+CREATE TABLE preview_claim_events (
+    id TEXT PRIMARY KEY,
+    claim_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('claimed','already','claimed_other_workspace','foreign','unverified','expired','unknown')),
+    created_at INTEGER NOT NULL
+  );
+
 CREATE TABLE preview_claims (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -919,6 +926,8 @@ CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
 
 CREATE INDEX play_research_sources_play ON play_research_sources(tenant_id,job_id,created_at);
+
+CREATE INDEX preview_claim_events_claim ON preview_claim_events (claim_id);
 
 CREATE INDEX preview_claims_recipient ON preview_claims (recipient_email);
 

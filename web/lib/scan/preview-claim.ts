@@ -27,7 +27,17 @@ export const PREVIEW_CLAIMS_DDL = `
   );
   CREATE INDEX IF NOT EXISTS preview_claims_recipient ON preview_claims (recipient_email);
 `
-export function migratePreviewClaim(db: Database.Database): void { db.exec(PREVIEW_CLAIMS_DDL) }
+// Privacy-safe claim-attempt audit (#416): outcome codes only - never an email, IP, token or snapshot.
+export const PREVIEW_CLAIM_EVENTS_DDL = `
+  CREATE TABLE IF NOT EXISTS preview_claim_events (
+    id TEXT PRIMARY KEY,
+    claim_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('claimed','already','claimed_other_workspace','foreign','unverified','expired','unknown')),
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS preview_claim_events_claim ON preview_claim_events (claim_id);
+`
+export function migratePreviewClaim(db: Database.Database): void { db.exec(PREVIEW_CLAIMS_DDL + PREVIEW_CLAIM_EVENTS_DDL) }
 
 // The stripped artifact a claim serves: the ready proof preview minus its spend (spend is the seller's, #403).
 export interface ClaimSnapshot {
@@ -73,7 +83,11 @@ export async function issuePreviewClaim(
   if (!proofInput) return null
   const proof: ProofPreview = buildProofPreview(proofInput, now)
   if (proof.status !== 'ready') return { status: 'hold', reason: proof.reason }
-  const snapshot: ClaimSnapshot = { runId: proof.runId, builtAt: proof.builtAt, expiresAt: proof.expiresAt, offer: proof.offer, companies: proof.companies, disclaimer: proof.disclaimer }
+  // Honest copy: the stored record proves an inferred offer and its source URL for one run. It does not prove the
+  // pages are the recipient's, so the claim's disclaimer never asserts that (#403's "your public pages" would be an
+  // unproven claim here: the issuer names the recipient).
+  const snapshot: ClaimSnapshot = { runId: proof.runId, builtAt: proof.builtAt, expiresAt: proof.expiresAt, offer: proof.offer, companies: proof.companies,
+    disclaimer: 'Found by one dazl run for an inferred offer, from the sources linked with each company. These are signals, not guaranteed customers.' }
   const id = randomBytes(16).toString('hex')
   await db.run(
     'INSERT INTO preview_claims (id, run_id, seller_tenant_id, recipient_email, business, snapshot, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -100,7 +114,7 @@ export async function readPublicClaim(db: Db, master: Buffer, token: string, now
 
 export type ClaimResult =
   | { status: 'claimed' | 'already'; id: string }
-  | { status: 'unknown' | 'expired' | 'unverified' | 'foreign' }
+  | { status: 'unknown' | 'expired' | 'unverified' | 'foreign' | 'claimed_other_workspace' }
 
 // Bind a claim to the signed-in account, once. The account's own verified email must equal the recipient; the
 // binding write is a single conditional UPDATE so two concurrent claims cannot both succeed. Claiming attaches
@@ -109,27 +123,45 @@ export async function claimPreview(
   db: Db, master: Buffer, token: string, actor: { actorId: string; tenantId: string }, now = Date.now(),
 ): Promise<ClaimResult> {
   const id = verifyClaimToken(master, token)
-  if (!id) return { status: 'unknown' }
+  if (!id) { await auditClaim(db, '', 'unknown', now); return { status: 'unknown' } }
   return await db.tx(function* (t) {
     const row = yield* t.get<{ recipient_email: string; expires_at: number; claimed_by_tenant: string | null }>(
       'SELECT recipient_email, expires_at, claimed_by_tenant FROM preview_claims WHERE id = ?', [id])
-    if (!row) return { status: 'unknown' } as ClaimResult
-    if (Number(row.expires_at) <= now) return { status: 'expired' } as ClaimResult
-    const u = yield* t.get<{ email: string; v: number | null }>('SELECT email, email_verified_at AS v FROM users WHERE id = ?', [actor.actorId])
-    if (!u || u.email.toLowerCase() !== row.recipient_email) return { status: 'foreign' } as ClaimResult
-    if (u.v === null) return { status: 'unverified' } as ClaimResult
-    if (row.claimed_by_tenant !== null) return (row.claimed_by_tenant === actor.tenantId ? { status: 'already', id } : { status: 'foreign' }) as ClaimResult
-    const upd = yield* t.run('UPDATE preview_claims SET claimed_by_tenant = ?, claimed_at = ? WHERE id = ? AND claimed_at IS NULL AND expires_at > ?',
-      [actor.tenantId, now, id, now])
-    if (upd.changes !== 1) return { status: 'foreign' } as ClaimResult // lost a race: the winner's row reads as claimed
-    return { status: 'claimed', id } as ClaimResult
+    let result: ClaimResult
+    if (!row) result = { status: 'unknown' }
+    else if (Number(row.expires_at) <= now) result = { status: 'expired' }
+    else {
+      const u = yield* t.get<{ email: string; v: number | null }>('SELECT email, email_verified_at AS v FROM users WHERE id = ?', [actor.actorId])
+      if (!u || u.email.toLowerCase() !== row.recipient_email) result = { status: 'foreign' }
+      else if (u.v === null) result = { status: 'unverified' }
+      // the recipient's own email, but another workspace of theirs already holds it (or won the race just now)
+      else if (row.claimed_by_tenant !== null && row.claimed_by_tenant !== actor.tenantId) result = { status: 'claimed_other_workspace' }
+      else if (row.claimed_by_tenant !== null) result = { status: 'already', id }
+      else {
+        const upd = yield* t.run('UPDATE preview_claims SET claimed_by_tenant = ?, claimed_at = ? WHERE id = ? AND claimed_at IS NULL AND expires_at > ?',
+          [actor.tenantId, now, id, now])
+        result = upd.changes === 1 ? { status: 'claimed', id } : { status: 'claimed_other_workspace' }
+      }
+    }
+    yield* t.run('INSERT INTO preview_claim_events (id, claim_id, outcome, created_at) VALUES (?, ?, ?, ?)',
+      [randomBytes(12).toString('hex'), id, result.status, now])
+    return result
   }, 'serializable')
 }
 
+// One audit row per claim attempt outside the binding transaction (a malformed token names no row): outcome only.
+async function auditClaim(db: Db, claimId: string, outcome: string, now: number): Promise<void> {
+  await db.run('INSERT INTO preview_claim_events (id, claim_id, outcome, created_at) VALUES (?, ?, ?, ?)',
+    [randomBytes(12).toString('hex'), claimId, outcome, now]).catch(() => {})
+}
+
 // The claiming workspace's own copy, for the stable private route. Another workspace's claim id reads as not found.
-export async function readClaimedPreview(db: Db, tenantId: string, id: string): Promise<{ business: string; snapshot: ClaimSnapshot } | null> {
+// Expiry is consistent with the public page: past the evidence expiry the preview is gone there too.
+export async function readClaimedPreview(db: Db, tenantId: string, id: string, now = Date.now()): Promise<{ business: string; snapshot: ClaimSnapshot } | { expired: true } | null> {
   if (!/^[a-f0-9]{32}$/.test(id)) return null
-  const row = await db.get<{ business: string; snapshot: string }>(
-    'SELECT business, snapshot FROM preview_claims WHERE id = ? AND claimed_by_tenant = ?', [id, tenantId])
-  return row ? { business: row.business, snapshot: JSON.parse(row.snapshot) as ClaimSnapshot } : null
+  const row = await db.get<{ business: string; snapshot: string; expires_at: number }>(
+    'SELECT business, snapshot, expires_at FROM preview_claims WHERE id = ? AND claimed_by_tenant = ?', [id, tenantId])
+  if (!row) return null
+  if (Number(row.expires_at) <= now) return { expired: true }
+  return { business: row.business, snapshot: JSON.parse(row.snapshot) as ClaimSnapshot }
 }

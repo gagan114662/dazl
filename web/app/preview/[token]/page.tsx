@@ -25,9 +25,9 @@ export default async function PreviewPage({ params, searchParams }: { params: Pr
         <p>It is now private to the account that claimed it. If that was you, sign in to see it.</p>
       </>}
       {c.status === 'ok' && <>
-        <p style={{ color: '#666', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1 }}>Preview for {c.business}</p>
+        <p style={{ color: '#666', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1 }}>The sender prepared this preview for {c.business}</p>
         <h1 style={{ fontSize: 24 }}>Companies that look like your next customers</h1>
-        <p><em>Inferred offer:</em> {c.snapshot.offer.text} (<a href={c.snapshot.offer.sourceUrl}>inferred from your public pages</a>)</p>
+        <p><em>Inferred offer:</em> {c.snapshot.offer.text} (<a href={c.snapshot.offer.sourceUrl}>source</a>)</p>
         <ul style={{ paddingLeft: 18 }}>
           {c.snapshot.companies.map((co) => (
             <li key={co.company} style={{ marginBottom: 16 }}>

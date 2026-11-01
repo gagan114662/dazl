@@ -5,10 +5,8 @@ import { getDb } from '@/lib/db/client'
 import { getScanDb } from '@/lib/scan/service'
 import { activateLifecycleFor, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearClaimCookie, clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
-import { claimPreview } from '@/lib/scan/preview-claim'
-import { captureError } from '@/lib/ops/errors'
-import { getMasterKey } from '@/lib/secrets'
+import { clearClaimCookie, clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
+import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
 import { captureError } from '@/lib/ops/errors'
@@ -66,22 +64,16 @@ export async function GET(req: NextRequest) {
   const ret = req.cookies.get(RETURN_COOKIE)?.value
   let landing = ret === 'settings' ? '/app/settings' : '/app'
   const session = await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
-  // #416: returning from a preview claim. Google verified this email, and claimPreview re-checks it against the
-  // claim's recipient: a claim meant for someone else fails here and the public page shows why.
-  if (ret === 'preview') {
-    const token = req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value ?? ''
-    const me = await getSessionUser(session, db)
-    let c: Awaited<ReturnType<typeof claimPreview>> = { status: 'unknown' }
-    if (me) {
-      try { c = await claimPreview(db, getMasterKey(), token, { actorId: me.actorId, tenantId: me.tenantId }) }
-      catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:preview-claim', method: 'GET' }) }
-    }
-    landing = c.status === 'claimed' || c.status === 'already' ? `/app/preview/${c.id}` : `/preview/${encodeURIComponent(token)}?e=${c.status}`
-  }
+  // #416: returning from a preview claim. A GET never consumes: the claim binds only on the confirm page's explicit
+  // POST, same as the password path. The intent cookie is re-scoped so the claim route can read it there.
+  let claimToken = ''
+  if (ret === 'preview') claimToken = req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value ?? ''
+  if (ret === 'preview') landing = isClaimToken(claimToken) ? '/preview/claim' : '/app' // lost intent cookie: safe landing, the link still works
   const res = redirectNoStore(new URL(landing, base))
   setSessionCookie(res, base, session, SESSION_TTL_S)
   clearOauthCookie(res, base)
   clearReturnCookie(res, base)
-  clearClaimCookie(res)
+  if (ret === 'preview' && isClaimToken(claimToken)) setClaimCookie(res, claimToken)
+  else clearClaimCookie(res)
   return res
 }

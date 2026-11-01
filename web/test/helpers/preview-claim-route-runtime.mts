@@ -77,7 +77,7 @@ test('the start route sets a host-only short claim intent from a validated row, 
   assert.equal(new URL(r.headers.get('location')!).pathname, '/api/auth/google', 'server-chosen destination, never an input URL')
   const set = r.headers.getSetCookie()
   const claim = set.find(c => /^dazl_claim=/.test(c))!
-  for (const a of [/^dazl_claim=[a-f0-9]{32}\.[a-f0-9]{32};/, /Max-Age=3600/, /Path=\/api\/auth/, /Secure/, /HttpOnly/, /SameSite=lax/i]) assert.match(claim, a)
+  for (const a of [/^dazl_claim=[a-f0-9]{32}\.[a-f0-9]{32};/, /Max-Age=3600/, /Path=\//, /Secure/, /HttpOnly/, /SameSite=lax/i]) assert.match(claim, a)
   assert.doesNotMatch(claim, /Domain=/i, 'host-only intent cookie')
   assert.ok(set.some(c => /^dazl_return=preview;/.test(c)))
   console.log('PREVIEW_START_OK')
@@ -90,15 +90,22 @@ test('a full claim through Google: signed in, claimed atomically, landed on the 
   const [state, n] = cookie.split('.'); nonce = n
   const r = await callback.GET(req(`https://app.test/api/auth/callback/google?code=c&state=${state}`, `dazl_oauth=${cookie}; dazl_return=preview; dazl_claim=${r0.token}`))
   const loc = new URL(r.headers.get('location')!)
-  assert.match(loc.pathname, /^\/app\/preview\/[a-f0-9]{32}$/, 'landed on the stable private claimed route')
+  assert.equal(loc.pathname, '/preview/claim', 'the GET lands on the confirm page - it never binds')
   const set = r.headers.getSetCookie()
   assert.ok(set.some(c => /^dazl_session=[0-9a-f]{64};/.test(c)))
-  assert.ok(set.some(c => /^dazl_claim=;.*Max-Age=0/.test(c)), 'intent cookie cleared')
+  assert.ok(set.some(c => /^dazl_claim=[a-f0-9]/.test(c)), 'intent cookie carried to the confirm flow, not cleared')
   assert.ok(set.some(c => /^dazl_return=;.*Max-Age=0/.test(c)))
+  assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'nothing claimed by the GET')
+  const session = /^dazl_session=([0-9a-f]{64});/.exec(set.find(c => /^dazl_session=/.test(c))!)![1]
+  const confirmPost = await withJar(new Map([['dazl_session', session]]), () =>
+    claimRoute.POST(new NextRequest('https://app.test/api/preview/claim', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://app.test', host: 'app.test', cookie: `dazl_claim=${r0.token}`, 'x-forwarded-for': '10.9.4.1' }, body: '{}' })))
+  assert.equal(confirmPost.status, 200, 'the intentional POST binds the claim')
+  assert.ok(confirmPost.headers.getSetCookie().some(c => /^dazl_claim=;.*Max-Age=0/.test(c)), 'spent intent cleared')
   const uid = (h.prepare("SELECT id FROM users WHERE email = 'pat@example.test'").get() as { id: string }).id
   const row = h.prepare('SELECT claimed_by_tenant FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_by_tenant: string }
   assert.equal(row.claimed_by_tenant, uid, 'claimed by the new account’s own workspace')
   assert.equal((await readPublicClaim(sqliteDb(h), MASTER, r0.token)).status, 'claimed', 'public content revoked')
+  assert.equal((h.prepare("SELECT count(*) AS n FROM preview_claim_events WHERE claim_id = ? AND outcome = 'claimed'").get(r0.id) as { n: number }).n, 1, 'attempt audited')
   console.log('PREVIEW_GOOGLE_CLAIM_OK')
 })
 
@@ -108,10 +115,15 @@ test('a claim meant for someone else is refused at the callback and stays unclai
   const cookie = /dazl_oauth=([^;]+)/.exec(s.headers.get('set-cookie')!)![1]
   const [state, n] = cookie.split('.'); nonce = n
   const r = await callback.GET(req(`https://app.test/api/auth/callback/google?code=c&state=${state}`, `dazl_oauth=${cookie}; dazl_return=preview; dazl_claim=${r0.token}`))
-  const loc = new URL(r.headers.get('location')!)
-  assert.equal(loc.pathname, `/preview/${r0.token}`)
-  assert.equal(loc.searchParams.get('e'), 'foreign')
+  assert.equal(new URL(r.headers.get('location')!).pathname, '/preview/claim', 'GET stays consumption-free even for a foreign claim')
+  const set2 = r.headers.getSetCookie()
+  const session2 = /^dazl_session=([0-9a-f]{64});/.exec(set2.find(c => /^dazl_session=/.test(c))!)![1]
+  const refused = await withJar(new Map([['dazl_session', session2]]), () =>
+    claimRoute.POST(new NextRequest('https://app.test/api/preview/claim', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://app.test', host: 'app.test', cookie: `dazl_claim=${r0.token}`, 'x-forwarded-for': '10.9.4.2' }, body: '{}' })))
+  assert.equal(refused.status, 403)
+  assert.equal((await refused.json()).code, 'foreign')
   assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null)
+  assert.ok((h.prepare("SELECT count(*) AS n FROM preview_claim_events WHERE claim_id = ? AND outcome = 'foreign'").get(r0.id) as { n: number }).n >= 1, 'refusal audited')
   console.log('PREVIEW_FOREIGN_OK')
 })
 

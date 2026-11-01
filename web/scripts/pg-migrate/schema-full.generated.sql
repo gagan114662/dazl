@@ -13,7 +13,11 @@ BEGIN
   END IF;
 END $guard$;
 
+<<<<<<< HEAD
 DROP TABLE IF EXISTS advanced_consent, app_leases, autopilot_audit, autopilot_settings, calcom_bookings, calcom_hooks, company_events, connector_audit, consent_ledger, crm_push_claims, csv_batches, email_candidates, email_patterns, email_tokens, evidence_purge_audit, evidence_purge_gate, followup_messages, followup_threads, gmail_accounts, hiring_feed_crawl, inbound_messages, inbox_thread_reads, invitations, lead_enrichments, lead_evidence_copies, lead_qualifications, lifecycle_events, mail_read_consent, memberships, monitors, newsjacks, oauth_identities, oauth_states, organizations, outreach_llm_usage, outreach_messages, outreach_settings, outreach_signal_context, play_research_sources, preview_claims, rate_limits, reopen_messages, reply_drafts, reply_queries, reply_threads, scan_jobs, scan_model_calls, scan_run_report, scan_source_runs, scan_source_stats, scheduler_progress, scheduler_runs, seo_audits, seo_briefs, seo_index_configs, seo_index_keywords, seo_index_results, seo_index_runs, sequence_settings, sequence_steps, sequences, sessions, source_reviews, stripe_ended_subscriptions, stripe_events, suppressions, system_mail_outbox, tenant_competitors, tenant_connections, tenant_connectors, tenant_llm_keys, tenant_memory, tenant_plans, tenant_spend_pools, tinyfish_usage, trial_budget_lock, trial_reservations, trial_scans, users, warm_user_paths, watches, work_queue, work_queue_meta, commenter_batches, csv_rows, leads, monitor_runs, monitor_seen, watch_seen, commenter_rows, lead_sources CASCADE;
+=======
+DROP TABLE IF EXISTS advanced_consent, app_leases, autopilot_audit, autopilot_settings, calcom_bookings, calcom_hooks, company_events, connector_audit, consent_ledger, crm_push_claims, csv_batches, email_candidates, email_patterns, email_tokens, evidence_purge_audit, evidence_purge_gate, followup_messages, followup_threads, gmail_accounts, hiring_feed_crawl, inbound_messages, inbox_thread_reads, invitations, lead_enrichments, lead_evidence_copies, lead_qualifications, mail_read_consent, memberships, monitors, newsjacks, oauth_identities, oauth_states, organizations, outreach_llm_usage, outreach_messages, outreach_settings, outreach_signal_context, play_research_sources, preview_claim_events, preview_claims, rate_limits, reopen_messages, reply_drafts, reply_queries, reply_threads, scan_jobs, scan_model_calls, scan_run_report, scan_source_runs, scan_source_stats, scheduler_progress, scheduler_runs, seo_audits, seo_briefs, seo_index_configs, seo_index_keywords, seo_index_results, seo_index_runs, sequence_settings, sequence_steps, sequences, sessions, source_reviews, stripe_ended_subscriptions, stripe_events, suppressions, system_mail_outbox, tenant_competitors, tenant_connections, tenant_connectors, tenant_llm_keys, tenant_memory, tenant_plans, tenant_spend_pools, tinyfish_usage, trial_budget_lock, trial_reservations, trial_scans, users, warm_user_paths, watches, work_queue, work_queue_meta, commenter_batches, csv_rows, leads, monitor_runs, monitor_seen, watch_seen, commenter_rows, lead_sources CASCADE;
+>>>>>>> b0715915 (preview claim: intentional confirm, honest copy, audit, expiry)
 
 CREATE SEQUENCE IF NOT EXISTS connector_audit_insert_seq_seq;
 
@@ -389,6 +393,13 @@ CREATE TABLE play_research_sources (
  source_check TEXT NOT NULL, person_check TEXT, created_at BIGINT NOT NULL,
  UNIQUE(tenant_id,job_id,fingerprint)
 );
+
+CREATE TABLE preview_claim_events (
+    id TEXT PRIMARY KEY,
+    claim_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('claimed','already','claimed_other_workspace','foreign','unverified','expired','unknown')),
+    created_at BIGINT NOT NULL
+  );
 
 CREATE TABLE preview_claims (
     id TEXT PRIMARY KEY,
@@ -960,6 +971,8 @@ CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
 
 CREATE INDEX play_research_sources_play ON play_research_sources(tenant_id,job_id,created_at);
+
+CREATE INDEX preview_claim_events_claim ON preview_claim_events (claim_id);
 
 CREATE INDEX preview_claims_recipient ON preview_claims (recipient_email);
 

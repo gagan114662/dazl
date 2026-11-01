@@ -18,7 +18,8 @@ test('preview claim routes', () => {
 
 test('claiming is an intentional act: the claim page never POSTs on landing, only from its button', () => {
   const src = readFileSync(new URL('../app/preview/claim/page.tsx', import.meta.url), 'utf8')
-  assert.ok(!/useEffect/.test(src), 'no effect fires a write on landing')
+  const effects = src.match(/useEffect\([\s\S]*?\}, \[\]\)/g) ?? []
+  assert.ok(effects.every(e => !/POST/.test(e)), 'no effect fires a write on landing (read-only fetches only)')
   assert.match(src, /onClick=\{submit\}/)
   assert.match(src, /Claim this preview/)
 })
