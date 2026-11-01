@@ -43,3 +43,24 @@ test('soft, held and ignored verdicts never write or suppress', () => {
   assert.equal(bounceCount(d, 'A'), 0)
   assert.ok(!suppressed(d, 'lead@x.example'))
 })
+
+test('a crash between the ledger insert and the suppression rolls back completely; the replay records and suppresses', () => {
+  const d = db()
+  const crash = () => { throw new Error('simulated crash mid-write') }
+  assert.throws(() => applyBounceVerdict(d, 'A', perm('m1', 'lead@x.example'), 'dsn', 'gmail-1', undefined, crash), /simulated crash/)
+  assert.equal(bounceCount(d, 'A'), 0, 'no dedup row survives the failed write')
+  assert.ok(!suppressed(d, 'lead@x.example'), 'no suppression either')
+  assert.equal(applyBounceVerdict(d, 'A', perm('m1', 'lead@x.example'), 'dsn', 'gmail-1'), 'recorded', 'the replay is not misread as a duplicate')
+  assert.equal(bounceCount(d, 'A'), 1)
+  assert.ok(suppressed(d, 'lead@x.example'))
+})
+
+test('tenants and recipients are isolated in the ledger', () => {
+  const d = db()
+  assert.equal(applyBounceVerdict(d, 'A', perm('m1', 'lead@x.example'), 'dsn', 'g1'), 'recorded')
+  assert.equal(applyBounceVerdict(d, 'B', perm('m1', 'lead@x.example'), 'dsn', 'g2'), 'recorded', 'same send id + recipient under another tenant is separate')
+  assert.equal(applyBounceVerdict(d, 'A', perm('m1', 'Lead@X.example'), 'dsn', 'g3'), 'duplicate', 'recipient case folds within a tenant')
+  assert.equal(bounceCount(d, 'A'), 1)
+  assert.equal(bounceCount(d, 'B'), 1)
+  assert.ok(!suppressed(d, 'lead@y.example'), "tenant A's suppression never names another address")
+})
