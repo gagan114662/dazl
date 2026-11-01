@@ -917,13 +917,13 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // A trial scan reserves each paid step's maximum (lib/billing/trial-budget.ts): model calls by their prompt's bytes,
     // not the token counter's estimate, and the model's own web search, whose cost has no bound, is refused. Its web
     // research is TinyFish, charged per call below. A run with its own max_usd refuses research too (run-budget.ts).
-    // Fail closed (#379): the web-search research fallback's search-result tokens are bounded by nothing dazl sends, so it
-    // can never run priced - every guarded provider already refuses it ('research_unbounded'). A run with NO guard (no job
-    // max_usd, owner outside the pool lists, not a trial) was the only path where it could still run: unpriced, unbounded,
-    // unrecorded. Refuse exactly that method there too; completions are untouched (their fixture/real paths keep today's
-    // behaviour). The refusal surfaces as an honest budget_stopped finish, the same as a capped run.
-    const unguardedResearch = async (): Promise<never> => { throw new SpendRefused('research_unbounded') }
-    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: { ...baseProviders[vendor], research: unguardedResearch } } : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
+    // Fail closed (#379): the web-search research fallback is retired at the provider boundary - both real providers
+    // refuse it unconditionally (lib/llm/provider.ts), before any network call, because its search-result tokens are
+    // bounded by nothing dazl sends and it can never run priced. The runner deliberately does NOT wrap or replace the
+    // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
+    // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
+    // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or

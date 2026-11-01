@@ -145,19 +145,18 @@ test('a csv job whose searches find nothing stops honestly (research refused, #3
   const b = createBatch(db, 'A', ['ghost.example.co'])
   queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
-  let researchCalls = 0
-  const providers: Record<'anthropic' | 'openai', Provider> = {
-    anthropic: { research: async () => { researchCalls++; return { text: '[]', citedUrls: [] } }, complete: async () => 'supports' },
-    openai: { research: async () => ({ text: '', citedUrls: [] }) },
-  }
-  const fetchImpl = (async (u: string | URL | Request) => {
+  // The production wiring: no injected provider, so the run uses the real vendor registry. Any model web-search
+  // request would show up in webSearchCalls - the retired method must refuse before any network call (#379).
+  let webSearchCalls = 0
+  const fetchImpl = (async (u: string | URL | Request, init?: RequestInit) => {
     const s = String(u)
+    if ((s.includes('api.anthropic.com') || s.includes('api.openai.com')) && String(init?.body ?? '').includes('web_search')) webSearchCalls++
     if (s.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
     if (s.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
     return new Response('{}', { status: 404 })
   }) as typeof fetch
-  assert.equal(await runJob(db, job, { providers, master, fetchPage: page, fetchImpl }), 'failed')
-  assert.equal(researchCalls, 0, 'the unpriceable fallback was never invoked')
+  assert.equal(await runJob(db, job, { master, fetchPage: page, fetchImpl }), 'failed')
+  assert.equal(webSearchCalls, 0, 'the unpriceable fallback was refused before any network call')
   assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped', 'an honest stop, not "nothing found" and never an unpriced call')
   assert.equal(batchStatus(db, 'A', b)!.counts.failed, 1)
   } finally { delete process.env.TINYFISH_API_KEY }

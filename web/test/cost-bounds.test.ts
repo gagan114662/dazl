@@ -75,21 +75,26 @@ async function runScan(budget: string | null) {
 }
 test('#379: an unguarded run never reaches the unpriceable web-search research fallback (fail closed)', async () => {
   // Pre-fix this run ended 'done' with leads from provider.research - an unbounded, unpriced, unrecorded call.
-  // Post-fix it ends honestly as budget_stopped and the provider's research method is never even invoked.
+  // Post-fix the real provider's retired research method refuses before any network call: the run ends honestly as
+  // budget_stopped and no web-search request is ever made.
   resetTinyfishState()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   db.exec('CREATE TABLE users (id TEXT, business_name TEXT)'); db.prepare('INSERT INTO users VALUES (?, ?)').run('A', 'Acme')
   const id = createQueryJob(db, 'A', { query: 'Find Ohio companies hiring a payroll specialist', icp: JSON.stringify({ summary: 's', who: ['Controller'], industries: [], sizes: [], where: ['Ohio'], signals: ['payroll job'], exclude: [] }) })
   const job = claimKeyedJob(db, id)!
-  let researchCalls = 0
-  const lead = { company: 'Harbor Freight Supply', name: null, contact: null, signal: 'Hiring a payroll specialist', score: 80, excerpt: 'Hiring a payroll specialist', source_url: 'https://jobs.example/hf', event_date: null }
-  const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => { researchCalls++; return { text: JSON.stringify([lead]), citedUrls: [lead.source_url] } }, complete: async () => 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
-  const r = await runJob(db, job, { providers, master, fetchImpl: (async () => new Response('{}', { status: 404 })) as typeof fetch, fetchPage: async () => ({ text: 'x'.repeat(300), title: 'Jobs', retrievedAt: 1 }), score: false, ground: false })
+  // The production wiring: no injected provider. The retired real research method must refuse before any network
+  // call (#379) - a web-search request to a model vendor would show up in webSearchCalls.
+  let webSearchCalls = 0
+  const fetchImpl = (async (u: string | URL | Request, init?: RequestInit) => {
+    if ((String(u).includes('api.anthropic.com') || String(u).includes('api.openai.com')) && String(init?.body ?? '').includes('web_search')) webSearchCalls++
+    return new Response('{}', { status: 404 })
+  }) as typeof fetch
+  const r = await runJob(db, job, { master, fetchImpl, fetchPage: async () => ({ text: 'x'.repeat(300), title: 'Jobs', retrievedAt: 1 }), score: false, ground: false })
   assert.equal(r, 'failed')
   const row = db.prepare('SELECT status, error FROM scan_jobs').get() as { status: string; error: string }
   assert.equal(row.status, 'failed'); assert.equal(row.error, 'budget_stopped', 'an honest stop, never "nothing found"')
-  assert.equal(researchCalls, 0, 'the unpriceable call was refused at the provider boundary')
+  assert.equal(webSearchCalls, 0, 'the unpriceable call was refused at the provider boundary')
 })
 
 test('autopilot: a job that carries a budget never starts it; an unbudgeted job still does (control)', async () => {
