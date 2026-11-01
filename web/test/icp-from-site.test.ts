@@ -201,3 +201,21 @@ test('icpFromWebsite: garbage research output costs the draft nothing - it just 
   assert.equal(out.icp.summary, 'Sales ops.')
   assert.equal(out.icp.research, undefined)
 })
+
+test('hard byte bound: CJK-heavy 6-page prompt fits RESEARCH_PROMPT_MAX_BYTES and keeps the homepage', async () => {
+  const { fitPromptBytes, RESEARCH_PROMPT_MAX_BYTES } = await import('../lib/scan/icp-from-site.ts')
+  const pages = [{ url: 'https://a.example/', kind: 'home', title: 't', text: '歯'.repeat(3500) }]
+  for (let i = 0; i < 5; i++) pages.push({ url: `https://a.example/p${i}`, kind: 'pricing', title: 't', text: '科'.repeat(3500) })
+  const out = fitPromptBytes('a.example', pages)
+  assert.ok(Buffer.byteLength(out) <= RESEARCH_PROMPT_MAX_BYTES)
+  assert.ok(out.includes('https://a.example/'))
+})
+
+test('hard byte bound: ordinary English 6-page prompt is kept verbatim', async () => {
+  const { fitPromptBytes, RESEARCH_PROMPT_MAX_BYTES, } = await import('../lib/scan/icp-from-site.ts')
+  const pages = [{ url: 'https://a.example/', kind: 'home', title: 'Home', text: 'we sell booking software to dental practices '.repeat(40) }]
+  for (let i = 0; i < 5; i++) pages.push({ url: `https://a.example/p${i}`, kind: 'product', title: 'P', text: 'booking for clinics '.repeat(40) })
+  const out = fitPromptBytes('a.example', pages)
+  assert.ok(Buffer.byteLength(out) <= RESEARCH_PROMPT_MAX_BYTES)
+  for (const p of pages) assert.ok(out.includes(p.url))
+})
