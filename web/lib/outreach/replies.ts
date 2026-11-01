@@ -280,11 +280,10 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
       // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
       // stop a thread or end a sequence. They are counted unmatched and left for review.
-      // An exact Message-ID ref is CORRELATION, not authentication: only parties who saw the send's headers (the
-      // recipient, or anyone it was forwarded to) could quote it, and the worst a forged notice with a valid ref
-      // can do is suppress that very recipient - never another address, another tenant, or any disclosure. That
-      // self-suppression residual is accepted: no stronger signal exists in a DSN, and suppressing one's own
-      // address is compliance-aligned anyway.
+      // An exact Message-ID ref is CORRELATION, never authentication: a party who saw the send's headers could
+      // quote it. Correlation alone therefore never suppresses and never stops anything: a 5.x.x that correlates
+      // but cannot be PROVEN to come from the recipient's own mail infrastructure is classified bounce_review and
+      // left for a human. Automatic suppression exists only behind authenticated DSN provenance.
       const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
       let m: { id: string; lead_id: string; to_email: string } | undefined
       if (refId && dsn.recipient) m = (db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')").get(tenantId, refId) as typeof m) ?? undefined
@@ -296,14 +295,15 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         continue
       }
       if (/^5\.\d{1,3}\.\d{1,3}$/.test(dsn.status)) {
-        // A permanent failure: suppress the exact recipient, stop their threads and sequences, account once per send.
-        if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce'").get(tenantId, m.id)) {
-          recordBounce(db, tenantId, m.to_email, now)
-          db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND to_email = ?").run(tenantId, m.to_email)
-          auditAt(db, tenantId, 'bounce_separate_thread', `${m.to_email} (dsn ${dsn.status})`, m.lead_id, m.id, now)
-          out.bounces++
+        // A permanent failure WITHOUT authenticated provenance: review, never an automatic action. The notice
+        // correlates to our send (exact ref + recipient), so it is not noise - but nothing about it proves the
+        // recipient's mail infrastructure issued it, and unauthenticated mail must never suppress a contact or
+        // stop a thread. Counted once per send; the classification carries the correlation.
+        if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, m.id)) {
+          auditAt(db, tenantId, 'bounce_review', `dsn ${dsn.status} correlated, provenance unverified`, m.lead_id, m.id, now)
+          out.reviews++
         }
-        log('bounce', m.id, m.lead_id)
+        log('bounce_review', m.id, m.lead_id)
       } else log('soft_bounce', m.id, m.lead_id) // 4.x.x and anything non-permanent: never a suppression
     }
   } catch (e) {
