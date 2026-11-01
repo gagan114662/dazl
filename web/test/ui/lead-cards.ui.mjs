@@ -102,11 +102,13 @@ try {
   assert.match(await bright.textContent(), /Bright Dental is a two-location practice that matches your dental owner profile\./)
   assert.doesNotMatch(await bright.textContent(), /More detail follows/, 'one line of why, not the whole rationale')
   assert.match(await bright.textContent(), /news\.example · claimed event date 1 Oct 2026/)
-  await bright.getByText('Details', { exact: true }).click()
-  await bright.getByText("Hiring for Senior Sales Ops Manager. This may relate to your offer; buying need isn't verified.", { exact: true }).waitFor()
-  await bright.getByText(/checked 2026-10-20; original posting date unknown/).waitFor()
+  // The card's Details disclosure is its following sibling (the card div closes at the hold/approve line).
+  const brightDetails = bright.locator('xpath=following-sibling::details[1]')
+  await brightDetails.getByText('Details', { exact: true }).click()
+  await brightDetails.getByText("Hiring for Senior Sales Ops Manager. This may relate to your offer; buying need isn't verified.", { exact: true }).waitFor()
+  await brightDetails.getByText(/checked 2026-10-20; original posting date unknown/).waitFor()
   await shot('hiring-provenance')
-  await bright.getByText('Details', { exact: true }).click()
+  await brightDetails.getByText('Details', { exact: true }).click()
   assert.equal(await bright.getByRole('link', { name: 'news.example' }).getAttribute('href'), 'https://www.news.example/aaaa')
   assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), false, 'Details are closed by default')
 
