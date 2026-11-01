@@ -230,11 +230,14 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         if (c.via === 'domain' && !heuristicC) {
           const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
           const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
-          for (const e of withRepostHistory(checkedAuditRows(c, windowDays, now, checkedDay, null), c.board, existingEvidence)) addEnrichment(db, job.user_id, l.id, e) // #533 F-B: zero-match audit trail
+          const checkedRows = withRepostHistory(checkedAuditRows(c, windowDays, now, checkedDay, null), c.board, existingEvidence)
+          for (const e of checkedRows) addEnrichment(db, job.user_id, l.id, e) // #533 F-B: zero-match audit trail
           addEnrichment(db, job.user_id, l.id, checkedCoverageRow(c, windowDays, now, checkedDay))
-          { const full = withRepostHistory(fullListingAuditRows(c.board, c.boardUrl, c.allListed, new Set(), now, checkedDay, null), c.board, existingEvidence)
-            for (const e of full) addEnrichment(db, job.user_id, l.id, e) // #533 breadth: the whole listing - the actual absence evidence
-            addEnrichment(db, job.user_id, l.id, fullListingCoverageRow(c.board, c.boardUrl, c.listedCountAll, c.allListed, 0, full.length, now, checkedDay)) }
+          { const covered = new Set(checkedRows.map(r => r.value.replace(/^Unconfirmed: /, '').trim().toLowerCase())) // titles the zero-match audit just stored, actual inserted shapes
+            const coveredCount = c.allListed.filter(t => covered.has(t.trim().toLowerCase())).length
+            const full = withRepostHistory(fullListingAuditRows(c.board, c.boardUrl, c.allListed, covered, now, checkedDay, null), c.board, existingEvidence)
+            for (const e of full) addEnrichment(db, job.user_id, l.id, e) // #533 breadth: sampled titles in NEITHER store - absence within the sample is auditable
+            addEnrichment(db, job.user_id, l.id, fullListingCoverageRow(c.board, c.boardUrl, c.listedCountAll, c.allListed, coveredCount, full.length, now, checkedDay)) }
         }
       }
       // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers

@@ -226,11 +226,14 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
         const c = specific.checked
         const boundC = c.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && !!lead.company_domain && c.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')))
         if (boundC) {
-          for (const e of withRepostHistory(checkedAuditRows(c, WINDOW_DAYS, now, today, null), c.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
+          const checkedRows = withRepostHistory(checkedAuditRows(c, WINDOW_DAYS, now, today, null), c.board, existingEvidence)
+          for (const e of checkedRows) addEnrichment(db, tenantId, lead.id, e)
           addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
-          const full = withRepostHistory(fullListingAuditRows(c.board, c.boardUrl, c.allListed, new Set(), now, today, null), c.board, existingEvidence)
-          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: whole listing - the actual absence evidence
-          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(c.board, c.boardUrl, c.listedCountAll, c.allListed, 0, full.length, now, today))
+          const covered = new Set(checkedRows.map(r => r.value.replace(/^Unconfirmed: /, '').trim().toLowerCase())) // titles the zero-match audit just stored, actual inserted shapes
+          const coveredCount = c.allListed.filter(t => covered.has(t.trim().toLowerCase())).length
+          const full = withRepostHistory(fullListingAuditRows(c.board, c.boardUrl, c.allListed, covered, now, today, null), c.board, existingEvidence)
+          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: sampled titles in NEITHER store - absence within the sample is auditable
+          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(c.board, c.boardUrl, c.listedCountAll, c.allListed, coveredCount, full.length, now, today))
         }
       }
     }
