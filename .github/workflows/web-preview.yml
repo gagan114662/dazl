@@ -39,6 +39,9 @@ jobs:
       # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
       - name: Rendered research-review checks (first-run + leads draft editor)
         run: SHOTS=preview/research-review node test/ui/research-review.ui.mjs | tee /tmp/rr1.out && ! grep -q '^NOT RUN' /tmp/rr1.out && SHOTS=preview/research-review node test/ui/leads-research-review.ui.mjs | tee /tmp/rr2.out && ! grep -q '^NOT RUN' /tmp/rr2.out
+      # The #436 unsupported-adapter gates in Settings > Connectors (stubbed: no worker, session or network; screenshots into preview/settings-advanced). It must run, not skip.
+      - name: Rendered settings connectors unsupported-adapter check
+        run: SHOTS=preview/settings-advanced node test/ui/settings-advanced-unsupported.ui.mjs | tee /tmp/sa.out && ! grep -q '^NOT RUN' /tmp/sa.out
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out && ! grep -q '^NOT RUN' /tmp/it.out
