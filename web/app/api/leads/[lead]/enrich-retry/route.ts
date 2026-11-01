@@ -25,6 +25,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
     selector = { provider: b.provider, step: b.step }
   } catch { return NextResponse.json({ error: 'Pick one interrupted lookup to retry' }, { status: 400 }) }
   const r = await retryHeldEnrichment(getScanDb(), user.tenantId, lead, selector)
+  if (r.status === 'cost_unverified') return NextResponse.json({ error: 'The cost of this lookup on your account has not been verified, so it stays held.' }, { status: 409 })
   if (r.status !== 'retried') return NextResponse.json({ error: r.status === 'not_found' ? 'Lead not found' : 'No interrupted lookup to retry' }, { status: r.status === 'not_found' ? 404 : 409 })
   return NextResponse.json({ retried: true, attached: r.attached, releases: r.releases })
 }

@@ -359,10 +359,20 @@ export function heldEnrichments(db: Database.Database, tenantId: string, nowSec 
   return out
 }
 
+// Cost scope of an owner retry. Provider credit terms depend on the connected account's plan (Apollo's own pricing
+// page says legacy workspaces may differ from the published endpoint costs; PDL terms are not verified here either),
+// so a retry is only offered for a provider whose cost on THIS deployment's account the operator has confirmed:
+// DAZL_ENRICH_RETRY_COST_VERIFIED="apollo,pdl". Default: nothing verified, every held lookup stays held.
+export function retryCostVerified(provider: Prov): boolean {
+  return (process.env.DAZL_ENRICH_RETRY_COST_VERIFIED ?? '').split(',').map(x => x.trim().toLowerCase()).includes(provider)
+}
+
 // The exact cost/limits wording the owner acts on. Apollo credit costs are the provider's current endpoint
 // references; the retry is always the owner's explicit action, never an automatic release.
 export function heldCostText(h: HeldEnrichment): string {
-  if (h.provider === 'apollo' && h.step === 'people') return 'Retry the contact search: the saved company data is reused (not re-charged) and Apollo people search is a 0-credit endpoint. Rate limits may apply.'
+  const name = h.provider === 'apollo' ? 'Apollo' : 'People Data Labs'
+  if (!retryCostVerified(h.provider)) return `Retry unavailable: what this lookup costs on your ${name} account has not been verified, so it stays held and nothing is charged. ${h.provider === 'apollo' ? "Apollo documents contact search as 0 credits on current plans, but older plans can differ. " : ''}It can be retried once the cost on your account is confirmed.`
+  if (h.provider === 'apollo' && h.step === 'people') return 'Retry the contact search: the saved company data is reused (not re-charged). Apollo documents people search as 0 credits on current plans; confirm your plan if it is older. Rate limits may apply.'
   if (h.provider === 'apollo') return 'Retry the company lookup: the earlier attempt could not prove its outcome, so this can charge 1 Apollo credit again.'
   return `Retry the contact lookup: the earlier attempt could not prove its outcome, so this can use People Data Labs credits again (1 per profile returned, up to ${MAX_CONTACTS}).`
 }
@@ -370,13 +380,14 @@ export function heldCostText(h: HeldEnrichment): string {
 // The owner retry itself: releases ONLY the one held claim the owner selected. Consent and cost scope are
 // load-bearing: each retry action names the exact provider+step whose cost/limits were disclosed next to it, so
 // an Apollo action never releases a PDL claim and never runs a PDL call (the re-run is scoped to that provider).
-export async function retryHeldEnrichment(db: Database.Database, tenantId: string, leadId: string, selector: { provider: Prov; step: HeldEnrichment['step'] }, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<{ status: 'not_found' | 'nothing_held' } | { status: 'retried'; attached: number; releases: string[] }> {
+export async function retryHeldEnrichment(db: Database.Database, tenantId: string, leadId: string, selector: { provider: Prov; step: HeldEnrichment['step'] }, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<{ status: 'not_found' | 'nothing_held' | 'cost_unverified' } | { status: 'retried'; attached: number; releases: string[] }> {
   const lead = db.prepare('SELECT l.id, l.company, l.company_domain, l.scan_job_id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as (LeadRow & { scan_job_id: string }) | undefined
   if (!lead) return { status: 'not_found' }
   const h = heldEnrichments(db, tenantId).find(h => h.leadId === leadId && h.provider === selector.provider && h.step === selector.step)
   if (!h) return { status: 'nothing_held' }
+  if (!retryCostVerified(h.provider)) return { status: 'cost_unverified' } // checked BEFORE the claim is released: nothing moves
   const disclosure = h.provider === 'apollo' && h.step === 'people'
-    ? 'owner retry: people search resumed on the saved org memo; the 0-credit endpoint cannot re-bill'
+    ? 'owner retry: people search resumed on the saved org memo; Apollo documents this endpoint as 0 credits (cost confirmed by the operator for this account)'
     : 'owner retry: the earlier attempt could not prove its outcome; the lookup may be charged again'
   if (!releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)) return { status: 'nothing_held' }
   const r = await enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider })
