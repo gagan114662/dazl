@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { notFound, redirect } from 'next/navigation'
 import { connection } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
@@ -7,8 +8,13 @@ import { readClaimedPreview } from '@/lib/scan/preview-claim'
 // The stable private home of a claimed preview (#416): only the workspace that claimed it can read it; any other
 // workspace's id reads as not found. Reading never consumes or mutates. Expiry is consistent with the public page:
 // past the evidence expiry the preview is gone here too.
-export default async function ClaimedPreviewPage({ params }: { params: Promise<{ id: string }> }) {
-  await connection() // request-time rendering (cacheComponents: no force-dynamic segment config)
+type Props = { params: Promise<{ id: string }> }
+// cacheComponents: same Suspense pattern as the public page.
+export default function ClaimedPreviewPage(props: Props) {
+  return <Suspense fallback={<main style={{ maxWidth: 640, margin: '0 auto', padding: '48px 20px' }}>Loading preview...</main>}><ClaimedPreviewBody {...props} /></Suspense>
+}
+async function ClaimedPreviewBody({ params }: Props) {
+  await connection() // request-time rendering, inside the Suspense boundary
   const user = await requireUser()
   if (!user) redirect('/sign-in')
   const { id } = await params

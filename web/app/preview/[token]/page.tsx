@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { notFound } from 'next/navigation'
 import { connection } from 'next/server'
 import { getDb } from '@/lib/db/client'
@@ -7,8 +8,14 @@ import PreviewCta from './cta'
 
 // The public proof page a prospect's link opens (#416). It serves only the stored stripped artifact of its own run:
 // no contacts, no spend, no seller tenant data. Claimed and expired claims are terminal and show no content.
-export default async function PreviewPage({ params, searchParams }: { params: Promise<{ token: string }>; searchParams: Promise<{ e?: string }> }) {
-  await connection() // request-time rendering (cacheComponents: no force-dynamic segment config)
+type Props = { params: Promise<{ token: string }>; searchParams: Promise<{ e?: string }> }
+// cacheComponents: the dynamic work must sit behind a Suspense boundary, so the default export stays synchronous
+// and hands the params/searchParams promises to the async inner (the app/reset pattern).
+export default function PreviewPage(props: Props) {
+  return <Suspense fallback={<main style={{ maxWidth: 640, margin: '0 auto', padding: '48px 20px' }}>Loading preview...</main>}><PreviewBody {...props} /></Suspense>
+}
+async function PreviewBody({ params, searchParams }: Props) {
+  await connection() // request-time rendering, inside the Suspense boundary
   const { token } = await params
   const { e } = await searchParams
   if (!isClaimToken(token)) notFound()
