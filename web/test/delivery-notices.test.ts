@@ -1,6 +1,7 @@
 // #415: delivery-status notices (RFC 3464 DSNs) arrive on their OWN threads. syncReplies must acquire them with the
 // least privilege possible (daemon notices in the sync window only), correlate to the exact recorded send before
 // suppressing, never let a soft failure suppress, and never let an unmatched or forged notice cost a contact.
+// Exact Message-ID ref = correlation, not authentication; the accepted residual is self-suppression only.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -40,10 +41,10 @@ function seedSend(db: Database.Database) {
   db.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES ('seq1', 'A', 'L1', 'MID', 'sam@buyer.example', 'active')").run()
 }
 
-const dsnNotice = (id: string, opts: { status?: string; recipient?: string; ref?: string | null; action?: string }) =>
+const dsnNotice = (id: string, opts: { status?: string; recipient?: string; ref?: string | null; action?: string; from?: string }) =>
   ({ id, threadId: 'th-dsn-' + id, internalDate: String((NOW - 3600) * 1000), payload: {
     mimeType: 'multipart/report',
-    headers: [{ name: 'From', value: 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>' }, ...(opts.ref ? [{ name: 'References', value: opts.ref }] : [])],
+    headers: [{ name: 'From', value: opts.from ?? 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>' }, ...(opts.ref ? [{ name: 'References', value: opts.ref }] : [])],
     parts: [
       { mimeType: 'text/plain', body: { data: b64('This is an automatically generated Delivery Status Notification. Delivery to the following recipient failed permanently.') } },
       { mimeType: 'message/delivery-status', body: { data: b64(`Final-Recipient: rfc822; ${opts.recipient ?? 'sam@buyer.example'}\nAction: ${opts.action ?? 'failed'}\nStatus: ${opts.status ?? '5.1.1'}\nDiagnostic-Code: smtp; 550 5.1.1 The email account that you tried to reach does not exist.`) } },
@@ -124,6 +125,19 @@ test('a spoofed daemon From with a FABRICATED dazl-pattern reference suppresses 
   assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
   assert.equal((db.prepare("SELECT classification FROM inbound_messages WHERE gmail_id = 'dsn-forged-ref'").get() as { classification: string }).classification, 'bounce_unmatched')
   assert.equal((db.prepare("SELECT detail FROM autopilot_audit WHERE tenant_id = 'A' AND action = 'bounce_unmatched'").get() as { detail: string }).detail, 'no exact send correlation', 'audit carries no addresses of unmatched mail')
+})
+
+test('a spoofed daemon From quoting a KNOWN VALID reference still correlates - documented accepted residual', async () => {
+  // An exact Message-ID ref is correlation, not authentication. Only a party who saw the send's headers could
+  // quote it, and the worst outcome is suppression of that exact recipient (their own threads/sequence) - never
+  // another address, tenant, or any disclosure. From adds nothing (spoofable), so a forged daemon notice with a
+  // valid ref + matching recipient is treated exactly like a genuine one.
+  const db = await setup(); seedSend(db)
+  const forged = dsnNotice('dsn-spoof-valid', { from: 'mailer-daemon@attacker.example', ref: '<dazl.MID@acme.example>', recipient: 'sam@buyer.example', status: '5.1.1' })
+  const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmailStub([forged]) })
+  assert.equal(r.bounces, 1) // correlated - behavior documented, residual accepted (see lib/outreach/replies.ts)
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), true)
+  assert.equal(isSuppressed(db, 'A', 'carol@other.example'), false, 'correlation can never cross to another address')
 })
 
 test('without read consent nothing is listed and coverage reports unknown, never healthy', async () => {

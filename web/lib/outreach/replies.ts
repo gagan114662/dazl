@@ -280,6 +280,11 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
       // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
       // stop a thread or end a sequence. They are counted unmatched and left for review.
+      // An exact Message-ID ref is CORRELATION, not authentication: only parties who saw the send's headers (the
+      // recipient, or anyone it was forwarded to) could quote it, and the worst a forged notice with a valid ref
+      // can do is suppress that very recipient - never another address, another tenant, or any disclosure. That
+      // self-suppression residual is accepted: no stronger signal exists in a DSN, and suppressing one's own
+      // address is compliance-aligned anyway.
       const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
       let m: { id: string; lead_id: string; to_email: string } | undefined
       if (refId && dsn.recipient) m = (db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')").get(tenantId, refId) as typeof m) ?? undefined
