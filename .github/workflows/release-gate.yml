@@ -120,7 +120,7 @@ jobs:
                       entries.append({"path": m.name, "size": m.size, "sha256": hashlib.sha256(tf.extractfile(m).read()).hexdigest()})
           json.dump({"commit": os.environ["JOB_SHA"], "files": entries, "file_count": len(entries)}, open("tarball-manifest.json", "w"), indent=1)
           PYSCAN
-      - name: Artifact scans: zero native, no key material, no env files
+      - name: "Artifact scans: zero native, no key material, no env files"
         working-directory: ..
         run: |
           set -euo pipefail
@@ -136,7 +136,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: assembly
           clean: true
-      - name: Runtime-assembly smoke: artifact overlaid on the clean checkout boots and serves its release
+      - name: "Runtime-assembly smoke: artifact overlaid on the clean checkout boots and serves its release"
         working-directory: ..
         run: |
           set -euo pipefail
