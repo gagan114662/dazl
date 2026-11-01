@@ -63,6 +63,16 @@ jobs:
       - name: Saved-source recheck action and refusal states (fenced)
         if: success() || failure()
         run: node --experimental-strip-types test/smoke/evidence-recheck.smoke.mjs
+      - name: Seller intelligence Add/Dismiss/Restore production UI (fenced)
+        if: success() || failure()
+        run: node test/smoke/intelligence.smoke.mjs
+      - name: Upload seller intelligence UI pixels
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intelligence-ui-${{ github.event.pull_request.head.sha || github.sha }}
+          path: web/preview/intelligence
+          if-no-files-found: error
       - name: Release identity and readiness
         if: success() || failure()
         run: npm run test:smoke:release

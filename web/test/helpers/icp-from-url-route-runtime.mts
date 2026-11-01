@@ -96,9 +96,26 @@ test('route error mapping: invalid, not_public, js_only, upstream failure, unaut
   assert.equal(anon.status, 401)
 })
 
-test('seller decisions survive an unrelated latest play and a failed recall never makes a paid call', async () => {
+test('failed recall never makes a paid call', async () => {
   const db = setup(); setUser({ id: 'T1', business_name: 'Acme' }); saveKey(db,'T1','anthropic','sk-fixture-ant-key')
   db.exec('DROP TABLE seller_decisions')
   const r = await post({ url: 'https://acme.example' })
   assert.equal(r.status,503); assert.equal((await r.json()).error,'intelligence_unavailable'); assert.equal(modelCalls,0)
+})
+
+// Fresh model output and HTML transport are fixtures; handler/key/spend/research/recall/reuse all execute for real.
+test('durable seller corrections beat a fresh model after an unrelated latest play, without stale quotes', async()=>{
+ const {decisionRows}=await import('../../lib/scan/intelligence.ts')
+ const {captureSellerDecisions,createQueryJob}=await import('../../lib/scan/store.ts')
+ const db=setup();setUser({id:'T1',business_name:'Acme'});saveKey(db,'T1','anthropic','sk-fixture-ant-key')
+ const prior={v:1 as const,site:'acme.example',offers:[{i:'family-dental',n:'Family dental'}],q:null,ans:null,hyps:[{i:'family-dental:persona:parents',o:'family-dental',k:'persona' as const,t:'parents booking for a family',s:'rejected' as const,u:null,q:null,at:null}]}
+ captureSellerDecisions(db,decisionRows([{offer:'family-dental',hypothesis:'family-dental:persona:parents',action:'reject'}],prior,{tenant:'T1',actor:'actor-t1',job:'original',now:1800000000000}))
+ createQueryJob(db,'T1',{id:'unrelated',query:'a completely different play',icp:JSON.stringify({summary:'Unrelated',who:[],industries:[],sizes:[],where:[],signals:[],exclude:[]})})
+ DRAFT.offers=[{id:'o1',name:'Family dental'}] as never
+ DRAFT.items=[{offer:'o1',kind:'persona',text:'parents booking for a family',url:'https://acme.example/',quote:'Acme Dental is a family dental practice in Columbus, Ohio.'}] as never
+ DRAFT.sells='Family dental'
+ const r=await post({url:'https://acme.example'});assert.equal(r.status,200)
+ const out=await r.json();assert.ok(!out.icp.who.includes('parents booking for a family'))
+ assert.equal(out.icp.research.hyps.find((h:{k:string})=>h.k==='persona').s,'rejected')
+ assert.equal(out.intelligence.selected.length,1);assert.equal(modelCalls,1)
 })

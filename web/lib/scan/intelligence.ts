@@ -111,7 +111,7 @@ export function reuseSellerDecisions(icp: Icp, pack: DecisionPack, offerName: st
     const d = decisions.find(d => d.offer_id === h.o && (d.hypothesis_id === h.i || (d.kind === h.k && norm(d.text) === norm(h.t))))
     return d ? { ...h, t: d.text, s: d.action === 'reject' ? 'rejected' as const : 'reviewed' as const, u: null, q: null, at: null } : h
   })
-  for (const d of decisions) if (!hyps.some(h => h.o === d.offer_id && h.i === d.hypothesis_id)) hyps.push({ i: d.hypothesis_id, o: d.offer_id, k: d.kind, t: d.text,
+  for (const d of decisions) if (!hyps.some(h => h.o === d.offer_id && (h.i === d.hypothesis_id || (h.k === d.kind && norm(h.t) === norm(d.text))))) hyps.push({ i: d.hypothesis_id, o: d.offer_id, k: d.kind, t: d.text,
     s: d.action === 'reject' ? 'rejected' : 'reviewed', u: null, q: null, at: null })
   const matches = r.offers.filter(o => norm(o.n) === norm(offerName))
   // No fuzzy selection. Multiple products never donate their buyer list to one flat draft.

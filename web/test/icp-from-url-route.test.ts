@@ -13,5 +13,5 @@ test('icp-from-url route: tenant key drafts the icp, keyless gets the sourced fr
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 3/)
+  assert.match(r.stdout, /# pass 4/)
 })
