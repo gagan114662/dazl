@@ -17,7 +17,7 @@ import { providers } from '../llm/provider.ts'
 import { pickVendor } from '../scan/runner.ts'
 import { getMemory, memoryPromptBlock } from '../memory.ts'
 import { memoryForLead } from './play-memory.ts'
-import { norm } from './store.ts'
+import { norm, replySafetyStale } from './store.ts'
 
 // Multi-step sequences: step 1 is the normal approved outreach email; steps 2 and 3 are
 // follow-ups at +3 days and +7 days measured from the step-1 send, for leads who never
@@ -446,6 +446,8 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (now - s.step1_sent < gaps[stepRow.step - 1]) continue
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'sequence_skipped', why, s.lead_id, s.message_id, now) }
     if (isSuppressed(db, tenantId, s.to_email)) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); skip('suppressed'); continue }
+    // #413: stale safety ingest holds the step (still approved) until reply_sync recovers - never send on it.
+    if (!testFixtureSend(db, tenantId, { to_email: s.to_email, test: s.msg_test }) && replySafetyStale(db, tenantId, s.to_email, now)) { skip('reply_sync_stale'); continue }
     if (!db.prepare("SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND scope = 'sequence' AND evidence_ref = ? AND revoked_at IS NULL AND expires_at > ?").get(tenantId,norm(s.to_email),`sequence:${s.id}`,now)) { skip('no valid consent'); continue }
     if (sentShared24h() >= dailyCap) return stop('daily_cap')
     if (stepRow.approved_hash !== hash(s.to_email, stepRow.subject, stepRow.body)) {
@@ -479,6 +481,11 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId, s.id, stepRow.step) // inert: the sequence row is stopped below
         stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', 'converted', now)
         skip('converted')
+        continue
+      }
+      if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && replySafetyStale(db, tenantId, s.to_email, now)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId, s.id, stepRow.step)
+        skip('reply_sync_stale')
         continue
       }
       if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) {

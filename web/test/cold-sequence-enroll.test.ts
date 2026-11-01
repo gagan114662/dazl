@@ -37,6 +37,7 @@ function lead(db: Database.Database, email: string, company = 'Acme') {
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, job, company, email, 'Hiring roofers', 'https://acme.example/jobs', 'Hiring roofers', 90, 80)
   db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = ?").run(id)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job) // finished: its gates have run; only leads of a done scan are autopilot's candidates
   return id
 }
 // A first touch already sent (the autopilot outcome enrollment hooks after).
