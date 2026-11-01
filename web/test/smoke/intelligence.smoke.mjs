@@ -21,6 +21,7 @@ try{
  await review.getByRole('button',{name:'Dismiss',exact:true}).click();await review.getByText('Dismissed targeting (restore explicitly)').click()
  await review.screenshot({path:path.join(out,'dismissed.png')})
  await review.getByRole('button',{name:'Restore',exact:true}).click();await review.screenshot({path:path.join(out,'restored.png')})
+ const text=await review.innerText();assert.match(text,/Clinic managers[\s\S]*Added by you/)
  const buyerValues=await page.locator('textarea').evaluateAll(xs=>xs.map(x=>x.value));assert.ok(buyerValues.includes('Clinic managers'))
  console.log('PASS production ResearchReview Add/Dismiss/Restore and visible buyer-field wiring. No scan/provider called.')
  await ctx.close()

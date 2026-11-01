@@ -76,3 +76,10 @@ test('same statement with a changed model ID cannot be reconfirmed by an older p
  assert.equal(pack.decisions.length,1)
  assert.deepEqual(reuseSellerDecisions(profile(),pack,'Booking').who,[])
 })
+
+test('edited offer text is annotation-only, never a fuzzy buyer transplant',()=>{
+ const p=profile();p.who=[]
+ const out=reuseSellerDecisions(p,assembleDecisionPack(rows(),'A','seller.example'),'Booking with consulting')
+ assert.deepEqual(out.who,[])
+ assert.equal(out.research!.hyps[0].s,'reviewed')
+})

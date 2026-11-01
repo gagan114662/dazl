@@ -75,7 +75,7 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove, on
                     {h.q && (h.s === 'sourced' || h.s === 'reviewed')
                       ? <span className="block text-xs text-[var(--ink-2,#888)]">on your site: &ldquo;{h.q}&rdquo;{h.u ? <> - <a className="underline" href={h.u} target="_blank" rel="noreferrer">{h.u}</a></> : null}</span>
                       : h.s === 'reviewed'
-                        ? <span className="block text-xs text-[var(--ink-2,#888)]">added by you</span>
+                        ? <span className="block text-xs text-[var(--ink-2,#888)]"> Added by you</span>
                         : <span className="block text-xs text-[var(--ink-2,#888)]">inferred - not stated on your site</span>}
                   </span>
                   {FIELD_OF[h.k] && <button type="button" className="text-xs underline shrink-0" onClick={() => add(h)}>Add</button>}
