@@ -2,17 +2,21 @@
 // stored. Bounce notices often arrive OUTSIDE the thread dazl started, so the thread sync never sees them; this
 // module decides what a candidate notice may prove about a recorded send.
 //
-// Provenance bar (a mailer-daemon From name and quoted identifiers are NOT proof - any received message can carry
-// them): a permanent suppression needs ALL of
-//   1. the first Authentication-Results header (prepended by the receiving MX, i.e. Gmail itself) showing spf=pass
-//      or dkim=pass - an unauthenticated notice that otherwise correlates is HELD, never acted on;
-//   2. the returned original Message-ID matching a recorded outreach send (a random per-send id the sender of a
-//      forged notice cannot know for anyone but themselves);
-//   3. the DSN's Final-Recipient block matching exactly the recorded send's to_email - an unrelated recipient in
-//      the same notice is never suppressed.
+// Provenance bar - every one of these identifiers appears in FORGED received mail, so none is proof alone:
+//   - a mailer-daemon/postmaster From name: a pre-filter only;
+//   - the original Message-ID: correlates, but the recipient of a send knows it, so it is not authentication;
+//   - an Authentication-Results 'pass': authenticates only the domain it names - an attacker's OWN domain passes
+//     on the attacker's own notice. It counts only when BOTH:
+//       a. it sits on the FIRST Authentication-Results header AND that header's authserv-id is a receiving MX we
+//          trust (the tenant's mailbox provider; any deeper header travelled with the message and is injectable),
+//       b. the authenticated domain ALIGNS with a domain expected to issue bounces for the recipient (the
+//          recipient domain's MX hosts, supplied by the caller as expectedBounceDomains - provider/DNS-derived,
+//          never taken from the notice itself). Without caller-supplied alignment there is no trustworthy origin
+//          evidence offline and the notice is HELD as unverified, however perfect it looks.
 // A 4.x status or a non-failed action is soft forever, authenticated or not. Residual risk, documented: the
-// recipient of a send could forge their own authenticated-looking bounce; the effect approximates a self-opt-out,
-// and bounce accounting (recordBounce pause thresholds) is the monitor for abuse at volume.
+// recipient's own MX can issue a forged-but-fully-aligned notice; the effect approximates a self-opt-out, and
+// bounce accounting (recordBounce pause thresholds) is the volume monitor. A 'permanent' verdict here is a
+// CANDIDATE: suppression wiring is a separate, later decision and this module performs none.
 import type { GPart } from './reply-text.ts'
 
 export interface DsnRecipient { finalRecipient: string | null; action: string | null; status: string | null }
@@ -66,16 +70,41 @@ export function parseDsn(root: GPart | undefined): DsnParse | null {
   return { recipients: recs, originalMessageId }
 }
 
-// The FIRST Authentication-Results header is the one the receiving MX prepended; deeper ones travel with the message.
-export function dsnSourceAuthenticated(root: GPart | undefined): boolean {
+export interface DsnAuth { authservId: string; passDomains: string[] }
+
+// Only the FIRST Authentication-Results header can be the one the receiving MX prepended at receipt; every deeper
+// header travelled with the message and is injectable. Even then, a bare 'pass' is not trusted origin evidence:
+// it authenticates whatever domain it names, which may be the attacker's own. The caller decides trust via
+// trustedAuthservIds (the tenant mailbox provider's authserv-ids) and alignment via expectedBounceDomains.
+export function firstAuthenticationResults(root: GPart | undefined): DsnAuth | null {
   const first = root?.headers?.find(h => h.name.toLowerCase() === 'authentication-results')?.value ?? ''
-  return /\b(spf|dkim|dmarc)=pass\b/i.test(first)
+  if (!first.trim()) return null
+  const authservId = first.split(';', 1)[0].trim().toLowerCase()
+  const passDomains: string[] = []
+  for (const m of first.matchAll(/\bspf=pass\b[^;]*?\bsmtp\.mailfrom=([^\s;]+)/gi)) passDomains.push(m[1].toLowerCase().replace(/^[.@]+/, ''))
+  for (const m of first.matchAll(/\bdkim=pass\b[^;]*?\bheader\.d=([^\s;]+)/gi)) passDomains.push(m[1].toLowerCase().replace(/^[.@]+/, ''))
+  for (const m of first.matchAll(/\bdmarc=pass\b[^;]*?\bheader\.from=([^\s;]+)/gi)) passDomains.push(m[1].toLowerCase().replace(/^[.@]+/, ''))
+  return { authservId, passDomains }
+}
+
+const domainMatches = (candidate: string, expected: string[]): boolean =>
+  expected.some(e => { const x = e.toLowerCase(); return candidate === x || candidate.endsWith('.' + x) })
+
+// Trusted origin evidence: trusted receiving-MX authserv-id AND an authenticated domain aligned with the
+// caller-supplied expected bounce origins. Anything less is not provenance.
+export function dsnProvenance(root: GPart | undefined, trust: { trustedAuthservIds: string[]; expectedBounceDomains: string[] }): { ok: boolean; reason?: string } {
+  const ar = firstAuthenticationResults(root)
+  if (!ar) return { ok: false, reason: 'no_authentication_results' }
+  if (!trust.trustedAuthservIds.map(x => x.toLowerCase()).includes(ar.authservId)) return { ok: false, reason: 'untrusted_authserv' }
+  if (!trust.expectedBounceDomains.length) return { ok: false, reason: 'no_expected_origins' }
+  if (!ar.passDomains.some(d => domainMatches(d, trust.expectedBounceDomains))) return { ok: false, reason: 'domain_not_aligned' }
+  return { ok: true }
 }
 
 export const isDsnSender = (from: string): boolean => /^(mailer-daemon|postmaster)@/i.test(from.trim())
 
 // lookup: recorded send by exact Message-ID token (dazl.<id>@<domain>), undefined when nothing was sent with it.
-export function decideDsn(root: GPart | undefined, from: string, lookup: (originalMessageId: string) => { id: string; to_email: string } | undefined): DsnVerdict {
+export function decideDsn(root: GPart | undefined, from: string, lookup: (originalMessageId: string) => { id: string; to_email: string } | undefined, trust: { trustedAuthservIds: string[]; expectedBounceDomains: string[] } = { trustedAuthservIds: [], expectedBounceDomains: [] }): DsnVerdict {
   if (!isDsnSender(from)) return { kind: 'ignore', reason: 'not_a_dsn_sender' }
   const dsn = parseDsn(root)
   if (!dsn) return { kind: 'ignore', reason: 'not_a_dsn' }
@@ -85,8 +114,12 @@ export function decideDsn(root: GPart | undefined, from: string, lookup: (origin
   const rec = dsn.recipients.find(r => (r.finalRecipient ?? '').toLowerCase() === send.to_email.toLowerCase())
   if (!rec) return { kind: 'ignore', reason: 'recipient_mismatch' } // never suppress an unrelated recipient
   const recipient = send.to_email
-  const permanent = rec.action === 'failed' && !!rec.status && /^5\.\d{1,3}\.\d{1,3}$/.test(rec.status)
-  if (!permanent) return { kind: 'soft', recipient, status: rec.status ?? 'unknown' } // 4.x / delayed / expanded: never permanent
-  if (!dsnSourceAuthenticated(root)) return { kind: 'hold', reason: 'unauthenticated_source' }
+  const failed5xx = rec.action === 'failed' && !!rec.status && /^5\.\d{1,3}\.\d{1,3}$/.test(rec.status)
+  if (!failed5xx) return { kind: 'soft', recipient, status: rec.status ?? 'unknown' } // 4.x / delayed / expanded: never permanent
+  const prov = dsnProvenance(root, trust)
+  // Without established provenance a correlated notice is HELD as unverified - it is evidence for a person,
+  // never for a suppression. When provenance cannot be established at all (no expected origins supplied), that
+  // is the standing posture, not an error.
+  if (!prov.ok) return { kind: 'hold', reason: prov.reason ?? 'unverified' }
   return { kind: 'permanent', recipient, originalMessageId: dsn.originalMessageId }
 }
