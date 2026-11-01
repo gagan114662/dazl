@@ -71,7 +71,7 @@ export async function writeSellerDecisions(db: Db, rows: SellerDecision[]): Prom
   await db.tx(function* (t) { for (const r of rows) yield* t.run(SELLER_DECISION_INSERT, sellerDecisionArgs(r)) })
 }
 const SELECT = `SELECT id,tenant_id,actor_id,job_id,site,offer_id,hypothesis_id,kind,text,action,source_url,source_quote,source_checked_at,created_at,version
- FROM seller_decisions WHERE tenant_id = ? AND site = ? ORDER BY created_at DESC,id DESC LIMIT ?`
+ FROM seller_decisions WHERE tenant_id = ? AND site = ? ORDER BY created_at DESC,action DESC,id DESC LIMIT ?`
 export async function recallSellerDecisions(db: Db, tenant: string, site: string): Promise<DecisionPack> {
   const key = siteKey(site)
   if (!key) throw new Error('invalid_research_site')
@@ -87,9 +87,10 @@ export function assembleDecisionPack(rows: SellerDecision[], tenant: string, sit
   for (const r of rows) {
     if (r.tenant_id !== tenant || r.site !== site) continue
     if (++trace.considered > RECALL_LIMIT) { trace.truncated = true; break }
-    const k = `${r.offer_id}|${r.hypothesis_id}`
-    if (seen.has(k)) { trace.superseded.push(r.id); continue }
-    seen.add(k) // a too-large newer decision still suppresses its older value
+    const k = `${r.offer_id}|id:${r.hypothesis_id}`
+    const textKey = `${r.offer_id}|${r.kind}|text:${norm(r.text)}`
+    if (seen.has(k) || seen.has(textKey)) { trace.superseded.push(r.id); continue }
+    seen.add(k); seen.add(textKey) // a too-large newer decision still suppresses its older value
     const size = Buffer.byteLength(JSON.stringify(r))
     if (bytes + size > RECALL_BYTES) { trace.omitted.push(r.id); trace.truncated = true; continue }
     bytes += size; decisions.push(r); trace.selected.push(r.id)

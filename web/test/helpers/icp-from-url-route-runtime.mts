@@ -95,3 +95,10 @@ test('route error mapping: invalid, not_public, js_only, upstream failure, unaut
   const anon = await post({ url: 'https://acme.example' })
   assert.equal(anon.status, 401)
 })
+
+test('seller decisions survive an unrelated latest play and a failed recall never makes a paid call', async () => {
+  const db = setup(); setUser({ id: 'T1', business_name: 'Acme' }); saveKey(db,'T1','anthropic','sk-fixture-ant-key')
+  db.exec('DROP TABLE seller_decisions')
+  const r = await post({ url: 'https://acme.example' })
+  assert.equal(r.status,503); assert.equal((await r.json()).error,'intelligence_unavailable'); assert.equal(modelCalls,0)
+})

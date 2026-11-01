@@ -57,7 +57,7 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove, on
     setAnswer('')
   }
   const visible = research.hyps.filter(h => h.k !== 'offer' && h.s !== 'rejected')
-  if (visible.length === 0 && !research.q) return null
+  if (research.hyps.length === 0 && !research.q) return null
   return (
     <div className="border border-[var(--line,#333)] rounded p-3 mb-3" data-testid="research-review">
       <p className="text-xs uppercase tracking-wide text-[var(--ink-2,#888)] mb-2">From your website ({research.site}) - review before the scan</p>
