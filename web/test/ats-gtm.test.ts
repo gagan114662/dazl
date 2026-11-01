@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText } from '../lib/signals/ats-gtm.ts'
+import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow } from '../lib/signals/ats-gtm.ts'
 import { enrichJobSignals } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
@@ -265,4 +265,69 @@ test('specific hiring evidence persists beyond generic top3; aggregate remains d
   const specific = rows.find(r => r.value.startsWith('CRM Admin - posted'))!
   assert.ok(specific); assert.match(specific.label!, /Requested role: CRM administrator/); assert.equal(specific.source_url, 'https://boards.greenhouse.io/brightloop/jobs/6'); assert.equal(specific.source_date, d(20).slice(0, 10))
   db.close()
+})
+
+// --- #533: board-title audit trail + coverage metadata -----------------------------------------------
+test('#533 audit: every listed title beyond the dated postings is stored as a hiring-role row, and a coverage row says exactly what the sample covers', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Brightloop', 'brightloop.io', 'raised a seed round', 'https://news.example/1')").run(jobId)
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'lead1', 'u1', 'sitecrawl', 'domain', 'brightloop.io|evidence_own_domain', 'x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
+  const realNow = Date.now; Date.now = () => NOW
+  try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(ghBoard) }) } finally { Date.now = realNow }
+  type Row = { connector: string; kind: string; value: string; label: string; confidence: number | null }
+  const all = db.prepare("SELECT connector, kind, value, label, confidence FROM lead_enrichments WHERE kind IN ('hiring-role', 'hiring-board-coverage') ORDER BY value").all() as Row[]
+  const gtmAudit = all.filter(r => r.kind === 'hiring-role' && r.connector === 'signals:greenhouse-gtm')
+  assert.deepEqual(gtmAudit.map(r => r.value), ['SDR'])
+  assert.match(gtmAudit[0].label, /sales\/GTM titles only/); assert.match(gtmAudit[0].label, /posting date was not read/); assert.equal(gtmAudit[0].confidence, null)
+  const genAudit = all.filter(r => r.kind === 'hiring-role' && r.connector === 'signals:greenhouse')
+  assert.deepEqual(genAudit.map(r => r.value), ['SDR'])
+  assert.match(genAudit[0].label, /all listed titles/)
+  const cov = all.filter(r => r.kind === 'hiring-board-coverage')
+  assert.equal(cov.length, 2)
+  const gtmCov = cov.find(r => r.connector === 'signals:greenhouse-gtm')!
+  assert.match(gtmCov.value, /3 sales\/GTM-role titles only, 1 stored as audit rows/); assert.ok(!gtmCov.value.includes('TRUNCATED'))
+  const genCov = cov.find(r => r.connector === 'signals:greenhouse')!
+  assert.match(genCov.value, /4 all listed titles, 1 stored as audit rows/)
+  assert.match(gtmCov.label, /not a hiring signal/); assert.equal(gtmCov.confidence, null)
+  for (const r of all.filter(r => r.kind === 'hiring-role')) assert.ok(['SDR'].includes(r.value))
+})
+
+test('#533 truncation: a 60-title board stores at most 50 audit titles and the coverage row says the sample is TRUNCATED, never complete', async () => {
+  const many: Record<string, unknown> = { [`${GH}/jobs`]: { jobs: Array.from({ length: 60 }, (_, i) => ({ id: i + 1, title: `Account Executive ${String(i + 1).padStart(2, '0')}` })) } }
+  for (let i = 1; i <= 4; i++) many[`${GH}/jobs/${i}`] = { id: i, title: `Account Executive ${String(i).padStart(2, '0')}`, first_published: d(10), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${i}`, content: 'Apply at https://www.brightloop.io' }
+  const g = (await atsGtmBoard('Brightloop', 'brightloop.io', route(many), { now: NOW })).hiring
+  assert.ok(g); assert.equal(g!.listedCount, 60); assert.equal(g!.allTitles.length, 50)
+  const auditRows = boardTitleAudit(g!, NOW / 1000, '2026-10-28', null)
+  assert.equal(auditRows.length, 46)
+  const cov = boardCoverageRow(g!, auditRows.length, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /60 sales\/GTM-role titles only, 46 stored as audit rows/)
+  assert.match(cov.value, /TRUNCATED at 50 - a title beyond the sample is not disproved/)
+  assert.ok(!cov.value.includes('complete'))
+})
+
+test('#533 filtered pass: a requested-role-filtered board labels its audit and coverage as the matching subset, not the board', async () => {
+  const g = (await atsGtmBoard('Brightloop', 'brightloop.io', route(ghBoard), { now: NOW, roleMatch: t => /account executive/i.test(t) })).hiring
+  assert.ok(g); assert.equal(g!.titleFilter, 'role-match')
+  assert.deepEqual(g!.allTitles, ['Account Executive'])
+  for (const r of boardTitleAudit(g!, NOW / 1000, '2026-10-28', null)) assert.match(r.label, /requested-role matches only/)
+  const cov = boardCoverageRow(g!, 0, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /requested-role-matching titles only/)
+})
+
+test('#533 unconfirmed: the heuristic note propagates to audit rows, which stay unscored', async () => {
+  const g = (await atsGtmBoard('Brightloop', 'brightloop.io', route(ghBoard), { now: NOW })).hiring
+  assert.ok(g)
+  const rows = boardTitleAudit(g!, NOW / 1000, '2026-10-28', 'entity matched by name only (heuristic, not independently confirmed)')
+  assert.ok(rows.length > 0)
+  for (const r of rows) { assert.match(r.value, /^Unconfirmed: /); assert.match(r.label, /entity matched by name only/); assert.equal(r.confidence, null) }
+})
+
+test('#533 dedupeTitles: case-insensitive distinct, each capped at 120 chars, the list capped at 50', () => {
+  const titles = ['Account Executive', 'account executive', ' Head of Sales ', ...Array.from({ length: 60 }, (_, i) => `Role ${i}`)]
+  const out = dedupeTitles(titles)
+  assert.equal(out.length, 50)
+  assert.deepEqual(out.slice(0, 2), ['Account Executive', 'Head of Sales'])
+  assert.equal(dedupeTitles(['x'.repeat(200)])[0].length, 120)
 })
