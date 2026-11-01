@@ -9,7 +9,7 @@ import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from '.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
-import { atsGtmHiring, isGtmRole, postingEvidence, BOARD_LABEL } from '../signals/ats-gtm.ts'
+import { atsGtmHiring, isGtmRole, postingEvidence, boardTitleAudit, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
@@ -210,6 +210,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
         addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
         for (const e of postingEvidence(g, now, null)) addEnrichment(db, job.user_id, l.id, { ...e, label: roles.length ? `Requested role: ${matchedHiringRole(e.value.split(' - posted ')[0], roles)!.term}; ${e.label}`.slice(0, 200) : e.label })
+        for (const e of boardTitleAudit(g, now, new Date(now * 1000).toISOString().slice(0, 10), null)) addEnrichment(db, job.user_id, l.id, e) // #533: full board-title audit trail
         passed++; passedIds.push(l.id); continue
       }
       // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers
