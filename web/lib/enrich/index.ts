@@ -5,7 +5,7 @@
 // (an exhausted budget is a visible audit row, never a silent skip), no repeat charge for a lookup this job already made.
 // Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar).
 import type Database from 'better-sqlite3'
-import { addEnrichment, audit, getEnabledCredential } from '../connectors/store.ts'
+import { addEnrichment, audit, enrichFallbackEnabled, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -41,7 +41,12 @@ export async function enrichLeadContacts(
   const fetchImpl = deps.fetchImpl ?? fetch
   const master = deps.master ?? getMasterKey()
   // Independent loads: a missing or failing Apollo key never hides a configured PDL key.
+  // PDL runs when it is the only saved provider, or as the fallback ONLY with the tenant's explicit opt-in
+  // (#382): a PDL key saved under the original wording ("used only when no Apollo key is saved") is not consent
+  // to paid fallback credits. Off by default - without it, a tenant with both keys gets exactly the old
+  // Apollo-only behavior the settings page describes.
   const keys: Record<Prov, string | null> = { apollo: getEnabledCredential(db, tenantId, ENRICH_APOLLO, master), pdl: getEnabledCredential(db, tenantId, ENRICH_PDL, master) }
+  if (keys.apollo && !enrichFallbackEnabled(db, tenantId)) keys.pdl = null
   const summary: EnrichSummary = { attached: 0, byProvider: { apollo: 0, pdl: 0 }, skipped: [] }
   if (!keys.apollo && !keys.pdl) return summary
   const now = Math.floor(Date.now() / 1000)

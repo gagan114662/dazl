@@ -5,7 +5,7 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { enrichLeadContacts, APOLLO_CALLS, PDL_CALLS, MAX_FAILS } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
-import { migrateConnectors, saveCredential, recentAudit, enrichmentsForLeads } from '../lib/connectors/store.ts'
+import { migrateConnectors, saveCredential, recentAudit, enrichmentsForLeads, setEnrichFallback, enrichFallbackEnabled } from '../lib/connectors/store.ts'
 
 const master = randomBytes(32)
 const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 })
@@ -17,7 +17,8 @@ function seed(n = 1, both = true) {
   const leads = Array.from({ length: n }, (_, i) => ({ id: `lead${i + 1}`, company: i === 0 ? 'Harbor Dental' : `Harbor Dental ${i + 1}`, company_domain: i === 0 ? 'harbordental.example' : null as string | null }))
   for (const l of leads) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES (?, ?, '', ?, ?, 'opened', 'https://x.example/1')").run(l.id, jobId, l.company, l.company_domain)
   saveCredential(db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
-  if (both) saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
+  // The fallback legs below all exercise the opt-IN state; the default-off contract has its own leg.
+  if (both) { saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master); setEnrichFallback(db, 'u1', true) }
   return { db, jobId, leads }
 }
 const apolloWith = (people: unknown[], org: unknown = { organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) => async (url: string) => String(url).includes('organizations/enrich') ? ok(org) : ok({ people })
@@ -120,4 +121,18 @@ test('a one-off transport failure does NOT open the circuit: the next lead still
   const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(flaky, async () => ok(PDL_OK), calls), master })
   assert.equal(orgCalls, 2, 'Apollo retried for lead 2: one abort is transient, not a dead key')
   assert.equal(r.skipped.filter(s => s.why === 'circuit_open').length, 0)
+})
+
+test('default OFF: both keys saved without the opt-in never touch PDL (the old "Apollo only" contract)', async () => {
+  const { db, jobId, leads } = seed(1, false); saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
+  assert.equal(enrichFallbackEnabled(db, 'u1'), false)
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async (u: string) => (u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [] })), async () => ok(PDL_OK), calls), master })
+  assert.ok(calls.apollo > 0); assert.equal(calls.pdl, 0) // no opt-in -> no PDL call, no credit
+})
+test('opt-in toggle: enabling then disabling the flag controls the fallback exactly', async () => {
+  const { db } = seed(1, false)
+  assert.equal(enrichFallbackEnabled(db, 'u1'), false)
+  setEnrichFallback(db, 'u1', true); assert.equal(enrichFallbackEnabled(db, 'u1'), true)
+  setEnrichFallback(db, 'u1', false); assert.equal(enrichFallbackEnabled(db, 'u1'), false)
 })

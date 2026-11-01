@@ -78,9 +78,10 @@ export async function writeCredential(db: Db, tenantId: string, connector: strin
 }
 
 // Safe for the browser: never includes the credential or ciphertext. By connector, the order SQLite's primary-key
-// index gave; Postgres has no implicit order.
+// index gave; Postgres has no implicit order. The secret-less 'enrich:fallback' opt-in flag row is not a connector
+// and never surfaces here (connectors list, scan estimate vendors).
 export async function connectorStatus(db: Db, tenantId: string) {
-  return (await db.all<{ connector: string; last4: string; enabled: number }>('SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ? ORDER BY connector', [tenantId]))
+  return (await db.all<{ connector: string; last4: string; enabled: number }>("SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ? AND connector != 'enrich:fallback' ORDER BY connector", [tenantId]))
     .map(r => ({ connector: r.connector, last4: r.last4, enabled: Number(r.enabled) === 1 }))
 }
 
@@ -92,6 +93,23 @@ const DELETE_CREDENTIAL_SQL = 'DELETE FROM tenant_connectors WHERE tenant_id = ?
 export function deleteCredential(db: Database.Database, tenantId: string, connector: string): boolean {
   return db.prepare(DELETE_CREDENTIAL_SQL).run(tenantId, connector).changes === 1
 }
+// The Apollo -> PDL fallback is a separate, OFF-by-default opt-in (#382): a PDL key saved under the original
+// wording ("used only when no Apollo key is saved") is not consent to automatic paid fallback credits. The flag is
+// a tenant_connectors row with no secret; it is never returned by getEnabledCredential and never listed as a key.
+export const ENRICH_FALLBACK = 'enrich:fallback'
+export function setEnrichFallback(db: Database.Database, tenantId: string, on: boolean): void {
+  db.prepare("INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, '', '', ?) ON CONFLICT (tenant_id, connector) DO UPDATE SET enabled = excluded.enabled").run(tenantId, ENRICH_FALLBACK, on ? 1 : 0)
+}
+export async function writeEnrichFallback(db: Db, tenantId: string, on: boolean): Promise<void> {
+  await db.run("INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, '', '', ?) ON CONFLICT (tenant_id, connector) DO UPDATE SET enabled = excluded.enabled", [tenantId, ENRICH_FALLBACK, on ? 1 : 0])
+}
+export function enrichFallbackEnabled(db: Database.Database, tenantId: string): boolean {
+  return !!db.prepare("SELECT 1 FROM tenant_connectors WHERE tenant_id = ? AND connector = 'enrich:fallback' AND enabled = 1").get(tenantId)
+}
+export async function readEnrichFallbackEnabled(db: Db, tenantId: string): Promise<boolean> {
+  return !!(await db.get("SELECT 1 FROM tenant_connectors WHERE tenant_id = ? AND connector = 'enrich:fallback' AND enabled = 1", [tenantId]))
+}
+
 export async function removeCredential(db: Db, tenantId: string, connector: string): Promise<boolean> {
   return (await db.run(DELETE_CREDENTIAL_SQL, [tenantId, connector])).changes === 1
 }
@@ -100,11 +118,13 @@ export async function removeCredential(db: Db, tenantId: string, connector: stri
 const ENABLED_CREDENTIAL_SQL = 'SELECT ciphertext FROM tenant_connectors WHERE tenant_id = ? AND connector = ? AND enabled = 1'
 export function getEnabledCredential(db: Database.Database, tenantId: string, connector: string, master?: Buffer): string | null {
   const r = db.prepare(ENABLED_CREDENTIAL_SQL).get(tenantId, connector) as { ciphertext: string } | undefined
-  return r ? decryptSecret(r.ciphertext, ctx(tenantId, connector), master) : null
+  if (!r || !r.ciphertext) return null // empty ciphertext = the secret-less enrich:fallback opt-in flag, never a key
+  return decryptSecret(r.ciphertext, ctx(tenantId, connector), master)
 }
 export async function readEnabledCredential(db: Db, tenantId: string, connector: string, master?: Buffer): Promise<string | null> {
   const r = await db.get<{ ciphertext: string }>(ENABLED_CREDENTIAL_SQL, [tenantId, connector])
-  return r ? decryptSecret(r.ciphertext, ctx(tenantId, connector), master) : null
+  if (!r || !r.ciphertext) return null // empty ciphertext = the secret-less enrich:fallback opt-in flag, never a key
+  return decryptSecret(r.ciphertext, ctx(tenantId, connector), master)
 }
 
 export type AuditEntry = { tenantId: string; connector: string; jobId?: string | null; lookup: string; status: string; results: number }

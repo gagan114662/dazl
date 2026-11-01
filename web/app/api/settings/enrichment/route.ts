@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
-import { writeAudit, connectorStatus, removeCredential, readRecentAudit, writeCredential } from '@/lib/connectors/store'
+import { writeAudit, connectorStatus, removeCredential, readRecentAudit, writeCredential, readEnrichFallbackEnabled, writeEnrichFallback } from '@/lib/connectors/store'
 import { sameOriginJson } from '@/lib/same-origin'
 import { enrichmentWriteLimit } from '@/lib/settings/enrichment-guard'
 import { denied, stale } from '@/lib/workspace-access'
@@ -16,7 +16,7 @@ export async function GET() {
   const db = await getDb()
   const status = (await connectorStatus(db, user.tenantId)).filter(s => CONNECTORS.includes(s.connector))
   const auditRows = (await readRecentAudit(db, user.tenantId, 50) as { connector: string }[]).filter(r => CONNECTORS.includes(r.connector)).slice(0, 20)
-  return NextResponse.json({ connectors: status, audit: auditRows })
+  return NextResponse.json({ connectors: status, audit: auditRows, fallback: await readEnrichFallbackEnabled(db, user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
@@ -29,9 +29,17 @@ export async function POST(req: NextRequest) {
   const limited = await enrichmentWriteLimit(user.tenantId)
   if (!limited.ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: { 'Retry-After': String(limited.retryAfterS) } })
   if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Credential storage unavailable' }, { status: 503 })
-  const body = (await req.json().catch(() => null)) as { connector?: string; key?: string; disconnect?: boolean } | null
-  if (!body || !body.connector || !CONNECTORS.includes(body.connector)) return NextResponse.json({ error: 'Unknown connector' }, { status: 400 })
+  const body = (await req.json().catch(() => null)) as { connector?: string; key?: string; disconnect?: boolean; fallback?: boolean } | null
+  if (!body) return NextResponse.json({ error: 'Unknown connector' }, { status: 400 })
   const db = await getDb()
+  // The Apollo -> PDL fallback is a separate, explicit, off-by-default opt-in: saving a PDL key is not consent
+  // to automatic paid fallback credits (#382). Toggling it never touches stored keys.
+  if (typeof body.fallback === 'boolean') {
+    await writeEnrichFallback(db, user.tenantId, body.fallback)
+    await writeAudit(db, { tenantId: user.tenantId, connector: 'enrich:fallback', lookup: `fallback ${body.fallback ? 'opted in' : 'opted out'}`, status: 'ok', results: 0 })
+    return NextResponse.json({ ok: true, fallback: body.fallback })
+  }
+  if (!body.connector || !CONNECTORS.includes(body.connector)) return NextResponse.json({ error: 'Unknown connector' }, { status: 400 })
   if (body.disconnect) {
     await removeCredential(db, user.tenantId, body.connector)
     return NextResponse.json({ ok: true, disconnected: true })
