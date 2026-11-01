@@ -28,6 +28,9 @@ export function migrateConnectors(db: Database.Database): void {
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
     CREATE INDEX IF NOT EXISTS connector_audit_tenant ON connector_audit (tenant_id, created_at);
+    -- Recovery (#382 follow-up): the org lookup's result, written in the SAME transaction as the claim's
+    -- terminal settle. Presence is authoritative: memo == "agreement passed; the people step may resume".
+    -- Immutable once set (the settle guards on status='reserved'); NULL forever on people/legacy claims.
     CREATE TABLE IF NOT EXISTS connector_claims (
       tenant_id   TEXT NOT NULL,
       connector   TEXT NOT NULL,
@@ -36,6 +39,7 @@ export function migrateConnectors(db: Database.Database): void {
       status      TEXT NOT NULL CHECK (status IN ('reserved','ok','empty','rejected')),
       claimed_at  INTEGER NOT NULL,
       settled_at  INTEGER,
+      memo        TEXT,
       PRIMARY KEY (tenant_id, connector, scan_job_id, lookup)
     );
     -- Enriched fields live beside the lead, never over it. A row needs a source URL and a source date.
@@ -69,6 +73,8 @@ export function migrateConnectors(db: Database.Database): void {
       PRIMARY KEY (tenant_id, destination, lead_id)
     );
   `)
+  // Existing stores: add the memo column (PG twin: migrations/pg/0036_connector_claim_memo.sql).
+  try { db.exec('ALTER TABLE connector_claims ADD COLUMN memo TEXT') } catch { /* already present */ }
   migrateInsertionOrder(db, ['lead_enrichments', 'connector_audit']) // insert_seq (lib/db/insertion-order.ts)
 }
 
@@ -169,6 +175,9 @@ export type ReserveOutcome = { id: string } | { prior: 'ok' | 'empty' | 'rejecte
 const CLAIM_INSERT_SQL = "INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at) VALUES (?, ?, ?, ?, 'reserved', ?) ON CONFLICT DO NOTHING"
 const CLAIM_STATUS_SQL = "SELECT status FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?"
 const CLAIM_SETTLE_SQL = "UPDATE connector_claims SET status = ?, settled_at = ? WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved'"
+// The memo lands in the SAME settle UPDATE as the terminal status: memo presence can never drift from the claim's
+// outcome, and the status='reserved' guard makes a terminal memo immutable (no automatic rewrites, ever).
+const CLAIM_SETTLE_MEMO_SQL = "UPDATE connector_claims SET status = ?, settled_at = ?, memo = ? WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved' AND memo IS NULL"
 const RESERVE_STATUS_SQL = "SELECT status FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1"
 const claimKey = (a: AuditEntry) => [a.tenantId, a.connector, a.jobId ?? '', a.lookup.slice(0, 200)] as const
 const isTerminal = (status: string) => status === 'ok' || status === 'empty' || status.startsWith('contact rejected')
@@ -197,11 +206,15 @@ export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOu
 }
 // Settle a reserved lookup: the audit row and its claim move together in one transaction. Terminal outcomes mark
 // the claim (the durable never-pay-twice memo); non-terminal outcomes hold it (no automatic release on an unverifiable plan).
-export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: string, status: string, results: number): void {
+export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: string, status: string, results: number, memo?: string): void {
   const key = claimKey(a)
   db.transaction(() => {
     db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
-    if (isTerminal(status)) db.prepare(CLAIM_SETTLE_SQL).run(status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3])
+    if (isTerminal(status)) {
+      const claimStatus = status.startsWith('contact rejected') ? 'rejected' : status
+      if (memo == null) db.prepare(CLAIM_SETTLE_SQL).run(claimStatus, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3])
+      else db.prepare(CLAIM_SETTLE_MEMO_SQL).run(claimStatus, Math.floor(Date.now() / 1000), memo, key[0], key[1], key[2], key[3])
+    }
     // else: a non-terminal outcome HOLDS the claim 'reserved' - held for review, never automatically re-billed
   }).immediate()
 }
@@ -228,18 +241,80 @@ export async function writeTryReserve(db: Db, a: AuditEntry): Promise<ReserveOut
     return { id } as ReserveOutcome
   })
 }
-export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number): Promise<void> {
+export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number, memo?: string): Promise<void> {
   const key = claimKey(a)
   // The claim transition and the audit-row settlement are ONE transaction (parity with the sync path): a crash can
   // never leave a settled audit row beside a live claim (or vice versa).
   await db.tx(function* (t) {
-    if (isTerminal(status)) yield* t.run(CLAIM_SETTLE_SQL, [status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
+    if (isTerminal(status)) {
+      const claimStatus = status.startsWith('contact rejected') ? 'rejected' : status
+      if (memo == null) yield* t.run(CLAIM_SETTLE_SQL, [claimStatus, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
+      else yield* t.run(CLAIM_SETTLE_MEMO_SQL, [claimStatus, Math.floor(Date.now() / 1000), memo, key[0], key[1], key[2], key[3]])
+    }
     // else: a non-terminal outcome HOLDS the claim 'reserved' - held for review, never automatically re-billed
     yield* t.run("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'", [status, results, id])
   })
 }
 export async function writeAudit(db: Db, a: AuditEntry): Promise<void> {
   await db.run(AUDIT_SQL, auditArgs(a))
+}
+
+// Read-only outcome for a lookup key: the claim row when one exists, else (for keys older than the claims table)
+// the lookup's latest audit row - a pre-claims terminal outcome must still replay free, a pre-claims 'reserved'
+// still fails closed. Never writes: recovery code paths honor legacy state without creating legacy claims.
+export type ClaimOutcome = { prior: 'ok' | 'empty' | 'rejected' | 'uncertain'; status: string; memo: string | null }
+const CLAIM_READ_SQL = 'SELECT status, memo FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?'
+export function readOutcome(db: Database.Database, a: { tenantId: string; connector: string; jobId?: string | null; lookup: string }, opts: { legacyAudit?: boolean } = {}): ClaimOutcome | null {
+  const key = claimKey(a as AuditEntry)
+  const r = db.prepare(CLAIM_READ_SQL).get(key[0], key[1], key[2], key[3]) as { status: string; memo: string | null } | undefined
+  if (r) return { prior: claimPrior(r.status), status: r.status, memo: r.memo ?? null }
+  if (opts.legacyAudit === false) return null
+  const legacy = db.prepare(RESERVE_STATUS_SQL).get(a.tenantId, a.connector, a.jobId ?? null, a.lookup.slice(0, 200)) as { status: string } | undefined
+  // Same guard as auditTryReserve's legacy path: only a terminal or still-reserved audit row is an outcome;
+  // anything else (a transient code, a setup note) is observability, not a replay decision.
+  if (!legacy || !(isTerminal(legacy.status) || legacy.status === 'reserved')) return null
+  return { prior: claimPrior(legacy.status), status: legacy.status, memo: null }
+}
+export async function readOutcomeAsync(db: Db, a: { tenantId: string; connector: string; jobId?: string | null; lookup: string }, opts: { legacyAudit?: boolean } = {}): Promise<ClaimOutcome | null> {
+  const key = claimKey(a as AuditEntry)
+  const r = await db.get<{ status: string; memo: string | null }>(CLAIM_READ_SQL, [key[0], key[1], key[2], key[3]])
+  if (r) return { prior: claimPrior(r.status), status: r.status, memo: r.memo ?? null }
+  if (opts.legacyAudit === false) return null
+  const legacy = await db.get<{ status: string }>(RESERVE_STATUS_SQL, [a.tenantId, a.connector, a.jobId ?? null, a.lookup.slice(0, 200)])
+  if (!legacy || !(isTerminal(legacy.status) || legacy.status === 'reserved')) return null
+  return { prior: claimPrior(legacy.status), status: legacy.status, memo: null }
+}
+
+// OWNER-EXPLICIT release of a held claim (the retry route's one write): never called by any automatic path. A
+// 'reserved' claim NEVER carries a memo - memos are written only by the terminal settle, and the settle and the
+// release both gate on status - so the guarded delete can touch only a crash remnant with no outcome attached;
+// a settled memo (a paid org outcome, including a rejection verdict) is never released out from under its
+// audit lineage. The release audit row names the released claim's claimed_at, keeping the lineage link from
+// the original reservation through the owner's release to the next attempt's fresh claim row.
+const CLAIM_READ_CLAIMED_AT_SQL = 'SELECT claimed_at FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?'
+const CLAIM_DELETE_HELD_SQL = "DELETE FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved'"
+const releaseStatus = (claimedAt: number | undefined, disclosure: string) => `owner released held claim of ${new Date((claimedAt ?? 0) * 1000).toISOString()}: ${disclosure}`.slice(0, 200)
+export function releaseHeldClaim(db: Database.Database, a: { tenantId: string; connector: string; jobId: string; lookup: string }, disclosure: string): boolean {
+  const key = claimKey(a as AuditEntry)
+  const row = db.prepare(CLAIM_READ_CLAIMED_AT_SQL).get(key[0], key[1], key[2], key[3]) as { claimed_at: number } | undefined
+  const gone = db.prepare(CLAIM_DELETE_HELD_SQL).run(key[0], key[1], key[2], key[3]).changes === 1
+  if (gone) audit(db, { tenantId: a.tenantId, connector: a.connector, jobId: a.jobId, lookup: a.lookup, status: releaseStatus(row?.claimed_at, disclosure), results: 0 })
+  return gone
+}
+// PG twin: the same guarded delete + disclosure audit in one transaction (parity with the sync path above).
+export async function releaseHeldClaimAsync(db: Db, a: { tenantId: string; connector: string; jobId: string; lookup: string }, disclosure: string): Promise<boolean> {
+  const key = claimKey(a as AuditEntry)
+  return db.tx(function* (t) {
+    const row = yield* t.get<{ claimed_at: number }>(CLAIM_READ_CLAIMED_AT_SQL, [key[0], key[1], key[2], key[3]])
+    const gone = ((yield* t.run(CLAIM_DELETE_HELD_SQL, [key[0], key[1], key[2], key[3]]))).changes === 1
+    if (gone) yield* t.run(AUDIT_SQL, auditArgs({ tenantId: a.tenantId, connector: a.connector, jobId: a.jobId, lookup: a.lookup, status: releaseStatus(row?.claimed_at, disclosure), results: 0 }))
+    return gone
+  })
+}
+// The lookup's latest audit status (read-only): replay repair reads the recorded verdict behind a terminal claim.
+export function latestAuditStatus(db: Database.Database, a: { tenantId: string; connector: string; jobId: string; lookup: string }): string | null {
+  const r = db.prepare(RESERVE_STATUS_SQL).get(a.tenantId, a.connector, a.jobId, a.lookup.slice(0, 200)) as { status: string } | undefined
+  return r?.status ?? null
 }
 
 // Newest first; same-second rows newest-inserted first (insert_seq: the order rowid gave). Sync for the pipeline's
