@@ -218,7 +218,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       }
       if (!matched && specific.checked && !specific.contradictory) {
         const c = specific.checked
-        const boundC = c.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && c.domain === lead.company_domain))
+        const boundC = c.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && !!lead.company_domain && c.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')))
         if (boundC) {
           for (const e of checkedAuditRows(c, WINDOW_DAYS, now, today, null)) addEnrichment(db, tenantId, lead.id, e)
           addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))

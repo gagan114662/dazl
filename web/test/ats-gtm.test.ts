@@ -339,10 +339,10 @@ test('#533 F-B zero-match: an attributed board with no fresh matching posting le
   assert.equal(board.checked!.listedCount, 1); assert.deepEqual(board.checked!.allTitles, ['SDR'])
   const audits = checkedAuditRows(board.checked!, 90, NOW / 1000, '2026-10-28', null)
   assert.equal(audits.length, 1); assert.equal(audits[0].value, 'SDR')
-  assert.match(audits[0].label, /no fresh matching posting in the last 90 days, so no dated row was stored/)
+  assert.match(audits[0].label, /posting date read as older than the last 90 days; no dated evidence row was stored/)
   assert.equal(audits[0].confidence, null)
   const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
-  assert.match(cov.value, /0 fresh postings in the last 90 days; 1 sales\/GTM-role titles only listed, 1 stored as audit rows/)
+  assert.match(cov.value, /0 fresh postings in the last 90 days across the full listing \(1 sales\/GTM-role titles only, all posting dates read\); 1 stored as audit rows/)
   assert.ok(!cov.value.includes('TRUNCATED'))
   // fetch failure still stores nothing - the remaining gap is explicit, not papered over
   const failed = await atsGtmBoard('Brightloop', 'brightloop.io', route({}), { now: NOW })
@@ -361,7 +361,7 @@ test('#533 F-B zero-match integration: enrichJobSignals stores the zero-match tr
   try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(stale), creditEnrichment: false }) } finally { Date.now = realNow }
   const audits = db.prepare("SELECT value, label, confidence FROM lead_enrichments WHERE kind = 'hiring-role'").all() as { value: string; label: string; confidence: number | null }[]
   assert.deepEqual(audits.map(r => r.value), ['SDR'])
-  assert.match(audits[0].label, /no fresh matching posting in the last 90 days/)
+  assert.match(audits[0].label, /posting date read as older than the last 90 days/)
   const cov = db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'hiring-board-coverage'").all() as { value: string }[]
   assert.ok(cov.some(r => /0 fresh postings in the last 90 days/.test(r.value)), 'gtm zero-match coverage row stored')
   assert.ok(cov.some(r => /1 all listed titles/.test(r.value) || /Board listing: 1/.test(r.value)), 'generic pass still records its own listing coverage')
@@ -380,8 +380,59 @@ test('#533 F-B empty board: an attributed listing with zero titles stores a comp
   const gen = cov.find(r => r.connector === 'signals:greenhouse')!
   assert.ok(gen); assert.match(gen.value, /0 titles listed \(all listed titles\) - the listing itself was empty/)
   const gtm = cov.find(r => r.connector === 'signals:greenhouse-gtm')!
-  assert.ok(gtm, 'gtm pass also records its zero on the empty attributed board'); assert.match(gtm.value, /0 sales\/GTM-role titles only listed/)
+  assert.ok(gtm, 'gtm pass also records its zero on the empty attributed board'); assert.match(gtm.value, /0 sales\/GTM-role titles only listed on an empty board listing/)
   db.close()
+})
+
+test('#533 F-E GH detail failure: a title whose date was never read gets no freshness claim and the coverage row says freshness was not established', async () => {
+  const failDetail = { [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'SDR', updated_at: d(1) }] } } // detail endpoint absent from the fixture -> fetch fails
+  const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(failDetail), { now: NOW })
+  assert.equal(board.hiring, null)
+  assert.ok(board.checked); assert.equal(board.checked!.rawTotal, 1); assert.equal(board.checked!.rawUnread, 1); assert.equal(board.checked!.rawDatedStale, 0)
+  const audits = checkedAuditRows(board.checked!, 90, NOW / 1000, '2026-10-28', null)
+  assert.equal(audits.length, 1)
+  assert.match(audits[0].label, /posting date was not read - freshness unknown/)
+  assert.doesNotMatch(audits[0].label, /older than the last 90 days/, 'no freshness claim from an unread date')
+  const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /0 fresh postings in the last 90 days among the 0 of 1 listed postings whose dates were read; freshness of the rest was not established/)
+  assert.doesNotMatch(cov.value, /across the full listing/, 'partial date coverage never claims the full listing')
+})
+
+test('#533 F-E GH beyond the detail cap: titles 5+ are never date-checked, get unknown-freshness rows, and the coverage row scopes the 0-fresh claim to the 4 read', async () => {
+  const six = { [`${GH}/jobs`]: { jobs: Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: `SDR ${i + 1}`, updated_at: d(1) })) } }
+  for (let i = 1; i <= 4; i++) six[`${GH}/jobs/${i}`] = { id: i, title: `SDR ${i}`, first_published: d(400), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${i}`, content: 'old' }
+  const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(six), { now: NOW })
+  assert.equal(board.hiring, null)
+  assert.ok(board.checked); assert.equal(board.checked!.rawTotal, 6); assert.equal(board.checked!.rawDatedStale, 4); assert.equal(board.checked!.rawUnread, 2)
+  assert.deepEqual(board.checked!.datedStale, ['SDR 1', 'SDR 2', 'SDR 3', 'SDR 4'])
+  const audits = checkedAuditRows(board.checked!, 90, NOW / 1000, '2026-10-28', null)
+  assert.equal(audits.length, 6)
+  for (const r of audits.filter(r => ['SDR 1', 'SDR 2', 'SDR 3', 'SDR 4'].includes(r.value))) assert.match(r.label, /posting date read as older than the last 90 days/)
+  for (const r of audits.filter(r => ['SDR 5', 'SDR 6'].includes(r.value))) { assert.match(r.label, /posting date was not read - freshness unknown/); assert.doesNotMatch(r.label, /older than/) }
+  const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /0 fresh postings in the last 90 days among the 4 of 6 listed postings whose dates were read; freshness of the rest was not established/)
+})
+
+test('#533 F-E Lever zero-match: listing dates are read for every entry, so the full-listing 0-fresh claim stands', async () => {
+  const lever = { 'https://api.lever.co/v0/postings/brightloop?mode=json': [
+    { text: 'SDR', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 400 * 86_400_000, descriptionPlain: 'sales. brightloop.io' },
+    { text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/b', createdAt: NOW - 200 * 86_400_000, descriptionPlain: 'sales. brightloop.io' }] }
+  const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(lever), { now: NOW })
+  assert.equal(board.hiring, null)
+  assert.ok(board.checked); assert.equal(board.checked!.rawTotal, 2); assert.equal(board.checked!.rawDatedStale, 2); assert.equal(board.checked!.rawUnread, 0); assert.equal(board.checked!.rawFreshExcluded, 0)
+  const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /0 fresh postings in the last 90 days across the full listing \(2 sales\/GTM-role titles only, all posting dates read\)/)
+})
+
+test('#533 F-E fresh-but-closed is outside the 0-fresh claim: a closed fresh posting neither counts as evidence nor supports absence', async () => {
+  const closed = { [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'SDR', updated_at: d(1) }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'SDR', first_published: d(5), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: 'This job has expired.' } }
+  const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(closed), { now: NOW })
+  assert.equal(board.hiring, null)
+  assert.ok(board.checked); assert.equal(board.checked!.rawFreshExcluded, 1); assert.equal(board.checked!.rawDatedStale, 0)
+  const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
+  assert.match(cov.value, /freshness of the rest was not established; 1 fresh excluded as closed or unusable, outside this claim/)
+  assert.doesNotMatch(cov.value, /across the full listing/)
 })
 
 test('#533 dedupeTitles: case-insensitive distinct, each capped at 120 chars, the list capped at 50', () => {
