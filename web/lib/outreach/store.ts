@@ -5,6 +5,33 @@ import { migrateAttribution } from './attribution.ts'
 
 export const norm = (email: string) => email.trim().toLowerCase()
 
+// Current read-consent text version (defined here so the send-side freshness gate can check read authority without
+// importing replies.ts - replies.ts -> autopilot.ts -> service.ts would cycle). Re-exported from replies.ts.
+export const READ_CONSENT_VERSION = '2026-10-21'
+
+// #413: a send must never rely on stale safety state, scoped per recipient: safety state about a recipient exists
+// only once this tenant has SENT to them (a reply or opt-out presupposes a thread). A first contact to a
+// never-contacted address is exempt from reply freshness - but never from suppression: global, tenant and imported
+// opt-outs are checked separately at every send boundary and bind regardless of history.
+// With read authority (current consent + an active read-granted mailbox), opt-outs and replies arrive only through
+// reply_sync: no success inside the window leaves an unseen opt-out possible - hold until sync recovers. WITHOUT
+// read authority (revoked or never granted) freshness can never recover for a recipient already contacted: their
+// thread-bound sends hold until consent is restored, because an opt-out after the last sync stays invisible forever.
+// Stores without scheduler_progress (pre-freshness-tracking) have nothing to consult.
+// The window is the single source for REPLY_SYNC_STALE_S in lib/ops/scheduler-runs.ts (ops re-exports this value;
+// importing ops back from here would cycle).
+export const REPLY_SAFETY_STALE_S = 2 * 60 * 60
+export function replySafetyStale(db: Database.Database, tenantId: string, toEmail: string, now = Math.floor(Date.now() / 1000)): boolean {
+  const has = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
+  if (!has('scheduler_progress') || !has('mail_read_consent') || !has('gmail_accounts') || !has('outreach_messages')) return false
+  const prior = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND status IN ('sent','sending','uncertain') LIMIT 1").get(tenantId, norm(toEmail))
+  if (!prior) return false // no history with this recipient: no reply-derived safety state to be stale
+  const reads = db.prepare("SELECT 1 FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.tenant_id = ? AND c.version = ? AND g.read_granted = 1 AND g.status = 'active' LIMIT 1").get(tenantId, READ_CONSENT_VERSION)
+  if (!reads) return true // contacted before, and no reply ingest can ever recover freshness for them
+  const row = db.prepare("SELECT last_success_at FROM scheduler_progress WHERE tenant_id = ? AND kind = 'reply_sync'").get(tenantId) as { last_success_at: number | null } | undefined
+  return !row?.last_success_at || now - Number(row.last_success_at) > REPLY_SAFETY_STALE_S
+}
+
 export function migrateOutreach(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS gmail_accounts (

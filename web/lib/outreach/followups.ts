@@ -4,12 +4,12 @@ import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } fro
 import type Database from 'better-sqlite3'
 import type { Db, Param } from '../db/client.ts'
 import { isMissingSchema } from '../scan/play-offer-text.ts'
-import { norm } from './store.ts'
+import { norm, replySafetyStale } from './store.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, CONSENT_VERSION, DEFAULT_DAILY, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
-import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
 
@@ -88,8 +88,10 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (claim.changes !== 1) { skip('already claimed'); continue }
     if (accountSendCount(db,tenantId,now) > Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent); return stop('daily_cap') }
     const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(t.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
-    const orig = db.prepare('SELECT id, subject FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').get(tenantId, t.lead_id) as { id: string; subject: string } | undefined
+    const orig = db.prepare('SELECT id, subject, test FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').get(tenantId, t.lead_id) as { id: string; subject: string; test: number } | undefined
     if (!lead || !orig) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); skip('lead missing'); continue }
+    // #413: stale safety ingest holds the follow-up (claim row removed, thread untouched) until reply_sync recovers.
+    if (!testFixtureSend(db, tenantId, { to_email: t.to_email, test: orig.test }) && replySafetyStale(db, tenantId, t.to_email, now)) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); skip('reply_sync_stale'); continue }
     const master = d.master ?? getMasterKey()
     const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(orig.id, master)}`
     let token: string
@@ -114,6 +116,10 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         db.prepare("UPDATE followup_threads SET stopped = 'evidence_withdrawn' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id)
         skip('evidence_withdrawn'); continue
+      }
+      if (!testFixtureSend(db, tenantId, { to_email: t.to_email, test: orig.test }) && replySafetyStale(db, tenantId, t.to_email, now)) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent)
+        skip('reply_sync_stale'); continue
       }
       const stAfter = domainReviewStatus(db,tenantId,t.lead_id,t.to_email)
       if (stAfter !== 'ok') {
