@@ -57,3 +57,9 @@ test('invalid rules are analyzer failure, never green', async () => {
   const broken = new ESLint({ cwd, overrideConfig: [{ rules: { 'quality-nonexistent': 'error' } }] });
   await assert.rejects(() => broken.lintText('1;', { filePath: 'scripts/quality/probe.mjs' }));
 });
+
+test('compiler diagnostic display paths and line numbers do not change identity', () => {
+  const base = evidence('eval(input);', { ...message, message: 'Stable headline\n\n/tmp/base/source.ts:1:1\ncodeframe' });
+  const head = evidence('// shifted\neval(input);', { ...message, line: 2, endLine: 2, message: 'Stable headline\n\n/tmp/head/source.ts:2:1\ndifferent codeframe' });
+  assert.deepEqual(newEvidence(base, head), []);
+});

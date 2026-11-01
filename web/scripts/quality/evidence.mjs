@@ -20,7 +20,7 @@ export function evidenceFor(path, source, messages) {
   // Stage the whole batch. Fatal parse/config errors never become accepted debt.
   const staged = messages.map(m => {
     if (m.fatal || !m.ruleId || ![1, 2].includes(m.severity)) throw new Error(`unavailable analysis: ${path}:${m.line ?? 0} (${m.ruleId ?? 'parse/config'})`);
-    const identity = digest(JSON.stringify([path, m.ruleId, m.message, sourceSpan(source, m)]));
+    const identity = digest(JSON.stringify([path, m.ruleId, m.severity, m.messageId ?? m.message.split('\n\n')[0], sourceSpan(source, m)]));
     return Object.freeze({ identity, path, rule: m.ruleId, severity: m.severity, line: m.line, column: m.column });
   });
   return Object.freeze(staged);
