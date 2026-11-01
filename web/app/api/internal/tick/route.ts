@@ -15,10 +15,11 @@ import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
-import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
+import { DRAIN_HOLD_REASONS, classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
-// follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
+// follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
+// verified leads) for tenants with autopilot on. Without the secret configured the route does not exist.
 export async function POST(req: NextRequest) {
   const secret = process.env.AUTOPILOT_TICK_SECRET
   const got = req.headers.get('authorization') ?? ''
@@ -77,7 +78,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let done = 0
   for (const tenantId of all) {
     await lease.keep()
-    let stage: 'reply_sync' | 'followups' | 'first_touch' = 'reply_sync'
+    let stage: 'reply_sync' | 'followups' = 'reply_sync'
     try {
       const sync = classifySync(await syncReplies(db, tenantId))
       await progress(tenantId, 'reply_sync', sync)
@@ -89,19 +90,25 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
         await progress(tenantId, 'followups', f)
         if (f.outcome === 'failure') continue
       }
-      if (firstTouchSet.has(tenantId)) {
-        // Drain due held drafts, then pick up new leads: first touches restart without waiting for a new scan.
-        // Drain and discovery are one kind of scheduled work; a drain failure skips discovery (its sends are the riskier half).
-        stage = 'first_touch'
-        const dr = classifyWork(await drainFirstTouch(db, tenantId))
-        await progress(tenantId, 'first_touch', dr)
-        if (dr.outcome === 'failure') continue
-        const ap = classifyWork(await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? ''))
-        await progress(tenantId, 'first_touch', ap)
-        if (ap.outcome === 'failure') continue
-      }
       done++
     } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
+  }
+  // #411: first touches no longer wait for the next scan to finish. Two drains, then discovery: legacy holds recorded
+  // on the message row (drainFirstTouch, kind 'first_touch' - the released design, including #522's reply_sync_stale
+  // holds; disjoint selectors from autopilot_work, so no double send), then held work rows and new verified leads
+  // (runAutopilot, kind 'autopilot', #448). Every send runs within every autopilot and send check; the lease is kept
+  // alive between its messages.
+  let firstTouches = 0
+  for (const t of db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0').all() as { tenant_id: string; business_name: string | null }[]) {
+    await lease.keep()
+    try {
+      const dr = classifyWork(await drainFirstTouch(db, t.tenant_id))
+      await progress(t.tenant_id, 'first_touch', dr)
+      if (dr.outcome === 'failure') continue
+      const r = await runAutopilot(db, t.tenant_id, t.business_name ?? '', { keep: () => lease.keep() })
+      firstTouches += r.sent
+      await progress(t.tenant_id, 'autopilot', classifyWork(r, DRAIN_HOLD_REASONS))
+    } catch (e) { fenced(e); await progress(t.tenant_id, 'autopilot', failed(e)); captureError(e, { source: 'worker', where: 'tick:autopilot', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
@@ -132,6 +139,5 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let sessionsReaped = 0
   try { sessionsReaped = (await reapAccountHistory(shared, { fence })).sessions } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked })
-
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked })
 }
