@@ -121,6 +121,7 @@ test('a claim meant for someone else is refused at the callback and stays unclai
   const refused = await withJar(new Map([['dazl_session', session2]]), () =>
     claimRoute.POST(new NextRequest('https://app.test/api/preview/claim', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://app.test', host: 'app.test', cookie: `dazl_claim=${r0.token}`, 'x-forwarded-for': '10.9.4.2' }, body: '{}' })))
   assert.equal(refused.status, 403)
+  // 'POST /api/preview/claim': two-tenant coverage - a preview is claimed only by the recipient it was issued for
   assert.equal((await refused.json()).code, 'foreign')
   assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null)
   assert.ok((h.prepare("SELECT count(*) AS n FROM preview_claim_events WHERE claim_id = ? AND outcome = 'foreign'").get(r0.id) as { n: number }).n >= 1, 'refusal audited')
@@ -170,6 +171,7 @@ test('the issue route: the selected proof of the workspace’s own run enters th
   assert.match(issued.url, /^https:\/\/app\.test\/preview\/[a-f0-9]{32}\.[a-f0-9]{32}$/, 'a working claim link comes back')
   assert.equal((await readPublicClaim(sqliteDb(h), MASTER, issued.url.split('/preview/')[1])).status, 'ok', 'the link is live end to end')
   const foreign = await post({ runId: jobId, recipientEmail: 'x@y.test', business: 'B' }, await createSession('U1'))
+  // 'POST /api/preview/issue': two-tenant coverage - another workspace's run id reads as not found
   assert.equal(foreign.status, 404, 'another workspace’s run reads as not found')
   const holdJob = createJob(h, 'seller1', { business_name: 'Seller Co', industry: 'x', location: 'y' })
   h.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(holdJob)
