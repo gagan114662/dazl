@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
-import { addEnrichment, audit, connectorStatus, enrichmentsForLeads, getEnabledCredential, migrateConnectors, recentAudit, saveCredential, setEnabled, setEnrichFallback } from '../lib/connectors/store.ts'
+import { addEnrichment, audit, connectorStatus, getEnabledCredential, migrateConnectors, saveCredential, setEnabled, setEnrichFallback } from '../lib/connectors/store.ts'
 
 const master = randomBytes(32)
 const KEY = 'h'.repeat(40)
