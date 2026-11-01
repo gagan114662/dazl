@@ -36,6 +36,9 @@ jobs:
       # The rendered price-estimate check (stubbed: no server, db, network or key). esbuild bundles the page; installed with playwright for this job only, the lockfile untouched. It must run, not skip.
       - name: Rendered price-estimate and budget check
         run: node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out && ! grep -q '^SKIP' /tmp/budget-ui.out
+      # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
+      - name: Rendered research-review checks (first-run + leads draft editor)
+        run: SHOTS=preview/research-review node test/ui/research-review.ui.mjs | tee /tmp/rr1.out && ! grep -q '^NOT RUN' /tmp/rr1.out && SHOTS=preview/research-review node test/ui/leads-research-review.ui.mjs | tee /tmp/rr2.out && ! grep -q '^NOT RUN' /tmp/rr2.out
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
