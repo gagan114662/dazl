@@ -26,7 +26,14 @@ test('connector_claims: two PG connections racing one lookup - exactly one claim
     const key2 = { ...key, lookup: 'people Retry (retry.example)' }
     const w = await writeTryReserve(a, key2)
     assert.ok('id' in w)
-    await writeSettleClaim(a, key2, (w as { id: string }).id, 'rate_limited', 0)
+    await writeSettleClaim(a, key2, (w as { id: string }).id, 'rate_limited', 0, true) // received 429 = no data returned = definitively no charge: the claim releases
+    { // an UNCERTAIN settle (no known response) keeps the claim held on PG as on sqlite: the replay never re-bills
+      const key3 = { ...key, lookup: 'people Held Co (held.example)' }
+      const w3 = await writeTryReserve(a, key3)
+      await writeSettleClaim(a, key3, (w3 as { id: string }).id, 'error', 0)
+      const again = await writeTryReserve(a, key3)
+      assert.deepEqual(again, { prior: 'uncertain' }, 'a possibly-charged attempt stays held for review on PG')
+    }
     const r4 = await writeTryReserve(b, key2)
     assert.ok('id' in r4, 'a transient outcome releases the claim for a retry')
   } finally { await a.close(); await b.close(); await s.drop() }

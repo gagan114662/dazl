@@ -219,27 +219,34 @@ export async function writeTryReserve(db: Db, a: AuditEntry): Promise<ReserveOut
   const lookup = a.lookup.slice(0, 200)
   const key = claimKey(a)
   const now = Math.floor(Date.now() / 1000)
-  const won = (await db.run(CLAIM_INSERT_SQL, [key[0], key[1], key[2], key[3], now])).changes === 1
-  if (!won) {
-    const r = await db.get<{ status: string }>(CLAIM_STATUS_SQL, [key[0], key[1], key[2], key[3]])
-    return { prior: claimPrior(r?.status ?? 'reserved') }
-  }
-  const legacy = await db.get<{ status: string }>(RESERVE_STATUS_SQL, [a.tenantId, a.connector, a.jobId ?? null, lookup])
-  if (legacy && (isTerminal(legacy.status) || legacy.status === 'reserved')) {
-    const prior = claimPrior(legacy.status)
-    if (prior !== 'uncertain') await db.run(CLAIM_SETTLE_SQL, [prior, now, key[0], key[1], key[2], key[3]])
-    return { prior }
-  }
-  const id = randomBytes(12).toString('hex')
-  await db.run(AUDIT_SQL, [id, a.tenantId, a.connector, a.jobId ?? null, lookup, 'reserved', 0])
-  return { id }
+  // One transaction, as on the sync path: the PK claim insert decides the race; the audit row is written with it.
+  return db.tx(function* (t) {
+    const won = ((yield* t.run(CLAIM_INSERT_SQL, [key[0], key[1], key[2], key[3], now]))).changes === 1
+    if (!won) {
+      const r = yield* t.get<{ status: string }>(CLAIM_STATUS_SQL, [key[0], key[1], key[2], key[3]])
+      return { prior: claimPrior(r?.status ?? 'reserved') } as ReserveOutcome
+    }
+    const legacy = yield* t.get<{ status: string }>(RESERVE_STATUS_SQL, [a.tenantId, a.connector, a.jobId ?? null, lookup])
+    if (legacy && (isTerminal(legacy.status) || legacy.status === 'reserved')) {
+      const prior = claimPrior(legacy.status)
+      if (prior !== 'uncertain') yield* t.run(CLAIM_SETTLE_SQL, [prior, now, key[0], key[1], key[2], key[3]])
+      return { prior } as ReserveOutcome
+    }
+    const id = randomBytes(12).toString('hex')
+    yield* t.run(AUDIT_SQL, [id, a.tenantId, a.connector, a.jobId ?? null, lookup, 'reserved', 0])
+    return { id } as ReserveOutcome
+  })
 }
 export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number, noCharge = false): Promise<void> {
   const key = claimKey(a)
-  if (isTerminal(status)) await db.run(CLAIM_SETTLE_SQL, [status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
-  else if (noCharge && NO_CHARGE_CODES.has(status)) await db.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
-  // else: uncertain paid attempt stays 'reserved' (see NO_CHARGE_CODES)
-  await db.run("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'", [status, results, id])
+  // The claim transition and the audit-row settlement are ONE transaction (parity with the sync path): a crash can
+  // never leave a settled audit row beside a live claim (or vice versa).
+  await db.tx(function* (t) {
+    if (isTerminal(status)) yield* t.run(CLAIM_SETTLE_SQL, [status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
+    else if (noCharge && NO_CHARGE_CODES.has(status)) yield* t.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
+    // else: uncertain paid attempt stays 'reserved' (see NO_CHARGE_CODES)
+    yield* t.run("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'", [status, results, id])
+  })
 }
 export async function writeAudit(db: Db, a: AuditEntry): Promise<void> {
   await db.run(AUDIT_SQL, auditArgs(a))
