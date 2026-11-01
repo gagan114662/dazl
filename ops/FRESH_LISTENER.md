@@ -59,6 +59,11 @@ Popen it just created, maintain custody and a durable recovery record, and must
 not accept a user-supplied PID as proof of newly created ownership. Process
 checks have TOCTOU windows and do not constrain a privileged operator.
 
+The synthetic suite is ops/test_fresh_listener_launch.py, deliberately matching
+the existing fail-closed workflow's test_*launch*.py discovery. It adds these
+12 tests to the66 existing launch tests without changing workflow semantics.
+Local or CI test execution is not production preparation/cutover acceptance.
+
 ## Blockers before any production preparation
 
 1. Prove same-database schema forward/rollback compatibility for both builds,
