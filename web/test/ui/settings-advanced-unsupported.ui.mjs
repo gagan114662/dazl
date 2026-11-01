@@ -67,10 +67,18 @@ try {
   assert.equal(await rd.locator('input[type="checkbox"]').count(), 1, 'the consent checkbox renders for reddit')
   assert.match(await rd.innerText(), /Accept and continue/, 'the consent button renders for reddit')
   assert.ok(!(await rd.innerText()).includes('Not available yet'), 'no false unavailable claim on a supported platform')
+  await card.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(300)
   await shot('settings-connectors-unsupported-desktop')
 
   await page.setViewportSize({ width: 390, height: 844 })
+  // The card is taller than the mobile viewport: shoot each unsupported gate scrolled into view.
+  await fb.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(300)
   await shot('settings-connectors-unsupported-mobile')
+  await xhs.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(300)
+  await shot('settings-connectors-unsupported-mobile-xhs')
   console.log('PASS settings-advanced-unsupported: unsupported platforms show the honest reason with no consent/session affordance; supported keeps its consent gate')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
