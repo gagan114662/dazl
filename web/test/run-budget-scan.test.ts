@@ -83,12 +83,14 @@ async function run(budget: string | null, opts: { reserved?: number; model?: str
   } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
 }
 
-test('the research fallback is refused on every query job, flag or not (#379); both forms end budget_stopped', async () => {
+test('the research fallback is refused on every guarded query job, flag or not (#379)', async () => {
   const off = await run('{"paid_fallback":false}')
   assert.equal(off.c.research, 0); assert.equal(off.row.error, 'budget_stopped'); assert.equal(off.row.status, 'failed')
-  // #379: the control no longer calls research either - the unpriceable path is closed at the provider boundary
+  // An unguarded run against INJECTED providers keeps the fixture's own behavior (research runs once, finds nothing):
+  // injection is test-only. The production wiring refuses research at the real provider boundary with zero requests on
+  // the wire - pinned by cost-bounds.test.ts's #379 test and csv-import.test.ts's nothing-found test.
   const control = await run(null)
-  assert.equal(control.c.research, 0); assert.equal(control.row.error, 'budget_stopped'); assert.equal(control.row.status, 'failed')
+  assert.equal(control.c.research, 1); assert.equal(control.row.error, 'no_candidates'); assert.equal(control.row.status, 'failed')
 })
 
 test('judge=false on a QUERY job (previously ignored) switches the judge off; the control judges', async () => {
@@ -102,10 +104,11 @@ test('judge=false on a QUERY job (previously ignored) switches the judge off; th
 test('max_usd refuses research (disclosed as refused) and a budget stop is distinct from zero leads', async () => {
   const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5' })
   assert.equal(x.c.research, 0); assert.equal(x.row.error, 'budget_stopped')
-  // #379: searches that find nothing leave only the refused fallback, so this is a budget stop too; the honest
-  // zero-leads outcome ('no_candidates') is asserted where it still occurs (ats-source, campaigns, first5, csv-import)
+  // Unguarded + injected providers: searches find nothing, the fixture's research also finds nothing -> the honest
+  // zero-leads outcome 'no_candidates' (same as ats-source/campaigns/first5/csv-import). Against production wiring the
+  // research call never happens and the job ends budget_stopped - asserted in cost-bounds/csv-import (#379).
   const nothing = await run(null, { empty: true })
-  assert.equal(nothing.row.error, 'budget_stopped'); assert.equal(nothing.c.research, 0)
+  assert.equal(nothing.row.error, 'no_candidates'); assert.equal(nothing.c.research, 1)
 })
 
 test('the job reservation is saved after every reserved call and a re-run continues from it, so it cannot spend the limit again', async () => {
