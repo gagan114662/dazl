@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
+import { getDb, setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
@@ -156,6 +156,7 @@ async function onPg(ids: Ids) {
     await runPgMigrations(pg.pool)
     setScanDb(null as unknown as Database.Database) // getScanDb() now throws 'test database unset'
     setDb(pg)
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await seed(pg, ids)
     return await scenario(pg, ids)
   } finally { await pg.close(); await s.drop() }

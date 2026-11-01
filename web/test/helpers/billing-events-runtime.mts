@@ -11,8 +11,7 @@ import assert from 'node:assert/strict'
 import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { NextRequest } from 'next/server'
-import Database from 'better-sqlite3'
-import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setScanDb, setUser, trapScanDb } from './tenant-route-db.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
 process.env.STRIPE_SECRET_KEY = 'sk_test_fixture'
@@ -148,12 +147,11 @@ test('Stripe webhook events on Postgres: the same, with the SQLite handle trappe
   try {
     await runPgMigrations(pg.pool)
     setDb(pg)
-    // The webhook's #417 conversion step is on the app's SQLite runtime store (lib/db/pg-port-status.ts records
-    // it): give the route a schema'd, empty SQLite store so the billing path under test stays Postgres.
-    const lite = new Database(':memory:')
-    const { migrateAllSqlite } = await import('../../lib/db/sqlite-migrations.ts')
-    migrateAllSqlite(lite)
-    setScanDb(lite)
+    // Production on Postgres has no raw SQLite handle: trap it so a module still reaching for getScanDb fails here,
+    // as it would in production. The previous empty-SQLite substitution also repointed getDb() off Postgres
+    // (tenant-route-db.setScanDb calls setDb(sqliteDb(v))) - the leg printed a pg marker while running on SQLite.
+    trapScanDb()
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await scenario('pg')
   } finally { await pg.close(); await s.drop() }
 })

@@ -197,6 +197,7 @@ test('Stripe through /api/stripe on Postgres, the SQLite handle trapped', { skip
     // here instead of silently reading a fixture store (previously this leg handed the route an empty SQLite store,
     // which also repointed getDb() off Postgres - the leg proved nothing about Postgres).
     trapScanDb()
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await scenario('pg')
   } finally { await pg.close(); await s.drop() }
 })
