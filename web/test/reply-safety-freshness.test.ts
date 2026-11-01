@@ -184,6 +184,7 @@ test('reply_sync_stale hold: drain avoids the send while stale, then selects the
   assert.equal(r2.sent, 0)
   assert.equal(sent.length, 0)
   assert.equal((db.prepare("SELECT hold_reason FROM outreach_messages WHERE lead_id = 'L9'").get() as { hold_reason: string }).hold_reason, 'reply_sync_stale')
+  assert.equal((db.prepare("SELECT attempts FROM outreach_messages WHERE lead_id = 'L9'").get() as { attempts: number }).attempts, 0, 'a safety hold consumes no retry budget')
   // A full fresh sync: the drain selects the hold and the send goes through exactly once.
   // (The stale drain re-held at wall+901 with a fresh 15-minute retry window, so the hold is due at wall+1801.)
   syncRow(db, wall + 1802)
@@ -222,6 +223,7 @@ test('warm follow-up: stale ingest at claim holds; staleness DURING the token aw
   assert.equal(sent.length, 0)
   assert.equal((db.prepare("SELECT count(*) AS n FROM followup_messages WHERE tenant_id = 'A'").get() as { n: number }).n, 0, 'no claim row left behind')
   assert.equal((db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get('th1') as { stopped: string | null }).stopped, null, 'a transient hold never stops the thread')
+  assert.equal((db.prepare('SELECT followups_sent FROM followup_threads WHERE thread_id = ?').get('th1') as { followups_sent: number }).followups_sent, 0, 'a held follow-up never counts as sent')
   // Fresh at claim, rotting inside the token await: same inert outcome.
   syncRow(db, wall)
   await runFollowups(db, 'A', 'Acme', d(() => syncRow(db, wall - REPLY_SAFETY_STALE_S - 10)))
