@@ -235,7 +235,7 @@ class CheckedLaunchTests(unittest.TestCase):
             launch = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(sentinel)]
             second = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(later)]
             for first in [[sys.executable, '-c', 'raise SystemExit(23)'], ['/nonexistent/preflight'], [sys.executable, '-c', 'import time; time.sleep(5)']]:
-                with patch.object(checked, 'require_ci'), patch.object(checked, 'bind_launch'):
+                with patch.object(checked, 'require_ci'), patch.object(checked, 'bind_launch'), patch.object(checked, 'bind_target'):
                     report, code = checked.run([first,second],launch,timeout=0.2)
                 p = subprocess.CompletedProcess([],code,json.dumps(report))
                 self.assertEqual(p.returncode, 1, p.stdout)
@@ -248,7 +248,7 @@ class CheckedLaunchTests(unittest.TestCase):
             sentinel = Path(tmp) / 'launched'
             launch = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(sentinel)]
             good = [sys.executable, '-c', 'pass']
-            with patch.object(checked, 'bind_launch'), patch.object(checked, 'require_ci', side_effect=ValueError('ci_pending')):
+            with patch.object(checked, 'bind_launch'), patch.object(checked, 'bind_target'), patch.object(checked, 'require_ci', side_effect=ValueError('ci_pending')):
                 report, code = checked.run([good], launch)
             self.assertEqual(code, 1)
             self.assertFalse(report['launch_reached'])
@@ -259,12 +259,12 @@ class CheckedLaunchTests(unittest.TestCase):
             target = Path(tmp) / 'count'
             launch = [sys.executable, '-c', 'from pathlib import Path; p=Path(__import__("sys").argv[1]); p.write_text(p.read_text()+"x" if p.exists() else "x")', str(target)]
             good = [sys.executable, '-c', 'pass']
-            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'):
+            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'),patch.object(checked,'bind_target'):
                 report,code=checked.run([good,good],launch)
             p=subprocess.CompletedProcess([],code,json.dumps(report))
             self.assertEqual(p.returncode, 0)
             self.assertEqual(target.read_text(), 'x')
-            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'):
+            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'),patch.object(checked,'bind_target'):
                 report,code=checked.run([good],[sys.executable,'-c','raise SystemExit(3)'])
             p=subprocess.CompletedProcess([],code,json.dumps(report))
             self.assertEqual(p.returncode, 1)
