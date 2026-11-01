@@ -21,7 +21,7 @@ export default function KeyInline({ reason, onSaved }: { reason: string; onSaved
     } catch { setMsg('Could not reach the server. Try again.') } finally { setBusy(false) }
   }
   return (
-    <form onSubmit={save} className="border border-black/10 rounded-lg p-4 bg-[#fafafa] text-sm" autoComplete="off">
+    <form method="post" onSubmit={save} className="border border-black/10 rounded-lg p-4 bg-[#fafafa] text-sm" autoComplete="off">
       <label htmlFor="ai-key" className="font-medium block mb-1">Your AI key</label>
       <p className="text-[#555] text-xs mb-2">{reason} Your provider bills you for usage. The key is encrypted and never shown again.{' '}
         <a className="underline" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Get an Anthropic key</a> or{' '}

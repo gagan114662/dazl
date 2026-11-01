@@ -42,7 +42,7 @@ export default function SignIn() {
         <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+        <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">
           <input name="email" type="email" required placeholder="you@company.com"
             className="field" />
           <input name="password" type="password" required placeholder="Password"
