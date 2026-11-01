@@ -60,7 +60,7 @@ jobs:
       - name: Two tenants, no cross-tenant data on any route or page
         if: success() || failure()
         run: npm run test:smoke:tenants
-      - name: Enrichment fallback opt-in: renders off by default, toggle persists (fenced)
+      - name: "Enrichment fallback opt-in: renders off by default, toggle persists (fenced)"
         if: success() || failure()
         run: npm run test:smoke:enrichment
       - name: Enrichment fallback screenshots
