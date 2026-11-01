@@ -2,6 +2,7 @@ import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { ownerGuarded } from '../llm/owner-guard.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
+import { conversionBlockedNow, drainVerifiedPendingLifecycle } from './lifecycle.ts'
 import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -365,6 +366,7 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
 export interface SequenceResult { started: number; sent: number; skipped: number; stopped?: string }
 
 export async function runSequences(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<SequenceResult> {
+  drainVerifiedPendingLifecycle(db) // #417: complete verified conversions before this pass's sends
   const out: SequenceResult = { started: 0, sent: 0, skipped: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const stop = (w: string): SequenceResult => { out.stopped = w; return out }
@@ -453,7 +455,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       skip('changed_since_approval')
       continue
     }
-    const claim = db.prepare("UPDATE sequence_steps SET status = 'sending', claimed_at = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'approved'").run(now, tenantId, s.id, stepRow.step)
+    // #417: the conversion guard is atomic with the claim (one immediate transaction), so a verification that
+    // landed before this transaction blocks the send; one landing after it is stopped by the next boundary.
+    const claim = db.transaction(() => {
+      if (!testFixtureSend(db, tenantId, { to_email: s.to_email, test: s.msg_test }) && conversionBlockedNow(db, s.to_email)) return null
+      return db.prepare("UPDATE sequence_steps SET status = 'sending', claimed_at = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'approved'").run(now, tenantId, s.id, stepRow.step)
+    }).immediate()
+    if (claim === null) { stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', 'converted', now); skip('converted'); continue }
     if (claim.changes !== 1) { skip('already claimed'); continue }
     if (sentShared24h() > dailyCap) { db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); return stop('daily_cap') }
     const master = d.master ?? getMasterKey()

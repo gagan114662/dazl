@@ -24,6 +24,7 @@
 //   attribution only, never a scope.
 import type Database from 'better-sqlite3'
 import { stopSequenceForThread } from './sequences.ts'
+import { tableExists } from './send-budget.ts'
 
 export type LifecycleKind = 'signup' | 'activation' | 'payment'
 
@@ -105,6 +106,39 @@ export function activateLifecycleFor(db: Database.Database, rawEmail: string, no
     for (const r of rows) {
       const u = db.prepare('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL').run(now, r.event_key) as { changes: number }
       if (u.changes === 1) stopped += cancelPendingFor(db, email, r.kind, now)
+    }
+  })()
+  return stopped
+}
+
+// Fail-closed conversion check at the automated SEND boundaries (#417): an address blocks a send when it has
+// an ACTIVATED conversion, or a PENDING one whose ownership is already proven. The activation drains are
+// best-effort by design; a lost drain must never allow mail, so the boundary re-checks ownership itself
+// (users is co-located in the app's store). A store without users (pure-outreach unit fixtures) has no
+// accounts at all, so a pending row can prove nothing there and does not block.
+export function conversionBlockedNow(db: Database.Database, rawEmail: string): boolean {
+  migrateLifecycle(db)
+  const email = normalizeLifecycleEmail(rawEmail)
+  if (!email || !email.includes('@')) return false
+  const rows = db.prepare('SELECT activated_at FROM lifecycle_events WHERE email = ?').all(email) as { activated_at: number | null }[]
+  if (rows.some(r => r.activated_at !== null)) return true
+  if (!rows.length) return false
+  if (!tableExists(db, 'users')) return false
+  return !!db.prepare('SELECT 1 AS x FROM users WHERE lower(trim(email)) = ? AND email_verified_at IS NOT NULL').get(email)
+}
+
+// Progress half of the fail-closed pair: activate every pending conversion whose address is now verified,
+// stopping its queued work. Called at the start of each automated send pass so a drain lost at the
+// verification boundary completes before that pass's sends. No-op in stores without accounts.
+export function drainVerifiedPendingLifecycle(db: Database.Database, now = Math.floor(Date.now() / 1000)): number {
+  migrateLifecycle(db)
+  if (!tableExists(db, 'users')) return 0
+  let stopped = 0
+  db.transaction(() => {
+    const rows = db.prepare('SELECT le.event_key, le.kind, le.email FROM lifecycle_events le WHERE le.activated_at IS NULL AND EXISTS (SELECT 1 FROM users u WHERE lower(trim(u.email)) = le.email AND u.email_verified_at IS NOT NULL)').all() as { event_key: string; kind: LifecycleKind; email: string }[]
+    for (const r of rows) {
+      const u = db.prepare('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL').run(now, r.event_key) as { changes: number }
+      if (u.changes === 1) stopped += cancelPendingFor(db, r.email, r.kind, now)
     }
   })()
   return stopped

@@ -14,7 +14,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateAutopilot, runAutopilot, enable, getState, ATTESTATIONS, CONSENT_VERSION } from '../lib/outreach/autopilot.ts'
 import { migrateSequences } from '../lib/outreach/sequences.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
-import { recordLifecycleEvent, queuePendingLifecycle, activateLifecycleFor, paymentAccountFor, conversionEventFor } from '../lib/outreach/lifecycle.ts'
+import { recordLifecycleEvent, queuePendingLifecycle, activateLifecycleFor, drainVerifiedPendingLifecycle, conversionBlockedNow, paymentAccountFor, conversionEventFor } from '../lib/outreach/lifecycle.ts'
 import { startOAuth, completeOAuth } from '../lib/gmail/oauth.ts'
 import { saveSettings, type Deps } from '../lib/outreach/service.ts'
 
@@ -186,4 +186,38 @@ test('payment identity resolves to the bound account, never the typed Stripe ema
   assert.equal(paymentAccountFor(db, 't-shared'), null)
   // Unknown tenant: unmatched.
   assert.equal(paymentAccountFor(db, 't-nobody'), null)
+})
+
+const USERS_DDL = 'CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, email_verified_at INTEGER)'
+
+test('the send boundary fails closed on a PENDING conversion whose address is already verified', () => {
+  const db = base()
+  // No conversion at all: sends proceed.
+  assert.equal(conversionBlockedNow(db, 'free@corp.example'), false)
+  // Pending + unverified account: nothing proven, nothing blocked.
+  db.exec(USERS_DDL)
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u1', 'pending@corp.example', NULL)").run()
+  queuePendingLifecycle(db, 'signup', 'pending@corp.example', 'u1', NOW)
+  assert.equal(conversionBlockedNow(db, 'pending@corp.example'), false, 'unverified pending does not block')
+  // The account verifies but the activation drain is LOST: the boundary itself must still refuse the send.
+  db.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'u1'").run()
+  assert.equal(conversionBlockedNow(db, 'pending@corp.example'), true, 'verified-but-undrained blocks the send')
+  // Activated conversions block regardless.
+  activateLifecycleFor(db, 'pending@corp.example', NOW)
+  assert.equal(conversionBlockedNow(db, 'pending@corp.example'), true)
+  // A store without accounts cannot verify anything: pending does not block there.
+  const bare = base()
+  queuePendingLifecycle(bare, 'signup', 'bare@corp.example', 't', NOW)
+  assert.equal(conversionBlockedNow(bare, 'bare@corp.example'), false)
+})
+
+test('a send pass completes a verified conversion itself when the boundary drain was lost', async () => {
+  const { db, sent, d } = await autopilotTenant()
+  db.exec(USERS_DDL)
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u9', 'late@corp.example', 1)").run() // already verified
+  mkLead(db, 'A', 'late@corp.example')
+  assert.equal(queuePendingLifecycle(db, 'signup', 'late@corp.example', 'u9', NOW), true)
+  await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(sent.length, 0, 'the pass drained the verified conversion first, so no send went out')
+  assert.deepEqual(conversionEventFor(db, 'late@corp.example'), { kind: 'signup', created_at: NOW }, 'the event is activated')
 })

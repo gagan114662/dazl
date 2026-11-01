@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { LIFECYCLE_NOT_CONVERTED } from './lifecycle.ts'
+import { drainVerifiedPendingLifecycle, LIFECYCLE_NOT_CONVERTED } from './lifecycle.ts'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -184,6 +184,7 @@ export interface RunResult { sent: number; held: number; skipped: number; stoppe
 
 // One pass over this tenant's verified leads that have no message yet. Safe to call repeatedly.
 export async function runAutopilot(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<RunResult> {
+  drainVerifiedPendingLifecycle(db) // #417: complete verified conversions before candidate selection
   const out: RunResult = { sent: 0, held: 0, skipped: 0 }
   const env = d.flags ?? process.env
   const now = d.now ?? Math.floor(Date.now() / 1000)
