@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
-import { getScanDb } from '@/lib/scan/service'
-import { paymentAccountFor, queuePendingLifecycle, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
+import { paymentAccountForDb, queuePendingLifecycleDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
 import { applyStripeEvent, verifyStripeSignature, type StripeEvent } from '@/lib/billing/stripe'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -21,7 +20,8 @@ export async function POST(req: NextRequest) {
   }
   if (!event?.id || !event?.type) return NextResponse.json({ error: 'Bad payload' }, { status: 400 })
   try {
-    const result = await applyStripeEvent(await getDb(), event)
+    const db = await getDb()
+    const result = await applyStripeEvent(db, event)
     // #417: a paid subscription is a conversion - stop acquisition work queued for the paying ACCOUNT's email.
     // The identity is the account bound to the checkout (client_reference_id/metadata), never the buyer-typed
     // Stripe email, which proves no ownership. Verified email converts now; unverified queues a durable pending
@@ -32,10 +32,10 @@ export async function POST(req: NextRequest) {
       try {
         const o = (event.data?.object ?? {}) as { client_reference_id?: unknown; metadata?: { tenant_id?: unknown } }
         const tenantId = typeof o.client_reference_id === 'string' && o.client_reference_id ? o.client_reference_id : typeof o.metadata?.tenant_id === 'string' && o.metadata.tenant_id ? o.metadata.tenant_id : null
-        const account = tenantId ? paymentAccountFor(getScanDb(), tenantId) : null
+        const account = tenantId ? await paymentAccountForDb(db, tenantId) : null
         if (tenantId && account) {
-          if (account.verified) recordLifecycleEvent(getScanDb(), 'payment', account.email, tenantId)
-          else queuePendingLifecycle(getScanDb(), 'payment', account.email, tenantId)
+          if (account.verified) await recordLifecycleEventDb(db, 'payment', account.email, tenantId)
+          else await queuePendingLifecycleDb(db, 'payment', account.email, tenantId)
         }
       } catch (e) {
         captureError(e, { source: 'route', where: '/api/billing/webhook:lifecycle', method: 'POST', ref: event.id, requestId: requestIdOf(req) })

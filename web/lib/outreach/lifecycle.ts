@@ -22,7 +22,9 @@
 // - The table is global by design (NOT_DIRECT in test/helpers/tenant-tables.ts): conversion is account-level,
 //   and stopping a converted address's queued work across tenants is the point. account_tenant is
 //   attribution only, never a scope.
+import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import type { Db, Tx, TxBody } from '../db/client.ts'
 import { stopSequenceForThread } from './sequences.ts'
 import { tableExists } from './send-budget.ts'
 
@@ -76,7 +78,7 @@ export function recordLifecycleEvent(db: Database.Database, kind: LifecycleKind,
   const key = `${kind}|${email}`
   let stopped = 0
   db.transaction(() => {
-    const ins = db.prepare('INSERT OR IGNORE INTO lifecycle_events (event_key, kind, email, account_tenant, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?)').run(key, kind, email, accountTenant, now, now)
+    const ins = db.prepare('INSERT INTO lifecycle_events (event_key, kind, email, account_tenant, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING').run(key, kind, email, accountTenant, now, now)
     const activated = ins.changes === 1 ? 1 : (db.prepare('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL').run(now, key) as { changes: number }).changes
     if (activated === 1) stopped = cancelPendingFor(db, email, kind, now)
   })()
@@ -90,7 +92,7 @@ export function queuePendingLifecycle(db: Database.Database, kind: LifecycleKind
   migrateLifecycle(db)
   const email = normalizeLifecycleEmail(rawEmail)
   if (!email || !email.includes('@')) return false
-  const ins = db.prepare('INSERT OR IGNORE INTO lifecycle_events (event_key, kind, email, account_tenant, created_at, activated_at) VALUES (?, ?, ?, ?, ?, NULL)').run(`${kind}|${email}`, kind, email, accountTenant, now)
+  const ins = db.prepare('INSERT INTO lifecycle_events (event_key, kind, email, account_tenant, created_at, activated_at) VALUES (?, ?, ?, ?, ?, NULL) ON CONFLICT (event_key) DO NOTHING').run(`${kind}|${email}`, kind, email, accountTenant, now)
   return ins.changes === 1
 }
 
@@ -161,4 +163,54 @@ export function conversionEventFor(db: Database.Database, rawEmail: string): { k
   migrateLifecycle(db)
   const r = db.prepare('SELECT kind, created_at FROM lifecycle_events WHERE email = ? AND activated_at IS NOT NULL ORDER BY created_at LIMIT 1').get(normalizeLifecycleEmail(rawEmail)) as { kind: LifecycleKind; created_at: number } | undefined
   return r ?? null
+}
+
+// ---------- Db-layer variants for ported routes ----------
+// The billing webhook runs where the raw SQLite handle is a trap (a PG deployment): the same conversion, on the
+// ported Db layer and SQL both engines accept. The cancel cascade below replicates cancelPendingFor (incl.
+// stopSequenceForThread's audited stop) statement for statement; the sync functions stay for the sqlite-side
+// callers (auth routes, the autopilot pass). No migrate calls here: the Db layer's schema comes from the
+// migrations (sqlite-migrations.ts / pg 0029), as for every ported module.
+
+function* cancelPendingForTx(t: Tx, email: string, kind: LifecycleKind, now: number): TxBody<number> {
+  const reason = `converted_${kind}`
+  let stopped = 0
+  const seqs = yield* t.all<{ tenant_id: string; lead_id: string }>("SELECT tenant_id, lead_id FROM sequences WHERE status IN ('approved','active') AND lower(trim(to_email)) = ?", [email])
+  for (const s of seqs) {
+    const r = yield* t.run("UPDATE sequences SET status = 'stopped', stop_reason = ? WHERE tenant_id = ? AND lead_id = ? AND status IN ('approved','active')", [reason.slice(0, 40), s.tenant_id, s.lead_id])
+    if (r.changes > 0) {
+      yield* t.run("INSERT INTO autopilot_audit (id, tenant_id, lead_id, message_id, action, detail, created_at) VALUES (?, ?, ?, NULL, 'sequence_stopped', ?, ?)", [randomBytes(12).toString('hex'), s.tenant_id, s.lead_id, reason.slice(0, 200), now])
+      stopped++
+    }
+  }
+  stopped += (yield* t.run('UPDATE followup_threads SET stopped = ? WHERE stopped IS NULL AND lower(trim(to_email)) = ?', [reason.slice(0, 40), email])).changes
+  stopped += (yield* t.run("UPDATE outreach_messages SET status = 'skipped', error = ?, hold_reason = NULL, hold_until = NULL WHERE status IN ('draft','approved') AND hold_reason IS NOT NULL AND lower(trim(to_email)) = ?", [reason, email])).changes
+  return stopped
+}
+
+export async function recordLifecycleEventDb(db: Db, kind: LifecycleKind, rawEmail: string, accountTenant: string | null, now = Math.floor(Date.now() / 1000)): Promise<number> {
+  const email = normalizeLifecycleEmail(rawEmail)
+  if (!email || !email.includes('@')) return 0
+  const key = `${kind}|${email}`
+  return db.tx(function* (t) {
+    const ins = yield* t.run('INSERT INTO lifecycle_events (event_key, kind, email, account_tenant, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING', [key, kind, email, accountTenant, now, now])
+    const activated = ins.changes === 1 ? 1 : (yield* t.run('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL', [now, key])).changes
+    if (activated !== 1) return 0
+    return yield* cancelPendingForTx(t, email, kind, now)
+  })
+}
+
+export async function queuePendingLifecycleDb(db: Db, kind: LifecycleKind, rawEmail: string, accountTenant: string | null, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  const email = normalizeLifecycleEmail(rawEmail)
+  if (!email || !email.includes('@')) return false
+  const ins = await db.run('INSERT INTO lifecycle_events (event_key, kind, email, account_tenant, created_at, activated_at) VALUES (?, ?, ?, ?, ?, NULL) ON CONFLICT (event_key) DO NOTHING', [`${kind}|${email}`, kind, email, accountTenant, now])
+  return ins.changes === 1
+}
+
+export async function paymentAccountForDb(db: Db, tenantId: string): Promise<{ email: string; verified: boolean } | null> {
+  const direct = await db.get<{ email: string; v: number | null }>('SELECT email, email_verified_at AS v FROM users WHERE id = ?', [tenantId])
+  if (direct) return { email: direct.email, verified: direct.v !== null }
+  const owners = await db.all<{ email: string; v: number | null }>("SELECT u.email, u.email_verified_at AS v FROM memberships m JOIN users u ON u.id = m.member_id WHERE m.tenant_id = ? AND m.role = 'owner'", [tenantId])
+  if (owners.length !== 1) return null
+  return { email: owners[0].email, verified: owners[0].v !== null }
 }
