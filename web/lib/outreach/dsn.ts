@@ -22,7 +22,7 @@ import type { GPart } from './reply-text.ts'
 export interface DsnRecipient { finalRecipient: string | null; action: string | null; status: string | null }
 export interface DsnParse { recipients: DsnRecipient[]; originalMessageId: string | null }
 export type DsnVerdict =
-  | { kind: 'permanent'; recipient: string; originalMessageId: string }
+  | { kind: 'permanent'; recipient: string; originalMessageId: string; outreachMessageId: string }
   | { kind: 'soft'; recipient: string; status: string }
   | { kind: 'hold'; reason: string }
   | { kind: 'ignore'; reason: string }
@@ -121,5 +121,5 @@ export function decideDsn(root: GPart | undefined, from: string, lookup: (origin
   // never for a suppression. When provenance cannot be established at all (no expected origins supplied), that
   // is the standing posture, not an error.
   if (!prov.ok) return { kind: 'hold', reason: prov.reason ?? 'unverified' }
-  return { kind: 'permanent', recipient, originalMessageId: dsn.originalMessageId }
+  return { kind: 'permanent', recipient, originalMessageId: dsn.originalMessageId, outreachMessageId: send.id }
 }

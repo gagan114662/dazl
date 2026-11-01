@@ -41,7 +41,7 @@ test('structured fields parse: recipient blocks and the original Message-ID from
 
 test('authenticated 5.x.x for the recorded send and recipient is permanent', () => {
   const v = decideDsn(fixture({ auth: AUTH_OK }), 'mailer-daemon@mx.example.com', known, TRUST)
-  assert.deepEqual(v, { kind: 'permanent', recipient: 'lead@prospect.example', originalMessageId: MSGID })
+  assert.deepEqual(v, { kind: 'permanent', recipient: 'lead@prospect.example', originalMessageId: MSGID, outreachMessageId: 'abc123' })
 })
 
 test('an otherwise-perfect but unauthenticated notice is held, never a permanent suppression', () => {
