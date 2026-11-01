@@ -88,6 +88,15 @@ try {
     await panel.getByText('Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.', { exact: true }).waitFor()
     await panel.getByRole('button', { name: 'More information' }).first().click()
     await panel.getByText(/To find separate-thread delivery failures, dazl searches mailer-daemon and postmaster notices/).waitFor()
+    // Consent text must never be clipped: the whole popover stays inside the viewport, even on a 390px phone.
+    const tip = panel.getByTestId('infotip-text').first()
+    const bb = await tip.boundingBox()
+    const vw = page.viewportSize().width
+    assert.ok(bb, 'popover has a box')
+    assert.ok(bb.x >= 0 && bb.x + bb.width <= vw, `popover ${Math.round(bb.x)}..${Math.round(bb.x + bb.width)} inside 0..${vw}`)
+    const tipText = await tip.innerText()
+    for (const clause of ['searches mailer-daemon and postmaster notices in a bounded time window', 'Unmatched notice content is not kept as a reply', 'untick the read access and still connect send-only'])
+      assert.ok(tipText.includes(clause), `popover keeps the clause: ${clause}`)
     await panel.scrollIntoViewIfNeeded()
     await shot(page, 'gmail-settings-scope-mobile')
     assert.equal(await panel.getByText(/Only threads dazl started are read|never lists, searches, or reads anything else/).count(), 0)
@@ -98,6 +107,10 @@ try {
     await page.getByText(/With your consent, dazl reads replies in its outreach threads and checks delivery-failure notices for its sends/).waitFor()
     assert.equal(await page.getByText(/Only replies to outreach threads|nothing else in your mailbox|Nothing else in (?:your|the) mailbox is read/).count(), 0)
     for (const text of READ_CONSENT_TEXT) await page.getByText(text, { exact: true }).waitFor()
+    // The page's main pane scrolls inside a fixed-height layout: bring the whole consent card on screen so the
+    // capture (and the person) reaches the last clauses, not just the first.
+    await page.getByText(READ_CONSENT_TEXT[READ_CONSENT_TEXT.length - 1], { exact: true }).scrollIntoViewIfNeeded()
+    await page.getByText(/untick the read access and still connect send-only/).scrollIntoViewIfNeeded()
     await shot(page, 'inbox-disconnected-mobile')
     await ctx.close()
   }
