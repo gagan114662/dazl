@@ -117,12 +117,18 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   const uncertain = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId)
   if (uncertain) { pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
 
+  // Recipient eligibility is judged by createDraft's single policy stack (published address from the cited page OR the
+  // company's own crawled contact page, purpose, identity review, suppression), never by WHERE the contact was stored.
+  // The prefilter therefore admits a lead whose own contact is absent or not an email when its sitecrawl recorded a
+  // published email; createDraft picks that address with the same checks a manual draft passes, and every ineligible
+  // route (wrong purpose, unconfirmed domain, suppressed, personal, undeliverable) is still refused there.
   const leads = db.prepare(
     `SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
+     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.quarantined_at IS NULL
+       AND (l.contact IS NOT NULL OR EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.connector = 'sitecrawl' AND e.kind = 'email'))
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
      ORDER BY l.score DESC LIMIT 25`,
-  ).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string }[]
+  ).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId) as { id: string; contact: string }[]
 
   for (const l of leads) {
     // re-read state each time so a pause or kill takes effect between sends

@@ -124,6 +124,33 @@ test('autopilot skips with no draft, no send and an audited reason when the sell
   assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'skipped' && a.detail === 'seller_offer_required'))
 })
 
+test('a lead whose contact is missing but whose own site published an email IS eligible: eligibility never depends on where the contact was stored (refs #412)', async () => {
+  const db = await setup(); ok(db); const { sent, d } = sends()
+  // Past the warmup: two prior approved sends so autopilot's policy arm sends.
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e2','A','x1','o1@z.example','s','bodybodybodybodybodybody','sent',1,1)").run()
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e3','A','x2','o2@z.example','s','bodybodybodybodybodybody','sent',2,2)").run()
+  const id = lead(db, null)
+  // The company's own domain (own-domain basis: identity machine-verified, no user review needed) published a sales inbox.
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', 'northside.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://northside.example/', '2026-10-22', 1)").run(id)
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'sales@northside.example', NULL, 'https://northside.example/contact', '2026-10-22', 2)").run(id)
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 1, 'autopilot considers the crawl-only-email lead')
+  assert.equal(sent.length, 1)
+  assert.deepEqual(status(db).map(m => m.to_email), ['o1@z.example', 'o2@z.example', 'sales@northside.example'])
+})
+
+test('a crawl-only lead whose published address is not sales-contactable stays excluded (refs #412)', async () => {
+  const db = await setup(); ok(db); const { sent, d } = sends()
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e2','A','x1','o1@z.example','s','bodybodybodybodybodybody','sent',1,1)").run()
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e3','A','x2','o2@z.example','s','bodybodybodybodybodybody','sent',2,2)").run()
+  const id = lead(db, null)
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', 'northside.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://northside.example/', '2026-10-22', 1)").run(id)
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'support@northside.example', NULL, 'https://northside.example/contact', '2026-10-22', 2)").run(id)
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 0); assert.equal(sent.length, 0)
+  assert.equal(status(db).filter(m => m.to_email === 'support@northside.example').length, 0, 'the purpose gate inside createDraft still refuses non-sales inboxes')
+})
+
 test('a crawled address whose website the user has not checked is never drafted or sent by autopilot', async () => {
   const db = await setup(); migrateConnectors(db); ok(db); const { sent, d } = sends()
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e2','A','x1','o1@z.example','s','bodybodybodybodybodybody','sent',1,1)").run()
