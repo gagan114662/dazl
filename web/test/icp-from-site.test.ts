@@ -219,3 +219,23 @@ test('hard byte bound: ordinary English 6-page prompt is kept verbatim', async (
   assert.ok(Buffer.byteLength(out) <= RESEARCH_PROMPT_MAX_BYTES)
   for (const p of pages) assert.ok(out.includes(p.url))
 })
+
+test('icpFromWebsite: SpendAccountingFailed surfaces as accounting_pending, never key_rejected', async () => {
+  const { SpendAccountingFailed } = await import('../lib/llm/spend-guard.ts')
+  const failing: Provider = { research: async () => { throw new Error('unused') }, complete: async () => { throw new SpendAccountingFailed('settle_not_saved') } }
+  const out = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: failing } })
+  assert.ok('error' in out)
+  if ('error' in out) assert.equal(out.error, 'accounting_pending', 'a possibly-billed call must not invite key re-entry')
+})
+
+test('icpFromWebsite: model_unpriced refusal is distinct from spend_limit; genuine limit stays spend_limit', async () => {
+  const { SpendRefused } = await import('../lib/llm/spend-guard.ts')
+  const unpriced: Provider = { research: async () => { throw new Error('unused') }, complete: async () => { throw new SpendRefused('model_unpriced') } }
+  const out1 = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: unpriced } })
+  assert.ok('error' in out1)
+  if ('error' in out1) assert.equal(out1.error, 'model_unpriced', 'an unpriced model is not a reached spend limit')
+  const limited: Provider = { research: async () => { throw new Error('unused') }, complete: async () => { throw new SpendRefused('over_limit') } }
+  const out2 = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: limited } })
+  assert.ok('error' in out2)
+  if ('error' in out2) assert.equal(out2.error, 'spend_limit', 'the genuine limit keeps its accurate surface')
+})

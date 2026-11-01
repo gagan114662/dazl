@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
+import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
@@ -12,7 +12,7 @@ import { pickVendor } from './runner.ts'
 // returned for review and is never auto-saved - it only persists if the user then runs
 // a scan with it. Trial scans never pay for this: no tenant key, no call.
 
-export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'spend_limit'
+export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'spend_limit' | 'spend_unavailable' | 'model_unpriced' | 'accounting_pending'
 
 const ENTITIES: [RegExp, string][] = [[/&amp;/g, '&'], [/&lt;/g, '<'], [/&gt;/g, '>'], [/&quot;/g, '"'], [/&#0?39;|&apos;/g, "'"], [/&nbsp;/g, ' ']]
 const unescape = (s: string) => ENTITIES.reduce((t, [re, v]) => t.replace(re, v), s)
@@ -121,7 +121,15 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     const withResearch = 'error' in research ? icp : { ...icp, research: toStored(research) }
     return { icp: withResearch, source: page.finalUrl, sells }
   } catch (e) {
-    if (spendRefused(e)) return { error: 'spend_limit' } // the owner's spend limit: no call was made
+    // A call MAY have been made and billed, but its cost could not be recorded: the pool refuses every later call
+    // until an operator settles the marker. Never surface this as a key problem - re-entering the key cannot help.
+    if (spendAccountingFailed(e)) return { error: 'accounting_pending' }
+    if (spendRefused(e)) {
+      // Refused BEFORE any call: the configured model has no listed price (nothing chargeable, not a limit).
+      if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
+      if (e.reason === 'over_limit') return { error: 'spend_limit' } // the owner's spend limit: no call was made
+      return { error: 'spend_unavailable' } // busy / unsettled / unsaved reservation / count failure: nothing charged
+    }
     return { error: 'key_rejected' }
   }
 }

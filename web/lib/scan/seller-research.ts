@@ -73,8 +73,13 @@ export interface FetchedPage { url: string; kind: PageKind; title: string; text:
 // offer ref are dropped; a statement is sourced only when its quote is verbatim on the cited page. When `prior` is
 // given, its answered-question binding is carried while the answering offer still exists, and the same question is
 // never re-asked; prior reviewed/rejected corrections re-apply to the same content-keyed hypotheses.
+export const OFFER_QUESTION = 'Which of your offers is this play for?'
+export const WHO_QUESTION = 'Who buys this?'
+
 export function buildResearch(out: unknown, pages: FetchedPage[], site: string, prior?: SellerResearch | null): SellerResearch | { error: 'model_failed' } {
   if (!out || typeof out !== 'object') return { error: 'model_failed' }
+  // Site identity: another site's corrections and answers never carry into this read, even when offer slugs collide.
+  if (prior && prior.site !== site) prior = null
   const o = out as { offers?: unknown; items?: unknown }
   const raw = (Array.isArray(o.offers) ? o.offers : []).filter((x): x is { id?: unknown; name: string } => typeof (x as { name?: unknown })?.name === 'string').slice(0, 6)
   const seen = new Map<string, number>()
@@ -110,7 +115,7 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
   const answered = prior?.answered && offersKept.some(x => x.id === prior.answered!.offer) ? prior.answered : null
   // At most ONE question, and only when the answer changes targeting: several offers with no sourced buyer for them, or no sourced buyer at all.
   const sourcedBuyer = (id: string) => corrected.some(h => h.offer === id && h.kind === 'persona' && (h.status === 'sourced' || h.status === 'reviewed'))
-  let question = offersKept.length > 1 && offersKept.some(x => !sourcedBuyer(x.id)) ? 'Which of your offers is this play for?' : !offersKept.some(x => sourcedBuyer(x.id)) ? 'Who buys this?' : null
+  let question = offersKept.length > 1 && offersKept.some(x => !sourcedBuyer(x.id)) ? OFFER_QUESTION : !offersKept.some(x => sourcedBuyer(x.id)) ? WHO_QUESTION : null
   if (question && answered && answered.question === question) question = null
   return { site, pages: pages.map(p => ({ url: p.url, title: p.title, fetched_at: p.fetched_at, kind: p.kind })), offers: offersKept, hypotheses: corrected, question, answered }
 }
@@ -165,34 +170,37 @@ export function fromStored(s: IcpResearch): SellerResearch {
 
 const kindField = { persona: 'who', industry: 'industries', size: 'sizes', location: 'where', disqualifier: 'exclude' } as const
 type DraftField = 'who' | 'industries' | 'sizes' | 'where' | 'exclude'
-const near = (a: string, b: string) => { const x = norm(a), y = norm(b); return !!x && !!y && (x.includes(y) || y.includes(x)) }
+const exact = (a: string, b: string) => { const x = norm(a), y = norm(b); return !!x && x === y }
 
-// The reviewed draft IS the person's correction of the hypotheses (#379): for the play's offer, a hypothesis whose text
-// survives in the matching draft field is confirmed; one that does not is rejected. Corrections apply per offer, then the
-// effective profile is the draft PLUS the offer's confirmed/sourced statements the draft does not already say - the draft
-// always wins, another offer's statements never enter. The corrected research is returned so the decision is retained.
+// The reviewed draft is the person's authority over the hypotheses (#379):
+// - a hypothesis whose text appears EXACTLY (normalized) in the matching draft field is confirmed ('reviewed');
+// - one the person previously confirmed and has now REMOVED from the draft is 'rejected': deleting it is an explicit
+//   correction, and it stays rejected across recrawls;
+// - one they never confirmed keeps its status: absence from the draft is NOT a rejection, because the person may
+//   never have been shown it. A page-verified statement is never auto-rejected and never silently re-asked away.
+// The effective profile is the draft VERBATIM - hypothesis text is never merged into the targeting fields. Research
+// feeds retrieval and ranking only through these truthful statuses and the person's own edits to the visible fields.
+// Questions: choosing the play's offer answers ONLY the offer-selection question, and only when the offer binding is
+// unambiguous. 'Who buys this?' is answered by the person's typed words (carried in the stored research), never inferred.
 export function applyReviewedDraft(icp: Icp, offer: string): Icp {
   const stored = icp.research
   if (!stored) return icp
   const r = fromStored(stored)
-  const oid = r.offers.find(o => o.id === offerId(offer) || near(o.name, offer))?.id
-  if (!oid) return icp   // this play's offer was not found on the site read: nothing to correct or merge
-  const corrections: Correction[] = []
-  for (const h of r.hypotheses) {
-    if (h.offer !== oid || (h.status !== 'sourced' && h.status !== 'hypothesis')) continue
+  // Stable, unambiguous offer identity: exact id or exact normalized name. Zero matches (the play's offer was not
+  // found on the site read) or several ('SEO audit' vs 'SEO audit Pro', two offers with the same name) mean nothing
+  // can be bound: no corrections, no answer, the draft passes through untouched.
+  const matches = r.offers.filter(o => o.id === offerId(offer) || exact(o.name, offer))
+  const oid = matches.length === 1 ? matches[0].id : null
+  if (!oid) return icp
+  const hyps = r.hypotheses.map(h => {
+    if (h.offer !== oid) return h
     const field = kindField[h.kind as keyof typeof kindField] as DraftField | undefined
-    if (!field) continue   // offer/pain statements carry evidence, not a draft field
-    corrections.push({ offer: oid, hypothesis: h.id, action: icp[field].some(v => near(v, h.text)) ? 'confirm' : 'reject' })
-  }
-  const corrected = applyCorrections(r, corrections)
-  const t = targetingFor(corrected, oid)
-  const merge = (draft: string[], extra: string[]) => [...draft, ...extra.filter(e => !draft.some(d => near(d, e)))]
-  // Creating the play answers its pending targeting question: the chosen offer (and the reviewed draft) is the answer.
-  const answered = corrected.answered ?? (r.question ? { question: r.question, offer: oid } : null)
-  return {
-    ...icp,
-    who: merge(icp.who, t.who), industries: merge(icp.industries, t.industries), sizes: merge(icp.sizes, t.sizes),
-    where: merge(icp.where, t.where), exclude: merge(icp.exclude, t.exclude),
-    research: toStored({ ...corrected, answered }),
-  }
+    if (!field) return h   // offer/pain statements carry evidence, not a draft field
+    const inDraft = icp[field].some(v => exact(v, h.text))
+    if (inDraft) return h.status === 'reviewed' ? h : { ...h, status: 'reviewed' as const }
+    if (h.status === 'reviewed') return { ...h, status: 'rejected' as const }
+    return h
+  })
+  const answered = r.answered ?? (r.question === OFFER_QUESTION ? { question: r.question, offer: oid } : null)
+  return { ...icp, research: toStored({ ...r, hypotheses: hyps, answered }) }
 }

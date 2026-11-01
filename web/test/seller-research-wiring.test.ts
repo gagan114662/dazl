@@ -70,8 +70,9 @@ test('the reviewed draft corrects the research per offer and the effective profi
   assert.deepEqual(eff.industries, ['dental'], 'the draft wins; no contamination')
   const st = eff.research!
   const confirmed = st.hyps.find(h => h.i === 'acme-booking:persona:a1')!
-  const rejected = st.hyps.find(h => h.i === 'acme-booking:industry:a2')!
-  assert.deepEqual([confirmed.s, rejected.s], ['reviewed', 'rejected'], 'corrections persist with the play')
+  const notSeen = st.hyps.find(h => h.i === 'acme-booking:industry:a2')!
+  assert.equal(confirmed.s, 'reviewed', 'an exact draft match confirms the hypothesis')
+  assert.equal(notSeen.s, 'sourced', 'absence from the draft is NOT a rejection: a page-verified statement the person was never shown keeps its truthful status')
   assert.ok(st.hyps.some(h => h.o === 'acme-payroll' && h.s === 'sourced'), "the other offer's own evidence is retained untouched")
 })
 
