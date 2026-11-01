@@ -5,7 +5,10 @@ import { getDb } from '@/lib/db/client'
 import { getScanDb } from '@/lib/scan/service'
 import { activateLifecycleFor, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
+import { clearClaimCookie, clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
+import { claimPreview } from '@/lib/scan/preview-claim'
+import { captureError } from '@/lib/ops/errors'
+import { getMasterKey } from '@/lib/secrets'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
 import { captureError } from '@/lib/ops/errors'
@@ -60,10 +63,25 @@ export async function GET(req: NextRequest) {
   // Signing in again on a browser already signed in to this same account (a re-authentication) replaces that session
   // rather than leaving it behind; another account's session in the cookie is left alone.
   await replacedSession(req.cookies.get('dazl_session')?.value, r.user_id, db)
-  const landing = req.cookies.get(RETURN_COOKIE)?.value === 'settings' ? '/app/settings' : '/app'
+  const ret = req.cookies.get(RETURN_COOKIE)?.value
+  let landing = ret === 'settings' ? '/app/settings' : '/app'
+  const session = await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
+  // #416: returning from a preview claim. Google verified this email, and claimPreview re-checks it against the
+  // claim's recipient: a claim meant for someone else fails here and the public page shows why.
+  if (ret === 'preview') {
+    const token = req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value ?? ''
+    const me = await getSessionUser(session, db)
+    let c: Awaited<ReturnType<typeof claimPreview>> = { status: 'unknown' }
+    if (me) {
+      try { c = await claimPreview(db, getMasterKey(), token, { actorId: me.actorId, tenantId: me.tenantId }) }
+      catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:preview-claim', method: 'GET' }) }
+    }
+    landing = c.status === 'claimed' || c.status === 'already' ? `/app/preview/${c.id}` : `/preview/${encodeURIComponent(token)}?e=${c.status}`
+  }
   const res = redirectNoStore(new URL(landing, base))
-  setSessionCookie(res, base, await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) }), SESSION_TTL_S)
+  setSessionCookie(res, base, session, SESSION_TTL_S)
   clearOauthCookie(res, base)
   clearReturnCookie(res, base)
+  clearClaimCookie(res)
   return res
 }
