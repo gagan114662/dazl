@@ -16,6 +16,100 @@ export interface Icp {
   // request was searched as if it were American. ISO 3166-1 alpha-2 (PT) and ISO 639-1 (pt); absent means unknown.
   country?: string
   language?: string
+  // Source-backed seller research (#379): per-offer buyer hypotheses with verbatim quotes, URLs and fetch times,
+  // reviewed/rejected corrections and the one answered targeting question. Persisted INSIDE this JSON (no schema
+  // change); the total serialized size is bounded by ICP_JSON_BUDGET. Never trusted as fact: only sourced/reviewed
+  // items may feed retrieval and ranking, and only for their own offer.
+  research?: IcpResearch
+}
+
+// Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
+export interface ResearchedHyp { i: string; o: string; k: 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'; t: string; s: 'sourced' | 'hypothesis' | 'reviewed' | 'rejected'; u: string | null; q: string | null; at: number | null }
+export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null }
+
+// scan_jobs.icp is TEXT CHECK (char_length <= 4000); PG counts characters, JS .length counts UTF-16 units, so the
+// budget stays under the column limit with margin. The budget covers the TOTAL document: flat user constraints are
+// NEVER truncated to fit - a profile that cannot fit whole is a typed overflow the caller must surface. Only the
+// system-generated research block is fitted to the remaining room (deterministic priority, whole hypotheses only).
+export const ICP_JSON_BUDGET = 3900
+const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: 140, question: 120, answer: 100 }
+const RKINDS = new Set(['offer', 'persona', 'industry', 'size', 'location', 'disqualifier', 'pain'])
+const RSTATUS = new Set(['sourced', 'hypothesis', 'reviewed', 'rejected'])
+
+// Validates anything that claims to be persisted research; malformed entries are dropped, never trusted.
+export function normalizeResearch(raw: unknown): IcpResearch | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const r = raw as Record<string, unknown>
+  const site = clean(r.site, RCAPS.site)
+  const offers = (Array.isArray(r.offers) ? r.offers : []).map(x => {
+    const o = x as Record<string, unknown>
+    const i = clean(o?.i, RCAPS.offerId), n = clean(o?.n, RCAPS.offerName)
+    return i && n && /^[a-z0-9][a-z0-9-]*$/.test(i) ? { i, n } : null
+  }).filter((x): x is { i: string; n: string } => !!x).slice(0, RCAPS.offers)
+  if (!site || offers.length === 0) return undefined
+  const ids = new Set(offers.map(o => o.i))
+  const hyps: ResearchedHyp[] = []
+  for (const h of (Array.isArray(r.hyps) ? r.hyps : []).slice(0, RCAPS.hyps) as Record<string, unknown>[]) {
+    const i = clean(h?.i, 64), o = clean(h?.o, RCAPS.offerId), k = String(h?.k ?? ''), st = String(h?.s ?? '')
+    const t = clean(h?.t, RCAPS.text)
+    if (!i || !ids.has(o) || !RKINDS.has(k) || !RSTATUS.has(st) || !t) continue
+    const u = typeof h.u === 'string' && /^https:\/\//.test(h.u) ? h.u.slice(0, RCAPS.url) : null
+    const q = typeof h.q === 'string' ? clean(h.q, RCAPS.quote) : null
+    const at = typeof h.at === 'number' && Number.isInteger(h.at) && h.at > 0 ? h.at : null
+    hyps.push({ i, o, k: k as ResearchedHyp['k'], t, s: st as ResearchedHyp['s'], u, q: q || null, at })
+  }
+  const question = typeof r.q === 'string' && r.q.trim() ? clean(r.q, RCAPS.question) : null
+  const ansRaw = r.ans as Record<string, unknown> | null | undefined
+  const ansT = typeof ansRaw?.t === 'string' ? clean(ansRaw.t, RCAPS.answer) : ''
+  const ans = ansRaw && typeof ansRaw.q === 'string' && typeof ansRaw.o === 'string' && ids.has(clean(ansRaw.o, RCAPS.offerId))
+    ? { q: clean(ansRaw.q, RCAPS.question), o: clean(ansRaw.o, RCAPS.offerId), ...(ansT ? { t: ansT } : {}) } : null
+  return { v: 1, site, offers, hyps, q: question, ans }
+}
+
+// Deterministic research fit: whole hypotheses only, best first - reviewed (a person's decision), sourced (page-verified),
+// rejected (a person's decision), then unreviewed hypotheses - round-robin across offers so no offer is starved. If even
+// the site/offers skeleton cannot fit, the research block is omitted whole. Flat user constraints are never touched.
+function fitResearch(r: IcpResearch, room: number): IcpResearch | undefined {
+  if (JSON.stringify(r).length <= room) return r   // the common case: the whole block fits, kept verbatim
+  const skeleton = { v: 1 as const, site: r.site, offers: r.offers, hyps: [] as ResearchedHyp[], q: r.q, ans: r.ans }
+  if (JSON.stringify(skeleton).length > room) return undefined
+  const rank = (s: ResearchedHyp['s']) => s === 'reviewed' ? 0 : s === 'sourced' ? 1 : s === 'rejected' ? 2 : 3
+  const byOffer = new Map<string, ResearchedHyp[]>()
+  for (const h of [...r.hyps].sort((a, b) => rank(a.s) - rank(b.s))) { const l = byOffer.get(h.o) ?? []; l.push(h); byOffer.set(h.o, l) }
+  const order = [...byOffer.values()]
+  const out: IcpResearch = { ...skeleton }
+  for (let i = 0; ; i++) {
+    let added = false
+    for (const l of order) {
+      if (i >= l.length) continue
+      const cand = { ...out, hyps: [...out.hyps, l[i]] }
+      if (JSON.stringify(cand).length > room) continue   // a hypothesis persists whole or not at all; try the next one
+      out.hyps = cand.hyps; added = true
+    }
+    if (!added) break
+  }
+  return out
+}
+
+// Model-facing prompts carry the canonical FLAT profile only: the research review block (sourced, unapproved or
+// rejected statements) is review provenance for the person and the store, never model targeting input (#379).
+export const flatProfile = (icp: unknown): unknown => {
+  if (!icp || typeof icp !== 'object' || !('research' in (icp as Record<string, unknown>))) return icp
+  const { research: _omit, ...flat } = icp as Record<string, unknown>
+  return flat
+}
+
+export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' }
+// Total-budget enforcement for every icp write. Research that cannot fit whole is omitted explicitly (never partially
+// parsed back); flat user constraints overflowing on their own are a typed refusal, never silent truncation.
+export function budgetedIcp(icp: Icp): IcpBudget {
+  const { research, ...flat } = icp
+  if (JSON.stringify(flat).length > ICP_JSON_BUDGET) return { ok: false, reason: 'profile_too_large' }
+  if (!research) return { ok: true, icp, json: JSON.stringify(icp) }
+  const room = ICP_JSON_BUDGET - JSON.stringify(flat).length - 16   // the ,"research":... wrapper
+  const fitted = fitResearch(research, room)
+  const out = fitted ? { ...icp, research: fitted } : flat
+  return { ok: true, icp: out, json: JSON.stringify(out) }
 }
 
 export const MAX_QUERY = 600
@@ -50,7 +144,8 @@ export function normalizeIcp(raw: unknown): Icp | null {
   const country = isoCountry(r.country)
   const language = typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()) ? r.language.trim().toLowerCase() : null
   const win = typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365 ? r.window_days : null
-  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}) }
+  const research = normalizeResearch(r.research)
+  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}) }
 }
 
 export function icpPrompt(query: string, seller?: string): string {

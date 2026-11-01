@@ -17,6 +17,7 @@ import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, d
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
 import PlayResearch from './play-research'
+import ResearchReview, { asResearchBlock } from '../research-review'
 import HiringFeed from './hiring-feed'
 import QualifyPreview from './qualify-preview'
 import EvidenceRecheck from './evidence-recheck'
@@ -47,7 +48,7 @@ const REJECT_PRESETS = ['Not a fit', 'Wrong company', 'Wrong contact', 'Already 
 const rejectReason = (why: string) => { const t = why.replace(/\s+/g, ' ').trim().slice(0, 120); return t ? `Rejected: ${t}` : 'Rejected' }
 const isRejection = (r: string | null | undefined) => !!r && /^Rejected(:|$)/.test(r)
 interface Lead { timing?: 'proof_backed' | 'unconfirmed'; timing_reason?: string | null; day_verified?: boolean; window_missed?: boolean; timing_note?: string | null; evidence_copy_id?: string | null; evidence_purged_at?: number | null; evidence_origin?: string | null; own_fetch_failure?: string | null; discovered_via?: string | null; discovered_via_link?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; window_held?: boolean; stored_intent?: number | null; stored_why?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
-interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[]; country?: string; language?: string; window_days?: number }
+interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[]; country?: string; language?: string; window_days?: number; research?: unknown }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number }
 interface Monitor { id: string; query: string; interval_hours: number; enabled: number; paused_reason: string | null; next_run_at: number | null; last_new_count: number | null; run_count: number }
@@ -352,7 +353,11 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: siteUrl.trim() }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first - filling from your website runs on your key.' : j.error === 'invalid' || j.error === 'not_public' ? 'That address is not a public website.' : j.error === 'js_only' || j.error === 'not_html' ? 'We could not read enough text from that page (it may need JavaScript). Try your about page, or describe your buyers above.' : j.error === 'blocked' || j.error === 'timeout' ? 'That site did not let us read it. Describe your buyers above instead.' : 'Could not read that site. Describe your buyers above instead.')); return }
-      setDraft(j.icp)
+      const filled = j.icp as Icp
+      // A 'Who buys this?' answer carried across a recrawl is the person's own words: keep it visible in the draft.
+      const ansT = asResearchBlock((filled as { research?: unknown }).research)?.ans?.t?.trim()
+      if (ansT && !filled.who.some(x => x.trim().toLowerCase() === ansT.toLowerCase())) filled.who = [...filled.who, ansT]
+      setDraft(filled)
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
       setDraftNote(`Filled from ${host}. Edit anything that is off, then run the scan.`)
@@ -751,6 +756,7 @@ export default function LeadsClient() {
               <textarea className={`${input} w-full mb-2`} rows={2} value={draft[k].join('\n')} onChange={e => setDraft({ ...draft, [k]: lines(e.target.value) })} />
             </div>
           ))}
+          {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} />}
           <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}

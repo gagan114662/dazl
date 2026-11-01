@@ -4,7 +4,8 @@ import { cleanText } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
-import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
+import { MAX_QUERY, budgetedIcp, normalizeIcp } from '@/lib/scan/icp'
+import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { countActiveJobs, createJob, createQueryJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
 import { planQuota, readPlan, scansThisMonth } from '@/lib/plans'
@@ -62,6 +63,22 @@ export async function POST(req: NextRequest) {
     const e = effectiveOffer({ seller, query }, tenant)
     if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
   }
+
+  // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's
+  // offer join the effective profile the runner retrieves and grades with; another offer's never do. The binding offer
+  // is the play's own when stated, else the same effective offer the play will run with (seller snapshot, then the
+  // tenant's positioning/profile): a play that relies on the profile offer still gets the review semantics. The total
+  // budget is enforced here, BEFORE anything is reserved, queued or counted: an oversized profile is refused whole,
+  // never silently truncated (lib/scan/icp.ts budgetedIcp).
+  let bindOffer = offer
+  if (icp && !bindOffer) {
+    let tenantContext: string | null
+    try { tenantContext = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+    bindOffer = effectiveOffer({ seller, query }, tenantContext).offer ?? ''
+  }
+  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer) : icp
+  const sized = effective ? budgetedIcp(effective) : null
+  if (sized && !sized.ok) return NextResponse.json({ error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
 
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not
   // strictly valid is rejected, never ignored, so a caller expecting a restricted run is never widened into a full one.
@@ -132,7 +149,7 @@ export async function POST(req: NextRequest) {
     if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
     const jid = job_id
     db.transaction(() => {
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
       // Kept with the job so the finished scan can show actual against what was confirmed.
       if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), jid)

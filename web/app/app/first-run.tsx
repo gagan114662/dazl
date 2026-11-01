@@ -11,6 +11,7 @@ import BrainGraph from './onboarding/brain-graph'
 import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
+import ResearchReview, { asResearchBlock, type ResearchBlock } from './research-review'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import { calendarDay } from '@/lib/day'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
@@ -58,6 +59,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // replaced when the profile changes, so the box never keeps a sentence built from an older profile.
   const [askIsSuggestion, setAskIsSuggestion] = useState(true)
   const [busy, setBusy] = useState(false)
+  // The source-backed research block from the website read (#379): carried untouched through the reviewed profile
+  // into the scan, so the play keeps its provenance and per-offer corrections.
+  const [research, setResearch] = useState<unknown>(null)
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
   // The brain: facts from the website read, revealed one by one while it builds.
@@ -100,7 +104,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const brain: Brain = { summary: summary || sells, who: list(who), industries: list(industries), where: list(where), signals: list(signals) }
   const plays = useMemo(() => suggestPlays(brain), [summary, sells, who, industries, where, signals]) // eslint-disable-line react-hooks/exhaustive-deps
   // The reviewed profile exactly as shown in step 2; it goes to the search with the sentence (no hidden fields).
-  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude) }
+  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude), ...(research ? { research } : {}) }
 
   // Watch the first play: its status every few seconds until it settles, then its ready leads (the same gates as Home).
   const firstId = first?.id ?? null, firstStatus = first?.status ?? null
@@ -141,6 +145,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       }
       if (j.sells) setSells(String(j.sells))
       fillBuyer(j.icp ?? {})
+      const rb = asResearchBlock((j.icp as { research?: unknown })?.research)
+      setResearch(rb)
+      // A 'Who buys this?' answer carried across a recrawl is the person's own words: it belongs in the visible field.
+      const ansT = rb?.ans?.t?.trim()
+      if (ansT) setWho(prev => prev.split(';').map(x => x.trim().toLowerCase()).includes(ansT.toLowerCase()) ? prev : prev.trim() ? `${prev}; ${ansT}` : ansT)
       try { setReadFrom(new URL(j.source).hostname) } catch { setReadFrom('your website') }
       setWebsite(url)
       const f = brainFacts({ ...j, business_name: bizName })
@@ -383,6 +392,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
         <h2 className="text-xl font-semibold">Here&apos;s what we think you sell and who buys it</h2>
         <p className="text-[#555]">{readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.</p>
+        {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#777]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
         <label className="flex flex-col gap-1">Who buys it<textarea className="field" rows={2} maxLength={400} value={summary} onChange={e => setSummary(e.target.value)} placeholder="e.g. Independent dental practices with 2-10 chairs" /></label>

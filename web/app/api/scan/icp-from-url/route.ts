@@ -3,6 +3,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { icpFromWebsite } from '@/lib/scan/icp-from-site'
+import { latestQueryJob } from '@/lib/scan/store'
 import { denied } from '@/lib/workspace-access'
 
 // Turns the user's own homepage into an editable ICP draft (returned, never saved).
@@ -18,9 +19,22 @@ export async function POST(req: NextRequest) {
   let url = typeof body?.url === 'string' ? body.url.trim().slice(0, 300) : ''
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`
   if (url.length < 5) return NextResponse.json({ error: 'invalid' }, { status: 400 })
-  const out = await icpFromWebsite(getScanDb(), user.tenantId, url)
+  // Prior research carries the answered-question binding and reviewed corrections into a recrawl (#379) - only for
+  // the SAME site (double-guard on the submitted URL's host; buildResearch re-checks against the fetched final URL).
+  let prior = null
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '')
+    const prev = latestQueryJob(getScanDb(), user.tenantId)
+    let pj: unknown = null; try { pj = prev?.icp ? JSON.parse(prev.icp) : null } catch { pj = null }
+    const pr = pj && typeof pj === 'object' ? (pj as { research?: { site?: unknown } | null }).research : null
+    prior = pr && typeof pr === 'object' && pr.site === host ? (pr as never) : null
+  } catch { prior = null }
+  const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { prior })
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
+    if (out.error === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.' }, { status: 503 })
+    if (out.error === 'accounting_pending') return NextResponse.json({ error: 'accounting_pending', message: 'The cost of an earlier AI call could not be recorded, so paid generation is paused until that record settles. That call may still be billed to your key; no new charge was made for this request.' }, { status: 503 })
+    if (out.error === 'spend_unavailable') return NextResponse.json({ error: 'spend_unavailable', message: 'Your spend budget could not be checked just now, so nothing was generated and nothing was charged. Try again shortly.' }, { status: 503 })
     const status = out.error === 'no_api_key' || out.error === 'key_unreadable' || out.error === 'invalid' || out.error === 'not_public' ? 400
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
     return NextResponse.json({ error: out.error }, { status })

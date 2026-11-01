@@ -19,6 +19,12 @@ export function knownErrorCopy(code: unknown): string | null {
       return 'The scan service is having trouble right now. Try again later.'
     case 'invalid_budget':
       return 'The spend limit was not accepted.'
+    case 'model_unpriced':
+      return 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.'
+    case 'accounting_pending':
+      return 'The cost of an earlier AI call could not be recorded, so paid generation is paused until that record settles. That call may still be billed to your key. No new charge was made for this request.'
+    case 'spend_unavailable':
+      return 'Your spend budget could not be checked just now, so nothing was generated and nothing was charged. Try again shortly.'
     default:
       return null
   }

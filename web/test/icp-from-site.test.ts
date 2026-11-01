@@ -138,3 +138,104 @@ test('redirects cannot introduce credentials or a nonstandard port', async () =>
     assert.equal(calls, 1)
   }
 })
+
+// ---------- #379: multi-page seller research through icpFromWebsite ----------
+const SITE2: Record<string, string> = {
+  'https://multi.example/': `<html><title>Multi</title><body><h1>${'Multi builds practice software. '.repeat(20)}</h1><a href="/pricing">Pricing</a><a href="/customers">Customers</a></body></html>`,
+  'https://multi.example/pricing': `<html><body>${'Booking starts at $49 per location per month. Payroll is priced per employee for clinics with 10 to 50 staff. '.repeat(5)}</body></html>`,
+  'https://multi.example/customers': `<html><body>${'Case study: Harbor Dental, a four-chair dental practice, cut no-shows with Multi Booking. '.repeat(5)}</body></html>`,
+}
+const multiFetch = (async (url: unknown) => htmlResponse(SITE2[String(url)] ?? SITE2['https://multi.example/'])) as unknown as typeof fetch
+const COMBINED = JSON.stringify({
+  sells: 'Practice software for clinics',
+  draft: { summary: 'Clinic operators who run bookings and payroll.', who: ['practice managers'], industries: ['dental practices'], sizes: [], where: [], signals: ['hiring front-desk staff'], exclude: [] },
+  offers: [{ id: 'o1', name: 'Multi Booking' }, { id: 'o2', name: 'Multi Payroll' }],
+  items: [
+    { offer: 'o1', kind: 'persona', text: 'practice managers', url: 'https://multi.example/customers', quote: 'Harbor Dental, a four-chair dental practice', inferred: false },
+    { offer: 'o2', kind: 'size', text: '10 to 50 staff', url: 'https://multi.example/pricing', quote: 'clinics with 10 to 50 staff', inferred: false },
+    { offer: 'o2', kind: 'location', text: 'Texas', url: 'https://multi.example/pricing', quote: 'available across Texas', inferred: false },
+  ],
+})
+const combinedProvider: Provider = { research: async () => { throw new Error('unused') }, complete: async () => COMBINED }
+
+test('icpFromWebsite: a multiproduct site whose homepage omits the buyer yields a draft plus per-offer source-backed hypotheses', async () => {
+  const out = await icpFromWebsite(setup(), 'A', 'https://multi.example', { master, lookup: pubLookup, fetchImpl: multiFetch, providers: { anthropic: combinedProvider } })
+  assert.ok('icp' in out, JSON.stringify(out))
+  if (!('icp' in out)) return
+  assert.match(out.icp.summary, /Clinic operators/)
+  const r = out.icp.research!
+  assert.ok(r, 'research block attached')
+  assert.deepEqual(r.offers.map(o => o.i), ['multi-booking', 'multi-payroll'])
+  const persona = r.hyps.find(h => h.k === 'persona')!
+  assert.deepEqual([persona.s, persona.o, persona.u], ['sourced', 'multi-booking', 'https://multi.example/customers'])
+  assert.ok(persona.q && SITE2['https://multi.example/customers'].includes(persona.q), 'verbatim quote retained')
+  const size = r.hyps.find(h => h.k === 'size')!
+  assert.equal(size.s, 'sourced', 'a quoted size is sourced')
+  assert.ok(!r.hyps.some(h => h.k === 'location'), 'an unquoted place is unknown and unknowns are never persisted or shown as fact')
+  assert.ok(!r.hyps.some(h => h.s === ('unknown' as never)), 'unknowns are not persisted')
+})
+
+test('icpFromWebsite: a sub-page blocked at a guarded redirect is skipped; the draft and the other pages still land', async () => {
+  const redirecting = (async (url: unknown) => String(url).endsWith('/pricing')
+    ? htmlResponse('', 302, 'text/html', { location: 'https://127.0.0.1/internal' })
+    : htmlResponse(SITE2[String(url)] ?? SITE2['https://multi.example/'])) as unknown as typeof fetch
+  const out = await icpFromWebsite(setup(), 'A', 'https://multi.example', { master, lookup: pubLookup, fetchImpl: redirecting, providers: { anthropic: combinedProvider } })
+  assert.ok('icp' in out, JSON.stringify(out))
+  if (!('icp' in out)) return
+  assert.match(out.icp.summary, /Clinic operators/, 'the draft never fails on a skipped page')
+  assert.ok(out.icp.research, 'research still built from the readable pages')
+})
+
+test('icpFromWebsite: the multi-page read stays inside its latency budget; budget exhausted means homepage-only evidence', async () => {
+  const out = await icpFromWebsite(setup(), 'A', 'https://multi.example', { master, lookup: pubLookup, fetchImpl: multiFetch, providers: { anthropic: combinedProvider }, researchTimeMs: 0 })
+  assert.ok('icp' in out, JSON.stringify(out))
+  if (!('icp' in out)) return
+  assert.match(out.icp.summary, /Clinic operators/, 'the draft still returns from the homepage alone')
+})
+
+test('icpFromWebsite: garbage research output costs the draft nothing - it just has no provenance block', async () => {
+  const noResearch: Provider = { research: async () => { throw new Error('unused') }, complete: async () => JSON.stringify({ sells: 'x', draft: { summary: 'Sales ops.', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }, offers: 'not-an-array', items: 42 }) }
+  const out = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: noResearch } })
+  assert.ok('icp' in out, JSON.stringify(out))
+  if (!('icp' in out)) return
+  assert.equal(out.icp.summary, 'Sales ops.')
+  assert.equal(out.icp.research, undefined)
+})
+
+test('hard byte bound: CJK-heavy 6-page prompt fits RESEARCH_PROMPT_MAX_BYTES and keeps the homepage', async () => {
+  const { fitPromptBytes, RESEARCH_PROMPT_MAX_BYTES } = await import('../lib/scan/icp-from-site.ts')
+  const pages = [{ url: 'https://a.example/', kind: 'home', title: 't', text: '歯'.repeat(3500) }]
+  for (let i = 0; i < 5; i++) pages.push({ url: `https://a.example/p${i}`, kind: 'pricing', title: 't', text: '科'.repeat(3500) })
+  const out = fitPromptBytes('a.example', pages)
+  assert.ok(Buffer.byteLength(out) <= RESEARCH_PROMPT_MAX_BYTES)
+  assert.ok(out.includes('https://a.example/'))
+})
+
+test('hard byte bound: ordinary English 6-page prompt is kept verbatim', async () => {
+  const { fitPromptBytes, RESEARCH_PROMPT_MAX_BYTES, } = await import('../lib/scan/icp-from-site.ts')
+  const pages = [{ url: 'https://a.example/', kind: 'home', title: 'Home', text: 'we sell booking software to dental practices '.repeat(40) }]
+  for (let i = 0; i < 5; i++) pages.push({ url: `https://a.example/p${i}`, kind: 'product', title: 'P', text: 'booking for clinics '.repeat(40) })
+  const out = fitPromptBytes('a.example', pages)
+  assert.ok(Buffer.byteLength(out) <= RESEARCH_PROMPT_MAX_BYTES)
+  for (const p of pages) assert.ok(out.includes(p.url))
+})
+
+test('icpFromWebsite: SpendAccountingFailed surfaces as accounting_pending, never key_rejected', async () => {
+  const { SpendAccountingFailed } = await import('../lib/llm/spend-guard.ts')
+  const failing: Provider = { research: async () => { throw new Error('unused') }, complete: async () => { throw new SpendAccountingFailed('settle_not_saved') } }
+  const out = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: failing } })
+  assert.ok('error' in out)
+  if ('error' in out) assert.equal(out.error, 'accounting_pending', 'a possibly-billed call must not invite key re-entry')
+})
+
+test('icpFromWebsite: model_unpriced refusal is distinct from spend_limit; genuine limit stays spend_limit', async () => {
+  const { SpendRefused } = await import('../lib/llm/spend-guard.ts')
+  const unpriced: Provider = { research: async () => { throw new Error('unused') }, complete: async () => { throw new SpendRefused('model_unpriced') } }
+  const out1 = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: unpriced } })
+  assert.ok('error' in out1)
+  if ('error' in out1) assert.equal(out1.error, 'model_unpriced', 'an unpriced model is not a reached spend limit')
+  const limited: Provider = { research: async () => { throw new Error('unused') }, complete: async () => { throw new SpendRefused('over_limit') } }
+  const out2 = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: limited } })
+  assert.ok('error' in out2)
+  if ('error' in out2) assert.equal(out2.error, 'spend_limit', 'the genuine limit keeps its accurate surface')
+})

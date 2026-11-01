@@ -1,5 +1,5 @@
 // Runs the billing path on a fresh Postgres schema with two tenants (see test/pg-billing.test.ts). Stubbed: no network.
-import { test } from 'node:test'
+import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { setUser } from './tenant-route-db.ts'
 import { pgDb, setDb } from '../../lib/db/client.ts'
@@ -16,7 +16,11 @@ test('billing on Postgres, two tenants', async () => {
   try {
     await runPgMigrations(db.pool)
     setDb(db)
-    const now = new Date(Date.UTC(2026, 9, 15))
+    // The routes read the CURRENT UTC month (lib/plans.ts monthStartS) from the in-process JS clock; the whole billing
+    // path (fixtures and both route handlers) shares it, so freezing Date at one instant keeps fixture and routes in the
+    // same month with no boundary race and no sleeping into the next month. Only Date is mocked - real timers stay live.
+    mock.timers.enable({ apis: ['Date'], now: Date.now() })
+    const now = new Date()
     const month = monthStartS(now)
     // plans: A on Pro and past_due, B on Free (no row)
     await savePlan(db, A, 'pro')
@@ -65,5 +69,5 @@ test('billing on Postgres, two tenants', async () => {
     assert.ok(!JSON.stringify(seen[B]).includes('model-a') && !JSON.stringify(seen[B]).includes('cus_a') && !JSON.stringify(seen[B]).includes('past_due'))
     assert.ok(!JSON.stringify(seen[A]).includes('model-b'))
     console.log('PG_BILLING ok')
-  } finally { await db.close(); await s.drop() }
+  } finally { mock.timers.reset(); await db.close(); await s.drop() }
 })
