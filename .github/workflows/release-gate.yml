@@ -2,7 +2,8 @@ name: release-gate
 # What must hold before a commit is deployed (issue #362; web/docs/DEPLOY.md "Release gate"). Runs on every pull request
 # touching web/ or ops/, and on every push to main, so the exact commit Instinct deploys has a run of its own:
 # - browser: the production build, then every production smoke check against it in Chromium: pages and chunks load,
-#   chunk-load recovery, the /app sign-in gate, the two-tenant leak check, release identity plus readiness, and the
+#   chunk-load recovery, the /app sign-in gate, the two-tenant leak check, the scan view transparency UI
+#   harness on fenced fixture data, release identity plus readiness, and the
 #   recovery drill (docs/RECOVERY.md) on a synthetic backup with the app started on the restored copy;
 # - migrations: the previous release's SQLite database (filled by its own synthetic staging seed and a stored key) is
 #   migrated by this release keeping every row and value, a second migration changes nothing, the previous release's
@@ -60,6 +61,16 @@ jobs:
       - name: Two tenants, no cross-tenant data on any route or page
         if: success() || failure()
         run: npm run test:smoke:tenants
+      - name: "Enrichment fallback opt-in: renders off by default, toggle persists (fenced)"
+        if: success() || failure()
+        run: npm run test:smoke:enrichment
+      - name: Enrichment fallback screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enrichment-fallback-${{ github.event.pull_request.head.sha || github.sha }}
+          path: web/preview/enrichment-fallback/*.png
+          retention-days: 30
       - name: Inbox UI - filters, paging and the bounce_review badge
         if: success() || failure()
         run: mkdir -p /tmp/inbox-shots && SHOTS=/tmp/inbox-shots node --experimental-strip-types test/ui/inbox.ui.mjs
@@ -76,6 +87,9 @@ jobs:
       - name: Seller intelligence Add/Dismiss/Restore production UI (fenced)
         if: success() || failure()
         run: node test/smoke/intelligence.smoke.mjs && node test/smoke/intelligence-chain.smoke.mjs
+      - name: Whole website-research review draft and estimated submission (fenced)
+        if: success() || failure()
+        run: SHOTS=preview/leads-research-review node test/ui/leads-research-review.ui.mjs
       - name: Upload seller intelligence UI pixels
         if: always()
         uses: actions/upload-artifact@v4
@@ -84,6 +98,25 @@ jobs:
           path: |
             web/preview/intelligence
             web/preview/intelligence-chain
+            web/preview/leads-research-review
+          if-no-files-found: error
+      # Scan view transparency: the unmodified fixture-fenced UI harness (test/ui/scan-transparency.ui.mjs)
+      # must render real route bytes - provider failures, cost per verification pass, honest unavailable
+      # states. The harness exits 0 on SKIP when esbuild/playwright are missing, so the grep makes the
+      # gate fail-closed: a SKIP is a failed check here, never a silent pass.
+      - name: Scan view provider-failure transparency and per-verification-pass cost UI (fenced fixture)
+        if: success() || failure()
+        run: |
+          npm install --no-save esbuild playwright@1.63.0
+          SHOT_A=preview/scan-transparency/branch-a.png SHOT_B=preview/scan-transparency/branch-b.png SHOT_C=preview/scan-transparency/telemetry-unknown.png \
+            node test/ui/scan-transparency.ui.mjs 2>&1 | tee /tmp/scan-transparency-ui.log
+          ! grep -q '^SKIP' /tmp/scan-transparency-ui.log
+      - name: Upload scan transparency UI pixels
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-transparency-ui-${{ github.event.pull_request.head.sha || github.sha }}
+          path: web/preview/scan-transparency
           if-no-files-found: error
       - name: Release identity and readiness
         if: success() || failure()

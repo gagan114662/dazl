@@ -3,7 +3,10 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { migrateCommenterImport, commenterBatchStatus, deleteCommenterBatch, deriveName, importCommenters, normalizeProfileUrl, parseImport, MAX_PROFILES } from '../lib/scan/commenter-import.ts'
+import { migrateCommenterImport, commenterBatchStatus, deleteCommenterBatch, deriveName, enrichCommenters, importCommenters, normalizeProfileUrl, parseImport, MAX_PROFILES } from '../lib/scan/commenter-import.ts'
+import { createJob } from '../lib/scan/store.ts'
+import { saveCredential } from '../lib/connectors/store.ts'
+import { randomBytes } from 'node:crypto'
 
 function setup() {
   const db = new Database(':memory:')
@@ -92,4 +95,41 @@ test('deleteCommenterBatch: removes enrichments, leads, rows, job and batch; ten
   for (const t of ['lead_enrichments', 'leads', 'commenter_rows', 'commenter_batches', 'scan_jobs']) {
     assert.equal((db.prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n, 0, t)
   }
+})
+
+// #382: the commenter-import paid calls share the waterfall's atomic reservation primitive (this route holds no
+// job lease, so a double-run must never pay twice). Stubbed providers; no network, no credits.
+function seedBatch() {
+  const db = setup()
+  const master = randomBytes(32)
+  const jobId = createJob(db, 'A', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('l1', ?, '', 'Acme', 'acme.com', 'opened', 'https://x.example/1')").run(jobId)
+  db.prepare("INSERT INTO commenter_batches (id, user_id, context, total, note, created_at, job_id) VALUES ('b1', 'A', 't', 1, NULL, 1, ?)").run(jobId)
+  saveCredential(db, 'A', 'enrich:apollo', 'test-apollo-key-1234', master)
+  return { db, master, jobId }
+}
+const apolloStub = (calls: { org: number; people: number }) => (async (u: RequestInfo | URL) => {
+  const s = String(u)
+  if (s.includes('organizations')) { calls.org++; return new Response(JSON.stringify({ organization: { name: 'Acme', website_url: 'https://acme.com', city: 'New York', state: 'NY', country: 'United States' } }), { status: 200 }) }
+  calls.people++; return new Response(JSON.stringify({ people: [{ name: 'Commenter Person', title: 'VP', linkedin_url: 'https://profiles.example/c', organization: { name: 'Acme', primary_domain: 'acme.com' } }] }), { status: 200 })
+}) as typeof fetch
+
+test('enrichCommenters: a replay (re-import / double-run) never repays - the second run makes 0 provider calls', async () => {
+  const { db, master } = seedBatch()
+  const calls = { org: 0, people: 0 }
+  await enrichCommenters(db, 'A', 'b1', { fetchImpl: apolloStub(calls), master })
+  assert.equal(calls.org, 1); assert.equal(calls.people, 1)
+  await enrichCommenters(db, 'A', 'b1', { fetchImpl: apolloStub(calls), master })
+  assert.equal(calls.org, 1, 'terminal org outcome replays free')
+  assert.equal(calls.people, 1, 'terminal people outcome replays free')
+})
+
+test('enrichCommenters: a stale reserved org row (crashed pass) skips the paid org call but still runs the free people search', async () => {
+  const { db, master, jobId } = seedBatch()
+  db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES ('r1', 'A', 'enrich:apollo', ?, 'org Acme', 'reserved', 0)").run(jobId)
+  const calls = { org: 0, people: 0 }
+  await enrichCommenters(db, 'A', 'b1', { fetchImpl: apolloStub(calls), master })
+  assert.equal(calls.org, 0, 'the possibly-paid org call is never repeated')
+  assert.equal(calls.people, 1, 'the 0-credit people search still runs under its own gate')
 })
