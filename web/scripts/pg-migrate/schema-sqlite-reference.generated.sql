@@ -30,6 +30,12 @@ CREATE TABLE autopilot_settings (
       daily_cap INTEGER NOT NULL DEFAULT 20 CHECK (daily_cap BETWEEN 1 AND 50)
     , followups_enabled INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE bounce_records (
+      tenant_id TEXT NOT NULL, outreach_message_id TEXT NOT NULL, recipient TEXT NOT NULL,
+      status TEXT NOT NULL, source TEXT NOT NULL, source_gmail_id TEXT, created_at INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, outreach_message_id, recipient)
+    );
+
 CREATE TABLE calcom_bookings (
       tenant_id      TEXT NOT NULL,
       booking_uid    TEXT NOT NULL,
@@ -281,6 +287,8 @@ CREATE TABLE leads (
       created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), stage TEXT, watch_new INTEGER NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at INTEGER, confidence INTEGER CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at INTEGER, timing_note TEXT CHECK (timing_note IS NULL OR length(timing_note) <= 300), published_at TEXT, evidence_copy_id TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR length(company_domain) <= 253), quarantined_at INTEGER, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR length(quarantine_reason) <= 300), fit INTEGER CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent INTEGER CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action INTEGER CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR length(why) <= 600), signals TEXT CHECK (signals IS NULL OR length(signals) <= 1000), seen_before INTEGER NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT, event_date_proof TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured')), event_date_proof_note TEXT CHECK (event_date_proof_note IS NULL OR length(event_date_proof_note) <= 200), insert_seq INTEGER,
       CHECK (name <> '' OR company <> '')
     );
+
+CREATE TABLE mail_bounce_scan_consent (tenant_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));
 
 CREATE TABLE mail_read_consent (tenant_id TEXT PRIMARY KEY, version TEXT NOT NULL, accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));
 

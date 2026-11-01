@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, recentInbound, revokeReadConsent, syncReplies } from '@/lib/outreach/replies'
+import { acceptBounceScanConsent, BOUNCE_SCAN_CONSENT_TEXT, BOUNCE_SCAN_CONSENT_VERSION, hasBounceScanConsent, revokeBounceScanConsent } from '@/lib/outreach/bounce-scan'
 import { followupsEnabled, runFollowups, setFollowups } from '@/lib/outreach/followups'
 import { getState } from '@/lib/outreach/autopilot'
 import { sameOriginJson } from '@/lib/same-origin'
@@ -12,7 +13,7 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
   const acc = db.prepare('SELECT read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number; status: string } | undefined
-  return NextResponse.json({ available: true, gmail_connected: !!acc, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.tenantId) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.tenantId), autopilot_on: getState(db, user.tenantId).enabled, inbound: recentInbound(db, user.tenantId) })
+  return NextResponse.json({ available: true, gmail_connected: !!acc, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.tenantId) }, bounce_scan: { version: BOUNCE_SCAN_CONSENT_VERSION, text: BOUNCE_SCAN_CONSENT_TEXT, accepted: hasBounceScanConsent(db, user.tenantId) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.tenantId), autopilot_on: getState(db, user.tenantId).enabled, inbound: recentInbound(db, user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
@@ -27,6 +28,10 @@ export async function POST(req: NextRequest) {
       if (body.accept !== true || body.version !== READ_CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
       acceptReadConsent(db, user.tenantId); return NextResponse.json({ ok: true })
     case 'revoke': revokeReadConsent(db, user.tenantId); return NextResponse.json({ ok: true })
+    case 'bounce_scan_on':
+      if (body.accept !== true || body.version !== BOUNCE_SCAN_CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
+      acceptBounceScanConsent(db, user.tenantId); return NextResponse.json({ ok: true })
+    case 'bounce_scan_off': revokeBounceScanConsent(db, user.tenantId); return NextResponse.json({ ok: true })
     case 'followups_off': setFollowups(db, user.tenantId, false); return NextResponse.json({ ok: true })
     case 'followups_on': {
       const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
