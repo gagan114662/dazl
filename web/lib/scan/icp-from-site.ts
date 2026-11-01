@@ -18,7 +18,7 @@ const ENTITIES: [RegExp, string][] = [[/&amp;/g, '&'], [/&lt;/g, '<'], [/&gt;/g,
 const unescape = (s: string) => ENTITIES.reduce((t, [re, v]) => t.replace(re, v), s)
 
 // Title, meta description and visible text, scripts/styles/comments removed.
-export function extractSiteText(html: string): { title: string; text: string } {
+export function extractSiteFacts(html: string): { title: string; description: string; text: string } {
   const title = unescape(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
   const metaTag = /<meta[^>]+name=["']description["'][^>]*>/i.exec(html)?.[0] ?? /<meta[^>]+content=["'][^"']*["'][^>]+name=["']description["'][^>]*>/i.exec(html)?.[0] ?? ''
   const desc = unescape(/content=["']([\s\S]*?)["']/i.exec(metaTag)?.[1] ?? '').trim().slice(0, 500)
@@ -29,8 +29,18 @@ export function extractSiteText(html: string): { title: string; text: string } {
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<[^>]+>/g, ' ')
   const text = unescape(visible).replace(/\s+/g, ' ').trim().slice(0, 5000)
-  return { title: [title, desc].filter(Boolean).join(' - '), text }
+  return { title, description: desc, text }
 }
+// Back-compatible view: title and description joined, with the visible text.
+export function extractSiteText(html: string): { title: string; text: string } {
+  const f = extractSiteFacts(html)
+  return { title: [f.title, f.description].filter(Boolean).join(' - '), text: f.text }
+}
+
+// What a keyless account gets from "Read my site" (#409): only facts actually extracted from the fetched page, each
+// labeled with the URL it came from. No inferred buyers, offers or product names - the reviewable skeleton stays the
+// user's to fill. The fetch itself is the only work: SSRF-guarded, size/time bounded, never a model call.
+export interface FreeSiteRead { free: true; source: string; site: string; facts: { kind: 'title' | 'description'; text: string; source: string }[] }
 
 // One call, all fetched pages: the flat editable draft PLUS the per-offer source-backed hypotheses (#379). Multi-page
 // evidence fixes the homepage-only miss; the hypotheses carry their own proof and are never trusted without a verbatim quote.
@@ -73,31 +83,38 @@ Rules: use every page, not just the first. Only what the pages support, no inven
 
 export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider>; prior?: IcpResearch | null; researchTimeMs?: number }
 
-export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string; sells: string } | { error: IcpFromSiteError }> {
-  // Key first: no key of their own, no fetch and no call. This feature never uses the
-  // trial or an operator key - the cost always lands on the tenant's own key.
+export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string; sells: string } | FreeSiteRead | { error: IcpFromSiteError }> {
+  // Fetch first (#409): reading the public page is free and needs no AI key. Only the model step below does, and it
+  // never uses the trial or an operator key - the cost always lands on the tenant's own key.
+  const started = Date.now()
+  const page = await fetchPublicHtml(rawUrl, deps)
+  if ('error' in page) return page
+  const facts = extractSiteFacts(page.html)
+  if (facts.text.length < 200) return { error: 'js_only' } // nothing readable without running JS
+  const home = { title: [facts.title, facts.description].filter(Boolean).join(' - '), text: facts.text }
+
+  let site = ''
+  try { site = new URL(page.finalUrl).hostname.toLowerCase().replace(/^www\./, '') } catch { return { error: 'invalid' } }
+
   const vendor = pickVendor(db, tenantId)
-  if (!vendor) return { error: 'no_api_key' }
-  const read = readKey(db, tenantId, vendor, deps.master)
-  if (read.unreadable) return { error: 'key_unreadable' }
-  if (!read.key) return { error: 'no_api_key' }
+  const read = vendor ? readKey(db, tenantId, vendor, deps.master) : null
+  if (read?.unreadable) return { error: 'key_unreadable' }
+  if (!vendor || !read?.key) {
+    // No key of their own: return the free read - only what the page itself states, each fact with its source URL.
+    const out: FreeSiteRead['facts'] = []
+    if (facts.title) out.push({ kind: 'title', text: facts.title, source: page.finalUrl })
+    if (facts.description) out.push({ kind: 'description', text: facts.description, source: page.finalUrl })
+    return { free: true, source: page.finalUrl, site, facts: out }
+  }
   const raw = (deps.providers ?? providers)[vendor]
   // The owner's spend pool (lib/llm/owner-guard.ts) on the profile read too.
   const provider = raw && ownerGuarded(db, tenantId, raw)
   if (!provider?.complete) return { error: 'key_rejected' }
 
-  const started = Date.now()
-  const page = await fetchPublicHtml(rawUrl, deps)
-  if ('error' in page) return page
-  const home = extractSiteText(page.html)
-  if (home.text.length < 200) return { error: 'js_only' } // nothing readable without running JS
-
   // Bounded multi-page read (#379): same-site pricing/customers/industries/product pages, every fetch through the
   // SSRF-guarded fetchPublicHtml (DNS pinning, private-range and redirect refusal, per-page size cap), inside one
   // total latency budget. A page that fails or a budget that runs out never fails the draft - it just has less evidence.
   const pages: FetchedPage[] = [{ url: page.finalUrl, kind: 'home', title: home.title, text: home.text.slice(0, RESEARCH_PAGE_TEXT), fetched_at: Math.floor(Date.now() / 1000) }]
-  let site = ''
-  try { site = new URL(page.finalUrl).hostname.toLowerCase().replace(/^www\./, '') } catch { return { error: 'invalid' } }
   for (const l of researchLinks(page.html, page.finalUrl)) {
     if (Date.now() - started > (deps.researchTimeMs ?? RESEARCH_TIME_MS)) break
     const sub = await fetchPublicHtml(l.url, deps).catch(() => null)
