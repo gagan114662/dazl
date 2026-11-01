@@ -1,4 +1,4 @@
-// The website-research review block (#379) in the Leads draft editor ("Fill from my website"). NOT part of `npm test`.
+// The website-research review block (#379) in the Leads draft editor ("Fill from my website"). Runs in release-gate browser CI, not `npm test`.
 // Run:  cd web && npm run build && node test/ui/leads-research-review.ui.mjs   (SHOTS=<dir> saves screenshots)
 // Production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed in the
 // browser: no site is fetched, no model is called, no scan runs. It proves:
@@ -123,7 +123,12 @@ try {
   assert.deepEqual(sent.icp.who, ['practice managers', 'office managers'], 'Who is exactly the reviewed draft')
   const hyps = Object.fromEntries(sent.icp.research.hyps.map(h => [h.i, h]))
   assert.equal(hyps.h2.s, 'rejected', 'the dismissal is an explicit rejection')
-  assert.equal(hyps.h1.s, 'sourced', 'un-acted statement keeps its truth status')
+  assert.equal(hyps.h1.s, 'reviewed', 'Add records human review, not source verification')
+  assert.equal(hyps.h3.s, 'inferred', 'untouched inferred statement keeps its truth status')
+  assert.equal(hyps.h1.u, SITE, 'Add preserves the existing source URL without inventing evidence')
+  assert.equal(hyps.h1.q, RESEARCH.hyps[0].q, 'Add preserves the existing quote, not new source verification')
+  assert.equal(hyps.h1.at, RESEARCH.hyps[0].at, 'Add does not refresh the source check timestamp')
+  assert.deepEqual(sent.icp.research.decisions, [{ offer: 'o1', hypothesis: 'h1', action: 'confirm' }, { offer: 'o1', hypothesis: 'h2', action: 'reject' }], 'only explicit Add/Dismiss actions create seller decisions')
   assert.deepEqual(sent.icp.research.ans, { q: 'Who buys this?', o: 'o1', t: 'office managers' }, 'the typed answer goes WITH ITS WORDS')
   console.log('PASS leads-research-review: render, add, dismiss, answer, prefilled play offer, estimated run carries the reviewed draft')
 } finally {

@@ -66,6 +66,9 @@ jobs:
       - name: Seller intelligence Add/Dismiss/Restore production UI (fenced)
         if: success() || failure()
         run: node test/smoke/intelligence.smoke.mjs && node test/smoke/intelligence-chain.smoke.mjs
+      - name: Whole website-research review draft and estimated submission (fenced)
+        if: success() || failure()
+        run: SHOTS=preview/leads-research-review node test/ui/leads-research-review.ui.mjs
       - name: Upload seller intelligence UI pixels
         if: always()
         uses: actions/upload-artifact@v4
@@ -74,6 +77,7 @@ jobs:
           path: |
             web/preview/intelligence
             web/preview/intelligence-chain
+            web/preview/leads-research-review
           if-no-files-found: error
       - name: Release identity and readiness
         if: success() || failure()
