@@ -1,7 +1,8 @@
 // #379: multi-page seller research. Synthetic site (invented company); stubbed fetch and model; no network, no key.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCorrections, researchLinks, researchSeller, targetingFor, MAX_PAGES } from '../lib/scan/seller-research.ts'
+import { applyCorrections, buildResearch, jsonOnly, researchLinks, targetingFor, MAX_PAGES, type FetchedPage, type PageKind, type SellerResearch } from '../lib/scan/seller-research.ts'
+import { extractSiteText } from '../lib/scan/icp-from-site.ts'
 
 const pad = (s: string) => `${s} ${'Our team builds reliable software for growing businesses and supports every customer. '.repeat(3)}`
 const SITE: Record<string, string> = {
@@ -25,7 +26,20 @@ const MODEL = JSON.stringify({
   ],
 })
 const calls: string[] = []
-const run = () => researchSeller('https://acme.example/', { fetchHtml, complete: async p => { calls.push(p); return MODEL }, now: () => 1_800_000_000 })
+// The crawl harness the deleted researchSeller wrapper used to provide: the same pure steps (researchLinks +
+// extractSiteText + the 80-char and page-text caps) feeding buildResearch directly. The production crawl lives in
+// icpFromWebsite with its own tests; the behavioral contract under test here is buildResearch's.
+const crawl = async (complete: (p: string) => Promise<string>, prior?: SellerResearch | null, now: () => number = () => 1_800_000_000) => {
+  const home = await fetchHtml('https://acme.example/'); if (!home) return { error: 'unreachable' as const }
+  const pages: FetchedPage[] = []
+  const read = (h: { html: string; finalUrl: string }, kind: PageKind) => { const { title, text } = extractSiteText(h.html); if (text.length >= 80) pages.push({ url: h.finalUrl, kind, title, text: text.slice(0, 3500), fetched_at: now() }) }
+  read(home, 'home')
+  for (const l of researchLinks(home.html, home.finalUrl)) { const p = await fetchHtml(l.url); if (p) read(p, l.kind) }
+  if (pages.length === 0) return { error: 'unreadable' as const }
+  const prompt = pages.map((p, i) => `PAGE ${i + 1} ${p.url}`).join('\n')
+  return buildResearch(jsonOnly(await complete(prompt)), pages, 'acme.example', prior)
+}
+const run = () => crawl(async p => { calls.push(p); return MODEL })
 
 test('the crawl is bounded and same-site: pricing, customers and product pages are read; offsite, files and mailto are not', async () => {
   const links = researchLinks(SITE['https://acme.example/'], 'https://acme.example/')
@@ -53,9 +67,9 @@ test('a multiproduct site whose homepage omits the buyer yields distinct, source
 test('at most one question, and only when the answer changes targeting', async () => {
   const r = await run() as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.equal(r.question, null, 'every offer has a sourced buyer: nothing to ask')
-  const noBuyer = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => JSON.stringify({ offers: [{ id: 'o1', name: 'A' }, { id: 'o2', name: 'B' }], items: [] }) }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  const noBuyer = await crawl(async () => JSON.stringify({ offers: [{ id: 'o1', name: 'A' }, { id: 'o2', name: 'B' }], items: [] })) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.equal(noBuyer.question, 'Which of your offers is this play for?')
-  const one = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => JSON.stringify({ offers: [{ id: 'o1', name: 'A' }], items: [] }) }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  const one = await crawl(async () => JSON.stringify({ offers: [{ id: 'o1', name: 'A' }], items: [] })) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.equal(one.question, 'Who buys this?')
 })
 
@@ -85,7 +99,7 @@ test('a recrawl keeps stable offer and hypothesis identity, so reviewed correcti
     { offer: 'x9', kind: 'persona', text: 'clinic owners', url: 'https://acme.example/products/payroll', quote: 'payroll for clinic owners without a finance team', inferred: false },
     { offer: 'x1', kind: 'industry', text: 'dental practices', url: 'https://acme.example/customers', quote: 'Harbor Dental, a four-chair dental practice', inferred: false },
   ] })
-  const second = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => shuffled, now: () => 1_800_000_100, prior: reviewed }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  const second = await crawl(async () => shuffled, reviewed, () => 1_800_000_100) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.deepEqual(second.offers.map(o => o.id).sort(), ['acme-booking', 'acme-payroll'], 'stable ids despite swapped order and different positional refs')
   const reBooking = second.hypotheses.find(x => x.id === bookingPersona.id)!
   assert.deepEqual([reBooking.status, reBooking.text], ['reviewed', 'office managers'], 'the edit re-applies to the same content-keyed hypothesis')
@@ -96,20 +110,18 @@ test('a recrawl keeps stable offer and hypothesis identity, so reviewed correcti
 
 test('an answered question stays bound to its offer across recrawls and is never re-asked', async () => {
   const noBuyer = JSON.stringify({ offers: [{ id: 'o1', name: 'Acme Booking' }, { id: 'o2', name: 'Acme Payroll' }], items: [] })
-  const first = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => noBuyer }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  const first = await crawl(async () => noBuyer) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.equal(first.question, 'Which of your offers is this play for?')
   const answered = { ...first, question: null, answered: { question: first.question!, offer: 'acme-booking' } }
-  const second = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => noBuyer, prior: answered }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  const second = await crawl(async () => noBuyer, answered) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.equal(second.question, null, 'the answered question is not re-asked')
   assert.deepEqual(second.answered, { question: 'Which of your offers is this play for?', offer: 'acme-booking' }, 'the binding persists while the offer exists')
   const gone = JSON.stringify({ offers: [{ id: 'o1', name: 'Acme Payroll' }], items: [] })
-  const third = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => gone, prior: answered }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  const third = await crawl(async () => gone, answered) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.deepEqual(third.answered, null, 'the binding lapses when its offer no longer exists')
 })
 
-test('failure modes: unreachable site, unreadable pages, bad model output', async () => {
-  assert.deepEqual(await researchSeller('https://nope.example/', { fetchHtml: async () => null, complete: async () => '{}' }), { error: 'unreachable' })
-  assert.deepEqual(await researchSeller('https://acme.example/', { fetchHtml: async () => ({ html: '<html><body>hi</body></html>', finalUrl: 'https://acme.example/' }), complete: async () => '{}' }), { error: 'unreadable' })
-  assert.deepEqual(await researchSeller('https://acme.example/', { fetchHtml, complete: async () => 'not json' }), { error: 'model_failed' })
-  assert.deepEqual(await researchSeller('https://acme.example/', { fetchHtml, complete: async () => '{"offers":[],"items":[]}' }), { error: 'model_failed' })
+test('failure modes: bad model output and empty offers are model_failed (fetch errors are covered by icpFromWebsite tests)', async () => {
+  assert.deepEqual(await crawl(async () => 'not json'), { error: 'model_failed' })
+  assert.deepEqual(await crawl(async () => '{"offers":[],"items":[]}'), { error: 'model_failed' })
 })

@@ -16,7 +16,7 @@ test('billing on Postgres, two tenants', async () => {
   try {
     await runPgMigrations(db.pool)
     setDb(db)
-    const now = new Date(Date.UTC(2026, 9, 15))
+    const now = new Date()   // the routes read the CURRENT month by the real clock; pinning a past month breaks every later month
     const month = monthStartS(now)
     // plans: A on Pro and past_due, B on Free (no row)
     await savePlan(db, A, 'pro')
