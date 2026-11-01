@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
 import { syncReplies, READ_CONSENT_VERSION } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
+import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
@@ -14,7 +15,7 @@ import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
-import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Outcome } from '@/lib/ops/scheduler-runs'
+import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -58,30 +59,48 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // workers report refusals as a result, not an exception, so what came back is classified (lib/ops/scheduler-runs.ts):
   // success, a hold (the tenant's own configuration or idle state) or a failure. Only failures make the run partial.
   let failures = 0, holds = 0
-  const progress = async (tenant: string, kind: 'reply_sync' | 'followups' | 'sequences', o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
+  const progress = async (tenant: string, kind: Kind, o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
   const failed = (e: unknown): Outcome => ({ outcome: 'failure', error: e })
   // Sending follow-ups stays gated on the send-side switches (autopilot on, not paused, follow-ups on).
   const sendTenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   const sendSet = new Map(sendTenants.map(t => [t.tenant_id, t.business_name] as const))
+  // First-touch work (backlog drain + new leads) needs only autopilot on and unpaused; the follow-ups switch is
+  // irrelevant to it. Consent, warmup and offer authority are re-checked inside the workers themselves.
+  const firstTouchTenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0').all() as { tenant_id: string; business_name: string | null }[]
+  const firstTouchSet = new Map(firstTouchTenants.map(t => [t.tenant_id, t.business_name] as const))
   // Reading replies, opt-outs and bounces is authorized by READ consent plus an active read-granted mailbox - never by
   // permission to send. A first-touch-only, paused or follow-ups-off account still gets its safety ingest; a revoked
   // consent or a missing/inactive/read-less mailbox is never selected (syncReplies re-checks the same gates, so a
   // race between this read and a revocation still ends before any provider call).
   const readTenants = db.prepare("SELECT c.tenant_id FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.version = ? AND g.read_granted = 1 AND g.status = 'active'").all(READ_CONSENT_VERSION) as { tenant_id: string }[]
-  const all = [...new Set([...sendSet.keys(), ...readTenants.map(t => t.tenant_id)])]
+  const all = [...new Set([...sendSet.keys(), ...firstTouchSet.keys(), ...readTenants.map(t => t.tenant_id)])]
   let done = 0
   for (const tenantId of all) {
     await lease.keep()
-    let stage: 'reply_sync' | 'followups' = 'reply_sync'
+    let stage: 'reply_sync' | 'followups' | 'first_touch' = 'reply_sync'
     try {
       const sync = classifySync(await syncReplies(db, tenantId))
       await progress(tenantId, 'reply_sync', sync)
       if (sync.outcome === 'failure') continue
-      if (!sendSet.has(tenantId)) { done++; continue } // read-only tenant: replies ingested; nothing to send
-      stage = 'followups'
-      const f = classifyWork(await runFollowups(db, tenantId, sendSet.get(tenantId) ?? ''))
-      await progress(tenantId, 'followups', f)
-      if (f.outcome !== 'failure') done++
+      if (!sendSet.has(tenantId) && !firstTouchSet.has(tenantId)) { done++; continue } // read-only tenant: replies ingested; nothing to send
+      if (sendSet.has(tenantId)) {
+        stage = 'followups'
+        const f = classifyWork(await runFollowups(db, tenantId, sendSet.get(tenantId) ?? ''))
+        await progress(tenantId, 'followups', f)
+        if (f.outcome === 'failure') continue
+      }
+      if (firstTouchSet.has(tenantId)) {
+        // Drain due held drafts, then pick up new leads: first touches restart without waiting for a new scan.
+        // Drain and discovery are one kind of scheduled work; a drain failure skips discovery (its sends are the riskier half).
+        stage = 'first_touch'
+        const dr = classifyWork(await drainFirstTouch(db, tenantId))
+        await progress(tenantId, 'first_touch', dr)
+        if (dr.outcome === 'failure') continue
+        const ap = classifyWork(await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? ''))
+        await progress(tenantId, 'first_touch', ap)
+        if (ap.outcome === 'failure') continue
+      }
+      done++
     } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
   }
   let sequences = 0
