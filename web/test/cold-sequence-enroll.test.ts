@@ -11,7 +11,7 @@ import { migrateAutopilot, enable, runAutopilot, ATTESTATIONS, CONSENT_VERSION }
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { saveSettings, suppress, approve, sendMessage, type Deps } from '../lib/outreach/service.ts'
-import { migrateSequences, acceptAutoSequencePolicy, autoSequencePolicyAccepted, AUTO_SEQUENCE_POLICY, enrollColdSequence, createSequence, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
+import { migrateSequences, acceptAutoSequencePolicy, autoSequencePolicyAccepted, AUTO_SEQUENCE_POLICY, AUTO_SEQUENCE_POLICY_TEXT, enrollColdSequence, createSequence, approveSequence, runSequences } from '../lib/outreach/sequences.ts'
 
 // #414: under a separately versioned one-time policy, a successful autopilot first touch enrolls a bounded
 // cold no-reply sequence (day 3 / day 7) without per-lead creation or approval. Manual mode is unchanged.
@@ -49,6 +49,7 @@ const sends = () => { const sent: string[] = []; const d: Deps & { flags: Record
 const seqRows = (db: Database.Database) => db.prepare('SELECT id, lead_id, status, policy, claims_hash FROM sequences').all() as { id: string; lead_id: string; status: string; policy: string | null; claims_hash: string | null }[]
 
 test('policy acceptance is exact and versioned; without it nothing enrolls', async () => {
+  assert.ok(AUTO_SEQUENCE_POLICY_TEXT.length >= 3 && AUTO_SEQUENCE_POLICY_TEXT.every(t => t.length > 40), 'the acceptance screen has real policy text')
   const db = await setup()
   assert.throws(() => acceptAutoSequencePolicy(db, 'A', 'some-other-version'), /policy_unknown/)
   assert.equal(autoSequencePolicyAccepted(db, 'A'), false)

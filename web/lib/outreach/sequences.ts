@@ -87,6 +87,14 @@ export function migrateSequences(db: Database.Database): void {
 // acceptance is what turns successful autopilot first touches into bounded day-3/day-7 no-reply follow-ups.
 // Manual sequence creation/approval is unchanged and does not depend on this policy.
 export const AUTO_SEQUENCE_POLICY = '2026-11-01-cold-sequence-1'
+// Shown verbatim where the tenant accepts the policy. Accepting is a one-time, exact-version decision: a
+// version change stops auto-enrolled sets until the new text is read and accepted again.
+export const AUTO_SEQUENCE_POLICY_TEXT = [
+  'After dazl sends a first email for you and it is confirmed sent, it can create a 3-step follow-up sequence for that prospect automatically: the email already sent becomes step 1, and follow-ups go out 3 and 7 days later if there is no reply.',
+  'The follow-up words come only from the same confirmed details as the first email (company, signal and source). If those details or this policy change, the sequence stops instead of sending stale words.',
+  'Any reply, opt-out or bounce stops the sequence. You can stop any sequence at any time on this page.',
+  'Sequences you create and approve yourself are unchanged and do not depend on this policy.',
+]
 export function acceptAutoSequencePolicy(db: Database.Database, tenantId: string, version: string, now = Math.floor(Date.now() / 1000)): void {
   if (version !== AUTO_SEQUENCE_POLICY) throw new SequenceError('policy_unknown')
   db.prepare('INSERT INTO sequence_settings (tenant_id, auto_policy, auto_policy_at) VALUES (?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET auto_policy = excluded.auto_policy, auto_policy_at = excluded.auto_policy_at').run(tenantId, version, now)
