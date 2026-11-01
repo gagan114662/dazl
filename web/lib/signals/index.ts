@@ -1,3 +1,4 @@
+import { requestedHiringRoles, matchedHiringRole } from '../scan/hiring-role-match.ts'
 // Intent-signal enrichment from free public sources, no paid APIs:
 //   funding  - SEC EDGAR full-text search for Form D filings by company name
 //              (efts.sec.gov; descriptive User-Agent is required by SEC fair-access rules)
@@ -124,6 +125,8 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   const leads = (listLeads(db, tenantId, jobId, MAX_LEADS) as { id: string; company: string; company_domain: string | null }[]).filter(l => l.company)
   const { fundingNews, fundingRoundFor } = await import('./funding-round.ts')
   const news = process.env.SIGNALS_FUNDING_RSS === '0' ? [] : await fundingNews(fetchImpl).catch(() => [])
+  const job = db.prepare('SELECT query, icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { query: string | null; icp: string | null } | undefined
+  const requestedRoles = requestedHiringRoles(job?.query, job?.icp)
   const jinaLeft = { n: 2 }
   let funding = 0, hiring = 0, rounds = 0, gtm = 0, officers = 0
   const today = new Date().toISOString().slice(0, 10)
@@ -153,7 +156,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       // as unconfirmed, are not scored (no confidence) and are NOT written to the company's account history as hiring growth.
       const rel = domainRelationship(db, tenantId, lead.id, lead.company_domain)
       const est = rel === 'established'
-      addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, label: (est ? (h.titles.join('; ') || '') : `${h.titles.join('; ')} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: h.url, source_date: today, retrieved_at: now })
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${h.openRoles} open role${h.openRoles === 1 ? '' : 's'} (generic hiring; posting date unknown)`, label: (est ? (h.titles.join('; ') || '') : `${h.titles.join('; ')} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: h.url, source_date: today, retrieved_at: now })
       if (ck && est) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: null, retrievedAt: now, confidence: 70 })
       hiring++
     }
@@ -169,6 +172,15 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       for (const e of postingEvidence(g, now, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
       gtm++
+    }
+    if (requestedRoles.length) {
+      const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false }))
+      const matched = specific.hiring
+      const bound = matched && !specific.contradictory && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!matched.domain && matched.domain === lead.company_domain))
+      if (matched && bound) for (const e of postingEvidence(matched, now, null)) {
+        const role = matchedHiringRole(e.value.split(' - posted ')[0], requestedRoles)
+        if (role) addEnrichment(db, tenantId, lead.id, { ...e, label: `Requested role: ${role.term}; ${e.label}`.slice(0, 200) })
+      }
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
     if (r && classifyEntityMatch(lead.company, r.matched) === 'heuristic') {

@@ -63,6 +63,18 @@ jobs:
       - name: Saved-source recheck action and refusal states (fenced)
         if: success() || failure()
         run: node --experimental-strip-types test/smoke/evidence-recheck.smoke.mjs
+      - name: Hiring provenance and lead cards (fenced)
+        if: success() || failure()
+        run: |
+          mkdir -p preview/lead-cards
+          SHOTS=preview/lead-cards node test/ui/lead-cards.ui.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lead-cards-${{ github.event.pull_request.head.sha || github.sha }}
+          path: web/preview/lead-cards/*.png
+          retention-days: 14
+          if-no-files-found: error
       - name: Release identity and readiness
         if: success() || failure()
         run: npm run test:smoke:release

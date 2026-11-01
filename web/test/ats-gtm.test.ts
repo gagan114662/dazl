@@ -247,3 +247,22 @@ test('board adapters take the role from the posting’s own JSON title: a non-sa
   const ashby = { 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Backend Engineer', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: 'Account Executive. brightloop.io' }] } }
   assert.equal((await atsGtmBoard('Brightloop', 'brightloop.io', route(ashby), { now: NOW })).hiring, null)
 })
+
+test('specific hiring evidence persists beyond generic top3; aggregate remains date-unknown context, never exact-role proof', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status='running',query=?,icp=? WHERE id=?").run('Companies hiring a CRM administrator', JSON.stringify({ signals: ['hiring a CRM administrator'] }), jobId)
+  db.prepare("INSERT INTO leads (id,scan_job_id,company,company_domain,signal,source_url) VALUES ('lead1',?,'Brightloop','brightloop.io','hiring','https://news.example/1')").run(jobId)
+  db.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,confidence,source_url,source_date,retrieved_at) VALUES ('D1','lead1','u1','sitecrawl','domain','brightloop.io|evidence_own_domain',NULL,'https://brightloop.io/','2026-10-28',1)").run()
+  const jobs = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: i === 5 ? 'CRM Admin' : 'Account Executive' }))
+  const m: Record<string, unknown> = { [`${GH}/jobs`]: { jobs } }
+  for (const j of jobs) m[`${GH}/jobs/${j.id}`] = { ...j, first_published: d(20), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${j.id}`, content: 'https://brightloop.io', location: { name: 'London' } }
+  const realNow = Date.now; Date.now = () => NOW
+  try { await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(m), creditEnrichment: false }) } finally { Date.now = realNow }
+  const rows = db.prepare("SELECT value,label,source_url,source_date FROM lead_enrichments WHERE kind='hiring'").all() as { value: string; label: string | null; source_url: string; source_date: string }[]
+  const generic = rows.find(r => r.value.includes('6 open roles'))!
+  assert.ok(generic); assert.match(generic.value, /generic hiring; posting date unknown/); assert.doesNotMatch(generic.label ?? '', /Requested role:/)
+  const specific = rows.find(r => r.value.startsWith('CRM Admin - posted'))!
+  assert.ok(specific); assert.match(specific.label!, /Requested role: CRM administrator/); assert.equal(specific.source_url, 'https://boards.greenhouse.io/brightloop/jobs/6'); assert.equal(specific.source_date, d(20).slice(0, 10))
+  db.close()
+})

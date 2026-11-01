@@ -129,5 +129,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/shared/lease.ts': 0,
   'lib/signals/competitor-reddit.ts': 0,
   'lib/signals/domain-basis.ts': 0,
+  'lib/signals/index.ts': 0,
   'lib/watch.ts': 0,
 }

@@ -1,3 +1,4 @@
+import { requiredGateHeld } from '../lib/scan/held-state.ts'
 // "Seed funding AND hiring sales": the funding quote alone no longer carries a lead. A dated sales / GTM posting on a public Greenhouse /
 // Lever / Ashby board bound to the lead's own domain (or the source quote itself naming the hiring) keeps it; otherwise it goes to review as
 // `no_sales_hiring_evidence`. Stubbed board JSON, invented companies, no network. The quote / date / identity gates are untouched.
@@ -46,10 +47,10 @@ function seed(over: { extra?: number; domain?: string | null; excerpt?: string; 
 const lead = (db: Database.Database) => db.prepare("SELECT review_reason, confidence, why FROM leads WHERE id = 'L1'").get() as { review_reason: string | null; confidence: number | null; why: string }
 const counts = (db: Database.Database) => db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
 
-test('when is the sales-hiring proof required: only seed/event + sales hiring requests; seed-only and hiring-only are untouched', () => {
+test('when is the sales-hiring proof required: compound sales hiring and specifically requested sales roles, not seed-only or broad hiring', () => {
   assert.equal(salesHiringRequired(REQUEST, ICP), true)
   assert.equal(salesHiringRequired('Find London UK startups that announced seed funding within the past 90 days.', JSON.stringify({ signals: ['announced seed funding'] })), false, 'seed only')
-  assert.equal(salesHiringRequired('Find London UK companies hiring sales account executives.', JSON.stringify({ signals: ['hiring sales account executives'] })), false, 'hiring only')
+  assert.equal(salesHiringRequired('Find London UK companies hiring sales account executives.', JSON.stringify({ signals: ['hiring sales account executives'] })), true, 'explicit account-executive title requires source matching even without funding')
   assert.equal(salesHiringRequired('Find dental practices that opened a new location or posted a front desk receptionist job', JSON.stringify({ signals: ['opened a new location', 'posted a receptionist job'] })), false, 'not a sales role')
   assert.equal(salesHiringRequired(null, null), false)
   assert.equal(quoteNamesSalesHiring('Brightloop raised a seed round and is hiring two account executives.', null), true)
@@ -354,4 +355,50 @@ test('FAIL-CLOSED in memory: failClosedSalesHiring still returns the held lead w
   const held = failClosedSalesHiring(db, job, 'database is locked')
   assert.deepEqual(held.map(h => [h.id, h.reason, h.written]), [['L1', 'sales_hiring_check_failed', false]])
   assert.equal(lead(db).review_reason, null, 'the row did not change - the in-memory set is the truth')
+})
+
+test('specific roles: generic AE cannot satisfy SalesOps/CRM, pure hiring or compound event', async () => {
+  for (const compound of [false, true]) {
+    const query = `${compound ? 'Companies raised seed funding and ' : 'Companies '}hiring a sales operations manager or CRM administrator`
+    const icp = JSON.stringify({ signals: [compound ? 'seed funding and hiring a sales operations manager' : 'hiring a sales operations manager'], where: [] })
+    const { db, job } = seed({ query, icp })
+    const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+    assert.equal(r.required, true); assert.equal(r.passed, 0); assert.equal(r.demoted, 1)
+    assert.match(lead(db).why, /source-matched requested role/)
+    db.close()
+  }
+})
+test('specific role survives top3 truncation: filter requested title BEFORE detail cap; persist term, title, URL and original date', async () => {
+  const query = 'Companies hiring a sales operations manager or CRM administrator'
+  const { db, job } = seed({ query, icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const jobs = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: i === 5 ? 'Senior Sales Ops Manager' : 'Account Executive' }))
+  const r = await applySalesHiringGate(db, job, serve(board({
+    [`${GH}/jobs`]: { jobs },
+    [`${GH}/jobs/6`]: { id: 6, title: 'Senior Sales Ops Manager', first_published: d(20), updated_at: d(1), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/6', content: 'Brightloop careers https://brightloop.io', location: { name: 'London' } },
+  })), { now: NOW })
+  assert.equal(r.passed, 1)
+  const rows = enrichmentsForLeads(db, 'u1', ['L1']).L1
+  const proof = rows.find(e => e.source_url.endsWith('/jobs/6') && e.value.includes('Senior Sales Ops Manager'))!
+  assert.ok(proof); assert.match(proof.label!, /Requested role: sales operations manager/)
+  assert.equal(proof.source_date, d(20).slice(0, 10)); assert.match(proof.label!, /board updated/)
+  assert.match(lead(db).why, /buying need isn't verified/)
+  db.close()
+})
+test('named hiring role cannot use model signal, unrelated quote, undated post or recent update to revive old post', async () => {
+  for (const date of [undefined, d(120)]) {
+    const { db, job } = seed({ query: 'Companies hiring a CRM administrator', icp: JSON.stringify({ signals: ['hiring a CRM administrator'] }), excerpt: 'Brightloop is hiring account executives' })
+    const r = await applySalesHiringGate(db, job, serve(board({
+      [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'CRM Admin' }] },
+      [`${GH}/jobs/1`]: { id: 1, title: 'CRM Admin', first_published: date, updated_at: d(1), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: 'https://brightloop.io' },
+    })), { now: NOW })
+    assert.equal(r.passed, 0); assert.equal(r.demoted, 1)
+    db.close()
+  }
+})
+
+ test('legacy generic gate pass never silently upgrades to requested-role proof', () => {
+  const { db } = seed({ query: 'Companies hiring a CRM administrator', icp: JSON.stringify({ signals: ['hiring a CRM administrator'] }) })
+  db.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,source_url,source_date,retrieved_at) VALUES ('legacy','L1','u1','scan:gate','gate_passed','sales_hiring','https://invalid.example/','2026-10-28',1)").run()
+  assert.equal(requiredGateHeld(db, 'u1', 'L1'), 'sales_hiring_check_failed')
+  db.close()
 })
