@@ -17,7 +17,7 @@
 //      /api/leads/<id>/enrich-retry once, and the notice clears when nothing is held.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
-const UNVERIFIED_COST = 'Retry unavailable: what this lookup costs on your Apollo account has not been verified, so it stays held and nothing is charged. Apollo documents contact search as 0 credits on current plans, but older plans can differ. It can be retried once the cost on your account is confirmed.'
+const UNVERIFIED_COST = 'Retry unavailable: what this lookup costs on your Apollo account has not been verified, so it stays held and no new lookup is made. Whether the earlier interrupted attempt was already billed is not known. Apollo documents contact search as 0 credits on current plans, but older plans can differ. It can be retried once the cost on your account is confirmed.'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'

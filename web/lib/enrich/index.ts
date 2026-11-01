@@ -371,7 +371,7 @@ export function retryCostVerified(provider: Prov): boolean {
 // references; the retry is always the owner's explicit action, never an automatic release.
 export function heldCostText(h: HeldEnrichment): string {
   const name = h.provider === 'apollo' ? 'Apollo' : 'People Data Labs'
-  if (!retryCostVerified(h.provider)) return `Retry unavailable: what this lookup costs on your ${name} account has not been verified, so it stays held and nothing is charged. ${h.provider === 'apollo' ? "Apollo documents contact search as 0 credits on current plans, but older plans can differ. " : ''}It can be retried once the cost on your account is confirmed.`
+  if (!retryCostVerified(h.provider)) return `Retry unavailable: what this lookup costs on your ${name} account has not been verified, so it stays held and no new lookup is made. Whether the earlier interrupted attempt was already billed is not known. ${h.provider === 'apollo' ? "Apollo documents contact search as 0 credits on current plans, but older plans can differ. " : ''}It can be retried once the cost on your account is confirmed.`
   if (h.provider === 'apollo' && h.step === 'people') return 'Retry the contact search: the saved company data is reused (not re-charged). Apollo documents people search as 0 credits on current plans; confirm your plan if it is older. Rate limits may apply.'
   if (h.provider === 'apollo') return 'Retry the company lookup: the earlier attempt could not prove its outcome, so this can charge 1 Apollo credit again.'
   return `Retry the contact lookup: the earlier attempt could not prove its outcome, so this can use People Data Labs credits again (1 per profile returned, up to ${MAX_CONTACTS}).`

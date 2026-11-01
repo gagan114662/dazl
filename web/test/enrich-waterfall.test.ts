@@ -409,7 +409,7 @@ test('OWNER RETRY: with the account cost UNVERIFIED (default) the held lookup st
     const held = heldEnrichments(db, 'u1')
     assert.equal(held.length, 1)
     assert.equal(retryCostVerified('apollo'), false); assert.equal(retryCostVerified('pdl'), false)
-    assert.match(heldCostText(held[0]), /Retry unavailable.*has not been verified.*older plans can differ/, 'the owner is told the cost is unverified, not promised free')
+    assert.match(heldCostText(held[0]), /Retry unavailable.*has not been verified.*no new lookup is made.*earlier interrupted attempt was already billed is not known.*older plans can differ/, 'the owner is told the cost is unverified, not promised free')
     assert.doesNotMatch(heldCostText(held[0]), /0-credit endpoint/)
     const calls: Calls = { apollo: 0, pdl: 0 }
     const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'people' }, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
