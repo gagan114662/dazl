@@ -53,3 +53,23 @@ test('fields outside the profile are dropped and values are capped by the same v
   assert.ok(saved.who.length < 20)
   rmSync(dir, { recursive: true, force: true })
 })
+
+test('#420: a complete manual profile (no website) completes the checklist milestone after reload; edits and tenant isolation hold', async () => {
+  const { readyItems } = await import('../../lib/ready-card.ts')
+  const card = (profile: unknown) => readyItems({ profile: profile as never, usage: null, outreach: null, sources: null, jobs: null, totals: null, campaigns: null, messages: null })
+  const step = (items: ReturnType<typeof readyItems>) => items.find(x => x.id === 'profile')!
+  as('A')
+  assert.equal((await post({ website: '' })).status, 200, 'clear the website saved by an earlier test: the manual path has none')
+  const buyer = { summary: 'Dental practices in Brooklyn expanding', who: ['Practice owner'], industries: ['Dental'], sizes: ['2-10 chairs'], where: ['Brooklyn, NY'], signals: ['new location'], exclude: ['DSOs'] }
+  assert.equal((await post({ sells: 'Online booking and reminders for dental practices', business_name: 'Brightsmile', buyer })).status, 200)
+  // Reload = a fresh GET; the milestone completes without a website and without any model key.
+  const afterReload = await get()
+  assert.equal(afterReload.website ?? '', '')
+  assert.equal(step(card(afterReload)).state, 'done', 'a valid saved manual profile completes the business-profile milestone')
+  // A later edit that clears the buyer profile reopens the step - no stale done.
+  assert.equal((await post({ buyer: null })).status, 200)
+  assert.equal(step(card(await get())).state, 'todo')
+  // Tenant B never sees A's manual profile (B has a buyer but no sells: partial, still todo).
+  as('B')
+  assert.equal(step(card(await get())).state, 'todo', "another tenant's checklist never completes from A's profile")
+})

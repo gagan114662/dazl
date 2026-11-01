@@ -39,11 +39,14 @@ const MESSAGES_CAP = 200, CAMPAIGNS_CAP = 10, JOBS_CAP = 20
 
 export function readinessRows(i: ReadinessInput): Row[] {
   const p = i.profile, u = i.usage, o = i.outreach
-  const missing = p ? [!p.business_name && 'business name', !p.sells && 'what you sell', !p.website && 'website'].filter(Boolean) as string[] : []
-  // Business details only (name, what it sells, website): the buyer profile is not checked here.
+  // Business details (name, what it sells) plus where the buyer profile comes from: a website dazl can read, OR a
+  // buyer profile saved by hand (the supported manual path - it passed normalizeIcp on save). With a saved buyer the
+  // website is optional, so a website-less manual profile still completes this row.
+  const manual = !!p && !p.website && !!p.buyer && (!!p.buyer.summary?.trim() || (p.buyer.who?.length ?? 0) > 0)
+  const missing = p ? [!p.business_name && 'business name', !p.sells && 'what you sell', (!p.website && !manual) && 'website'].filter(Boolean) as string[] : []
   const SITE = 'Website and business details'
   const site: Row = !p ? { id: 'site', label: SITE, state: 'unknown', detail: 'could not check - your profile did not load', fix: null }
-    : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells} (${p.website!.replace(/^https:\/\//, '')})`, fix: null }
+    : missing.length === 0 ? { id: 'site', label: SITE, state: 'done', detail: `${p.business_name} - ${p.sells}${p.website ? ` (${p.website.replace(/^https:\/\//, '')})` : ''}`, fix: null }
     : { id: 'site', label: SITE, state: 'todo', detail: `missing ${missing.join(', ')}`, fix: { kind: 'inline', label: 'Add' } }
   // The brain: the saved buyer profile (who buys it), which the first search is built on. It is built and edited in the
   // Home setup steps, which the fix link reopens at that step.

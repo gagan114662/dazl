@@ -41,6 +41,7 @@ const JOBS = [job('a', 1, 'London B2B SaaS startups hiring sales'), job('b', 2, 
 const camp = (id, o = {}) => ({ id, status: 'done', qualification: { sourceChecked: o.sc ?? 0, confirmedByYou: 0, needsReview: 0, unverified: 2, held: o.held ?? 0, rejected: 0 }, contact: { withContact: o.contacts ?? 0, readyWithContact: o.ready ?? 0, draftable: o.draftable ?? 0 }, outreach: { drafts: o.drafts ?? 0, approved: 0, sent: 0 } })
 const SCENES = {
   fresh: { profile: { ...PROFILE, buyer: null }, key: false, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
+  manual: { profile: { ...PROFILE, website: undefined }, key: true, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   reviewed: { profile: PROFILE, key: true, gmail: GMAIL, sender: { sender_name: '', postal_address: '' }, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [] },
   midway: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: [camp(JOBS[0].id), camp(JOBS[1].id, { sc: 2, contacts: 1, ready: 1, draftable: 1 })], msgs: [] },
   quota: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [], used: 50 },
@@ -95,6 +96,20 @@ try {
     assert.ok((await card(page).boundingBox()).y < (await page.getByTestId('journey').boundingBox()).y, 'the card sits above the journey')
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll (${tag})`)
     await shot(page, `new-${tag}`)
+    assert.deepEqual(writes, []); await ctx.close()
+    // 1b. A complete profile saved by hand (sells + buyer, no website): the profile step is done, the search
+    // step is next - the card never asks for a website (#420).
+    ;({ ctx, page, writes } = await open(SCENES.manual, w, h))
+    await card(page).waitFor()
+    assert.deepEqual(await states(page), ['profile:done', 'search:done', 'play:todo*', 'qualified:todo', 'contact:todo', 'draft:todo', 'sender:todo'], 'manual profile done, search can run, first search is the actual next prerequisite')
+    assert.deepEqual(await fixes(page), ['', '', 'Run a search>/app/leads', '', '', '', 'Connect>/app/settings#gmail'], 'no Add website fix anywhere on the manual path')
+    assert.ok((await card(page).textContent()).includes('saved by hand'), 'the done detail names the manual profile')
+    // The full checklist on the same page must agree (#420 whole contract): the business-details row completes
+    // from the manual profile and never asks for a website.
+    const siteRow = await page.getByTestId('ready-site').textContent()
+    assert.match(siteRow ?? '', /Brightsmile - Online booking and reminders for dental practices/, 'readiness panel completes from the manual profile')
+    assert.ok(!/missing website/.test(siteRow ?? ''), 'readiness panel: no website ask on the manual path')
+    await shot(page, `manual-${tag}`)
     assert.deepEqual(writes, []); await ctx.close()
     // 2. The reviewed account.
     ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))

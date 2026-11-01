@@ -13,7 +13,7 @@ test('a new account: the steps in order, each to-do with its fix; Gmail goes to 
   assert.deepEqual(Object.values(r).map(x => x.state), ['todo', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo', 'done'])
   assert.deepEqual(rows.filter(x => x.next).map(x => x.id), ['site'], 'exactly one next step: the first to-do')
   assert.deepEqual(r.brain.fix, { kind: 'link', href: '/app?setup=brain', label: 'Build' })
-  assert.equal(r.site.label, 'Website and business details', 'business details only: the buyer profile is not checked')
+  assert.equal(r.site.label, 'Website and business details', 'name, sells, and where the buyer profile comes from (website or a saved manual buyer profile)')
   assert.deepEqual(r.play.fix, { kind: 'link', href: '/app/leads', label: 'Write a play' })
   assert.equal(r.key.detail, 'needed for searches')
   assert.deepEqual(r.gmail.fix, { kind: 'link', href: '/app/settings#gmail', label: 'Connect' })
@@ -219,4 +219,21 @@ test('first play and first scan never claim absence from a full newest-20 list; 
   assert.equal(rows({ jobs: imports, totals: { searches: 0, finished: 0 } }).play.state, 'todo')
   // A short list is complete: absence there is real.
   assert.equal(rows({ jobs: failed.slice(0, 3) }).scan.detail, 'no scan has finished yet')
+})
+
+test('a complete manual profile (no website) completes the business-details row and the whole checklist can finish', () => {
+  const profile = { sells: 'Booking software', business_name: 'Acme', buyer: { summary: 'Independent dental practices', who: ['Practice owner'] } }
+  const r = readinessRows({ profile, usage: { has_key: true, trial: null }, outreach: { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St' }, daily_cap: 12, sent_24h: 0 }, jobs: [job()], sources: { web_index: true, news: true, websites: true }, messages: [{ status: 'sent' }], campaigns: [{ id: 'j', qualification: { rejected: 0 } }] })
+  assert.ok(r.every(x => x.state === 'done'), 'no website ask once the manual profile is saved (#420)')
+  assert.equal(byId(r).site.detail, 'Acme - Booking software', 'no website parenthetical on the manual path')
+})
+
+
+test('manual path: website is asked only when there is no saved buyer profile either', () => {
+  const base = { usage: { has_key: true }, outreach: { gmail: null, sender: null, daily_cap: 20, sent_24h: 0 }, jobs: [], sources: { web_index: false, news: true, websites: true }, messages: [], campaigns: [] }
+  const rows = (profile: unknown) => byId(readinessRows({ ...base, profile: profile as never }))
+  assert.equal(rows({ sells: 'x', business_name: 'B', buyer: null }).site.detail, 'missing website')
+  assert.equal(rows({ sells: 'x', business_name: 'B', buyer: { summary: '', who: [] } }).site.detail, 'missing website', 'an empty buyer profile does not stand in for a website')
+  assert.equal(rows({ sells: 'x', business_name: 'B', buyer: { summary: '', who: ['Owner'] } }).site.state, 'done', 'a buyer profile with roles but no summary still counts')
+  assert.equal(rows({ website: 'https://acme.example', buyer: null }).site.detail, 'missing business name, what you sell', 'website-only stays partial as before')
 })
