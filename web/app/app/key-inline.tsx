@@ -5,8 +5,8 @@ import { vendorForKey } from '@/lib/onboarding'
 // One field: paste an Anthropic or OpenAI key, the prefix picks the provider. The server checks the key with the
 // provider before saving it (same PUT /api/settings/llm-key as Settings), so a bad key is never stored.
 //
-// Deliberately NOT a <form>: KeyInline also renders inside other forms (the first-run brain and ask steps), and the
-// HTML parser drops a nested <form> tag - the field and button then belong to the OUTER form, so 'Save key' submitted
+// Deliberately NOT a form element: KeyInline also renders inside other forms (the first-run brain and ask steps),
+// and the HTML parser drops a nested form tag - the field and button then belong to the OUTER form, so 'Save key' submitted
 // that form natively (POST /app): the React save never ran, no llm-key PUT went out and the page state was lost
 // (#409, confirmed live on 40e7bf30). A div + an explicit type="button" click + Enter on the field keeps the same
 // keyboard flow and can never be captured by an ancestor form, whatever placement KeyInline is given next.
