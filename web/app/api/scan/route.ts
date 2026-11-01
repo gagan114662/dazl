@@ -65,10 +65,18 @@ export async function POST(req: NextRequest) {
   }
 
   // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's
-  // offer join the effective profile the runner retrieves and grades with; another offer's never do. The total budget
-  // is enforced here, BEFORE anything is reserved, queued or counted: an oversized profile is refused whole, never
-  // silently truncated (lib/scan/icp.ts budgetedIcp).
-  const effective = icp && offer ? applyReviewedDraft(icp, offer) : icp
+  // offer join the effective profile the runner retrieves and grades with; another offer's never do. The binding offer
+  // is the play's own when stated, else the same effective offer the play will run with (seller snapshot, then the
+  // tenant's positioning/profile): a play that relies on the profile offer still gets the review semantics. The total
+  // budget is enforced here, BEFORE anything is reserved, queued or counted: an oversized profile is refused whole,
+  // never silently truncated (lib/scan/icp.ts budgetedIcp).
+  let bindOffer = offer
+  if (icp && !bindOffer) {
+    let tenantContext: string | null
+    try { tenantContext = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+    bindOffer = effectiveOffer({ seller, query }, tenantContext).offer ?? ''
+  }
+  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer) : icp
   const sized = effective ? budgetedIcp(effective) : null
   if (sized && !sized.ok) return NextResponse.json({ error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
 
