@@ -56,7 +56,10 @@ try {
         if (decodeURIComponent(landed.href).includes(v)) errsAt(`fixture value in the URL`)
         if (bodyText.includes(v)) errsAt(`fixture value echoed in the response body`)
       }
-      if (method === 'POST' && resp.status() !== 405) errsAt(`native POST answered HTTP ${resp.status()}, expected the harmless 405`)
+      // The harmless outcomes for a native POST to a page route are 405 (Method Not Allowed) or a plain
+      // 200 re-render of the page: no action handler exists, so nothing mutates and nothing echoes (both
+      // asserted separately). Anything else (redirect carrying values, 5xx) is a failure.
+      if (method === 'POST' && ![405, 200].includes(resp.status())) errsAt(`native POST answered HTTP ${resp.status()}, expected the harmless 405 or page re-render`)
     }
     console.log(`${errs.length ? 'FAIL' : 'ok  '} JS disabled ${c.path}`)
     for (const e of errs) console.log(`     ${e}`)
