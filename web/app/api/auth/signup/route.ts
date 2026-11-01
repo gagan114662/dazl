@@ -4,6 +4,8 @@ import { cookies } from 'next/headers'
 import { createPasswordUser, createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { sendVerification } from '@/lib/email-ownership'
 import { getDb } from '@/lib/db/client'
+import { getScanDb } from '@/lib/scan/service'
+import { recordLifecycleEvent } from '@/lib/outreach/lifecycle'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
@@ -33,6 +35,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'We could not create an account with those details. Try signing in instead.' }, { status: 400 })
     }
 
+    // #417: a new account is a converted prospect - stop any acquisition work queued for its exact email.
+    // Best-effort against the outreach store: a failure here never blocks the signup and is surfaced.
+    try { recordLifecycleEvent(getScanDb(), 'signup', email, id) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signup:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
     // The address is unverified until its owner opens this link; a failed send never blocks the signup.
     await sendVerification(await getDb(), id).catch(e => captureError(e, { source: 'route', where: '/api/auth/signup:verify', method: 'POST', requestId: requestIdOf(req) }))
     const token = await createSession(id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })

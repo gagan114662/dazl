@@ -2,10 +2,13 @@ import { connection, NextRequest } from 'next/server'
 import { createSession, getSessionUser, replacedSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { FRESH_AUTH_S } from '@/lib/sessions'
 import { getDb } from '@/lib/db/client'
+import { getScanDb } from '@/lib/scan/service'
+import { recordLifecycleEvent } from '@/lib/outreach/lifecycle'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
 import { clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
+import { captureError } from '@/lib/ops/errors'
 
 const back = (base: string, err: string) => {
   const res = redirectNoStore(new URL(`/sign-in?error=${err}`, base))
@@ -46,6 +49,10 @@ export async function GET(req: NextRequest) {
   }
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
+
+  // #417: a newly created account (not a re-sign-in) is a converted prospect; stop queued acquisition work
+  // for its exact, Google-verified email. Best-effort: never blocks the sign-in, failures are surfaced.
+  if (r.created) { try { recordLifecycleEvent(getScanDb(), 'signup', id.email, r.user_id) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle', method: 'GET' }) } }
 
   // Signing in again on a browser already signed in to this same account (a re-authentication) replaces that session
   // rather than leaving it behind; another account's session in the cookie is left alone.

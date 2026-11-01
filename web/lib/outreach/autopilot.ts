@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import { LIFECYCLE_NOT_CONVERTED } from './lifecycle.ts'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -206,6 +207,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.quarantined_at IS NULL
        AND (l.contact IS NOT NULL OR EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.connector = 'sitecrawl' AND e.kind = 'email'))
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
+       AND ${LIFECYCLE_NOT_CONVERTED}
      ORDER BY l.score DESC LIMIT 25`,
   ).all(tenantId, MIN_CONFIDENCE, tenantId, tenantId) as { id: string; contact: string }[]
 
