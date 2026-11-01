@@ -48,6 +48,9 @@ jobs:
       # refs #471: follow-ups held-state honesty on the real route (production build, throwaway db, synthetic fixtures, no stubbing, no send). It must run, not skip.
       - name: Follow-ups held states (promised date only when sendable; held shows reason + schedule date)
         run: SHOTS=preview/followups-held node test/ui/followups-held.ui.mjs | tee /tmp/fh.out && ! grep -q '^NOT RUN' /tmp/fh.out
+      # The #410 trial line in Settings: a fresh account on an unconfigured trial is told the trial is unavailable, never that it used its scans; available counts down; used-up and throttled say their own reasons. It must run, not skip.
+      - name: Trial status line (fresh, available, used-up, throttled)
+        run: SHOTS=preview/trial-status node test/ui/trial-status.ui.mjs | tee /tmp/ts.out && ! grep -q '^NOT RUN' /tmp/ts.out
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
