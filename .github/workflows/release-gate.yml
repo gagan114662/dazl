@@ -107,8 +107,10 @@ jobs:
         run: |
           set -euo pipefail
           node ../ops/release-manifest.mjs write . release.json
+          # .next/cache is build-time state (turbopack store, ~195 MB here), not runtime: the 010 contract
+          # artifact is 28 MB. Exclude it; .next/server + .next/static carry everything next start serves.
           tar --sort=name --owner=0 --group=0 --numeric-owner \
-            --exclude='*.node' --exclude='*.so' --exclude='*.so.*' \
+            --exclude='*.node' --exclude='*.so' --exclude='*.so.*' --exclude='.next/cache' \
             -czf "../release-app-$JOB_SHA.tar.gz" .next .build-commit
           cd ..
           sha256sum "release-app-$JOB_SHA.tar.gz" > "release-app-$JOB_SHA.tar.gz.sha256"
