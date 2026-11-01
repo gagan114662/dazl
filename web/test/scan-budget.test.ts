@@ -61,20 +61,24 @@ test('NEVER-resolving provider: the budget does NOT release the run (admission g
   void run
 })
 
-test('transport abort is the real hard bound: a fetch that never answers is aborted and the EXISTING retry path re-pends the job', async () => {
+test('transport abort is the real hard bound on the live provider; the retired research path makes no fetch at all (#379)', async () => {
+  // The abort bound now lives where live provider calls still exist: complete. A fetch that never answers is aborted
+  // at the 50 ms transport timeout - no hang.
+  const hangingFetch = ((_u: unknown, init?: RequestInit) => new Promise((_, rej) => init?.signal?.addEventListener('abort', () => rej(new Error('aborted'))))) as unknown as typeof fetch
+  const t0 = Date.now()
+  await assert.rejects(anthropicProvider.complete('sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'prompt', hangingFetch), /network_or_timeout/)
+  assert.ok(Date.now() - t0 < 3_000, 'settled at the 50 ms transport timeout, not hung')
+  // #379: the unguarded plain-job scan's only provider call was research, which is retired at the real provider
+  // boundary - the job fails honestly budget_stopped with ZERO fetch attempts (no spend is even possible), instead of
+  // the old re-pend-and-retry-unpriced-research loop.
   const { db, master, id } = rig()
   let calls = 0
-  const hangingFetch = ((_u: unknown, init?: RequestInit) => { calls++; return new Promise((_, rej) => init?.signal?.addEventListener('abort', () => rej(new Error('aborted')))) }) as unknown as typeof fetch
+  const countingFetch = ((...a: unknown[]) => { calls++; return (hangingFetch as (...b: unknown[]) => unknown)(...a) }) as unknown as typeof fetch
   const providers = { anthropic: anthropicProvider, openai: anthropicProvider } as never
-  const job1 = claimKeyedJob(db)!
-  const t0 = Date.now()
-  assert.equal(await runJob(db, job1, { providers, master, fetchImpl: hangingFetch, score: false }), 'retry')
-  assert.ok(Date.now() - t0 < 3_000, 'settled at the 50 ms transport timeout, not hung')
-  assert.equal(getJob(db, 'A', id)!.status, 'pending')
-  // existing behavior, unchanged by the budget: the retry repeats the provider call (spend) until MAX_ATTEMPTS
-  const job2 = claimKeyedJob(db)!
-  assert.equal(await runJob(db, job2, { providers, master, fetchImpl: hangingFetch, score: false }), 'retry')
-  assert.equal(calls >= 2, true)
+  assert.equal(await runJob(db, claimKeyedJob(db)!, { providers, master, fetchImpl: countingFetch, score: false }), 'failed')
+  const j = getJob(db, 'A', id)!
+  assert.equal(j.status, 'failed'); assert.equal(j.error, 'budget_stopped')
+  assert.equal(calls, 0, 'retired research attempted no fetch')
 })
 
 test('reap + late completion + ownership loss: the old attempt finishing late writes nothing and does not touch the new attempt', async () => {
