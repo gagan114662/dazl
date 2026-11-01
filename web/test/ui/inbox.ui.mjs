@@ -69,6 +69,7 @@ async function open(url, width = 1280, height = 900, delay = () => 0, connected 
       if (u.searchParams.get('thread_id')) return json({ messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Yes - send details', at: now, classification: 'positive' }] })
       calls.push(u.search); const body = serve(u, reads); await wait(delay(u, 'GET')); return json(body)
     }
+    if (p === '/api/outreach/settings') return json({ gmail: { email: 'me@x.example', status: 'active', read_granted: true }, sender: { sender_name: 'Sam', postal_address: 'Synthetic test address' }, daily_cap: 5, sent_24h: 0, read_notice: [] })
     if (p === '/api/outreach/conversion') return json({ rows: [] })
     return json({}, 404)
   })
@@ -79,6 +80,17 @@ async function open(url, width = 1280, height = 900, delay = () => 0, connected 
 const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 const ids = async page => page.getByTestId('inbox-thread').evaluateAll(els => els.map(e => e.textContent))
 try {
+  {
+    const { ctx, page } = await open('/app/settings', 390, 844)
+    const panel = page.locator('#gmail')
+    await panel.getByText('Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.', { exact: true }).waitFor()
+    await panel.getByRole('button', { name: 'More information' }).first().click()
+    await panel.getByText(/To find separate-thread delivery failures, dazl searches mailer-daemon and postmaster notices/).waitFor()
+    await panel.scrollIntoViewIfNeeded()
+    await shot(page, 'gmail-settings-scope-mobile')
+    assert.equal(await panel.getByText(/Only threads dazl started are read|never lists, searches, or reads anything else/).count(), 0)
+    await ctx.close()
+  }
   {
     const { ctx, page } = await open('/app/inbox', 390, 844, () => 0, false)
     await page.getByText(/With your consent, dazl reads replies in its outreach threads and checks delivery-failure notices for its sends/).waitFor()
