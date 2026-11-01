@@ -13,7 +13,10 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateAutopilot, runAutopilot, enable, getState, ATTESTATIONS, CONSENT_VERSION } from '../lib/outreach/autopilot.ts'
 import { migrateSequences } from '../lib/outreach/sequences.ts'
-import { migrateReplies } from '../lib/outreach/replies.ts'
+import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
+import { migrateLedger } from '../lib/outreach/ledger.ts'
+import { acceptAutoSequencePolicy, AUTO_SEQUENCE_POLICY, enrollColdSequence, runSequences } from '../lib/outreach/sequences.ts'
+import { GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { recordLifecycleEvent, queuePendingLifecycle, activateLifecycleFor, drainVerifiedPendingLifecycle, conversionBlockedNow, paymentAccountFor, conversionEventFor } from '../lib/outreach/lifecycle.ts'
 import { startOAuth, completeOAuth } from '../lib/gmail/oauth.ts'
 import { saveSettings, createDraft, approve, sendMessage, type Deps } from '../lib/outreach/service.ts'
@@ -238,4 +241,38 @@ test('a conversion proven DURING the token refresh still stops the send: claim o
   await assert.rejects(sendMessage(db, 'A', mid, midFlight), (e: unknown) => (e as { code?: string }).code === 'converted')
   assert.equal(sent.length, 0, 'no bytes went to Gmail')
   assert.deepEqual(db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(mid), { status: 'skipped', error: 'converted' }, 'terminal skip, never released back to approved')
+})
+
+test('sequence step: a conversion proven DURING the token refresh stops the step and terminates the sequence', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db); seedOffers(db)
+  db.exec(USERS_DDL)
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u9', 'seqprospect@corp.example', NULL)").run()
+  const master = randomBytes(32)
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
+  saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
+  acceptReadConsent(db, 'A'); acceptAutoSequencePolicy(db, 'A', AUTO_SEQUENCE_POLICY)
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const leadId = randomBytes(12).toString('hex')
+  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(leadId, job, 'Acme', 'seqprospect@corp.example', 'Hiring roofers', 'https://acme.example/jobs', 'Hiring roofers', 90, 80)
+  db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = ?").run(leadId)
+  const mid = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id) VALUES (?, 'A', ?, ?, 'A quick question', 'This is the sent first touch body.', 'sent', ?, 'g1', 'thread-1')").run(mid, leadId, 'seqprospect@corp.example', NOW)
+  const seqId = enrollColdSequence(db, 'A', mid, { businessName: 'Acme' })!
+  assert.ok(seqId)
+  // Pending conversion, still unverified: the claim must succeed; verification lands inside the token await.
+  assert.equal(queuePendingLifecycle(db, 'signup', 'seqprospect@corp.example', 'u9', NOW), true)
+  const sent: string[] = []
+  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }, env: genv, master, now: NOW + 3 * 86400 + 1, baseUrl: 'https://app.test', fetchImpl: (async (u: unknown) => {
+    const url = String(u)
+    if (url.includes('token')) { db.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'u9'").run(); return json({ access_token: 'at' }) }
+    if (url.includes('/threads/')) return json({ messages: [] })
+    return json({}, 404)
+  }) as unknown as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never }
+  await runSequences(db, 'A', 'Acme', d)
+  assert.equal(sent.length, 0, 'no bytes went to Gmail')
+  assert.equal((db.prepare('SELECT status FROM sequences WHERE id = ?').get(seqId) as { status: string }).status, 'stopped', 'sequence terminated')
+  assert.deepEqual(db.prepare('SELECT status, claimed_at FROM sequence_steps WHERE sequence_id = ? AND step = 2').get(seqId), { status: 'approved', claimed_at: null }, 'step released inert, never sent')
 })
