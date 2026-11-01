@@ -215,3 +215,25 @@ test('revocation: no new enrollment, in-flight auto sets stop at the next tick, 
   const acts = (db.prepare("SELECT action FROM autopilot_audit WHERE tenant_id = 'A' AND action LIKE 'sequence_policy%' ORDER BY rowid").all() as { action: string }[]).map(x => x.action)
   assert.deepEqual(acts, ['sequence_policy_accepted', 'sequence_policy_revoked', 'sequence_policy_accepted'], 'accept/revoke decisions are audited')
 })
+
+test('a revocation landing during the token await stops the step at the send boundary (nothing reaches Gmail)', async () => {
+  const db = await setup(); acceptAutoSequencePolicy(db, 'A', AUTO_SEQUENCE_POLICY)
+  const l = lead(db, 'a@one.example'), m = sentMessage(db, l, 'a@one.example')
+  const id = enrollColdSequence(db, 'A', m, { businessName: 'Acme' })!
+  const { sent, d } = sends()
+  let tokenCalls = 0
+  const raceFetch = (async (u: unknown) => {
+    const url = String(u)
+    // syncReplies takes the first token; the revoke lands during the send's own token refresh (the second call).
+    if (url.includes('token')) { tokenCalls++; if (tokenCalls === 2) revokeAutoSequencePolicy(db, 'A'); return json({ access_token: 'at' }) }
+    if (url.includes('/threads/')) return json({ messages: [] })
+    return json({}, 404)
+  }) as typeof fetch
+  const r = await runSequences(db, 'A', 'Acme', { ...d, fetchImpl: raceFetch, now: NOW + 3 * DAY })
+  assert.equal(r.sent, 0, 'no step sends after the boundary recheck sees the revocation')
+  assert.equal(sent.length, 0, 'Gmail was never called')
+  const seq = db.prepare('SELECT status, stop_reason FROM sequences WHERE id = ?').get(id) as { status: string; stop_reason: string }
+  assert.deepEqual(seq, { status: 'stopped', stop_reason: 'policy_revoked' })
+  const step = db.prepare('SELECT status, claimed_at FROM sequence_steps WHERE sequence_id = ? AND step = 2').get(id) as { status: string; claimed_at: number | null }
+  assert.deepEqual(step, { status: 'approved', claimed_at: null }, 'the claim was released, not left stuck in sending')
+})

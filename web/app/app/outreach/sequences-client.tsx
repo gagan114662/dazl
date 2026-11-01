@@ -57,7 +57,7 @@ export default function SequencesClient() {
     {data?.auto_policy&&(data.auto_policy.accepted
       ? <div className="text-xs text-[#666] mt-2" role="status" data-testid="auto-policy-status"><p>Automatic follow-up sequences are on (policy {data.auto_policy.version}). A confirmed-sent first email starts a 3-step sequence by itself; a reply, opt-out, bounce or changed details stops it. You can stop any sequence below.</p>
         <button disabled={busy} className="btn-ghost text-xs mt-2" data-testid="auto-policy-revoke" onClick={()=>void action({action:'revoke_auto_policy'})}>Turn off automatic sequences</button>
-        <p className="mt-1">Turning off stops every automatic sequence at its next scheduled step and no new ones start. Sequences you approved yourself are unaffected.</p></div>
+        <p className="mt-1">Turning off stops every automatic sequence at its next scheduled step and no new ones start. A step already handed to Gmail at that moment cannot be recalled. Sequences you approved yourself are unaffected.</p></div>
       : <div className="text-sm mt-3 border border-black/20 rounded p-3" data-testid="auto-policy-offer">
         <p className="font-medium">Automatic follow-up sequences (one-time policy)</p>
         <ul className="list-disc pl-5 text-xs text-[#555] mt-2">{data.auto_policy.text.map((t,i)=><li key={i}>{t}</li>)}</ul>

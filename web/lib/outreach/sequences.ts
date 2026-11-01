@@ -499,6 +499,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1' || current?.status !== 'active' || getState(db,tenantId).paused || isSuppressed(db,tenantId,s.to_email) || !hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); continue
       }
+      // Revocation can land during the token await: re-prove acceptance at the send boundary, after the
+      // last await, so a policy turned off mid-tick stops this step before Gmail. The only exception is a
+      // send Gmail has already accepted; that residual is stated in the settings UI.
+      if (s.policy !== null && !autoSequencePolicyAccepted(db, tenantId)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped','policy_revoked',now); out.skipped++; continue
+      }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name, fromEmail: acct.email, to: s.to_email, subject: stepRow.subject,
         body: composeBody(stepRow.body, settings, unsubUrl),
