@@ -38,7 +38,7 @@ const usage = hasKey => ({ plan: 'free', scans_used: 0, scan_limit: 50, has_key:
 const b = await chromium.launch()
 try {
   for (const [width, height, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
-    const run = async (name, icpResponse, hasKey, check, profileGet = '{}') => {
+    const run = async (name, icpResponse, hasKey, check, profileGet = '{}', failProfilePost = false) => {
       const ctx = await b.newContext({ viewport: { width, height } })
       await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
       const writes = []
@@ -51,7 +51,7 @@ try {
         if (u.pathname === '/api/scan/jobs') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"jobs":[]}' })
         if (u.pathname === '/api/settings/profile') {
           if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: profileGet })
-          return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' })
+          return route.fulfill(failProfilePost ? { status: 500, contentType: 'application/json', body: '{"error":"save failed"}' } : { status: 200, contentType: 'application/json', body: '{"ok":true}' })
         }
         if (u.pathname === '/api/scan/icp-from-url') return route.fulfill(Array.isArray(icpResponse) ? icpResponse.shift() : icpResponse)
         return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
@@ -86,23 +86,21 @@ try {
       assert.equal(writes.filter(w => w.startsWith('POST /api/settings/profile')).length, 1, 'keyed path auto-saves the AI draft as before')
     })
 
-    await run('keyed-then-keyless', [ { status: 200, contentType: 'application/json', body: JSON.stringify(KEYED) }, { status: 200, contentType: 'application/json', body: JSON.stringify(FREE) } ], true, async (page, writes) => {
-      // First (keyed) read: the keyed path auto-saves the inferred profile verbatim (first-run.tsx readSite ->
-      // POST /api/settings/profile, before any user edit) and lands on the ready step.
-      await page.getByTestId('ready-step').waitFor({ timeout: 30000 })
-      assert.ok(writes.some(w => w.startsWith('POST /api/settings/profile')), 'keyed read auto-saved the inferred draft (its documented path)')
-      // The person returns later (key since removed) and reads the same site again. The saved profile legitimately
-      // holds the model-generated values (hydrated from GET /api/settings/profile); the reread must not show any AI
-      // research/hypotheses beside "No AI was used", must not re-infer, and must not delete the saved inputs.
-      await page.goto(`${base}/app?setup=site`, { waitUntil: 'networkidle' })
+    await run('stale-research-cleared', [ { status: 200, contentType: 'application/json', body: JSON.stringify(KEYED) }, { status: 200, contentType: 'application/json', body: JSON.stringify(FREE) } ], true, async (page, writes) => {
+      // In-mount, no remount: the keyed read's auto-save is refused (500), so it lands on the brain step with its AI
+      // hypotheses on screen. Back -> read the site again (the key is gone) -> the free read must not show the old
+      // research beside "No AI was used". FAILS when the unconditional clear at the start of readSite is removed.
+      await page.getByTestId('research-review').waitFor({ timeout: 30000 })
+      assert.equal(await page.getByLabel('What you sell').inputValue(), 'CRM cleanup for sales teams', 'keyed prefill on screen')
+      await page.getByRole('button', { name: 'Back', exact: true }).click()
       await page.getByTestId('site-step').waitFor({ timeout: 15000 })
       await page.getByLabel('Your website').fill('acme.example')
       await page.getByRole('button', { name: 'Read my site' }).click()
       await page.getByTestId('free-site-read').waitFor({ timeout: 30000 })
-      assert.equal(await page.getByTestId('research-review').count(), 0, 'no AI research anywhere on the free read')
+      assert.equal(await page.getByTestId('research-review').count(), 0, 'old AI research cleared before the free read renders')
       assert.match(await page.locator('form', { has: page.getByTestId('free-site-read') }).innerText(), /No AI was used for this read/, 'honest no-AI copy')
-      assert.equal(await page.getByLabel('What you sell').inputValue(), 'CRM cleanup for sales teams', 'saved (model-generated, user-editable) profile inputs survive untouched')
-    }, JSON.stringify({ website: 'https://acme.example', sells: 'CRM cleanup for sales teams', business_name: '', buyer: { summary: 'Sales ops teams at B2B SaaS companies.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: [], exclude: [] } }))
+      assert.equal(await page.getByLabel('What you sell').inputValue(), 'CRM cleanup for sales teams', 'the person\u2019s on-screen inputs are never deleted')
+    }, '{}', true)
 
     await run('read-failed', { status: 502, contentType: 'application/json', body: '{"error":"not_public"}' }, false, async (page, writes) => {
       await page.getByTestId('site-step').waitFor({ timeout: 15000 })
