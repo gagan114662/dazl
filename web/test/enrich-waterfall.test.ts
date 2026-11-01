@@ -136,3 +136,24 @@ test('opt-in toggle: enabling then disabling the flag controls the fallback exac
   setEnrichFallback(db, 'u1', true); assert.equal(enrichFallbackEnabled(db, 'u1'), true)
   setEnrichFallback(db, 'u1', false); assert.equal(enrichFallbackEnabled(db, 'u1'), false)
 })
+
+test('tenant isolation: one tenant opting in never enables another tenant\'s fallback', async () => {
+  const a = seed(1, true) // opted in
+  const b = seed(1, false); saveCredential(b.db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master) // both keys, NO opt-in
+  setEnrichFallback(a.db, 'u1', true)
+  assert.equal(enrichFallbackEnabled(a.db, 'u1'), true)
+  assert.equal(enrichFallbackEnabled(b.db, 'u1'), false)
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(b.db, 'u1', b.jobId, b.leads, { fetchImpl: router(async (u: string) => (u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [] })), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.pdl, 0, 'a tenant without its own opt-in never spends PDL credits')
+})
+test('disabled provider: opt-in does not resurrect a disabled PDL key', async () => {
+  const { db, jobId, leads } = seed()
+  const { setEnabled } = await import('../lib/connectors/store.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  assert.equal(await setEnabled(sqliteDb(db), 'u1', 'enrich:pdl', false), true)
+  assert.equal(enrichFallbackEnabled(db, 'u1'), true) // the flag is on...
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async (u: string) => (u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [] })), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.pdl, 0, '...but a disabled PDL key is never used')
+})
