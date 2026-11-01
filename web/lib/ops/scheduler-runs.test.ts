@@ -47,6 +47,20 @@ test('migration rebuilds a pre-first_touch store, carrying rows verbatim', async
   assert.equal((db.prepare(`SELECT count(*) AS n FROM scheduler_progress`).get() as { n: number }).n, 3)
 })
 
+test('migration upgrades a store missing both the kind and the outcome columns, carrying rows', async () => {
+  const db = new Database(':memory:')
+  db.exec(`CREATE TABLE scheduler_progress (
+      tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      last_attempt_at INTEGER NOT NULL, last_success_at INTEGER, last_error TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0, last_run_id TEXT, PRIMARY KEY (tenant_id, kind))`)
+  db.prepare(`INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, consecutive_failures) VALUES ('t9', 'followups', 50, 2)`).run()
+  migrateSchedulerRuns(db)
+  const row = db.prepare(`SELECT kind, last_attempt_at, consecutive_failures, last_outcome FROM scheduler_progress WHERE tenant_id = 't9'`).get() as { kind: string; last_attempt_at: number; consecutive_failures: number; last_outcome: string }
+  assert.deepEqual(row, { kind: 'followups', last_attempt_at: 50, consecutive_failures: 2, last_outcome: 'success' })
+  await recordProgress(db, 'run1', 't9', 'first_touch', { outcome: 'success' }, 60)
+  assert.equal((db.prepare(`SELECT count(*) AS n FROM scheduler_progress WHERE tenant_id = 't9'`).get() as { n: number }).n, 2)
+})
+
 test('a fresh store records first_touch progress directly', async () => {
   const db = new Database(':memory:')
   migrateSchedulerRuns(db)
