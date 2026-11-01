@@ -141,6 +141,7 @@ function gmail(threads: Record<string, unknown[]>, calls: string[]) {
     const u = String(url); calls.push(u)
     if (u.includes('oauth2')) return json({ access_token: 'at' })
     const m = u.match(/threads\/([^?]+)/); if (m) return json({ messages: threads[m[1]] ?? [] })
+    if (u.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as unknown as typeof fetch
 }
@@ -178,11 +179,15 @@ test('sync, two tenants: HTML unsubscribe suppresses and stops only A\'s thread;
   assert.equal(cls(db, 'A', 'a2-r'), 'positive'); assert.equal(hasConsent(db, 'A', 'kim@other.example', 'email', 'followup', NOW), true)
   assert.equal(hasConsent(db, 'B', 'kim@other.example', 'email', 'followup', NOW), false)
   assert.equal(cls(db, 'B', 'b2-r'), 'auto'); assert.equal(stopped(db, 'B', b2.thread), null)
-  // each tenant's sync opened only its own threads, by id, and nothing else (no list, search or other scope)
+  // each tenant's sync opened only its own threads, by id; the one permitted non-thread call is the bounded
+  // mailer-daemon/postmaster notice search (#415) - no other list, search, label or send scope
   const gm = (c: string[]) => c.filter(u => u.includes('gmail.googleapis.com'))
-  assert.deepEqual(gm(callsA).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [a1.thread, a2.thread].sort())
-  assert.deepEqual(gm(callsB).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort(), [b1.thread, b2.thread].sort())
-  assert.ok(![...callsA, ...callsB].some(u => /messages\?|q=|labels|\/send/.test(u)))
+  const threadIds = (c: string[]) => gm(c).filter(u => u.includes('threads/')).map(u => u.replace(/.*threads\//, '').replace(/\?.*/, '')).sort()
+  assert.deepEqual(threadIds(callsA), [a1.thread, a2.thread].sort())
+  assert.deepEqual(threadIds(callsB), [b1.thread, b2.thread].sort())
+  assert.ok(gm(callsA).every(u => u.includes('threads/') || (u.includes('messages?q=') && u.includes('mailer-daemon'))))
+  assert.ok(gm(callsB).every(u => u.includes('threads/') || (u.includes('messages?q=') && u.includes('mailer-daemon'))))
+  assert.ok(![...callsA, ...callsB].some(u => /labels|\/send/.test(u) || (u.includes('messages?') && !u.includes('mailer-daemon'))))
   // stored excerpts are the new text only (the quoted "Interested, call me" is not kept)
   assert.equal((db.prepare("SELECT excerpt FROM inbound_messages WHERE gmail_id = 'a1-r'").get() as { excerpt: string }).excerpt, 'Bitte abmelden, danke.')
   // a later sync does not re-read or re-classify what was stored
