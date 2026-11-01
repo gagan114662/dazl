@@ -43,7 +43,8 @@ test('the disclosure names every path and what bounds it, and still says it is n
   assert.equal(d.surfaces.find(s => s.surface === 'autopilot')!.status, 'off')
 })
 
-// A successful stubbed scan, so the post-scan autopilot step is reached.
+// A successful stubbed scan, so the post-scan autopilot step is reached. Leads come from the free GDELT news path
+// (an injected newsHttp turns it on): #379 refuses the unpriceable web-search research fallback on every run.
 async function runScan(budget: string | null) {
   resetTinyfishState()
   const recent = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10)
@@ -54,13 +55,43 @@ async function runScan(budget: string | null) {
   db.exec('CREATE TABLE users (id TEXT, business_name TEXT)'); db.prepare('INSERT INTO users VALUES (?, ?)').run('A', 'Acme') // the post-scan step reads the business name
   const id = createQueryJob(db, 'A', { query: 'Find Ohio companies hiring a payroll specialist', icp: JSON.stringify({ summary: 's', who: ['Controller'], industries: [], sizes: [], where: ['Ohio'], signals: ['payroll job'], exclude: [] }), runBudget: budget })
   const job = claimKeyedJob(db, id)!
-  const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => ({ text: JSON.stringify([lead]), citedUrls: [lead.source_url] }), complete: async () => 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
+  // The extraction call (the one paid model call of the primary path) answers with the candidate; every other model
+  // call (query planning, verification, fit) answers 'supports' as before. research() must never be reached: #379.
+  let researchCalls = 0
+  const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => { researchCalls++; return { text: '', citedUrls: [] } }, complete: async (_k, _p, _f, max) => max === 3000 ? JSON.stringify([lead]) : 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
   saveCredential(db, 'A', 'enrich:apollo', 'apollo-test-key', master)
   let autopilot = 0; let apollo = 0
-  const fetchImpl = (async (url: string | URL | Request) => { if (String(url).includes('apollo')) apollo++; return new Response('{}', { status: 404 }) }) as typeof fetch
-  const r = await runJob(db, job, { providers, master, fetchImpl, fetchPage: async () => ({ text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 }), score: false, ground: false, autopilot: (async () => { autopilot++; return { sent: 0, held: 0, skipped: 0 } }) as never })
-  return { r, autopilot, apollo, status: (db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status }
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const u = String(url)
+    if (u.includes('apollo')) apollo++
+    if (u.includes('api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: lead.source_url, title: 'Harbor Freight Supply is hiring', snippet: QUOTE, date: recent }] }), { status: 200 })
+    if (u.includes('api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: lead.source_url, title: 'Jobs', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
+    return new Response('{}', { status: 404 })
+  }) as typeof fetch
+  const pageText = `Posted ${recent}. ${QUOTE}. Apply now. The payroll specialist owns biweekly payroll, benefits records and year-end filings for the Columbus team, working with the office manager on staffing plans.`
+  const newsHttp = (async () => ({ status: 200, body: JSON.stringify({ articles: [{ url: lead.source_url, title: 'Harbor Freight Supply is hiring', seendate: recent.replaceAll('-', '') + 'T100000Z' }] }) })) as never
+  const r = await runJob(db, job, { providers, master, fetchImpl, newsHttp, fetchPage: async () => ({ text: pageText, title: 'Jobs', retrievedAt: 1 }), score: false, ground: false, autopilot: (async () => { autopilot++; return { sent: 0, held: 0, skipped: 0 } }) as never })
+  return { r, autopilot, apollo, researchCalls, status: (db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status }
 }
+test('#379: an unguarded run never reaches the unpriceable web-search research fallback (fail closed)', async () => {
+  // Pre-fix this run ended 'done' with leads from provider.research - an unbounded, unpriced, unrecorded call.
+  // Post-fix it ends honestly as budget_stopped and the provider's research method is never even invoked.
+  resetTinyfishState()
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  db.exec('CREATE TABLE users (id TEXT, business_name TEXT)'); db.prepare('INSERT INTO users VALUES (?, ?)').run('A', 'Acme')
+  const id = createQueryJob(db, 'A', { query: 'Find Ohio companies hiring a payroll specialist', icp: JSON.stringify({ summary: 's', who: ['Controller'], industries: [], sizes: [], where: ['Ohio'], signals: ['payroll job'], exclude: [] }) })
+  const job = claimKeyedJob(db, id)!
+  let researchCalls = 0
+  const lead = { company: 'Harbor Freight Supply', name: null, contact: null, signal: 'Hiring a payroll specialist', score: 80, excerpt: 'Hiring a payroll specialist', source_url: 'https://jobs.example/hf', event_date: null }
+  const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => { researchCalls++; return { text: JSON.stringify([lead]), citedUrls: [lead.source_url] } }, complete: async () => 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
+  const r = await runJob(db, job, { providers, master, fetchImpl: (async () => new Response('{}', { status: 404 })) as typeof fetch, fetchPage: async () => ({ text: 'x'.repeat(300), title: 'Jobs', retrievedAt: 1 }), score: false, ground: false })
+  assert.equal(r, 'failed')
+  const row = db.prepare('SELECT status, error FROM scan_jobs').get() as { status: string; error: string }
+  assert.equal(row.status, 'failed'); assert.equal(row.error, 'budget_stopped', 'an honest stop, never "nothing found"')
+  assert.equal(researchCalls, 0, 'the unpriceable call was refused at the provider boundary')
+})
+
 test('autopilot: a job that carries a budget never starts it; an unbudgeted job still does (control)', async () => {
   const control = await runScan(null)
   assert.equal(control.status, 'done'); assert.equal(control.autopilot, 1, 'fixture precondition: the post-scan autopilot step is reached')
