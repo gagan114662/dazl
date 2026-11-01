@@ -70,6 +70,23 @@ class TargetIdentityTests(unittest.TestCase):
         saved = self.root / 'saved'; safe.rename(saved); safe.symlink_to(saved)
         with self.assertRaises(Exception): self.m.bind_target(self.launch, self.sha)
 
+    def test_blob_comparison_survives_git_assume_unchanged(self):
+        safe = self.root / 'ops/safe_launch.py'
+        self.git('update-index', '--assume-unchanged', 'ops/safe_launch.py')
+        safe.write_text('# hidden modified helper\n')
+        self.assertFalse(self.git('status', '--porcelain', '--untracked-files=no').strip())
+        with self.assertRaisesRegex(ValueError, 'helper_bytes'): self.m.bind_target(self.launch, self.sha)
+
+    def test_stage_marker_and_alternate_inner_paths_refuse(self):
+        alias = self.root / 'alias'; alias.symlink_to(self.root / 'web', target_is_directory=True)
+        launch = self.launch.copy(); launch[launch.index('--stage') + 1] = str(alias)
+        with self.assertRaisesRegex(ValueError, 'stage_symlink'): self.m.bind_target(launch, self.sha)
+        launch = self.launch.copy(); launch[1] = str(self.root / 'other.py')
+        with self.assertRaisesRegex(ValueError, 'helper_path'): self.m.bind_target(launch, self.sha)
+        marker = self.root / 'web/.build-commit'; marker.unlink()
+        saved = self.root / 'marker'; saved.write_text(self.sha); marker.symlink_to(saved)
+        with self.assertRaisesRegex(ValueError, 'build_mismatch'): self.m.bind_target(self.launch, self.sha)
+
     def test_build_or_helper_mutated_in_preflight_never_reaches_launch(self):
         for target in [self.root / 'web/.build-commit', self.root / 'ops/safe_launch.py']:
             original = target.read_bytes()
