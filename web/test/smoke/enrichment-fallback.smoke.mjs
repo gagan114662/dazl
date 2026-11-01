@@ -90,8 +90,11 @@ try {
   assert.equal(flagRow(), null, 'no flag row exists before the tenant ever opts in')
 
   // Opt in through the control; the flag must persist in the DB and across a reload.
-  await toggle.click()
-  await page.getByText('Saved.').waitFor()
+  const [onResp] = await Promise.all([ // wait for the save itself, not the stale 'Saved.' left by the key save
+    page.waitForResponse(r => r.url().includes('/api/settings/enrichment') && r.request().method() === 'POST' && (r.request().postData() || '').includes('fallback')),
+    toggle.click()
+  ])
+  assert.ok(onResp.ok(), 'opt-in save accepted')
   assert.deepEqual(flagRow(), { enabled: 1, ciphertext: '' }, 'opt-in persisted as a secret-less flag row')
   await page.reload()
   await page.getByText('Enrichment (bring your own key)', { exact: true }).waitFor()
@@ -106,8 +109,11 @@ try {
   assert.equal(status.fallback, true, 'GET reports the opt-in')
 
   // Opt out again: the flag flips off, keys untouched.
-  await toggle2.click()
-  await page.getByText('Saved.').waitFor()
+  const [offResp] = await Promise.all([
+    page.waitForResponse(r => r.url().includes('/api/settings/enrichment') && r.request().method() === 'POST' && (r.request().postData() || '').includes('fallback')),
+    toggle2.click()
+  ])
+  assert.ok(offResp.ok(), 'opt-out save accepted')
   assert.deepEqual(flagRow(), { enabled: 0, ciphertext: '' }, 'opt-out persisted')
   assert.equal((await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))).fallback, false)
 
