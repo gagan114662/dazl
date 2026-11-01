@@ -17,7 +17,11 @@ const out = path.resolve(process.argv[2] ?? path.join(root, 'preview', 'enrichme
 mkdirSync(out, { recursive: true })
 let dbPath
 const srv = await startServer({
-  env: { DAZL_MASTER_KEY: randomBytes(32).toString('base64') },
+  env: {
+    // The net fence scrubs *KEY* vars before Next starts. Restore ONLY this generated fixture afterwards.
+    SMOKE_MASTER_B64: randomBytes(32).toString('base64'),
+    NODE_OPTIONS: `--experimental-strip-types --import ${path.join(root, 'test/helpers/net-fence.ts')} --import ${path.join(root, 'test/smoke/stripe-test-env.mjs')}`,
+  },
   prepare: async p => {
     dbPath = p
     const { migrateAllSqlite } = await import('../../lib/db/sqlite-migrations.ts')
