@@ -103,6 +103,29 @@ test('forged, unrelated, or ambiguous notices suppress nobody', async () => {
   assert.equal((db.prepare("SELECT count(*) AS n FROM inbound_messages WHERE tenant_id = 'A' AND classification = 'bounce_unmatched'").get() as { n: number }).n, 3)
 })
 
+test('a genuine-looking NO-REFERENCE 5.1.1 notice naming the sole recent recipient can never suppress (From is not authentication)', async () => {
+  const db = await setup(); seedSend(db)
+  const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmailStub([dsnNotice('dsn-noref', { ref: null, status: '5.1.1', recipient: 'sam@buyer.example' })]) })
+  assert.equal(r.bounces, 0)
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
+  assert.equal((db.prepare("SELECT stopped FROM followup_threads WHERE tenant_id = 'A' AND thread_id = 'th-1'").get() as { stopped: string | null }).stopped, null)
+  assert.deepEqual(db.prepare("SELECT status FROM sequences WHERE id = 'seq1'").get(), { status: 'active' })
+  const row = db.prepare("SELECT classification, from_email, excerpt FROM inbound_messages WHERE gmail_id = 'dsn-noref'").get() as { classification: string; from_email: string; excerpt: string }
+  assert.equal(row.classification, 'bounce_unmatched', 'unmatched is never soft_bounce and never a suppression')
+  // retention minimum: nothing about the claimed sender or recipient of mail that may not be ours
+  assert.equal(row.from_email, ''); assert.equal(row.excerpt, '')
+})
+
+test('a spoofed daemon From with a FABRICATED dazl-pattern reference suppresses nobody', async () => {
+  const db = await setup(); seedSend(db)
+  const forged = dsnNotice('dsn-forged-ref', { ref: '<dazl.0123456789abcdef01234567@acme.example>', status: '5.1.1', recipient: 'sam@buyer.example' })
+  const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmailStub([forged]) })
+  assert.equal(r.bounces, 0)
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
+  assert.equal((db.prepare("SELECT classification FROM inbound_messages WHERE gmail_id = 'dsn-forged-ref'").get() as { classification: string }).classification, 'bounce_unmatched')
+  assert.equal((db.prepare("SELECT detail FROM autopilot_audit WHERE tenant_id = 'A' AND action = 'bounce_unmatched'").get() as { detail: string }).detail, 'no exact send correlation', 'audit carries no addresses of unmatched mail')
+})
+
 test('without read consent nothing is listed and coverage reports unknown, never healthy', async () => {
   const db = await setup(false); seedSend(db)
   const calls: string[] = []

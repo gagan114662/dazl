@@ -270,23 +270,24 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       const g = (await get(`messages/${hit.id}?format=full`)) as GMsg
       const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
       const from = addr(header(g, 'from'))
-      if (!/^(mailer-daemon|postmaster)@/.test(from)) { db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL)').run(hit.id, tenantId, g.threadId ?? '', from, '', 'bounce_unmatched', at); continue }
+      // Retention minimum for anything that does not correlate to an exact recorded send: the opaque id (for
+      // one-time accounting), the time and the classification. No sender, recipient or content of mail that may
+      // not be ours - the read consent covers replies and delivery notices FOR OUR THREADS only.
+      const logUnmatched = () => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL)').run(hit.id, tenantId, g.threadId ?? '', '', '', 'bounce_unmatched', at)
+      if (!/^(mailer-daemon|postmaster)@/.test(from)) { logUnmatched(); continue }
       const dsn = dsnFromNotice(g)
-      // Correlate to the exact recorded send: the daemon references our Message-ID, and the failed recipient is who
-      // we wrote to. Without BOTH, or with an ambiguous recipient, nothing is suppressed - an arbitrary quoted code
-      // or address must never cost a contact (a forged or mis-delivered notice included).
+      // Correlate to the exact recorded send: the notice must reference our Message-ID AND name the recipient we
+      // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
+      // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
+      // stop a thread or end a sequence. They are counted unmatched and left for review.
       const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
       let m: { id: string; lead_id: string; to_email: string } | undefined
       if (refId && dsn.recipient) m = (db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')").get(tenantId, refId) as typeof m) ?? undefined
       if (m && norm(m.to_email) !== dsn.recipient) m = undefined // the notice must name who we actually wrote to
-      if (!m && dsn.recipient && !refId) {
-        const cand = db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND status = 'sent' AND sent_at >= ? ORDER BY sent_at DESC").all(tenantId, dsn.recipient, now - 30 * 86400) as { id: string; lead_id: string; to_email: string }[]
-        if (cand.length === 1) m = cand[0] // unambiguous structured recipient correlation
-      }
       const log = (cls: string, mid: string | null, leadId: string | null) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(hit.id, tenantId, g.threadId ?? '', leadId, from, `dsn status ${dsn.status ?? 'none'}`, cls, at, mid)
       if (!m || !dsn.failed || !dsn.status) {
-        log('bounce_unmatched', null, null)
-        auditAt(db, tenantId, 'bounce_unmatched', `${from}: no exact send correlation`, undefined, undefined, now)
+        logUnmatched()
+        auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
         continue
       }
       if (/^5\.\d{1,3}\.\d{1,3}$/.test(dsn.status)) {
