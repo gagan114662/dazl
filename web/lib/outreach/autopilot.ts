@@ -134,15 +134,28 @@ function domainCapDueAt(db: Database.Database, tenantId: string, domain: string,
   return (t ?? now) + 7 * 86400
 }
 
-// Classify a thrown send: only a generic provider failure ('error') is transient and known-not-sent (an
-// accepted-but-unconfirmed send is returned as 'uncertain', never thrown). Transient failures get a bounded backoff
-// retry; every named policy refusal is permanent, so the draft is skipped instead of stranded forever.
+// Retry eligibility is PROOF-based, never assumed. sendClaimed (service.ts) throws only via release(), which runs
+// solely while Gmail has provably not accepted the message: the claim is rolled back to 'approved' with claimed_at
+// NULL, and 400/404/429 are Gmail's own refusals before acceptance. A timeout, transport error, 5xx, malformed
+// success or any other ambiguous provider outcome is marked 'uncertain' with the tenant paused inside sendClaimed and
+// is NEVER thrown - so no ambiguous outcome can ever enter this retry path. The retry-eligible codes below are the
+// transient subset of those proven-not-sent refusals; every other named refusal is a permanent policy verdict and the
+// draft is skipped instead of stranded. Non-OutreachError exceptions are not classified here at all: they propagate
+// to the scheduler as failures.
+const TRANSIENT_RELEASE_CODES: ReadonlySet<string> = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap', 'already_sending'])
 function holdSendFailure(db: Database.Database, tenantId: string, msgId: string, leadId: string, code: string, now: number): 'held' | 'skipped' {
-  const tries = (db.prepare('SELECT attempts FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(msgId, tenantId) as { attempts: number } | undefined)?.attempts ?? 0
-  if (code === 'error' && tries < MAX_SEND_RETRIES) { setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S * (tries + 1)); return 'held' }
-  const why = code === 'error' ? 'retry_exhausted' : code
-  db.prepare("UPDATE outreach_messages SET status = 'skipped', error = ?, hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(why.slice(0, 200), msgId, tenantId)
-  auditAt(db, tenantId, 'skipped', why, leadId, msgId, now)
+  if (TRANSIENT_RELEASE_CODES.has(code)) {
+    const tries = (db.prepare('SELECT attempts FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(msgId, tenantId) as { attempts: number } | undefined)?.attempts ?? 0
+    if (code !== 'already_sending' && tries >= MAX_SEND_RETRIES) {
+      db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'retry_exhausted', hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(msgId, tenantId)
+      auditAt(db, tenantId, 'skipped', 'retry_exhausted', leadId, msgId, now)
+      return 'skipped'
+    }
+    setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S * (tries + 1))
+    return 'held'
+  }
+  db.prepare("UPDATE outreach_messages SET status = 'skipped', error = ?, hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(code.slice(0, 200), msgId, tenantId)
+  auditAt(db, tenantId, 'skipped', code, leadId, msgId, now)
   return 'skipped'
 }
 
@@ -198,7 +211,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id) }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
-      const code = e instanceof OutreachError ? e.code : 'error'
+      if (!(e instanceof OutreachError)) throw e // DB/runtime faults are scheduler failures, never retry-classified
+      const code = e.code
       audit(db, tenantId, 'send_failed', code, l.id, id)
       if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
       if (code === 'paused' || code === 'already_uncertain') return stop(code)
@@ -255,7 +269,8 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id) }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', m.lead_id, m.id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
-      const code = e instanceof OutreachError ? e.code : 'error'
+      if (!(e instanceof OutreachError)) throw e // DB/runtime faults are scheduler failures, never retry-classified
+      const code = e.code
       audit(db, tenantId, 'send_failed', code, m.lead_id, m.id)
       if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
       if (code === 'paused' || code === 'already_uncertain') return stop(code)
