@@ -6,7 +6,7 @@ interface AuditRow { connector: string; scan_job_id: string | null; lookup: stri
 
 const SLOTS = [
   { id: 'enrich:apollo', name: 'Apollo.io', hint: 'api.apollo.io key. Organization lookups cost 1 credit each (capped at 5 companies per scan); people search is free and returns names and titles, not emails.' },
-  { id: 'enrich:pdl', name: 'People Data Labs', hint: 'api key. Used only when no Apollo key is saved - unless you turn on the fallback below. Person search costs 1 credit per profile returned (free tier: 100/month).' },
+  { id: 'enrich:pdl', name: 'People Data Labs', hint: 'api key. Used only when no Apollo key is saved - unless you turn on the fallback below. Person search uses your PDL credits per profile returned. Your plan determines available credits and billing.' },
 ]
 
 export default function EnrichmentPanel() {
