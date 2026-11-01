@@ -61,7 +61,9 @@ export async function syncBounceNotices(db: Database.Database, tenantId: string,
   const token = await getAccessToken(db, tenantId, d)
   // Consent is re-proven after every await stage (token, list, each fetch): a revocation landing mid-scan
   // stops the scan where it stands - no further fetches, no writes. JS is single-threaded, so the awaits
-  // are the only interleave points; between the last check and a write there is no await.
+  // are the only interleave points; between the last check and a write there is no await. Honest residual:
+  // an HTTP request already in flight when the revocation lands cannot be recalled - its response is read,
+  // but the revocation is honored before the NEXT request and before any write.
   if (!hasBounceScanConsent(db, tenantId)) return { ...out, stopped: 'revoked' }
   const f = d.fetchImpl ?? fetch
   const get = async (path: string) => {
