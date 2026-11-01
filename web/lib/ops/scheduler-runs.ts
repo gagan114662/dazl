@@ -76,7 +76,7 @@ export type Outcome = { outcome: 'success' } | { outcome: 'hold'; reason: string
 // Stop reasons runFollowups and runSequences return that are legitimate holds: the tenant's own configuration or an
 // idle state, not something failing. Every other stop (and any reason the tick does not know) is a failure: the
 // scheduler must never read an unknown refusal as progress.
-export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval'])
+export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval', 'off', 'consent_required', 'warmup'])
 export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'uncertain_send', 'gmail_or_identity'])
 export function classifyWork(r: { stopped?: string; sent?: number; started?: number }): Outcome {
   if (r.stopped === undefined) return { outcome: 'success' }

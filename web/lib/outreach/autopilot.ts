@@ -1,7 +1,9 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
-import { createDraft, approve, getSettings, isSuppressed, OutreachError, sendMessage, suppress, type Deps } from './service.ts'
+import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
+import { readTenantOffer } from './play-memory.ts'
+import { draftOffer } from '../scan/play-offer-text.ts'
 import { polishDraft } from './draft-llm.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
@@ -100,6 +102,50 @@ const autoSent24h = (db: Database.Database, tenantId: string, now: number) => (d
 const domainSentRecently = (db: Database.Database, tenantId: string, domain: string, now: number) =>
   !!db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400)
 
+// First-touch backlog holds. A hold records why the draft waits, when it may next be tried, the consent version the
+// hold was recorded under and the offer the draft's words were created for. The scheduler drain acts only on holds it
+// can name; warmup (manual-approval) drafts and pre-existing drafts with no hold record are never auto-sent.
+const TRANSIENT_RETRY_S = 900
+const MAX_SEND_RETRIES = 3
+export const HOLD_REASONS = ['warmup_manual', 'daily_cap', 'held_domain_cap', 'send_failed'] as const
+
+// The offer inputs a first-touch draft is created under, exactly as createDraftInner resolves them. A null means the
+// offer could not be read: such a draft is never drained, since its authority cannot be re-verified.
+function offerHashFor(db: Database.Database, tenantId: string, leadId: string): string | null {
+  try {
+    const r = draftOffer(playOfferRow(db, tenantId, leadId), readTenantOffer(db, tenantId))
+    if (r.refuse) return null
+    return createHash('sha256').update(r.offer ?? '').digest('hex')
+  } catch { return null }
+}
+
+function setHold(db: Database.Database, tenantId: string, msgId: string, leadId: string, reason: typeof HOLD_REASONS[number], until: number | null): void {
+  db.prepare("UPDATE outreach_messages SET hold_reason = ?, hold_until = ?, hold_policy = ?, offer_hash = ? WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')")
+    .run(reason, until, CONSENT_VERSION, reason === 'warmup_manual' ? null : offerHashFor(db, tenantId, leadId), msgId, tenantId)
+}
+
+// Earliest time the daily autopilot cap can have a free slot: when the oldest counted send leaves the 24h window.
+function dailyCapDueAt(db: Database.Database, tenantId: string, now: number): number {
+  const t = (db.prepare("SELECT MIN(created_at) AS t FROM autopilot_audit WHERE tenant_id = ? AND action = 'sent' AND created_at >= ?").get(tenantId, now - 86400) as { t: number | null }).t
+  return (t ?? now) + 86400
+}
+function domainCapDueAt(db: Database.Database, tenantId: string, domain: string, now: number): number {
+  const t = (db.prepare("SELECT MAX(claimed_at) AS t FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400) as { t: number | null }).t
+  return (t ?? now) + 7 * 86400
+}
+
+// Classify a thrown send: only a generic provider failure ('error') is transient and known-not-sent (an
+// accepted-but-unconfirmed send is returned as 'uncertain', never thrown). Transient failures get a bounded backoff
+// retry; every named policy refusal is permanent, so the draft is skipped instead of stranded forever.
+function holdSendFailure(db: Database.Database, tenantId: string, msgId: string, leadId: string, code: string, now: number): 'held' | 'skipped' {
+  const tries = (db.prepare('SELECT attempts FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(msgId, tenantId) as { attempts: number } | undefined)?.attempts ?? 0
+  if (code === 'error' && tries < MAX_SEND_RETRIES) { setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S * (tries + 1)); return 'held' }
+  const why = code === 'error' ? 'retry_exhausted' : code
+  db.prepare("UPDATE outreach_messages SET status = 'skipped', error = ?, hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(why.slice(0, 200), msgId, tenantId)
+  auditAt(db, tenantId, 'skipped', why, leadId, msgId, now)
+  return 'skipped'
+}
+
 export interface RunResult { sent: number; held: number; skipped: number; stopped?: string }
 
 // One pass over this tenant's verified leads that have no message yet. Safe to call repeatedly.
@@ -141,10 +187,10 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       out.skipped++; audit(db, tenantId, 'skipped', e instanceof OutreachError ? e.code : 'error', l.id); continue
     }
     const to = (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email
-    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
-    if (autoSent24h(db, tenantId, now) >= st.daily_cap) { audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }
+    if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) { setHold(db, tenantId, id, l.id, 'warmup_manual', null); out.held++; audit(db, tenantId, 'held_warmup', 'needs your approval', l.id, id); continue }
+    if (autoSent24h(db, tenantId, now) >= st.daily_cap) { setHold(db, tenantId, id, l.id, 'daily_cap', dailyCapDueAt(db, tenantId, now)); audit(db, tenantId, 'daily_cap', `cap ${st.daily_cap}`, l.id, id); return { ...out, held: out.held + 1, stopped: 'daily_cap' } }
     const domain = to.split('@')[1]
-    if (domainSentRecently(db, tenantId, domain, now)) { out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
+    if (domainSentRecently(db, tenantId, domain, now)) { setHold(db, tenantId, id, l.id, 'held_domain_cap', domainCapDueAt(db, tenantId, domain, now)); out.held++; audit(db, tenantId, 'held_domain_cap', 'one email per company per 7 days', l.id, id); continue }
     if (isSuppressed(db, tenantId, to)) { out.skipped++; audit(db, tenantId, 'skipped', 'suppressed', l.id, id); continue }
     try {
       approve(db, tenantId, id)
@@ -155,7 +201,65 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       const code = e instanceof OutreachError ? e.code : 'error'
       audit(db, tenantId, 'send_failed', code, l.id, id)
       if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
-      out.held++
+      if (code === 'paused' || code === 'already_uncertain') return stop(code)
+      if (holdSendFailure(db, tenantId, id, l.id, code, now) === 'skipped') out.skipped++; else out.held++
+    }
+  }
+  return out
+}
+
+export interface DrainResult { sent: number; held: number; skipped: number; stopped?: string }
+
+// Scheduler drain of the first-touch backlog: drafts the autopilot itself held for a named reason, due now. A draft
+// is sent only when every authority it was created under is still current: autopilot on, unpaused, consent current,
+// warmup already cleared, the hold recorded under this consent version, and the offer inputs unchanged (changed words
+// or offer invalidate the authority; the draft is skipped, never sent). Warmup-manual drafts and drafts with no hold
+// record are never touched. Caps are re-checked at send time; an over-cap tenant is re-held, not sent.
+export async function drainFirstTouch(db: Database.Database, tenantId: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<DrainResult> {
+  const out: DrainResult = { sent: 0, held: 0, skipped: 0 }
+  const env = d.flags ?? process.env
+  const now = d.now ?? Math.floor(Date.now() / 1000)
+  const audit = (db2: Database.Database, t: string, a: string, dt?: string, l?: string, m?: string) => auditAt(db2, t, a, dt, l, m, now)
+  const stop = (why: string): DrainResult => { out.stopped = why; return out }
+  if (!autopilotAvailable(env)) return stop('not_available')
+  const st = getState(db, tenantId)
+  if (!st.enabled) return stop('off')
+  if (st.paused) return stop('paused')
+  if (!st.consent_current) return stop('consent_required')
+  if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) return stop('warmup') // first sends stay manually approved
+  const rows = db.prepare(
+    `SELECT id, lead_id, to_email, offer_hash FROM outreach_messages
+     WHERE tenant_id = ? AND status IN ('draft','approved') AND hold_reason IN ('daily_cap','held_domain_cap','send_failed')
+       AND hold_policy = ? AND hold_until IS NOT NULL AND hold_until <= ?
+     ORDER BY created_at LIMIT 10`,
+  ).all(tenantId, CONSENT_VERSION, now) as { id: string; lead_id: string; to_email: string; offer_hash: string | null }[]
+  for (const m of rows) {
+    const cur = getState(db, tenantId)
+    if (cur.paused || !cur.enabled || !autopilotAvailable(env)) return stop('paused')
+    if (m.offer_hash === null || offerHashFor(db, tenantId, m.lead_id) !== m.offer_hash) {
+      // The offer (or its readability) changed since the draft was created: the authority these words were prepared
+      // under is gone. Never send; leave a clear skipped record.
+      db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'offer_changed', hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(m.id, tenantId)
+      audit(db, tenantId, 'skipped', 'offer_changed', m.lead_id, m.id); out.skipped++; continue
+    }
+    const domain = m.to_email.split('@')[1]
+    if (autoSent24h(db, tenantId, now) >= st.daily_cap) { setHold(db, tenantId, m.id, m.lead_id, 'daily_cap', dailyCapDueAt(db, tenantId, now)); out.held++; continue }
+    if (domainSentRecently(db, tenantId, domain, now)) { setHold(db, tenantId, m.id, m.lead_id, 'held_domain_cap', domainCapDueAt(db, tenantId, domain, now)); out.held++; continue }
+    if (isSuppressed(db, tenantId, m.to_email)) {
+      db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(m.id, tenantId)
+      audit(db, tenantId, 'skipped', 'suppressed', m.lead_id, m.id); out.skipped++; continue
+    }
+    try {
+      approve(db, tenantId, m.id)
+      const r = await sendMessage(db, tenantId, m.id, d)
+      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id) }
+      else { audit(db, tenantId, 'uncertain', 'send outcome unknown', m.lead_id, m.id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
+    } catch (e) {
+      const code = e instanceof OutreachError ? e.code : 'error'
+      audit(db, tenantId, 'send_failed', code, m.lead_id, m.id)
+      if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
+      if (code === 'paused' || code === 'already_uncertain') return stop(code)
+      if (holdSendFailure(db, tenantId, m.id, m.lead_id, code, now) === 'skipped') out.skipped++; else out.held++
     }
   }
   return out

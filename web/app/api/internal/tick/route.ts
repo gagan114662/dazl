@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
 import { syncReplies, READ_CONSENT_VERSION } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
+import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
@@ -63,26 +64,45 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // Sending follow-ups stays gated on the send-side switches (autopilot on, not paused, follow-ups on).
   const sendTenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
   const sendSet = new Map(sendTenants.map(t => [t.tenant_id, t.business_name] as const))
+  // First-touch work (backlog drain + new leads) needs only autopilot on and unpaused; the follow-ups switch is
+  // irrelevant to it. Consent, warmup and offer authority are re-checked inside the workers themselves.
+  const firstTouchTenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0').all() as { tenant_id: string; business_name: string | null }[]
+  const firstTouchSet = new Map(firstTouchTenants.map(t => [t.tenant_id, t.business_name] as const))
   // Reading replies, opt-outs and bounces is authorized by READ consent plus an active read-granted mailbox - never by
   // permission to send. A first-touch-only, paused or follow-ups-off account still gets its safety ingest; a revoked
   // consent or a missing/inactive/read-less mailbox is never selected (syncReplies re-checks the same gates, so a
   // race between this read and a revocation still ends before any provider call).
   const readTenants = db.prepare("SELECT c.tenant_id FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.version = ? AND g.read_granted = 1 AND g.status = 'active'").all(READ_CONSENT_VERSION) as { tenant_id: string }[]
-  const all = [...new Set([...sendSet.keys(), ...readTenants.map(t => t.tenant_id)])]
+  const all = [...new Set([...sendSet.keys(), ...firstTouchSet.keys(), ...readTenants.map(t => t.tenant_id)])]
   let done = 0
   for (const tenantId of all) {
     await lease.keep()
-    let stage: 'reply_sync' | 'followups' = 'reply_sync'
+    let stage: 'reply_sync' | 'followups' | 'first_touch' = 'reply_sync'
     try {
       const sync = classifySync(await syncReplies(db, tenantId))
       await progress(tenantId, 'reply_sync', sync)
       if (sync.outcome === 'failure') continue
-      if (!sendSet.has(tenantId)) { done++; continue } // read-only tenant: replies ingested; nothing to send
-      stage = 'followups'
-      const f = classifyWork(await runFollowups(db, tenantId, sendSet.get(tenantId) ?? ''))
-      await progress(tenantId, 'followups', f)
-      if (f.outcome !== 'failure') done++
-    } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
+      if (!sendSet.has(tenantId) && !firstTouchSet.has(tenantId)) { done++; continue } // read-only tenant: replies ingested; nothing to send
+      if (sendSet.has(tenantId)) {
+        stage = 'followups'
+        const f = classifyWork(await runFollowups(db, tenantId, sendSet.get(tenantId) ?? ''))
+        await progress(tenantId, 'followups', f)
+        if (f.outcome === 'failure') continue
+      }
+      if (firstTouchSet.has(tenantId)) {
+        // Drain due held drafts, then pick up new leads: first touches restart without waiting for a new scan.
+        // scheduler_progress kinds are a fixed CHECK set, so first-touch outcomes fold into the run counters here
+        // (widening that CHECK is a separate reviewed migration).
+        stage = 'first_touch'
+        const dr = classifyWork(await drainFirstTouch(db, tenantId))
+        if (dr.outcome === 'failure') failures++; else if (dr.outcome === 'hold') holds++
+        if (dr.outcome === 'failure') continue
+        const ap = classifyWork(await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? ''))
+        if (ap.outcome === 'failure') failures++; else if (ap.outcome === 'hold') holds++
+        if (ap.outcome === 'failure') continue
+      }
+      done++
+    } catch (e) { fenced(e); if (stage === 'first_touch') { failures++ } else { await progress(tenantId, stage, failed(e)) } captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
