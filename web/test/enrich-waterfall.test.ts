@@ -283,3 +283,22 @@ test('an UNCERTAIN paid attempt (timeout/abort after the request left) stays hel
   assert.ok(r2.skipped.some(x => x.why === 'uncertain'), 'the replay reports the lead uncertain (held for review)')
   assert.equal(callsAfter.apollo, calls.apollo, 'no new provider call for the held lead')
 })
+
+test('a CHARGED sub-step survives a later transient: org 200 then people 429 keeps the claim held - the replay re-bills NOTHING', async () => {
+  const { db, jobId, leads } = seed(1, false) // Apollo only
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  // org enrich succeeds (a credit is spent: data was returned), then the people search is rate-limited
+  const orgThenPeople429 = async (url: string) =>
+    String(url).includes('organizations/enrich')
+      ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } })
+      : new Response(JSON.stringify({ error: 'rate limited' }), { status: 429 })
+  const r1 = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(orgThenPeople429, async () => ok(PDL_OK), calls), master })
+  assert.equal(r1.attached, 0)
+  assert.ok(calls.apollo >= 2, 'both sub-steps ran (org charged, people refused)')
+  const claims1 = db.prepare("SELECT status FROM connector_claims WHERE tenant_id = 'u1'").all() as { status: string }[]
+  assert.deepEqual(claims1.map(c => c.status), ['reserved'], 'the attempt already spent money: the claim must NOT be released for a blind retry')
+  const r2 = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  assert.equal(r2.attached, 0, 'held for review: no automatic re-attempt of a partially-charged lead')
+  assert.ok(r2.skipped.some(x => x.why === 'uncertain'), 'the replay reports the lead uncertain')
+  assert.equal(calls.apollo, 2, 'ZERO additional org (or people) calls - the org credit is never re-billed')
+})

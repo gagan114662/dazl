@@ -176,7 +176,7 @@ const isTerminal = (status: string) => status === 'ok' || status === 'empty' || 
 // consumed "when qualifying data is returned" (docs.apollo.io/docs/api-pricing). A timeout/abort/network failure
 // after the request left is NOT in this set: the provider may have processed it (a 200 we never saw), so the claim
 // stays 'reserved' and the replay fails closed (uncertain, held for review) rather than risk a second charge.
-const NO_CHARGE_CODES: ReadonlySet<string> = new Set(['rate_limited', 'auth', 'upstream'])
+export const NO_CHARGE_CODES: ReadonlySet<string> = new Set(['rate_limited', 'auth', 'upstream'])
 const claimPrior = (status: string): 'ok' | 'empty' | 'rejected' | 'uncertain' =>
   status === 'ok' || status === 'empty' ? status : status === 'rejected' || status.startsWith('contact rejected') ? 'rejected' : 'uncertain'
 export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOutcome {
@@ -202,12 +202,15 @@ export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOu
 }
 // Settle a reserved lookup: the audit row and its claim move together in one transaction. Terminal outcomes mark
 // the claim (the durable never-pay-twice memo); transient outcomes release it so the lookup may retry.
-export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: string, status: string, results: number): void {
+// noCharge: the caller's WHOLE-ATTEMPT verdict that no paid sub-step returned data or ended unknown. A claim covers
+// every paid call of one provider attempt (Apollo = org + people): org 200 (charged - data returned) then people 429
+// is NOT a no-charge attempt, and releasing the claim would let a replay re-bill the org call. Default false = hold.
+export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: string, status: string, results: number, noCharge = false): void {
   const key = claimKey(a)
   db.transaction(() => {
     db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
     if (isTerminal(status)) db.prepare(CLAIM_SETTLE_SQL).run(status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3])
-    else if (NO_CHARGE_CODES.has(status)) db.prepare(CLAIM_RELEASE_SQL).run(key[0], key[1], key[2], key[3])
+    else if (noCharge && NO_CHARGE_CODES.has(status)) db.prepare(CLAIM_RELEASE_SQL).run(key[0], key[1], key[2], key[3])
     // else: an uncertain paid attempt stays 'reserved' - held for review, never automatically re-billed
   }).immediate()
 }
@@ -231,10 +234,10 @@ export async function writeTryReserve(db: Db, a: AuditEntry): Promise<ReserveOut
   await db.run(AUDIT_SQL, [id, a.tenantId, a.connector, a.jobId ?? null, lookup, 'reserved', 0])
   return { id }
 }
-export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number): Promise<void> {
+export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number, noCharge = false): Promise<void> {
   const key = claimKey(a)
   if (isTerminal(status)) await db.run(CLAIM_SETTLE_SQL, [status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
-  else if (NO_CHARGE_CODES.has(status)) await db.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
+  else if (noCharge && NO_CHARGE_CODES.has(status)) await db.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
   // else: uncertain paid attempt stays 'reserved' (see NO_CHARGE_CODES)
   await db.run("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'", [status, results, id])
 }
