@@ -503,6 +503,12 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // #417: a conversion proven during the refresh stops the send terminally - never released back to approved,
+  // where it could linger past an activation that skips only draft/approved rows.
+  if (!testFixtureSend(db,tenantId,m) && conversionBlockedNow(db, m.to_email)) {
+    db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'converted', claimed_at = NULL WHERE id = ? AND status = 'sending'").run(id)
+    throw new OutreachError('converted')
+  }
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')

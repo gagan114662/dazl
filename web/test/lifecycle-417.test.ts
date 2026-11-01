@@ -16,7 +16,7 @@ import { migrateSequences } from '../lib/outreach/sequences.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { recordLifecycleEvent, queuePendingLifecycle, activateLifecycleFor, drainVerifiedPendingLifecycle, conversionBlockedNow, paymentAccountFor, conversionEventFor } from '../lib/outreach/lifecycle.ts'
 import { startOAuth, completeOAuth } from '../lib/gmail/oauth.ts'
-import { saveSettings, type Deps } from '../lib/outreach/service.ts'
+import { saveSettings, createDraft, approve, sendMessage, type Deps } from '../lib/outreach/service.ts'
 
 const NOW = 1_800_000_000
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
@@ -220,4 +220,22 @@ test('a send pass completes a verified conversion itself when the boundary drain
   await runAutopilot(db, 'A', 'Acme', d)
   assert.equal(sent.length, 0, 'the pass drained the verified conversion first, so no send went out')
   assert.deepEqual(conversionEventFor(db, 'late@corp.example'), { kind: 'signup', created_at: NOW }, 'the event is activated')
+})
+
+test('a conversion proven DURING the token refresh still stops the send: claim ordering alone is not enough', async () => {
+  const { db, sent, d } = await autopilotTenant()
+  db.exec(USERS_DDL)
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u5', 'mid@corp.example', NULL)").run()
+  assert.equal(queuePendingLifecycle(db, 'signup', 'mid@corp.example', 'u5', NOW), true) // pending + unverified: the claim must succeed
+  const lead = mkLead(db, 'A', 'mid@corp.example')
+  const mid = createDraft(db, 'A', lead, 'Acme')
+  approve(db, 'A', mid)
+  // The verification commits while the access token is being refreshed - inside the await between claim and send.
+  const midFlight = { ...d, fetchImpl: (async (u: string) => {
+    if (String(u).includes('token')) { db.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'u5'").run(); return json({ access_token: 'at' }) }
+    return json({}, 404)
+  }) as unknown as typeof fetch }
+  await assert.rejects(sendMessage(db, 'A', mid, midFlight), (e: unknown) => (e as { code?: string }).code === 'converted')
+  assert.equal(sent.length, 0, 'no bytes went to Gmail')
+  assert.deepEqual(db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(mid), { status: 'skipped', error: 'converted' }, 'terminal skip, never released back to approved')
 })

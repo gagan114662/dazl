@@ -473,7 +473,14 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       return stop('gmail_unavailable')
     }
     try {
-      // Recheck after token refresh: suppression/reply/pause can change during await.
+      // Recheck after token refresh: suppression/reply/pause/conversion can change during await.
+      // #417: a conversion proven during the refresh stops the sequence terminally.
+      if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && conversionBlockedNow(db, s.to_email)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId, s.id, stepRow.step) // inert: the sequence row is stopped below
+        stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', 'converted', now)
+        skip('converted')
+        continue
+      }
       if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue
