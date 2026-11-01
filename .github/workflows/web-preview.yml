@@ -42,6 +42,9 @@ jobs:
       # The #436 unsupported-adapter gates in Settings > Connectors (stubbed: no worker, session or network; screenshots into preview/settings-advanced). It must run, not skip.
       - name: Rendered settings connectors unsupported-adapter check
         run: SHOTS=preview/settings-advanced node test/ui/settings-advanced-unsupported.ui.mjs | tee /tmp/sa.out && ! grep -q '^NOT RUN' /tmp/sa.out
+      # The #379 offer-question binding: picking an offer binds the play's offer on both surfaces (stubbed; screenshots into preview/offer-question). It must run, not skip.
+      - name: Rendered offer-question binding check (first-run + leads draft editor)
+        run: SHOTS=preview/offer-question node test/ui/offer-question-binding.ui.mjs | tee /tmp/oq.out && ! grep -q '^NOT RUN' /tmp/oq.out
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out && ! grep -q '^NOT RUN' /tmp/it.out

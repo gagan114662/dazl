@@ -20,11 +20,14 @@ export function asResearchBlock(x: unknown): ResearchBlock | null {
   return Array.isArray(r.offers) && Array.isArray(r.hyps) ? r : null
 }
 
-export default function ResearchReview({ research, onChange, onAdd, onRemove }: {
+export default function ResearchReview({ research, onChange, onAdd, onRemove, onOfferPick }: {
   research: ResearchBlock
   onChange: (r: ResearchBlock) => void
   onAdd: (field: 'who' | 'industries' | 'sizes' | 'where' | 'exclude', text: string) => void
   onRemove: (field: 'who' | 'industries' | 'sizes' | 'where' | 'exclude', text: string) => void
+  // "Which of your offers is this play for?" is answered BY binding this play's offer - the server treats the play's
+  // offer as the answer (applyReviewedDraft), so the click must set the same field the run sends, never only the block.
+  onOfferPick?: (offerName: string) => void
 }) {
   const [answer, setAnswer] = useState('')
   // Dismiss rejects the statement AND removes its exact text from the visible field in the same action: the draft the
@@ -35,7 +38,12 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove }: 
     if (h && field) onRemove(field, h.t)
     onChange({ ...research, hyps: research.hyps.map(x => x.i === id ? { ...x, s: 'rejected' } : x) })
   }
-  const answerOffer = (offerId: string) => research.q ? onChange({ ...research, ans: { q: research.q, o: offerId } }) : null
+  const answerOffer = (offerId: string) => {
+    if (!research.q) return
+    onChange({ ...research, ans: { q: research.q, o: offerId } })
+    const o = research.offers.find(x => x.i === offerId)
+    if (o) onOfferPick?.(o.n)
+  }
   const answerWho = () => {
     const t = answer.trim()
     if (!t || !research.q) return
@@ -77,7 +85,7 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove }: 
         <div className="mt-2" data-testid="research-question">
           <p className="text-sm mb-1">{research.q}</p>
           {research.q === OFFER_QUESTION
-            ? <div className="flex gap-2 flex-wrap">{research.offers.map(o => <button key={o.i} type="button" className="text-xs underline" onClick={() => answerOffer(o.i)}>{o.n}</button>)}</div>
+            ? <div className="flex gap-2 flex-wrap">{research.offers.map(o => <button key={o.i} type="button" data-testid={`research-offer-pick-${o.i}`} className="text-xs underline" onClick={() => answerOffer(o.i)}>{o.n}</button>)}</div>
             : research.q === WHO_QUESTION
               ? <div className="flex gap-2"><input className="border border-[var(--line,#333)] bg-transparent px-2 py-1 text-sm flex-1" maxLength={120} value={answer} onChange={e => setAnswer(e.target.value)} placeholder="e.g. practice managers at dental clinics" /><button type="button" className="text-xs underline" onClick={answerWho} disabled={!answer.trim()}>Save</button></div>
               : null}
