@@ -37,17 +37,17 @@ test('the crawl is bounded and same-site: pricing, customers and product pages a
 
 test('a multiproduct site whose homepage omits the buyer yields distinct, source-backed hypotheses per offer; unsupported claims are not facts', async () => {
   const r = await run(); assert.ok(!('error' in r)); if ('error' in r) return
-  assert.deepEqual(r.offers.map(o => o.name), ['Acme Booking', 'Acme Payroll']); assert.equal(r.pages.length, 5)
+  assert.deepEqual(r.offers.map(o => o.id), ['acme-booking', 'acme-payroll'], 'offer identity is the normalized name, never the positional ref'); assert.deepEqual(r.offers.map(o => o.name), ['Acme Booking', 'Acme Payroll']); assert.equal(r.pages.length, 5)
   assert.ok(calls[0].includes('PAGE 5') && calls[0].includes('/pricing') && !calls[0].includes('other.example'))
   const h = (id: string) => r.hypotheses.find(x => x.id === id)!
-  const booking = r.hypotheses.find(x => x.offer === 'o1' && x.kind === 'persona')!, pay = r.hypotheses.find(x => x.offer === 'o2' && x.kind === 'persona' && x.text === 'clinic owners')!
+  const booking = r.hypotheses.find(x => x.offer === 'acme-booking' && x.kind === 'persona')!, pay = r.hypotheses.find(x => x.offer === 'acme-payroll' && x.kind === 'persona' && x.text === 'clinic owners')!
   assert.deepEqual([booking.status, booking.text, booking.url, booking.fetched_at], ['sourced', 'practice managers', 'https://acme.example/products/booking', 1_800_000_000])
   assert.deepEqual([pay.status, pay.url], ['sourced', 'https://acme.example/products/payroll']); assert.notEqual(booking.text, pay.text, 'distinct personas per offer')
   assert.equal(r.hypotheses.find(x => x.text === 'CFOs of hospital groups')!.status, 'hypothesis', 'an inferred persona is a hypothesis, not a fact')
   const size = r.hypotheses.find(x => x.kind === 'size')!, loc = r.hypotheses.find(x => x.kind === 'location')!
   assert.deepEqual([size.status, size.text, size.quote, loc.status, loc.text], ['unknown', 'unknown', null, 'unknown', 'unknown'], 'headcount and location without a quote on the page are unknown')
   assert.ok(!r.hypotheses.some(x => x.text === 'ghost offer'), 'an item for an unknown offer is dropped')
-  assert.equal(h('o1:offer').status, 'hypothesis')
+  assert.equal(h('acme-booking:offer').status, 'hypothesis')
 })
 
 test('at most one question, and only when the answer changes targeting', async () => {
@@ -61,15 +61,50 @@ test('at most one question, and only when the answer changes targeting', async (
 
 test('reviewed corrections change retrieval per offer and never leak across offers; unsupported items never become targeting', async () => {
   const r = await run() as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
-  assert.deepEqual(targetingFor(r, 'o1'), { who: ['practice managers'], industries: ['dental practices'], exclude: [], sizes: [], where: [] })
-  assert.deepEqual(targetingFor(r, 'o2').who, ['clinic owners'], 'the hospital-CFO hypothesis is not targeting until a person confirms it')
+  assert.deepEqual(targetingFor(r, 'acme-booking'), { who: ['practice managers'], industries: ['dental practices'], exclude: [], sizes: [], where: [] })
+  assert.deepEqual(targetingFor(r, 'acme-payroll').who, ['clinic owners'], 'the hospital-CFO hypothesis is not targeting until a person confirms it')
   const hyp = r.hypotheses.find(x => x.text === 'CFOs of hospital groups')!
-  const fixed = applyCorrections(r, [{ offer: 'o2', hypothesis: hyp.id, action: 'confirm' }, { offer: 'o1', hypothesis: 'o1:persona:0', action: 'edit', value: 'front-desk leads' }, { offer: 'o1', hypothesis: hyp.id, action: 'reject' }])
-  assert.deepEqual(targetingFor(fixed, 'o2').who.sort(), ['CFOs of hospital groups', 'clinic owners'])
-  assert.deepEqual(targetingFor(fixed, 'o1').who, ['front-desk leads'], 'an edit is reviewed; the reject aimed at another offer\'s item changed nothing here')
-  const rej = applyCorrections(r, [{ offer: 'o1', hypothesis: 'o1:persona:0', action: 'reject' }])
-  assert.deepEqual(targetingFor(rej, 'o1').who, []); assert.deepEqual(targetingFor(rej, 'o2').who, ['clinic owners'])
+  const bookingPersona = r.hypotheses.find(x => x.offer === 'acme-booking' && x.kind === 'persona')!
+  const fixed = applyCorrections(r, [{ offer: 'acme-payroll', hypothesis: hyp.id, action: 'confirm' }, { offer: 'acme-booking', hypothesis: bookingPersona.id, action: 'edit', value: 'front-desk leads' }, { offer: 'acme-booking', hypothesis: hyp.id, action: 'reject' }])
+  assert.deepEqual(targetingFor(fixed, 'acme-payroll').who.sort(), ['CFOs of hospital groups', 'clinic owners'])
+  assert.deepEqual(targetingFor(fixed, 'acme-booking').who, ['front-desk leads'], 'an edit is reviewed; the reject aimed at another offer item changed nothing here')
+  const rej = applyCorrections(r, [{ offer: 'acme-booking', hypothesis: bookingPersona.id, action: 'reject' }])
+  assert.deepEqual(targetingFor(rej, 'acme-booking').who, []); assert.deepEqual(targetingFor(rej, 'acme-payroll').who, ['clinic owners'])
   assert.equal(fixed.question, null)
+})
+
+test('a recrawl keeps stable offer and hypothesis identity, so reviewed corrections re-apply and never contaminate across offers', async () => {
+  const first = await run() as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  const bookingPersona = first.hypotheses.find(x => x.offer === 'acme-booking' && x.kind === 'persona')!
+  const cfo = first.hypotheses.find(x => x.text === 'CFOs of hospital groups')!
+  const reviewed = applyCorrections(first, [{ offer: 'acme-booking', hypothesis: bookingPersona.id, action: 'edit', value: 'office managers' }, { offer: 'acme-payroll', hypothesis: cfo.id, action: 'confirm' }])
+  // Recrawl: same site, the model returns the same statements in a DIFFERENT order with different positional refs.
+  const shuffled = JSON.stringify({ offers: [{ id: 'x9', name: 'Acme Payroll' }, { id: 'x1', name: 'Acme Booking' }], items: [
+    { offer: 'x1', kind: 'persona', text: 'practice managers', url: 'https://acme.example/products/booking', quote: 'lets practice managers fill their appointment book', inferred: false },
+    { offer: 'x9', kind: 'persona', text: 'CFOs of hospital groups', url: 'https://acme.example/pricing', quote: 'built for hospital group CFOs', inferred: true },
+    { offer: 'x9', kind: 'persona', text: 'clinic owners', url: 'https://acme.example/products/payroll', quote: 'payroll for clinic owners without a finance team', inferred: false },
+    { offer: 'x1', kind: 'industry', text: 'dental practices', url: 'https://acme.example/customers', quote: 'Harbor Dental, a four-chair dental practice', inferred: false },
+  ] })
+  const second = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => shuffled, now: () => 1_800_000_100, prior: reviewed }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.deepEqual(second.offers.map(o => o.id).sort(), ['acme-booking', 'acme-payroll'], 'stable ids despite swapped order and different positional refs')
+  const reBooking = second.hypotheses.find(x => x.id === bookingPersona.id)!
+  assert.deepEqual([reBooking.status, reBooking.text], ['reviewed', 'office managers'], 'the edit re-applies to the same content-keyed hypothesis')
+  const reCfo = second.hypotheses.find(x => x.id === cfo.id)!
+  assert.equal(reCfo.status, 'reviewed', 'the confirm re-applies across the recrawl')
+  assert.deepEqual(targetingFor(second, 'acme-booking').who, ['office managers']); assert.deepEqual(targetingFor(second, 'acme-payroll').who.sort(), ['CFOs of hospital groups', 'clinic owners'])
+})
+
+test('an answered question stays bound to its offer across recrawls and is never re-asked', async () => {
+  const noBuyer = JSON.stringify({ offers: [{ id: 'o1', name: 'Acme Booking' }, { id: 'o2', name: 'Acme Payroll' }], items: [] })
+  const first = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => noBuyer }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.equal(first.question, 'Which of your offers is this play for?')
+  const answered = { ...first, question: null, answered: { question: first.question!, offer: 'acme-booking' } }
+  const second = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => noBuyer, prior: answered }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.equal(second.question, null, 'the answered question is not re-asked')
+  assert.deepEqual(second.answered, { question: 'Which of your offers is this play for?', offer: 'acme-booking' }, 'the binding persists while the offer exists')
+  const gone = JSON.stringify({ offers: [{ id: 'o1', name: 'Acme Payroll' }], items: [] })
+  const third = await researchSeller('https://acme.example/', { fetchHtml, complete: async () => gone, prior: answered }) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.deepEqual(third.answered, null, 'the binding lapses when its offer no longer exists')
 })
 
 test('failure modes: unreachable site, unreadable pages, bad model output', async () => {

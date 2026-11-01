@@ -3,6 +3,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { icpFromWebsite } from '@/lib/scan/icp-from-site'
+import { latestQueryJob } from '@/lib/scan/store'
 import { denied } from '@/lib/workspace-access'
 
 // Turns the user's own homepage into an editable ICP draft (returned, never saved).
@@ -18,7 +19,10 @@ export async function POST(req: NextRequest) {
   let url = typeof body?.url === 'string' ? body.url.trim().slice(0, 300) : ''
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`
   if (url.length < 5) return NextResponse.json({ error: 'invalid' }, { status: 400 })
-  const out = await icpFromWebsite(getScanDb(), user.tenantId, url)
+  // Prior research carries the answered-question binding and reviewed corrections into a recrawl (#379).
+  let prior = null
+  try { const prev = latestQueryJob(getScanDb(), user.tenantId); let pj: unknown = null; try { pj = prev?.icp ? JSON.parse(prev.icp) : null } catch { pj = null }; prior = pj && typeof pj === 'object' && (pj as { research?: unknown }).research ? (pj as { research: never }).research : null } catch { prior = null }
+  const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { prior })
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     const status = out.error === 'no_api_key' || out.error === 'key_unreadable' || out.error === 'invalid' || out.error === 'not_public' ? 400

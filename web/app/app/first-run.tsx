@@ -58,6 +58,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // replaced when the profile changes, so the box never keeps a sentence built from an older profile.
   const [askIsSuggestion, setAskIsSuggestion] = useState(true)
   const [busy, setBusy] = useState(false)
+  // The source-backed research block from the website read (#379): carried untouched through the reviewed profile
+  // into the scan, so the play keeps its provenance and per-offer corrections.
+  const [research, setResearch] = useState<unknown>(null)
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
   // The brain: facts from the website read, revealed one by one while it builds.
@@ -100,7 +103,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const brain: Brain = { summary: summary || sells, who: list(who), industries: list(industries), where: list(where), signals: list(signals) }
   const plays = useMemo(() => suggestPlays(brain), [summary, sells, who, industries, where, signals]) // eslint-disable-line react-hooks/exhaustive-deps
   // The reviewed profile exactly as shown in step 2; it goes to the search with the sentence (no hidden fields).
-  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude) }
+  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude), ...(research ? { research } : {}) }
 
   // Watch the first play: its status every few seconds until it settles, then its ready leads (the same gates as Home).
   const firstId = first?.id ?? null, firstStatus = first?.status ?? null
@@ -140,7 +143,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
       if (j.sells) setSells(String(j.sells))
-      fillBuyer(j.icp ?? {})
+      fillBuyer(j.icp ?? {}); setResearch((j.icp as { research?: unknown })?.research ?? null)
       try { setReadFrom(new URL(j.source).hostname) } catch { setReadFrom('your website') }
       setWebsite(url)
       const f = brainFacts({ ...j, business_name: bizName })
