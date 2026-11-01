@@ -216,7 +216,7 @@ export function checkedAuditRows(c: CheckedListing, windowDays: number, retrieve
     connector: `signals:${c.board}-gtm`, kind: 'hiring-role',
     value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${t}`.slice(0, 254),
     label: [unconfirmedNote, stale.has(t.trim().toLowerCase())
-      ? `Board listing audit (${filterText}): posting date read as older than the last ${windowDays} days; no dated evidence row was stored`
+      ? `Board listing audit (${filterText}): posting date read as older than the last ${windowDays} days (long-open; repost history unknown); no dated evidence row was stored`
       : `Board listing audit (${filterText}): title listed on the board when checked; its posting date was not read - freshness unknown`].filter(Boolean).join('; ').slice(0, 200),
     confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }))
@@ -235,6 +235,49 @@ export function checkedCoverageRow(c: CheckedListing, windowDays: number, retrie
     label: COVERAGE_LABEL.slice(0, 200),
     confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }
+}
+// --- Repost / history labeling (AC4) -----------------------------------------------------------------------
+// Without a stable employer posting ID or board-provided repost history, a changed posting date can NEVER prove a
+// repost or renewed demand, and the same title on two boards can NEVER be proven the same posting. So history is
+// attached as honest labels on the NEW rows; existing rows are never rewritten (the trail stays as recorded).
+export interface ExistingEvidenceRow { kind: string; connector: string; value: string; source_date: string; retrieved_at: number }
+// A job TITLE can itself contain ' - posted '; only a trailing, date-shaped suffix is the posting date (last occurrence).
+const splitPosted = (value: string): [string, string | null] => {
+  const i = value.lastIndexOf(' - posted ')
+  if (i < 0) return [value, null]
+  const d = value.slice(i + ' - posted '.length)
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? [value.slice(0, i), d] : [value, null]
+}
+const evidenceTitle = (value: string): string => splitPosted(value.replace(/^Unconfirmed: /, ''))[0].trim().toLowerCase()
+const boardOf = (connector: string): string => connector.replace(/^signals:/, '').replace(/-gtm$/, '')
+export function withRepostHistory<T extends { connector: string; kind: string; value: string; label: string }>(rows: T[], board: GtmHiring['board'], existing: ExistingEvidenceRow[]): T[] {
+  const mine = `signals:${board}-gtm`
+  return rows.map(r => {
+    if (r.kind !== 'hiring' && r.kind !== 'hiring-role') return r
+    const t = evidenceTitle(r.value)
+    if (!t) return r
+    const notes: string[] = []
+    const thisDate = r.kind === 'hiring' ? splitPosted(r.value)[1] : null
+    const priors = existing.filter(e => e.connector === mine && e.kind === 'hiring' && evidenceTitle(e.value) === t && splitPosted(e.value)[1] !== null && splitPosted(e.value)[1] !== thisDate)
+    if (priors.length) {
+      const dates = [...new Set(priors.map(e => splitPosted(e.value)[1]))].sort()
+      const firstSeen = new Date(Math.min(...priors.map(e => e.retrieved_at)) * 1000).toISOString().slice(0, 10)
+      // The qualifier leads: label truncation (200) can only drop the parenthetical detail, never the honest qualifier itself.
+      notes.push(`repost vs continued listing unknown, not renewed demand (board previously dated ${dates.join(', ')}, first seen ${firstSeen})`)
+    }
+    const otherBoards = [...new Set(existing.filter(e => (e.kind === 'hiring' || e.kind === 'hiring-role') && boardOf(e.connector) !== board && evidenceTitle(e.value) === t).map(e => boardOf(e.connector)))].sort()
+    if (otherBoards.length) notes.push(`same posting unknown (also listed on ${otherBoards.join(', ')})`)
+    if (!notes.length) return r
+    // The qualifier notes are the load-bearing part: when the combined label exceeds the 200-char cap, shorten the
+    // PRE-EXISTING base context, never the notes - a truncated 'repost vs continued listing' without 'unknown, not
+    // renewed demand' would be a misleading claim. (The base detail also survives on the other rows for this lead.)
+    const full = [r.label, ...notes].join('; ')
+    if (full.length <= 200) return { ...r, label: full }
+    const suffix = notes.join('; ')
+    const room = 200 - suffix.length - 2
+    const base = room > 0 ? r.label.slice(0, room) : ''
+    return { ...r, label: ((base ? base + '; ' : '') + suffix).slice(0, 200) }
+  })
 }
 export function postingEvidence(g: GtmHiring, retrievedAt: number, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
   return g.postings.slice(0, 3).map(p => ({

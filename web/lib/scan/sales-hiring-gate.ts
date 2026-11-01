@@ -9,7 +9,7 @@ import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from '.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
-import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, BOARD_LABEL } from '../signals/ats-gtm.ts'
+import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, withRepostHistory, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
@@ -210,9 +210,10 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const line = roles.length ? `Hiring for ${p.title} (requested: ${match!.term}), posted ${p.date}. This may relate to your offer; buying need isn't verified. ` : `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
         setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
         addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
-        for (const e of postingEvidence(g, now, null)) addEnrichment(db, job.user_id, l.id, { ...e, label: roles.length ? `Requested role: ${matchedHiringRole(e.value.split(' - posted ')[0], roles)!.term}; ${e.label}`.slice(0, 200) : e.label })
+        const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
+        for (const e of withRepostHistory(postingEvidence(g, now, null), g.board, existingEvidence)) addEnrichment(db, job.user_id, l.id, { ...e, label: roles.length ? `Requested role: ${matchedHiringRole(e.value.split(' - posted ')[0], roles)!.term}; ${e.label}`.slice(0, 200) : e.label })
         { const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
-          const auditRows = boardTitleAudit(g, now, checkedDay, null)
+          const auditRows = withRepostHistory(boardTitleAudit(g, now, checkedDay, null), g.board, existingEvidence)
           for (const e of auditRows) addEnrichment(db, job.user_id, l.id, e) // #533: board-title audit sample
           addEnrichment(db, job.user_id, l.id, boardCoverageRow(g, auditRows.length, Math.min(g.postings.length, 3), now, checkedDay)) }
         passed++; passedIds.push(l.id); continue
@@ -222,7 +223,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const heuristicC = c.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(c.domain && l.company_domain && c.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
         if (c.via === 'domain' && !heuristicC) {
           const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
-          for (const e of checkedAuditRows(c, windowDays, now, checkedDay, null)) addEnrichment(db, job.user_id, l.id, e) // #533 F-B: zero-match audit trail
+          const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
+          for (const e of withRepostHistory(checkedAuditRows(c, windowDays, now, checkedDay, null), c.board, existingEvidence)) addEnrichment(db, job.user_id, l.id, e) // #533 F-B: zero-match audit trail
           addEnrichment(db, job.user_id, l.id, checkedCoverageRow(c, windowDays, now, checkedDay))
         }
       }
