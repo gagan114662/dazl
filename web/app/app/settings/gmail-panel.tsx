@@ -57,7 +57,7 @@ export default function GmailPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
-      <Caveat className="text-[#555] text-sm mb-4" summary="Emails go out from your own Gmail after you approve them (or on autopilot, if you turn it on), and connecting asks to read only replies and delivery-failure notices in the threads dazl started.">Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them - dazl never lists, searches, or reads anything else in your mailbox. On Google&apos;s consent screen you can untick the read access and still connect send-only.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-4" summary="Emails go out from your own Gmail after you approve them (or on autopilot, if you turn it on), and connecting asks to read replies in dazl outreach threads and check delivery-failure notices for its sends.">Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them. To find separate-thread delivery failures, dazl searches mailer-daemon and postmaster notices in a bounded time window and checks whether they match its recorded sends. Unmatched notice content is not kept as a reply. On Google&apos;s consent screen you can untick the read access and still connect send-only.</Caveat>
       {s?.gmail ? (
         <div className="text-sm mb-4">
           <div className="flex items-center justify-between">
@@ -68,7 +68,7 @@ export default function GmailPanel() {
             </span>
           </div>
           {s.gmail.status === 'active' && (
-            <p className="text-[#666] text-xs mt-1">{s.gmail.read_granted ? 'Reply reading: on. Only threads dazl started are read.' : 'Reply reading: off (send only). Reconnect and leave the read access ticked to turn it on.'}</p>
+            <p className="text-[#666] text-xs mt-1">{s.gmail.read_granted ? 'Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.' : 'Reply reading: off (send only). Reconnect and leave the read access ticked to turn it on.'}</p>
           )}
         </div>
       ) : (

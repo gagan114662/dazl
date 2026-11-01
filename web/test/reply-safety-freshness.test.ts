@@ -127,6 +127,8 @@ const seqDeps = (master: Buffer, onToken?: () => void) => {
     const url = String(u)
     if (url.includes('token')) { onToken?.(); return json({ access_token: 'at' }) }
     if (url.includes('/threads/')) return json({ messages: [] })
+    // #415 also checks the consent-scoped delivery-notice listing before sequence execution.
+    if (url.includes('/messages?q=') && decodeURIComponent(url).includes('from:mailer-daemon OR from:postmaster after:')) return json({ messages: [] })
     return json({}, 404)
   }) as unknown as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never }
   return { d, sent }
@@ -152,6 +154,17 @@ test('sequence step: fresh ingest lets the approved step send (gate does not bre
   await runSequences(db, 'A', 'Acme', d)
   assert.equal(sent.length, 1, 'the approved follow-up went out')
   assert.equal((db.prepare('SELECT status FROM sequence_steps WHERE sequence_id = ? AND step = 2').get(seqId) as { status: string }).status, 'sent')
+})
+
+test('sequence step: failed delivery-notice lookup holds even with fresh thread ingest', async () => {
+  const { db, master } = await seedSequenceTenant()
+  syncRow(db, NOW + 3 * 86400 - 60)
+  const { d, sent } = seqDeps(master)
+  const original = d.fetchImpl!
+  d.fetchImpl = (async (...args: Parameters<typeof fetch>) => String(args[0]).includes('/messages?q=') ? json({ error: 'unavailable' }, 503) : original(...args)) as typeof fetch
+  const result = await runSequences(db, 'A', 'Acme', d)
+  assert.equal(result.stopped, 'reply_sync_failed')
+  assert.equal(sent.length, 0, 'no send when any consent-scoped safety lookup fails')
 })
 
 test('sequence step: ingest going stale DURING the token await releases the claim inert - nothing sends', async () => {

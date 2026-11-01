@@ -237,6 +237,7 @@ test('a conversion proven DURING the token refresh still stops the send: claim o
   // The verification commits while the access token is being refreshed - inside the await between claim and send.
   const midFlight = { ...d, fetchImpl: (async (u: string) => {
     if (String(u).includes('token')) { db.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'u5'").run(); return json({ access_token: 'at' }) }
+    if (u.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as unknown as typeof fetch }
   await assert.rejects(sendMessage(db, 'A', mid, midFlight), (e: unknown) => (e as { code?: string }).code === 'converted')
@@ -271,6 +272,7 @@ test('sequence step: a conversion proven DURING the token refresh stops the step
     const url = String(u)
     if (url.includes('token')) { db.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'u9'").run(); return json({ access_token: 'at' }) }
     if (url.includes('/threads/')) return json({ messages: [] })
+    if (url.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as unknown as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never }
   await runSequences(db, 'A', 'Acme', d)

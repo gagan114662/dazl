@@ -7,7 +7,8 @@ export const norm = (email: string) => email.trim().toLowerCase()
 
 // Current read-consent text version (defined here so the send-side freshness gate can check read authority without
 // importing replies.ts - replies.ts -> autopilot.ts -> service.ts would cycle). Re-exported from replies.ts.
-export const READ_CONSENT_VERSION = '2026-10-21'
+import { READ_CONSENT_VERSION } from './read-consent.ts'
+export { READ_CONSENT_VERSION }
 
 // #413: a send must never rely on stale safety state, scoped per recipient: safety state about a recipient exists
 // only once this tenant has SENT to them (a reply or opt-out presupposes a thread). A first contact to a

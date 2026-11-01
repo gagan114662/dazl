@@ -46,7 +46,7 @@ function sentMessage(db: Database.Database, leadId: string, email: string) {
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id) VALUES (?, 'A', ?, ?, 'A quick question', 'This is the sent first touch.', 'sent', ?, 'g1', 'thread-1')").run(mid, leadId, email, NOW)
   return mid
 }
-const sends = () => { const sent: string[] = []; const d: Deps & { flags: Record<string, string> } = { flags: ON, env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: (async (u: unknown) => { const url = String(u); if (url.includes('token')) return json({ access_token: 'at' }); if (url.includes('/threads/')) return json({ messages: [] }); return json({}, 404) }) as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(Buffer.from(raw, 'base64url').toString('utf8')); return { id: 'g' + sent.length, threadId: 'thread-1' } }) as never }; return { sent, d } }
+const sends = () => { const sent: string[] = []; const d: Deps & { flags: Record<string, string> } = { flags: ON, env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: (async (u: unknown) => { const url = String(u); if (url.includes('token')) return json({ access_token: 'at' }); if (url.includes('/threads/')) return json({ messages: [] }); if (url.includes('messages?q=')) return json({ messages: [] }); return json({}, 404) }) as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(Buffer.from(raw, 'base64url').toString('utf8')); return { id: 'g' + sent.length, threadId: 'thread-1' } }) as never }; return { sent, d } }
 const seqRows = (db: Database.Database) => db.prepare('SELECT id, lead_id, status, policy, claims_hash FROM sequences').all() as { id: string; lead_id: string; status: string; policy: string | null; claims_hash: string | null }[]
 
 test('policy acceptance is exact and versioned; without it nothing enrolls', async () => {
@@ -228,6 +228,7 @@ test('a revocation landing during the token await stops the step at the send bou
     // syncReplies takes the first token; the revoke lands during the send's own token refresh (the second call).
     if (url.includes('token')) { tokenCalls++; if (tokenCalls === 2) revokeAutoSequencePolicy(db, 'A'); return json({ access_token: 'at' }) }
     if (url.includes('/threads/')) return json({ messages: [] })
+    if (url.includes('messages?q=')) return json({ messages: [] })
     return json({}, 404)
   }) as typeof fetch
   const r = await runSequences(db, 'A', 'Acme', { ...d, fetchImpl: raceFetch, now: NOW + 3 * DAY })

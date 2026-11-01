@@ -44,6 +44,7 @@ function mock(reply?: string, syncFail = false) {
     const url = String(u)
     if (url.includes('oauth2')) return json({ access_token: 'at' })
     if (url.includes('/threads/')) return syncFail ? json({},500) : json({messages: reply ? [{id:'reply-1',internalDate:String((NOW+1)*1000),payload:{mimeType:'text/plain',headers:[{name:'From',value:'lead@acme.example'}],body:{data:Buffer.from(reply).toString('base64url')}}}] : []})
+    if (url.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({},404)
   }) as typeof fetch
   const sendFn = (async (_t: string,raw: string) => { calls.push(Buffer.from(raw,'base64url').toString('utf8')); return {id:`gm${calls.length}`,threadId:'thread-1'} })

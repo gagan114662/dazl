@@ -79,6 +79,8 @@ function gmailStub(threads: Record<string, unknown[]> = {}) {
     if (u.startsWith('https://oauth2.googleapis.com/')) return json({ access_token: 'scenario-access-token', expires_in: 3600 })
     const m = /gmail\.googleapis\.com\/gmail\/v1\/users\/me\/threads\/([^?]+)/.exec(u)
     if (m) return json({ messages: threads[decodeURIComponent(m[1])] ?? [] })
+    // #415: no synthetic delivery notices here; only the narrowly scoped listing is allowed.
+    if (/gmail\.googleapis\.com\/gmail\/v1\/users\/me\/messages\?q=/.test(u) && decodeURIComponent(u).includes('from:mailer-daemon OR from:postmaster after:')) return json({ messages: [] })
     throw new Error(`scenario gmail stub: refused ${u}`)
   }) as unknown as typeof fetch
 }
