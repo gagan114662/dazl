@@ -484,6 +484,22 @@ export default function LeadsClient() {
     if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
   }
   useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
+  // Interrupted enrichment lookups (a rate limit or crash left the outcome unknown): nothing retried itself, so a
+  // lookup that may have been charged is never re-billed on its own. The owner retries each one explicitly, with
+  // the cost and limits stated next to the button (GET /api/enrich/held -> costText).
+  const [heldEnrich, setHeldEnrich] = useState<{ leadId: string; company: string; provider: 'apollo' | 'pdl'; step: 'org' | 'people' | 'legacy'; since: number; costText: string }[]>([])
+  const [retryingEnrich, setRetryingEnrich] = useState<string | null>(null)
+  const loadHeldEnrich = () => fetch('/api/enrich/held').then(r => r.ok ? r.json() : null).then(j => { if (j) setHeldEnrich(j.held ?? []) }).catch(() => {})
+  useEffect(() => { void loadHeldEnrich() }, [])
+  // One button per held item: the action is scoped to exactly that provider+step, whose cost/limits are the
+  // costText shown beside it - retrying Apollo never releases or runs a PDL lookup.
+  const retryEnrich = async (h: { leadId: string; provider: 'apollo' | 'pdl'; step: 'org' | 'people' | 'legacy' }) => {
+    const k = `${h.leadId}:${h.provider}:${h.step}`
+    setRetryingEnrich(k)
+    const r = await fetch(`/api/leads/${h.leadId}/enrich-retry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: h.provider, step: h.step }) }).catch(() => null)
+    setRetryingEnrich(null)
+    if (r?.ok) { void loadHeldEnrich(); void loadLeads() }
+  }
   // The Review drafts bar: this scan's unsent emails by state (drafts to review, approved not sent), read back from
   // Outreach so it survives a reload and counts drafts made with Draft email too. Read-only; null when it could not load.
   const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
@@ -947,6 +963,22 @@ export default function LeadsClient() {
           <span>{barCopy(scanDrafts)}</span>
           <a className="btn-primary text-xs px-3 py-1.5 shrink-0" href={`/app/outreach?job_id=${jobId}`}>{scanDrafts.drafts > 0 ? 'Review drafts' : 'Open in Outreach'}</a>
         </div>
+      )}
+      {heldEnrich.length > 0 && (
+        <section className="card p-4 mb-4 text-sm" aria-label="Contact enrichment needs attention" data-testid="enrich-held">
+          <p className="font-semibold mb-1">Contact enrichment needs attention</p>
+          <p className="text-[var(--ink-2)] mb-3">A company or contact lookup was interrupted (a rate limit or a crash) and was not retried automatically, so a lookup that may have been charged is never re-billed on its own.</p>
+          <ul className="space-y-3">
+            {heldEnrich.map(h => (
+              <li key={`${h.leadId}:${h.provider}:${h.step}`} className="flex flex-wrap items-center gap-3">
+                <span className="font-semibold">{h.company}</span>
+                <span className="text-[var(--ink-3)]">{h.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} &middot; interrupted {new Date(h.since * 1000).toLocaleString()}</span>
+                <span className="basis-full text-[var(--ink-2)]" data-testid="enrich-held-cost">{h.costText}</span>
+                <button type="button" className="btn-primary btn-sm" disabled={retryingEnrich === `${h.leadId}:${h.provider}:${h.step}`} onClick={() => void retryEnrich(h)} data-testid={`enrich-retry-${h.leadId}-${h.provider}-${h.step}`}>{retryingEnrich === `${h.leadId}:${h.provider}:${h.step}` ? 'Retrying…' : 'Retry lookup'}</button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
       {jobId && visibleLeads.length > 0 && (() => {
         const n = cardCounts(visibleLeads, draftedLeads, approved)

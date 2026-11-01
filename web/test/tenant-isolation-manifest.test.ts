@@ -84,7 +84,7 @@ for (const [name, file, expect] of [
   ['a member whose role does not allow a route is refused with 403 and changes nothing; viewers still read', 'tenant-route-roles-runtime.mts',
     new RegExp(`ROLES ${REFUSED} ${VIEWER_READS} STALE ${FRESH}\\b`)],
 
-  ["tenant B cannot read or change tenant A's rows through the id-taking lead, batch and reply routes", 'tenant-route-ids-runtime.mts', /COHORT 18/],
+  ["tenant B cannot read or change tenant A's rows through the id-taking lead, batch and reply routes", 'tenant-route-ids-runtime.mts', /COHORT 19/],
   ["tenant B cannot read or change tenant A's rows through the list, body-id and query-id routes, or any session-scope route", 'tenant-route-pending-runtime.mts',
     // 13 targeted handlers, then the sweep over every session-scope handler (the cohort counts both)
     new RegExp(`SWEPT ${SCOPED}\\b[\\s\\S]*COHORT ${13 + SCOPED}\\b`)],

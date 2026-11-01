@@ -30,7 +30,7 @@ export const DEGRADED: Record<string, Degraded> = {
   // scans, trial admission and paid or shared providers
   scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'evidence-recheck': 'closed', 'hiring-feed': 'closed',
   'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'play-research': 'closed', 'find-contact': 'closed',
-  'settings:enrichment': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
+  'settings:enrichment': 'closed', 'enrich-retry': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   checkout: 'closed', llmkey: 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   // low risk: the app's own data, or must keep working
