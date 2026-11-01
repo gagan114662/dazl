@@ -149,7 +149,14 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     try {
       approve(db, tenantId, id)
       const r = await sendMessage(db, tenantId, id, d)
-      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id) }
+      if (r === 'sent') {
+        out.sent++; audit(db, tenantId, 'sent', undefined, l.id, id)
+        // #414: a proven first-touch send enrolls the bounded cold follow-up sequence, only under the
+        // tenant-accepted AUTO_SEQUENCE_POLICY. Deferred import: sequences.ts already imports this module.
+        // Enrollment is best-effort - it must never pause the tenant or affect the send that just happened.
+        try { (await import('./sequences.ts')).enrollColdSequence(db, tenantId, id, { businessName }) }
+        catch (e) { audit(db, tenantId, 'sequence_enroll_failed', e instanceof Error ? e.message.slice(0, 40) : 'error', l.id, id) }
+      }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', l.id, id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
       const code = e instanceof OutreachError ? e.code : 'error'

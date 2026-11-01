@@ -618,7 +618,9 @@ CREATE TABLE seo_index_runs (
 
 CREATE TABLE sequence_settings (
       tenant_id      TEXT PRIMARY KEY,
-      test_addresses TEXT NOT NULL DEFAULT '[]'
+      test_addresses TEXT NOT NULL DEFAULT '[]',
+      auto_policy    TEXT,
+      auto_policy_at INTEGER
     );
 
 CREATE TABLE sequence_steps (
@@ -644,7 +646,7 @@ CREATE TABLE sequences (
       to_email    TEXT NOT NULL,
       status      TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','active','replied','done','stopped')),
       stop_reason TEXT CHECK (stop_reason IS NULL OR length(stop_reason) <= 40),
-      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), policy TEXT, claims_hash TEXT,
       UNIQUE (tenant_id, lead_id)
     );
 
