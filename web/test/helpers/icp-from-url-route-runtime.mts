@@ -10,6 +10,7 @@ import { migrateScan } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migratePlatform } from '../../lib/db/platform-tables.ts'
+import { setErrorSinks, type ErrorRecord } from '../../lib/ops/errors.ts'
 import { POST } from '../../app/api/scan/icp-from-url/route.ts'
 
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
@@ -99,8 +100,13 @@ test('route error mapping: invalid, not_public, js_only, upstream failure, unaut
 test('failed recall never makes a paid call', async () => {
   const db = setup(); setUser({ id: 'T1', business_name: 'Acme' }); saveKey(db,'T1','anthropic','sk-fixture-ant-key')
   db.exec('DROP TABLE seller_decisions')
-  const r = await post({ url: 'https://acme.example' })
-  assert.equal(r.status,503); assert.equal((await r.json()).error,'intelligence_unavailable'); assert.equal(modelCalls,0)
+  const records: ErrorRecord[] = []; const restore = setErrorSinks([r => records.push(r)])
+  try {
+    const r = await post({ url: 'https://acme.example', prompt: 'private profile prompt', targeting: 'private buyer segment' })
+    assert.equal(r.status,503); assert.equal((await r.json()).error,'intelligence_unavailable'); assert.equal(modelCalls,0)
+    assert.equal(records.length,1); assert.equal(records[0].source,'route'); assert.equal(records[0].where,'/api/scan/icp-from-url'); assert.equal(records[0].method,'POST')
+    assert.ok(!/private profile prompt|private buyer segment|sk-fixture-ant-key|acme\.example/.test(JSON.stringify(records)), 'central reporter gets the error and fixed route context, never request or targeting data')
+  } finally { restore() }
 })
 
 // Fresh model output and HTML transport are fixtures; handler/key/spend/research/recall/reuse all execute for real.

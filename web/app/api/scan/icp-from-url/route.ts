@@ -1,3 +1,5 @@
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 import { recallSellerDecisions, siteKey } from '@/lib/scan/intelligence'
 import { sqliteDb } from '@/lib/db/client'
 import { NextRequest, NextResponse } from 'next/server'
@@ -36,7 +38,10 @@ export async function POST(req: NextRequest) {
   // A failed recall is not empty memory: refuse before any fetch/model call so corrections cannot silently vanish.
   let decisions
   try { decisions = await recallSellerDecisions(sqliteDb(getScanDb()), user.tenantId, url) }
-  catch { return NextResponse.json({ error: 'intelligence_unavailable', message: 'Saved targeting decisions could not be read. Try again before generating a new profile.' }, { status: 503 }) }
+  catch (e) {
+    captureError(e, { source: 'route', where: '/api/scan/icp-from-url', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
+    return NextResponse.json({ error: 'intelligence_unavailable', message: 'Saved targeting decisions could not be read. Try again before generating a new profile.' }, { status: 503 })
+  }
   if (decisions.trace.truncated) return NextResponse.json({ error: 'intelligence_capacity', message: 'Saved targeting exceeds the safe recall window. No new profile was generated; use your existing reviewed profile.' }, { status: 409 })
   const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { prior, decisions })
   if ('error' in out) {
