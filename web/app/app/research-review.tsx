@@ -7,7 +7,7 @@
 import { useState } from 'react'
 
 export type ResearchHyp = { i: string; o: string; k: string; t: string; s: string; u: string | null; q: string | null; at: number | null }
-export type ResearchBlock = { v: 1; site: string; q: string | null; ans: { q: string; o: string } | null; offers: { i: string; n: string }[]; hyps: ResearchHyp[] }
+export type ResearchBlock = { v: 1; site: string; q: string | null; ans: { q: string; o: string; t?: string } | null; offers: { i: string; n: string }[]; hyps: ResearchHyp[] }
 
 const FIELD_OF: Record<string, 'who' | 'industries' | 'sizes' | 'where' | 'exclude'> = { persona: 'who', industry: 'industries', size: 'sizes', location: 'where', disqualifier: 'exclude' }
 const OFFER_QUESTION = 'Which of your offers is this play for?'
@@ -20,19 +20,27 @@ export function asResearchBlock(x: unknown): ResearchBlock | null {
   return Array.isArray(r.offers) && Array.isArray(r.hyps) ? r : null
 }
 
-export default function ResearchReview({ research, onChange, onAdd }: {
+export default function ResearchReview({ research, onChange, onAdd, onRemove }: {
   research: ResearchBlock
   onChange: (r: ResearchBlock) => void
   onAdd: (field: 'who' | 'industries' | 'sizes' | 'where' | 'exclude', text: string) => void
+  onRemove: (field: 'who' | 'industries' | 'sizes' | 'where' | 'exclude', text: string) => void
 }) {
   const [answer, setAnswer] = useState('')
-  const dismiss = (id: string) => onChange({ ...research, hyps: research.hyps.map(h => h.i === id ? { ...h, s: 'rejected' } : h) })
+  // Dismiss rejects the statement AND removes its exact text from the visible field in the same action: the draft the
+  // person sees is the authority, with no hidden contradiction a later exact-match could resurrect.
+  const dismiss = (id: string) => {
+    const h = research.hyps.find(x => x.i === id)
+    const field = h ? FIELD_OF[h.k] : undefined
+    if (h && field) onRemove(field, h.t)
+    onChange({ ...research, hyps: research.hyps.map(x => x.i === id ? { ...x, s: 'rejected' } : x) })
+  }
   const answerOffer = (offerId: string) => research.q ? onChange({ ...research, ans: { q: research.q, o: offerId } }) : null
   const answerWho = () => {
     const t = answer.trim()
     if (!t || !research.q) return
     onAdd('who', t)   // the typed answer lands in the visible profile field - the person's own words, editable
-    onChange({ ...research, ans: { q: research.q, o: research.offers[0]?.i ?? '' } })
+    onChange({ ...research, ans: { q: research.q, o: research.offers[0]?.i ?? '', t } })   // ...and persists IN the block, so a recrawl carries it
     setAnswer('')
   }
   const visible = research.hyps.filter(h => h.k !== 'offer' && h.s !== 'rejected')
@@ -53,7 +61,9 @@ export default function ResearchReview({ research, onChange, onAdd }: {
                     <span className="text-[var(--ink-2,#888)]">{KIND_LABEL[h.k] ?? h.k}: </span>{h.t}
                     {h.s === 'sourced' && h.q
                       ? <span className="block text-xs text-[var(--ink-2,#888)]">on your site: &ldquo;{h.q}&rdquo;{h.u ? <> - <a className="underline" href={h.u} target="_blank" rel="noreferrer">{h.u}</a></> : null}</span>
-                      : <span className="block text-xs text-[var(--ink-2,#888)]">inferred - not stated on your site</span>}
+                      : h.s === 'reviewed' && !h.q
+                        ? <span className="block text-xs text-[var(--ink-2,#888)]">added by you</span>
+                        : <span className="block text-xs text-[var(--ink-2,#888)]">inferred - not stated on your site</span>}
                   </span>
                   {FIELD_OF[h.k] && <button type="button" className="text-xs underline shrink-0" onClick={() => onAdd(FIELD_OF[h.k], h.t)}>Add</button>}
                   <button type="button" className="text-xs underline shrink-0" onClick={() => dismiss(h.i)}>Dismiss</button>
@@ -73,7 +83,7 @@ export default function ResearchReview({ research, onChange, onAdd }: {
               : null}
         </div>
       )}
-      {research.ans && <p className="text-xs text-[var(--ink-2,#888)] mt-1">Answered: {research.ans.q}</p>}
+      {research.ans && <p className="text-xs text-[var(--ink-2,#888)] mt-1" data-testid="research-answered">Answered: {research.ans.q}{research.ans.t ? ` - ${research.ans.t}` : ''}</p>}
     </div>
   )
 }

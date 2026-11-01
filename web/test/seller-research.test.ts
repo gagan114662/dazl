@@ -1,7 +1,7 @@
 // #379: multi-page seller research. Synthetic site (invented company); stubbed fetch and model; no network, no key.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCorrections, buildResearch, jsonOnly, researchLinks, targetingFor, MAX_PAGES, type FetchedPage, type PageKind, type SellerResearch } from '../lib/scan/seller-research.ts'
+import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, jsonOnly, researchLinks, targetingFor, toStored, MAX_PAGES, type FetchedPage, type PageKind, type SellerResearch } from '../lib/scan/seller-research.ts'
 import { extractSiteText } from '../lib/scan/icp-from-site.ts'
 
 const pad = (s: string) => `${s} ${'Our team builds reliable software for growing businesses and supports every customer. '.repeat(3)}`
@@ -119,6 +119,36 @@ test('an answered question stays bound to its offer across recrawls and is never
   const gone = JSON.stringify({ offers: [{ id: 'o1', name: 'Acme Payroll' }], items: [] })
   const third = await crawl(async () => gone, answered) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
   assert.deepEqual(third.answered, null, 'the binding lapses when its offer no longer exists')
+})
+
+test("a typed 'Who buys this?' answer persists its WORDS across recrawls as a reviewed persona on the answering offer", async () => {
+  const oneOffer = JSON.stringify({ offers: [{ id: 'o1', name: 'Acme Booking' }], items: [] })
+  const first = await crawl(async () => oneOffer) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.equal(first.question, 'Who buys this?')
+  const answered = { ...first, question: null, answered: { question: 'Who buys this?', offer: 'acme-booking', text: 'office managers' } }
+  const second = await crawl(async () => oneOffer, answered) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.equal(second.question, null, 'the answered question is not re-asked')
+  assert.deepEqual(second.answered, { question: 'Who buys this?', offer: 'acme-booking', text: 'office managers' }, 'the typed words carry with the binding')
+  const words = second.hypotheses.find(h => h.kind === 'persona' && h.text === 'office managers')
+  assert.ok(words, "the person's words surface as a persona hypothesis, not only a suppression flag")
+  assert.equal(words!.offer, 'acme-booking')
+  assert.equal(words!.status, 'reviewed', 'the person\'s own answer is reviewed targeting')
+  assert.equal(words!.url, null); assert.equal(words!.quote, null)
+  // Kept in the draft it stays reviewed; deleted from the draft it is an explicit rejection that persists.
+  const base = { summary: '', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+  const kept = applyReviewedDraft({ ...base, who: ['office managers'], research: toStored(second) }, 'Acme Booking')
+  assert.equal(fromStored(kept.research!).hypotheses.find(h => h.text === 'office managers')!.status, 'reviewed')
+  const dropped = applyReviewedDraft({ ...base, research: toStored(second) }, 'Acme Booking')
+  assert.equal(fromStored(dropped.research!).hypotheses.find(h => h.text === 'office managers')!.status, 'rejected')
+  // The binding lapses when its offer no longer exists: words are not injected and the question is asked again.
+  const other = JSON.stringify({ offers: [{ id: 'o1', name: 'Acme Payroll' }], items: [] })
+  const third = await crawl(async () => other, answered) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.equal(third.answered, null)
+  assert.ok(!third.hypotheses.some(h => h.text === 'office managers'))
+  // A different site never inherits the answer.
+  const far = buildResearch(JSON.parse(oneOffer), [], 'other.example', answered) as Exclude<Awaited<ReturnType<typeof run>>, { error: string }>
+  assert.equal(far.answered, null, 'site identity guards the carried answer')
+  assert.ok(!far.hypotheses.some(h => h.text === 'office managers'))
 })
 
 test('failure modes: bad model output and empty offers are model_failed (fetch errors are covered by icpFromWebsite tests)', async () => {

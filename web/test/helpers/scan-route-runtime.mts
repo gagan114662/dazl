@@ -34,7 +34,8 @@ const research = (): IcpResearch => {
     { offer: 'o1', kind: 'persona', text: 'front-desk leads', url: PAGES[0].url, quote: 'helps front-desk leads cut no-shows', inferred: false },
   ] }, PAGES, 'acme.example')
   if ('error' in r) throw new Error('fixture')
-  return toStored(r)
+  // The person already answered 'Who buys this?' in their own words; the answer must survive the route end to end.
+  return toStored({ ...r, question: null, answered: { question: 'Who buys this?', offer: 'acme-booking', text: 'office managers' } })
 }
 const icpWith = (r: IcpResearch, who: string[]): Icp => ({ summary: 'Dental practices that need booking software.', who, industries: [], sizes: [], where: [], signals: [], exclude: [], research: r })
 const storedIcp = (db: Database.Database, jobId: string) => {
@@ -62,6 +63,7 @@ test('scan route: omitted offer binds by the play effective offer; persisted del
     assert.equal(hyp(s1.icp.research!, 'practice managers').s, 'reviewed', 'draft-kept statement confirmed via the effective offer')
     assert.equal(hyp(s1.icp.research!, 'front-desk leads').s, 'sourced', 'unseen sourced statement is NOT rejected')
     assert.deepEqual(s1.icp.who, ['practice managers'], 'stored profile is the reviewed draft verbatim')
+    assert.deepEqual(s1.icp.research!.ans, { q: 'Who buys this?', o: 'acme-booking', t: 'office managers' }, 'the typed answer persists with its words, not a bare suppression flag')
 
     // 2. Next play: the person removed 'practice managers' from the draft -> the persisted review honors the deletion.
     done(db)

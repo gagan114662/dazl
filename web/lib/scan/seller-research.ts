@@ -10,7 +10,7 @@ export type HypKind = 'offer' | 'persona' | 'industry' | 'size' | 'location' | '
 export type HypStatus = 'sourced' | 'hypothesis' | 'unknown' | 'reviewed' | 'rejected'
 export interface Hypothesis { id: string; offer: string; kind: HypKind; text: string; status: HypStatus; url: string | null; quote: string | null; fetched_at: number | null }
 export interface ResearchedPage { url: string; title: string; fetched_at: number; kind: PageKind }
-export interface AnsweredQuestion { question: string; offer: string }
+export interface AnsweredQuestion { question: string; offer: string; text?: string }
 export interface SellerResearch { site: string; pages: ResearchedPage[]; offers: { id: string; name: string }[]; hypotheses: Hypothesis[]; question: string | null; answered: AnsweredQuestion | null }
 export type PageKind = 'home' | 'product' | 'pricing' | 'customers' | 'industries'
 
@@ -101,6 +101,11 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
   const offersKept = offers.map(({ id, name }) => ({ id, name }))
   // The answered binding survives a recrawl while the answering offer still exists; the same question is not re-asked.
   const answered = prior?.answered && offersKept.some(x => x.id === prior.answered!.offer) ? prior.answered : null
+  // A typed 'Who buys this?' answer is the person's own targeting: it survives a recrawl as a REVIEWED persona on the
+  // answering offer, so a fresh model draft can never lose it behind the answered-question suppression. Deleting it
+  // from the draft on the next play records an explicit rejection, like any reviewed statement.
+  if (answered?.text && !corrected.some(h => h.offer === answered.offer && h.kind === 'persona' && exact(h.text, answered.text!)))
+    corrected = [...corrected, { id: hypId(answered.offer, 'persona', answered.text), offer: answered.offer, kind: 'persona', text: answered.text, status: 'reviewed', url: null, quote: null, fetched_at: null }]
   // At most ONE question, and only when the answer changes targeting: several offers with no sourced buyer for them, or no sourced buyer at all.
   const sourcedBuyer = (id: string) => corrected.some(h => h.offer === id && h.kind === 'persona' && (h.status === 'sourced' || h.status === 'reviewed'))
   let question = offersKept.length > 1 && offersKept.some(x => !sourcedBuyer(x.id)) ? OFFER_QUESTION : !offersKept.some(x => sourcedBuyer(x.id)) ? WHO_QUESTION : null
@@ -130,14 +135,14 @@ import type { Icp, IcpResearch, ResearchedHyp } from './icp.ts'
 
 export function toStored(r: SellerResearch): IcpResearch {
   return {
-    v: 1, site: r.site, q: r.question, ans: r.answered ? { q: r.answered.question, o: r.answered.offer } : null,
+    v: 1, site: r.site, q: r.question, ans: r.answered ? { q: r.answered.question, o: r.answered.offer, ...(r.answered.text ? { t: r.answered.text } : {}) } : null,
     offers: r.offers.map(o => ({ i: o.id, n: o.name })),
     hyps: r.hypotheses.filter(h => h.status !== 'unknown').map(h => ({ i: h.id, o: h.offer, k: h.kind, t: h.text, s: h.status as ResearchedHyp['s'], u: h.url, q: h.quote, at: h.fetched_at })),
   }
 }
 export function fromStored(s: IcpResearch): SellerResearch {
   return {
-    site: s.site, question: s.q, answered: s.ans ? { question: s.ans.q, offer: s.ans.o } : null,
+    site: s.site, question: s.q, answered: s.ans ? { question: s.ans.q, offer: s.ans.o, ...(s.ans.t ? { text: s.ans.t } : {}) } : null,
     pages: [], offers: s.offers.map(o => ({ id: o.i, name: o.n })),
     hypotheses: s.hyps.map(h => ({ id: h.i, offer: h.o, kind: h.k, text: h.t, status: h.s, url: h.u, quote: h.q, fetched_at: h.at })),
   }
@@ -153,7 +158,8 @@ const exact = (a: string, b: string) => { const x = norm(a), y = norm(b); return
 //   correction, and it stays rejected across recrawls;
 // - one they never confirmed keeps its status: absence from the draft is NOT a rejection, because the person may
 //   never have been shown it. A page-verified statement is never auto-rejected and never silently re-asked away.
-// The effective profile is the draft VERBATIM - hypothesis text is never merged into the targeting fields. Research
+// The effective profile is the draft VERBATIM - hypothesis text is never merged INTO the targeting fields; the one
+// exception is rejection precedence below: an explicitly rejected statement's own exact text leaves the effective fields. Research
 // feeds retrieval and ranking only through these truthful statuses and the person's own edits to the visible fields.
 // Questions: choosing the play's offer answers ONLY the offer-selection question, and only when the offer binding is
 // unambiguous. 'Who buys this?' is answered by the person's typed words (carried in the stored research), never inferred.
@@ -171,11 +177,25 @@ export function applyReviewedDraft(icp: Icp, offer: string): Icp {
     if (h.offer !== oid) return h
     const field = kindField[h.kind as keyof typeof kindField] as DraftField | undefined
     if (!field) return h   // offer/pain statements carry evidence, not a draft field
+    if (h.status === 'rejected') return h   // an explicit rejection is NEVER resurrected by matching field text
     const inDraft = icp[field].some(v => exact(v, h.text))
     if (inDraft) return h.status === 'reviewed' ? h : { ...h, status: 'reviewed' as const }
     if (h.status === 'reviewed') return { ...h, status: 'rejected' as const }
     return h
   })
+  // Rejection precedence: a dismissed statement's exact text leaves the EFFECTIVE targeting for this play, so stale
+  // field text cannot keep targeting a statement the person rejected. (The dismissed UI also removes the field text in
+  // the same action; this is the server-side guarantee for any client.) The stored draft itself is the person's input
+  // and is not rewritten here.
+  const rejectedText = new Map<DraftField, Set<string>>()
+  for (const h of hyps) {
+    if (h.offer !== oid || h.status !== 'rejected') continue
+    const field = kindField[h.kind as keyof typeof kindField] as DraftField | undefined
+    if (!field) continue
+    const l = rejectedText.get(field) ?? new Set<string>(); l.add(norm(h.text)); rejectedText.set(field, l)
+  }
+  const effective: Partial<Pick<Icp, DraftField>> = {}
+  for (const [field, texts] of rejectedText) effective[field] = icp[field].filter(v => !texts.has(norm(v)))
   const answered = r.answered ?? (r.question === OFFER_QUESTION ? { question: r.question, offer: oid } : null)
-  return { ...icp, research: toStored({ ...r, hypotheses: hyps, answered }) }
+  return { ...icp, ...effective, research: toStored({ ...r, hypotheses: hyps, answered }) }
 }

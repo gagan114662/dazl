@@ -353,7 +353,11 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: siteUrl.trim() }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first - filling from your website runs on your key.' : j.error === 'invalid' || j.error === 'not_public' ? 'That address is not a public website.' : j.error === 'js_only' || j.error === 'not_html' ? 'We could not read enough text from that page (it may need JavaScript). Try your about page, or describe your buyers above.' : j.error === 'blocked' || j.error === 'timeout' ? 'That site did not let us read it. Describe your buyers above instead.' : 'Could not read that site. Describe your buyers above instead.')); return }
-      setDraft(j.icp)
+      const filled = j.icp as Icp
+      // A 'Who buys this?' answer carried across a recrawl is the person's own words: keep it visible in the draft.
+      const ansT = asResearchBlock((filled as { research?: unknown }).research)?.ans?.t?.trim()
+      if (ansT && !filled.who.some(x => x.trim().toLowerCase() === ansT.toLowerCase())) filled.who = [...filled.who, ansT]
+      setDraft(filled)
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
       setDraftNote(`Filled from ${host}. Edit anything that is off, then run the scan.`)
@@ -752,7 +756,7 @@ export default function LeadsClient() {
               <textarea className={`${input} w-full mb-2`} rows={2} value={draft[k].join('\n')} onChange={e => setDraft({ ...draft, [k]: lines(e.target.value) })} />
             </div>
           ))}
-          {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft({ ...draft, research: r })} onAdd={(f, t) => setDraft({ ...draft, [f]: [...draft[f], t] })} />}
+          {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft({ ...draft, research: r })} onAdd={(f, t) => setDraft({ ...draft, [f]: [...draft[f], t] })} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft({ ...draft, [f]: draft[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) }) }} />}
           <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}

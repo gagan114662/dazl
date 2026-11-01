@@ -25,14 +25,14 @@ export interface Icp {
 
 // Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
 export interface ResearchedHyp { i: string; o: string; k: 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'; t: string; s: 'sourced' | 'hypothesis' | 'reviewed' | 'rejected'; u: string | null; q: string | null; at: number | null }
-export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string } | null }
+export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null }
 
 // scan_jobs.icp is TEXT CHECK (char_length <= 4000); PG counts characters, JS .length counts UTF-16 units, so the
 // budget stays under the column limit with margin. The budget covers the TOTAL document: flat user constraints are
 // NEVER truncated to fit - a profile that cannot fit whole is a typed overflow the caller must surface. Only the
 // system-generated research block is fitted to the remaining room (deterministic priority, whole hypotheses only).
 export const ICP_JSON_BUDGET = 3900
-const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: 140, question: 120 }
+const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: 140, question: 120, answer: 100 }
 const RKINDS = new Set(['offer', 'persona', 'industry', 'size', 'location', 'disqualifier', 'pain'])
 const RSTATUS = new Set(['sourced', 'hypothesis', 'reviewed', 'rejected'])
 
@@ -60,8 +60,9 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   }
   const question = typeof r.q === 'string' && r.q.trim() ? clean(r.q, RCAPS.question) : null
   const ansRaw = r.ans as Record<string, unknown> | null | undefined
+  const ansT = typeof ansRaw?.t === 'string' ? clean(ansRaw.t, RCAPS.answer) : ''
   const ans = ansRaw && typeof ansRaw.q === 'string' && typeof ansRaw.o === 'string' && ids.has(clean(ansRaw.o, RCAPS.offerId))
-    ? { q: clean(ansRaw.q, RCAPS.question), o: clean(ansRaw.o, RCAPS.offerId) } : null
+    ? { q: clean(ansRaw.q, RCAPS.question), o: clean(ansRaw.o, RCAPS.offerId), ...(ansT ? { t: ansT } : {}) } : null
   return { v: 1, site, offers, hyps, q: question, ans }
 }
 
@@ -88,6 +89,14 @@ function fitResearch(r: IcpResearch, room: number): IcpResearch | undefined {
     if (!added) break
   }
   return out
+}
+
+// Model-facing prompts carry the canonical FLAT profile only: the research review block (sourced, unapproved or
+// rejected statements) is review provenance for the person and the store, never model targeting input (#379).
+export const flatProfile = (icp: unknown): unknown => {
+  if (!icp || typeof icp !== 'object' || !('research' in (icp as Record<string, unknown>))) return icp
+  const { research: _omit, ...flat } = icp as Record<string, unknown>
+  return flat
 }
 
 export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' }
