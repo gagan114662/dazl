@@ -133,7 +133,8 @@ test('enrichLeadContacts: rejected key audits auth and stops the pass (no burn o
   await enrichLeadContacts(db, 'u1', jobId, [lead, { id: 'lead2', company: 'Beta', company_domain: null }], { fetchImpl: (async () => { calls++; return new Response('no', { status: 401 }) }) as never, master })
   assert.equal(calls, 1)
   const st = (recentAudit(db, 'u1', 10) as { status: string }[]).map(a => a.status)
-  assert.deepEqual(st, ['auth'])
+  // #382: the dead provider is never re-billed, and the skip is VISIBLE per later lead (recent-first).
+  assert.deepEqual(st, ['skipped: apollo auth earlier this pass', 'auth'])
 })
 
 test('enrichJobSignals wiring: saved apollo key adds apollo enrichments inside the scan waterfall', async () => {
