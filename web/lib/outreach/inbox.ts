@@ -51,7 +51,7 @@ function threadsSql(jobFilter: boolean): string {
       SELECT r.thread_id, r.gmail_id, r.lead_id, j.id AS job_id, r.from_email, r.excerpt, r.classification, r.received_at, r.replies,
              l.company, l.name AS lead_name, t.followups_sent, t.stopped,
              CASE WHEN rd.read_upto IS NULL OR r.last_at > rd.read_upto THEN 1 ELSE 0 END AS unread,
-             CASE WHEN r.classification IN ('positive','other','uncertain') AND (t.stopped IS NULL OR t.stopped = 'review'
+             CASE WHEN r.classification IN ('positive','other','uncertain','bounce_review') AND (t.stopped IS NULL OR t.stopped = 'review'
                OR (r.classification = 'uncertain' AND t.stopped NOT IN ('opt_out','negative','bounce','suppressed'))) THEN 1 ELSE 0 END AS needs_owner
       FROM ranked r
       LEFT JOIN leads l ON l.id = r.lead_id AND EXISTS (SELECT 1 FROM scan_jobs sj WHERE sj.id = l.scan_job_id AND sj.user_id = ?)
