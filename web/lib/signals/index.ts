@@ -11,7 +11,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
-import { atsGtmBoard, postingEvidence, boardTitleAudit, dedupeTitles } from './ats-gtm.ts'
+import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, dedupeTitles } from './ats-gtm.ts'
 import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
@@ -25,7 +25,7 @@ export function nameTokens(name: string): string[] {
 }
 
 export interface FundingSignal { date: string; entity: string; url: string }
-export interface HiringSignal { board: string; openRoles: number; titles: string[]; url: string; via: 'domain' | 'name'; allTitles: string[] } // allTitles: every listed title (bounded audit trail, #533)
+export interface HiringSignal { board: string; openRoles: number; titles: string[]; url: string; via: 'domain' | 'name'; allTitles: string[]; listedCount: number } // allTitles: a BOUNDED SAMPLE (cap 50) of every listed title; listedCount is the full deduped count before the cap, so listedCount > allTitles.length marks a truncated sample that cannot prove absence (#533)
 
 // Latest Form D (or D/A) filing for the company within the last 18 months, but only
 // when the filing entity IS the company (exact name after suffix stripping - the search
@@ -101,17 +101,17 @@ export async function atsHiring(company: string, domain: string | null, fetchImp
     const gh = await get(`https://boards-api.greenhouse.io/v1/boards/${slug}/jobs`, fetchImpl)
     if (Array.isArray(gh?.jobs) && gh.jobs.length > 0) {
       const jobs = gh.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), allTitles: dedupeTitles(jobs.map((j: { title: string }) => j.title)), url: jobs.length === 1 && jobs[0].absolute_url ? jobs[0].absolute_url : `https://boards.greenhouse.io/${slug}`, via }
+      if (jobs.length) return { board: 'greenhouse', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), allTitles: dedupeTitles(jobs.map((j: { title: string }) => j.title)), listedCount: new Set(jobs.map((j: { title: string }) => j.title.trim().toLowerCase())).size, url: jobs.length === 1 && jobs[0].absolute_url ? jobs[0].absolute_url : `https://boards.greenhouse.io/${slug}`, via }
     }
     const lever = await get(`https://api.lever.co/v0/postings/${slug}?mode=json`, fetchImpl)
     if (Array.isArray(lever) && lever.length > 0) {
       const jobs = lever.filter((j: { text?: string }) => typeof j?.text === 'string')
-      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), allTitles: dedupeTitles(jobs.map((j: { text: string }) => j.text)), url: jobs.length === 1 && jobs[0].hostedUrl ? jobs[0].hostedUrl : `https://jobs.lever.co/${slug}`, via }
+      if (jobs.length) return { board: 'lever', openRoles: jobs.length, titles: topTitles(jobs, (j: { text: string }) => j.text), allTitles: dedupeTitles(jobs.map((j: { text: string }) => j.text)), listedCount: new Set(jobs.map((j: { text: string }) => j.text.trim().toLowerCase())).size, url: jobs.length === 1 && jobs[0].hostedUrl ? jobs[0].hostedUrl : `https://jobs.lever.co/${slug}`, via }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${slug}`, fetchImpl)
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const jobs = ashby.jobs.filter((j: { title?: string }) => typeof j?.title === 'string')
-      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), allTitles: dedupeTitles(jobs.map((j: { title: string }) => j.title)), url: jobs.length === 1 && jobs[0].jobUrl ? jobs[0].jobUrl : `https://jobs.ashbyhq.com/${slug}`, via }
+      if (jobs.length) return { board: 'ashby', openRoles: jobs.length, titles: topTitles(jobs, (j: { title: string }) => j.title), allTitles: dedupeTitles(jobs.map((j: { title: string }) => j.title)), listedCount: new Set(jobs.map((j: { title: string }) => j.title.trim().toLowerCase())).size, url: jobs.length === 1 && jobs[0].jobUrl ? jobs[0].jobUrl : `https://jobs.ashbyhq.com/${slug}`, via }
     }
   }
   return null
@@ -160,7 +160,9 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       if (ck && est) recordCompanyEvent(db, tenantId, { companyKey: ck, companyName: lead.company, scope: 'account', leadId: lead.id, eventType: 'hiring_surge', summary: `${h.openRoles} open role${h.openRoles === 1 ? '' : 's'}`, detail: h.titles.join('; ').slice(0, 200) || null, sourceUrl: h.url, sourcePublishedAt: null, retrievedAt: now, confidence: 70 })
       // #533: store every listed title as an audit row, so 'the requested role was not on this board' is provable later.
       const covered = new Set(h.titles.map(t => t.trim().toLowerCase()))
-      for (const t of h.allTitles.filter(t => !covered.has(t.trim().toLowerCase()))) addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring-role', value: `${est ? '' : 'Unconfirmed: '}${t}`.slice(0, 254), label: (est ? 'Board listing audit: title listed on the board; its posting date was not read' : `Board listing audit: title listed on the board; its posting date was not read (${HEURISTIC_NOTE})`).slice(0, 200), confidence: null, source_url: h.url.slice(0, 500), source_date: today, retrieved_at: now })
+      for (const t of h.allTitles.filter(t => !covered.has(t.trim().toLowerCase()))) addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring-role', value: `${est ? '' : 'Unconfirmed: '}${t}`.slice(0, 254), label: (est ? 'Board listing audit (all listed titles): title listed on the board; its posting date was not read' : `Board listing audit (all listed titles): title listed on the board; its posting date was not read (${HEURISTIC_NOTE})`).slice(0, 200), confidence: null, source_url: h.url.slice(0, 500), source_date: today, retrieved_at: now })
+      { const auditRows = h.allTitles.filter(t => !covered.has(t.trim().toLowerCase())).length
+        addEnrichment(db, tenantId, lead.id, { connector: `signals:${h.board}`, kind: 'hiring-board-coverage', value: `Board listing: ${h.listedCount} all listed titles, ${auditRows} stored as audit rows${h.listedCount > h.allTitles.length ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254), label: 'Coverage of the stored hiring audit sample; not a hiring signal'.slice(0, 200), confidence: null, source_url: h.url.slice(0, 500), source_date: today, retrieved_at: now }) }
       hiring++
     }
     // Dated sales / go-to-market postings from the company's own public board: the "hiring sales" half of a seed + sales request, with the
@@ -174,7 +176,9 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       for (const e of postingEvidence(g, now, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
-      for (const e of boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE)) addEnrichment(db, tenantId, lead.id, e)
+      { const auditRows = boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE)
+        for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
+        addEnrichment(db, tenantId, lead.id, boardCoverageRow(g, auditRows.length, now, today)) }
       gtm++
     }
     if (requestedRoles.length) {
@@ -186,7 +190,9 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
           const role = matchedHiringRole(e.value.split(' - posted ')[0], requestedRoles)
           if (role) addEnrichment(db, tenantId, lead.id, { ...e, label: `Requested role: ${role.term}; ${e.label}`.slice(0, 200) })
         }
-        for (const e of boardTitleAudit(matched, now, today, null)) addEnrichment(db, tenantId, lead.id, e)
+        { const auditRows = boardTitleAudit(matched, now, today, null)
+          for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
+          addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, now, today)) }
       }
     }
     const r = await fundingRoundFor(lead.company, news, { fetchImpl, jinaLeft }).catch(() => null)
