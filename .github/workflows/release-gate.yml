@@ -121,13 +121,13 @@ jobs:
           json.dump({"commit": os.environ["JOB_SHA"], "files": entries, "file_count": len(entries)}, open("tarball-manifest.json", "w"), indent=1)
           PYSCAN
       - name: "Artifact scans: zero native, no key material, no env files"
-        working-directory: ..
+        working-directory: web
         run: |
           set -euo pipefail
-          tar -tzf "release-app-$JOB_SHA.tar.gz" > tar-list.txt
+          tar -tzf "$GITHUB_WORKSPACE/release-app-$JOB_SHA.tar.gz" > tar-list.txt
           if grep -E '(^|/)(\.env[^/]*|.*\.pem|id_rsa|.*\.key)$' tar-list.txt; then echo 'env/key file in artifact'; exit 1; fi
           if grep -E '\.(node|so)(\.[0-9]+)*$' tar-list.txt; then echo 'native payload in artifact (contract is zero-native)'; exit 1; fi
-          rm -rf /tmp/artifact-scan && mkdir -p /tmp/artifact-scan && tar -xzf "release-app-$JOB_SHA.tar.gz" -C /tmp/artifact-scan
+          rm -rf /tmp/artifact-scan && mkdir -p /tmp/artifact-scan && tar -xzf "$GITHUB_WORKSPACE/release-app-$JOB_SHA.tar.gz" -C /tmp/artifact-scan
           if find /tmp/artifact-scan -type f -exec sh -c 'head -c 4 "$1" | grep -q "^.ELF"' _ {} \; -print | grep .; then echo 'ELF binary in artifact'; exit 1; fi
           if grep -rIl 'BEGIN [A-Z ]*PRIVATE KEY' /tmp/artifact-scan | head -1 | grep .; then echo 'key material in artifact'; exit 1; fi
       - name: Clean exact checkout for the runtime-assembly smoke
@@ -137,10 +137,10 @@ jobs:
           path: assembly
           clean: true
       - name: "Runtime-assembly smoke: artifact overlaid on the clean checkout boots and serves its release"
-        working-directory: ..
+        working-directory: web
         run: |
           set -euo pipefail
-          cd assembly/web
+          cd "$GITHUB_WORKSPACE/assembly/web"
           npm ci --no-audit --no-fund
           tar -xzf "$GITHUB_WORKSPACE/release-app-$JOB_SHA.tar.gz" -C .
           test "$(cat .build-commit)" = "$JOB_SHA"
