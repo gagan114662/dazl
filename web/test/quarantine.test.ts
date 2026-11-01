@@ -49,5 +49,7 @@ test('a quarantined lead cannot be drafted, is held at the send gate, and is lef
 test('autopilot never selects a quarantined lead (the candidate query excludes it)', async () => {
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../lib/outreach/autopilot.ts', import.meta.url), 'utf8')
-  assert.match(src, /l\.contact IS NOT NULL AND l\.quarantined_at IS NULL/)
+  // #412: the contact clause widened to admit a lead whose sitecrawl recorded a published email, but the
+  // quarantine exclusion still gates every candidate
+  assert.match(src, /l\.quarantined_at IS NULL\s+AND \(l\.contact IS NOT NULL OR EXISTS/)
 })
