@@ -55,6 +55,6 @@ test('SEAM 3: Dismiss-after-Add must stick — the dismissed statement must not 
   const dismissed = { ...stored, hyps: stored.hyps.map(h => h.t === 'practice managers' ? { ...h, s: 'rejected' as const } : h) }
   const icp: Icp = { summary: 's', who: ['practice managers'], industries: [], sizes: [], where: [], signals: [], exclude: [], research: dismissed }
   const eff = applyReviewedDraft(icp, 'Booking')
-  assert.equal(eff.research!.hyps.find(h => h.t === 'practice managers')!.s, 'rejected', 'FAILS TODAY: the stale field text resurrects the dismissal to reviewed')
+  assert.equal(eff.research!.hyps.find(h => h.t === 'practice managers')!.s, 'rejected', 'stale field text never resurrects a dismissal')
   assert.ok(!/practice managers/.test(icpTextFor(eff, '')), 'a dismissed statement must not reach the grader')
 })

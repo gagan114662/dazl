@@ -38,6 +38,7 @@ const RESEARCH = { v: 1, site: 'acme.example', q: 'Who buys this?', ans: null,
     { i: 'h1', o: 'o1', k: 'persona', t: 'practice managers', s: 'sourced', u: SITE, q: 'lets practice managers fill their appointment book', at: 1800000000 },
     { i: 'h2', o: 'o1', k: 'persona', t: 'front-desk leads', s: 'sourced', u: SITE, q: 'helps front-desk leads cut no-shows', at: 1800000000 },
     { i: 'h3', o: 'o1', k: 'industry', t: 'Dental', s: 'inferred', u: null, q: null, at: null },
+    { i: 'h5', o: 'o1', k: 'persona', t: 'scheduling coordinators', s: 'reviewed', u: SITE, q: 'scheduling coordinators fill their book', at: 1800000000 },
     { i: 'h4', o: 'o1', k: 'persona', t: 'clinic owners', s: 'sourced', u: SITE, q: 'clinic owners fill their book', at: 1800000000 },
   ] }
 const READ = { source: 'https://acme.example/', sells: 'Acme Booking',
@@ -80,6 +81,10 @@ try {
   assert.match(await h1.innerText(), /lets practice managers fill their appointment book/, 'h1 shows the page quote')
   assert.equal(await h1.locator(`a[href="${SITE}"]`).count(), 1, 'h1 links the page it came from')
   assert.match(await h3.innerText(), /inferred - not stated on your site/, 'h3 is marked inferred, with no invented source')
+  const h5 = page.getByTestId('hyp-h5')
+  assert.match(await h5.innerText(), /on your site: .scheduling coordinators fill their book./, 'a CONFIRMED statement keeps its real quote, never the inferred label')
+  assert.ok(!/inferred/.test(await h5.innerText()), 'a confirmed statement with a quote is never labelled inferred')
+  assert.equal(await h5.locator(`a[href="${SITE}"]`).count(), 1, 'a confirmed statement keeps its page link')
 
   // 2. Add puts the statement into the visible profile field.
   const who = page.getByLabel(/Buyer roles/)

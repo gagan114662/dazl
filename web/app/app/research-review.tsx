@@ -59,9 +59,9 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove }: 
                 <li key={h.i} className="flex items-start gap-2 text-sm" data-testid={`hyp-${h.i}`}>
                   <span className="flex-1">
                     <span className="text-[var(--ink-2,#888)]">{KIND_LABEL[h.k] ?? h.k}: </span>{h.t}
-                    {h.s === 'sourced' && h.q
+                    {h.q && (h.s === 'sourced' || h.s === 'reviewed')
                       ? <span className="block text-xs text-[var(--ink-2,#888)]">on your site: &ldquo;{h.q}&rdquo;{h.u ? <> - <a className="underline" href={h.u} target="_blank" rel="noreferrer">{h.u}</a></> : null}</span>
-                      : h.s === 'reviewed' && !h.q
+                      : h.s === 'reviewed'
                         ? <span className="block text-xs text-[var(--ink-2,#888)]">added by you</span>
                         : <span className="block text-xs text-[var(--ink-2,#888)]">inferred - not stated on your site</span>}
                   </span>
