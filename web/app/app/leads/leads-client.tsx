@@ -3,6 +3,8 @@ import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
+import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
+import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
@@ -144,7 +146,10 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
-  const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null } | null>(null)
+  const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
+  // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
+  const [providerIssues, setProviderIssues] = useState<ProviderIssue[] | null>(null)
+  const [providerIssuesUnknown, setProviderIssuesUnknown] = useState(false) // API said null: record unreadable - not an all-clear
   const [jobError, setJobError] = useState('')
   const [enrichInterrupted, setEnrichInterrupted] = useState(false) // enrichment started but never ended (crash/restart): contacts and fit may be incomplete
   const [emptyReason, setEmptyReason] = useState<string | null>(null) // why a scan that read pages still extracted nothing (counts only)
@@ -464,7 +469,7 @@ export default function LeadsClient() {
       statusFails.current = 0
       const s = await r.json()
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
-      setQuality(s.quality ?? null); setCost(s.cost ?? null)
+      setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
@@ -877,6 +882,21 @@ export default function LeadsClient() {
         <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost" data-within={cost.actual?.within ?? 'unknown'}>
           Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start. {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
         </p>
+      )}
+      {cost?.per_verification_pass && (status === 'done' || status === 'failed') && (
+        <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost-per-pass" data-unavailable={cost.per_verification_pass.unavailable ?? ''}>
+          {cost.per_verification_pass.usd_per_pass !== null
+            ? <>Model cost per lead that passed verification: ${cost.per_verification_pass.usd_per_pass < 0.01 ? cost.per_verification_pass.usd_per_pass.toFixed(4) : cost.per_verification_pass.usd_per_pass.toFixed(2)} across {cost.per_verification_pass.verified} {cost.per_verification_pass.verified === 1 ? 'lead' : 'leads'}. {cost.model_scope ?? COST_PER_PASS_SCOPE} Passing verification is hygiene, not proof of a good lead.</>
+            : <>No per-lead cost to show: {cost.per_verification_pass.unavailable}.{cost.per_verification_pass.model_usd !== null ? ` The model cost ($${cost.per_verification_pass.model_usd < 0.01 ? cost.per_verification_pass.model_usd.toFixed(4) : cost.per_verification_pass.model_usd.toFixed(2)}) is still shown above.` : ''} Passing verification is hygiene, not proof of a good lead.</>}
+        </p>
+      )}
+      {providerIssuesUnknown && (status === 'done' || status === 'failed') && (
+        <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-provider-issues-unknown">Provider failures can&apos;t be shown for this scan: the record of provider calls isn&apos;t available. This is not an all-clear.</p>
+      )}
+      {providerIssues && providerIssues.length > 0 && (
+        <div className="text-xs mb-3 rounded border border-[#e8b04a] bg-[#fff8e6] text-[#8a5a00] px-3 py-2" data-testid="scan-provider-issues" role="status">
+          {providerIssues.map((i, k) => <p key={`${i.connector}:${i.status}:${k}`}>{providerIssueText(i)}</p>)}
+        </div>
       )}
       {quality && status === 'done' && (
         <p className="text-xs text-[var(--ink-2)] mb-3 flex flex-wrap items-center gap-1.5" data-testid="scan-quality">
