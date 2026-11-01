@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
 import { readTenantOffer } from './play-memory.ts'
+import { tableExists } from './send-budget.ts'
 import { draftOffer } from '../scan/play-offer-text.ts'
 import { polishDraft } from './draft-llm.ts'
 
@@ -133,6 +134,18 @@ function domainCapDueAt(db: Database.Database, tenantId: string, domain: string,
   const t = (db.prepare("SELECT MAX(claimed_at) AS t FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ?").get(tenantId, `%@${domain}`, now - 7 * 86400) as { t: number | null }).t
   return (t ?? now) + 7 * 86400
 }
+// Account-level daily cap (send-budget accountSendCount's rolling window over all four send tables): due when the
+// oldest send still inside the window leaves it. A re-hold at this time keeps the original cap semantics; it never
+// consumes a retry attempt, because the cap holding is legitimate, not a fault of the draft.
+function accountCapDueAt(db: Database.Database, tenantId: string, now: number): number {
+  let oldest: number | null = null
+  const take = (t: number | null | undefined) => { if (t != null && (oldest === null || t < oldest)) oldest = t }
+  take((db.prepare("SELECT MIN(COALESCE(claimed_at,sent_at,created_at)) AS t FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
+  if (tableExists(db, 'followup_messages')) take((db.prepare("SELECT MIN(created_at) AS t FROM followup_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND created_at >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
+  if (tableExists(db, 'sequence_steps')) take((db.prepare("SELECT MIN(COALESCE(claimed_at,sent_at,created_at)) AS t FROM sequence_steps WHERE tenant_id = ? AND step > 1 AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
+  if (tableExists(db, 'reopen_messages')) take((db.prepare("SELECT MIN(COALESCE(sent_at,created_at)) AS t FROM reopen_messages WHERE tenant_id = ? AND status IN ('sent','approved') AND COALESCE(sent_at,created_at) >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
+  return (oldest ?? now) + 86400
+}
 
 // Retry eligibility is PROOF-based, never assumed. sendClaimed (service.ts) throws only via release(), which runs
 // solely while Gmail has provably not accepted the message: the claim is rolled back to 'approved' with claimed_at
@@ -142,16 +155,23 @@ function domainCapDueAt(db: Database.Database, tenantId: string, domain: string,
 // transient subset of those proven-not-sent refusals; every other named refusal is a permanent policy verdict and the
 // draft is skipped instead of stranded. Non-OutreachError exceptions are not classified here at all: they propagate
 // to the scheduler as failures.
-const TRANSIENT_RELEASE_CODES: ReadonlySet<string> = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap', 'already_sending'])
+const TRANSIENT_RELEASE_CODES: ReadonlySet<string> = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap', 'already_sending']) // classified in holdSendFailure: caps/claim-conflicts wait without consuming retries; provider faults get bounded backoff
 function holdSendFailure(db: Database.Database, tenantId: string, msgId: string, leadId: string, code: string, now: number): 'held' | 'skipped' {
-  if (TRANSIENT_RELEASE_CODES.has(code)) {
-    const tries = (db.prepare('SELECT attempts FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(msgId, tenantId) as { attempts: number } | undefined)?.attempts ?? 0
-    if (code !== 'already_sending' && tries >= MAX_SEND_RETRIES) {
+  // Claim conflict: another tick owns this send right now. The loser writes nothing (setHold's status filter excludes
+  // a claimed row), consumes no attempt and never touches the winner's claim; it simply looks again later.
+  if (code === 'already_sending') { setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S); return 'held' }
+  // Legitimate cap still in force: wait for the window to roll. Never counts toward retry exhaustion.
+  if (code === 'daily_cap') { setHold(db, tenantId, msgId, leadId, 'daily_cap', accountCapDueAt(db, tenantId, now)); return 'held' }
+  if (code === 'gmail_unavailable' || code === 'gmail_rate_limited') {
+    // Exhaustion counts only this message's own transient provider faults (audited just above), never the attempts
+    // column: a claim released for a legitimate cap or a lost race is not a fault and must not move a draft toward skipping.
+    const tries = (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND message_id = ? AND action = 'send_failed' AND detail IN ('gmail_unavailable','gmail_rate_limited')").get(tenantId, msgId) as { n: number }).n
+    if (tries >= MAX_SEND_RETRIES) {
       db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'retry_exhausted', hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(msgId, tenantId)
       auditAt(db, tenantId, 'skipped', 'retry_exhausted', leadId, msgId, now)
       return 'skipped'
     }
-    setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S * (tries + 1))
+    setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S * tries)
     return 'held'
   }
   db.prepare("UPDATE outreach_messages SET status = 'skipped', error = ?, hold_reason = NULL, hold_until = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(code.slice(0, 200), msgId, tenantId)
@@ -242,11 +262,11 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
   if (!st.consent_current) return stop('consent_required')
   if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) return stop('warmup') // first sends stay manually approved
   const rows = db.prepare(
-    `SELECT id, lead_id, to_email, offer_hash FROM outreach_messages
+    `SELECT id, lead_id, to_email, status, offer_hash FROM outreach_messages
      WHERE tenant_id = ? AND status IN ('draft','approved') AND hold_reason IN ('daily_cap','held_domain_cap','send_failed')
        AND hold_policy = ? AND hold_until IS NOT NULL AND hold_until <= ?
      ORDER BY created_at LIMIT 10`,
-  ).all(tenantId, CONSENT_VERSION, now) as { id: string; lead_id: string; to_email: string; offer_hash: string | null }[]
+  ).all(tenantId, CONSENT_VERSION, now) as { id: string; lead_id: string; to_email: string; status: string; offer_hash: string | null }[]
   for (const m of rows) {
     const cur = getState(db, tenantId)
     if (cur.paused || !cur.enabled || !autopilotAvailable(env)) return stop('paused')
@@ -264,7 +284,7 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
       audit(db, tenantId, 'skipped', 'suppressed', m.lead_id, m.id); out.skipped++; continue
     }
     try {
-      approve(db, tenantId, m.id)
+      if (m.status === 'draft') approve(db, tenantId, m.id) // a released retry is already approved; approve() is draft-only
       const r = await sendMessage(db, tenantId, m.id, d)
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id) }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', m.lead_id, m.id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
