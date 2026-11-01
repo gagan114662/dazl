@@ -68,7 +68,7 @@ const ROWS = [
   row(3, 'Clearline Tax', null, null, 'Clearline Tax is advertising for a senior bookkeeper and a payroll clerk.', 'reed.example', '2026-10-16'),
   row(4, 'Ashworth Partners', 'Helen Ashworth, Managing partner', 'helen@ashworthpartners.example', 'Ashworth Partners announced a merger and a move to larger offices in Leeds.', 'yorkshirepost.example', '2026-10-12'),
 ]
-const NOTICE = ['dazl reads only replies and delivery-failure notices in the email threads it started for you.', 'Nothing else in your mailbox is read, stored or used.']
+const NOTICE = ['dazl reads replies in the email threads it started for you and checks delivery-failure notices for its sends.', 'Delivery-failure checks search a bounded daemon-notice window; unmatched notice content is not retained as a reply.']
 async function run({ width, height, tag, drafted = [] }) {
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0, drafts: [...drafted], failNext4: true, sender: { sender_name: '', postal_address: '', booking_url: null } }
   const ctx = await b.newContext({ viewport: { width, height } })
