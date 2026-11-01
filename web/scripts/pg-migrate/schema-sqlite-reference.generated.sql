@@ -429,6 +429,26 @@ CREATE TABLE play_research_sources (
  UNIQUE(tenant_id,job_id,fingerprint)
 );
 
+CREATE TABLE preview_claim_events (
+    id TEXT PRIMARY KEY,
+    claim_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('claimed','already','claimed_other_workspace','foreign','unverified','expired','unknown')),
+    created_at INTEGER NOT NULL
+  );
+
+CREATE TABLE preview_claims (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    seller_tenant_id TEXT NOT NULL,
+    recipient_email TEXT NOT NULL CHECK (length(recipient_email) <= 254),
+    business TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    claimed_by_tenant TEXT,
+    claimed_at INTEGER
+  );
+
 CREATE TABLE rate_limits (
       key TEXT PRIMARY KEY CHECK (length(key) <= 300),
       count INTEGER NOT NULL,
@@ -906,6 +926,10 @@ CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
 
 CREATE INDEX play_research_sources_play ON play_research_sources(tenant_id,job_id,created_at);
+
+CREATE INDEX preview_claim_events_claim ON preview_claim_events (claim_id);
+
+CREATE INDEX preview_claims_recipient ON preview_claims (recipient_email);
 
 CREATE INDEX rate_limits_reset ON rate_limits (reset_at);
 

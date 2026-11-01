@@ -20,5 +20,12 @@ export const setSessionCookie = (res: NextResponse, base: string, value: string,
 // What the callback does after Google: 'settings' (a re-authentication started there: sign in, land back there) or
 // 'link' (add this Google identity to the signed-in account). Only these two values are honoured.
 export const RETURN_COOKIE = 'dazl_return'
-export const setReturnCookie = (res: NextResponse, base: string, value: 'settings' | 'link' = 'settings') => res.cookies.set(RETURN_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
+export const setReturnCookie = (res: NextResponse, base: string, value: 'settings' | 'link' | 'preview' = 'settings') => res.cookies.set(RETURN_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
 export const clearReturnCookie = (res: NextResponse, base: string) => res.cookies.set(RETURN_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
+// The preview claim being continued through sign-in (#416): the claim token itself, host-only, short-lived. Path '/'
+// because both the Google callback and the claim route must read it; it carries no PII and is already a public-page URL.
+// Set only from a validated preview row (app/api/preview/[token]/google); every reader re-verifies it before any use.
+export const PREVIEW_CLAIM_COOKIE = 'dazl_claim'
+const hostOnly = (maxAge: number, path: string) => ({ httpOnly: true, secure: true, sameSite: 'lax' as const, maxAge, path })
+export const setClaimCookie = (res: NextResponse, value: string) => res.cookies.set(PREVIEW_CLAIM_COOKIE, value, hostOnly(3600, '/'))
+export const clearClaimCookie = (res: NextResponse) => res.cookies.set(PREVIEW_CLAIM_COOKIE, '', hostOnly(0, '/'))

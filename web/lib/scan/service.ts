@@ -23,6 +23,7 @@ import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateReplies } from '../outreach/replies.ts'
 import { migrateThreadReplies } from '../replies/threads.ts'
 import { migrateTrial } from './trial.ts'
+import { migratePreviewClaim } from './preview-claim.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
 import { migrateEvents } from '../events/store.ts'
 import { migrateSeo } from '../seo/audit.ts'
@@ -34,6 +35,7 @@ export function getScanDb() {
   if (!ready) {
     migrateSchedulerRuns(db)
     migrateScan(db)
+    migratePreviewClaim(db)
     migrateSourceReview(db)
     migratePlayResearch(db)
     migrateWatch(db)

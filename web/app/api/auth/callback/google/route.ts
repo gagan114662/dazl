@@ -5,7 +5,8 @@ import { getDb } from '@/lib/db/client'
 import { getScanDb } from '@/lib/scan/service'
 import { activateLifecycleFor, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
+import { clearClaimCookie, clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
+import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
 import { captureError } from '@/lib/ops/errors'
@@ -60,10 +61,19 @@ export async function GET(req: NextRequest) {
   // Signing in again on a browser already signed in to this same account (a re-authentication) replaces that session
   // rather than leaving it behind; another account's session in the cookie is left alone.
   await replacedSession(req.cookies.get('dazl_session')?.value, r.user_id, db)
-  const landing = req.cookies.get(RETURN_COOKIE)?.value === 'settings' ? '/app/settings' : '/app'
+  const ret = req.cookies.get(RETURN_COOKIE)?.value
+  let landing = ret === 'settings' ? '/app/settings' : '/app'
+  const session = await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
+  // #416: returning from a preview claim. A GET never consumes: the claim binds only on the confirm page's explicit
+  // POST, same as the password path. The intent cookie is re-scoped so the claim route can read it there.
+  let claimToken = ''
+  if (ret === 'preview') claimToken = req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value ?? ''
+  if (ret === 'preview') landing = isClaimToken(claimToken) ? '/preview/claim' : '/app' // lost intent cookie: safe landing, the link still works
   const res = redirectNoStore(new URL(landing, base))
-  setSessionCookie(res, base, await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) }), SESSION_TTL_S)
+  setSessionCookie(res, base, session, SESSION_TTL_S)
   clearOauthCookie(res, base)
   clearReturnCookie(res, base)
+  if (ret === 'preview' && isClaimToken(claimToken)) setClaimCookie(res, claimToken)
+  else clearClaimCookie(res)
   return res
 }

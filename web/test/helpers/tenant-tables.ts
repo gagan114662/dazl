@@ -21,6 +21,8 @@ export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: st
   scheduler_runs: { global: 'one row per scheduler tick: times, status, lease generation and tenant counts; per-tenant progress is scheduler_progress (tenant_id)' },
   rate_limits: { global: 'counters keyed by caller (tenant id, account or IP inside the key); holds no tenant data and no route reads it back' },
   app_leases: { global: 'named locks for platform jobs (the scheduled tick); no tenant data' },
+  preview_claim_events: { global: "claim-attempt audit (#416): outcome codes keyed by claim id only; holds no tenant data, email, IP or token" },
+  preview_claims: { global: "issued proof previews bound to a recipient email (#416): run/seller/recipient/expiry are immutable at insert, claimed_by_tenant is set once atomically; served by token, per-tenant reads use claimed_by_tenant" },
   trial_budget_lock: { global: 'one row every free-trial admission locks in turn (lib/billing/trial-budget.ts); a counter, no tenant data' },
 }
 
