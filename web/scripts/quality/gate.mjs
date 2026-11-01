@@ -30,7 +30,7 @@ try {
   // Both revisions use the exact HEAD toolchain/config, not two drifting policies.
   const config = await readFile(path.join(web, 'eslint.config.mjs'));
   const configHash = digest(config);
-  report.policy = { configHash, files: {} };
+  report.policy = { configHash, dependencyLockHash: digest(await readFile(path.join(web, 'package-lock.json'))), node: process.version, files: {} };
   for (const name of ['policy.mjs', 'evidence.mjs', 'gate.mjs', 'scan.mjs']) report.policy.files[name] = digest(await readFile(path.join(web, 'scripts/quality', name)));
   const findings = {};
   for (const [label, sha] of [['base', base], ['head', head]]) {

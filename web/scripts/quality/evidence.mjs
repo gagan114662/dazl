@@ -10,10 +10,9 @@ export function sourceSpan(source, m) {
   if (!Number.isInteger(start) || start < 0 || start >= lines.length) throw new Error('invalid finding location');
   const end = (m.endLine ?? m.line) - 1;
   if (end < start || end >= lines.length) throw new Error('invalid finding end');
-  const selected = lines.slice(start, end + 1);
-  selected[0] = selected[0].slice((m.column ?? 1) - 1);
-  if (m.endColumn) selected[selected.length - 1] = selected[selected.length - 1].slice(0, m.endColumn - 1 - (end === start ? (m.column ?? 1) - 1 : 0));
-  return selected.join('\n').trim();
+  // Include complete affected lines: ESLint's eval span can cover only the
+  // callee, which would hide a changed argument under a count-only identity.
+  return lines.slice(start, end + 1).map(line => line.trim()).join('\n');
 }
 
 export function evidenceFor(path, source, messages) {

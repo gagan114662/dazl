@@ -43,7 +43,7 @@ jobs:
           echo "QUALITY_BASE=$BASE" >> "$GITHUB_ENV"
       - name: Calibration and negative plants
         working-directory: web
-        run: node --test scripts/quality/calibration.test.mjs
+        run: node --test scripts/quality/calibration.test.mjs scripts/quality/integration.test.mjs
       - name: Analyze all tracked web JS and TS, reject new evidence
         working-directory: web
         run: node scripts/quality/gate.mjs --base "$QUALITY_BASE" --report ../quality-report.json
