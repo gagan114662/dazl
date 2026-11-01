@@ -66,7 +66,7 @@ test('transport abort is the real hard bound on the live provider; the retired r
   // at the 50 ms transport timeout - no hang.
   const hangingFetch = ((_u: unknown, init?: RequestInit) => new Promise((_, rej) => init?.signal?.addEventListener('abort', () => rej(new Error('aborted'))))) as unknown as typeof fetch
   const t0 = Date.now()
-  await assert.rejects(anthropicProvider.complete('sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'prompt', hangingFetch), /network_or_timeout/)
+  await assert.rejects(anthropicProvider.complete!('sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'prompt', hangingFetch), /network_or_timeout/)
   assert.ok(Date.now() - t0 < 3_000, 'settled at the 50 ms transport timeout, not hung')
   // #379: the unguarded plain-job scan's only provider call was research, which is retired at the real provider
   // boundary - the job fails honestly budget_stopped with ZERO fetch attempts (no spend is even possible), instead of
