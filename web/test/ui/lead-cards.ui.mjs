@@ -17,6 +17,7 @@
 //      /api/leads/<id>/enrich-retry once, and the notice clears when nothing is held.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
+const UNVERIFIED_COST = 'Retry unavailable: what this lookup costs on your Apollo account has not been verified, so it stays held and no new lookup is made. Whether the earlier interrupted attempt was already billed is not known. Apollo documents contact search as 0 credits on current plans, but older plans can differ. It can be retried once the cost on your account is confirmed.'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
@@ -75,7 +76,7 @@ await ctx.route('**/*', async route => {
   }
   const q = /^\/api\/leads\/([a-f0-9]{24})\/quarantine$/.exec(u.pathname)
   if (q) { quarantineCalls.push({ method: m, lead: q[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ quarantined: m === 'POST' }) }
-  if (u.pathname === '/api/enrich/held') return json(heldMode ? { held: [{ leadId: 'a'.repeat(24), company: 'Bright Dental', provider: 'apollo', step: 'people', since: 1762000000, costText: 'Retry the contact search: the saved company data is reused (not re-charged) and Apollo people search is a 0-credit endpoint. Rate limits may apply.' }] } : { held: [] })
+  if (u.pathname === '/api/enrich/held') return json(heldMode ? { held: [{ leadId: 'a'.repeat(24), company: 'Bright Dental', provider: 'apollo', step: 'people', since: 1762000000, costText: UNVERIFIED_COST, retryable: false }] } : { held: [] })
   const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
   if (er && m === 'POST') { retryCalls.push({ lead: er[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
   return json({}, 404)
@@ -191,10 +192,11 @@ try {
   await heldSection.waitFor()
   assert.match(await heldSection.textContent(), /Contact enrichment needs attention/)
   assert.match(await heldSection.textContent(), /Bright Dental/)
-  assert.equal(await heldSection.getByTestId('enrich-held-cost').textContent(), 'Retry the contact search: the saved company data is reused (not re-charged) and Apollo people search is a 0-credit endpoint. Rate limits may apply.')
+  assert.equal(await heldSection.getByTestId('enrich-held-cost').textContent(), UNVERIFIED_COST)
   await heldSection.scrollIntoViewIfNeeded(); await shot('enrich-held')
-  await heldSection.getByTestId(`enrich-retry-${'a'.repeat(24)}-apollo-people`).click()
-  assert.deepEqual(retryCalls, [{ lead: 'a'.repeat(24), body: { provider: 'apollo', step: 'people' } }], 'the owner action posts exactly the held provider+step it was shown for')
+  const retryBtn = heldSection.getByTestId(`enrich-retry-${'a'.repeat(24)}-apollo-people`)
+  assert.equal(await retryBtn.isDisabled(), true, 'with the account cost unverified the retry action is disabled')
+  assert.deepEqual(retryCalls, [], 'nothing was posted')
   heldMode = false // the retry cleared it
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal(await page.getByTestId('enrich-held').count(), 0, 'the notice clears once nothing is held')

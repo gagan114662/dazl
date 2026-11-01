@@ -43,6 +43,9 @@ for (const [why, apollo] of [
   })
 }
 
+// The pre-existing owner-retry tests exercise the mechanics for an operator-VERIFIED account; the default (unverified) is its own test below.
+process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = 'apollo,pdl'
+
 test('Apollo finds a verified person: PDL is not called (and not charged)', async () => {
   const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
   await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
@@ -367,7 +370,7 @@ test('OWNER RETRY: org paid + people held -> the owner action releases ONLY the 
   db.prepare("UPDATE connector_claims SET claimed_at = 0 WHERE lookup = ?").run(k.stepPeople) // old enough to be held, not live
   const held = heldEnrichments(db, 'u1')
   assert.deepEqual(held.map(h => `${h.provider}:${h.step}`), ['apollo:people'], 'the held people step surfaces for the owner')
-  assert.match(heldCostText(held[0]), /0-credit/, 'the owner sees the free-endpoint cost wording')
+  assert.match(heldCostText(held[0]), /0 credits on current plans/, 'the owner sees the qualified (documented, current-plan) cost wording')
   const calls: Calls = { apollo: 0, pdl: 0 }
   const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'people' }, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
   assert.deepEqual(r, { status: 'retried', attached: 1, releases: ['apollo people'] })
@@ -392,6 +395,32 @@ test('OWNER RETRY: a LEGACY whole-attempt hold releases with the may-repay discl
   const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'legacy' }, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
   assert.deepEqual(r, { status: 'retried', attached: 1, releases: ['apollo legacy'] })
   assert.equal(calls.apollo, 2, 'the full attempt re-runs (org + people): the disclosed possible re-charge')
+})
+
+test('OWNER RETRY: with the account cost UNVERIFIED (default) the held lookup stays held - nothing released, no provider call', async () => {
+  const saved = process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; delete process.env.DAZL_ENRICH_RETRY_COST_VERIFIED
+  try {
+    const { db, jobId, leads } = seed(1, false)
+    const { auditTryReserve } = await import('../lib/connectors/store.ts')
+    const { claimKeysFor, heldEnrichments, retryHeldEnrichment, heldCostText, retryCostVerified } = await import('../lib/enrich/index.ts')
+    const k = claimKeysFor(leads[0])
+    assert.ok('id' in auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: k.stepPeople, status: 'reserved', results: 0 }))
+    db.prepare("UPDATE connector_claims SET claimed_at = 0 WHERE lookup = ?").run(k.stepPeople)
+    const held = heldEnrichments(db, 'u1')
+    assert.equal(held.length, 1)
+    assert.equal(retryCostVerified('apollo'), false); assert.equal(retryCostVerified('pdl'), false)
+    assert.match(heldCostText(held[0]), /Retry unavailable.*has not been verified.*no new lookup is made.*earlier interrupted attempt was already billed is not known.*older plans can differ/, 'the owner is told the cost is unverified, not promised free')
+    assert.doesNotMatch(heldCostText(held[0]), /0-credit endpoint/)
+    const calls: Calls = { apollo: 0, pdl: 0 }
+    const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'people' }, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+    assert.deepEqual(r, { status: 'cost_unverified' })
+    assert.deepEqual(calls, { apollo: 0, pdl: 0 }, 'no provider call')
+    const st = db.prepare("SELECT status FROM connector_claims WHERE tenant_id = 'u1' AND lookup = ?").all(k.stepPeople) as { status: string }[]
+    assert.deepEqual(st.map(x => x.status), ['reserved'], 'the held claim was NOT released')
+    assert.deepEqual(db.prepare("SELECT status FROM connector_audit WHERE tenant_id = 'u1' AND status LIKE 'owner released%'").all(), [], 'no release audit')
+    process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = 'pdl' // verifying PDL does not verify Apollo
+    assert.equal(retryCostVerified('apollo'), false); assert.equal(retryCostVerified('pdl'), true)
+  } finally { if (saved !== undefined) process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = saved; else delete process.env.DAZL_ENRICH_RETRY_COST_VERIFIED }
 })
 
 test('OWNER RETRY: a FRESH claim (a live pass may be in flight) is never released', async () => {

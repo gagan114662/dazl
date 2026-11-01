@@ -487,7 +487,7 @@ export default function LeadsClient() {
   // Interrupted enrichment lookups (a rate limit or crash left the outcome unknown): nothing retried itself, so a
   // lookup that may have been charged is never re-billed on its own. The owner retries each one explicitly, with
   // the cost and limits stated next to the button (GET /api/enrich/held -> costText).
-  const [heldEnrich, setHeldEnrich] = useState<{ leadId: string; company: string; provider: 'apollo' | 'pdl'; step: 'org' | 'people' | 'legacy'; since: number; costText: string }[]>([])
+  const [heldEnrich, setHeldEnrich] = useState<{ leadId: string; company: string; provider: 'apollo' | 'pdl'; step: 'org' | 'people' | 'legacy'; since: number; costText: string; retryable?: boolean }[]>([])
   const [retryingEnrich, setRetryingEnrich] = useState<string | null>(null)
   const loadHeldEnrich = () => fetch('/api/enrich/held').then(r => r.ok ? r.json() : null).then(j => { if (j) setHeldEnrich(j.held ?? []) }).catch(() => {})
   useEffect(() => { void loadHeldEnrich() }, [])
@@ -974,7 +974,7 @@ export default function LeadsClient() {
                 <span className="font-semibold">{h.company}</span>
                 <span className="text-[var(--ink-3)]">{h.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} &middot; interrupted {new Date(h.since * 1000).toLocaleString()}</span>
                 <span className="basis-full text-[var(--ink-2)]" data-testid="enrich-held-cost">{h.costText}</span>
-                <button type="button" className="btn-primary btn-sm" disabled={retryingEnrich === `${h.leadId}:${h.provider}:${h.step}`} onClick={() => void retryEnrich(h)} data-testid={`enrich-retry-${h.leadId}-${h.provider}-${h.step}`}>{retryingEnrich === `${h.leadId}:${h.provider}:${h.step}` ? 'Retrying…' : 'Retry lookup'}</button>
+                <button type="button" className="btn-primary btn-sm" disabled={h.retryable !== true || retryingEnrich === `${h.leadId}:${h.provider}:${h.step}`} onClick={() => void retryEnrich(h)} data-testid={`enrich-retry-${h.leadId}-${h.provider}-${h.step}`}>{retryingEnrich === `${h.leadId}:${h.provider}:${h.step}` ? 'Retrying…' : 'Retry lookup'}</button>
               </li>
             ))}
           </ul>
