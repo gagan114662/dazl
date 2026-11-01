@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { migrateLifecycle } from './lifecycle.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateAttribution } from './attribution.ts'
 
@@ -85,6 +86,7 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('outreach_messages', 'hold_reason', 'TEXT') // why a first-touch draft is held; NULL = never held by the scheduler (legacy/manual)
   addCol('outreach_messages', 'hold_until', 'INTEGER') // earliest retry time (unix seconds); NULL = no scheduler retry
   addCol('outreach_messages', 'hold_policy', 'TEXT') // consent version the hold was recorded under; drain never acts on another version
+  migrateLifecycle(db) // #417: conversion events stop queued acquisition work
   addCol('outreach_messages', 'offer_hash', 'TEXT') // hash of the offer inputs the draft's words were created under
   addCol('outreach_settings', 'booking_url', 'TEXT')
   // Idempotent upgrades for usage tables created before these columns existed.

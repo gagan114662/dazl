@@ -4,6 +4,8 @@ import { cookies } from 'next/headers'
 import { createPasswordUser, createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { sendVerification } from '@/lib/email-ownership'
 import { getDb } from '@/lib/db/client'
+import { getScanDb } from '@/lib/scan/service'
+import { queuePendingLifecycle } from '@/lib/outreach/lifecycle'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
@@ -33,6 +35,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'We could not create an account with those details. Try signing in instead.' }, { status: 400 })
     }
 
+    // #417: queue the conversion as PENDING: this typed address is unverified, so it cancels nothing and
+    // excludes nothing until its owner proves it (verification link, reset link, or Google sign-in). The row
+    // is durable, so a lost drain is completed by a later sign-in. Best-effort: never blocks the signup.
+    try { queuePendingLifecycle(getScanDb(), 'signup', email, id) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signup:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
     // The address is unverified until its owner opens this link; a failed send never blocks the signup.
     await sendVerification(await getDb(), id).catch(e => captureError(e, { source: 'route', where: '/api/auth/signup:verify', method: 'POST', requestId: requestIdOf(req) }))
     const token = await createSession(id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })

@@ -5,6 +5,7 @@ import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
+import { conversionBlockedNow } from './lifecycle.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -459,6 +460,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   // The identity check and the claim are one write transaction (the same lock the review action takes), so a withdraw cannot land between them.
   const claim = db.transaction(() => {
     if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
+    // #417: a converted recipient fails closed AT THE CLAIM, atomically with it: an activated conversion, or a
+    // pending one whose address is already verified (a lost activation drain must never allow a send).
+    if (!testFixtureSend(db, tenantId, pre) && conversionBlockedNow(db, pre.to_email)) throw new OutreachError('converted')
     return db.prepare("UPDATE outreach_messages SET status = 'sending', attempts = attempts + 1, claimed_at = ?, error = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(nowS(d), id, tenantId)
   }).immediate()
   if (claim.changes !== 1) throw new OutreachError('already_sending')
@@ -499,6 +503,12 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // #417: a conversion proven during the refresh stops the send terminally - never released back to approved,
+  // where it could linger past an activation that skips only draft/approved rows.
+  if (!testFixtureSend(db,tenantId,m) && conversionBlockedNow(db, m.to_email)) {
+    db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'converted', claimed_at = NULL WHERE id = ? AND status = 'sending'").run(id)
+    throw new OutreachError('converted')
+  }
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')

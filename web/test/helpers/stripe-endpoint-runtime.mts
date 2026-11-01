@@ -3,14 +3,15 @@
 // tampered delivery changes nothing, and an event for a tenant the store does not know answers 200, is logged, and
 // changes no plan. Stripe is never reached: api.stripe.com is a stub that records the checkout call, and webhook bodies
 // are Stripe-shaped fixtures signed with a test secret. SQLite, and Postgres (with DAZL_TEST_PG_URL) with the raw
-// SQLite handle trapped.
+// SQLite handle trapped (trapScanDb): on the Postgres leg getDb() IS the Postgres store, so section 7's conversion
+// write and its injected failure exercise the same Db-over-Postgres boundary production runs.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { NextRequest } from 'next/server'
-import Database from 'better-sqlite3'
-import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setScanDb, setUser, getScanDb, trapScanDb } from './tenant-route-db.ts'
+import { migrateLifecycle } from '../../lib/outreach/lifecycle.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
 process.env.STRIPE_SECRET_KEY = 'sk_test_fixture'
@@ -117,6 +118,66 @@ async function scenario(engine: string) {
   assert.deepEqual(await deliver(stranger), { status: 200, result: 'duplicate' }, 'its replay is a no-op too')
   await bUntouched('unknown tenant')
   assert.deepEqual(await view(B.TENANT), PRO('active'))
+
+  // 7. #417 conversion on payment: the identity is the ACCOUNT bound to the checkout (client_reference_id),
+  // never the buyer-typed Stripe email. A verified account email cancels its queued acquisition work now; an
+  // unverified one queues a durable pending conversion; a store failure answers 503 and the Stripe replay
+  // (a 'duplicate' that still reaches the conversion block) completes it. Everything in this section goes through
+  // the Db layer, so on the Postgres leg the conversion write, the failure injection and every assertion hit the
+  // Postgres store itself - the same boundary production runs (app/api/billing/webhook/route.ts -> getDb()).
+  const C = { TENANT: 'c'.repeat(28) + id(), CUSTOMER: 'cus_C' + id(), SUBSCRIPTION: 'sub_C' + id() }
+  await db.run("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'c-owner@example.test', 'x', 'y', 100)", [C.TENANT])
+  await db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('mc1', ?, 'lc1', 'c-owner@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)", [C.TENANT])
+  await db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('mc2', ?, 'lc2', 'bystander@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)", [C.TENANT])
+  const cEvent = fixture('checkout.session.completed', C, 'evt_c_co_' + id())
+    .replace('"customer":', '"customer_details": { "email": "bystander@example.test" }, "customer":') // buyer-typed email names a bystander
+  assert.deepEqual(await deliver(cEvent), { status: 200, result: 'applied' })
+  assert.equal((await db.get<{ status: string }>("SELECT status FROM outreach_messages WHERE id = 'mc1'"))!.status, 'skipped', 'verified paying account: its queued work stops')
+  assert.equal((await db.get<{ error: string }>("SELECT status, error FROM outreach_messages WHERE id = 'mc1'"))!.error, 'converted_payment')
+  assert.equal((await db.get<{ status: string }>("SELECT status FROM outreach_messages WHERE id = 'mc2'"))!.status, 'draft', 'the buyer-typed Stripe email is never used: the bystander keeps their queued work')
+  assert.equal(await db.get("SELECT 1 AS x FROM lifecycle_events WHERE kind = 'payment' AND email = 'c-owner@example.test' AND activated_at IS NOT NULL") !== undefined, true)
+
+  // Unverified account email: nothing cancels; a durable pending conversion waits for verification.
+  const D = { TENANT: 'd'.repeat(28) + id(), CUSTOMER: 'cus_D' + id(), SUBSCRIPTION: 'sub_D' + id() }
+  await db.run("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'd-owner@example.test', 'x', 'y', NULL)", [D.TENANT])
+  await db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('md1', ?, 'ld1', 'd-owner@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)", [D.TENANT])
+  assert.deepEqual(await deliver(fixture('checkout.session.completed', D, 'evt_d_co_' + id())), { status: 200, result: 'applied' })
+  assert.equal((await db.get<{ status: string }>("SELECT status FROM outreach_messages WHERE id = 'md1'"))!.status, 'draft', 'unverified account: nothing canceled')
+  assert.equal(await db.get("SELECT 1 AS x FROM lifecycle_events WHERE kind = 'payment' AND email = 'd-owner@example.test' AND activated_at IS NULL") !== undefined, true, 'a durable pending conversion waits for verification')
+
+  // Store failure on the conversion write, injected on the store the route actually writes (lifecycle_events on
+  // THIS engine): 503 (Stripe will retry), the plan change already applied; the replay arrives as 'duplicate',
+  // still reaches the conversion block, and completes it exactly once.
+  const injectLifecycleFailure = async () => {
+    if (db.kind === 'pg') {
+      await db.run("CREATE OR REPLACE FUNCTION fail_lifecycle() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN RAISE EXCEPTION 'injected store failure'; END $f$")
+      await db.run('CREATE TRIGGER fail_lifecycle BEFORE INSERT ON lifecycle_events FOR EACH ROW EXECUTE FUNCTION fail_lifecycle()')
+    } else {
+      getScanDb().exec("CREATE TRIGGER fail_lifecycle BEFORE INSERT ON lifecycle_events BEGIN SELECT RAISE(ABORT, 'injected store failure'); END")
+    }
+  }
+  const clearLifecycleFailure = async () => {
+    if (db.kind === 'pg') {
+      await db.run('DROP TRIGGER fail_lifecycle ON lifecycle_events')
+      await db.run('DROP FUNCTION fail_lifecycle()')
+    } else {
+      getScanDb().exec('DROP TRIGGER fail_lifecycle')
+      migrateLifecycle(getScanDb())
+    }
+  }
+  const E = { TENANT: 'e'.repeat(28) + id(), CUSTOMER: 'cus_E' + id(), SUBSCRIPTION: 'sub_E' + id() }
+  await db.run("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'e-owner@example.test', 'x', 'y', 100)", [E.TENANT])
+  await db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('me1', ?, 'le1', 'e-owner@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)", [E.TENANT])
+  await injectLifecycleFailure()
+  const eEvent = fixture('checkout.session.completed', E, 'evt_e_co_' + id())
+  const failed = await deliver(eEvent)
+  assert.equal(failed.status, 503, 'conversion store failure answers 503 so Stripe retries')
+  assert.equal((await db.get<{ status: string }>("SELECT status FROM outreach_messages WHERE id = 'me1'"))!.status, 'draft', 'no half-applied conversion')
+  await clearLifecycleFailure()
+  assert.deepEqual(await deliver(eEvent), { status: 200, result: 'duplicate' }, 'the replayed event reaches the conversion block again')
+  assert.equal((await db.get<{ status: string }>("SELECT status FROM outreach_messages WHERE id = 'me1'"))!.status, 'skipped', 'the recovered conversion cancels the queued work')
+  assert.deepEqual(await deliver(eEvent), { status: 200, result: 'duplicate' }, 'further replays stay no-ops')
+
   console.log('STRIPE_ENDPOINT', engine)
 }
 
@@ -131,8 +192,12 @@ test('Stripe through /api/stripe on Postgres, the SQLite handle trapped', { skip
   const pg = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 3 })
   try {
     await runPgMigrations(pg.pool)
-    setScanDb(null as unknown as Database.Database)
     setDb(pg)
+    // Production on Postgres has no raw SQLite handle: trap it so any module still reaching for getScanDb fails
+    // here instead of silently reading a fixture store (previously this leg handed the route an empty SQLite store,
+    // which also repointed getDb() off Postgres - the leg proved nothing about Postgres).
+    trapScanDb()
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await scenario('pg')
   } finally { await pg.close(); await s.drop() }
 })

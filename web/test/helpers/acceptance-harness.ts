@@ -8,6 +8,7 @@ import { migrateScan, createQueryJob } from '../../lib/scan/store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
+import { migrateAuth } from '../../lib/auth-db.ts'
 import type { Provider } from '../../lib/llm/provider.ts'
 import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
@@ -43,7 +44,8 @@ export async function runFixture(f: Fixture) {
   resetTinyfishState()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
-  db.exec('CREATE TABLE IF NOT EXISTS users (id TEXT, business_name TEXT)'); db.prepare('INSERT INTO users VALUES (?, ?)').run('A', 'Acme')
+  migrateAuth(db) // the actual current users schema; a hand-rolled shape drifts (email_verified_at broke the #417 drain here)
+  db.prepare("INSERT INTO users (id, email, business_name, password_hash, salt) VALUES ('A', 'acme@example.test', 'Acme', 'h', 's')").run()
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
   const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
   createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
