@@ -99,6 +99,17 @@ CREATE TABLE connector_audit (
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     , insert_seq INTEGER);
 
+CREATE TABLE connector_claims (
+      tenant_id   TEXT NOT NULL,
+      connector   TEXT NOT NULL,
+      scan_job_id TEXT NOT NULL,
+      lookup      TEXT NOT NULL CHECK (length(lookup) <= 200),
+      status      TEXT NOT NULL CHECK (status IN ('reserved','ok','empty','rejected')),
+      claimed_at  INTEGER NOT NULL,
+      settled_at  INTEGER,
+      PRIMARY KEY (tenant_id, connector, scan_job_id, lookup)
+    );
+
 CREATE TABLE consent_ledger (
       id           TEXT PRIMARY KEY,
       tenant_id    TEXT NOT NULL,

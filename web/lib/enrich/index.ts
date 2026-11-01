@@ -5,7 +5,7 @@
 // (an exhausted budget is a visible audit row, never a silent skip), no repeat charge for a lookup this job already made.
 // Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar).
 import type Database from 'better-sqlite3'
-import { addEnrichment, audit, auditSettle, auditTryReserve, enrichFallbackEnabled, getEnabledCredential } from '../connectors/store.ts'
+import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -152,7 +152,7 @@ async function runApollo(c: Ctx, key: string): Promise<number> {
     org = await apolloOrgEnrich(key, { domain: lead.company_domain, name: lead.company }, fetchImpl)
     // A same-name company elsewhere (Pico Rivera, CA for a New York lead) is not attached: the record must agree on the domain or the place.
     const agree = org ? contactAgreement({ company_domain: lead.company_domain, where, evidence, domainEstablished: established }, { domain: domainOf(org.website), place: org.place, address: org.address, keyedOnLeadDomain: !!lead.company_domain }) : null
-    if (org && agree && !agree.ok) { auditSettle(db, reservationId, agree.reason, 0); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: agree.reason, sourceUrl: org.website ?? src }); return 0 }
+    if (org && agree && !agree.ok) { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: agree.reason, results: 0 }, reservationId, agree.reason, 0); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: agree.reason, sourceUrl: org.website ?? src }); return 0 }
     if (org && (org.employees || org.industry)) {
       const bits = [org.employees ? `${org.employees} employees` : null, org.industry, org.founded ? `founded ${org.founded}` : null].filter(Boolean).join(' · ')
       addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'firmographic', value: bits.slice(0, 254), label: org.name, confidence: 75, source_url: org.linkedin ?? org.website ?? src, source_date: today, retrieved_at: now })
@@ -160,16 +160,16 @@ async function runApollo(c: Ctx, key: string): Promise<number> {
     audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: orgKey, status: org ? 'ok' : 'empty', results: org ? 1 : 0 }) // org observability row; the gate row carries the replay contract
   } catch (e) {
     const code = e instanceof EnrichError ? e.code : 'error'
-    if (e instanceof EnrichError && e.code === 'auth') { auditSettle(db, reservationId, code, 0); throw e } // the key is bad: no point asking Apollo for people
+    if (e instanceof EnrichError && e.code === 'auth') { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e } // the key is bad: no point asking Apollo for people
     audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: orgKey, status: code, results: 0 })
     orgFailure = e    // any other org failure: still try the people search below (the domain may already be known); if it cannot run, this failure is the provider's
   }
   // The org lookup above often discovers the domain even when the lead had none - search people by that domain (much more reliable than a raw company name).
   const orgDomain = lead.company_domain ?? (/^[a-z]+:\/\/([^/?#]+)/i.exec(org?.website ?? '')?.[1]?.replace(/^www\./, '') || null)
-  if (!orgDomain) { auditSettle(db, reservationId, 'contact rejected: no domain to confirm the company', 0); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: 'contact rejected: no domain to confirm the company', sourceUrl: src }); if (orgFailure) throw orgFailure; return 0 }
+  if (!orgDomain) { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: 'contact rejected: no domain to confirm the company', results: 0 }, reservationId, 'contact rejected: no domain to confirm the company', 0); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: 'contact rejected: no domain to confirm the company', sourceUrl: src }); if (orgFailure) throw orgFailure; return 0 }
   let found: Awaited<ReturnType<typeof apolloPeopleSearch>>
   try { found = await apolloPeopleSearch(key, { domain: orgDomain, name: lead.company }, fetchImpl, MAX_CONTACTS) }
-  catch (e) { auditSettle(db, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
+  catch (e) { auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: e instanceof EnrichError ? e.code : 'error', results: 0 }, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
   // A person whose own organization contradicts the requested company (another name, another domain) is not attached.
   const people = []
   for (const p of found) {
@@ -179,7 +179,7 @@ async function runApollo(c: Ctx, key: string): Promise<number> {
     recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: why, sourceUrl: src })
   }
   for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
-  auditSettle(db, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), people.length)
+  auditSettleClaim(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), results: people.length }, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), people.length)
   return people.length
 }
 
@@ -191,7 +191,7 @@ async function runPdl(c: Ctx, key: string, maxProfiles: number, charged: { n: nu
   const peopleKey = lookupKey('people', lead)
   let found: Awaited<ReturnType<typeof pdlPeopleSearch>>
   try { found = await pdlPeopleSearch(key, lead.company, fetchImpl, Math.max(1, maxProfiles)) }
-  catch (e) { auditSettle(db, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
+  catch (e) { auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: e instanceof EnrichError ? e.code : 'error', results: 0 }, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
   charged.n += found.length
   // PDL matches on the company NAME only: each person's company must agree with the lead on its domain or place.
   const people = []
@@ -200,6 +200,6 @@ async function runPdl(c: Ctx, key: string, maxProfiles: number, charged: { n: nu
     if (a.ok) people.push(p); else { audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: a.reason, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_PDL, reason: a.reason, sourceUrl: src }) }
   }
   for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
-  auditSettle(db, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), people.length)
+  auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), results: people.length }, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), people.length)
   return people.length
 }

@@ -28,6 +28,16 @@ export function migrateConnectors(db: Database.Database): void {
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
     CREATE INDEX IF NOT EXISTS connector_audit_tenant ON connector_audit (tenant_id, created_at);
+    CREATE TABLE IF NOT EXISTS connector_claims (
+      tenant_id   TEXT NOT NULL,
+      connector   TEXT NOT NULL,
+      scan_job_id TEXT NOT NULL,
+      lookup      TEXT NOT NULL CHECK (length(lookup) <= 200),
+      status      TEXT NOT NULL CHECK (status IN ('reserved','ok','empty','rejected')),
+      claimed_at  INTEGER NOT NULL,
+      settled_at  INTEGER,
+      PRIMARY KEY (tenant_id, connector, scan_job_id, lookup)
+    );
     -- Enriched fields live beside the lead, never over it. A row needs a source URL and a source date.
     CREATE TABLE IF NOT EXISTS lead_enrichments (
       id          TEXT PRIMARY KEY,
@@ -144,25 +154,80 @@ export function auditReserved(db: Database.Database, a: AuditEntry): string {
 export function auditSettle(db: Database.Database, id: string, status: string, results: number): void {
   db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
 }
-// The credit-discipline gate (#382): claim a lookup ATOMICALLY before paying for it. One guarded INSERT is the
-// whole protocol - a replayed job (stale-lease double-run, resume, or a concurrent caller on a lease-less route)
-// loses the race and reads the winner's outcome instead of paying again. Terminal outcomes (ok/empty/rejected)
-// replay free; a stale 'reserved' row proves the pass MAY have been charged, so the replay fails CLOSED (uncertain,
-// never a second payment). The reservation is scoped to tenant + connector + job + lookup: jobId must be non-null
-// for replays to see each other (SQL NULL never equals NULL). Settle exactly once with auditSettle.
+// The credit-discipline gate (#382): claim a lookup ATOMICALLY before paying for it. connector_claims' PRIMARY KEY
+// is the race decider on BOTH engines (ON CONFLICT DO NOTHING; two PG connections on the same key: exactly one
+// wins) - no reliance on job-claim leases or check-then-insert reads. A replayed job (stale-lease double-run,
+// resume, or a concurrent caller on a lease-less route) loses the race and reads the winner's outcome instead of
+// paying again. Terminal outcomes (ok/empty/rejected) keep the claim as the job's memo and replay free; a
+// TRANSIENT settle releases (deletes) the claim so a retriable failure may retry; a stale 'reserved' claim proves
+// the pass MAY have been charged, so the replay fails CLOSED (uncertain, never a second payment). The claim key
+// uses '' for a missing jobId because SQL NULL never equals NULL (callers always pass one today).
 export type ReserveOutcome = { id: string } | { prior: 'ok' | 'empty' | 'rejected' | 'uncertain' }
-const RESERVE_SQL = `INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results)
-  SELECT ?, ?, ?, ?, ?, 'reserved', 0
-  WHERE NOT EXISTS (SELECT 1 FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND (status = 'reserved' OR status = 'ok' OR status = 'empty' OR status LIKE 'contact rejected%'))`
+const CLAIM_INSERT_SQL = "INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at) VALUES (?, ?, ?, ?, 'reserved', ?) ON CONFLICT DO NOTHING"
+const CLAIM_STATUS_SQL = "SELECT status FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?"
+const CLAIM_SETTLE_SQL = "UPDATE connector_claims SET status = ?, settled_at = ? WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved'"
+const CLAIM_RELEASE_SQL = "DELETE FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ?"
 const RESERVE_STATUS_SQL = "SELECT status FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1"
+const claimKey = (a: AuditEntry) => [a.tenantId, a.connector, a.jobId ?? '', a.lookup.slice(0, 200)] as const
+const isTerminal = (status: string) => status === 'ok' || status === 'empty' || status.startsWith('contact rejected')
+const claimPrior = (status: string): 'ok' | 'empty' | 'rejected' | 'uncertain' =>
+  status === 'ok' || status === 'empty' ? status : status === 'rejected' || status.startsWith('contact rejected') ? 'rejected' : 'uncertain'
 export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOutcome {
-  const id = randomBytes(12).toString('hex')
   const lookup = a.lookup.slice(0, 200)
-  const n = db.prepare(RESERVE_SQL).run(id, a.tenantId, a.connector, a.jobId ?? null, lookup, a.tenantId, a.connector, a.jobId ?? null, lookup).changes
-  if (n === 1) return { id }
-  const r = db.prepare(RESERVE_STATUS_SQL).get(a.tenantId, a.connector, a.jobId ?? null, lookup) as { status: string } | undefined
-  const st = r?.status ?? ''
-  return { prior: st === 'ok' || st === 'empty' ? st : st.startsWith('contact rejected') ? 'rejected' : 'uncertain' }
+  const key = claimKey(a)
+  const now = Math.floor(Date.now() / 1000)
+  const won = db.prepare(CLAIM_INSERT_SQL).run(key[0], key[1], key[2], key[3], now).changes === 1
+  if (!won) {
+    const r = db.prepare(CLAIM_STATUS_SQL).get(key[0], key[1], key[2], key[3]) as { status: string } | undefined
+    return { prior: claimPrior(r?.status ?? 'reserved') }
+  }
+  // Stores written before claims existed can carry this lookup's audit rows: a crashed pass's 'reserved' or a
+  // terminal outcome there is the same contract (every attempt since claims writes both).
+  const legacy = db.prepare(RESERVE_STATUS_SQL).get(a.tenantId, a.connector, a.jobId ?? null, lookup) as { status: string } | undefined
+  if (legacy && (isTerminal(legacy.status) || legacy.status === 'reserved')) {
+    const prior = claimPrior(legacy.status)
+    if (prior !== 'uncertain') db.prepare(CLAIM_SETTLE_SQL).run(prior, now, key[0], key[1], key[2], key[3])
+    return { prior }
+  }
+  const id = randomBytes(12).toString('hex')
+  db.prepare(AUDIT_SQL).run(id, a.tenantId, a.connector, a.jobId ?? null, lookup, 'reserved', 0)
+  return { id }
+}
+// Settle a reserved lookup: the audit row and its claim move together in one transaction. Terminal outcomes mark
+// the claim (the durable never-pay-twice memo); transient outcomes release it so the lookup may retry.
+export function auditSettleClaim(db: Database.Database, a: AuditEntry, id: string, status: string, results: number): void {
+  const key = claimKey(a)
+  db.transaction(() => {
+    db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
+    if (isTerminal(status)) db.prepare(CLAIM_SETTLE_SQL).run(status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3])
+    else db.prepare(CLAIM_RELEASE_SQL).run(key[0], key[1], key[2], key[3])
+  }).immediate()
+}
+// Async twins for the Postgres port: the SAME statements, exercised against PG by the two-connection race test.
+export async function writeTryReserve(db: Db, a: AuditEntry): Promise<ReserveOutcome> {
+  const lookup = a.lookup.slice(0, 200)
+  const key = claimKey(a)
+  const now = Math.floor(Date.now() / 1000)
+  const won = (await db.run(CLAIM_INSERT_SQL, [key[0], key[1], key[2], key[3], now])).changes === 1
+  if (!won) {
+    const r = await db.get<{ status: string }>(CLAIM_STATUS_SQL, [key[0], key[1], key[2], key[3]])
+    return { prior: claimPrior(r?.status ?? 'reserved') }
+  }
+  const legacy = await db.get<{ status: string }>(RESERVE_STATUS_SQL, [a.tenantId, a.connector, a.jobId ?? null, lookup])
+  if (legacy && (isTerminal(legacy.status) || legacy.status === 'reserved')) {
+    const prior = claimPrior(legacy.status)
+    if (prior !== 'uncertain') await db.run(CLAIM_SETTLE_SQL, [prior, now, key[0], key[1], key[2], key[3]])
+    return { prior }
+  }
+  const id = randomBytes(12).toString('hex')
+  await db.run(AUDIT_SQL, [id, a.tenantId, a.connector, a.jobId ?? null, lookup, 'reserved', 0])
+  return { id }
+}
+export async function writeSettleClaim(db: Db, a: AuditEntry, id: string, status: string, results: number): Promise<void> {
+  const key = claimKey(a)
+  if (isTerminal(status)) await db.run(CLAIM_SETTLE_SQL, [status.startsWith('contact rejected') ? 'rejected' : status, Math.floor(Date.now() / 1000), key[0], key[1], key[2], key[3]])
+  else await db.run(CLAIM_RELEASE_SQL, [key[0], key[1], key[2], key[3]])
+  await db.run("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'", [status, results, id])
 }
 export async function writeAudit(db: Db, a: AuditEntry): Promise<void> {
   await db.run(AUDIT_SQL, auditArgs(a))

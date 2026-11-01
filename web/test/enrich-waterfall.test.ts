@@ -254,3 +254,17 @@ test('one unreadable key refuses THAT provider only: audited, the healthy provid
   const rows = db.prepare("SELECT status FROM connector_audit WHERE tenant_id = 'u1' AND connector = 'enrich:apollo' AND lookup = 'key load'").all() as { status: string }[]
   assert.ok(rows.some(x => x.status.startsWith('setup unreadable')), 'the refusal is audited on the provider')
 })
+
+test('a TRANSIENT outcome releases the claim: the retried lookup pays once more and succeeds (no eternal block)', async () => {
+  const { db, jobId, leads } = seed(1, false) // Apollo only
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  let pass1 = true
+  const flaky = async (u: string) => { if (pass1) return new Response('slow', { status: 429 }); return apolloWith([PERSON])(u) } // the WHOLE first attempt is rate-limited (org and people)
+  const r1 = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(flaky, async () => ok(PDL_OK), calls), master })
+  assert.equal(r1.attached, 0, 'the rate-limited pass attaches nothing')
+  pass1 = false
+  const r2 = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  assert.equal(r2.attached, 1, 'a retriable failure is not a terminal memo: the retry pays and succeeds')
+  const claims = db.prepare("SELECT status FROM connector_claims WHERE tenant_id = 'u1'").all() as { status: string }[]
+  assert.deepEqual(claims.map(c => c.status), ['ok'], 'the claim settled terminal exactly once')
+})
