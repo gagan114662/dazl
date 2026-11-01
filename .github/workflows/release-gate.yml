@@ -145,9 +145,15 @@ jobs:
           tar -xzf "$GITHUB_WORKSPACE/release-app-$JOB_SHA.tar.gz" -C .
           test "$(cat .build-commit)" = "$JOB_SHA"
           PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-          export DB_PATH=/tmp/relcheck-scratch/app.db DAZL_MASTER_KEY=$(head -c 32 /dev/urandom | base64) \
+          # The net fence deletes every *KEY*/*SECRET* env var, so readiness values arrive under the neutral
+          # SMOKE_* names the repo's own stripe-test-env.mjs restores after the fence (release-identity smoke pattern).
+          export DB_PATH=/tmp/relcheck-scratch/app.db \
             PUBLIC_BASE_URL="http://127.0.0.1:$PORT" NODE_ENV=production SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 \
-            NODE_OPTIONS="--experimental-strip-types --import $GITHUB_WORKSPACE/assembly/web/test/helpers/net-fence.ts"
+            SMOKE_MASTER_B64=$(head -c 32 /dev/urandom | base64) \
+            SMOKE_STRIPE_SK="sk_test_relcheck$(python3 -c 'import secrets;print(secrets.token_hex(6))')" \
+            SMOKE_STRIPE_WHSEC="whsec_relcheck$(python3 -c 'import secrets;print(secrets.token_hex(12))')" \
+            STRIPE_PRICE_PRO="price_relcheck" \
+            NODE_OPTIONS="--experimental-strip-types --import $GITHUB_WORKSPACE/assembly/web/test/helpers/net-fence.ts --import $GITHUB_WORKSPACE/assembly/web/test/smoke/stripe-test-env.mjs"
           mkdir -p /tmp/relcheck-scratch
           node node_modules/next/dist/bin/next start -p "$PORT" -H 127.0.0.1 & SPID=$!
           trap 'kill $SPID 2>/dev/null || true' EXIT
