@@ -144,6 +144,26 @@ export function auditReserved(db: Database.Database, a: AuditEntry): string {
 export function auditSettle(db: Database.Database, id: string, status: string, results: number): void {
   db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
 }
+// The credit-discipline gate (#382): claim a lookup ATOMICALLY before paying for it. One guarded INSERT is the
+// whole protocol - a replayed job (stale-lease double-run, resume, or a concurrent caller on a lease-less route)
+// loses the race and reads the winner's outcome instead of paying again. Terminal outcomes (ok/empty/rejected)
+// replay free; a stale 'reserved' row proves the pass MAY have been charged, so the replay fails CLOSED (uncertain,
+// never a second payment). The reservation is scoped to tenant + connector + job + lookup: jobId must be non-null
+// for replays to see each other (SQL NULL never equals NULL). Settle exactly once with auditSettle.
+export type ReserveOutcome = { id: string } | { prior: 'ok' | 'empty' | 'rejected' | 'uncertain' }
+const RESERVE_SQL = `INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results)
+  SELECT ?, ?, ?, ?, ?, 'reserved', 0
+  WHERE NOT EXISTS (SELECT 1 FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND (status = 'reserved' OR status = 'ok' OR status = 'empty' OR status LIKE 'contact rejected%'))`
+const RESERVE_STATUS_SQL = "SELECT status FROM connector_audit WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1"
+export function auditTryReserve(db: Database.Database, a: AuditEntry): ReserveOutcome {
+  const id = randomBytes(12).toString('hex')
+  const lookup = a.lookup.slice(0, 200)
+  const n = db.prepare(RESERVE_SQL).run(id, a.tenantId, a.connector, a.jobId ?? null, lookup, a.tenantId, a.connector, a.jobId ?? null, lookup).changes
+  if (n === 1) return { id }
+  const r = db.prepare(RESERVE_STATUS_SQL).get(a.tenantId, a.connector, a.jobId ?? null, lookup) as { status: string } | undefined
+  const st = r?.status ?? ''
+  return { prior: st === 'ok' || st === 'empty' ? st : st.startsWith('contact rejected') ? 'rejected' : 'uncertain' }
+}
 export async function writeAudit(db: Db, a: AuditEntry): Promise<void> {
   await db.run(AUDIT_SQL, auditArgs(a))
 }

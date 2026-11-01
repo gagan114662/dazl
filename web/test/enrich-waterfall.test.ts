@@ -209,3 +209,48 @@ test('same-name leads with no domain never share a memo: each is searched, neith
   const keys = (db2.prepare("SELECT DISTINCT lookup FROM connector_audit WHERE tenant_id = 'u1' AND connector = 'enrich:apollo' AND lookup LIKE 'people %'").all() as { lookup: string }[]).map(r => r.lookup)
   assert.ok(keys.some(k => k.includes('lead:lead1')) && keys.some(k => k.includes('lead:lead2')), 'each no-domain lead has its own durable identity')
 })
+
+test('a double-run (stale lease reap / concurrent caller) never pays twice: the loser reads the winner, makes 0 provider calls', async () => {
+  const { db, jobId, leads } = seed(1)
+  const aCalls: Calls = { apollo: 0, pdl: 0 }
+  const bCalls: Calls = { apollo: 0, pdl: 0 }
+  // Worker A claims the atomic reservation and stalls INSIDE the org call; the reaper's worker B runs the same job.
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r })
+  const aApollo = async (u: string) => { if (u.includes('organizations')) await gate; return apolloWith([PERSON])(u) }
+  const A = enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(aApollo, async () => ok(PDL_OK), aCalls), master })
+  await new Promise(r => setTimeout(r, 20)) // A is parked mid-org-call with its reservation durable
+  const rb = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), bCalls), master })
+  assert.equal(bCalls.apollo, 0, 'the double-run never repeats a possibly-paid call')
+  assert.equal(bCalls.pdl, 0, 'uncertain stops the waterfall for the lead')
+  assert.ok(rb.skipped.some(x => x.why === 'uncertain'), 'the second worker reports the lead uncertain')
+  release()
+  const ra = await A
+  assert.equal(aCalls.apollo, 2, 'the winner pays exactly once: org + people')
+  assert.equal(ra.attached, 1)
+})
+
+test('setup failures refuse explicitly: no master key = no calls, an audited refusal, never a silent swallow', async () => {
+  const { db, jobId, leads } = seed(1)
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const saved = process.env.DAZL_MASTER_KEY; delete process.env.DAZL_MASTER_KEY
+  try {
+    const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls) }) // no deps.master: needs the env key
+    assert.equal(calls.apollo + calls.pdl, 0, 'no paid call without a readable setup')
+    assert.equal(r.attached, 0)
+    const rows = db.prepare("SELECT status FROM connector_audit WHERE tenant_id = 'u1' AND connector = 'enrich'").all() as { status: string }[]
+    assert.ok(rows.some(x => x.status.startsWith('setup failed')), 'the refusal is on the durable record')
+  } finally { if (saved !== undefined) process.env.DAZL_MASTER_KEY = saved }
+})
+
+test('one unreadable key refuses THAT provider only: audited, the healthy provider still runs', async () => {
+  const { db, jobId, leads } = seed(1) // both keys saved + fallback opted in
+  db.prepare("UPDATE tenant_connectors SET ciphertext = 'corrupt-not-json' WHERE tenant_id = 'u1' AND connector = 'enrich:apollo'").run()
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.apollo, 0, 'the unreadable key is never used')
+  assert.equal(calls.pdl, 1, 'a healthy provider still runs')
+  assert.equal(r.attached, 1)
+  const rows = db.prepare("SELECT status FROM connector_audit WHERE tenant_id = 'u1' AND connector = 'enrich:apollo' AND lookup = 'key load'").all() as { status: string }[]
+  assert.ok(rows.some(x => x.status.startsWith('setup unreadable')), 'the refusal is audited on the provider')
+})
