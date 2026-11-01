@@ -102,7 +102,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run build
-      - name: Deterministic zero-native artifact (.next + .build-commit), sha256, per-file manifest
+      - id: pack
+        name: Deterministic zero-native artifact (.next + .build-commit), sha256, per-file manifest
         run: |
           set -euo pipefail
           node ../ops/release-manifest.mjs write . release.json
@@ -120,7 +121,8 @@ jobs:
                       entries.append({"path": m.name, "size": m.size, "sha256": hashlib.sha256(tf.extractfile(m).read()).hexdigest()})
           json.dump({"commit": os.environ["JOB_SHA"], "files": entries, "file_count": len(entries)}, open("tarball-manifest.json", "w"), indent=1)
           PYSCAN
-      - name: "Artifact scans: zero native, no key material, no env files"
+      - id: scans
+        name: "Artifact scans: zero native, no key material, no env files"
         working-directory: web
         run: |
           set -euo pipefail
@@ -164,9 +166,11 @@ jobs:
           # Next serves public/<path> at the site root, not under /public: strip the directory prefix.
           ASSET=$(find public -type f | sort | head -1); [ -n "$ASSET" ]
           curl -sf "http://127.0.0.1:$PORT/${ASSET#public/}" >/dev/null || { echo "public asset $ASSET not served"; exit 1; }
+      # Upload only after the build, packaging and EVERY security scan succeeded; a later smoke failure
+      # still uploads (the gates are proven by then), but a rejected payload is never published.
       - name: Upload runnable release artifact
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.pack.outcome == 'success' && steps.scans.outcome == 'success'
         with:
           name: release-app-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
