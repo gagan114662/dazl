@@ -187,7 +187,13 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   // A per-run budget control can skip this paid-credit pass for a specific run.
   if (deps.creditEnrichment !== false) {
     const { enrichLeadContacts } = await import('../enrich/index.ts')
-    await enrichLeadContacts(db, tenantId, jobId, leads, { fetchImpl }).catch(() => {})
+    // A bonus, never the bar: the scan survives an enrich failure, but the failure is NEVER silent - an audit row
+    // when the database allows it, a sanitized log line always.
+    await enrichLeadContacts(db, tenantId, jobId, leads, { fetchImpl }).catch((e) => {
+      const why = `pass failed: ${e instanceof Error ? e.message.slice(0, 120) : 'error'}`
+      try { audit(db, { tenantId, connector: 'enrich', jobId, lookup: 'contact pass', status: why, results: 0 }) } catch { /* db down: the log line still carries it */ }
+      console.error('[enrich]', why)
+    })
   }
 }
 

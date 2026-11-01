@@ -35,7 +35,8 @@ export async function POST(req: NextRequest) {
   // Company-level enrichment after the response: BYOK Apollo/PDL org + people (no emails),
   // contact-page crawl (evidence fetch skipped - profile URLs are never fetched), SEC/job-board signals.
   after(async () => {
-    await enrichCommenters(db, user.tenantId, batchId).catch(() => {})
+    // Enrichment is a bonus on top of the import, but never a silent one.
+    await enrichCommenters(db, user.tenantId, batchId).catch((e) => console.error('[commenters] enrich failed:', e instanceof Error ? e.message.slice(0, 120) : 'error'))
     const leadRows = db.prepare("SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND company <> ''").all(jobId) as { id: string; company: string; source_url: string }[]
     if (leadRows.length > 0) await crawlJob(db, user.tenantId, jobId, { leads: leadRows, skipEvidenceFetch: true }).catch(() => {})
     await enrichJobSignals(db, user.tenantId, jobId, {}).catch(() => {})
