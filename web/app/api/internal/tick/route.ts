@@ -76,9 +76,10 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   const readTenants = db.prepare("SELECT c.tenant_id FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.version = ? AND g.read_granted = 1 AND g.status = 'active'").all(READ_CONSENT_VERSION) as { tenant_id: string }[]
   const all = [...new Set([...sendSet.keys(), ...firstTouchSet.keys(), ...readTenants.map(t => t.tenant_id)])]
   let done = 0
+  let firstTouches = 0
   for (const tenantId of all) {
     await lease.keep()
-    let stage: 'reply_sync' | 'followups' = 'reply_sync'
+    let stage: 'reply_sync' | 'followups' | 'first_touch' = 'reply_sync'
     try {
       const sync = classifySync(await syncReplies(db, tenantId))
       await progress(tenantId, 'reply_sync', sync)
@@ -90,25 +91,27 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
         await progress(tenantId, 'followups', f)
         if (f.outcome === 'failure') continue
       }
+      if (firstTouchSet.has(tenantId)) {
+        // Drain due held drafts, then pick up new leads: first touches restart without waiting for a new scan.
+        // Drain and discovery are one kind of scheduled work ('first_touch'); a drain failure skips discovery (its
+        // sends are the riskier half), and a reply/follow-up failure skips the tenant's first touches this tick:
+        // the tick's per-tenant failure accounting is the released contract (one refusal, one failure), so the two
+        // passes stay inside this loop rather than a parallel one that would double-count a switched-off tenant.
+        // drainFirstTouch covers legacy holds recorded on the message row (including #522's reply_sync_stale holds;
+        // disjoint selectors from autopilot_work, so no double send); runAutopilot drains held work rows and new
+        // verified leads (#448). Every send runs within every autopilot and send check; the lease is kept alive
+        // between its messages.
+        stage = 'first_touch'
+        const dr = classifyWork(await drainFirstTouch(db, tenantId))
+        await progress(tenantId, 'first_touch', dr)
+        if (dr.outcome === 'failure') continue
+        const ap = await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? '', { keep: () => lease.keep() })
+        firstTouches += ap.sent
+        await progress(tenantId, 'first_touch', classifyWork(ap, DRAIN_HOLD_REASONS))
+        if (ap.stopped !== undefined && !DRAIN_HOLD_REASONS.has(ap.stopped)) continue
+      }
       done++
     } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
-  }
-  // #411: first touches no longer wait for the next scan to finish. Two drains, then discovery: legacy holds recorded
-  // on the message row (drainFirstTouch, kind 'first_touch' - the released design, including #522's reply_sync_stale
-  // holds; disjoint selectors from autopilot_work, so no double send), then held work rows and new verified leads
-  // (runAutopilot, kind 'autopilot', #448). Every send runs within every autopilot and send check; the lease is kept
-  // alive between its messages.
-  let firstTouches = 0
-  for (const t of db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0').all() as { tenant_id: string; business_name: string | null }[]) {
-    await lease.keep()
-    try {
-      const dr = classifyWork(await drainFirstTouch(db, t.tenant_id))
-      await progress(t.tenant_id, 'first_touch', dr)
-      if (dr.outcome === 'failure') continue
-      const r = await runAutopilot(db, t.tenant_id, t.business_name ?? '', { keep: () => lease.keep() })
-      firstTouches += r.sent
-      await progress(t.tenant_id, 'autopilot', classifyWork(r, DRAIN_HOLD_REASONS))
-    } catch (e) { fenced(e); await progress(t.tenant_id, 'autopilot', failed(e)); captureError(e, { source: 'worker', where: 'tick:autopilot', tenantId: t.tenant_id, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
