@@ -74,13 +74,20 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # Runnable release artifact (infra 010 route, moved into CI): exact pinned toolchain, exact source, the
-  # original build gate (type/lint intact), production dependencies only, deterministic tarball, per-file
-  # sha256 manifest, and scans that refuse native binaries, key material or env files in the artifact.
+  # Runnable release artifact, matching the accepted 010 contract (recovered by infra from its receipts):
+  # the artifact is ONLY the compiled .next tree + the exact .build-commit marker. The stage supplies a
+  # clean exact git checkout of the same commit (public/, next.config.ts, package files, ops, source);
+  # dependencies come from the runtime's own store (runner deps here; the arm64 host store symlink in the
+  # checked-release path). Zero native payloads, zero env/key material: scans fail the run otherwise.
+  # The extract smoke performs the real runtime assembly: overlay the artifact onto a CLEAN checkout of
+  # the same commit with freshly installed runner deps, boot the result, and verify release identity,
+  # readiness, a page and a public asset. Nothing here provisions anything on the host.
   package:
     needs: browser
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      JOB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     defaults:
       run:
         working-directory: web
@@ -95,34 +102,61 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run build
-      - name: Prune to production dependencies
-        run: npm prune --omit=dev
-      - name: Deterministic runnable tarball, sha256, per-file manifest
+      - name: Deterministic zero-native artifact (.next + .build-commit), sha256, per-file manifest
         run: |
           set -euo pipefail
           node ../ops/release-manifest.mjs write . release.json
-          tar --sort=name --owner=0 --group=0 --numeric-owner -czf "../release-app-$GITHUB_SHA.tar.gz" package.json package-lock.json .next node_modules ops
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --exclude='*.node' --exclude='*.so' --exclude='*.so.*' \
+            -czf "../release-app-$JOB_SHA.tar.gz" .next .build-commit
           cd ..
-          sha256sum "release-app-$GITHUB_SHA.tar.gz" > "release-app-$GITHUB_SHA.tar.gz.sha256"
+          sha256sum "release-app-$JOB_SHA.tar.gz" > "release-app-$JOB_SHA.tar.gz.sha256"
           python3 - <<'PYSCAN'
-          import hashlib, json, tarfile
+          import hashlib, json, os, tarfile
           entries = []
-          with tarfile.open(f"release-app-{__import__('os').environ['GITHUB_SHA']}.tar.gz") as tf:
+          with tarfile.open(f"release-app-{os.environ['JOB_SHA']}.tar.gz") as tf:
               for m in tf.getmembers():
                   if m.isfile():
                       entries.append({"path": m.name, "size": m.size, "sha256": hashlib.sha256(tf.extractfile(m).read()).hexdigest()})
-          json.dump({"files": entries, "file_count": len(entries)}, open("tarball-manifest.json", "w"), indent=1)
+          json.dump({"commit": os.environ["JOB_SHA"], "files": entries, "file_count": len(entries)}, open("tarball-manifest.json", "w"), indent=1)
           PYSCAN
-      - name: Artifact scans: no native binaries, no key material, no env files
+      - name: Artifact scans: zero native, no key material, no env files
         working-directory: ..
         run: |
           set -euo pipefail
-          tar -tzf "release-app-$GITHUB_SHA.tar.gz" > tar-list.txt
+          tar -tzf "release-app-$JOB_SHA.tar.gz" > tar-list.txt
           if grep -E '(^|/)(\.env[^/]*|.*\.pem|id_rsa|.*\.key)$' tar-list.txt; then echo 'env/key file in artifact'; exit 1; fi
-          rm -rf /tmp/artifact-scan && mkdir -p /tmp/artifact-scan && tar -xzf "release-app-$GITHUB_SHA.tar.gz" -C /tmp/artifact-scan
-          if find /tmp/artifact-scan -type f \( -name '*.node' -o -name '*.so' -o -name '*.so.*' \) | grep .; then echo 'native binary in artifact'; exit 1; fi
+          if grep -E '\.(node|so)(\.[0-9]+)*$' tar-list.txt; then echo 'native payload in artifact (contract is zero-native)'; exit 1; fi
+          rm -rf /tmp/artifact-scan && mkdir -p /tmp/artifact-scan && tar -xzf "release-app-$JOB_SHA.tar.gz" -C /tmp/artifact-scan
           if find /tmp/artifact-scan -type f -exec sh -c 'head -c 4 "$1" | grep -q "^.ELF"' _ {} \; -print | grep .; then echo 'ELF binary in artifact'; exit 1; fi
           if grep -rIl 'BEGIN [A-Z ]*PRIVATE KEY' /tmp/artifact-scan | head -1 | grep .; then echo 'key material in artifact'; exit 1; fi
+      - name: Clean exact checkout for the runtime-assembly smoke
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: assembly
+          clean: true
+      - name: Runtime-assembly smoke: artifact overlaid on the clean checkout boots and serves its release
+        working-directory: ..
+        run: |
+          set -euo pipefail
+          cd assembly/web
+          npm ci --no-audit --no-fund
+          tar -xzf "$GITHUB_WORKSPACE/release-app-$JOB_SHA.tar.gz" -C .
+          test "$(cat .build-commit)" = "$JOB_SHA"
+          PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          export DB_PATH=/tmp/relcheck-scratch/app.db DAZL_MASTER_KEY=$(head -c 32 /dev/urandom | base64) \
+            PUBLIC_BASE_URL="http://127.0.0.1:$PORT" NODE_ENV=production SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 \
+            NODE_OPTIONS="--experimental-strip-types --import $GITHUB_WORKSPACE/assembly/web/test/helpers/net-fence.ts"
+          mkdir -p /tmp/relcheck-scratch
+          node node_modules/next/dist/bin/next start -p "$PORT" -H 127.0.0.1 & SPID=$!
+          trap 'kill $SPID 2>/dev/null || true' EXIT
+          for i in $(seq 1 60); do curl -sf "http://127.0.0.1:$PORT/api/ready" >/dev/null 2>&1 && break; sleep 1; done
+          curl -sf "http://127.0.0.1:$PORT/api/ready" >/dev/null
+          node "$GITHUB_WORKSPACE/ops/release-manifest.mjs" check "$GITHUB_WORKSPACE/web/release.json" "http://127.0.0.1:$PORT"
+          curl -sf "http://127.0.0.1:$PORT/" >/dev/null
+          ASSET=$(find public -type f | sort | head -1); [ -n "$ASSET" ]
+          curl -sf "http://127.0.0.1:$PORT/$ASSET" >/dev/null || { echo "public asset $ASSET not served"; exit 1; }
       - name: Upload runnable release artifact
         uses: actions/upload-artifact@v4
         if: success()
