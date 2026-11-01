@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile, mkdtemp, rm, mkdir, lstat } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyzer, extensions, policyVersion } from './policy.mjs';
-import { evidenceFor, newEvidence, digest } from './evidence.mjs';
+import { extensions, policyVersion } from './policy.mjs';
+import { newEvidence, digest } from './evidence.mjs';
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const root = path.dirname(web);
@@ -31,7 +31,7 @@ try {
   const config = await readFile(path.join(web, 'eslint.config.mjs'));
   const configHash = digest(config);
   report.policy = { configHash, files: {} };
-  for (const name of ['policy.mjs', 'evidence.mjs', 'gate.mjs']) report.policy.files[name] = digest(await readFile(path.join(web, 'scripts/quality', name)));
+  for (const name of ['policy.mjs', 'evidence.mjs', 'gate.mjs', 'scan.mjs']) report.policy.files[name] = digest(await readFile(path.join(web, 'scripts/quality', name)));
   const findings = {};
   for (const [label, sha] of [['base', base], ['head', head]]) {
     const tree = path.join(scratch, label);
@@ -46,23 +46,11 @@ try {
     const tracked = execFileSync('git', ['ls-tree', '-r', '--name-only', '-z', sha, '--', 'web'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
     const candidates = tracked.filter(p => extensions.test(p));
     if (!candidates.length) throw new Error(`empty ${label} source inventory`);
-    const lint = analyzer(cwd);
-    const records = [];
-    const excluded = [];
-    let analyzed = 0;
-    for (const filename of candidates) {
-      const relative = filename.slice(4);
-      const absolute = path.join(cwd, relative);
-      if (!(await lstat(absolute)).isFile()) throw new Error(`non-regular source: ${filename}`);
-      if (await lint.isPathIgnored(absolute)) { excluded.push(filename); continue; }
-      const source = await readFile(absolute, 'utf8');
-      const result = await lint.lintText(source, { filePath: absolute, warnIgnored: false });
-      if (result.length !== 1) throw new Error(`missing analysis: ${filename}`);
-      records.push(...evidenceFor(filename, source, result[0].messages));
-      analyzed++;
-    }
-    if (!analyzed) throw new Error(`no ${label} files analyzed`);
-    report.coverage[label] = { candidates: candidates.length, analyzed, excluded, findings: records.length };
+    await writeFile(path.join(cwd, '.quality-inventory.json'), JSON.stringify(candidates));
+    const output = path.join(scratch, `${label}-findings.json`);
+    execFileSync(process.execPath, ['--max-old-space-size=1400', path.join(web, 'scripts/quality/scan.mjs'), cwd, output], { cwd: root, stdio: 'inherit', timeout: 8 * 60 * 1000 });
+    const { records, coverage } = JSON.parse(await readFile(output, 'utf8'));
+    report.coverage[label] = coverage;
     findings[label] = records;
   }
   report.newFindings = newEvidence(findings.base, findings.head);
