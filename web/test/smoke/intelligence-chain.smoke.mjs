@@ -10,7 +10,7 @@ import {loadPlaywright,newContext,startServer,root} from './harness.mjs'
 const {chromium}=loadPlaywright();const out=path.join(root,'preview','intelligence-chain');mkdirSync(out,{recursive:true})
 const child=spawn(process.execPath,['--experimental-strip-types','--no-warnings','--import','./test/helpers/net-fence.ts','--loader','./test/helpers/intelligence-chain-loader.mjs','./test/helpers/intelligence-chain-runtime.mts'],{cwd:root,env:{...process.env},stdio:['pipe','pipe','pipe']})
 let seq=0,stderr='';const pending=new Map();child.stderr.on('data',d=>stderr+=d)
-readline.createInterface({input:child.stdout}).on('line',l=>{try{const j=JSON.parse(l);const p=pending.get(j.id);if(!p)throw Error(l);pending.delete(j.id);p.resolve(j.result)}catch(e){for(const p of pending.values())p.reject(Error(l+stderr))}})
+readline.createInterface({input:child.stdout}).on('line',l=>{try{const j=JSON.parse(l);const p=pending.get(j.id);if(!p)throw Error(l);pending.delete(j.id);p.resolve(j.result)}catch{for(const p of pending.values())p.reject(Error(l+stderr))}})
 const rpc=(op,body)=>new Promise((resolve,reject)=>{const id=++seq;pending.set(id,{resolve,reject});child.stdin.write(JSON.stringify({id,op,body})+'\n')})
 child.on('exit',code=>{for(const p of pending.values())p.reject(Error(`RPC exit${code} ${stderr}`))})
 const srv=await startServer();let browser

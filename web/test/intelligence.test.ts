@@ -1,10 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { sqliteDb } from '../lib/db/client.ts'
-import { migrateSellerDecisions } from '../lib/scan/intelligence-schema.ts'
 import { migrateScan, createQueryJob, captureSellerDecisions } from '../lib/scan/store.ts'
-import { assembleDecisionPack, decisionRows, recallSellerDecisions, reuseSellerDecisions, siteKey, writeSellerDecisions, RECALL_LIMIT, type SellerDecision } from '../lib/scan/intelligence.ts'
+import { assembleDecisionPack, decisionRows, recallSellerDecisions, reuseSellerDecisions, siteKey, writeSellerDecisions, RECALL_LIMIT } from '../lib/scan/intelligence.ts'
 import { budgetedIcp, type Icp } from '../lib/scan/icp.ts'
 import { bothEngines } from './helpers/engines.ts'
 const profile = (): Icp => ({ summary: 'Buyer search', who: ['clinic managers'], industries: [], sizes: [], where: [], signals: [], exclude: [], research: {v:1,site:'seller.example',offers:[{i:'booking',n:'Booking'},{i:'payroll',n:'Payroll'}],q:null,ans:null,hyps:[{i:'booking:persona:1',o:'booking',k:'persona',t:'clinic managers',s:'reviewed',u:'https://seller.example/customers',q:'Our customers include clinics',at:1700000000}]}})
