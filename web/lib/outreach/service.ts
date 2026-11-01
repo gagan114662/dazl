@@ -506,7 +506,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
   // #413: safety ingest can also fall behind during the await - release and hold, never send.
-  if (!testFixtureSend(db, tenantId, m) && replySafetyStale(db, tenantId, m.to_email, nowS(d))) release('reply_sync_stale')
+  if (!testFixtureSend(db, tenantId, m) && replySafetyStale(db, tenantId, m.to_email, nowS(d), m.id)) release('reply_sync_stale')
   // #417: a conversion proven during the refresh stops the send terminally - never released back to approved,
   // where it could linger past an activation that skips only draft/approved rows.
   if (!testFixtureSend(db,tenantId,m) && conversionBlockedNow(db, m.to_email)) {

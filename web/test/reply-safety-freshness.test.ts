@@ -89,6 +89,15 @@ test('gate is per-recipient: inert for fresh first contacts, blocking for contac
   assert.equal(sendBlockReason(db, 'A', 'M2'), null)
 })
 
+test('a first contact is not refused by its own claim: the post-claim recheck excludes the in-flight message', () => {
+  const db = setup()
+  approvedMsg(db, 'M1') // approved, never sent: no history with this recipient
+  db.prepare("UPDATE outreach_messages SET status = 'sending', claimed_at = ? WHERE id = 'M1'").run(NOW) // its own claim
+  db.prepare('DELETE FROM mail_read_consent').run(); db.prepare('UPDATE gmail_accounts SET read_granted = 0').run()
+  assert.equal(replySafetyStale(db, 'A', 'prospect@corp.example', NOW, 'M1'), false, 'the in-flight send itself is not prior contact')
+  assert.equal(replySafetyStale(db, 'A', 'prospect@corp.example', NOW), true, 'but once in flight it IS history for the next send to them')
+})
+
 test('sendMessage refuses at the pre-check when safety state is stale: no claim, no send, row stays approved', async () => {
   const db = setup()
   approvedMsg(db, 'M0', 'sent', 'L2')

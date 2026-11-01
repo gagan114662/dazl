@@ -21,10 +21,13 @@ export const READ_CONSENT_VERSION = '2026-10-21'
 // The window is the single source for REPLY_SYNC_STALE_S in lib/ops/scheduler-runs.ts (ops re-exports this value;
 // importing ops back from here would cycle).
 export const REPLY_SAFETY_STALE_S = 2 * 60 * 60
-export function replySafetyStale(db: Database.Database, tenantId: string, toEmail: string, now = Math.floor(Date.now() / 1000)): boolean {
+export function replySafetyStale(db: Database.Database, tenantId: string, toEmail: string, now = Math.floor(Date.now() / 1000), excludeId?: string): boolean {
   const has = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
   if (!has('scheduler_progress') || !has('mail_read_consent') || !has('gmail_accounts') || !has('outreach_messages')) return false
-  const prior = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND status IN ('sent','sending','uncertain') LIMIT 1").get(tenantId, norm(toEmail))
+  // History with the recipient is what makes safety state exist at all; the caller's OWN in-flight claim
+  // (status 'sending' mid-send) is not history - without the exclusion every first contact would refuse itself
+  // at the post-claim recheck whenever ingest is behind (the staging restart scenario caught exactly this).
+  const prior = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND status IN ('sent','sending','uncertain') AND id <> COALESCE(?, '') LIMIT 1").get(tenantId, norm(toEmail), excludeId ?? null)
   if (!prior) return false // no history with this recipient: no reply-derived safety state to be stale
   const reads = db.prepare("SELECT 1 FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.tenant_id = ? AND c.version = ? AND g.read_granted = 1 AND g.status = 'active' LIMIT 1").get(tenantId, READ_CONSENT_VERSION)
   if (!reads) return true // contacted before, and no reply ingest can ever recover freshness for them
