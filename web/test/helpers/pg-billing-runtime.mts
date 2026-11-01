@@ -16,7 +16,14 @@ test('billing on Postgres, two tenants', async () => {
   try {
     await runPgMigrations(db.pool)
     setDb(db)
-    const now = new Date()   // the routes read the CURRENT month by the real clock; pinning a past month breaks every later month
+    // The routes read the CURRENT UTC month by the real clock (lib/plans.ts monthStartS), so the fixtures must live in
+    // the same month the routes will see - pinning a past month fails every later month. Race: a run that crosses a
+    // month boundary mid-test would flip the routes' window between fixture and read, so near the end of a month wait
+    // the few seconds into the next one and anchor everything there (at most ~10 minutes, once a month).
+    const nextStart = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) / 1000
+    const slack = Math.floor(nextStart(new Date()) - Date.now() / 1000)
+    if (slack < 600) await new Promise(r => setTimeout(r, (slack + 30) * 1000))
+    const now = new Date()
     const month = monthStartS(now)
     // plans: A on Pro and past_due, B on Free (no row)
     await savePlan(db, A, 'pro')
