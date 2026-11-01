@@ -11,7 +11,7 @@ import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
-import { norm } from './store.ts'
+import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
@@ -436,6 +436,8 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
   if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
+  // #413: never send on stale safety state - an opt-out that reply_sync has not ingested yet is invisible here.
+  if (!testFixtureSend(db, tenantId, pre) && replySafetyStale(db, tenantId, pre.to_email)) throw new OutreachError('reply_sync_stale')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
 }
 
@@ -503,6 +505,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // #413: safety ingest can also fall behind during the await - release and hold, never send.
+  if (!testFixtureSend(db, tenantId, m) && replySafetyStale(db, tenantId, m.to_email, nowS(d), m.id)) release('reply_sync_stale')
   // #417: a conversion proven during the refresh stops the send terminally - never released back to approved,
   // where it could linger past an activation that skips only draft/approved rows.
   if (!testFixtureSend(db,tenantId,m) && conversionBlockedNow(db, m.to_email)) {
