@@ -39,24 +39,26 @@ try {
   await page.goto(`${srv.base}/app/settings`)
   await page.getByText('Enrichment (bring your own key)', { exact: true }).waitFor()
 
+  const card = page.locator('div.card', { hasText: 'Enrichment (bring your own key)' })
+
   // No keys: the opt-in must not render at all.
-  assert.equal(await page.getByRole('checkbox').count(), 0, 'no fallback checkbox before both keys are connected')
+  assert.equal(await card.getByText('Also use People Data Labs as a fallback').count(), 0, 'no fallback checkbox before both keys are connected')
 
   // Save both keys through the real UI (values are invented; the net fence blocks any real provider call).
-  await page.getByPlaceholder('Paste your Apollo.io API key').fill('smoke-apollo-key-0000000000000000')
-  await page.getByRole('button', { name: 'Save', exact: true }).first().click()
-  await page.getByText('Connected (key ending 0000)', { exact: false }).first().waitFor()
-  await page.getByPlaceholder('Paste your People Data Labs API key').fill('smoke-pdl-key-00000000000000000000')
-  await page.getByRole('button', { name: 'Save', exact: true }).first().click()
-  await page.getByText('Connected (key ending 0000)').nth(1).waitFor()
+  await card.getByPlaceholder('Paste your Apollo.io API key').fill('smoke-apollo-key-0000000000000000')
+  await card.getByRole('button', { name: 'Save', exact: true }).click()
+  await card.getByText(/Connected \(key ending 0000\)/).first().waitFor()
+  await card.getByPlaceholder('Paste your People Data Labs API key').fill('smoke-pdl-key-00000000000000000000')
+  await card.getByRole('button', { name: 'Save', exact: true }).click()
+  await card.getByText(/Connected \(key ending 0000\)/).nth(1).waitFor()
 
   // Both keys connected: the opt-in renders, OFF by default, with the paid-credit wording at the control.
-  const toggle = page.getByRole('checkbox')
+  const toggle = card.locator('label', { hasText: 'Also use People Data Labs as a fallback' }).getByRole('checkbox')
   await toggle.waitFor()
   assert.equal(await toggle.isChecked(), false, 'the fallback is OFF by default')
-  await page.getByText('Off by default.').waitFor()
-  await page.getByText('1 of your PDL credits').waitFor()
-  let p = path.join(out, 'fallback-off.png'); await page.getByText('Enrichment (bring your own key)').locator('xpath=ancestor::div[contains(@class,"card")]').screenshot({ path: p }); shots.push(p)
+  await card.getByText('Off by default.').waitFor()
+  await card.getByText('1 of your PDL credits').waitFor()
+  let p = path.join(out, 'fallback-off.png'); await card.screenshot({ path: p }); shots.push(p)
   assert.equal(flagRow(), null, 'no flag row exists before the tenant ever opts in')
 
   // Opt in through the control; the flag must persist in the DB and across a reload.
@@ -65,9 +67,10 @@ try {
   assert.deepEqual(flagRow(), { enabled: 1, ciphertext: '' }, 'opt-in persisted as a secret-less flag row')
   await page.reload()
   await page.getByText('Enrichment (bring your own key)', { exact: true }).waitFor()
-  await page.getByRole('checkbox').waitFor()
-  assert.equal(await page.getByRole('checkbox').isChecked(), true, 'the opt-in survives a reload')
-  p = path.join(out, 'fallback-on.png'); await page.getByText('Enrichment (bring your own key)').locator('xpath=ancestor::div[contains(@class,"card")]').screenshot({ path: p }); shots.push(p)
+  const toggle2 = card.locator('label', { hasText: 'Also use People Data Labs as a fallback' }).getByRole('checkbox')
+  await toggle2.waitFor()
+  assert.equal(await toggle2.isChecked(), true, 'the opt-in survives a reload')
+  p = path.join(out, 'fallback-on.png'); await card.screenshot({ path: p }); shots.push(p)
 
   // The flag never surfaces as a connector, and GET reports it under its own field.
   const status = await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))
@@ -75,7 +78,7 @@ try {
   assert.equal(status.fallback, true, 'GET reports the opt-in')
 
   // Opt out again: the flag flips off, keys untouched.
-  await page.getByRole('checkbox').click()
+  await toggle2.click()
   await page.getByText('Saved.').waitFor()
   assert.deepEqual(flagRow(), { enabled: 0, ciphertext: '' }, 'opt-out persisted')
   assert.equal((await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))).fallback, false)
