@@ -87,7 +87,7 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove, on
         )
       })}
       {research.hyps.some(h => h.s === 'rejected') && <details className="mt-2 text-xs"><summary>Dismissed targeting (restore explicitly)</summary>
-        {research.hyps.filter(h => h.s === 'rejected').map(h => <p key={h.i}>{research.offers.find(o => o.i === h.o)?.n}: {h.t} {FIELD_OF[h.k] && <button type="button" className="underline" onClick={() => add(h)}>Restore</button>}</p>)}
+        {research.hyps.filter(h => h.s === 'rejected').map(h => <p key={h.i}>{research.offers.find(o => o.i === h.o)?.n}: {h.t} {FIELD_OF[h.k] && <button type="button" className="underline ml-2" onClick={() => add(h)}> Restore</button>}</p>)}
       </details>}
       {research.q && !research.ans && (
         <div className="mt-2" data-testid="research-question">

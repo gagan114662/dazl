@@ -11,7 +11,8 @@ const srv=await startServer();let browser
 try{
  browser=await chromium.launch();const ctx=await newContext(browser,srv);const page=await ctx.newPage();await page.setViewportSize({width:1280,height:1000})
  await page.route('**/api/scan/icp-from-url',r=>r.fulfill({json:{icp:profile,sells:'Booking',source:'https://seller.example/',intelligence:{selected:[],trust:'seller_targeting_only'}}}))
- await page.route('**/api/scan/estimate',r=>r.fulfill({status:503,json:{error:'fixture_stop_before_paid_work'}}))
+ let submitted
+ await page.route('**/api/scan/estimate',r=>{submitted=r.request().postDataJSON();return r.fulfill({status:503,json:{error:'fixture_stop_before_paid_work'}})})
  await page.goto(srv.base+'/app/leads');await page.getByTestId('play-settings').locator('summary').first().click();await page.getByTestId('more-sources').locator('summary').first().click()
  await page.getByPlaceholder('Your website - we will fill the profile from it').fill('https://seller.example')
  await page.getByRole('button',{name:'Fill from my website',exact:true}).click()
@@ -23,6 +24,11 @@ try{
  await review.getByRole('button',{name:'Restore',exact:true}).click();await review.screenshot({path:path.join(out,'restored.png')})
  const text=await review.innerText();assert.match(text,/Clinic managers[\s\S]*Added by you/)
  const buyerValues=await page.locator('textarea').evaluateAll(xs=>xs.map(x=>x.value));assert.ok(buyerValues.includes('Clinic managers'))
+ await page.getByLabel('Who do you want to reach?',{exact:true}).fill('Find clinic managers')
+ await page.getByRole('button',{name:'Run scan with this profile',exact:true}).first().click()
+ await page.getByText('Could not get a price estimate, so nothing was started. Try again.').waitFor()
+ assert.deepEqual(submitted.icp.research.decisions,[{offer:'booking',hypothesis:'booking:persona:1',action:'confirm'}])
+ assert.deepEqual(submitted.icp.who,['Clinic managers'])
  console.log('PASS production ResearchReview Add/Dismiss/Restore and visible buyer-field wiring. No scan/provider called.')
  await ctx.close()
 }finally{await browser?.close();srv.stop()}
