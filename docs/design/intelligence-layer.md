@@ -51,3 +51,5 @@ The ledger is append-only by application contract, with immutable row identity a
 - https://blogs.oracle.com/developers/oracle-ai-agent-memory-a-governed-unified-memory-core-for-enterprise-ai-agents: vendor description of unified working/semantic/episodic/procedural access patterns, not a reason to replace dazl's database.
 
 Base: 213faf1a, then stacked on exact reviewed 526 `0a43851365f478b10d649136e8ef993ce094d744` solely for gapless 0032/0033/0034 migration integration. No merge or deployment. Final rebase and every exact-head gate required after actual main changes.
+
+Final integration update: rebased onto actual main `0fc9d848121f18f8f8b3449fc4d1e6ce594019bb` after526 merged (parents213faf1a and88a21d54). Migration0034 follows actual0032/0033 gaplessly. Earlier298530a4 chain pixels establish the scenario only; final-head CI/pixels are rerun after this rebase.
