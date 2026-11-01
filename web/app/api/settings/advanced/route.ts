@@ -3,7 +3,7 @@ import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { writeCredential, removeCredential, connectorStatus, setEnabled } from '@/lib/connectors/store'
 import { writeConsent, readConsent, removeConsent } from '@/lib/advanced'
-import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, platformAllowed, scopeFor } from '@/lib/advanced/config'
+import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform } from '@/lib/advanced/config'
 import { tinyfishEnabled } from '@/lib/search/tinyfish'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
@@ -25,7 +25,7 @@ export async function GET() {
       // X needs no session when the operator key is set (TinyFish public-index path): expose that as
       // operator_index so the UI can offer the checkbox on consent alone, matching collectAdvanced.
       const operatorIndex = p === 'x' && tinyfishEnabled() && platformAllowed(p, f)
-      return { platform: p, allowed: platformAllowed(p, f), consent: await readConsent(db, user.tenantId, scopeFor(p)), connected: !!c, enabled: !!c?.enabled, operator_index: operatorIndex, last4: c?.last4 ?? null, high_risk: p === 'linkedin' }
+      return { platform: p, allowed: platformAllowed(p, f), supported: PLATFORM_SUPPORT[p].supported, unsupported_reason: PLATFORM_SUPPORT[p].reason, consent: await readConsent(db, user.tenantId, scopeFor(p)), connected: !!c, enabled: !!c?.enabled, operator_index: operatorIndex, last4: c?.last4 ?? null, high_risk: p === 'linkedin' }
     })),
   })
 }
@@ -40,8 +40,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const f = advFlags()
   if (!isAdvPlatform(body?.platform) || !platformAllowed(body.platform, f)) return NextResponse.json({ error: 'Not available' }, { status: 404 })
+  const p = body.platform as AdvPlatform
+  // A platform the worker cannot fetch offers no consent, session collection or enable flow.
+  // Withdrawing consent and switching a stale stored session OFF stay available for cleanup.
+  if (!PLATFORM_SUPPORT[p].supported && !(body?.action === 'revoke' || (body?.action === 'toggle' && body?.enabled === false))) return NextResponse.json({ error: 'Not available' }, { status: 404 })
   const db = await getDb()
-  const p = body.platform
   if (body.action === 'consent') {
     if (body.accept !== true || body.version !== CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
     await writeConsent(db, user.tenantId, scopeFor(p))

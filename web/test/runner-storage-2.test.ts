@@ -106,7 +106,7 @@ test('advanced connectors: the same gates, sessions, budget and audit rows from 
         for (let i = 0; i < n; i++) await st.db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES (?, ?, ?, 'x', 'ok', 0, ?)", [`seed${k++}`, t, c, now - ago])
       }
       const sessions: string[] = []
-      const worker = async (r: { platform: string; session: string }) => { sessions.push(`${r.platform}:${r.session}`); return [{ url: `https://reddit.example/${r.platform}`, title: 't', quote: 'a quote long enough', date: '2026-10-01', login_walled: false }] }
+      const worker = async (r: { platform: string; session: string }) => { sessions.push(`${r.platform}:${r.session}`); return { items: [{ url: `https://reddit.example/${r.platform}`, title: 't', quote: 'a quote long enough', date: '2026-10-01', login_walled: false }], unsupported: null } }
       const items = await collectAdvanced(st.store, A, 'job1', ['reddit', 'x', 'reddit'], 'dentists hiring', { worker: worker as never, master, env: advEnv, now })
       outs.push({ items, sessions, audit: await st.db.all("SELECT tenant_id, connector, scan_job_id, lookup, status, results FROM connector_audit WHERE id NOT LIKE 'seed%' ORDER BY insert_seq") })
     } finally { await st.done() }

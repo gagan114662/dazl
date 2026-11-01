@@ -127,7 +127,7 @@ test('competitor complaints: the same searches, sessions, budget and audit rows;
       const worker = async (r: { query: string; session: string }) => {
         calls.push({ query: r.query, session: r.session })
         if (r.query.startsWith('Bee')) return null // the worker failed for this one
-        return [{ url: `https://reddit.example/${r.query.split(' ')[0]}`, title: 't', quote: 'q', date: recent, login_walled: false }, { url: 'https://reddit.example/old', title: 't', quote: 'q', date: '2020-01-01', login_walled: false }]
+        return { items: [{ url: `https://reddit.example/${r.query.split(' ')[0]}`, title: 't', quote: 'q', date: recent, login_walled: false }, { url: 'https://reddit.example/old', title: 't', quote: 'q', date: '2020-01-01', login_walled: false }], unsupported: null }
       }
       const deps = { worker: worker as never, master, env, now }
       const items = impl === 'sync' ? await collectCompetitorComplaints(s.raw!, A, 'job1', deps) : await gatherCompetitorComplaints(s.db, A, 'job1', deps)

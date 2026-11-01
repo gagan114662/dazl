@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import { asDb, type Db, type DbLike } from '../db/client.ts'
 import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
-import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
+import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
@@ -40,7 +40,12 @@ export async function readConsent(db: Db, tenantId: string, scope: ConsentScope)
 }
 
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }
-export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerItem[] | null>
+// The worker's structured outcome: the item list plus an explicit refusal. `unsupported` means the
+// worker build cannot fetch this platform at all (its reason says why); it is not an error and
+// never counts as a zero-result search. When it is null the list is the whole outcome: non-empty is
+// ok, empty is a genuine successful search that found nothing.
+export type WorkerOutcome = { items: WorkerItem[]; unsupported: string | null }
+export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerOutcome | null>
 
 // Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled}]}.
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
@@ -57,9 +62,18 @@ export function httpWorker(env: Record<string, string | undefined> = process.env
       if (!res.ok) return null
       const text = await res.text()
       if (text.length > 1_000_000) return null
-      return parseWorkerItems(JSON.parse(text))
+      return parseWorkerReply(JSON.parse(text))
     } catch { return null }
   }
+}
+
+// The worker's reply body: validated items plus the outcome field. Only the exact 'unsupported'
+// outcome is honored; anything else (missing, misspelled, another string) reads as a normal list
+// result, so a worker can never turn a successful search into a silent refusal.
+export function parseWorkerReply(raw: unknown): WorkerOutcome {
+  const o = raw as { outcome?: unknown; reason?: unknown } | null
+  const unsupported = o?.outcome === 'unsupported' ? (typeof o.reason === 'string' && o.reason.length > 0 ? o.reason.slice(0, 200) : 'not implemented by the worker') : null
+  return { items: parseWorkerItems(raw), unsupported }
 }
 
 export function parseWorkerItems(raw: unknown): WorkerItem[] {
@@ -109,6 +123,9 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     const q = p === 'x' && deps.xQuery ? deps.xQuery : query
     const skip = (status: string) => writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status, results: 0 })
     if (!platformAllowed(p, flags)) { await skip('disabled'); continue }
+    // A platform this build cannot fetch is an honest 'unsupported', not a completed zero-result
+    // search. It never reaches consent, the rate limiter or the worker, and it burns no call budget.
+    if (!PLATFORM_SUPPORT[p].supported) { await skip('unsupported'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
     if (await callsLastHour(db, tenantId, p, deps.now ?? Math.floor(Date.now() / 1000)) >= maxCallsPerHour(p, env)) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped
@@ -135,8 +152,12 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // which the site owner placed there for the connector fetchers. A worker with
     // neither answers no_session, which audits as worker_error here.
     const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
-    const items = await worker({ platform: p, query: q.slice(0, 300), session })
-    if (items === null) { await skip('worker_error'); continue }
+    const r = await worker({ platform: p, query: q.slice(0, 300), session })
+    if (r === null) { await skip('worker_error'); continue }
+    // Version skew: the worker refuses a platform this build still offers. Record it the same
+    // honest way; a refusal carries no items to use.
+    if (r.unsupported) { await skip('unsupported'); continue }
+    const items = r.items
     await writeAudit(db, { tenantId, connector: id, jobId, lookup: q, status: items.length ? 'ok' : 'empty', results: items.length })
     for (const it of items) out.push({ source: id, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled })
   }

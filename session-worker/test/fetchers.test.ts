@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseReddit, parseX, parseBilibili, parseInstagram } from '../src/fetchers.ts'
+import { CAPABILITY, FETCHERS, parseReddit, parseX, parseBilibili, parseInstagram } from '../src/fetchers.ts'
 
 test('reddit: posts map to items with permalink, quote and date', () => {
   const raw = { data: { children: [
@@ -50,4 +50,23 @@ test('instagram: users with a latin bio become items', () => {
   const items = parseInstagram(raw)
   assert.equal(items.length, 1)
   assert.equal(items[0].url, 'https://www.instagram.com/acmerobotics/')
+})
+
+test('capability: facebook and xiaohongshu are declared unsupported with reasons; every fetcher platform is covered', () => {
+  assert.equal(CAPABILITY.facebook.supported, false)
+  assert.match(CAPABILITY.facebook.reason ?? '', /browser worker/)
+  assert.equal(CAPABILITY.xiaohongshu.supported, false)
+  assert.match(CAPABILITY.xiaohongshu.reason ?? '', /signing is not implemented/)
+  for (const p of Object.keys(FETCHERS)) {
+    const c = CAPABILITY[p as keyof typeof CAPABILITY]
+    assert.ok(c, `CAPABILITY is missing ${p}`)
+    if (c.supported) assert.equal(c.reason, null)
+    else assert.ok(typeof c.reason === 'string' && c.reason.length > 10, `${p} needs a real reason`)
+  }
+})
+
+test('unsupported stubs never make a network call and return nothing', async () => {
+  await assert.doesNotReject(FETCHERS.facebook('hiring sales', 'session-cookie', {}))
+  assert.deepEqual(await FETCHERS.facebook('q', 's', {}), [])
+  assert.deepEqual(await FETCHERS.xiaohongshu('q', 's', {}), [])
 })

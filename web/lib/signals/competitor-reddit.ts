@@ -79,8 +79,11 @@ async function complaints(store: ComplaintStore, tenantId: string, jobId: string
   const out: ComplaintItem[] = []
   for (const name of competitors.slice(0, budget)) {
     const q = complaintQuery(name)
-    const items = await worker({ platform: 'reddit', query: q.slice(0, 300), session }).catch(() => null)
-    if (items === null) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'worker_error', results: 0 }); continue }
+    const r = await worker({ platform: 'reddit', query: q.slice(0, 300), session }).catch(() => null)
+    if (r === null) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'worker_error', results: 0 }); continue }
+    // Version skew: a worker refusal is 'unsupported', never a fake empty result.
+    if (r.unsupported) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'unsupported', results: 0 }); continue }
+    const items = r.items
     const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff)
     await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: fresh.length ? 'ok' : 'empty', results: fresh.length })
     for (const it of fresh.slice(0, 10)) out.push({ source: COMPLAINT_CONNECTOR, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled, complaint_of: name })

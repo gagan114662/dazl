@@ -27,7 +27,7 @@ test('selection keeps only known advanced platforms', () => {
 
 test('gates: no consent, flag off, then success, with audit and per-tenant isolation', async () => {
   const db = setup(); let calls = 0; const seen: unknown[] = []
-  const worker: WorkerFetch = async r => { calls++; seen.push(r); return [item] }
+  const worker: WorkerFetch = async r => { calls++; seen.push(r); return { items: [item], unsupported: null } }
   const run = (t: string, env = ON, p: 'reddit' | 'linkedin' = 'reddit') => collectAdvanced(db, t, 'j1', [p], 'q', { worker, master, env })
   assert.equal((await run('A')).length, 0)
   acceptConsent(db, 'A', 'advanced'); assert.equal(hasConsent(db, 'A', 'advanced'), true)
@@ -49,7 +49,7 @@ test('gates: no consent, flag off, then success, with audit and per-tenant isola
 
 test('rate limit: per user per hour, kill switch stops calls', async () => {
   const db = setup(); let calls = 0
-  const worker: WorkerFetch = async () => { calls++; return [] }
+  const worker: WorkerFetch = async () => { calls++; return { items: [], unsupported: null } }
   acceptConsent(db, 'A', 'advanced'); saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-123', master)
   const env = { ...ON, ADVANCED_MAX_PER_HOUR: '2' }
   for (let i = 0; i < 4; i++) await collectAdvanced(db, 'A', 'j', ['reddit'], 'q', { worker, master, env })
@@ -77,7 +77,7 @@ test('x gets the keyword query and audit shows it; reddit keeps the raw query', 
   const { xSearchQuery } = await import('../lib/advanced/index.ts')
   const db = setup(); acceptConsent(db, 'A', 'advanced')
   const seen: { platform: string; query: string }[] = []
-  const worker: WorkerFetch = async r => { seen.push(r); return [item] }
+  const worker: WorkerFetch = async r => { seen.push(r); return { items: [item], unsupported: null } }
   const raw = 'founders of recently funded B2B startups who are hiring their first sales rep'
   const kw = xSearchQuery({ who: ['founders of recently funded B2B startups'], signals: ['hiring their first sales rep'], where: [], industries: [], sizes: [], exclude: [] } as never)
   await collectAdvanced(db, 'A', 'j1', ['x', 'reddit'], raw, { worker, master, env: ON, xQuery: kw })
@@ -94,7 +94,7 @@ test('x via operator index: consent alone, no session, no worker call - mirrors 
   const { migrateTinyfish, resetTinyfishState } = await import('../lib/search/tinyfish.ts')
   migrateTinyfish(db); resetTinyfishState()
   let workerCalled = false
-  const worker: WorkerFetch = async () => { workerCalled = true; return [item] }
+  const worker: WorkerFetch = async () => { workerCalled = true; return { items: [item], unsupported: null } }
   const fetchImpl = (async (u: string) => new Response(JSON.stringify({ results: [
     { url: 'https://x.com/acme/status/12345', title: 't', snippet: 'we are dumping our current sales tool, it never works', date: '2026-10-20' },
   ] }), { status: 200 })) as unknown as typeof fetch

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 
-interface P { platform: string; allowed: boolean; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
+interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
 const NAMES: Record<string, string> = { linkedin: 'LinkedIn', x: 'X', reddit: 'Reddit', xiaohongshu: 'XiaoHongShu', bilibili: 'Bilibili' }
 const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon' } as const
 
@@ -23,7 +23,9 @@ export default function AdvancedPanel() {
   function Row(c: Channel, p: P) {
     return (
       <>
-        {!p.allowed ? (
+        {p.supported === false ? (
+          <p className="text-[#555]">Not available yet - dazl cannot read {c.name}{p.unsupported_reason ? `: ${p.unsupported_reason}` : ''}. Connecting a session is off for it.</p>
+        ) : !p.allowed ? (
           <p className="text-[#555]">Off on this server. The operator turns it on with ADVANCED_CONNECTORS.</p>
         ) : !p.consent ? (
           <div className="flex flex-col gap-2">

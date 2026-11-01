@@ -63,7 +63,7 @@ test('competitor complaints run even when the scan selected no sources, and the 
   const complaintUrl = 'https://www.reddit.com/r/saas/comments/xyz/salesforce_alternatives'
   // No `sources` on the job: the sources block is skipped entirely; complaints must still run.
   const id = createQueryJob(db, 'A', { query: 'teams unhappy with their crm', icp: JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }) } as never)
-  const worker = async () => [{ url: complaintUrl, title: 'Salesforce is terrible, alternatives?', quote: QUOTE, date: new Date().toISOString().slice(0, 10), login_walled: false }]
+  const worker = async () => ({ items: [{ url: complaintUrl, title: 'Salesforce is terrible, alternatives?', quote: QUOTE, date: new Date().toISOString().slice(0, 10), login_walled: false }], unsupported: null })
   const cLead = () => lead(complaintUrl, { signal: "complained about Salesforce" })
   const prov = fake(ok([cLead()], [complaintUrl]))
   prov.anthropic.complete = async (_k,prompt) => prompt.startsWith('You check one claim') ? 'supports' : "Here: " + JSON.stringify([cLead()])
@@ -298,7 +298,7 @@ test('a stop during research starts no complaint-source, grounding or later prov
   try {
     const id = createQueryJob(db, 'A', { query: 'teams unhappy with their crm', icp: JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }) } as never)
     let workerCalls = 0, completeCalls = 0, researchCalls = 0
-    const worker = async () => { workerCalls++; return [] }
+    const worker = async () => { workerCalls++; return { items: [], unsupported: null } }
     const prov = fake(async () => { researchCalls++; cancelJob(db, 'A', id); return { text: 'Here: ' + JSON.stringify([lead('https://a.com')]), citedUrls: ['https://a.com'] } })
     prov.anthropic.complete = async () => { completeCalls++; return 'supports' }
     assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, fetchPage: page, advancedWorker: worker }), 'done')

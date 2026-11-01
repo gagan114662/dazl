@@ -43,7 +43,7 @@ test('refresh: no consent means no worker calls; disabled means disabled', async
   const d = db()
   setQueries(d, 't1', ['outbound tool'])
   let calls = 0
-  const worker = async () => { calls++; return [] }
+  const worker = async () => { calls++; return { items: [], unsupported: null } }
   const r1 = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
   assert.equal(calls, 0)
   assert.equal(r1.platforms.reddit, 'no_consent')
@@ -56,13 +56,13 @@ test('refresh: keeps only fresh, on-topic question threads, dedupes by url, tena
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  const worker = async () => [
+  const worker = async () => ({ unsupported: null, items: [
     item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH),
     item('https://www.reddit.com/r/sales/comments/a2', 'Anyone use a tool for outbound?', OLD),
     item('https://www.reddit.com/r/sales/comments/a3', 'We just launched our dashboard', FRESH),
     item('https://www.reddit.com/r/sales/comments/a4', 'Anyone use a tool for outbound?', null),
     item('https://x.com/founder/status/55', 'Best cold email software for a small team?', FRESH),
-  ]
+  ] })
   const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
   // The X item asks about cold email software - a fresh question, but off-topic for the
   // "outbound tool" query, so the relevance gate filters it instead of presenting it.
@@ -159,7 +159,7 @@ test('refresh: hourly budget is shared with other advanced features', async () =
   const ins = d.prepare("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results) VALUES (?, 't1', 'adv:reddit', 'q', 'ok', 1)")
   for (let i = 0; i < 10; i++) ins.run(`a${i}`)
   let calls = 0
-  const r = await refreshReplies(d, 't1', { worker: async () => { calls++; return [] }, env: ENV_ON, now: NOW })
+  const r = await refreshReplies(d, 't1', { worker: async () => { calls++; return { items: [], unsupported: null } }, env: ENV_ON, now: NOW })
   assert.equal(r.platforms.reddit, 'rate_limited')
   assert.equal(r.platforms.x, 'ok') // x has its own budget
   assert.equal(calls, 1) // only x was fetched; reddit was gated before any worker call
@@ -171,7 +171,7 @@ test('draft: not found, no key, then drafted on the tenant key with edit and mar
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  await refreshReplies(d, 't1', { worker: async () => [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], env: ENV_ON, now: NOW })
+  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), env: ENV_ON, now: NOW })
   const thread = listThreads(d, 't1')[0]
 
   assert.deepEqual(await draftReply(d, 't1', 'f'.repeat(24), { sells: '', website: '' }, { master }), { error: 'not_found' })
@@ -222,7 +222,7 @@ test('draft: unreadable stored key returns key_unreadable, never throws a 500', 
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  await refreshReplies(d, 't1', { worker: async () => [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], env: ENV_ON, now: NOW })
+  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), env: ENV_ON, now: NOW })
   const thread = listThreads(d, 't1')[0]
   saveKey(d, 't1', 'anthropic', 'sk-ant...1234', master)
   d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
@@ -233,7 +233,7 @@ test('draft: a key the provider rejects (401) returns key_rejected instead of th
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  await refreshReplies(d, 't1', { worker: async () => [item('https://www.reddit.com/r/sales/comments/a2', 'Anyone use a tool for outbound?', FRESH)], env: ENV_ON, now: NOW })
+  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a2', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), env: ENV_ON, now: NOW })
   const thread = listThreads(d, 't1')[0]
   saveKey(d, 't1', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   let calls = 0
