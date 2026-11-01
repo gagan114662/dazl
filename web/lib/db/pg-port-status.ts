@@ -60,7 +60,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/memory.ts': 0,
   'lib/ops/health-route.ts': 0,
   'lib/ops/health.ts': 0,
-  'lib/ops/scheduler-runs.ts': 1,
+  'lib/ops/scheduler-runs.ts': 0,
   'lib/outreach/attribution.ts': 1,
   'lib/outreach/autopilot.ts': 3,
   'lib/outreach/campaigns.ts': 0,
