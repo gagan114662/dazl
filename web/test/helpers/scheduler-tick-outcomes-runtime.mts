@@ -228,7 +228,7 @@ test('two ticks at once: one runs, one is skipped, one run row, one attempt per 
   // every tenant with work has exactly one row per kind, all stamped with the one run (the primary key allows no second);
   // #413: every consenting tenant also has its reply_sync row, independent of send-side work
   const rows = db.prepare('SELECT tenant_id, kind FROM scheduler_progress WHERE last_run_id = ? ORDER BY tenant_id, kind').all(ran[0].run) as { tenant_id: string; kind: string }[]
-  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/followups`, `${F}/reply_sync`, `${N}/reply_sync`, `${N}/sequences`, `${P}/reply_sync`, `${P}/sequences`, `${R}/reply_sync`, `${S}/reply_sync`, `${U}/reply_sync`, `${U}/sequences`, `${W}/followups`, `${W}/reply_sync`])
+  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/first_touch`, `${F}/followups`, `${F}/reply_sync`, `${N}/reply_sync`, `${N}/sequences`, `${P}/reply_sync`, `${P}/sequences`, `${R}/reply_sync`, `${S}/reply_sync`, `${U}/reply_sync`, `${U}/sequences`, `${W}/first_touch`, `${W}/followups`, `${W}/reply_sync`])
   assert.deepEqual(lastRun(), { status: 'ok', tenants_attempted: 7, tenants_failed: 0 })
 })
 

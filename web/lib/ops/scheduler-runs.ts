@@ -37,7 +37,7 @@ export const OVERDUE_ALERT_S = 60 * 60
 export const BLOCKED_AFTER_FAILURES = 3
 const KEEP_RUNS = 2000
 
-export type Kind = 'reply_sync' | 'followups' | 'sequences'
+export type Kind = 'reply_sync' | 'followups' | 'sequences' | 'first_touch'
 export function migrateSchedulerRuns(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS scheduler_runs (
@@ -54,7 +54,7 @@ export function migrateSchedulerRuns(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS scheduler_runs_started ON scheduler_runs (started_at);
     CREATE TABLE IF NOT EXISTS scheduler_progress (
       tenant_id            TEXT NOT NULL,
-      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences','first_touch')),
       last_attempt_at      INTEGER NOT NULL,
       last_success_at      INTEGER,
       last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
@@ -65,6 +65,31 @@ export function migrateSchedulerRuns(db: Database.Database): void {
       PRIMARY KEY (tenant_id, kind)
     );
   `)
+  // Stores created before 'first_touch' became a kind (#411): sqlite cannot alter a CHECK constraint, so the table
+  // is rebuilt once, inside one transaction, rows carried verbatim. Detected from the live DDL, never from a version
+  // guess; a store already carrying the new CHECK is untouched.
+  const ddl = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_progress'").get() as { sql: string } | undefined)?.sql ?? ''
+  if (ddl && !ddl.includes("'first_touch'")) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE scheduler_progress_rebuild (
+          tenant_id            TEXT NOT NULL,
+          kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences','first_touch')),
+          last_attempt_at      INTEGER NOT NULL,
+          last_success_at      INTEGER,
+          last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
+          last_outcome         TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure')),
+          last_hold            TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40),
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          last_run_id          TEXT,
+          PRIMARY KEY (tenant_id, kind)
+        );
+        INSERT INTO scheduler_progress_rebuild SELECT * FROM scheduler_progress;
+        DROP TABLE scheduler_progress;
+        ALTER TABLE scheduler_progress_rebuild RENAME TO scheduler_progress;
+      `)
+    }).immediate()
+  }
   // Stores created before the outcome columns existed (earlier heads of #447; never a released schema).
   const cols = new Set((db.prepare('PRAGMA table_info(scheduler_progress)').all() as { name: string }[]).map(c => c.name))
   if (!cols.has('last_outcome')) db.exec("ALTER TABLE scheduler_progress ADD COLUMN last_outcome TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure'))")

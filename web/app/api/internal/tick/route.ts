@@ -15,7 +15,7 @@ import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
-import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Outcome } from '@/lib/ops/scheduler-runs'
+import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
@@ -59,7 +59,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // workers report refusals as a result, not an exception, so what came back is classified (lib/ops/scheduler-runs.ts):
   // success, a hold (the tenant's own configuration or idle state) or a failure. Only failures make the run partial.
   let failures = 0, holds = 0
-  const progress = async (tenant: string, kind: 'reply_sync' | 'followups' | 'sequences', o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
+  const progress = async (tenant: string, kind: Kind, o: Outcome) => { if (o.outcome === 'failure') failures++; else if (o.outcome === 'hold') holds++; await recordProgress(raw, runId, tenant, kind, o) }
   const failed = (e: unknown): Outcome => ({ outcome: 'failure', error: e })
   // Sending follow-ups stays gated on the send-side switches (autopilot on, not paused, follow-ups on).
   const sendTenants = db.prepare('SELECT s.tenant_id, u.business_name FROM autopilot_settings s JOIN users u ON u.id = s.tenant_id WHERE s.enabled = 1 AND s.paused = 0 AND s.followups_enabled = 1').all() as { tenant_id: string; business_name: string | null }[]
@@ -91,18 +91,17 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
       }
       if (firstTouchSet.has(tenantId)) {
         // Drain due held drafts, then pick up new leads: first touches restart without waiting for a new scan.
-        // scheduler_progress kinds are a fixed CHECK set, so first-touch outcomes fold into the run counters here
-        // (widening that CHECK is a separate reviewed migration).
+        // Drain and discovery are one kind of scheduled work; a drain failure skips discovery (its sends are the riskier half).
         stage = 'first_touch'
         const dr = classifyWork(await drainFirstTouch(db, tenantId))
-        if (dr.outcome === 'failure') failures++; else if (dr.outcome === 'hold') holds++
+        await progress(tenantId, 'first_touch', dr)
         if (dr.outcome === 'failure') continue
         const ap = classifyWork(await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? ''))
-        if (ap.outcome === 'failure') failures++; else if (ap.outcome === 'hold') holds++
+        await progress(tenantId, 'first_touch', ap)
         if (ap.outcome === 'failure') continue
       }
       done++
-    } catch (e) { fenced(e); if (stage === 'first_touch') { failures++ } else { await progress(tenantId, stage, failed(e)) } captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
+    } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
   }
   let sequences = 0
   for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
