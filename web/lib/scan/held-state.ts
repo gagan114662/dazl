@@ -1,4 +1,4 @@
-import { requestedHiringRoles } from './hiring-role-match.ts'
+import { requestedHiringRoles, roleNeedsSourceProof } from './hiring-role-match.ts'
 // A REQUIRED gate (the sales-hiring check) that failed is a hold no human confirmation can clear. Confirming the lead or its domain says "the source / company is
 // right"; it says nothing about the gate that could not run. Every drafting, approving and sending gate re-reads this state:
 //   - the lead's stored review reason, or the reason it was confirmed FROM (confirmLeadReview moves review_reason into human_confirmed_from),
@@ -49,7 +49,7 @@ export function requiredGateHeld(db: Database.Database, tenantId: string, leadId
   let passed = false
   try {
     if (db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1").get(leadId, tenantId)) return SALES_GATE_HELD
-    const passValue = requestedHiringRoles(row.query, row.icp).length ? 'requested_role_v1' : 'sales_hiring'
+    const passValue = requestedHiringRoles(row.query, row.icp).some(roleNeedsSourceProof) ? 'requested_role_v1' : 'sales_hiring'
     passed = !!db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_passed' AND value = ? LIMIT 1").get(leadId, tenantId, passValue)
   } catch { /* no enrichments table: nothing was marked */ }
   if (reportHolds(db, tenantId, leadId)) return SALES_GATE_HELD

@@ -1,4 +1,4 @@
-import { requestedHiringRoles, matchedHiringRole } from './hiring-role-match.ts'
+import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from './hiring-role-match.ts'
 // "Seed funding AND hiring sales": a request whose play needs an event beyond hiring plus sales / GTM hiring is not answered by the
 // funding quote alone. After the contact crawl has bound each lead to its company domain, a verified lead keeps its place only when
 //   (a) its own saved quote already names a sales / GTM hiring (the source says it), or
@@ -151,7 +151,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const none = { required: false, checked: 0, passed: 0, demoted: 0, demotions: [] as { company: string; url: string; reason: string }[] }
   if (!salesHiringRequired(job.query, job.icp)) return none
   const demotions = none.demotions
-  const roles = requestedHiringRoles(job.query, job.icp)
+  const roles = requestedHiringRoles(job.query, job.icp).filter(roleNeedsSourceProof)
   let signalTerms: string[] = []
   try { signalTerms = JSON.parse(job.icp ?? '{}').signals ?? [] } catch { /* no profile */ }
   const eventRequired = needsEventBeyondHiring(signalTerms, job.query ?? '')

@@ -17,3 +17,11 @@ test('unsupported explicit title stays required instead of falling through to ge
   assert.equal(required.length, 1)
   assert.equal(matchedHiringRole('Account Executive', required), null)
 })
+
+test('qualifier-led, time, quantity and activity captures are not roles; quantity prefixes strip to the title', () => {
+  for (const q of ['roofers hiring in the last 3 months', 'Find Ohio companies hiring in Dayton', 'agencies hiring now', 'firms hiring within 90 days', 'roofing crews hiring prospecting', 'Find Ohio companies that are hiring.'])
+    assert.deepEqual(requestedHiringRoles(q, null), [], q)
+  assert.deepEqual(requestedHiringRoles('Find dental practices hiring 2-3 receptionists.', null).map(r => r.term), ['receptionists'])
+  assert.deepEqual(requestedHiringRoles('Find practices hiring one or two receptionists.', null).map(r => r.term), ['receptionists'])
+  assert.deepEqual(requestedHiringRoles('startups hiring their first sales representative in the last 90 days', null).map(r => r.term), ['sales representative'])
+})

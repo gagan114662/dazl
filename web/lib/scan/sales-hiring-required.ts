@@ -1,4 +1,4 @@
-import { requestedHiringRoles } from './hiring-role-match.ts'
+import { requestedHiringRoles, roleNeedsSourceProof } from './hiring-role-match.ts'
 // Whether a request needs the sales-hiring proof. Kept apart from sales-hiring-gate.ts on purpose: held-state.ts (reached from the
 // browser bundle through the outreach follow-up client) imports this, and it must stay free of server-only modules (db, network, crawl).
 import { isGtmRole } from '../signals/ats-gtm.ts'
@@ -10,5 +10,5 @@ export function salesHiringRequired(query: string | null | undefined, icp: strin
   let signals: string[] = []
   try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) signals = j!.signals.filter((x): x is string => typeof x === 'string') } catch { /* no profile */ }
   const text = [...signals, query ?? ''].join(' . ')
-  return requestedHiringRoles(query, icp).length > 0 || needsEventBeyondHiring(signals, query ?? '') && HIRING_WORDS.test(text) && isGtmRole(text.replace(/\b(?:hir(?:e|es|ed|ing)|recruit\w*)\b/gi, ' '))
+  return requestedHiringRoles(query, icp).some(roleNeedsSourceProof) || needsEventBeyondHiring(signals, query ?? '') && HIRING_WORDS.test(text) && isGtmRole(text.replace(/\b(?:hir(?:e|es|ed|ing)|recruit\w*)\b/gi, ' '))
 }
