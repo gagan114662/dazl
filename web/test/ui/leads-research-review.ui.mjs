@@ -68,6 +68,7 @@ const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
 try {
   await page.goto(`${base}/app/leads`, { waitUntil: 'networkidle' })
+  await page.getByTestId('play-settings').locator('summary').first().click() // the website fill lives under Settings for this play > More sources
   await page.getByTestId('more-sources').locator('summary').first().click()
   await page.getByPlaceholder('Your website - we will fill the profile from it').fill('acme.example')
   await page.getByRole('button', { name: 'Fill from my website' }).click()
@@ -85,14 +86,14 @@ try {
 
   // 2. Add, Dismiss, typed answer - all land in the visible draft.
   await h1.getByRole('button', { name: 'Add' }).click()
-  await page.waitForFunction(() => [...document.querySelectorAll('textarea')].some(t => t.value.includes('practice managers')), null, { timeout: 5000 })
+  for (let i = 0; i < 50 && !(await who.inputValue()).includes('practice managers'); i++) await page.waitForTimeout(100)
   assert.match(await who.inputValue(), /practice managers/, 'Add lands the statement in the Who field')
   await h2.getByRole('button', { name: 'Dismiss' }).click()
   assert.equal(await page.getByTestId('hyp-h2').count(), 0, 'dismissed statement hidden')
   const q = page.getByTestId('research-question')
   await q.locator('input').fill('office managers')
   await q.getByRole('button', { name: 'Save' }).click()
-  await page.waitForFunction(() => [...document.querySelectorAll('textarea')].some(t => t.value.includes('office managers')), null, { timeout: 5000 })
+  for (let i = 0; i < 50 && !(await who.inputValue()).includes('office managers'); i++) await page.waitForTimeout(100)
   assert.match(await who.inputValue(), /office managers/, 'typed answer lands in the Who field')
   await shot('leads-draft-research-reviewed')
 
