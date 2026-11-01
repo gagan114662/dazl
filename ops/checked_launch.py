@@ -42,7 +42,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-REQUIRED_CI = frozenset({'browser', 'migrations', 'test-sqlite', 'test-postgres', 'fail-closed'})
+REQUIRED_CI = frozenset({'browser', 'migrations', 'test-sqlite', 'test-postgres', 'fail-closed', 'static-quality'})
 
 
 def read_token(token_file):
