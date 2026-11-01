@@ -11,7 +11,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { companyKey, recordCompanyEvent } from '../events/store.ts'
 import { listLeads } from '../scan/store.ts'
 import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-match.ts'
-import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, withRepostHistory, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
+import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
 import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
 
@@ -215,14 +215,25 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
         }
         { const auditRows = withRepostHistory(boardTitleAudit(matched, now, today, null), matched.board, existingEvidence)
           for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)
-          addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, Math.min(matched.postings.length, 3), now, today)) }
+          addEnrichment(db, tenantId, lead.id, boardCoverageRow(matched, auditRows.length, Math.min(matched.postings.length, 3), now, today))
+          const covered = new Set(matched.allTitles.map(x => x.trim().toLowerCase())) // dated rows + filtered audit rows already cover the whole filtered sample
+          const coveredCount = matched.allListed.filter(t => covered.has(t.trim().toLowerCase())).length
+          const full = withRepostHistory(fullListingAuditRows(matched.board, matched.boardUrl, matched.allListed, covered, now, today, null), matched.board, existingEvidence)
+          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: sampled titles in NEITHER dated nor filtered stores, so requested-role absence within the sample is auditable
+          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(matched.board, matched.boardUrl, matched.listedCountAll, matched.allListed, coveredCount, full.length, now, today)) }
       }
       if (!matched && specific.checked && !specific.contradictory) {
         const c = specific.checked
         const boundC = c.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!c.domain && !!lead.company_domain && c.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')))
         if (boundC) {
-          for (const e of withRepostHistory(checkedAuditRows(c, WINDOW_DAYS, now, today, null), c.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
+          const checkedRows = withRepostHistory(checkedAuditRows(c, WINDOW_DAYS, now, today, null), c.board, existingEvidence)
+          for (const e of checkedRows) addEnrichment(db, tenantId, lead.id, e)
           addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
+          const covered = new Set(checkedRows.map(r => r.value.replace(/^Unconfirmed: /, '').trim().toLowerCase())) // titles the zero-match audit just stored, actual inserted shapes
+          const coveredCount = c.allListed.filter(t => covered.has(t.trim().toLowerCase())).length
+          const full = withRepostHistory(fullListingAuditRows(c.board, c.boardUrl, c.allListed, covered, now, today, null), c.board, existingEvidence)
+          for (const e of full) addEnrichment(db, tenantId, lead.id, e) // #533 breadth: sampled titles in NEITHER store - absence within the sample is auditable
+          addEnrichment(db, tenantId, lead.id, fullListingCoverageRow(c.board, c.boardUrl, c.listedCountAll, c.allListed, coveredCount, full.length, now, today))
         }
       }
     }

@@ -23,7 +23,10 @@ type AshbyPosting = { isListed?: unknown; title?: unknown; jobUrl?: unknown; pub
 
 export interface GtmPosting { title: string; date: string; url: string; location: string | null; updated?: string | null } // date = the posting's own publish date; updated = the board's last-edited date, shown as a label and never used as a date
 export interface GtmHiring { board: 'greenhouse' | 'lever' | 'ashby'; postings: GtmPosting[]; newest: string; url: string; domain: string | null; via: 'domain' | 'board_name';
-  allTitles: string[]; boardUrl: string; listedCount: number; titleFilter: 'all' | 'gtm' | 'role-match' } // allTitles: a BOUNDED SAMPLE (cap 50) of the roleOk titles on the board LISTING; listedCount is the full deduped count before the cap, so listedCount > allTitles.length means the sample is truncated and cannot prove a role absent (#533); boardUrl: the listing page itself
+  allTitles: string[]; boardUrl: string; listedCount: number; titleFilter: 'all' | 'gtm' | 'role-match';
+  // Breadth (#533): the UNFILTERED listing - every title on the board (deduped, cap 50) and its full pre-cap count.
+  // The filtered sample can never answer 'was the requested role anywhere on this board'; the full listing can.
+  allListed: string[]; listedCountAll: number } // allTitles: a BOUNDED SAMPLE (cap 50) of the roleOk titles on the board LISTING; listedCount is the full deduped count before the cap, so listedCount > allTitles.length means the sample is truncated and cannot prove a role absent (#533); boardUrl: the listing page itself
 
 const get = async (url: string, fetchImpl: typeof fetch): Promise<any> => {
   try {
@@ -80,7 +83,7 @@ export async function atsGtmHiring(company: string, domain: string | null, fetch
 // #533 review (F-B): a successfully fetched, attributed board LISTING whose titles pass no freshness/role filter
 // used to collapse to the same null as "fetch failed" or "no board", leaving zero-match checks with no stored trace.
 // `checked` carries that listing outcome so callers can store an honest zero-match audit + coverage trail.
-export interface CheckedListing { board: GtmHiring['board']; boardUrl: string; allTitles: string[]; listedCount: number; titleFilter: GtmHiring['titleFilter']; via: 'domain' | 'board_name'; domain: string | null;
+export interface CheckedListing { board: GtmHiring['board']; boardUrl: string; allTitles: string[]; listedCount: number; titleFilter: GtmHiring['titleFilter']; via: 'domain' | 'board_name'; domain: string | null; allListed: string[]; listedCountAll: number;
   // F-E (review): freshness is per-title knowledge, not a blanket claim. rawTotal = roleOk listing entries; rawDatedStale = entries whose
   // posting date was actually READ and is outside the window; rawUnread = entries never date-checked (detail fetch failed/absent, beyond the
   // detail cap, or no date in the payload); rawFreshExcluded = fresh entries excluded for another reason (closed / unusable) - outside any
@@ -103,8 +106,10 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
     if (Array.isArray(gh?.jobs)) {
       let nameOk = viaDomain
       if (!nameOk) { const b = await get(`https://boards-api.greenhouse.io/v1/boards/${token}`, fetchImpl); nameOk = typeof b?.name === 'string' && classifyEntityMatch(company, b.name) === 'heuristic' }
-      if (nameOk && gh.jobs.length === 0 && !checked) checked = { board: 'greenhouse', boardUrl: `https://boards.greenhouse.io/${token}`, allTitles: [], listedCount: 0, titleFilter, via: viaDomain ? 'domain' : 'board_name', domain: null, rawTotal: 0, rawDatedStale: 0, rawUnread: 0, rawFreshExcluded: 0, datedStale: [] }
+      if (nameOk && gh.jobs.length === 0 && !checked) checked = { board: 'greenhouse', boardUrl: `https://boards.greenhouse.io/${token}`, allTitles: [], listedCount: 0, titleFilter, via: viaDomain ? 'domain' : 'board_name', domain: null, rawTotal: 0, rawDatedStale: 0, rawUnread: 0, rawFreshExcluded: 0, datedStale: [], allListed: [], listedCountAll: 0 }
       if (nameOk && gh.jobs.length > 0) {
+        const ghAllTitles = gh.jobs.filter((x: { title?: unknown }) => typeof x?.title === 'string').map((x: { title: string }) => x.title)
+        const ghAll = dedupeTitles(ghAllTitles), ghAllCount = new Set(ghAllTitles.map((t: string) => t.trim().toLowerCase())).size
         const ghTitles = gh.jobs.filter((x: { title?: unknown }) => typeof x?.title === 'string' && roleOk(x.title as string)).map((x: { title: string }) => x.title)
         const listTitles = dedupeTitles(ghTitles)
         const postings: GtmPosting[] = []; const seen = new Set<string>()
@@ -124,16 +129,18 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
           postings.push({ title, date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null, updated: day(det?.updated_at) })
         }
         const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true } // the postings name more than one company site, or another company's: contradictory, fail closed
-        if (postings.length) return { hiring: build('greenhouse', postings, `https://boards.greenhouse.io/${token}`, found, viaDomain ? 'domain' : 'board_name', listTitles, new Set(ghTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false, checked: null }
-        if (!checked) checked = { board: 'greenhouse', boardUrl: `https://boards.greenhouse.io/${token}`, allTitles: listTitles, listedCount: new Set(ghTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: viaDomain ? 'domain' : 'board_name', domain: found, rawTotal: ghTitles.length, rawDatedStale, rawUnread, rawFreshExcluded, datedStale: listTitles.filter(t => datedStaleTitles.has(t.trim().toLowerCase())) }
+        if (postings.length) return { hiring: build('greenhouse', postings, `https://boards.greenhouse.io/${token}`, found, viaDomain ? 'domain' : 'board_name', listTitles, new Set(ghTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, ghAll, ghAllCount), contradictory: false, checked: null }
+        if (!checked) checked = { board: 'greenhouse', boardUrl: `https://boards.greenhouse.io/${token}`, allTitles: listTitles, listedCount: new Set(ghTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: viaDomain ? 'domain' : 'board_name', domain: found, rawTotal: ghTitles.length, rawDatedStale, rawUnread, rawFreshExcluded, datedStale: listTitles.filter(t => datedStaleTitles.has(t.trim().toLowerCase())), allListed: ghAll, listedCountAll: ghAllCount }
       }
     }
     // Lever and Ashby carry no company name in the payload: only a domain-derived token counts.
     if (!viaDomain) continue
     const lever = await get(`https://api.lever.co/v0/postings/${token}?mode=json`, fetchImpl)
-    if (Array.isArray(lever) && lever.length === 0 && !checked) checked = { board: 'lever', boardUrl: `https://jobs.lever.co/${token}`, allTitles: [], listedCount: 0, titleFilter, via: 'domain', domain: null, rawTotal: 0, rawDatedStale: 0, rawUnread: 0, rawFreshExcluded: 0, datedStale: [] }
+    if (Array.isArray(lever) && lever.length === 0 && !checked) checked = { board: 'lever', boardUrl: `https://jobs.lever.co/${token}`, allTitles: [], listedCount: 0, titleFilter, via: 'domain', domain: null, rawTotal: 0, rawDatedStale: 0, rawUnread: 0, rawFreshExcluded: 0, datedStale: [], allListed: [], listedCountAll: 0 }
     if (Array.isArray(lever) && lever.length > 0) {
       const seen = new Set<string>()
+      const leverAllTitles = lever.filter((j: LeverPosting) => typeof j?.text === 'string').map((j: { text: string }) => j.text)
+      const lvAll = dedupeTitles(leverAllTitles), lvAllCount = new Set(leverAllTitles.map((t: string) => t.trim().toLowerCase())).size
       const leverTitles = lever.filter((j: LeverPosting) => typeof j?.text === 'string' && roleOk(j.text)).map((j: { text: string }) => j.text)
       const listTitles = dedupeTitles(leverTitles)
       // Lever carries createdAt in the LISTING, so every entry's date is read - but a fresh entry excluded as closed/unusable is still outside any 0-fresh claim.
@@ -142,13 +149,15 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
       const postings = dedupe(lever.filter((j: LeverPosting): j is LeverPosting & { text: string; hostedUrl: string } => typeof j?.text === 'string' && roleOk(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)) && !postingClosed(j.descriptionPlain ?? j.description))
         .slice(0, MAX_DETAIL).map((j: LeverPosting & { text: string; hostedUrl: string }) => { for (const d of fieldDomains([j.descriptionPlain, j.description, j.additionalPlain, j.additional, ...(Array.isArray(j.lists) ? (j.lists as { text?: unknown; content?: unknown }[]).flatMap((l) => [l?.text, l?.content]) : [])], token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
-      if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain', listTitles, new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false, checked: null }
-      if (!checked) checked = { board: 'lever', boardUrl: `https://jobs.lever.co/${token}`, allTitles: listTitles, listedCount: new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found, rawTotal: leverTitles.length, rawDatedStale: lvDatedStale, rawUnread: lvUnread, rawFreshExcluded: lvFreshExcluded, datedStale: listTitles.filter(t => lvStaleTitles.has(t.trim().toLowerCase())) }
+      if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain', listTitles, new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, lvAll, lvAllCount), contradictory: false, checked: null }
+      if (!checked) checked = { board: 'lever', boardUrl: `https://jobs.lever.co/${token}`, allTitles: listTitles, listedCount: new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found, rawTotal: leverTitles.length, rawDatedStale: lvDatedStale, rawUnread: lvUnread, rawFreshExcluded: lvFreshExcluded, datedStale: listTitles.filter(t => lvStaleTitles.has(t.trim().toLowerCase())), allListed: lvAll, listedCountAll: lvAllCount }
     }
     const ashby = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`, fetchImpl)
-    if (Array.isArray(ashby?.jobs) && ashby.jobs.length === 0 && !checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: [], listedCount: 0, titleFilter, via: 'domain', domain: null, rawTotal: 0, rawDatedStale: 0, rawUnread: 0, rawFreshExcluded: 0, datedStale: [] }
+    if (Array.isArray(ashby?.jobs) && ashby.jobs.length === 0 && !checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: [], listedCount: 0, titleFilter, via: 'domain', domain: null, rawTotal: 0, rawDatedStale: 0, rawUnread: 0, rawFreshExcluded: 0, datedStale: [], allListed: [], listedCountAll: 0 }
     if (Array.isArray(ashby?.jobs) && ashby.jobs.length > 0) {
       const seen = new Set<string>()
+      const ashbyAllTitles = ashby.jobs.filter((j: AshbyPosting) => j?.isListed === true && typeof j.title === 'string').map((j: { title: string }) => j.title)
+      const abAll = dedupeTitles(ashbyAllTitles), abAllCount = new Set(ashbyAllTitles.map((t: string) => t.trim().toLowerCase())).size
       const ashbyTitles = ashby.jobs.filter((j: AshbyPosting) => j?.isListed === true && typeof j.title === 'string' && roleOk(j.title)).map((j: { title: string }) => j.title)
       const listTitles = dedupeTitles(ashbyTitles)
       let abDatedStale = 0, abUnread = 0, abFreshExcluded = 0; const abStaleTitles = new Set<string>()
@@ -156,16 +165,16 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
       const postings = dedupe(ashby.jobs.filter((j: AshbyPosting): j is AshbyPosting & { title: string; jobUrl: string } => j?.isListed === true && typeof j.title === 'string' && roleOk(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)) && !postingClosed(j.descriptionPlain ?? j.descriptionHtml))
         .slice(0, MAX_DETAIL).map((j: AshbyPosting & { title: string; jobUrl: string }) => { for (const d of fieldDomains([j.descriptionPlain, j.descriptionHtml, j.description], token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true }
-      if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain', listTitles, new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter), contradictory: false, checked: null }
-      if (!checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: listTitles, listedCount: new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found, rawTotal: ashbyTitles.length, rawDatedStale: abDatedStale, rawUnread: abUnread, rawFreshExcluded: abFreshExcluded, datedStale: listTitles.filter(t => abStaleTitles.has(t.trim().toLowerCase())) }
+      if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain', listTitles, new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, abAll, abAllCount), contradictory: false, checked: null }
+      if (!checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: listTitles, listedCount: new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found, rawTotal: ashbyTitles.length, rawDatedStale: abDatedStale, rawUnread: abUnread, rawFreshExcluded: abFreshExcluded, datedStale: listTitles.filter(t => abStaleTitles.has(t.trim().toLowerCase())), allListed: abAll, listedCountAll: abAllCount }
     }
   }
   return { hiring: null, contradictory: false, checked }
 }
 
-function build(board: GtmHiring['board'], postings: GtmPosting[], boardUrl: string, domain: string | null, via: GtmHiring['via'], allTitles: string[] = [], listedCount = allTitles.length, titleFilter: GtmHiring['titleFilter'] = 'gtm'): GtmHiring {
+function build(board: GtmHiring['board'], postings: GtmPosting[], boardUrl: string, domain: string | null, via: GtmHiring['via'], allTitles: string[] = [], listedCount = allTitles.length, titleFilter: GtmHiring['titleFilter'] = 'gtm', allListed: string[] = allTitles, listedCountAll = listedCount): GtmHiring {
   const sorted = [...postings].sort((a, b) => (a.date < b.date ? 1 : -1))
-  return { board, postings: sorted, newest: sorted[0].date, url: sorted.length === 1 ? sorted[0].url : boardUrl, domain, via, allTitles, boardUrl, listedCount, titleFilter }
+  return { board, postings: sorted, newest: sorted[0].date, url: sorted.length === 1 ? sorted[0].url : boardUrl, domain, via, allTitles, boardUrl, listedCount, titleFilter, allListed, listedCountAll }
 }
 
 // One evidence row PER posting (up to 3, newest first): role title, the posting's own URL, its publish date, the board and location, and when dazl read it.
@@ -278,6 +287,28 @@ export function withRepostHistory<T extends { connector: string; kind: string; v
     const base = room > 0 ? r.label.slice(0, room) : ''
     return { ...r, label: ((base ? base + '; ' : '') + suffix).slice(0, 200) }
   })
+}
+// Breadth (#533): the UNFILTERED listing audit. Filtered passes (GTM / role-match) answer their own question; only the
+// full listing can answer 'was the requested role anywhere on this board' from stored evidence. Rows for titles already
+// covered by dated or filtered rows collapse via ON CONFLICT (same lead/connector/kind/value), so overlap costs nothing.
+export function fullListingAuditRows(board: GtmHiring['board'], boardUrl: string, allListed: string[], coveredTitles: Set<string>, retrievedAt: number, checkedDate: string, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
+  return allListed.filter(t => !coveredTitles.has(t.trim().toLowerCase())).map(t => ({
+    connector: `signals:${board}-gtm`, kind: 'hiring-role',
+    value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${t}`.slice(0, 254),
+    label: [unconfirmedNote, 'Board listing audit (all listed titles): title listed on the board; its posting date was not read'].filter(Boolean).join('; ').slice(0, 200),
+    confidence: null, source_url: boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
+  }))
+}
+export function fullListingCoverageRow(board: GtmHiring['board'], boardUrl: string, listedCountAll: number, allListed: string[], covered: number, stored: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
+  const truncated = listedCountAll > allListed.length
+  return {
+    connector: `signals:${board}-gtm`, kind: 'hiring-board-coverage',
+    // covered + stored always sum to the SAMPLE size (allListed.length), never silently to listedCountAll: a title
+    // already covered by a dated posting row or the filtered audit is counted once, in 'covered', never double-counted here.
+    value: `Board listing: ${listedCountAll} all listed titles, ${allListed.length} sampled: ${covered} already covered by dated posting or filtered audit rows + ${stored} more as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),
+    label: COVERAGE_LABEL.slice(0, 200),
+    confidence: null, source_url: boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
+  }
 }
 export function postingEvidence(g: GtmHiring, retrievedAt: number, unconfirmedNote: string | null): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }[] {
   return g.postings.slice(0, 3).map(p => ({
