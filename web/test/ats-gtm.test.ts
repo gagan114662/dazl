@@ -442,8 +442,8 @@ test('#533 AC4 repost labeling: a board re-dating a previously stored title is l
     { kind: 'hiring-role', connector: 'signals:lever-gtm', value: 'Account Executive', source_date: '2026-09-01', retrieved_at: Date.parse('2026-09-01T00:00:00Z') / 1000 },
   ]
   const out = withRepostHistory(rows, 'greenhouse', existing)
-  assert.match(out[0].label, /previously dated 2026-08-01 \(first seen 2026-08-02\); repost vs continued listing unknown, not renewed demand/)
-  assert.match(out[0].label, /also on lever; same posting unknown/)
+  assert.match(out[0].label, /repost vs continued listing unknown, not renewed demand \(board previously dated 2026-08-01, first seen 2026-08-02\)/)
+  assert.match(out[0].label, /same posting unknown \(also listed on lever\)/)
   assert.equal(out[0].value, 'Account Executive - posted 2026-10-20', 'value and dates are never rewritten')
   assert.deepEqual(existing[0].value, 'Account Executive - posted 2026-08-01', 'stored history is untouched')
   // same date on the same board: no repost note (that is the same observation, and ON CONFLICT would skip it anyway)
@@ -464,6 +464,26 @@ test('#533 AC4 updated-date never resets freshness: a stale first_published with
   assert.match(audits[0].label, /posting date read as older than the last 90 days \(long-open; repost history unknown\)/)
 })
 
+test('#533 AC4 nit: a 200-char label cap can only drop the parenthetical detail, never the repost qualifier itself', () => {
+  const base = 'x'.repeat(150)
+  const rows = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Account Executive - posted 2026-10-20', label: base }]
+  const existing = [{ kind: 'hiring', connector: 'signals:greenhouse-gtm', value: 'Account Executive - posted 2026-08-01', source_date: '2026-08-01', retrieved_at: Date.parse('2026-08-02T00:00:00Z') / 1000 }]
+  const out = withRepostHistory(rows, 'greenhouse', existing)
+  assert.ok(out[0].label.length <= 200)
+  assert.ok(out[0].label.includes('repost vs continued listing unknown, not renewed demand'), 'the qualifier survives truncation whole')
+})
+
+test("#533 AC4 nit: a job title containing ' - posted ' is parsed by the trailing date-shaped suffix only", () => {
+  const rows = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Sales Lead - posted daily roundup - posted 2026-10-20', label: 'x' }]
+  const sameTitleNewDate = [{ kind: 'hiring', connector: 'signals:greenhouse-gtm', value: 'Sales Lead - posted daily roundup - posted 2026-08-01', source_date: '2026-08-01', retrieved_at: Date.parse('2026-08-02T00:00:00Z') / 1000 }]
+  const out = withRepostHistory(rows, 'greenhouse', sameTitleNewDate)
+  assert.match(out[0].label, /repost vs continued listing unknown/, 'same full title, different trailing date -> repost note')
+  // a separator NOT followed by a date is part of the title: no date comparison, no repost note
+  const noDate = [{ kind: 'hiring', connector: 'signals:greenhouse-gtm', value: 'Sales Lead - posted daily roundup', source_date: '2026-08-01', retrieved_at: 1 }]
+  const out2 = withRepostHistory([{ connector: 'signals:greenhouse-gtm', kind: 'hiring-role', value: 'Sales Lead - posted daily roundup', label: 'y' }], 'greenhouse', noDate)
+  assert.equal(out2[0].label, 'y', 'no date-shaped suffix -> no repost annotation')
+})
+
 test('#533 AC4 integration: a repost observed on a later fetch keeps both dates and labels the new row repost-unknown', async () => {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
@@ -476,7 +496,7 @@ test('#533 AC4 integration: a repost observed on a later fetch keeps both dates 
   const rows = db.prepare("SELECT value, label FROM lead_enrichments WHERE kind = 'hiring' AND connector = 'signals:greenhouse-gtm' ORDER BY value").all() as { value: string; label: string }[]
   const repost = rows.find(r => r.value === 'Account Executive - posted ' + d(12).slice(0, 10))!
   assert.ok(repost, 'the new posting row exists beside the old one')
-  assert.match(repost.label, /previously dated 2026-08-01 \(first seen 2026-08-02\); repost vs continued listing unknown, not renewed demand/)
+  assert.match(repost.label, /repost vs continued listing unknown, not renewed demand \(board previously dated 2026-08-01, first seen 2026-08-02\)/)
   const old = rows.find(r => r.value === 'Account Executive - posted 2026-08-01')!
   assert.equal(old.label, 'old', 'the earlier row is never rewritten')
   const agg = db.prepare("SELECT value FROM lead_enrichments WHERE connector = 'signals:greenhouse' AND kind = 'hiring'").get() as { value: string }
