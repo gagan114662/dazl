@@ -38,6 +38,7 @@ function mkLead(db: Database.Database, tenant: string, contact: string | null, c
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, job, `${company} ${id.slice(0, 4)}`, contact, 'Hiring', 'https://n.example/a', 'Co is hiring', 90, 80)
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE id = ?").run(id)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job) // finished: its gates have run; only leads of a done scan are autopilot's candidates
   return id
 }
 const BODY = 'bodybodybodybodybodybody'
@@ -259,6 +260,7 @@ test('sequence step: a conversion proven DURING the token refresh stops the step
   const leadId = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(leadId, job, 'Acme', 'seqprospect@corp.example', 'Hiring roofers', 'https://acme.example/jobs', 'Hiring roofers', 90, 80)
   db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = ?").run(leadId)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job) // finished: its gates have run; only leads of a done scan are autopilot's candidates
   const mid = randomBytes(12).toString('hex')
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id) VALUES (?, 'A', ?, ?, 'A quick question', 'This is the sent first touch body.', 'sent', ?, 'g1', 'thread-1')").run(mid, leadId, 'seqprospect@corp.example', NOW)
   const seqId = enrollColdSequence(db, 'A', mid, { businessName: 'Acme' })!

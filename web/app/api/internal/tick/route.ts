@@ -15,10 +15,11 @@ import { dueTenants, runIndexChecks } from '@/lib/seo/indexing'
 import { reapAccountHistory } from '@/lib/account-retention'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
-import { classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
+import { DRAIN_HOLD_REASONS, classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
-// follow-ups for tenants who turned both on. Without the secret configured the route does not exist.
+// follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
+// verified leads) for tenants with autopilot on. Without the secret configured the route does not exist.
 export async function POST(req: NextRequest) {
   const secret = process.env.AUTOPILOT_TICK_SECRET
   const got = req.headers.get('authorization') ?? ''
@@ -75,6 +76,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   const readTenants = db.prepare("SELECT c.tenant_id FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.version = ? AND g.read_granted = 1 AND g.status = 'active'").all(READ_CONSENT_VERSION) as { tenant_id: string }[]
   const all = [...new Set([...sendSet.keys(), ...firstTouchSet.keys(), ...readTenants.map(t => t.tenant_id)])]
   let done = 0
+  let firstTouches = 0
   for (const tenantId of all) {
     await lease.keep()
     let stage: 'reply_sync' | 'followups' | 'first_touch' = 'reply_sync'
@@ -91,14 +93,22 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
       }
       if (firstTouchSet.has(tenantId)) {
         // Drain due held drafts, then pick up new leads: first touches restart without waiting for a new scan.
-        // Drain and discovery are one kind of scheduled work; a drain failure skips discovery (its sends are the riskier half).
+        // Drain and discovery are one kind of scheduled work ('first_touch'); a drain failure skips discovery (its
+        // sends are the riskier half), and a reply/follow-up failure skips the tenant's first touches this tick:
+        // the tick's per-tenant failure accounting is the released contract (one refusal, one failure), so the two
+        // passes stay inside this loop rather than a parallel one that would double-count a switched-off tenant.
+        // drainFirstTouch covers legacy holds recorded on the message row (including #522's reply_sync_stale holds;
+        // disjoint selectors from autopilot_work, so no double send); runAutopilot drains held work rows and new
+        // verified leads (#448). Every send runs within every autopilot and send check; the lease is kept alive
+        // between its messages.
         stage = 'first_touch'
         const dr = classifyWork(await drainFirstTouch(db, tenantId))
         await progress(tenantId, 'first_touch', dr)
         if (dr.outcome === 'failure') continue
-        const ap = classifyWork(await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? ''))
-        await progress(tenantId, 'first_touch', ap)
-        if (ap.outcome === 'failure') continue
+        const ap = await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? '', { keep: () => lease.keep() })
+        firstTouches += ap.sent
+        await progress(tenantId, 'first_touch', classifyWork(ap, DRAIN_HOLD_REASONS))
+        if (ap.stopped !== undefined && !DRAIN_HOLD_REASONS.has(ap.stopped)) continue
       }
       done++
     } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
@@ -132,6 +142,5 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let sessionsReaped = 0
   try { sessionsReaped = (await reapAccountHistory(shared, { fence })).sessions } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked })
-
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked })
 }

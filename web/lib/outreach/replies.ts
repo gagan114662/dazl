@@ -5,7 +5,7 @@ import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
 import { isStaging } from '../staging.ts'
 import { auditAt, recordBounce } from './autopilot.ts'
 import { grantConsent, revokeAll } from './ledger.ts'
-import { norm } from './store.ts'
+import { norm, READ_CONSENT_VERSION } from './store.ts'
 import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
@@ -13,7 +13,7 @@ export { newText, messageText, htmlToText } from './reply-text.ts'
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens only threads it started,
 // by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
 // reads nothing when the user has not consented or has turned it off.
-export const READ_CONSENT_VERSION = '2026-10-21'
+export { READ_CONSENT_VERSION }
 export const READ_CONSENT_TEXT = [
   'dazl will read replies in the email threads it started for you, and delivery-failure notices for them. It will not read any other email.',
   'It uses this to stop emailing people who unsubscribe or bounce, to stop cold sequences on any human reply, and to start separately approved warm follow-ups for interested replies.',

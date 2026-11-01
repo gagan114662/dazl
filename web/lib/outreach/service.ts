@@ -9,9 +9,10 @@ import { conversionBlockedNow } from './lifecycle.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
+import { captureError } from '../ops/errors.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
-import { norm } from './store.ts'
+import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { pickCrawledEmail } from './published-email.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
@@ -75,7 +76,12 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
-export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
+// expectSender: the Gmail address the caller authorized this send from (autopilot's held drafts); the send is refused
+// (sender_changed) unless the connected account is that address at the moment the message is handed to Gmail.
+// authorize: the caller's own authority, re-read synchronously as the last check before the message is handed to Gmail
+// (after every await of the send path); a returned code refuses the send, known not sent. Autopilot passes one (on,
+// not paused, current consent, operator flag, its reserved slot); a manual send passes none and is unchanged.
+export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; expectSender?: string; authorize?: () => string | null }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
 
@@ -436,6 +442,8 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
   if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
+  // #413: never send on stale safety state - an opt-out that reply_sync has not ingested yet is invisible here.
+  if (!testFixtureSend(db, tenantId, pre) && replySafetyStale(db, tenantId, pre.to_email)) throw new OutreachError('reply_sync_stale')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
 }
 
@@ -503,6 +511,15 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // A recheck that cannot run (a read fails) is a refusal, not an unknown outcome: nothing has left yet, the message goes
+  // back to approved with that reason and the caller decides (fail closed).
+  try {
+  // The sending identity first: the account may have been disconnected or reconnected to another address meanwhile. The
+  // message goes out only from the address read before the refresh (and, when given, the one the caller authorized).
+  const sender = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
+  if (!sender || sender.email.toLowerCase() !== acct!.email.toLowerCase() || (d.expectSender !== undefined && d.expectSender.toLowerCase() !== sender.email.toLowerCase())) release('sender_changed')
+  // #413: safety ingest can also fall behind during the await - release and hold, never send.
+  if (!testFixtureSend(db, tenantId, m) && replySafetyStale(db, tenantId, m.to_email, nowS(d), m.id)) release('reply_sync_stale')
   // #417: a conversion proven during the refresh stops the send terminally - never released back to approved,
   // where it could linger past an activation that skips only draft/approved rows.
   if (!testFixtureSend(db,tenantId,m) && conversionBlockedNow(db, m.to_email)) {
@@ -523,6 +540,12 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  if (d.authorize) { const why = d.authorize(); if (why) release(why) }
+  } catch (e) {
+    if (e instanceof OutreachError) throw e
+    captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId })
+    release('authority_unreadable')
+  }
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
