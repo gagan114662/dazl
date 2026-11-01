@@ -38,6 +38,7 @@ const RESEARCH = { v: 1, site: 'acme.example', q: 'Who buys this?', ans: null,
     { i: 'h1', o: 'o1', k: 'persona', t: 'practice managers', s: 'sourced', u: SITE, q: 'lets practice managers fill their appointment book', at: 1800000000 },
     { i: 'h2', o: 'o1', k: 'persona', t: 'front-desk leads', s: 'sourced', u: SITE, q: 'helps front-desk leads cut no-shows', at: 1800000000 },
     { i: 'h3', o: 'o1', k: 'industry', t: 'Dental', s: 'inferred', u: null, q: null, at: null },
+    { i: 'h4', o: 'o1', k: 'persona', t: 'clinic owners', s: 'sourced', u: SITE, q: 'clinic owners fill their book', at: 1800000000 },
   ] }
 const READ = { source: 'https://acme.example/', sells: 'Acme Booking',
   icp: { summary: 'Dental practices that need booking software.', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], research: RESEARCH } }
@@ -86,6 +87,14 @@ try {
   await page.waitForFunction(() => document.querySelector('input.field[maxlength="400"], label:has(> input)') && [...document.querySelectorAll('label')].find(l => l.textContent.includes('Buyer roles'))?.querySelector('input')?.value.includes('practice managers'), null, { timeout: 5000 })
   assert.match(await who.inputValue(), /practice managers/, 'Add lands the statement in Buyer roles')
 
+  // 2b. Add then Dismiss: the text leaves the visible field in the same action (no hidden contradiction to resurrect).
+  const h4 = page.getByTestId('hyp-h4')
+  await h4.getByRole('button', { name: 'Add' }).click()
+  await page.waitForFunction(() => [...document.querySelectorAll('label')].find(l => l.textContent.includes('Buyer roles'))?.querySelector('input')?.value.includes('clinic owners'), null, { timeout: 5000 })
+  await h4.getByRole('button', { name: 'Dismiss' }).click()
+  await page.waitForFunction(() => ![...document.querySelectorAll('label')].find(l => l.textContent.includes('Buyer roles'))?.querySelector('input')?.value.includes('clinic owners'), null, { timeout: 5000 })
+  assert.equal(await page.getByTestId('hyp-h4').count(), 0, 'dismissed statement is hidden')
+
   // 3. Dismiss hides the statement.
   await h2.getByRole('button', { name: 'Dismiss' }).click()
   assert.equal(await page.getByTestId('hyp-h2').count(), 0, 'dismissed statement is hidden')
@@ -97,7 +106,7 @@ try {
   await q.getByRole('button', { name: 'Save' }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('label')].find(l => l.textContent.includes('Buyer roles'))?.querySelector('input')?.value.includes('office managers'), null, { timeout: 5000 })
   assert.match(await who.inputValue(), /office managers/, 'the typed answer lands in Buyer roles')
-  assert.match(await block.innerText(), /Answered: Who buys this\?/, 'the question is marked answered')
+  assert.match(await block.innerText(), /Answered: Who buys this\? - office managers/, 'the answered line shows the typed words')
 
   // Save: the reviewed block (rejection + answer) and the edited profile go in one POST.
   await page.getByRole('button', { name: 'Looks right, continue' }).click()
@@ -105,10 +114,12 @@ try {
   const saved = profileBodies.at(-1)
   assert.ok(saved?.buyer, 'a profile was saved')
   assert.deepEqual(saved.buyer.who, ['practice managers', 'office managers'], 'saved who is exactly the edited field')
+  assert.ok(!saved.buyer.who.includes('clinic owners'), 'the add-then-dismissed text is not in the saved field')
   const hyps = Object.fromEntries(saved.buyer.research.hyps.map(h => [h.i, h]))
   assert.equal(hyps.h2.s, 'rejected', 'the dismissal is saved as an explicit rejection')
+  assert.equal(hyps.h4.s, 'rejected', 'the add-then-dismissal is saved as an explicit rejection')
   assert.equal(hyps.h1.s, 'sourced', 'an un-acted statement keeps its truth status')
-  assert.deepEqual(saved.buyer.research.ans, { q: 'Who buys this?', o: 'o1' }, 'the answer is saved with the block')
+  assert.deepEqual(saved.buyer.research.ans, { q: 'Who buys this?', o: 'o1', t: 'office managers' }, 'the answer is saved with its WORDS, recrawl-durable')
   console.log('PASS research-review: render, add, dismiss, answer, and saved reviewed block')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
