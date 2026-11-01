@@ -42,6 +42,9 @@ jobs:
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out && ! grep -q '^NOT RUN' /tmp/it.out
+      # The #420 manual-profile ready card and readiness panel: a saved-by-hand profile completes both surfaces without a website and the panel must not contradict the card. They must run, not skip.
+      - name: Ready card and readiness panel (manual profile without a website)
+        run: node test/ui/ready-card.ui.mjs | tee /tmp/rc.out && ! grep -q '^NOT RUN' /tmp/rc.out && node test/ui/readiness.ui.mjs | tee /tmp/rd.out && ! grep -q '^NOT RUN' /tmp/rd.out
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
