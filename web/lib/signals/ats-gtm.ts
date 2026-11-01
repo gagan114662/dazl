@@ -228,7 +228,7 @@ export function checkedCoverageRow(c: CheckedListing, windowDays: number, retrie
     ? `0 fresh postings in the last ${windowDays} days; 0 ${filterText} listed on an empty board listing`
     : c.rawUnread === 0 && c.rawFreshExcluded === 0 && c.rawDatedStale === c.rawTotal
       ? `0 fresh postings in the last ${windowDays} days across the full listing (${c.listedCount} ${filterText}, all posting dates read)`
-      : `0 fresh postings in the last ${windowDays} days among the ${c.rawDatedStale} of ${c.rawTotal} listed postings whose dates were read; freshness of the rest was not established${c.rawFreshExcluded ? `; ${c.rawFreshExcluded} fresh excluded as closed or unusable, outside this claim` : ''}`
+      : `posting dates read for ${c.rawDatedStale + c.rawFreshExcluded} of ${c.rawTotal} listed postings${c.rawDatedStale || c.rawFreshExcluded ? ` (${[c.rawDatedStale ? `${c.rawDatedStale} older than the last ${windowDays} days` : '', c.rawFreshExcluded ? `${c.rawFreshExcluded} fresh but closed or unusable` : ''].filter(Boolean).join(', ')})` : ''}; the other ${c.rawTotal - c.rawDatedStale - c.rawFreshExcluded} were never date-read, so absence is not proven`
   return {
     connector: `signals:${c.board}-gtm`, kind: 'hiring-board-coverage',
     value: `Board checked: ${core}; ${c.allTitles.length} stored as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),

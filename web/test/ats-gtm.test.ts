@@ -394,12 +394,12 @@ test('#533 F-E GH detail failure: a title whose date was never read gets no fres
   assert.match(audits[0].label, /posting date was not read - freshness unknown/)
   assert.doesNotMatch(audits[0].label, /older than the last 90 days/, 'no freshness claim from an unread date')
   const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
-  assert.match(cov.value, /0 fresh postings in the last 90 days among the 0 of 1 listed postings whose dates were read; freshness of the rest was not established/)
+  assert.match(cov.value, /posting dates read for 0 of 1 listed postings; the other 1 were never date-read, so absence is not proven/)
   assert.doesNotMatch(cov.value, /across the full listing/, 'partial date coverage never claims the full listing')
 })
 
 test('#533 F-E GH beyond the detail cap: titles 5+ are never date-checked, get unknown-freshness rows, and the coverage row scopes the 0-fresh claim to the 4 read', async () => {
-  const six = { [`${GH}/jobs`]: { jobs: Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: `SDR ${i + 1}`, updated_at: d(1) })) } }
+  const six: Record<string, unknown> = { [`${GH}/jobs`]: { jobs: Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: `SDR ${i + 1}`, updated_at: d(1) })) } }
   for (let i = 1; i <= 4; i++) six[`${GH}/jobs/${i}`] = { id: i, title: `SDR ${i}`, first_published: d(400), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${i}`, content: 'old' }
   const board = await atsGtmBoard('Brightloop', 'brightloop.io', route(six), { now: NOW })
   assert.equal(board.hiring, null)
@@ -410,7 +410,7 @@ test('#533 F-E GH beyond the detail cap: titles 5+ are never date-checked, get u
   for (const r of audits.filter(r => ['SDR 1', 'SDR 2', 'SDR 3', 'SDR 4'].includes(r.value))) assert.match(r.label, /posting date read as older than the last 90 days/)
   for (const r of audits.filter(r => ['SDR 5', 'SDR 6'].includes(r.value))) { assert.match(r.label, /posting date was not read - freshness unknown/); assert.doesNotMatch(r.label, /older than/) }
   const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
-  assert.match(cov.value, /0 fresh postings in the last 90 days among the 4 of 6 listed postings whose dates were read; freshness of the rest was not established/)
+  assert.match(cov.value, /posting dates read for 4 of 6 listed postings \(4 older than the last 90 days\); the other 2 were never date-read, so absence is not proven/)
 })
 
 test('#533 F-E Lever zero-match: listing dates are read for every entry, so the full-listing 0-fresh claim stands', async () => {
@@ -431,7 +431,7 @@ test('#533 F-E fresh-but-closed is outside the 0-fresh claim: a closed fresh pos
   assert.equal(board.hiring, null)
   assert.ok(board.checked); assert.equal(board.checked!.rawFreshExcluded, 1); assert.equal(board.checked!.rawDatedStale, 0)
   const cov = checkedCoverageRow(board.checked!, 90, NOW / 1000, '2026-10-28')
-  assert.match(cov.value, /freshness of the rest was not established; 1 fresh excluded as closed or unusable, outside this claim/)
+  assert.match(cov.value, /posting dates read for 1 of 1 listed postings \(1 fresh but closed or unusable\); the other 0 were never date-read, so absence is not proven/)
   assert.doesNotMatch(cov.value, /across the full listing/)
 })
 
