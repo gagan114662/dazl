@@ -1,3 +1,5 @@
+import { recallSellerDecisions } from '@/lib/scan/intelligence'
+import { getDb } from '@/lib/db/client'
 import { NextRequest, NextResponse } from 'next/server'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
@@ -29,7 +31,11 @@ export async function POST(req: NextRequest) {
     const pr = pj && typeof pj === 'object' ? (pj as { research?: { site?: unknown } | null }).research : null
     prior = pr && typeof pr === 'object' && pr.site === host ? (pr as never) : null
   } catch { prior = null }
-  const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { prior })
+  // A failed recall is not empty memory: refuse before any fetch/model call so corrections cannot silently vanish.
+  let decisions
+  try { decisions = await recallSellerDecisions(await getDb(), user.tenantId, url) }
+  catch { return NextResponse.json({ error: 'intelligence_unavailable', message: 'Saved targeting decisions could not be read. Try again before generating a new profile.' }, { status: 503 }) }
+  const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { prior, decisions })
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     if (out.error === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.' }, { status: 503 })
@@ -39,5 +45,5 @@ export async function POST(req: NextRequest) {
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
     return NextResponse.json({ error: out.error }, { status })
   }
-  return NextResponse.json(out)
+  return NextResponse.json({ ...out, intelligence: decisions.trace })
 }
