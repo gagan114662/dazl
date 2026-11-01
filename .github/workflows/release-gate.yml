@@ -15,10 +15,10 @@ name: release-gate
 # throwaway databases and generated test-mode values, so nothing is scanned, sent, billed or fetched.
 on:
   pull_request:
-    paths: ["web/**", "ops/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml"]
+    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
-    paths: ["web/**", "ops/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml"]
+    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
 permissions:
   contents: read
 concurrency:

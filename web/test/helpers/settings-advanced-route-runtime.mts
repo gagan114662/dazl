@@ -1,6 +1,10 @@
 // #436 route gates: unsupported platforms expose supported:false + reason and refuse consent,
 // session save and enable, while cleanup paths (revoke, toggle off) and supported platforms work.
 // Synthetic fixture: throwaway SQLite, mocked session (tenant-route loader), no network.
+// Synthetic worker env AFTER the net-fence import scrubbed inherited *TOKEN* vars (same pattern as
+// pg-port-routes-2-runtime.mts): without URL+TOKEN advFlags().enabled is false and every POST 404s at the
+// platform gate. The fence still blocks all network; the route under test never calls the worker.
+Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'https://worker.invalid', ADVANCED_WORKER_TOKEN: 'test-token' })
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'

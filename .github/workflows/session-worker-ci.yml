@@ -4,7 +4,7 @@ on:
     paths: ["session-worker/**", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
-    paths: ["session-worker/**"]
+    paths: ["session-worker/**", ".github/workflows/session-worker-ci.yml"]
 jobs:
   test:
     runs-on: ubuntu-latest

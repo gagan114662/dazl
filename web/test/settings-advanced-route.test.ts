@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 test('settings advanced route: unsupported platforms refuse consent/save/enable; cleanup and supported platforms work', () => {
-  const env = { ...process.env, ADVANCED_CONNECTORS: '1' }
+  const env = { ...process.env }
   delete (env as Record<string, unknown>).NODE_TEST_CONTEXT
   const result = spawnSync(process.execPath, [
     '--experimental-strip-types', '--import', './test/helpers/net-fence.ts',

@@ -1,10 +1,10 @@
 name: web-ci
 on:
   pull_request:
-    paths: ["web/**", "ops/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml"]
+    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
-    paths: ["web/**", "ops/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml"]
+    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   # Manual run at an exact ref so a merged commit whose diff only touched release plumbing
   # can still carry the full required check set on its own SHA (checked_launch's gate).
   workflow_dispatch:
