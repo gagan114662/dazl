@@ -81,7 +81,7 @@ def require_empty(port):
 
 
 def listener_owners(port):
-    sockets = []
+    sockets = set()
     for table, loopback in [('tcp', '0100007F'), ('tcp6', '00000000000000000000000001000000')]:
         for row in Path('/proc/net/' + table).read_text().splitlines()[1:]:
             cols = row.split()
@@ -89,22 +89,25 @@ def listener_owners(port):
             if cols[3] == '0A' and int(number, 16) == port:
                 if address != loopback:
                     raise CandidateRefused('candidate_not_loopback')
-                sockets.append(cols[9])
+                sockets.add(cols[9])
     if not sockets:
         raise CandidateRefused('candidate_listener_missing')
-    owners = set()
+    inode_owners = {inode: set() for inode in sockets}
     for proc in Path('/proc').iterdir():
         if not proc.name.isdigit():
             continue
         try:
             for fd in (proc / 'fd').iterdir():
-                if os.readlink(fd) in {'socket:[' + n + ']' for n in sockets}:
-                    owners.add(int(proc.name))
+                target = os.readlink(fd)
+                if target.startswith('socket:[') and target.endswith(']'):
+                    inode = target[8:-1]
+                    if inode in inode_owners:
+                        inode_owners[inode].add(int(proc.name))
         except (OSError, PermissionError):
             continue
-    if not owners:
+    if any(not owners for owners in inode_owners.values()):
         raise CandidateRefused('candidate_socket_owner_unknown')
-    return owners
+    return set().union(*inode_owners.values())
 
 
 def require_owned_listener(expected, port):
@@ -139,6 +142,9 @@ def candidate_ready(expected, port, commit):
     require_owned_listener(expected, port)
     return {'status': 'candidate_ready_only', 'commit': commit, 'port': port,
             'pid': expected.pid, 'start_ticks': expected.start_ticks,
+            'observed_wall_unix_ns': time.time_ns(),
+            'observed_monotonic_ns': time.monotonic_ns(),
+            'clock_scope': 'monotonic_same_host_boot_only',
             'public_upstream_changed': False}
 
 

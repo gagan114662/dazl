@@ -122,6 +122,29 @@ server.serve_forever()
             kill.assert_called_once_with(row.pgid, signal.SIGTERM)
         self.assertIsNone(child.poll())
 
+    def test_receipt_records_wall_and_monotonic_observation_not_expiry(self):
+        child, port, row = self.child()
+        with patch.object(m.time, 'time_ns', return_value=123456789), patch.object(m.time, 'monotonic_ns', return_value=987654321):
+            report = m.candidate_ready(row, port, SHA)
+        self.assertEqual(report['observed_wall_unix_ns'], 123456789)
+        self.assertEqual(report['observed_monotonic_ns'], 987654321)
+        self.assertEqual(report['clock_scope'], 'monotonic_same_host_boot_only')
+        self.assertNotIn('expires_at', report)
+
+    def test_every_listen_inode_must_have_a_resolved_owner(self):
+        child, port, row = self.child()
+        real_read = Path.read_text
+        def read(path, *args, **kwargs):
+            text = real_read(path, *args, **kwargs)
+            if str(path) == '/proc/net/tcp':
+                # Extra same-port LISTEN socket with an inode no PID owns.
+                text += f' 99: 0100007F:{port:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 999999999999\n'
+            return text
+        with patch.object(Path, 'read_text', read), patch.object(m.os, 'killpg') as kill:
+            with self.assertRaisesRegex(m.CandidateRefused, 'socket_owner_unknown'):
+                m.require_owned_listener(row, port)
+            kill.assert_not_called()
+
     def test_no_execute_cli_or_caddy_capability(self):
         result = subprocess.run([sys.executable, str(Path(m.__file__)), '--execute'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)

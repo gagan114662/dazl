@@ -33,8 +33,14 @@ None of these historical facts authorize starting a production candidate.
 A caller-created process must lead its own new session/group, with exact PID,
 /proc start ticks, UID, cwd and cgroup. A candidate-ready-only result requires
 all observed listener owners on the port to belong to that group/session and
-match UID/cwd/cgroup; listeners must bind loopback, with no wildcard endpoint.
-The exact readiness commit is checked between two identity checks. Redirects
+match UID/cwd/cgroup; listeners must bind exactly127.0.0.1 or ::1, with no wildcard endpoint. Every
+LISTEN inode on the port must have at least one resolved process owner, not
+merely one resolved inode while another is hidden or has disappeared.
+The exact readiness commit is checked between two identity checks. The result
+records wall-clock and monotonic nanosecond observation timestamps; monotonic
+values are comparable only on the same host boot. This is not an expiry policy
+or a trusted durable receipt: a future orchestrator still needs freshness/boot
+binding, serialization and custody checks before phase2. Redirects
 are refused. No provider or database is contacted by the tests.
 
 Cleanup rechecks the same leader identity and signals only its group. It never
