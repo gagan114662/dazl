@@ -1,0 +1,57 @@
+name: static-quality
+# Deliberately no paths filter: a missing required check is not a pass.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Full ancestor SHA to compare (required for a manual run)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: static-quality-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+jobs:
+  static-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: web
+      - name: Resolve exact comparison (never silently fall back)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$BASE^{commit}"
+          git merge-base --is-ancestor "$BASE" HEAD
+          echo "QUALITY_BASE=$BASE" >> "$GITHUB_ENV"
+      - name: Calibration and negative plants
+        working-directory: web
+        run: node --test scripts/quality/calibration.test.mjs
+      - name: Analyze all tracked web JS and TS, reject new evidence
+        working-directory: web
+        run: node scripts/quality/gate.mjs --base "$QUALITY_BASE" --report ../quality-report.json
+      - name: Evidence, coverage and remaining unknowns
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-quality-${{ github.event.pull_request.head.sha || github.sha }}
+          path: quality-report.json
+          if-no-files-found: error
+          retention-days: 30
