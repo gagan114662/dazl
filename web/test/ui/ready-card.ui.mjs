@@ -104,6 +104,11 @@ try {
     assert.deepEqual(await states(page), ['profile:done', 'search:done', 'play:todo*', 'qualified:todo', 'contact:todo', 'draft:todo', 'sender:todo'], 'manual profile done, search can run, first search is the actual next prerequisite')
     assert.deepEqual(await fixes(page), ['', '', 'Run a search>/app/leads', '', '', '', 'Connect>/app/settings#gmail'], 'no Add website fix anywhere on the manual path')
     assert.ok((await card(page).textContent()).includes('saved by hand'), 'the done detail names the manual profile')
+    // The full checklist on the same page must agree (#420 whole contract): the business-details row completes
+    // from the manual profile and never asks for a website.
+    const siteRow = await page.getByTestId('ready-site').textContent()
+    assert.match(siteRow ?? '', /Brightsmile - Online booking and reminders for dental practices/, 'readiness panel completes from the manual profile')
+    assert.ok(!/missing website/.test(siteRow ?? ''), 'readiness panel: no website ask on the manual path')
     await shot(page, `manual-${tag}`)
     assert.deepEqual(writes, []); await ctx.close()
     // 2. The reviewed account.
