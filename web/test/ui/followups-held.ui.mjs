@@ -14,7 +14,9 @@
 //      will be sent right now ... Dates below are the schedule, not a promise"; followups_off holds
 //      every due thread with "the follow-ups switch is off" and promises nothing;
 //   4. stopped threads render their stopped text (domain_unconfirmed, deliberately long company name);
-//   5. at 390px identity, sent count, hold reason and schedule date stack full-width and readable.
+//   5. at 390px identity, sent count, hold reason and schedule date stack full-width and readable;
+//   6. at 320px (the original #471 acceptance viewport) the account-hold banner and the long
+//      stopped text stay readable with no horizontal scroll.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -149,7 +151,30 @@ try {
     await row.scrollIntoViewIfNeeded(); await row.screenshot({ path: path.join(shots, 'followups-held-390-stopped.png') })
     await mp.screenshot({ path: path.join(shots, 'followups-held-390.png') })
   }
-  console.log('follow-ups held-state UI check passed: promised dates only when the runner would send; held threads show reason + configuration date, never a promise; account-hold banners (consent/paused/uncertain/off); stopped text; 390px readable, no horizontal scroll')
+  // 320px (the original #471 acceptance viewport): account-hold banner and long stopped text readable.
+  const db3 = new Database(DB)
+  db3.exec(`UPDATE autopilot_settings SET consent_version='1999-01-01' WHERE tenant_id='${tenant}'`)
+  const nar = await b.newContext({ viewport: { width: 320, height: 700 } })
+  await nar.addCookies([{ name: 'dazl_session', value: token, url: base }])
+  const np = await nar.newPage()
+  await np.goto(`${base}/app/follow-ups`, { waitUntil: 'load' }); await np.waitForTimeout(1200)
+  const nb = await np.textContent('body') ?? ''
+  assert.match(nb, /Nothing will be sent right now/, '320px: banner present under account hold')
+  assert.match(nb, /schedule, not a promise/, '320px: schedule-not-promise wording')
+  assert.match(nb, /schedule said/, '320px: held rows show configuration date')
+  assert.match(nb, /not confirmed as the right company/, '320px: long stopped text present')
+  const nOverflow = await np.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)
+  assert.equal(nOverflow, false, '320px: no horizontal scroll')
+  if (shots) {
+    await np.locator('[data-testid=followups-held]').screenshot({ path: path.join(shots, 'followups-held-320-banner.png') })
+    const srow = np.locator('[data-testid=stopped-row]').first()
+    await srow.scrollIntoViewIfNeeded(); await srow.screenshot({ path: path.join(shots, 'followups-held-320-stopped.png') })
+    await np.screenshot({ path: path.join(shots, 'followups-held-320.png') })
+  }
+  await nar.close()
+  db3.prepare('UPDATE autopilot_settings SET consent_version = ? WHERE tenant_id = ?').run(snap.consent_version, tenant)
+  db3.close()
+  console.log('follow-ups held-state UI check passed: promised dates only when the runner would send; held threads show reason + configuration date, never a promise; account-hold banners (consent/paused/uncertain/off); stopped text; 390px and 320px readable, no horizontal scroll')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
