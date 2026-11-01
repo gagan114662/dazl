@@ -86,7 +86,7 @@ export default function InboxClient() {
         <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. With your consent, dazl also checks delivery-failure notices for its sends. Unmatched notices are not kept as replies.</p>
       )}
       {(!i.consent_accepted || !i.read_granted) && (
-        <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Only replies to outreach threads dazl started are read - nothing else in your mailbox." />
+        <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. With your consent, dazl reads replies in its outreach threads and checks delivery-failure notices for its sends." />
       )}
       {i.consent_accepted && i.read_granted && (
         <div className="flex flex-wrap items-center gap-2 mb-4" data-testid="inbox-filters">

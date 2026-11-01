@@ -8,7 +8,7 @@ import { isStaging, STUB_SENDER } from '../staging.ts'
 // Least privilege: send is the required grant. Reading replies is a separate, optional gmail.readonly grant (below).
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
 // Reading is a separate, optional grant. gmail.readonly is the narrowest scope that returns message bodies.
-// dazl only ever opens threads it started itself (by thread id) and never lists or searches the mailbox.
+// dazl opens its outreach threads and searches a bounded daemon-notice window for delivery failures correlated to its recorded sends.
 export const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const SCOPES = ['openid', 'email', GMAIL_SEND_SCOPE]
 const STATE_TTL_S = 600

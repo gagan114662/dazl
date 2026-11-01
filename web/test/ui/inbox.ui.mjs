@@ -53,7 +53,7 @@ function serve(u, reads) {
 
 const b = await chromium.launch()
 // delay(u, method) -> ms: hold that response back (the body is computed when the request arrives, as a server would)
-async function open(url, width = 1280, height = 900, delay = () => 0) {
+async function open(url, width = 1280, height = 900, delay = () => 0, connected = true) {
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const reads = new Set(), calls = [], posts = []
@@ -65,6 +65,7 @@ async function open(url, width = 1280, height = 900, delay = () => 0) {
     const wait = ms => new Promise(r => setTimeout(r, ms))
     if (p === '/api/outreach/inbox' && req.method() === 'POST') { const body = JSON.parse(req.postData() || '{}'); posts.push(body); reads.add(body.thread_id); await wait(delay(u, 'POST')); return json({ ok: true }) }
     if (p === '/api/outreach/inbox') {
+      if (!connected) return json({ available: false, consent_accepted: false, read_granted: false, account: null, threads: [], counts: { threads: 0, needs_owner: 0, unread: 0, unread_needs_owner: 0 } })
       if (u.searchParams.get('thread_id')) return json({ messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Yes - send details', at: now, classification: 'positive' }] })
       calls.push(u.search); const body = serve(u, reads); await wait(delay(u, 'GET')); return json(body)
     }
@@ -78,6 +79,13 @@ async function open(url, width = 1280, height = 900, delay = () => 0) {
 const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 const ids = async page => page.getByTestId('inbox-thread').evaluateAll(els => els.map(e => e.textContent))
 try {
+  {
+    const { ctx, page } = await open('/app/inbox', 390, 844, () => 0, false)
+    await page.getByText(/With your consent, dazl reads replies in its outreach threads and checks delivery-failure notices for its sends/).waitFor()
+    assert.equal(await page.getByText(/Only replies to outreach threads|nothing else in your mailbox|Nothing else in (?:your|the) mailbox is read/).count(), 0)
+    await shot(page, 'inbox-disconnected-mobile')
+    await ctx.close()
+  }
   {
     const { ctx, page, calls } = await open('/app/inbox')
     await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
