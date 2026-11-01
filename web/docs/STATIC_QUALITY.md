@@ -53,6 +53,11 @@ with zero excluded source files. They remain **existing debt**, not ignored
 files or a statement of safety. No editable baseline JSON is committed. Fixes
 reduce the next base's debt; new findings fail even if total counts fall.
 
+The gate also parses every workflow YAML and validates basic job/step shape. An
+unquoted colon in a step name, duplicate key or empty jobs fails calibration or
+validation. This is not full GitHub expression/permission validation; actual
+executed checks remain the evidence of execution, and absent jobs are not pass.
+
 ## Run and inspect
 
 From `web`, after `npm ci --ignore-scripts`:

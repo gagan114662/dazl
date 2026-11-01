@@ -41,6 +41,9 @@ jobs:
           git cat-file -e "$BASE^{commit}"
           git merge-base --is-ancestor "$BASE" HEAD
           echo "QUALITY_BASE=$BASE" >> "$GITHUB_ENV"
+      - name: Workflow syntax and job shape (not execution proof)
+        working-directory: web
+        run: node scripts/quality/workflows.mjs
       - name: Calibration and negative plants
         working-directory: web
         run: node --test scripts/quality/calibration.test.mjs scripts/quality/integration.test.mjs

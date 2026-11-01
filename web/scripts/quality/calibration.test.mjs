@@ -63,3 +63,12 @@ test('compiler diagnostic display paths and line numbers do not change identity'
   const head = evidence('// shifted\neval(input);', { ...message, line: 2, endLine: 2, message: 'Stable headline\n\n/tmp/head/source.ts:2:1\ndifferent codeframe' });
   assert.deepEqual(newEvidence(base, head), []);
 });
+
+test('workflow YAML: unquoted colon/duplicate keys/empty jobs reject; quoted name passes', async () => {
+  const { validateWorkflow } = await import('./workflows.mjs');
+  const valid = 'on: push\njobs:\n  proof:\n    runs-on: ubuntu-latest\n    steps:\n      - name: "Checks: negative cases"\n        run: node proof.mjs\n';
+  assert.deepEqual(validateWorkflow(valid), ['proof']);
+  assert.throws(() => validateWorkflow(valid.replace('"Checks: negative cases"', 'Checks: negative cases')));
+  assert.throws(() => validateWorkflow('on: push\njobs: {}'));
+  assert.throws(() => validateWorkflow('on: push\non: pull_request\njobs: {}'));
+});
