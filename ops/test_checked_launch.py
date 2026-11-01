@@ -170,6 +170,41 @@ class RequireCiFixtures(unittest.TestCase):
             checked.require_ci('gagan114662/dazl', 'xyz', get=stub_get(all_green()))
 
 
+class StaticQualityRolloutTests(unittest.TestCase):
+    def test_static_quality_is_required_without_retiring_existing_checks(self):
+        self.assertEqual(checked.REQUIRED_CI, frozenset({
+            'browser', 'migrations', 'test-sqlite', 'test-postgres',
+            'fail-closed', 'static-quality'}))
+
+    def test_static_quality_absence_is_not_success(self):
+        checks = [c for c in all_green() if c['name'] != 'static-quality']
+        with self.assertRaisesRegex(ValueError, '^ci_missing$'):
+            checked.require_ci('gagan114662/dazl', COMMIT, get=stub_get(checks))
+
+    def test_static_quality_non_success_states_refuse(self):
+        for conclusion in ['failure', 'cancelled', 'skipped', 'neutral', 'timed_out', None]:
+            with self.subTest(conclusion=conclusion), self.assertRaises(ValueError):
+                checked.require_ci('gagan114662/dazl', COMMIT,
+                    get=stub_get(all_green(**{'static-quality': {'conclusion': conclusion}})))
+        for state in ['queued', 'in_progress']:
+            with self.subTest(status=state), self.assertRaises(ValueError):
+                checked.require_ci('gagan114662/dazl', COMMIT,
+                    get=stub_get(all_green(**{'static-quality': {'status': state, 'conclusion': None, 'completed_at': None}})))
+
+    def test_static_quality_wrong_identity_refuses(self):
+        for values in [{'head_sha': 'e'*40}, {'slug': 'not-github-actions'}, {'suite': None}]:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                checked.require_ci('gagan114662/dazl', COMMIT,
+                    get=stub_get(all_green(**{'static-quality': values})))
+
+    def test_static_quality_independent_failure_not_masked(self):
+        checks = all_green()
+        checks.append(run_obj('static-quality', conclusion='failure', suite=2,
+                              rid=1000, completed_at='2026-10-31T20:00:00Z'))
+        with self.assertRaisesRegex(ValueError, '^ci_not_passed$'):
+            checked.require_ci('gagan114662/dazl', COMMIT, get=stub_get(checks))
+
+
 class TokenlessPathTests(unittest.TestCase):
     def test_tokenless_request_sends_no_authorization_header(self):
         sent = {}

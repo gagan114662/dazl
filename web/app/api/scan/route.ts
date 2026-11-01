@@ -1,3 +1,5 @@
+import { decisionRows } from '@/lib/scan/intelligence'
+import { captureSellerDecisions } from '@/lib/scan/store'
 import { randomBytes } from 'node:crypto'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { cleanText } from '@/lib/validate'
@@ -77,6 +79,10 @@ export async function POST(req: NextRequest) {
     bindOffer = effectiveOffer({ seller, query }, tenantContext).offer ?? ''
   }
   const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer) : icp
+  // Capture only explicit Add/Dismiss events, not inferred statuses or a profile's mere presence.
+  let decisions: ReturnType<typeof decisionRows>
+  try { decisions = decisionRows(body?.research_decisions, effective?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, effective ?? undefined) }
+  catch { return NextResponse.json({ error: 'invalid_research_decisions' }, { status: 400 }) }
   const sized = effective ? budgetedIcp(effective) : null
   if (sized && !sized.ok) return NextResponse.json({ error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
 
@@ -151,6 +157,8 @@ export async function POST(req: NextRequest) {
     db.transaction(() => {
       if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
+      // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
+      if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))
       // Kept with the job so the finished scan can show actual against what was confirmed.
       if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), jid)
       if (funded === 'trial') {

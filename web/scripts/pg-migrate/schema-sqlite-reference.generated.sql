@@ -631,6 +631,16 @@ CREATE TABLE scheduler_runs (
       error             TEXT CHECK (error IS NULL OR length(error) <= 200)
     );
 
+CREATE TABLE seller_decisions (
+ id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, actor_id TEXT NOT NULL, job_id TEXT NOT NULL,
+ site TEXT NOT NULL, offer_id TEXT NOT NULL, hypothesis_id TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK (kind IN ('persona','industry','size','location','disqualifier','pain')),
+ text TEXT NOT NULL, action TEXT NOT NULL CHECK (action IN ('confirm','reject')),
+ source_url TEXT, source_quote TEXT, source_checked_at INTEGER,
+ created_at INTEGER NOT NULL, version INTEGER NOT NULL CHECK (version = 1),
+ UNIQUE(tenant_id,job_id,offer_id,hypothesis_id)
+);
+
 CREATE TABLE seo_audits (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
     results TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
@@ -973,6 +983,8 @@ CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
 
 CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
+
+CREATE INDEX seller_decisions_recall ON seller_decisions(tenant_id,site,created_at,id);
 
 CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 

@@ -1,3 +1,4 @@
+import { reuseSellerDecisions, type DecisionPack } from './intelligence.ts'
 import type Database from 'better-sqlite3'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { readKey } from '../llm/key-store.ts'
@@ -81,7 +82,7 @@ From what this company sells, reply with ONLY one JSON object:
  "items": [{"offer": "o1", "kind": "persona|industry|size|location|disqualifier|pain", "text": string, "url": one of the PAGE urls above, "quote": an EXACT phrase copied from that page, "inferred": true|false}]}
 Rules: use every page, not just the first. Only what the pages support, no invented facts, no hype words. "quote" must be copied exactly from the page it cites; if the pages do not state a buyer, headcount or place, either set inferred=true (a hypothesis) or leave it out. Never invent a size or a location.`
 
-export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider>; prior?: IcpResearch | null; researchTimeMs?: number }
+export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider>; prior?: IcpResearch | null; researchTimeMs?: number; decisions?: DecisionPack }
 
 export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string; sells: string } | FreeSiteRead | { error: IcpFromSiteError }> {
   // Fetch first (#409): reading the public page is free and needs no AI key. Only the model step below does, and it
@@ -136,7 +137,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     const prior = deps.prior ? fromStored(deps.prior) : null
     const research = parsed ? buildResearch({ offers: parsed.offers, items: parsed.items }, pages, site, prior) : { error: 'model_failed' as const }
     const withResearch = 'error' in research ? icp : { ...icp, research: toStored(research) }
-    return { icp: withResearch, source: page.finalUrl, sells }
+    return { icp: deps.decisions ? reuseSellerDecisions(withResearch, deps.decisions, sells) : withResearch, source: page.finalUrl, sells }
   } catch (e) {
     // A call MAY have been made and billed, but its cost could not be recorded: the pool refuses every later call
     // until an operator settles the marker. Never surface this as a key problem - re-entering the key cannot help.
