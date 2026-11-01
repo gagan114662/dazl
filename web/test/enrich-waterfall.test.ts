@@ -157,3 +157,55 @@ test('disabled provider: opt-in does not resurrect a disabled PDL key', async ()
   await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async (u: string) => (u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [] })), async () => ok(PDL_OK), calls), master })
   assert.equal(calls.pdl, 0, '...but a disabled PDL key is never used')
 })
+
+test('PDL credit truth: the scan budget caps PROFILES RETURNED, and each search size is capped by what remains', async () => {
+  const { db, jobId, leads } = seed(2, true)
+  const sizes: number[] = []
+  const pdlProfiles = (n: number) => ({ data: Array.from({ length: n }, () => PDL_OK.data[0]) })
+  const capRouter = (async (u: RequestInfo | URL, init?: { body?: string }) => {
+    const s2 = String(u)
+    if (s2.includes('apollo.io')) return s2.includes('organizations') ? ok({ organization: { name: 'X', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [] })
+    sizes.push(JSON.parse(init?.body ?? '{}').size ?? 0)
+    return ok(pdlProfiles(4))
+  }) as unknown as typeof fetch
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: capRouter, master })
+  assert.deepEqual(sizes, [5, 1], 'the first search may request the full budget; the second is capped by what 4 returned profiles left')
+  // Charged = profiles RETURNED (adapter contract): 4 + min(4, size 1) = 5, never more than the budget.
+  const charged = (db.prepare("SELECT results FROM connector_audit WHERE tenant_id = 'u1' AND connector = 'enrich:pdl' AND status = 'ok'").all() as { results: number }[]).reduce((a, r) => a + r.results, 0)
+  assert.equal(charged, 5, 'profiles returned across the scan never exceed the 5-credit budget')
+  assert.ok(r.byProvider.pdl > 0)
+})
+test('terminal rejection is a replay class of its own: a fully-contradicted search is never paid for twice', async () => {
+  const { db, jobId, leads } = seed()
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const contradicting = async (u: string) => u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [{ ...PERSON, organization: { name: 'Different Co', primary_domain: 'different.example' } }] })
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(contradicting, async () => ok(PDL_OK), calls), master })
+  const apolloAfterFirst = calls.apollo
+  assert.ok(apolloAfterFirst > 0)
+  const r2 = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(contradicting, async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.apollo, apolloAfterFirst, 'the replayed rejection costs nothing')
+  assert.ok(r2.skipped.some(s2 => s2.provider === 'apollo' && s2.why === 'replayed'), 'rejection replays as replayed, not a re-pay')
+})
+test('a stale reserved row (crashed pass) fails closed: no second payment, no downstream provider, reported uncertain', async () => {
+  const { db, jobId, leads } = seed()
+  db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES ('r1', 'u1', 'enrich:apollo', ?, ?, 'reserved', 0)").run(jobId, 'people Harbor Dental (harbordental.example)')
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async () => ok({ people: [PERSON] }), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.apollo, 0, 'the possibly-paid call is never repeated')
+  assert.equal(calls.pdl, 0, 'unknown paid state stops the waterfall for the lead')
+  assert.ok(r.skipped.some(s2 => s2.why === 'uncertain'), 'the pass reports the lead uncertain')
+})
+test('same-name leads with no domain never share a memo: each is searched, neither silences the other', async () => {
+  const db2 = new Database(':memory:'); migrateScan(db2); migrateConnectors(db2)
+  const jobId = createJob(db2, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db2.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(NYC, jobId)
+  const leads = [1, 2].map(i => ({ id: `lead${i}`, company: 'Harbor Dental', company_domain: null as string | null }))
+  for (const l of leads) db2.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES (?, ?, '', ?, NULL, 'opened', 'https://x.example/1')").run(l.id, jobId, l.company)
+  saveCredential(db2, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const apollo = async (u: string) => u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [PERSON] })
+  await enrichLeadContacts(db2, 'u1', jobId, leads, { fetchImpl: router(apollo, async () => ok(PDL_OK), calls), master })
+  assert.ok(calls.apollo >= 4, `both leads searched (org+people each), got ${calls.apollo}`)
+  const keys = (db2.prepare("SELECT DISTINCT lookup FROM connector_audit WHERE tenant_id = 'u1' AND connector = 'enrich:apollo' AND lookup LIKE 'people %'").all() as { lookup: string }[]).map(r => r.lookup)
+  assert.ok(keys.some(k => k.includes('lead:lead1')) && keys.some(k => k.includes('lead:lead2')), 'each no-domain lead has its own durable identity')
+})

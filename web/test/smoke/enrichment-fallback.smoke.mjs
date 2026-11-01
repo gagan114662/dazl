@@ -46,7 +46,7 @@ try {
 
   // Save both keys through the real UI (values are invented; the net fence blocks any real provider call).
   await card.getByPlaceholder('Paste your Apollo.io API key').fill('smoke-apollo-key-0000000000000000')
-  await card.getByRole('button', { name: 'Save', exact: true }).click()
+  await card.getByRole('button', { name: 'Save', exact: true }).first().click() // both slots render Save until Apollo shows Connected; PDL's is unique after
   await card.getByText(/Connected \(key ending 0000\)/).first().waitFor()
   await card.getByPlaceholder('Paste your People Data Labs API key').fill('smoke-pdl-key-00000000000000000000')
   await card.getByRole('button', { name: 'Save', exact: true }).click()

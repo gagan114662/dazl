@@ -133,6 +133,17 @@ const auditArgs = (a: AuditEntry) => [randomBytes(12).toString('hex'), a.tenantI
 export function audit(db: Database.Database, a: AuditEntry): void {
   db.prepare(AUDIT_SQL).run(...auditArgs(a))
 }
+// Paid-call credit discipline (#382): reserve the audit row BEFORE the provider call and settle it after, so a crash
+// between the call and the write can never make a replay pay twice - the stale 'reserved' row is proof the call may
+// have been charged, and the replay fails closed (skips, reports uncertain) instead of paying again.
+export function auditReserved(db: Database.Database, a: AuditEntry): string {
+  const id = randomBytes(12).toString('hex')
+  db.prepare(AUDIT_SQL).run(id, a.tenantId, a.connector, a.jobId ?? null, a.lookup.slice(0, 200), 'reserved', 0)
+  return id
+}
+export function auditSettle(db: Database.Database, id: string, status: string, results: number): void {
+  db.prepare("UPDATE connector_audit SET status = ?, results = ? WHERE id = ? AND status = 'reserved'").run(status, results, id)
+}
 export async function writeAudit(db: Db, a: AuditEntry): Promise<void> {
   await db.run(AUDIT_SQL, auditArgs(a))
 }
