@@ -161,11 +161,12 @@ jobs:
           curl -sf "http://127.0.0.1:$PORT/api/ready" >/dev/null
           node "$GITHUB_WORKSPACE/ops/release-manifest.mjs" check "$GITHUB_WORKSPACE/web/release.json" "http://127.0.0.1:$PORT"
           curl -sf "http://127.0.0.1:$PORT/" >/dev/null
+          # Next serves public/<path> at the site root, not under /public: strip the directory prefix.
           ASSET=$(find public -type f | sort | head -1); [ -n "$ASSET" ]
-          curl -sf "http://127.0.0.1:$PORT/$ASSET" >/dev/null || { echo "public asset $ASSET not served"; exit 1; }
+          curl -sf "http://127.0.0.1:$PORT/${ASSET#public/}" >/dev/null || { echo "public asset $ASSET not served"; exit 1; }
       - name: Upload runnable release artifact
         uses: actions/upload-artifact@v4
-        if: success()
+        if: always()
         with:
           name: release-app-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
