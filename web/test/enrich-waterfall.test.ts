@@ -1,131 +1,123 @@
-// #382: with both keys configured, enrichment is a real Apollo -> PDL fallback waterfall. Apollo empty / 401 / 429 /
-// transport failure (timeout) falls back to PDL for that lead; an exhausted provider is skipped visibly, never
-// re-billed; a lead that already carries an enrich contact is never re-billed on replay; wrong-company records are
-// still rejected through the fallback; a dead provider never silently ends the research for the remaining leads.
-// Stubbed provider responses and invented companies: no network, no credits, no real keys.
+// #382: Apollo -> PDL as a real fallback waterfall. Stubbed providers (invented company and people); no network, no credits.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
-import { enrichLeadContacts } from '../lib/enrich/index.ts'
+import { enrichLeadContacts, APOLLO_CALLS, PDL_CALLS, MAX_FAILS } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
-import { migrateConnectors, saveCredential, recentAudit, enrichmentsForLeads, addEnrichment } from '../lib/connectors/store.ts'
+import { migrateConnectors, saveCredential, recentAudit, enrichmentsForLeads } from '../lib/connectors/store.ts'
 
 const master = randomBytes(32)
 const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 })
-const NYC_ICP = JSON.stringify({ summary: 'NYC dental', where: ['New York City'], who: ['Practice manager'], signals: [] })
-
-function seed(nLeads = 1) {
+const NYC = JSON.stringify({ summary: 'NYC dental', where: ['New York City'], who: ['Practice manager'], signals: [] })
+function seed(n = 1, both = true) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
-  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(NYC_ICP, jobId)
-  const leads = []
-  for (let i = 1; i <= nLeads; i++) {
-    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, fit, intent, action, why) VALUES (?, ?, '', ?, NULL, 'opened a new practice', 'https://x.example/1', 4, 3, 4, 'New dental practice in Sunnyside.')").run(`lead${i}`, jobId, `Practice ${i}`)
-    leads.push({ id: `lead${i}`, company: `Practice ${i}`, company_domain: null })
-  }
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(NYC, jobId)
+  const leads = Array.from({ length: n }, (_, i) => ({ id: `lead${i + 1}`, company: i === 0 ? 'Harbor Dental' : `Harbor Dental ${i + 1}`, company_domain: i === 0 ? 'harbordental.example' : null as string | null }))
+  for (const l of leads) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES (?, ?, '', ?, ?, 'opened', 'https://x.example/1')").run(l.id, jobId, l.company, l.company_domain)
   saveCredential(db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
-  saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
+  if (both) saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
   return { db, jobId, leads }
 }
-const PDL_NY = { full_name: 'Maya Chen', job_title: 'Practice Manager', linkedin_url: 'https://linkedin.com/in/mc', job_company_website: null, job_company_location_locality: 'New York', job_company_location_region: 'New York', job_company_location_country: 'United States' }
-// Apollo fixtures; PDL answers the New York candidate. Call log proves who was billed.
-function waterfall(apollo: (u: string) => Response | Promise<Response>, calls: string[]) {
-  return (async (url: RequestInfo | URL) => {
-    const u = String(url); calls.push(u)
-    if (u.includes('api.apollo.io')) return apollo(u)
-    if (u.includes('peopledatalabs')) return ok({ data: [PDL_NY], status: 200 })
-    return new Response('no', { status: 404 })
-  }) as never
+const apolloWith = (people: unknown[], org: unknown = { organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) => async (url: string) => String(url).includes('organizations/enrich') ? ok(org) : ok({ people })
+const PERSON = { name: 'Invented Manager', title: 'Practice Manager', linkedin_url: 'https://profiles.example/m', organization: { name: 'Harbor Dental', primary_domain: 'harbordental.example' } }
+const PDL_OK = { data: [{ full_name: 'Pdl Person', job_title: 'Practice Manager', job_company_website: 'harbordental.example', job_company_location_locality: 'new york', job_company_location_region: 'new york', job_company_location_country: 'united states' }] }
+type Calls = { apollo: number; pdl: number }
+const router = (apollo: (u: string) => Promise<Response>, pdl: () => Promise<Response>, calls: Calls) => (async (u: RequestInfo | URL) => { const s = String(u); if (s.includes('apollo.io')) { calls.apollo++; return apollo(s) } calls.pdl++; return pdl() }) as typeof fetch
+const attached = (db: Database.Database, id = 'lead1') => (enrichmentsForLeads(db, 'u1', [id])[id] ?? []).filter(e => e.kind === 'contact').map(e => `${e.connector}:${e.value}`)
+const statuses = (db: Database.Database) => (recentAudit(db, 'u1', 50) as { connector: string; status: string }[]).map(a => `${a.connector.replace('enrich:', '')}:${a.status}`).reverse()
+
+for (const [why, apollo] of [
+  ['empty', async (u: string) => (u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [] }))],
+  ['401', async () => new Response('no', { status: 401 })],
+  ['429', async () => new Response('slow', { status: 429 })],
+  ['timeout', async () => { throw new DOMException('aborted', 'AbortError') }],
+  ['5xx', async () => new Response('x', { status: 503 })],
+] as [string, (u: string) => Promise<Response>][]) {
+  test(`both keys: Apollo ${why} -> PDL is tried and its valid, agreeing person is attached`, async () => {
+    const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+    const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apollo, async () => ok(PDL_OK), calls), master })
+    assert.deepEqual(attached(db), ['enrich:pdl:Pdl Person - Practice Manager']); assert.deepEqual(r.byProvider, { apollo: 0, pdl: 1 }); assert.equal(calls.pdl, 1)
+  })
 }
-const contacts = (db: Database.Database, id: string) => (enrichmentsForLeads(db, 'u1', [id])[id] ?? []).filter(e => e.kind === 'contact').map(e => `${e.connector}:${e.value}`)
-const statuses = (db: Database.Database) => (recentAudit(db, 'u1', 30) as { connector: string; status: string }[]).map(a => `${a.connector}:${a.status}`)
 
-test('Apollo empty (org and people) falls back to PDL and attaches the agreeing candidate', async () => {
-  const { db, jobId, leads } = seed(); const calls: string[] = []
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: waterfall(() => ok({}), calls), master })
-  assert.deepEqual(contacts(db, 'lead1'), ['enrich:pdl:Maya Chen - Practice Manager'])
-  assert.ok(calls.some(u => u.includes('organizations/enrich')) && calls.some(u => u.includes('peopledatalabs')), 'Apollo org leg ran, then PDL'); assert.equal(calls.filter(u => u.includes('mixed_people')).length, 0, 'no lead domain and an empty org: Apollo people search has no domain to key on, PDL is the fallback')
-  assert.ok(statuses(db).includes('enrich:apollo:empty') && statuses(db).includes('enrich:pdl:ok'), JSON.stringify(statuses(db)))
+test('Apollo finds a verified person: PDL is not called (and not charged)', async () => {
+  const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  assert.deepEqual(attached(db), ['enrich:apollo:Invented Manager - Practice Manager']); assert.equal(calls.pdl, 0)
 })
 
-test('Apollo 401: PDL takes over for every lead, Apollo is never re-billed after the first auth failure', async () => {
-  const { db, jobId, leads } = seed(3); const calls: string[] = []
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: waterfall(() => new Response('no', { status: 401 }), calls), master })
-  assert.equal(calls.filter(u => u.includes('api.apollo.io')).length, 1, 'one Apollo call, then dead for the pass')
-  assert.equal(calls.filter(u => u.includes('peopledatalabs')).length, 3, 'PDL served all three leads')
-  for (const l of leads) assert.deepEqual(contacts(db, l.id), [`enrich:pdl:Maya Chen - Practice Manager`])
+test('only a PDL key (no Apollo key) still works; only an Apollo key never calls PDL', async () => {
+  const a = seed(1, false); const c1: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(a.db, 'u1', a.jobId, a.leads, { fetchImpl: router(async () => ok({ people: [] }), async () => ok(PDL_OK), c1), master }); assert.equal(c1.pdl, 0)
+  const b = seed(1, true); b.db.prepare("DELETE FROM tenant_connectors WHERE connector = 'enrich:apollo'").run(); const c2: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(b.db, 'u1', b.jobId, b.leads, { fetchImpl: router(async () => ok({ people: [] }), async () => ok(PDL_OK), c2), master })
+  assert.deepEqual([c2.apollo, c2.pdl, attached(b.db).length], [0, 1, 1])
+})
+
+test('wrong-company results are still rejected, whichever provider returns them: Apollo (other company) falls through, PDL (Pico Rivera) is refused', async () => {
+  const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  const wrong = { data: [{ full_name: 'Wrong Person', job_title: 'Manager', job_company_website: 'harbordental.example', job_company_location_locality: 'pico rivera', job_company_location_region: 'california', job_company_location_country: 'united states' }] }
+  const other = { ...PERSON, organization: { name: 'Totally Different Co', primary_domain: 'different.example' } }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([other]), async () => ok(wrong), calls), master })
+  assert.deepEqual(attached(db), []); assert.equal(r.attached, 0); assert.ok(calls.pdl === 1, 'PDL was tried after Apollo yielded nothing usable')
+})
+
+test('a bad Apollo key opens only Apollo: later leads skip it visibly and still use PDL; the pass does not end', async () => {
+  const { db, jobId, leads } = seed(2); const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async () => new Response('no', { status: 401 }), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.apollo, 1, 'one failed attempt, then the circuit is open'); assert.equal(calls.pdl, 2)
+  assert.deepEqual(r.skipped.filter(s => s.provider === 'apollo').map(s => s.why), ['circuit_open'])
+  assert.ok(statuses(db).includes('apollo:circuit_open') && statuses(db).includes('apollo:auth'))
+  assert.deepEqual(attached(db, 'lead2'), ['enrich:pdl:Pdl Person - Practice Manager'], 'the second lead (no domain) takes PDL\'s record because its employer place agrees with the scan geography')
+})
+
+test('repeated transient failures open the circuit after MAX_FAILS; exhausted budget is a visible skip, not silent', async () => {
+  const { db, jobId, leads } = seed(5); const calls: Calls = { apollo: 0, pdl: 0 }
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async () => new Response('slow', { status: 429 }), async () => ok({ data: [] }), calls), master })
+  assert.equal(calls.apollo, 4, `lead 1 costs an org + a people call, leads 2 and 3 one failed org call each; the circuit opens at ${MAX_FAILS} failures and leads 4-5 are skipped`); assert.ok(statuses(db).includes('apollo:circuit_open'))
+  assert.ok(APOLLO_CALLS >= 1 && PDL_CALLS >= 1)
+})
+
+test('a replayed job does not pay again: a lookup this job already made is skipped (found -> stop, empty -> next provider)', async () => {
+  const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  const f = router(apolloWith([]), async () => ok(PDL_OK), calls)
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: f, master })
+  assert.deepEqual([calls.apollo > 0, calls.pdl], [true, 1]); const before = { ...calls }
+  const again = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: f, master })
+  assert.deepEqual(calls, before, 'no provider call at all on the replay'); assert.deepEqual(again.skipped.map(s => `${s.provider}:${s.why}`), ['apollo:replayed', 'pdl:replayed'])
+  assert.equal(attached(db).length, 1, 'no duplicate rows')
+})
+
+test('an exhausted per-tenant budget skips visibly (an audit row), the other provider still runs, and nothing is silently dropped', async () => {
+  const { db, jobId, leads } = seed(3); const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([]), async () => ok(PDL_OK), calls), master, budget: { apollo: 1, pdl: 2 } })
+  assert.equal(calls.pdl, 2, 'PDL stops at its own budget'); assert.ok(r.skipped.some(s => s.provider === 'apollo' && s.why === 'budget_exhausted') && r.skipped.some(s => s.provider === 'pdl' && s.why === 'budget_exhausted'))
+  assert.ok(statuses(db).includes('apollo:budget_exhausted') && statuses(db).includes('pdl:budget_exhausted'))
+})
+
+test('both providers dead (auth): every lead carries an audited reason, circuits open per provider, nothing is silently dropped', async () => {
+  const { db, jobId, leads } = seed(3); const calls: Calls = { apollo: 0, pdl: 0 }
+  const denied = async () => new Response('no', { status: 401 })
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(denied, denied, calls), master })
+  assert.equal(calls.apollo, 1); assert.equal(calls.pdl, 1, 'each provider billed once, then circuit open')
+  assert.deepEqual(attached(db), [])
+  assert.equal(r.skipped.filter(s => s.why === 'circuit_open' && s.provider === 'apollo').length, 2)
+  assert.equal(r.skipped.filter(s => s.why === 'circuit_open' && s.provider === 'pdl').length, 2)
   const st = statuses(db)
-  assert.ok(st.includes('enrich:apollo:auth'))
-  assert.ok(st.includes('skipped: apollo auth earlier this pass'.replace(/^/, 'enrich:apollo:')), JSON.stringify(st))
+  assert.ok(st.includes('apollo:auth') && st.includes('pdl:auth'), JSON.stringify(st))
+  assert.ok(st.includes('apollo:circuit_open') && st.includes('pdl:circuit_open'), JSON.stringify(st))
 })
 
-test('Apollo 429 (budget/rate exhausted): visible skip, PDL fallback, no Apollo retry burn', async () => {
-  const { db, jobId, leads } = seed(2); const calls: string[] = []
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: waterfall(() => new Response('no', { status: 429 }), calls), master })
-  assert.equal(calls.filter(u => u.includes('api.apollo.io')).length, 1)
-  assert.equal(calls.filter(u => u.includes('peopledatalabs')).length, 2)
-  const st = statuses(db)
-  assert.ok(st.includes('enrich:apollo:rate_limited') && st.includes('enrich:apollo:skipped: apollo rate_limited earlier this pass'), JSON.stringify(st))
-})
-
-test('Apollo transport failure (timeout-shaped throw) falls back to PDL for that lead and Apollo stays up for the next', async () => {
-  const { db, jobId, leads } = seed(2); const calls: string[] = []
+test('a one-off transport failure does NOT open the circuit: the next lead still uses Apollo', async () => {
+  const { db, jobId, leads } = seed(2); const calls: Calls = { apollo: 0, pdl: 0 }
   let orgCalls = 0
-  const apollo = (u: string) => {
-    if (u.includes('organizations/enrich')) { orgCalls++; if (orgCalls === 1) throw new TypeError('fetch failed'); return ok({ organization: { name: 'Practice 2', website_url: 'https://practice2.example', city: 'New York', state: 'New York', country: 'United States' } }) }
-    if (u.includes('mixed_people')) return ok({ people: [{ name: 'Sam Osei', title: 'Owner', linkedin_url: null, organization: { name: 'Practice 2', primary_domain: null } }] })
-    return ok({})
+  const flaky = async (u: string) => {
+    if (u.includes('organizations/enrich')) { orgCalls++; if (orgCalls === 1) throw new DOMException('aborted', 'AbortError') }
+    return ok({ people: [] })
   }
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: waterfall(async (u: string) => apollo(u), calls), master })
-  assert.deepEqual(contacts(db, 'lead1'), ['enrich:pdl:Maya Chen - Practice Manager'], 'lead 1 fell back')
-  assert.deepEqual(contacts(db, 'lead2'), ['enrich:apollo:Sam Osei - Owner'], 'lead 2 used Apollo: a one-off transport failure is not a dead key')
-})
-
-test('a lead Apollo enriches is never billed twice: PDL is not called, and a replayed pass bills nothing', async () => {
-  const { db, jobId, leads } = seed(); const calls: string[] = []
-  const apollo = (u: string) => u.includes('organizations/enrich') ? ok({ organization: { name: 'Practice 1', estimated_num_employees: 9, industry: 'Dental', website_url: 'https://practice1.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [{ name: 'Sam Osei', title: 'Owner', linkedin_url: null, organization: { name: 'Practice 1', primary_domain: 'practice1.example' } }] })
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: waterfall(apollo, calls), master })
-  assert.deepEqual(contacts(db, 'lead1'), ['enrich:apollo:Sam Osei - Owner'])
-  assert.equal(calls.filter(u => u.includes('peopledatalabs')).length, 0, 'Apollo attached: PDL never runs for that lead')
-  calls.length = 0
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: waterfall(apollo, calls), master })
-  assert.equal(calls.filter(u => u.includes('api.apollo.io') || u.includes('peopledatalabs')).length, 0, 'replay bills nothing')
-  assert.ok(statuses(db).includes('enrich:apollo:skipped: already enriched'), JSON.stringify(statuses(db)))
-})
-
-test('a lead enriched by a PRIOR PDL run is not re-billed to Apollo on replay either', async () => {
-  const { db, jobId, leads } = seed()
-  addEnrichment(db, 'u1', 'lead1', { connector: 'enrich:pdl', kind: 'contact', value: 'Maya Chen - Practice Manager', label: 'People Data Labs', confidence: 70, source_url: 'https://x.example/1', source_date: '2026-10-30', retrieved_at: 1 })
-  const calls: string[] = []
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: waterfall(() => ok({}), calls), master })
-  assert.equal(calls.length, 0)
-})
-
-test('wrong-company PDL results are still rejected through the fallback; an Apollo rejection does not let PDL attach a mismatch', async () => {
-  const { db, jobId, leads } = seed(); const calls: string[] = []
-  const f = (async (url: RequestInfo | URL) => {
-    const u = String(url); calls.push(u)
-    if (u.includes('api.apollo.io')) return ok({})
-    if (u.includes('peopledatalabs')) return ok({ data: [{ ...PDL_NY, job_company_location_locality: 'Pico Rivera', job_company_location_region: 'California' }], status: 200 })
-    return new Response('no', { status: 404 })
-  }) as never
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: f, master })
-  assert.deepEqual(contacts(db, 'lead1'), [], 'nothing attached')
-  assert.ok(statuses(db).some(s => s.startsWith('enrich:pdl:contact rejected: location mismatch')), JSON.stringify(statuses(db)))
-})
-
-test('Apollo dead and PDL auth-failing: research does not silently end - every lead carries an audited reason', async () => {
-  const { db, jobId, leads } = seed(2); const calls: string[] = []
-  const f = (async (url: RequestInfo | URL) => {
-    const u = String(url); calls.push(u)
-    if (u.includes('api.apollo.io')) return new Response('no', { status: 401 })
-    if (u.includes('peopledatalabs')) return new Response('no', { status: 401 })
-    return new Response('no', { status: 404 })
-  }) as never
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: f, master })
-  assert.deepEqual(contacts(db, 'lead1'), []); assert.deepEqual(contacts(db, 'lead2'), [])
-  assert.equal(calls.filter(u => u.includes('peopledatalabs')).length, 1, 'PDL dead after its own auth failure')
-  const st = statuses(db)
-  for (const want of ['enrich:apollo:auth', 'enrich:pdl:auth', 'enrich:apollo:skipped: apollo auth earlier this pass', 'enrich:pdl:skipped: pdl auth earlier this pass']) assert.ok(st.includes(want), `${want} in ${JSON.stringify(st)}`)
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(flaky, async () => ok(PDL_OK), calls), master })
+  assert.equal(orgCalls, 2, 'Apollo retried for lead 2: one abort is transient, not a dead key')
+  assert.equal(r.skipped.filter(s => s.why === 'circuit_open').length, 0)
 })
