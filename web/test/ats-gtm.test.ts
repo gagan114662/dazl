@@ -182,11 +182,11 @@ test('HTML link: a posting that SAYS brightloop.io while its company-website lin
   assert.deepEqual(domainsInText('<a href="brightloop.io/jobs">Apply</a> <a href="mailto:jobs@brightloop.io">mail</a> at brightloop.io', 'brightloop'), ['brightloop.io'], 'agreeing text and links stay one domain')
   const html = '<p>Join Brightloop at brightloop.io</p><a href="https://brightloop.com">Company website</a>'
   const gh = await atsGtmBoard('Brightloop', 'brightloop.io', route({ ...ghBoard, [`${GH}/jobs/1`]: { ...(ghBoard[`${GH}/jobs/1`] as object), content: html.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') } }), { now: NOW })
-  assert.deepEqual(gh, { hiring: null, contradictory: true })
+  assert.deepEqual(gh, { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false })
   const lever = await atsGtmBoard('Brightloop', 'brightloop.io', route({ 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, description: html }] }), { now: NOW })
-  assert.deepEqual(lever, { hiring: null, contradictory: true })
+  assert.deepEqual(lever, { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false })
   const ashby = await atsGtmBoard('Brightloop', 'brightloop.io', route({ 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionHtml: html }] } }), { now: NOW })
-  assert.deepEqual(ashby, { hiring: null, contradictory: true })
+  assert.deepEqual(ashby, { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false })
 })
 
 test('plain text AND html both supplied: the plain text says brightloop.io, the HTML link says brightloop.com -> contradictory on Lever and Ashby (and Greenhouse content+description), through real enrichment', async () => {
@@ -195,7 +195,7 @@ test('plain text AND html both supplied: the plain text says brightloop.io, the 
   const ashby = { 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: plain, descriptionHtml: html }] } }
   const green = gh('&lt;p&gt;Apply at brightloop.io&lt;/p&gt;'); (green[`${GH}/jobs/1`] as Record<string, unknown>).description = html
   for (const [name, board] of [['lever', lever], ['ashby', ashby], ['greenhouse', green]] as const) {
-    assert.deepEqual(await atsGtmBoard('Brightloop', 'brightloop.io', route(board), { now: NOW }), { hiring: null, contradictory: true }, name)
+    assert.deepEqual(await atsGtmBoard('Brightloop', 'brightloop.io', route(board), { now: NOW }), { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false }, name)
     for (const basis of ['evidence_own_domain', 'name_probe', null]) {
       const { db, jobId } = leadDb('brightloop.io', basis); const r = await enrich(db, jobId, board)
       assert.deepEqual(r.gtm, [], `${name}/${basis}: a contradictory board writes nothing`); assert.equal(r.events, 0)
@@ -531,4 +531,39 @@ test('#533 breadth: full-listing audit rows skip titles already covered by dated
   assert.ok(!cov.value.includes('TRUNCATED'))
   const trunc = fullListingCoverageRow('greenhouse', 'https://boards.greenhouse.io/brightloop', 60, Array.from({ length: 50 }, (_, i) => `Title ${i}`), 0, 50, NOW / 1000, '2026-10-28')
   assert.match(trunc.value, /sample TRUNCATED at 50 - a title beyond the sample is not disproved/)
+})
+
+test('#533 check-history: the requested-role pass records one check:ats-board row per completed check; failure and abort are distinct', async () => {
+  const setup = () => {
+    const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+    const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+    db.prepare("UPDATE scan_jobs SET status='running',query=?,icp=? WHERE id=?").run('Companies hiring a CRM administrator', JSON.stringify({ signals: ['hiring a CRM administrator'] }), jobId)
+    db.prepare("INSERT INTO leads (id,scan_job_id,company,company_domain,signal,source_url) VALUES ('lead1',?,'Brightloop','brightloop.io','hiring','https://news.example/1')").run(jobId)
+    db.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,confidence,source_url,source_date,retrieved_at) VALUES ('D1','lead1','u1','sitecrawl','domain','brightloop.io|evidence_own_domain',NULL,'https://brightloop.io/','2026-10-28',1)").run()
+    return { db, jobId }
+  }
+  const rows = (db: Database.Database) => db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number }[]
+  const realNow = Date.now; Date.now = () => NOW
+  try {
+    // bound: CRM Admin matches and is dated fresh
+    const a = setup()
+    const jobs = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: i === 5 ? 'CRM Admin' : 'Account Executive' }))
+    const m: Record<string, unknown> = { [`${GH}/jobs`]: { jobs } }
+    for (const j of jobs) m[`${GH}/jobs/${j.id}`] = { ...j, first_published: d(20), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${j.id}`, content: 'https://brightloop.io', location: { name: 'London' } }
+    await enrichJobSignals(a.db, 'u1', a.jobId, { fetchImpl: route(m), creditEnrichment: false })
+    const ra = rows(a.db)
+    assert.equal(ra.length, 1); assert.equal(ra[0].lookup, 'lead1 (role-match)'); assert.equal(ra[0].status, 'checked_bound'); assert.equal(ra[0].results, 2, 'pre-cap DEDUPED count: 5 identical AE titles collapse, CRM Admin + AE = 2')
+    a.db.close()
+    // fetch failure: every board fetch throws - honest failure row, no count
+    const b = setup()
+    await enrichJobSignals(b.db, 'u1', b.jobId, { fetchImpl: (async () => { throw new Error('network down') }) as never, creditEnrichment: false })
+    const rb = rows(b.db)
+    assert.equal(rb.length, 1); assert.equal(rb[0].status, 'fetch_failed'); assert.equal(rb[0].results, -1)
+    b.db.close()
+    // aborted attempt (post-finish budget / stale attempt): NO row - no observation exists to record
+    const c0 = setup()
+    await enrichJobSignals(c0.db, 'u1', c0.jobId, { fetchImpl: (async () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e }) as never, creditEnrichment: false })
+    assert.equal(rows(c0.db).length, 0)
+    c0.db.close()
+  } finally { Date.now = realNow }
 })

@@ -197,19 +197,40 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         continue
       }
       if (l.company_domain) lookups++
-      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => null) : null
+      let boardFetchFailed = false
+      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch((e: unknown) => { boardFetchFailed = !(typeof e === 'object' && e !== null && (e as { name?: string }).name === 'AbortError'); return null }) : null
       const g = gbz?.hiring ?? null
       // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
       // by company name (a probe, a link label) could belong to a larger same-name company: its roles are not this lead's hiring.
       // The board is bound to the lead's domain when the cited page is hosted on it / the user confirmed it, or when the board's OWN postings name that same
       // domain (a company-site address or link inside the posting text).
       const heuristic = !!g && g.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(g.domain && l.company_domain && g.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
+      // #533 check-history: ONE append-only row per lead per completed board check, inline in the live-fetch path (never from a
+      // cached/replayed payload, so created_at is seconds after the real fetch and no replay can masquerade as a fresh check). Never
+      // attempted (no domain, lookup cap, quote proof) = NO row. results is the exact pre-cap deduped listing count read from the
+      // actual response; -1 when no count is honestly attributable (failure, unbound board, contradiction). A genuinely re-executed
+      // fetch (new attempt, new scan) truthfully appends a second row; evidence rows stay immutable and are never rewritten.
+      if (l.company_domain) {
+        const capped = (x: { listedCountAll: number; allListed: string[] }) => x.listedCountAll > x.allListed.length ? '_partial_capped' : ''
+        let row: { status: string; results: number } | null = null
+        if (!gbz) row = boardFetchFailed ? { status: 'fetch_failed', results: -1 } : null
+        else if (gbz.contradictory) row = { status: 'checked_rejected', results: -1 }
+        else if (g) row = g.via === 'domain' && !heuristic ? { status: `checked_bound${capped(g)}`, results: g.listedCountAll } : { status: 'checked_unbound', results: -1 }
+        else if (gbz.checked) {
+          const cc = gbz.checked
+          const heuristicC = cc.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(cc.domain && l.company_domain && cc.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
+          row = cc.via === 'domain' && !heuristicC ? { status: `checked_zero_match${capped(cc)}`, results: cc.listedCountAll } : { status: 'checked_unbound', results: -1 }
+        } else if (gbz.fetchAborted) row = null // attempt cut off mid-check: no observation exists, record nothing
+        else if (gbz.fetchFailed) row = { status: 'fetch_failed', results: -1 } // a listing fetch errored: absence unknown
+        else row = { status: 'no_board_found', results: -1 } // every probe answered cleanly: no board on any provider
+        if (row) audit(db, { tenantId: job.user_id, connector: 'check:ats-board', jobId: job.id, lookup: `${l.id} (gate)`.slice(0, 200), status: row.status, results: row.results })
+      }
       if (g && g.via === 'domain' && !heuristic) {
         const p = g.postings[0]
         const match = matchedHiringRole(p.title, roles)
         const line = roles.length ? `Hiring for ${p.title} (requested: ${match!.term}), posted ${p.date}. This may relate to your offer; buying need isn't verified. ` : `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
         setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-        addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
+        addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (g.postings.map(x => x.title).slice(0, 3).join('; ') + (g.postings.length > 3 ? ` (+${g.postings.length - 3} more)` : '')).slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
         const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
         for (const e of withRepostHistory(postingEvidence(g, now, null), g.board, existingEvidence)) addEnrichment(db, job.user_id, l.id, { ...e, label: roles.length ? `Requested role: ${matchedHiringRole(e.value.split(' - posted ')[0], roles)!.term}; ${e.label}`.slice(0, 200) : e.label })
         { const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)

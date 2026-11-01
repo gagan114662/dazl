@@ -440,3 +440,38 @@ test('#533 breadth: a stale requested-role title is covered by the zero-match au
   assert.equal(cov.length, 1); assert.match(cov[0].value, /2 all listed titles, 2 sampled: 1 already covered by dated posting or filtered audit rows \+ 1 more as audit rows/)
   db.close()
 })
+
+test('#533 check-history: each completed board check leaves exactly one check:ats-board row with the real outcome; never-attempted leaves none', async () => {
+  // bound: the default board has one fresh dated AE posting
+  const a = seed()
+  await applySalesHiringGate(a.db, a.job, serve(board()), { now: NOW })
+  let rows = a.db.prepare("SELECT lookup, status, results, scan_job_id FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_bound'); assert.equal(rows[0].results, 1); assert.equal(rows[0].lookup, 'L1 (gate)'); assert.equal(rows[0].scan_job_id, a.job.id)
+  a.db.close()
+  // zero-match: the requested role is absent from the sampled listing
+  const b = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  await applySalesHiringGate(b.db, b.job, serve(board()), { now: NOW })
+  rows = b.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match'); assert.equal(rows[0].results, 1)
+  b.db.close()
+  // fetch failure: the board fetch itself threw (network); an honest failure row, no count claimed
+  const c = seed()
+  const boom = (async () => { throw new Error('network down') }) as never
+  await applySalesHiringGate(c.db, c.job, boom, { now: NOW })
+  rows = c.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'fetch_failed'); assert.equal(rows[0].results, -1)
+  c.db.close()
+  // never attempted (no company domain): NO row - absence of a row means never checked, never 'checked and absent'
+  const d0 = seed({ domain: null })
+  await applySalesHiringGate(d0.db, d0.job, serve(board()), { now: NOW })
+  rows = d0.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 0)
+  d0.db.close()
+  // capped: 60 listed titles, none matching - the sample cap is explicit in the status, the pre-cap count is the true fetched count
+  const e0 = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const many = { [`${GH}/jobs`]: { jobs: Array.from({ length: 60 }, (_, i) => ({ id: i + 1, title: `Engineer ${i}` })) } }
+  await applySalesHiringGate(e0.db, e0.job, serve(many), { now: NOW })
+  rows = e0.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match_partial_capped'); assert.equal(rows[0].results, 60)
+  e0.db.close()
+})

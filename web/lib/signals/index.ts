@@ -189,7 +189,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       // A board's own NAME (even token-identical to the company) is a claim by the board, not proof of ownership: only an established domain, or the board's
       // postings all naming the lead's own domain, binds it. Otherwise: Unconfirmed, no confidence, nothing written to the company's history.
       const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
-      const titles = g.postings.map(p => p.title).slice(0, 3).join('; ')
+      const titles = g.postings.map(p => p.title).slice(0, 3).join('; ') + (g.postings.length > 3 ? ` (+${g.postings.length - 3} more)` : '')
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       for (const e of withRepostHistory(postingEvidence(g, now, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
       { const auditRows = withRepostHistory(boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)
@@ -205,7 +205,21 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
     }
     if (requestedRoles.length) {
-      const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false, checked: null }))
+      const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false, checked: null, fetchFailed: true, fetchAborted: false }))
+      // #533 check-history: one append-only row per completed requested-role board check, inline in the live-fetch path only;
+      // an aborted attempt writes nothing (no observation), a real failure says fetch_failed, results is the exact pre-cap
+      // listing count from the actual response or -1 when no count is honestly attributable.
+      if (!specific.fetchAborted) {
+        const sc = specific.checked
+        const boundS = !!specific.hiring && !specific.contradictory && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!specific.hiring.domain && specific.hiring.domain === lead.company_domain))
+        const boundSC = !!sc && sc.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!sc.domain && !!lead.company_domain && sc.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')))
+        const row = specific.contradictory ? { status: 'checked_rejected', results: -1 }
+          : specific.hiring ? (boundS ? { status: `checked_bound${specific.hiring.listedCountAll > specific.hiring.allListed.length ? '_partial_capped' : ''}`, results: specific.hiring.listedCountAll } : { status: 'checked_unbound', results: -1 })
+          : sc ? (boundSC ? { status: `checked_zero_match${sc.listedCountAll > sc.allListed.length ? '_partial_capped' : ''}`, results: sc.listedCountAll } : { status: 'checked_unbound', results: -1 })
+          : specific.fetchFailed ? { status: 'fetch_failed', results: -1 } // a listing fetch errored: absence unknown
+          : { status: 'no_board_found', results: -1 } // every probe answered cleanly: no board on any provider
+        audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (role-match)`.slice(0, 200), status: row.status, results: row.results })
+      }
       const matched = specific.hiring
       const bound = matched && !specific.contradictory && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!matched.domain && matched.domain === lead.company_domain))
       if (matched && bound) {
