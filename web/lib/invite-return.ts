@@ -21,17 +21,21 @@ export function afterSignIn(): string {
   return claimIntent() !== null ? '/preview/claim' : invite ?? '/app'
 }
 
-// Keep a preview-claim token for the auth round trip (#416). Called only from the preview page itself.
-export function keepClaim(t: string): void {
+// Keep a preview-claim token (and what it is for) for the auth round trip (#416). Called only from the preview page.
+export function keepClaim(t: string, business: string): void {
   if (!CLAIM_TOKEN.test(t)) return
-  try { sessionStorage.setItem(CLAIM_KEY, t) } catch { /* storage blocked: the prospect opens the link again */ }
+  try { sessionStorage.setItem(CLAIM_KEY, JSON.stringify({ t, b: business.slice(0, 150) })) } catch { /* storage blocked: the prospect opens the link again */ }
 }
 
 // The claim this tab is carrying, kept (not consumed) so a failed sign-in can be retried; the claim page clears it.
-export function claimIntent(): string | null {
-  let t: string | null = null
-  try { t = sessionStorage.getItem(CLAIM_KEY) } catch { /* storage blocked */ }
-  return t && CLAIM_TOKEN.test(t) ? t : null
+export function claimIntent(): { token: string; business: string } | null {
+  let raw: string | null = null
+  try { raw = sessionStorage.getItem(CLAIM_KEY) } catch { /* storage blocked */ }
+  if (!raw) return null
+  try {
+    const v = JSON.parse(raw) as { t?: unknown; b?: unknown }
+    return typeof v.t === 'string' && CLAIM_TOKEN.test(v.t) ? { token: v.t, business: typeof v.b === 'string' ? v.b : '' } : null
+  } catch { return null }
 }
 
 export function clearClaim(): void {

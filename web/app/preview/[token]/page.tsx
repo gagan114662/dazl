@@ -41,7 +41,7 @@ export default async function PreviewPage({ params, searchParams }: { params: Pr
         {e === 'unverified' && <p role="alert">Verify your email address, then open this link again to claim the preview.</p>}
         {(e === 'unknown' || e === 'expired') && <p role="alert">This preview is no longer available.</p>}
         {e === 'too_many' && <p role="alert">Too many attempts. Try again in a few minutes.</p>}
-        <PreviewCta token={token} />
+        <PreviewCta token={token} business={c.business} />
       </>}
     </main>
   )

@@ -56,12 +56,20 @@ export type IssueResult =
 // invented success ever gets a link. The snapshot stored is exactly what will be served, spend stripped.
 export async function issuePreviewClaim(
   db: Db, master: Buffer,
-  input: { runId: string; sellerTenantId: string; recipientEmail: string; business: string; inferredOffer: { text: string; sourceUrl: string } | null; spendUsd: number | null },
+  input: { runId: string; sellerTenantId: string; recipientEmail: string; business: string; spendUsd?: number | null },
   now = Date.now(),
 ): Promise<IssueResult | null> {
   const recipient = validateEmail(input.recipientEmail)
   if (!recipient) return null
-  const proofInput = await loadProofInput(db, input.sellerTenantId, input.runId, { inferredOffer: input.inferredOffer, spendUsd: input.spendUsd })
+  // The offer comes from the run's own record, never from the issuer's keyboard: the reviewed offer when the play
+  // set one, else the run's seller line; the source is the public page URL that line carries. No URL, no offer:
+  // the builder holds instead of showing an invented one.
+  const run = await db.get<{ seller: string | null; offer: string | null }>('SELECT seller, offer FROM scan_jobs WHERE id = ? AND user_id = ?', [input.runId, input.sellerTenantId])
+  if (!run) return null
+  const sourceUrl = (run.seller ?? '').match(/https?:\/\/\S+/)?.[0] ?? null
+  const text = (run.offer ?? (run.seller ?? '').replace(/https?:\/\/\S+/, '').replace(/\s+-\s*$/, '').trim()) || null
+  const inferredOffer = text && sourceUrl ? { text, sourceUrl } : null
+  const proofInput = await loadProofInput(db, input.sellerTenantId, input.runId, { inferredOffer, spendUsd: input.spendUsd ?? null })
   if (!proofInput) return null
   const proof: ProofPreview = buildProofPreview(proofInput, now)
   if (proof.status !== 'ready') return { status: 'hold', reason: proof.reason }

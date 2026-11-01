@@ -19,6 +19,7 @@ function setup() {
   const jobId = createJob(h, 'seller1', { business_name: 'Seller Co', industry: 'x', location: 'y' })
   const day = new Date(NOW - 10 * 86400_000).toISOString().slice(0, 10)
   h.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  h.prepare("UPDATE scan_jobs SET seller = ? WHERE id = ?").run(`${OFFER.text} - ${OFFER.sourceUrl}`, jobId)
   return { h, db, jobId, day }
 }
 const lead = (h: Database.Database, jobId: string, id: string, day: string) => h.prepare(
@@ -29,7 +30,7 @@ const user = (h: Database.Database, id: string, email: string, verified: boolean
   h.prepare('INSERT INTO users (id, email, name, business_name, password_hash, salt, created_at, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .run(id, email, 'P', 'B', 'h', 's', NOW, verified ? NOW : null)
 
-const ISSUE = (jobId: string, email = 'Prospect@Clinic.test') => ({ runId: jobId, sellerTenantId: 'seller1', recipientEmail: email, business: 'Clinic Soft', inferredOffer: OFFER, spendUsd: 0.42 })
+const ISSUE = (jobId: string, email = 'Prospect@Clinic.test') => ({ runId: jobId, sellerTenantId: 'seller1', recipientEmail: email, business: 'Clinic Soft' })
 
 test('issue: only a ready preview gets a claim; the stored snapshot is the stripped artifact (no spend, no contacts)', async () => {
   const { h, db, jobId, day } = setup()
