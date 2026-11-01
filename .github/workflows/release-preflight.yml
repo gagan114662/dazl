@@ -1,10 +1,12 @@
 name: release-preflight
 on:
   pull_request:
-    paths: ['web/**', 'ops/**', '.github/workflows/release-preflight.yml']
+    paths: ['web/**', 'ops/**', '.github/workflows/release-preflight.yml', '.github/workflows/release-gate.yml']
   push:
     branches: [main]
-    paths: ['web/**', 'ops/**', '.github/workflows/release-preflight.yml']
+    paths: ['web/**', 'ops/**', '.github/workflows/release-gate.yml']
+  # Same exact-SHA coverage as web-ci: dispatchable at any ref.
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
