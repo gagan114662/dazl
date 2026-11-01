@@ -72,6 +72,16 @@ test('the start route sets a host-only short claim intent from a validated row, 
   assert.equal(new URL(bad.headers.get('location')!).pathname.startsWith('/preview/'), true, 'unknown token never reaches Google')
   const malformed = await previewGoogle.GET(req('https://app.test/api/preview/junk/google'), { params: Promise.resolve({ token: 'junk' }) })
   assert.equal(new URL(malformed.headers.get('location')!).pathname, '/sign-in')
+  // 'GET /api/preview/[token]/google': an EXPIRED claim never reaches Google either - the start route reads the
+  // claim row fresh and only a live one sets the intent cookies (public-page expiry is covered separately).
+  const rx = await issueFor('expired@example.test')
+  const snap = JSON.parse((h.prepare('SELECT snapshot FROM preview_claims WHERE id = ?').get(rx.id) as { snapshot: string }).snapshot) as { expiresAt: number }
+  snap.expiresAt = NOW - 1000
+  h.prepare('UPDATE preview_claims SET expires_at = ?, snapshot = ? WHERE id = ?').run(NOW - 1000, JSON.stringify(snap), rx.id)
+  assert.equal((await readPublicClaim(sqliteDb(h), MASTER, rx.token)).status, 'expired', 'fixture: the claim reads expired')
+  const ex = await previewGoogle.GET(req(`https://app.test/api/preview/${rx.token}/google`), { params: Promise.resolve({ token: rx.token }) })
+  assert.equal(new URL(ex.headers.get('location')!).pathname, `/preview/${rx.token}`, 'expired claim redirects to the public page, never to Google')
+  assert.ok(!ex.headers.getSetCookie().some(c => /^dazl_claim=[a-f0-9]/.test(c)), 'no claim intent cookie from an expired claim')
   const r = await previewGoogle.GET(req(`https://app.test/api/preview/${r0.token}/google`), { params: Promise.resolve({ token: r0.token }) })
   assert.equal(r.status, 307)
   assert.equal(new URL(r.headers.get('location')!).pathname, '/api/auth/google', 'server-chosen destination, never an input URL')
