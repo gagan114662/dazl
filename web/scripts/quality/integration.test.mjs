@@ -21,6 +21,7 @@ test('actual git gate: clean/shift/delete pass; substitution/rename/add/parse/mi
     await mkdir(path.join(cwd, 'scripts'), { recursive: true });
     await cp(path.join(web, 'scripts/quality'), path.join(cwd, 'scripts/quality'), { recursive: true });
     await cp(path.join(web, 'eslint.config.mjs'), path.join(cwd, 'eslint.config.mjs'));
+    await cp(path.join(web, 'package-lock.json'), path.join(cwd, 'package-lock.json'));
     await symlink(path.join(web, 'node_modules'), path.join(cwd, 'node_modules'), 'dir');
     await writeFile(path.join(root, '.gitignore'), 'node_modules\n');
     git('init', '-q');
