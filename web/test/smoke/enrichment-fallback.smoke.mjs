@@ -36,6 +36,13 @@ try {
   browser = await chromium.launch()
   const ctx = await newContext(browser, srv)
   const page = await ctx.newPage()
+  page.on('response', async r => {
+    if (!r.url().includes('/api/settings/enrichment')) return
+    const body = await r.text().catch(() => '?')
+    console.log(`[enrichment-api] ${r.request().method()} ${r.status()} ${body.slice(0, 300)}`)
+  })
+  page.on('console', m => { if (m.type() === 'error') console.log(`[page-console-error] ${m.text().slice(0, 300)}`) })
+  page.on('pageerror', e => console.log(`[pageerror] ${String(e).slice(0, 300)}`))
   await page.goto(`${srv.base}/app/settings`)
   await page.getByText('Enrichment (bring your own key)', { exact: true }).waitFor()
 
@@ -47,7 +54,13 @@ try {
   // Save both keys through the real UI (values are invented; the net fence blocks any real provider call).
   await card.getByPlaceholder('Paste your Apollo.io API key').fill('smoke-apollo-key-0000000000000000')
   await card.getByRole('button', { name: 'Save', exact: true }).first().click() // both slots render Save until Apollo shows Connected; PDL's is unique after
-  await card.getByText(/Connected \(key ending 0000\)/).first().waitFor()
+  try {
+    await card.getByText(/Connected \(key ending 0000\)/).first().waitFor()
+  } catch (e) {
+    const p = path.join(out, 'first-save-failed.png'); await page.screenshot({ path: p, fullPage: true }); shots.push(p)
+    console.log(`[first-save-failed] card text at timeout: ${(await card.textContent())?.slice(0, 400)}`)
+    throw e
+  }
   await card.getByPlaceholder('Paste your People Data Labs API key').fill('smoke-pdl-key-00000000000000000000')
   await card.getByRole('button', { name: 'Save', exact: true }).click()
   await card.getByText(/Connected \(key ending 0000\)/).nth(1).waitFor()
