@@ -147,8 +147,13 @@ test('Stripe webhook events on Postgres: the same, with the SQLite handle trappe
   const pg = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 5 })
   try {
     await runPgMigrations(pg.pool)
-    setScanDb(null as unknown as Database.Database)
     setDb(pg)
+    // The webhook's #417 conversion step is on the app's SQLite runtime store (lib/db/pg-port-status.ts records
+    // it): give the route a schema'd, empty SQLite store so the billing path under test stays Postgres.
+    const lite = new Database(':memory:')
+    const { migrateAllSqlite } = await import('../../lib/db/sqlite-migrations.ts')
+    migrateAllSqlite(lite)
+    setScanDb(lite)
     await scenario('pg')
   } finally { await pg.close(); await s.drop() }
 })

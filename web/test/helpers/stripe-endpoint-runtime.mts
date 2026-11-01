@@ -10,7 +10,8 @@ import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { NextRequest } from 'next/server'
 import Database from 'better-sqlite3'
-import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setScanDb, setUser, getScanDb } from './tenant-route-db.ts'
+import { migrateLifecycle } from '../../lib/outreach/lifecycle.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
 process.env.STRIPE_SECRET_KEY = 'sk_test_fixture'
@@ -117,6 +118,49 @@ async function scenario(engine: string) {
   assert.deepEqual(await deliver(stranger), { status: 200, result: 'duplicate' }, 'its replay is a no-op too')
   await bUntouched('unknown tenant')
   assert.deepEqual(await view(B.TENANT), PRO('active'))
+
+  // 7. #417 conversion on payment: the identity is the ACCOUNT bound to the checkout (client_reference_id),
+  // never the buyer-typed Stripe email. A verified account email cancels its queued acquisition work now; an
+  // unverified one queues a durable pending conversion; a store failure answers 503 and the Stripe replay
+  // (a 'duplicate' that still reaches the conversion block) completes it. Lifecycle rows live on the app's
+  // SQLite runtime store (getScanDb); billing state above stays on the engine under test.
+  const scan = getScanDb()
+  const C = { TENANT: 'c'.repeat(28) + id(), CUSTOMER: 'cus_C' + id(), SUBSCRIPTION: 'sub_C' + id() }
+  scan.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'c-owner@example.test', 'x', 'y', 100)").run(C.TENANT)
+  scan.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('mc1', ?, 'lc1', 'c-owner@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)").run(C.TENANT)
+  scan.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('mc2', ?, 'lc2', 'bystander@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)").run(C.TENANT)
+  const cEvent = fixture('checkout.session.completed', C, 'evt_c_co_' + id())
+    .replace('"customer":', '"customer_details": { "email": "bystander@example.test" }, "customer":') // buyer-typed email names a bystander
+  assert.deepEqual(await deliver(cEvent), { status: 200, result: 'applied' })
+  assert.equal((scan.prepare("SELECT status FROM outreach_messages WHERE id = 'mc1'").get() as { status: string }).status, 'skipped', 'verified paying account: its queued work stops')
+  assert.equal((scan.prepare("SELECT status, error FROM outreach_messages WHERE id = 'mc1'").get() as { error: string }).error, 'converted_payment')
+  assert.equal((scan.prepare("SELECT status FROM outreach_messages WHERE id = 'mc2'").get() as { status: string }).status, 'draft', 'the buyer-typed Stripe email is never used: the bystander keeps their queued work')
+  assert.equal(scan.prepare("SELECT 1 AS x FROM lifecycle_events WHERE kind = 'payment' AND email = 'c-owner@example.test' AND activated_at IS NOT NULL").get() !== undefined, true)
+
+  // Unverified account email: nothing cancels; a durable pending conversion waits for verification.
+  const D = { TENANT: 'd'.repeat(28) + id(), CUSTOMER: 'cus_D' + id(), SUBSCRIPTION: 'sub_D' + id() }
+  scan.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'd-owner@example.test', 'x', 'y', NULL)").run(D.TENANT)
+  scan.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('md1', ?, 'ld1', 'd-owner@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)").run(D.TENANT)
+  assert.deepEqual(await deliver(fixture('checkout.session.completed', D, 'evt_d_co_' + id())), { status: 200, result: 'applied' })
+  assert.equal((scan.prepare("SELECT status FROM outreach_messages WHERE id = 'md1'").get() as { status: string }).status, 'draft', 'unverified account: nothing canceled')
+  assert.equal(scan.prepare("SELECT 1 AS x FROM lifecycle_events WHERE kind = 'payment' AND email = 'd-owner@example.test' AND activated_at IS NULL").get() !== undefined, true, 'a durable pending conversion waits for verification')
+
+  // Store failure on the conversion write: 503 (Stripe will retry), the plan change already applied; the replay
+  // arrives as 'duplicate', still reaches the conversion block, and completes it exactly once.
+  const E = { TENANT: 'e'.repeat(28) + id(), CUSTOMER: 'cus_E' + id(), SUBSCRIPTION: 'sub_E' + id() }
+  scan.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'e-owner@example.test', 'x', 'y', 100)").run(E.TENANT)
+  scan.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('me1', ?, 'le1', 'e-owner@example.test', 'hi', 'bodybodybodybodybodybody', 'draft', 'warmup_manual', 1800000100)").run(E.TENANT)
+  scan.exec("CREATE TRIGGER fail_lifecycle BEFORE INSERT ON lifecycle_events BEGIN SELECT RAISE(ABORT, 'injected store failure'); END")
+  const eEvent = fixture('checkout.session.completed', E, 'evt_e_co_' + id())
+  const failed = await deliver(eEvent)
+  assert.equal(failed.status, 503, 'conversion store failure answers 503 so Stripe retries')
+  assert.equal((scan.prepare("SELECT status FROM outreach_messages WHERE id = 'me1'").get() as { status: string }).status, 'draft', 'no half-applied conversion')
+  scan.exec('DROP TRIGGER fail_lifecycle')
+  migrateLifecycle(scan)
+  assert.deepEqual(await deliver(eEvent), { status: 200, result: 'duplicate' }, 'the replayed event reaches the conversion block again')
+  assert.equal((scan.prepare("SELECT status FROM outreach_messages WHERE id = 'me1'").get() as { status: string }).status, 'skipped', 'the recovered conversion cancels the queued work')
+  assert.deepEqual(await deliver(eEvent), { status: 200, result: 'duplicate' }, 'further replays stay no-ops')
+
   console.log('STRIPE_ENDPOINT', engine)
 }
 
@@ -131,8 +175,13 @@ test('Stripe through /api/stripe on Postgres, the SQLite handle trapped', { skip
   const pg = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 3 })
   try {
     await runPgMigrations(pg.pool)
-    setScanDb(null as unknown as Database.Database)
     setDb(pg)
+    // The webhook's #417 conversion step is on the app's SQLite runtime store (lib/db/pg-port-status.ts records
+    // it): give the route a schema'd, empty SQLite store so the billing path under test stays Postgres.
+    const lite = new Database(':memory:')
+    const { migrateAllSqlite } = await import('../../lib/db/sqlite-migrations.ts')
+    migrateAllSqlite(lite)
+    setScanDb(lite)
     await scenario('pg')
   } finally { await pg.close(); await s.drop() }
 })

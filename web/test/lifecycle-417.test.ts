@@ -1,6 +1,8 @@
-// #417: a prospect's signup/payment stops queued acquisition work for their EXACT email - atomically,
+// #417: a prospect's VERIFIED signup/payment stops queued acquisition work for their EXACT email - atomically,
 // idempotently, with a terminal reason and attribution preserved - and future cold plays never pick them up.
-// Ambiguous identity (same company, different email) matches nothing. No sends: fixtures + stubbed transport.
+// An UNVERIFIED identity queues a durable pending event: it cancels nothing and excludes nothing until
+// ownership is proven (verification/reset link, Google sign-in). Ambiguous identity matches nothing.
+// No sends: fixtures + stubbed transport.
 import { seedOffers } from './helpers/seed-offer.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -12,7 +14,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateAutopilot, runAutopilot, enable, getState, ATTESTATIONS, CONSENT_VERSION } from '../lib/outreach/autopilot.ts'
 import { migrateSequences } from '../lib/outreach/sequences.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
-import { recordLifecycleEvent, conversionEventFor } from '../lib/outreach/lifecycle.ts'
+import { recordLifecycleEvent, queuePendingLifecycle, activateLifecycleFor, paymentAccountFor, conversionEventFor } from '../lib/outreach/lifecycle.ts'
 import { startOAuth, completeOAuth } from '../lib/gmail/oauth.ts'
 import { saveSettings, type Deps } from '../lib/outreach/service.ts'
 
@@ -85,7 +87,8 @@ test('ambiguous identity stays unmatched: a same-company signup with a different
   assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get('m9') as { status: string }).status, 'draft')
 })
 
-test('a converted prospect is never an autopilot candidate again - by own contact or by crawled published email', async () => {
+// An autopilot-enabled tenant past warmup, with a send-recording stub. Returns the pieces the tests assert on.
+async function autopilotTenant() {
   const db = base()
   const master = randomBytes(32) // one key: the send path decrypts what completeOAuth encrypted
   const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
@@ -96,6 +99,13 @@ test('a converted prospect is never an autopilot candidate again - by own contac
   // Past warmup.
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('w1','A','x1','o1@z.example','s',?,'sent',1,1)").run(BODY)
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('w2','A','x2','o2@z.example','s',?,'sent',2,2)").run(BODY)
+  const sent: string[] = []
+  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: (async (u: string) => String(u).includes('token') ? json({ access_token: 'at' }) : json({}, 404)) as unknown as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never }
+  return { db, sent, d }
+}
+
+test('a converted prospect is never an autopilot candidate again - by own contact or by crawled published email', async () => {
+  const { db, sent, d } = await autopilotTenant()
   // Converted by own contact; converted via crawled email; and one still-cold prospect.
   mkLead(db, 'A', 'buyer@corp.example')
   const crawl = mkLead(db, 'A', null)
@@ -105,8 +115,6 @@ test('a converted prospect is never an autopilot candidate again - by own contac
   recordLifecycleEvent(db, 'payment', 'buyer@corp.example', 'tenant-new', NOW)
   recordLifecycleEvent(db, 'signup', 'sales@corp2.example', 'tenant-new-2', NOW)
 
-  const sent: string[] = []
-  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: (async (u: string) => String(u).includes('token') ? json({ access_token: 'at' }) : json({}, 404)) as unknown as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never }
   const r = await runAutopilot(db, 'A', 'Acme', d)
   const recipients = (db.prepare("SELECT to_email FROM outreach_messages WHERE id NOT IN ('w1','w2')").all() as { to_email: string }[]).map(x => x.to_email)
   assert.ok(!recipients.includes('buyer@corp.example'), 'converted by own contact: excluded')
@@ -114,4 +122,68 @@ test('a converted prospect is never an autopilot candidate again - by own contac
   assert.ok(recipients.includes('cold@prospect.example'), 'the still-cold prospect is unaffected')
   assert.equal(sent.length, 1)
   void r
+})
+
+test('an unverified signup queues a durable PENDING conversion: no cancels, no exclusion, until ownership is proven', async () => {
+  const db = base()
+  const lead = mkLead(db, 'A', 'victim@corp.example')
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('m1','A',?,'victim@corp.example','hi',?,'draft','warmup_manual',?)").run(lead, BODY, NOW + 100)
+  db.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES ('sq1','A',?,'m1','victim@corp.example','active')").run(lead)
+
+  // A free signup with a typed (unverified) address must not suppress another tenant's work.
+  assert.equal(queuePendingLifecycle(db, 'signup', 'victim@corp.example', 'tenant-new', NOW), true)
+  assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get('m1') as { status: string }).status, 'draft', 'nothing canceled while unverified')
+  assert.equal((db.prepare('SELECT status FROM sequences WHERE id = ?').get('sq1') as { status: string }).status, 'active')
+  assert.equal(conversionEventFor(db, 'victim@corp.example'), null, 'a pending event is not a conversion')
+
+  // And the pending address is STILL an autopilot candidate (no exclusion before verification).
+  const { db: db2, sent, d } = await autopilotTenant()
+  mkLead(db2, 'A', 'pending@corp.example')
+  assert.equal(queuePendingLifecycle(db2, 'signup', 'pending@corp.example', 'tenant-new', NOW), true)
+  await runAutopilot(db2, 'A', 'Acme', d)
+  assert.equal(sent.length, 1, 'a pending (unverified) conversion excludes nothing')
+
+  // Ownership proven (verification link opened): the queued event activates and the cancel lands.
+  const stopped = activateLifecycleFor(db, 'victim@corp.example', NOW + 20)
+  assert.ok(stopped >= 2, `held first touch + sequence stopped on activation (got ${stopped})`)
+  assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get('m1') as { status: string }).status, 'skipped')
+  assert.equal((db.prepare('SELECT status FROM sequences WHERE id = ?').get('sq1') as { status: string }).status, 'stopped')
+  assert.deepEqual(conversionEventFor(db, 'victim@corp.example'), { kind: 'signup', created_at: NOW })
+  // Idempotent: a second activation (verify + later sign-in both drain) changes nothing.
+  assert.equal(activateLifecycleFor(db, 'victim@corp.example', NOW + 30), 0)
+})
+
+test('a verified record activates a pending event of the same kind (payment queued unverified, then verified)', () => {
+  const db = base()
+  const lead = mkLead(db, 'A', 'payer@corp.example')
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES ('m1','A',?,'payer@corp.example','hi',?,'draft','warmup_manual',?)").run(lead, BODY, NOW + 100)
+  assert.equal(queuePendingLifecycle(db, 'payment', 'payer@corp.example', 'tenant-t', NOW), true)
+  assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get('m1') as { status: string }).status, 'draft')
+  // The same event recorded as verified (e.g. the Stripe replay after verification) activates and cancels.
+  const stopped = recordLifecycleEvent(db, 'payment', 'payer@corp.example', 'tenant-t', NOW + 5)
+  assert.ok(stopped >= 1)
+  assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get('m1') as { status: string }).status, 'skipped')
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM lifecycle_events').get() as { n: number }).n, 1, 'one event row, activated in place')
+  assert.equal(recordLifecycleEvent(db, 'payment', 'payer@corp.example', 'tenant-t', NOW + 9), 0, 'replays stay no-ops')
+})
+
+test('payment identity resolves to the bound account, never the typed Stripe email; ambiguous ownership stays unmatched', () => {
+  const db = base()
+  db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, email_verified_at INTEGER);
+           CREATE TABLE memberships (tenant_id TEXT NOT NULL, member_id TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY (tenant_id, member_id));`)
+  // Personal workspace: the tenant id IS the founder's users.id.
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('t-personal', 'founder@co.example', 100)").run()
+  assert.deepEqual(paymentAccountFor(db, 't-personal'), { email: 'founder@co.example', verified: true })
+  // Shared workspace, exactly one owner.
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u-owner', 'owner@co.example', NULL)").run()
+  db.prepare("INSERT INTO memberships (tenant_id, member_id, role) VALUES ('t-shared', 'u-owner', 'owner')").run()
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u-member', 'member@co.example', 100)").run()
+  db.prepare("INSERT INTO memberships (tenant_id, member_id, role) VALUES ('t-shared', 'u-member', 'operator')").run()
+  assert.deepEqual(paymentAccountFor(db, 't-shared'), { email: 'owner@co.example', verified: false }, 'unverified owner: the caller queues pending')
+  // Two owners: ambiguous, never guessed.
+  db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u-owner2', 'owner2@co.example', 100)").run()
+  db.prepare("INSERT INTO memberships (tenant_id, member_id, role) VALUES ('t-shared', 'u-owner2', 'owner')").run()
+  assert.equal(paymentAccountFor(db, 't-shared'), null)
+  // Unknown tenant: unmatched.
+  assert.equal(paymentAccountFor(db, 't-nobody'), null)
 })

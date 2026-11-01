@@ -186,8 +186,13 @@ test('Stripe test mode end to end on Postgres: the same steps, the same answers,
   const pg = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 3 })
   try {
     await runPgMigrations(pg.pool)
-    setScanDb(null as unknown as Database.Database) // getScanDb() now throws 'test database unset'
     setDb(pg)
+    // The webhook's #417 conversion step is on the app's SQLite runtime store (lib/db/pg-port-status.ts records
+    // it): give the route a schema'd, empty SQLite store so the billing path under test stays Postgres.
+    const lite = new Database(':memory:')
+    const { migrateAllSqlite } = await import('../../lib/db/sqlite-migrations.ts')
+    migrateAllSqlite(lite)
+    setScanDb(lite)
     await scenario('pg')
   } finally { await pg.close(); await s.drop() }
 })
