@@ -80,10 +80,10 @@ export default function InboxClient() {
   return (
     <div className="p-8 max-w-4xl">
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
-      <p className="text-[#555] text-sm mb-6">Replies to the email threads dazl started for you. Nothing else in your mailbox is read.</p>
+      <p className="text-[#555] text-sm mb-6">Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.</p>
       <ConversionPanel />
       {i.read_granted && i.account && (
-        <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. Nothing else in the mailbox is read.</p>
+        <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. With your consent, dazl also checks delivery-failure notices for its sends. Unmatched notices are not kept as replies.</p>
       )}
       {(!i.consent_accepted || !i.read_granted) && (
         <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Only replies to outreach threads dazl started are read - nothing else in your mailbox." />

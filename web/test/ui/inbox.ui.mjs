@@ -81,6 +81,8 @@ try {
   {
     const { ctx, page, calls } = await open('/app/inbox')
     await page.getByTestId('inbox-filters').waitFor({ timeout: 15000 })
+    await page.getByText('Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.', { exact: true }).waitFor()
+    assert.equal(await page.getByText(/Nothing else in (?:your|the) mailbox is read/).count(), 0, 'scope disclosure includes the delivery-notice search')
     assert.match(await page.getByTestId('inbox-filter-all').textContent(), /All\s*122/)
     assert.match(await page.getByTestId('inbox-filter-needs_owner').textContent(), /Needs you\s*82/)
     assert.match(await page.getByTestId('inbox-filter-unread').textContent(), /Unread\s*61/)
