@@ -57,7 +57,7 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (p === '/api/usage') return json({ plan: 'pro', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
   if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
-  if (p === '/api/settings/profile') return json({ business_name: 'Acme', sells: 'Acme Booking', website: 'acme.example', buyer: null })
+  if (p === '/api/settings/profile') return json({ business_name: 'Acme', sells: null, website: 'acme.example', buyer: null }) // no profile offer: only the read's sells line can fill the play offer
   if (p === '/api/scan/jobs') return json({ jobs: [] })
   if (p === '/api/scan/icp-from-url') return json(READ)
   if (p === '/api/scan/estimate' && m === 'POST') return json(EST)
@@ -103,7 +103,15 @@ try {
   await shot('leads-draft-research-reviewed')
 
   // 3. Estimate, confirm, run: the POST carries the reviewed draft with the answer's words and the play's offer.
-  await page.locator('#play-offer').fill('Acme Booking')
+  // #379: the play's offer is prefilled after a site read - request first, then the business profile (null in this
+  // fixture), then the read's generated sells line - so the required field is never left empty by a generation.
+  // It stays the person's input; here the prefilled default is what runs.
+  const offerInput = page.locator('#play-offer')
+  for (let i = 0; i < 50 && (await offerInput.inputValue()) !== 'Acme Booking'; i++) await page.waitForTimeout(100)
+  assert.equal(await offerInput.inputValue(), 'Acme Booking', 'the play offer is prefilled from the site read sells line, not left empty')
+  await offerInput.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(200)
+  await shot('leads-draft-offer-prefilled')
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   await page.getByTestId('estimate-confirm').waitFor()
   await page.getByTestId('estimate-confirm-run').click()
@@ -117,7 +125,7 @@ try {
   assert.equal(hyps.h2.s, 'rejected', 'the dismissal is an explicit rejection')
   assert.equal(hyps.h1.s, 'sourced', 'un-acted statement keeps its truth status')
   assert.deepEqual(sent.icp.research.ans, { q: 'Who buys this?', o: 'o1', t: 'office managers' }, 'the typed answer goes WITH ITS WORDS')
-  console.log('PASS leads-research-review: render, add, dismiss, answer, estimated run carries the reviewed draft')
+  console.log('PASS leads-research-review: render, add, dismiss, answer, prefilled play offer, estimated run carries the reviewed draft')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
