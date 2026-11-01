@@ -27,12 +27,13 @@ import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type DbLike } from '../db/client.ts'
 import { GAPS_S, TEST_GAPS_S } from '../outreach/sequences.ts'
+import { REPLY_SAFETY_STALE_S } from '../outreach/store.ts'
 
 // Thresholds (docs/SCHEDULER.md). The tick is expected every 15 minutes.
 export const TICK_EVERY_S = 15 * 60
 export const STALE_AFTER_S = 3 * TICK_EVERY_S        // three missed ticks
 export const CRASHED_AFTER_S = 30 * 60               // the tick lease TTL: a live run would have finished or renewed
-export const REPLY_SYNC_STALE_S = 2 * 60 * 60
+export const REPLY_SYNC_STALE_S = REPLY_SAFETY_STALE_S // single source: lib/outreach/store.ts (the send-side gate)
 export const OVERDUE_ALERT_S = 60 * 60
 export const BLOCKED_AFTER_FAILURES = 3
 const KEEP_RUNS = 2000

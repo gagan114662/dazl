@@ -109,7 +109,7 @@ const domainSentRecently = (db: Database.Database, tenantId: string, domain: str
 // can name; warmup (manual-approval) drafts and pre-existing drafts with no hold record are never auto-sent.
 const TRANSIENT_RETRY_S = 900
 const MAX_SEND_RETRIES = 3
-export const HOLD_REASONS = ['warmup_manual', 'daily_cap', 'held_domain_cap', 'send_failed'] as const
+export const HOLD_REASONS = ['warmup_manual', 'daily_cap', 'held_domain_cap', 'send_failed', 'reply_sync_stale'] as const
 
 // The offer inputs a first-touch draft is created under, exactly as createDraftInner resolves them. A null means the
 // offer could not be read: such a draft is never drained, since its authority cannot be re-verified.
@@ -163,6 +163,8 @@ function holdSendFailure(db: Database.Database, tenantId: string, msgId: string,
   if (code === 'already_sending') { setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S); return 'held' }
   // Legitimate cap still in force: wait for the window to roll. Never counts toward retry exhaustion.
   if (code === 'daily_cap') { setHold(db, tenantId, msgId, leadId, 'daily_cap', accountCapDueAt(db, tenantId, now)); return 'held' }
+  // #413: safety ingest behind - hold without consuming retries; the draft re-runs once reply_sync succeeds again.
+  if (code === 'reply_sync_stale') { setHold(db, tenantId, msgId, leadId, 'reply_sync_stale', now + TRANSIENT_RETRY_S); return 'held' }
   if (code === 'gmail_unavailable' || code === 'gmail_rate_limited') {
     // Exhaustion counts only this message's own transient provider faults (audited just above), never the attempts
     // column: a claim released for a legitimate cap or a lost race is not a fault and must not move a draft toward skipping.
@@ -273,7 +275,7 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
   if (sentTotal(db, tenantId) < WARMUP_SENDS(env)) return stop('warmup') // first sends stay manually approved
   const rows = db.prepare(
     `SELECT id, lead_id, to_email, status, offer_hash FROM outreach_messages
-     WHERE tenant_id = ? AND status IN ('draft','approved') AND hold_reason IN ('daily_cap','held_domain_cap','send_failed')
+     WHERE tenant_id = ? AND status IN ('draft','approved') AND hold_reason IN ('daily_cap','held_domain_cap','send_failed','reply_sync_stale')
        AND hold_policy = ? AND hold_until IS NOT NULL AND hold_until <= ?
      ORDER BY created_at LIMIT 10`,
   ).all(tenantId, CONSENT_VERSION, now) as { id: string; lead_id: string; to_email: string; status: string; offer_hash: string | null }[]
