@@ -1,5 +1,5 @@
 // Runs the billing path on a fresh Postgres schema with two tenants (see test/pg-billing.test.ts). Stubbed: no network.
-import { test } from 'node:test'
+import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { setUser } from './tenant-route-db.ts'
 import { pgDb, setDb } from '../../lib/db/client.ts'
@@ -16,13 +16,10 @@ test('billing on Postgres, two tenants', async () => {
   try {
     await runPgMigrations(db.pool)
     setDb(db)
-    // The routes read the CURRENT UTC month by the real clock (lib/plans.ts monthStartS), so the fixtures must live in
-    // the same month the routes will see - pinning a past month fails every later month. Race: a run that crosses a
-    // month boundary mid-test would flip the routes' window between fixture and read, so near the end of a month wait
-    // the few seconds into the next one and anchor everything there (at most ~10 minutes, once a month).
-    const nextStart = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) / 1000
-    const slack = Math.floor(nextStart(new Date()) - Date.now() / 1000)
-    if (slack < 600) await new Promise(r => setTimeout(r, (slack + 30) * 1000))
+    // The routes read the CURRENT UTC month (lib/plans.ts monthStartS) from the in-process JS clock; the whole billing
+    // path (fixtures and both route handlers) shares it, so freezing Date at one instant keeps fixture and routes in the
+    // same month with no boundary race and no sleeping into the next month. Only Date is mocked - real timers stay live.
+    mock.timers.enable({ apis: ['Date'], now: Date.now() })
     const now = new Date()
     const month = monthStartS(now)
     // plans: A on Pro and past_due, B on Free (no row)
@@ -72,5 +69,5 @@ test('billing on Postgres, two tenants', async () => {
     assert.ok(!JSON.stringify(seen[B]).includes('model-a') && !JSON.stringify(seen[B]).includes('cus_a') && !JSON.stringify(seen[B]).includes('past_due'))
     assert.ok(!JSON.stringify(seen[A]).includes('model-b'))
     console.log('PG_BILLING ok')
-  } finally { await db.close(); await s.drop() }
+  } finally { mock.timers.reset(); await db.close(); await s.drop() }
 })
