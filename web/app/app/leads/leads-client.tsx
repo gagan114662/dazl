@@ -358,6 +358,12 @@ export default function LeadsClient() {
       const ansT = asResearchBlock((filled as { research?: unknown }).research)?.ans?.t?.trim()
       if (ansT && !filled.who.some(x => x.trim().toLowerCase() === ansT.toLowerCase())) filled.who = [...filled.who, ansT]
       setDraft(filled)
+      // The play's offer starts from the request, then the business profile (same precedence as preview()), then -
+      // only while still empty - the one-line sells this read generated, which the form shows for review. The field
+      // stays the person's input: editable, nothing saved until they run with it (#379).
+      const genSells = typeof j.sells === 'string' ? j.sells.trim() : ''
+      startOffer(query)
+      if (genSells) setOfferText(prev => (prev.trim().length >= 3 ? prev : genSells))
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
       setDraftNote(`Filled from ${host}. Edit anything that is off, then run the scan.`)
