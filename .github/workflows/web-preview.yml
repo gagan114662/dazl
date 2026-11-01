@@ -42,6 +42,9 @@ jobs:
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out && ! grep -q '^NOT RUN' /tmp/it.out
+      # refs #471: follow-ups held-state honesty on the real route (production build, throwaway db, synthetic fixtures, no stubbing, no send). It must run, not skip.
+      - name: Follow-ups held states (promised date only when sendable; held shows reason + schedule date)
+        run: SHOTS=preview/followups-held node test/ui/followups-held.ui.mjs | tee /tmp/fh.out && ! grep -q '^NOT RUN' /tmp/fh.out
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
