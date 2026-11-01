@@ -70,7 +70,7 @@ async function open(url, width = 1280, height = 900, delay = () => 0, connected 
       if (u.searchParams.get('thread_id')) return json({ messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Yes - send details', at: now, classification: 'positive' }] })
       calls.push(u.search); const body = serve(u, reads); await wait(delay(u, 'GET')); return json(body)
     }
-    if (p === '/api/outreach/replies') return json({ available: true, read_granted: false, consent: { version: READ_CONSENT_VERSION, accepted: false, text: READ_CONSENT_TEXT } })
+    if (p === '/api/outreach/replies') return json({ available: true, gmail_connected: true, read_granted: false, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: false }, followups_enabled: false, autopilot_on: false, inbound: [] })
     if (p === '/api/outreach/settings') return json({ gmail: { email: 'me@x.example', status: 'active', read_granted: true }, sender: { sender_name: 'Sam', postal_address: 'Synthetic test address' }, daily_cap: 5, sent_24h: 0, read_notice: READ_CONSENT_TEXT })
     if (p === '/api/outreach/conversion') return json({ rows: [] })
     return json({}, 404)
