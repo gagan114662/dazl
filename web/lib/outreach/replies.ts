@@ -10,16 +10,11 @@ import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
-// Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens only threads it started,
+// Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens its outreach threads and bounded candidate delivery notices,
 // by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
 // reads nothing when the user has not consented or has turned it off.
 export { READ_CONSENT_VERSION }
-export const READ_CONSENT_TEXT = [
-  'dazl will read replies in the email threads it started for you, and delivery-failure notices for them. It will not read any other email.',
-  'It uses this to stop emailing people who unsubscribe or bounce, to stop cold sequences on any human reply, and to start separately approved warm follow-ups for interested replies.',
-  'dazl keeps the sender, the time, a short excerpt and the result. It does not keep full reply bodies.',
-  'You can turn this off any time. Turning it off stops reading and follow-ups.',
-]
+export { READ_CONSENT_TEXT } from './read-consent.ts'
 
 export function migrateReplies(db: Database.Database): void {
   db.exec(`

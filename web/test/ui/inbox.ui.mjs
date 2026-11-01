@@ -1,3 +1,4 @@
+import { READ_CONSENT_TEXT, READ_CONSENT_VERSION } from '../../lib/outreach/read-consent.ts'
 // Inbox list on the production build: one row per thread, filters, totals and "Show older" paging all come from the
 // server (lib/outreach/inbox.ts, #369). Every /api/* call is stubbed (throwaway database, server under
 // test/helpers/net-fence.ts; no Gmail, no email, no spend). NOT part of `npm test`.
@@ -69,7 +70,8 @@ async function open(url, width = 1280, height = 900, delay = () => 0, connected 
       if (u.searchParams.get('thread_id')) return json({ messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Yes - send details', at: now, classification: 'positive' }] })
       calls.push(u.search); const body = serve(u, reads); await wait(delay(u, 'GET')); return json(body)
     }
-    if (p === '/api/outreach/settings') return json({ gmail: { email: 'me@x.example', status: 'active', read_granted: true }, sender: { sender_name: 'Sam', postal_address: 'Synthetic test address' }, daily_cap: 5, sent_24h: 0, read_notice: [] })
+    if (p === '/api/outreach/replies') return json({ available: true, read_granted: false, consent: { version: READ_CONSENT_VERSION, accepted: false, text: READ_CONSENT_TEXT } })
+    if (p === '/api/outreach/settings') return json({ gmail: { email: 'me@x.example', status: 'active', read_granted: true }, sender: { sender_name: 'Sam', postal_address: 'Synthetic test address' }, daily_cap: 5, sent_24h: 0, read_notice: READ_CONSENT_TEXT })
     if (p === '/api/outreach/conversion') return json({ rows: [] })
     return json({}, 404)
   })
@@ -95,6 +97,7 @@ try {
     const { ctx, page } = await open('/app/inbox', 390, 844, () => 0, false)
     await page.getByText(/With your consent, dazl reads replies in its outreach threads and checks delivery-failure notices for its sends/).waitFor()
     assert.equal(await page.getByText(/Only replies to outreach threads|nothing else in your mailbox|Nothing else in (?:your|the) mailbox is read/).count(), 0)
+    for (const text of READ_CONSENT_TEXT) await page.getByText(text, { exact: true }).waitFor()
     await shot(page, 'inbox-disconnected-mobile')
     await ctx.close()
   }

@@ -157,3 +157,17 @@ test('without read consent nothing is listed and coverage reports unknown, never
   assert.equal(calls.filter(u => u.includes('messages')).length, 0, 'no mailbox listing without consent')
   assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
 })
+
+test('old narrower consent refuses acquisition before token or mailbox calls; fresh acceptance restores bounded search', async () => {
+  const db = await setup(); seedSend(db)
+  db.prepare("UPDATE mail_read_consent SET version='2026-10-21' WHERE tenant_id='A'").run()
+  const calls: string[] = []
+  const fetchImpl = (async (u: RequestInfo | URL) => { calls.push(String(u)); if (String(u).includes('token')) return json({ access_token: 'fixture' }); return json({ messages: [] }) }) as typeof fetch
+  const old = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl })
+  assert.equal(old.error, 'reading_not_enabled'); assert.equal(calls.length, 0, 'no token refresh or mail read under an old grant')
+  acceptReadConsent(db, 'A')
+  const fresh = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl })
+  assert.equal(fresh.error, undefined)
+  assert.ok(calls.some(u => u.includes('/messages?q=') && decodeURIComponent(u).includes('from:mailer-daemon OR from:postmaster after:')))
+  db.close()
+})
