@@ -74,6 +74,17 @@ jobs:
           name: lead-cards-${{ github.event.pull_request.head.sha || github.sha }}
           path: web/preview/lead-cards/*.png
           retention-days: 14
+      - name: Seller intelligence Add/Dismiss/Restore production UI (fenced)
+        if: success() || failure()
+        run: node test/smoke/intelligence.smoke.mjs && node test/smoke/intelligence-chain.smoke.mjs
+      - name: Upload seller intelligence UI pixels
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intelligence-ui-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            web/preview/intelligence
+            web/preview/intelligence-chain
           if-no-files-found: error
       - name: Release identity and readiness
         if: success() || failure()

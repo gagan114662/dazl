@@ -208,7 +208,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // nothing here changes what a scan checks.
       // From the ready screen the first play is the fast first scan (mode first5: the free sources only, the same
       // extraction and checks as every scan), so the first leads come back quickly; a wider, full scan stays one click away.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, ...(stay ? { mode: 'first5' } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(stay ? { mode: 'first5' } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.

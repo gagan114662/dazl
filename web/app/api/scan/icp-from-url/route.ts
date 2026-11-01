@@ -1,3 +1,7 @@
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
+import { recallSellerDecisions, siteKey } from '@/lib/scan/intelligence'
+import { sqliteDb } from '@/lib/db/client'
 import { NextRequest, NextResponse } from 'next/server'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
@@ -18,7 +22,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   let url = typeof body?.url === 'string' ? body.url.trim().slice(0, 300) : ''
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`
-  if (url.length < 5) return NextResponse.json({ error: 'invalid' }, { status: 400 })
+  if (url.length < 5 || !siteKey(url)) return NextResponse.json({ error: 'invalid' }, { status: 400 })
   // Prior research carries the answered-question binding and reviewed corrections into a recrawl (#379) - only for
   // the SAME site (double-guard on the submitted URL's host; buildResearch re-checks against the fetched final URL).
   let prior = null
@@ -29,7 +33,17 @@ export async function POST(req: NextRequest) {
     const pr = pj && typeof pj === 'object' ? (pj as { research?: { site?: unknown } | null }).research : null
     prior = pr && typeof pr === 'object' && pr.site === host ? (pr as never) : null
   } catch { prior = null }
-  const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { prior })
+  // Scan admission still owns the SQLite store, even in mixed mode. Read the SAME authoritative store;
+  // do not read an empty PG ledger while scans continue to write SQLite. The core also runs on Db/PG.
+  // A failed recall is not empty memory: refuse before any fetch/model call so corrections cannot silently vanish.
+  let decisions
+  try { decisions = await recallSellerDecisions(sqliteDb(getScanDb()), user.tenantId, url) }
+  catch (e) {
+    captureError(e, { source: 'route', where: '/api/scan/icp-from-url', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
+    return NextResponse.json({ error: 'intelligence_unavailable', message: 'Saved targeting decisions could not be read. Try again before generating a new profile.' }, { status: 503 })
+  }
+  if (decisions.trace.truncated) return NextResponse.json({ error: 'intelligence_capacity', message: 'Saved targeting exceeds the safe recall window. No new profile was generated; use your existing reviewed profile.' }, { status: 409 })
+  const out = await icpFromWebsite(getScanDb(), user.tenantId, url, { prior, decisions })
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     if (out.error === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.' }, { status: 503 })
@@ -39,5 +53,5 @@ export async function POST(req: NextRequest) {
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
     return NextResponse.json({ error: out.error }, { status })
   }
-  return NextResponse.json(out)
+  return NextResponse.json({ ...out, intelligence: decisions.trace })
 }
