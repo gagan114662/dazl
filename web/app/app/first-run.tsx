@@ -138,6 +138,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const url = normalizeWebsite(website)
     if (!url) return setError('Enter your website, like acme.com.')
     setBusy(true); setFacts([]); setShown(0); setStep('building')
+    // Every new read drops the last read's AI hypotheses: they are transient (never part of the saved profile), and a
+    // free read, a failed read or a read of a DIFFERENT site must never show them beside its own result. Saved profile
+    // fields are untouched - they carry the person's own edits, and the keyed read saved them with that provenance.
+    setResearch(null)
     try {
       const r = await fetch('/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) })
       const j = await r.json().catch(() => ({}))
@@ -150,6 +154,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         // Keyless free read: show the page's own facts, route to the reviewable manual profile. No brain facts, no
         // inferred draft, no auto-save - and no promise of a free search (the ask step prices key/trial honestly).
         setFreeRead({ site: String(j.site ?? ''), source: String(j.source ?? ''), facts: Array.isArray(j.facts) ? j.facts : [] })
+        // Research from any earlier keyed read was already cleared when this read began; the profile fields keep
+        // their values (keyed reads save them; the person's edits are their own), and nothing here re-infers them.
         try { setReadFrom(new URL(String(j.source ?? '')).hostname) } catch { setReadFrom('your website') }
         setWebsite(url)
         setStep('brain')

@@ -31,13 +31,14 @@ const FREE = { free: true, site: 'acme.example', source: 'https://acme.example/'
   { kind: 'title', text: 'Acme Inc', source: 'https://acme.example/' },
   { kind: 'description', text: 'CRM cleanup for sales teams.', source: 'https://acme.example/' },
 ] }
-const KEYED = { sells: 'CRM cleanup for sales teams', source: 'https://acme.example/', icp: { summary: 'Sales ops teams at B2B SaaS companies.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: [], exclude: [] } }
+const KEYED = { sells: 'CRM cleanup for sales teams', source: 'https://acme.example/', icp: { summary: 'Sales ops teams at B2B SaaS companies.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: [], exclude: [],
+  research: { v: 1, site: 'acme.example', q: null, ans: null, offers: [{ i: 'o1', n: 'CRM cleanup' }], hyps: [{ i: 'h1', o: 'o1', k: 'persona', t: 'Revenue operations leads', s: 'inferred', u: null, q: null, at: null }] } } }
 const usage = hasKey => ({ plan: 'free', scans_used: 0, scan_limit: 50, has_key: hasKey, billing_status: null, trial: null })
 
 const b = await chromium.launch()
 try {
   for (const [width, height, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
-    const run = async (name, icpResponse, hasKey, check) => {
+    const run = async (name, icpResponse, hasKey, check, profileGet = '{}') => {
       const ctx = await b.newContext({ viewport: { width, height } })
       await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
       const writes = []
@@ -49,10 +50,10 @@ try {
         if (u.pathname === '/api/usage') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(usage(hasKey)) })
         if (u.pathname === '/api/scan/jobs') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"jobs":[]}' })
         if (u.pathname === '/api/settings/profile') {
-          if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+          if (req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: profileGet })
           return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' })
         }
-        if (u.pathname === '/api/scan/icp-from-url') return route.fulfill(icpResponse)
+        if (u.pathname === '/api/scan/icp-from-url') return route.fulfill(Array.isArray(icpResponse) ? icpResponse.shift() : icpResponse)
         return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
       })
       const page = await ctx.newPage()
@@ -84,6 +85,24 @@ try {
       assert.equal(await page.getByTestId('free-site-read').count(), 0, 'keyed path never shows the free card')
       assert.equal(writes.filter(w => w.startsWith('POST /api/settings/profile')).length, 1, 'keyed path auto-saves the AI draft as before')
     })
+
+    await run('keyed-then-keyless', [ { status: 200, contentType: 'application/json', body: JSON.stringify(KEYED) }, { status: 200, contentType: 'application/json', body: JSON.stringify(FREE) } ], true, async (page, writes) => {
+      // First (keyed) read: the keyed path auto-saves the inferred profile verbatim (first-run.tsx readSite ->
+      // POST /api/settings/profile, before any user edit) and lands on the ready step.
+      await page.getByTestId('ready-step').waitFor({ timeout: 30000 })
+      assert.ok(writes.some(w => w.startsWith('POST /api/settings/profile')), 'keyed read auto-saved the inferred draft (its documented path)')
+      // The person returns later (key since removed) and reads the same site again. The saved profile legitimately
+      // holds the model-generated values (hydrated from GET /api/settings/profile); the reread must not show any AI
+      // research/hypotheses beside "No AI was used", must not re-infer, and must not delete the saved inputs.
+      await page.goto(`${base}/app?setup=site`, { waitUntil: 'networkidle' })
+      await page.getByTestId('site-step').waitFor({ timeout: 15000 })
+      await page.getByLabel('Your website').fill('acme.example')
+      await page.getByRole('button', { name: 'Read my site' }).click()
+      await page.getByTestId('free-site-read').waitFor({ timeout: 30000 })
+      assert.equal(await page.getByTestId('research-review').count(), 0, 'no AI research anywhere on the free read')
+      assert.match(await page.locator('form', { has: page.getByTestId('free-site-read') }).innerText(), /No AI was used for this read/, 'honest no-AI copy')
+      assert.equal(await page.getByLabel('What you sell').inputValue(), 'CRM cleanup for sales teams', 'saved (model-generated, user-editable) profile inputs survive untouched')
+    }, JSON.stringify({ website: 'https://acme.example', sells: 'CRM cleanup for sales teams', business_name: '', buyer: { summary: 'Sales ops teams at B2B SaaS companies.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: [], exclude: [] } }))
 
     await run('read-failed', { status: 502, contentType: 'application/json', body: '{"error":"not_public"}' }, false, async (page, writes) => {
       await page.getByTestId('site-step').waitFor({ timeout: 15000 })
