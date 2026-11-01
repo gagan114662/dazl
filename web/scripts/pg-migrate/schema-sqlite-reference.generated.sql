@@ -119,6 +119,7 @@ CREATE TABLE connector_claims (
       status      TEXT NOT NULL CHECK (status IN ('reserved','ok','empty','rejected')),
       claimed_at  INTEGER NOT NULL,
       settled_at  INTEGER,
+      memo        TEXT,
       PRIMARY KEY (tenant_id, connector, scan_job_id, lookup)
     );
 

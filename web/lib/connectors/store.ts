@@ -28,6 +28,9 @@ export function migrateConnectors(db: Database.Database): void {
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     );
     CREATE INDEX IF NOT EXISTS connector_audit_tenant ON connector_audit (tenant_id, created_at);
+    -- Recovery (#382 follow-up): the org lookup's result, written in the SAME transaction as the claim's
+    -- terminal settle. Presence is authoritative: memo == "agreement passed; the people step may resume".
+    -- Immutable once set (the settle guards on status='reserved'); NULL forever on people/legacy claims.
     CREATE TABLE IF NOT EXISTS connector_claims (
       tenant_id   TEXT NOT NULL,
       connector   TEXT NOT NULL,
@@ -36,9 +39,6 @@ export function migrateConnectors(db: Database.Database): void {
       status      TEXT NOT NULL CHECK (status IN ('reserved','ok','empty','rejected')),
       claimed_at  INTEGER NOT NULL,
       settled_at  INTEGER,
-      -- Recovery (#382 follow-up): the org lookup's result, written in the SAME transaction as the claim's
-      -- terminal settle. Presence is authoritative: memo == "agreement passed; the people step may resume".
-      -- Immutable once set (the settle guards on status='reserved'); NULL forever on people/legacy claims.
       memo        TEXT,
       PRIMARY KEY (tenant_id, connector, scan_job_id, lookup)
     );
