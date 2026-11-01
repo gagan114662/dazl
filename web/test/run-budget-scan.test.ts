@@ -30,13 +30,14 @@ test('normalizeScanBudget: strict, can only narrow, max_usd bounded; absent = no
     assert.equal(normalizeScanBudget(bad, true).ok, false, JSON.stringify(bad))
 })
 
-test('disclosure: no budget bounds nothing and says so; max_usd refuses research and enrichment; flags switch their own surface off', () => {
+test('disclosure: no budget bounds nothing and says so; fallback research is refused on every budget form (#379); flags switch their own surface off', () => {
   const none = describeRunBudget(null)
   assert.equal(none.bounded, false); assert.match(none.ceiling, /not dollar-bounded/)
-  assert.equal(none.surfaces.find(s => s.surface === 'fallback_research')!.status, 'allowed')
+  // #379: the unpriceable fallback is refused with or without a budget - 'allowed' no longer exists for this surface
+  assert.equal(none.surfaces.find(s => s.surface === 'fallback_research')!.status, 'refused')
   const cap = describeRunBudget({ max_usd: 1 })
   assert.equal(cap.surfaces.find(s => s.surface === 'fallback_research')!.status, 'refused'); assert.equal(cap.surfaces.find(s => s.surface === 'credit_enrichment')!.status, 'off')
-  assert.match(cap.surfaces.find(s => s.surface === 'fallback_research')!.note, /NOT the same search behaviour/)
+  assert.match(cap.surfaces.find(s => s.surface === 'fallback_research')!.note, /never run/)
   assert.equal(describeRunBudget({ paid_fallback: false }).surfaces.find(s => s.surface === 'fallback_research')!.status, 'refused')
   assert.equal(describeRunBudget({ judge: false }).surfaces.find(s => s.surface === 'judge')!.status, 'off')
   assert.equal(describeRunBudget({ credit_enrichment: false }).surfaces.find(s => s.surface === 'credit_enrichment')!.status, 'off')
@@ -53,7 +54,7 @@ test('SpendGuard: starts from what was already reserved, reports every reservati
 })
 
 type Counts = { research: number; judge: number; complete: number }
-async function run(budget: string | null, opts: { reserved?: number; model?: string; tinyfish?: boolean; leads?: boolean; beforeRun?: (db: Database.Database, id: string) => void; onFirstComplete?: (db: Database.Database, id: string) => void } = {}) {
+async function run(budget: string | null, opts: { reserved?: number; model?: string; tinyfish?: boolean; empty?: boolean; leads?: boolean; beforeRun?: (db: Database.Database, id: string) => void; onFirstComplete?: (db: Database.Database, id: string) => void } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
@@ -75,32 +76,39 @@ async function run(budget: string | null, opts: { reserved?: number; model?: str
   }
   const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: anth, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
   const page = async () => ({ text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 })
-  const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; if (opts.tinyfish) process.env.TINYFISH_API_KEY = 'tf-test'
+  const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; if (opts.tinyfish || opts.empty) process.env.TINYFISH_API_KEY = 'tf-test'
   try {
     const r = await runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, ground: false })
     return { r, c, db, id, row: db.prepare('SELECT status, error, attempts, spend_reserved_usd FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null; attempts: number; spend_reserved_usd: number | null } }
   } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
 }
 
-test('paid_fallback=false on a QUERY job (previously ignored): research is not called and the run ends budget_stopped; control without the flag calls it', async () => {
+test('the research fallback is refused on every guarded query job, flag or not (#379)', async () => {
   const off = await run('{"paid_fallback":false}')
   assert.equal(off.c.research, 0); assert.equal(off.row.error, 'budget_stopped'); assert.equal(off.row.status, 'failed')
+  // An unguarded run against INJECTED providers keeps the fixture's own behavior (research runs once, finds nothing):
+  // injection is test-only. The production wiring refuses research at the real provider boundary with zero requests on
+  // the wire - pinned by cost-bounds.test.ts's #379 test and csv-import.test.ts's nothing-found test.
   const control = await run(null)
-  assert.equal(control.c.research, 1); assert.notEqual(control.row.error, 'budget_stopped')
+  assert.equal(control.c.research, 1); assert.equal(control.row.error, 'no_candidates'); assert.equal(control.row.status, 'failed')
 })
 
 test('judge=false on a QUERY job (previously ignored) switches the judge off; the control judges', async () => {
   const off = await run('{"judge":false}', { leads: true })
   assert.equal(off.c.judge, 0)
-  const control = await run(null, { leads: true })
+  // leads through the TinyFish-primary path (the intended paid surface): the research fallback is refused (#379)
+  const control = await run(null, { tinyfish: true })
   assert.ok(control.c.judge >= 1, 'fixture precondition: without the flag the judge runs')
 })
 
 test('max_usd refuses research (disclosed as refused) and a budget stop is distinct from zero leads', async () => {
   const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5' })
   assert.equal(x.c.research, 0); assert.equal(x.row.error, 'budget_stopped')
-  const nothing = await run(null) // no budget, research returns nothing: "nothing found", not a budget stop
-  assert.equal(nothing.row.error, 'no_candidates')
+  // Unguarded + injected providers: searches find nothing, the fixture's research also finds nothing -> the honest
+  // zero-leads outcome 'no_candidates' (same as ats-source/campaigns/first5/csv-import). Against production wiring the
+  // research call never happens and the job ends budget_stopped - asserted in cost-bounds/csv-import (#379).
+  const nothing = await run(null, { empty: true })
+  assert.equal(nothing.row.error, 'no_candidates'); assert.equal(nothing.c.research, 1)
 })
 
 test('the job reservation is saved after every reserved call and a re-run continues from it, so it cannot spend the limit again', async () => {

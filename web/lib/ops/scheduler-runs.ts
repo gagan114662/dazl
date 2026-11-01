@@ -37,7 +37,7 @@ export const OVERDUE_ALERT_S = 60 * 60
 export const BLOCKED_AFTER_FAILURES = 3
 const KEEP_RUNS = 2000
 
-export type Kind = 'reply_sync' | 'followups' | 'sequences'
+export type Kind = 'reply_sync' | 'followups' | 'sequences' | 'first_touch'
 export function migrateSchedulerRuns(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS scheduler_runs (
@@ -54,7 +54,7 @@ export function migrateSchedulerRuns(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS scheduler_runs_started ON scheduler_runs (started_at);
     CREATE TABLE IF NOT EXISTS scheduler_progress (
       tenant_id            TEXT NOT NULL,
-      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences','first_touch')),
       last_attempt_at      INTEGER NOT NULL,
       last_success_at      INTEGER,
       last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
@@ -65,10 +65,37 @@ export function migrateSchedulerRuns(db: Database.Database): void {
       PRIMARY KEY (tenant_id, kind)
     );
   `)
-  // Stores created before the outcome columns existed (earlier heads of #447; never a released schema).
+  // Stores created before the outcome columns existed (earlier heads of #447; never a released schema). These run
+  // BEFORE the kind rebuild below so the verbatim INSERT ... SELECT always sees the full column set.
   const cols = new Set((db.prepare('PRAGMA table_info(scheduler_progress)').all() as { name: string }[]).map(c => c.name))
   if (!cols.has('last_outcome')) db.exec("ALTER TABLE scheduler_progress ADD COLUMN last_outcome TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure'))")
   if (!cols.has('last_hold')) db.exec('ALTER TABLE scheduler_progress ADD COLUMN last_hold TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40)')
+  // Stores created before 'first_touch' became a kind (#411): sqlite cannot alter a CHECK constraint, so the table
+  // is rebuilt once, inside one transaction, rows carried verbatim. Detected from the live DDL, never from a version
+  // guess; a store already carrying the new CHECK is untouched.
+  const ddl = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_progress'").get() as { sql: string } | undefined)?.sql ?? ''
+  if (ddl && !ddl.includes("'first_touch'")) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE scheduler_progress_rebuild (
+          tenant_id            TEXT NOT NULL,
+          kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences','first_touch')),
+          last_attempt_at      INTEGER NOT NULL,
+          last_success_at      INTEGER,
+          last_error           TEXT CHECK (last_error IS NULL OR length(last_error) <= 200),
+          last_outcome         TEXT NOT NULL DEFAULT 'success' CHECK (last_outcome IN ('success','hold','failure')),
+          last_hold            TEXT CHECK (last_hold IS NULL OR length(last_hold) <= 40),
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          last_run_id          TEXT,
+          PRIMARY KEY (tenant_id, kind)
+        );
+        INSERT INTO scheduler_progress_rebuild (tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id)
+          SELECT tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id FROM scheduler_progress;
+        DROP TABLE scheduler_progress;
+        ALTER TABLE scheduler_progress_rebuild RENAME TO scheduler_progress;
+      `)
+    }).immediate()
+  }
 }
 
 // What the tick records for one tenant and kind of work, from what the worker returned.
@@ -76,7 +103,7 @@ export type Outcome = { outcome: 'success' } | { outcome: 'hold'; reason: string
 // Stop reasons runFollowups and runSequences return that are legitimate holds: the tenant's own configuration or an
 // idle state, not something failing. Every other stop (and any reason the tick does not know) is a failure: the
 // scheduler must never read an unknown refusal as progress.
-export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval'])
+export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval', 'off', 'consent_required', 'warmup'])
 export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'uncertain_send', 'gmail_or_identity'])
 export function classifyWork(r: { stopped?: string; sent?: number; started?: number }): Outcome {
   if (r.stopped === undefined) return { outcome: 'success' }

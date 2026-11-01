@@ -342,6 +342,10 @@ CREATE TABLE outreach_messages (
       approved_hash  TEXT,
       attempts       BIGINT NOT NULL DEFAULT 0,
       claimed_at     BIGINT,
+      hold_reason    TEXT,
+      hold_until     BIGINT,
+      hold_policy    TEXT,
+      offer_hash     TEXT,
       sent_at        BIGINT,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR char_length(error) <= 200),
@@ -513,7 +517,7 @@ CREATE TABLE scan_source_stats (
 
 CREATE TABLE scheduler_progress (
       tenant_id            TEXT NOT NULL,
-      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences')),
+      kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences','first_touch')),
       last_attempt_at      BIGINT NOT NULL,
       last_success_at      BIGINT,
       last_error           TEXT CHECK (last_error IS NULL OR char_length(last_error) <= 200),

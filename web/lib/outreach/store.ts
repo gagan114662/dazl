@@ -60,6 +60,10 @@ export function migrateOutreach(db: Database.Database): void {
       approved_hash  TEXT,
       attempts       INTEGER NOT NULL DEFAULT 0,
       claimed_at     INTEGER,
+      hold_reason    TEXT,
+      hold_until     INTEGER,
+      hold_policy    TEXT,
+      offer_hash     TEXT,
       sent_at        INTEGER,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR length(error) <= 200),
@@ -78,6 +82,10 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('gmail_accounts', 'read_granted', 'INTEGER NOT NULL DEFAULT 0')
   addCol('outreach_messages', 'thread_id', 'TEXT')
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
+  addCol('outreach_messages', 'hold_reason', 'TEXT') // why a first-touch draft is held; NULL = never held by the scheduler (legacy/manual)
+  addCol('outreach_messages', 'hold_until', 'INTEGER') // earliest retry time (unix seconds); NULL = no scheduler retry
+  addCol('outreach_messages', 'hold_policy', 'TEXT') // consent version the hold was recorded under; drain never acts on another version
+  addCol('outreach_messages', 'offer_hash', 'TEXT') // hash of the offer inputs the draft's words were created under
   addCol('outreach_settings', 'booking_url', 'TEXT')
   // Idempotent upgrades for usage tables created before these columns existed.
   // Column presence is checked against the live schema; a genuinely failing

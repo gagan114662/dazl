@@ -77,9 +77,10 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const lo = modelCost(model, calls.min, c.inK.min, c.outK.min), hi = modelCost(model, calls.max, c.inK.max, c.outK.max)
     rows.push({ id: c.id, label: c.label, provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: modelUnit, units: calls, usd: lo === null || hi === null ? null : { min: lo, max: hi }, capped, note: off ? (c.optional === 'judge' ? 'Off: you skipped the judge' : 'Not a hiring request') : `${calls.min === calls.max ? calls.max : `${calls.min}-${calls.max}`} call(s), ${c.inK.min}-${c.inK.max}k tokens in, ${c.outK.min}-${c.outK.max}k out each` })
   }
-  const refusedFallback = capped || b?.paid_fallback === false
-  rows.push({ id: 'fallback_research', label: 'Web-search research fallback', provider: 'AI model web search', kind: 'unbounded', unit: 'research call', unit_usd: 'not priced: search-result tokens are not bounded', units: refusedFallback ? { min: 0, max: 0 } : { min: 0, max: 1 }, usd: refusedFallback ? { min: 0, max: 0 } : null, capped: false,
-    note: refusedFallback ? 'Off: this run refuses it' : 'Only if the normal sources find nothing; its cost cannot be bounded or estimated' })
+  // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,
+  // with or without a cap, exactly like a guarded provider already refused it.
+  rows.push({ id: 'fallback_research', label: 'Web-search research fallback', provider: 'AI model web search', kind: 'unbounded', unit: 'research call', unit_usd: 'not priced: search-result tokens are not bounded', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false,
+    note: 'Never run: its cost cannot be bounded or estimated, so every run refuses it' })
   const tfSearch = num(env.DAZL_PRICE_TINYFISH_SEARCH_USD), tfFetch = num(env.DAZL_PRICE_TINYFISH_FETCH_USD)
   if (b?.first5) rows.push({ id: 'sources_free', label: 'Free sources only (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'No TinyFish search or fetch in this mode' })
   else {
