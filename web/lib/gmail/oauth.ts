@@ -13,7 +13,7 @@ export const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const SCOPES = ['openid', 'email', GMAIL_SEND_SCOPE]
 const STATE_TTL_S = 600
 
-export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string }
+export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string; DAZL_ENV?: string }
 export interface OAuthDeps { withRead?: boolean; env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')

@@ -1,15 +1,15 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
+interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; bounce_scan: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
 
 export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
   const [msg, setMsg] = useState('')
   async function load() { const r = await fetch('/api/outreach/replies'); if (r.ok) setI(await r.json()) }
   useEffect(() => { void load() }, [])
-  async function act(action: string) {
-    const r = await fetch('/api/outreach/replies', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, accept: true, version: i?.consent.version }) })
+  async function act(action: string, version?: string) {
+    const r = await fetch('/api/outreach/replies', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, accept: true, version: version ?? i?.consent.version }) })
     const j = await r.json().catch(() => ({})); setMsg(r.ok ? (action === 'sync' ? 'Checked replies.' : '') : j.error || 'Something went wrong'); void load()
   }
   if (!i || !i.available) return null
@@ -36,6 +36,23 @@ export default function RepliesPanel() {
             {i.followups_enabled ? <button className="underline underline-offset-2" onClick={() => act('followups_off')}>Turn off follow-ups</button> : <button className="underline underline-offset-2" disabled={!i.autopilot_on} onClick={() => act('followups_on')}>{i.autopilot_on ? 'Turn on follow-ups' : 'Turn on autopilot first'}</button>}
             <button className="underline underline-offset-2" onClick={() => act('revoke')}>Stop reading replies</button>
           </div>
+        </div>
+      )}
+      {i.gmail_connected && i.read_granted && (
+        <div className="mt-4 border-t border-black/10 pt-4 text-sm space-y-2">
+          <h3 className="font-medium">Delivery-failure scan</h3>
+          {i.bounce_scan.accepted ? (
+            <>
+              <p className="text-[#555]">On. dazl scans for delivery-failure notices and stops emailing an address only when a notice verifiably matches an email dazl sent.</p>
+              <button className="underline underline-offset-2" onClick={() => act('bounce_scan_off')}>Turn off the delivery-failure scan</button>
+            </>
+          ) : (
+            <>
+              <p className="text-[#555]">Off. This is separate from reply reading above; turning it on does not change reply reading.</p>
+              <ul className="list-disc pl-5 text-[#555]">{i.bounce_scan.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
+              <button className="underline underline-offset-2" onClick={() => act('bounce_scan_on', i.bounce_scan.version)}>Turn on the delivery-failure scan</button>
+            </>
+          )}
         </div>
       )}
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}

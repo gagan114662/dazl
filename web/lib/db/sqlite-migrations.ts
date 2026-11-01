@@ -13,6 +13,8 @@ import { migrateTrial } from '../scan/trial.ts'
 import { migrateOutreach } from '../outreach/store.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { migrateReplies } from '../outreach/replies.ts'
+import { migrateBounceLedger } from '../outreach/bounce-ledger.ts'
+import { migrateBounceScan } from '../outreach/bounce-scan.ts'
 import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateAutopilot } from '../outreach/autopilot.ts'
@@ -50,7 +52,7 @@ export function migrateAllSqlite(db: Database.Database): void {
   migratePlatform(db)
   const migrates = [
     migrateScan, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
-    migrateOutreach, migrateSequences, migrateReplies, migrateLedger, migrateReopen,
+    migrateOutreach, migrateSequences, migrateReplies, migrateBounceLedger, migrateBounceScan, migrateLedger, migrateReopen,
     migrateAutopilot, migrateCalcom, migrateIndexing, migrateBriefs, migrateSeo,
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,

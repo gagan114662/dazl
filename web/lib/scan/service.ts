@@ -21,6 +21,8 @@ import { migrateCommenterImport } from './commenter-import.ts'
 import { migrateMemory } from '../memory.ts'
 import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateReplies } from '../outreach/replies.ts'
+import { migrateBounceLedger } from '../outreach/bounce-ledger.ts'
+import { migrateBounceScan } from '../outreach/bounce-scan.ts'
 import { migrateThreadReplies } from '../replies/threads.ts'
 import { migrateTrial } from './trial.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
@@ -46,6 +48,8 @@ export function getScanDb() {
     migrateAutopilot(db)
     migrateLedger(db)
     migrateReplies(db)
+    migrateBounceLedger(db)
+    migrateBounceScan(db)
     migrateThreadReplies(db)
     migrateSequences(db)
     migrateTrial(db)
