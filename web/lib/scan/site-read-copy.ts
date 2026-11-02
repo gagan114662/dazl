@@ -3,7 +3,7 @@
 // with the two ways on (own key, or the profile by hand). Pure, so test/site-read-copy.test.ts can pin each mapping.
 const own = 'Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'
 export function siteKeyReason(why: string | null): string {
-  if (why === 'not_configured') return `The free trial isn't available here right now. ${own}`
+  if (why === 'not_configured' || why === 'not_in_allowlist') return `The free trial isn't available here right now. ${own}`
   // Only an admitted read counts (lib/scan/trial-site-read.ts): three per 30 days, done or failed on dazl's side after
   // the call; a refusal (ineligible, busy, throttled, no money) or a read its guard refused before any call never uses one.
   // The limiter is a fixed window (lib/rate-limit.ts): all three come back together, 30 days after the first.
