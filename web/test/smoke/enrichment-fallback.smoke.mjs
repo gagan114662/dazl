@@ -85,7 +85,7 @@ try {
   await toggle.waitFor()
   assert.equal(await toggle.isChecked(), false, 'the fallback is OFF by default')
   await card.getByText('Off by default.').waitFor()
-  await card.getByText('1 of your PDL credits').waitFor()
+  await card.getByText(/1 PDL credit \(up to 5 per scan - documented terms; the cost on your account is not verified\)/).waitFor()
   let p = path.join(out, 'fallback-off.png'); await card.screenshot({ path: p }); shots.push(p)
   assert.equal(flagRow(), null, 'no flag row exists before the tenant ever opts in')
 
