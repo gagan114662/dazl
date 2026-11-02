@@ -17,7 +17,7 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GmailSendError } from '../lib/gmail/oauth.ts'
-import { approve, createDraft, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
+import { approve, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot, pause, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateSchedulerRuns } from '../lib/ops/scheduler-runs.ts'
@@ -82,7 +82,7 @@ const heldAfterOneSend = async () => {
 const heldRow = (db: Database.Database, to: string) => db.prepare('SELECT status, approved_hash FROM outreach_messages WHERE to_email = ?').get(to) as { status: string; approved_hash: string | null }
 const sentCount = (db: Database.Database) => (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = 'A' AND status = 'sent' AND to_email NOT LIKE '%@z.example'").get() as { n: number }).n
 // The held draft back with the user: out of autopilot's queue, unapproved, the earlier send untouched.
-const assertBackWithUser = (db: Database.Database, heldTo: string, calls: number) => {
+const assertBackWithUser = (db: Database.Database, heldTo: string) => {
   assert.equal(sentCount(db), 1)
   assert.equal(work(db).length, 0)
   assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
@@ -94,7 +94,7 @@ test('#411 parity: sender identity is rechecked at send commitment - an address 
   const r = await runAutopilot(db, 'A', 'Acme', d)
   assert.equal(r.sent, 0)
   assert.equal(s.calls.length, 1) // only the first pass's send
-  assertBackWithUser(db, heldTo, s.calls.length)
+  assertBackWithUser(db, heldTo)
   assert.ok(audits(db).some(a => a.action === 'send_failed' && a.detail === 'sender_changed'))
 })
 
@@ -104,12 +104,12 @@ test('#411 parity: a reconnect to a different Gmail address hands the held draft
   const r = await runAutopilot(db, 'A', 'Acme', at(s.d, NOW + DAY + 1))
   assert.equal(r.sent, 0)
   assert.equal(s.calls.length, 1)
-  assertBackWithUser(db, heldTo, s.calls.length)
+  assertBackWithUser(db, heldTo)
   assert.ok(audits(db).some(a => a.action === 'released'))
 })
 
 test('#411 parity: disconnected waits; the same address reconnected sends; another address is released', async () => {
-  const { db, s, heldTo } = await heldAfterOneSend()
+  const { db, s } = await heldAfterOneSend()
   db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run()
   const r1 = await runAutopilot(db, 'A', 'Acme', at(s.d, NOW + DAY + 1))
   assert.equal(r1.sent, 0)
@@ -131,7 +131,7 @@ test('#411 parity: disconnected waits; the same address reconnected sends; anoth
   const r3 = await runAutopilot(db2, 'A', 'Acme', s2.d)
   assert.equal(r3.sent, 0)
   assert.equal(s2.calls.length, 0)
-  assertBackWithUser(db2, h2.heldTo, 0)
+  assertBackWithUser(db2, h2.heldTo)
 })
 
 test('#448 parity: autopilot turned off, its operator flag off or its consent changed during the token refresh: the held draft is not sent (Instinct negative)', async () => {
@@ -141,7 +141,7 @@ test('#448 parity: autopilot turned off, its operator flag off or its consent ch
     const r = await runAutopilot(db, 'A', 'Acme', d)
     assert.equal(r.sent, 0)
     assert.equal(s.calls.length, 1)
-    assertBackWithUser(db, heldTo, s.calls.length)
+    assertBackWithUser(db, heldTo)
     assert.ok(audits(db).some(a => a.action === 'released')) }
   // Operator flag off: not the tenant's decision - held (unapproved), not handed back.
   { const { db, s, heldTo } = await heldAfterOneSend()
@@ -159,7 +159,7 @@ test('#448 parity: autopilot turned off, its operator flag off or its consent ch
     const r = await runAutopilot(db, 'A', 'Acme', d)
     assert.equal(r.sent, 0)
     assert.equal(s.calls.length, 1)
-    assertBackWithUser(db, heldTo, s.calls.length) }
+    assertBackWithUser(db, heldTo) }
 })
 
 test('#448 parity: the offer, seller, sender name or postal address changed during the token refresh: the held draft is not sent (Instinct negative)', async () => {
@@ -174,7 +174,7 @@ test('#448 parity: the offer, seller, sender name or postal address changed duri
     const r = await runAutopilot(db, 'A', 'Acme', d)
     assert.equal(r.sent, 0)
     assert.equal(s.calls.length, 1)
-    assertBackWithUser(db, heldTo, s.calls.length)
+    assertBackWithUser(db, heldTo)
     assert.ok(audits(db).some(a => a.action === 'send_failed' && a.detail === 'authority_changed'))
   }
 })
@@ -559,7 +559,7 @@ test('#448 parity: disable() leaves warm-up holds as they are and releases only 
 })
 
 test('#448 parity: disable() while the Gmail request is open (after the commitment): the send completes and is recorded as sent', async () => {
-  const { db, s, heldTo } = await heldAfterOneSend()
+  const { db, heldTo } = await heldAfterOneSend()
   const calls: string[] = []
   const d: Deps & { flags: Record<string, string> } = { flags: { ...ON }, env: genv, master, now: NOW + DAY + 1, baseUrl: 'https://app.test', fetchImpl: tokenOk, sendFn: (async (_t: string, raw: string) => { calls.push(raw); disable(db, 'A'); return { id: 'g' } }) as never }
   const r = await runAutopilot(db, 'A', 'Acme', d)
