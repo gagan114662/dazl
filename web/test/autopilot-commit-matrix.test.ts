@@ -625,3 +625,113 @@ test('#448 parity: a manual send whose recheck read fails after the token refres
   assert.equal(m.status, 'approved') // back with the user, still approved
   assert.equal(m.error, 'authority_unreadable')
 })
+
+test('#448 parity: keep (the lease heartbeat) is awaited before every message; when it throws the pass ends there with nothing started', async () => {
+  const db = await setup(); cap1x(db, 3); warmed(db)
+  lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  const s = sendStub(NOW)
+  let beats = 0
+  const keep = async () => { if (++beats === 2) throw new Error('lease lost') }
+  await assert.rejects(() => runAutopilot(db, 'A', 'Acme', { ...s.d, keep }))
+  assert.equal(beats, 2) // awaited before each message
+  assert.equal(s.calls.length, 1) // the first went; the second never started
+  assert.equal(sentCount(db), 1)
+})
+
+test('#448 parity: a lead refused for a reason the user can clear is tried again an hour later; a transient store error on the next tick; a personal address never', async () => {
+  // A retryable refusal (recorded an hour ago) no longer excludes the lead.
+  { const db = await setup(); ok(db); warmed(db)
+    const l = lead(db, 'a@one.example')
+    db.prepare("INSERT INTO autopilot_audit (id, tenant_id, lead_id, action, detail, created_at) VALUES ('skippedretryable00001','A',?,'skipped','lead_ungraded',?)").run(l, NOW - 3700)
+    const s = sendStub(NOW)
+    const r = await runAutopilot(db, 'A', 'Acme', s.d)
+    assert.equal(r.sent, 1) // retried and sent after the hour
+    assert.equal(s.calls.length, 1) }
+  // A transient store error on the draft path is tried again on the next tick.
+  { const db = await setup(); ok(db); warmed(db)
+    lead(db, 'a@one.example')
+    const heal = breakPrepare(db, 'l.company, l.name, l.contact', 50) // the lead read inside createDraft
+    const s1 = sendStub(NOW)
+    const r1 = await runAutopilot(db, 'A', 'Acme', s1.d)
+    heal()
+    assert.equal(r1.sent, 0)
+    assert.ok(audits(db).some(a => a.action === 'skipped' && a.detail === 'error'))
+    const s2 = sendStub(NOW + 601)
+    const r2 = await runAutopilot(db, 'A', 'Acme', s2.d)
+    assert.equal(r2.sent, 1) // next tick: drafted and sent
+    assert.equal(s2.calls.length, 1) }
+  // A personal address is refused once and never retried.
+  { const db = await setup(); ok(db); warmed(db)
+    lead(db, 'someone@gmail.com')
+    const s1 = sendStub(NOW)
+    const r1 = await runAutopilot(db, 'A', 'Acme', s1.d)
+    assert.equal(r1.sent, 0)
+    assert.equal(r1.skipped, 1)
+    const n = audits(db).filter(a => a.action === 'skipped' && a.detail === 'personal_email').length
+    const s2 = sendStub(NOW + 7200)
+    const r2 = await runAutopilot(db, 'A', 'Acme', s2.d)
+    assert.equal(r2.sent, 0)
+    assert.equal(s2.calls.length, 0)
+    assert.equal(audits(db).filter(a => a.action === 'skipped' && a.detail === 'personal_email').length, n) }
+})
+
+test('#448 parity: a lead the draft path refuses is skipped once - one audit row over two passes, and the lower-scored leads behind it are reached', async () => {
+  const db = await setup(); ok(db); warmed(db)
+  lead(db, 'someone@gmail.com', 95) // refused: personal address
+  lead(db, 'b@two.example', 80)     // behind it in score order: still reached
+  const s1 = sendStub(NOW)
+  const r1 = await runAutopilot(db, 'A', 'Acme', s1.d)
+  assert.equal(r1.sent, 1) // the lower-scored lead was reached
+  assert.equal(s1.calls.length, 1)
+  const skipped = () => audits(db).filter(a => a.action === 'skipped' && a.detail === 'personal_email')
+  assert.equal(skipped().length, 1)
+  const s2 = sendStub(NOW + 60)
+  await runAutopilot(db, 'A', 'Acme', s2.d)
+  assert.equal(skipped().length, 1) // one audit row over two passes
+  assert.equal(s2.calls.length, 0)
+})
+
+test('#448 parity: leads of a scan still running are not candidates (no skipped row); once the scan is done they are drafted and sent', async () => {
+  const db = await setup(); ok(db); warmed(db)
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES ('leadrunning00000000001', ?, 'Co Run', 'a@one.example', 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, 80)").run(job)
+  db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = 'leadrunning00000000001'").run()
+  const s1 = sendStub(NOW)
+  const r1 = await runAutopilot(db, 'A', 'Acme', s1.d)
+  assert.equal(r1.sent, 0)
+  assert.equal(r1.skipped, 0) // not a refusal: simply not a candidate yet
+  assert.equal(s1.calls.length, 0)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
+  const s2 = sendStub(NOW + 60)
+  const r2 = await runAutopilot(db, 'A', 'Acme', s2.d)
+  assert.equal(r2.sent, 1)
+  assert.equal(s2.calls.length, 1)
+})
+
+test('#448 parity: leads of a budgeted scan or a trial-funded scan are never drafted by the drain; an ordinary scan\'s are', async () => {
+  for (const mark of ["UPDATE scan_jobs SET run_budget = 100", "UPDATE scan_jobs SET funded_by = 'trial'"] as const) {
+    const db = await setup(); ok(db); warmed(db)
+    lead(db, 'a@one.example')
+    db.exec(mark)
+    const s = sendStub(NOW)
+    const r = await runAutopilot(db, 'A', 'Acme', s.d)
+    assert.equal(r.sent, 0)
+    assert.equal(s.calls.length, 0)
+    assert.equal(msgRow(db).length, 0) // never drafted
+  }
+  const db = await setup(); ok(db); warmed(db)
+  lead(db, 'a@one.example')
+  const s = sendStub(NOW)
+  const r = await runAutopilot(db, 'A', 'Acme', s.d)
+  assert.equal(r.sent, 1)
+})
+
+test('#448 parity: query plans - the skipped-row check searches autopilot_audit by lead, the disables count by action', async () => {
+  const db = await setup(); ok(db)
+  const plan = (sql: string) => (db.prepare('EXPLAIN QUERY PLAN ' + sql).all() as { detail: string }[]).map(r => r.detail).join(' | ')
+  const skipped = plan("SELECT 1 FROM autopilot_audit WHERE tenant_id = 'A' AND lead_id = 'x' AND action = 'skipped'")
+  assert.match(skipped, /SEARCH autopilot_audit USING (COVERING )?INDEX .*lead/i)
+  const disables = plan("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = 'A' AND action = 'disabled'")
+  assert.match(disables, /SEARCH autopilot_audit USING (COVERING )?INDEX .*action/i)
+})
