@@ -490,7 +490,7 @@ test('OWNER RETRY SCOPE: releasing one held claim never releases or runs the oth
   const calls: Calls = { apollo: 0, pdl: 0 }
   const r = await retryHeldEnrichment(db, 'u1', 'lead1', { provider: 'apollo', step: 'people' }, { fetchImpl: router(async () => ok({ people: [] }), async () => ok(PDL_OK), calls), master })
   assert.deepEqual(r, { status: 'retried', attached: 0, releases: ['apollo people'] })
-  assert.equal(calls.apollo, 1, 'only the selected apollo people step re-ran')
+  assert.equal(calls.apollo, 2, 'only the selected apollo people step re-ran: the role-filtered query plus its at-most-one 0-credit unfiltered fallback (#383); the org step resumed on its memo, no org call')
   assert.equal(calls.pdl, 0, 'PDL was neither released nor run by the apollo action')
   const pdl = db.prepare("SELECT status FROM connector_claims WHERE connector = 'enrich:pdl'").get() as { status: string }
   assert.equal(pdl.status, 'reserved', 'the PDL claim stays held for its own owner action')

@@ -68,8 +68,14 @@ function orgOf(p: Record<string, unknown>): { name: string | null; domain: strin
 }
 
 // 0 credits. People come back with no emails/phones; we strip them even if present.
-export async function apolloPeopleSearch(apiKey: string, org: { domain?: string | null; name: string }, fetchImpl: typeof fetch = fetch, max = 5): Promise<ApolloPerson[]> {
+// `role`: the reviewed buyer persona (the scan ICP's who list) as titles, sent BEFORE the page cap so a
+// buyer beyond the first unfiltered page is still returned (#383). Only what the tenant reviewed goes
+// into the query: seniorities/functions are never invented from title words (a wrong derived seniority
+// would exclude the very buyer the filter exists to find).
+export async function apolloPeopleSearch(apiKey: string, org: { domain?: string | null; name: string }, fetchImpl: typeof fetch = fetch, max = 5, role?: { titles: string[] }): Promise<ApolloPerson[]> {
   const body: Record<string, unknown> = { per_page: max, page: 1 }
+  const titles = (role?.titles ?? []).map(t => t.trim()).filter(Boolean).slice(0, 10)
+  if (titles.length) body.person_titles = titles
   if (org.domain) body.q_organization_domains = org.domain
   else body.q_organization_name = org.name
   const j = await call(apiKey, '/api/v1/mixed_people/api_search', body, fetchImpl) as { people?: Record<string, unknown>[] }
