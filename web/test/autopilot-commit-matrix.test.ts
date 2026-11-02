@@ -444,3 +444,84 @@ test('#448 parity: reservations - a known-not-sent refusal releases the cap; an 
     assert.equal(s2.calls.length, 0)
     assert.equal(workRow(db).reason, 'daily_cap') }
 })
+
+// A prepare that throws once (or always) for a matching statement: store faults inside the send commitment.
+const breakPrepare = (db: Database.Database, match: string, times = 1) => {
+  const orig = db.prepare.bind(db)
+  let left = times
+  ;(db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string, ...rest: unknown[]) => {
+    if (left > 0 && sql.includes(match)) { left--; throw new Error('store fault') }
+    return orig(sql, ...rest as [])
+  }) as typeof db.prepare
+  return () => { (db as unknown as { prepare: typeof db.prepare }).prepare = orig }
+}
+
+test('#448 parity: the volume authority cannot be read at the send commitment (the store fails once during the token refresh): refused, nothing sent, read again next pass', async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  const d = injectAtToken(at(s.d, NOW + DAY + 1), () => breakPrepare(db, 'autopilot_settings'))
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 0)
+  assert.equal(s.calls.length, 1)
+  assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
+  assert.equal(workRow(db).reason, 'authority_unreadable')
+  // Read again next pass: the store healed, the draft sends.
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(s.d, NOW + DAY + 2))
+  assert.equal(r2.sent, 1)
+  assert.equal(s.calls.length, 2)
+})
+
+test('#448 parity: the commit mark cannot be written: no send (fail closed), the slot released, the draft held and read again next pass', async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  // The reservation row is gone when the commit mark runs (a store fault lost it): the CAS finds nothing to mark.
+  const d = injectAtToken(at(s.d, NOW + DAY + 1), () => db.prepare("DELETE FROM autopilot_audit WHERE action = 'send_reserved'").run())
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 0)
+  assert.equal(s.calls.length, 1)
+  assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
+  assert.equal(workRow(db).reason, 'reservation_lost')
+  const r2 = await runAutopilot(db, 'A', 'Acme', at(s.d, NOW + DAY + 2))
+  assert.equal(r2.sent, 1)
+  assert.equal(s.calls.length, 2)
+})
+
+test('#448 parity: the reservation store vanishes inside the refresh: nothing sent, the draft is NOT left approved by autopilot, the pass fails', async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  const d = injectAtToken(at(s.d, NOW + DAY + 1), () => db.prepare('DROP TABLE autopilot_audit').run())
+  await assert.rejects(() => runAutopilot(db, 'A', 'Acme', d))
+  assert.equal(s.calls.length, 1)
+  const m = heldRow(db, heldTo)
+  assert.equal(m.approved_hash, null) // never left approved by autopilot
+})
+
+test("#448 parity (redesigned): a held draft's work row gone at the commitment is its authority ended - nothing sent, back with the user", async () => {
+  // #448 expected the send to go and the pass to fail on the queue. The evolved drain deliberately refuses instead:
+  // the work row must still be there at the commitment, because disable() removes it (autopilot.ts deliver's commit).
+  const { db, s, heldTo } = await heldAfterOneSend()
+  const d = injectAtToken(at(s.d, NOW + DAY + 1), () => db.prepare("DELETE FROM autopilot_work WHERE tenant_id = 'A'").run())
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 0)
+  assert.equal(s.calls.length, 1)
+  assert.equal(r.stopped, 'autopilot_off')
+  assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
+  assert.ok(audits(db).some(a => a.action === 'released'))
+})
+
+test('#448 parity: the store stays unreadable from the send commitment on: the pass fails, nothing is sent', async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  breakPrepare(db, 'autopilot_settings', 1_000_000) // from the commitment on, every settings read fails
+  await assert.rejects(() => runAutopilot(db, 'A', 'Acme', at(s.d, NOW + DAY + 1)))
+  assert.equal(s.calls.length, 1)
+  assert.equal(heldRow(db, heldTo).approved_hash, null)
+  // A crashed send's reap to uncertain (and never resending it) is covered by first-touch-drain's restart test.
+})
+
+test("#448 parity: the autopilot settings read fails once during the token refresh (the send path's own paused check): authority_unreadable, nothing sent, held and unapproved", async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  // The fault lands inside service.ts's own recheck (its paused read), which fails closed as authority_unreadable.
+  const d = injectAtToken(at(s.d, NOW + DAY + 1), () => breakPrepare(db, 'autopilot_settings'))
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 0)
+  assert.equal(s.calls.length, 1)
+  assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
+  assert.equal(workRow(db).reason, 'authority_unreadable')
+})
