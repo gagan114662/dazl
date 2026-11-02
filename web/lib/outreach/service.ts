@@ -14,7 +14,7 @@ import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
-import { pickCrawledEmail } from './published-email.ts'
+import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -184,6 +184,17 @@ type CrawledRows = NonNullable<Parameters<typeof domainReviewFor>[1]>
 function readCrawledRows(db: Database.Database, tenantId: string, leadId: string): CrawledRows {
   return db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(leadId, tenantId) as CrawledRows
 }
+// The pages a draft for this lead may cite, for the launch claim check (claimIssuesFor): read from the store so a
+// send gate can check a made draft without re-deriving the address. The crawl rows unreadable is not fatal here:
+// the draft itself was made under the same read, so a missing table shrinks the allowlist to the cited pages.
+export function draftEvidenceUrlsFor(db: Database.Database, tenantId: string, leadId: string): string[] {
+  const row = db.prepare('SELECT contact, source_url FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null } | undefined
+  if (!row) return []
+  let crawled: CrawledRows = []
+  try { crawled = readCrawledRows(db, tenantId, leadId) } catch { /* enrichment table not present */ }
+  return draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled })
+}
+
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
 // after the draft was made). A draft made before this check existed, or whose confirmation was later withdrawn, cannot be approved or sent.
 export type DomainReviewStatus = 'ok' | 'required' | 'unreadable' | 'quarantined'
@@ -232,7 +243,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   // themselves from the needs-review list. A human confirmation is the user's own
   // checked decision, labelled as such in the UI; it never rewrites the machine verdict.
   if (evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
+// Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
   // grade, and the lead must not be emailed until a rescan grades it successfully. A real
   // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
@@ -249,14 +260,10 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   try {
     crawled = readCrawledRows(db, tenantId, lead.id)
     const r = pickCrawledEmail(crawled)
-    if (r && !contactIsEmail) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
-    // A contact that equals a crawled address is not proof the cited page printed it: cite the page the crawler actually
-    // saved for that address (the table keeps one record per address), never the signal/news URL. The recipient and the
-    // identity rules are unchanged. A contact the crawl never recorded keeps the cited page.
-    if (contactIsEmail) {
-      const same = crawled.find(x => x.connector === 'sitecrawl' && x.kind === 'email' && norm(x.value) === norm(published) && x.source_url)
-      if (same?.source_url) addressUrl = same.source_url
-    }
+    if (r && !contactIsEmail) published = r.value
+    // The cited page: the one rule in published-email.ts (the crawl's own record of the address where it exists,
+    // never the signal/news URL). The recipient and the identity rules are unchanged.
+    addressUrl = addressCitationUrl({ contact: lead.contact, source_url: lead.source_url, enrichments: crawled }) ?? lead.source_url
   } catch { /* enrichment table not present */ }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')

@@ -55,6 +55,13 @@ export function domainBasisFor(email: string, enrichments: PublishedEmailLead['e
   const w = rs.reduce((m, r) => (r.basis!.rank < m.basis!.rank ? r : m))
   return { kind: w.basis!.kind, url: w.x.source_url ?? null, domain: w.domain }
 }
+// Candidate-selection SQL for "this lead may have a published recipient", shared by autopilot's candidate query
+// (autopilot.ts newLeadsSql) and launch calibration's sample audience (calibration.ts): the lead's own contact is
+// stored, or its sitecrawl recorded an email. A deliberate superset of the JS projection below - address shape
+// (PUBLISHED_EMAIL_RE) and the newest-crawled-first choice are judged only by pickCrawledEmail/publishedContact, the
+// same projection the draft and send gates apply - so eligibility never depends on WHERE the contact was stored.
+// Carries one '?' (tenant id) inside the EXISTS. SQL both engines accept (db/client.ts).
+export const PUBLISHED_RECIPIENT_CANDIDATE_SQL = `(l.contact IS NOT NULL OR EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.connector = 'sitecrawl' AND e.kind = 'email'))`
 // The crawled address a draft would use. One rule for the UI and for createDraft: newest retrieved first.
 export function pickCrawledEmail<T extends { connector: string; kind: string; value: string; retrieved_at?: number | null }>(enrichments: T[] | undefined): T | null {
   const c = (enrichments ?? []).filter(x => x.connector === 'sitecrawl' && x.kind === 'email' && PUBLISHED_EMAIL_RE.test(address(x.value)))
@@ -82,6 +89,26 @@ export function classifyPurpose(email: string, context?: ContactContext | null):
   if(isRecruitingInbox(email)||NON_SALES.has(first)||restriction)return {purpose:'non-sales',hint:restriction??first}
   const positive=context?.excerpt && /\b(sales (inquir|enquir)|business (inquir|enquir)|partnership (inquir|enquir))/.test(context.excerpt.toLowerCase())
   return {purpose:positive?'sales':'unknown',hint:positive?'business inquiry context':'purpose not established'}
+}
+
+// The page a draft cites as the place the recipient address is published (createDraft's addressUrl): the cited
+// page for a direct contact, the company's own contact page for a crawled one - and the crawl's record of even a
+// direct contact when it has one (equality with the contact does not prove the cited page printed it).
+export function addressCitationUrl(lead: PublishedEmailLead): string | null {
+  const primary = address(lead.contact)
+  if (PUBLISHED_EMAIL_RE.test(primary)) {
+    const same = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && address(x.value) === primary && x.source_url)
+    return same?.source_url ?? lead.source_url ?? null
+  }
+  const e = pickCrawledEmail(lead.enrichments)
+  if (e) return e.source_url ?? lead.source_url ?? null
+  return lead.source_url ?? null
+}
+// Every page a draft for this lead may cite: the address-citation page plus the lead's cited signal page (the
+// saved excerpt rides with it). The launch claim check (launch-policy.ts claimIssuesFor) allows links on exactly
+// these pages, so a draft's own citations never depend on WHERE the contact was stored.
+export function draftEvidenceUrls(lead: PublishedEmailLead): string[] {
+  return [...new Set([addressCitationUrl(lead), lead.source_url].filter((u): u is string => !!u))]
 }
 
 export function publishedContact(lead: PublishedEmailLead): PublishedContact | null {

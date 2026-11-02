@@ -16,6 +16,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { approveBlockReason, createDraft, getSettings, OutreachError, type Deps } from './service.ts'
 import { getState, liftLaunchPause, MIN_CONFIDENCE } from './autopilot.ts'
 import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, REQUIRED_STOPS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
+import { PUBLISHED_RECIPIENT_CANDIDATE_SQL, publishedContact, draftEvidenceUrls } from './published-email.ts'
 
 // Receipt evidence: the message with this Message-ID is in the mailbox's INBOX. Any error or absence is "not received".
 async function receivedInInbox(token: string, messageId: string, fetchImpl: typeof fetch): Promise<boolean> {
@@ -76,23 +77,29 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
   const mailbox = gmailStatus(db, tenantId)
   const connected = mailbox?.status === 'active' ? mailbox.email.toLowerCase() : null
 
-  // samples: the audience's best verified leads with a contact, as autopilot would pick them, skipping excluded recipients.
+  // samples: the audience's best verified leads with a published recipient, as autopilot would pick them, skipping excluded recipients.
   // A sample draft is an ordinary draft the tenant owns: autopilot never re-drafts a lead that already has a message, so
   // these leads are sent by hand (or deleted) by the tenant, never by the launch; they appear as drafts in Outreach.
   const candidates = db.prepare(
     `SELECT l.id, l.contact, l.source_url, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.contact IS NOT NULL AND l.quarantined_at IS NULL
-     ORDER BY l.score DESC LIMIT 200`).all(tenantId, MIN_CONFIDENCE) as { id: string; contact: string; source_url: string | null; play: string }[]
+     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND ${PUBLISHED_RECIPIENT_CANDIDATE_SQL} AND l.quarantined_at IS NULL
+     ORDER BY l.score DESC LIMIT 200`).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string | null; source_url: string | null; play: string }[]
+  const crawlRows = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl'")
   const samples: SampleDraft[] = []
   for (const c of candidates) {
     if (samples.length >= MIN_SAMPLE_DRAFTS) break
-    if (outsidePolicy(policy, c.play, c.contact)) continue
+    // The ONE recipient projection (published-email.ts): the address a draft would use, from the cited page or the
+    // company's own crawled contact page. A lead with no published recipient anywhere is not a sample (the draft
+    // gate's no_email_contact), and the policy's audience/exclusions judge the address the draft would actually use.
+    const pc = publishedContact({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] })
+    if (!pc) continue
+    if (outsidePolicy(policy, c.play, pc.email)) continue
     const existing = db.prepare("SELECT id FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status = 'draft' ORDER BY created_at DESC LIMIT 1").get(tenantId, c.id) as { id: string } | undefined
     let id = existing?.id
     // a lead createDraft refuses (its own gate) is not a sample; a store fault is not "too few samples" and surfaces
     if (!id) { try { id = createDraft(db, tenantId, c.id, businessName) } catch (e) { if (e instanceof OutreachError) continue; throw e } }
     const body = (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(id) as { body: string }).body
-    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, c.source_url ? [c.source_url] : [])))
+    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }))))
   }
 
   // integration check: only when the connected mailbox is the policy's sender, and only to the owned test inbox

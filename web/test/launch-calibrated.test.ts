@@ -50,7 +50,7 @@ const play = (db: Database.Database) => {
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
   return job
 }
-function lead(db: Database.Database, job: string, contact: string, score = 80) {
+function lead(db: Database.Database, job: string, contact: string | null, score = 80) {
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, job, 'Co ' + id.slice(0, 4), contact, 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, score)
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE id = ?").run(id)
@@ -119,6 +119,34 @@ test('calibration: samples stay drafts, the only message goes to the owned test 
   const run = await runAutopilot(db, 'A', 'Acme', g.d)
   assert.equal(run.sent, 2); assert.deepEqual(g.to(), ['d@four.example', 'e@five.example'])
   assert.ok(!recentAutopilotAudit(db, 'A').some(a => a.action === 'held_warmup'))
+})
+
+test('calibration samples a crawl-only-email lead through the one recipient projection; purpose and policy still exclude (refs #412)', async () => {
+  const db = await setup(); const job = play(db)
+  lead(db, job, 'a@one.example'); lead(db, job, 'b@two.example')
+  const enrich = (id: string, domain: string, email: string) => {
+    db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', ?, '2026-10-22', 1)").run(id, `${domain}|evidence_own_domain`, `https://${domain}/`)
+    db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', ?, NULL, ?, '2026-10-22', 2)").run(id, email, `https://${domain}/contact`)
+  }
+  const crawlOnly = lead(db, job, null); enrich(crawlOnly, 'northside.example', 'sales@northside.example')
+  const support = lead(db, job, null); enrich(support, 'northside.example', 'support@northside.example')
+  const excluded = lead(db, job, null); enrich(excluded, 'customer.example', 'boss@customer.example')
+  acceptLaunchPolicy(db, 'A', policy([job]), NOW)
+  const cal = gmail()
+  const r = await runCalibration(db, 'A', 'Acme', cal.d)
+  assert.deepEqual(r, { ok: true, failures: [], heldLeads: [] })
+  const draftedTo = db.prepare('SELECT to_email FROM outreach_messages').all().map(m => (m as { to_email: string }).to_email)
+  assert.ok(draftedTo.includes('sales@northside.example'), 'a lead whose contact was never stored is sampled on its company-published address')
+  assert.ok(!draftedTo.includes('support@northside.example'), 'the purpose gate refuses a non-sales inbox, wherever it was found')
+  assert.ok(!draftedTo.includes('boss@customer.example'), 'the policy exclusion judges the address the draft would use, not the stored contact')
+  // launched: a new crawl-only lead is SENT under the calibrated launch - the claim check allows the draft's own
+  // citation pages (the company contact page the draft cites by policy), so sending no longer depends on storage either
+  const fresh = lead(db, job, null); enrich(fresh, 'riverside.example', 'sales@riverside.example')
+  const g = gmail()
+  const run = await runAutopilot(db, 'A', 'Acme', g.d)
+  assert.deepEqual(g.to(), ['sales@riverside.example'], 'the crawl-only first touch goes out under the launch')
+  assert.equal(run.sent, 1)
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'skipped' && a.detail === 'excluded' && a.lead_id === excluded), 'the excluded crawl-only lead is refused by the policy, not by its storage')
 })
 
 test('failed checks hold the launch: test inbox not reached, too few samples, a different mailbox, a policy without authority', async () => {

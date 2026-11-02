@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { drainVerifiedPendingLifecycle, LIFECYCLE_NOT_CONVERTED } from './lifecycle.ts'
+import { PUBLISHED_RECIPIENT_CANDIDATE_SQL } from './published-email.ts'
+import { draftEvidenceUrlsFor } from './service.ts'
+import { publishedContact } from './published-email.ts'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -353,7 +356,7 @@ export function newLeadsSql(scope = ''): string {
      WHERE j.user_id = ? AND j.status = 'done' AND (j.enrich_started_at IS NULL OR j.enrich_finished_at IS NOT NULL OR j.enrich_started_at < ?)
        AND j.run_budget IS NULL AND j.funded_by <> 'trial'
        AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.quarantined_at IS NULL
-       AND (l.contact IS NOT NULL OR EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.connector = 'sitecrawl' AND e.kind = 'email'))
+       AND ${PUBLISHED_RECIPIENT_CANDIDATE_SQL}
        AND ${LIFECYCLE_NOT_CONVERTED}
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
@@ -426,7 +429,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const m = messageId ? db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { to_email: string; subject: string; body: string } | undefined : undefined
     const outside = outsidePolicy(gate.policy, row?.play ?? '', m?.to_email ?? row?.contact ?? '')
     if (outside) return outside
-    if (m && claimIssuesFor(gate.policy, `${m.subject}\n${m.body}`, row?.source_url ? [row.source_url] : []).length) return 'claims'
+    if (m && claimIssuesFor(gate.policy, `${m.subject}\n${m.body}`, draftEvidenceUrlsFor(db, tenantId, leadId)).length) return 'claims'
     return null
   }
   // A launch stop ends the pass: the drafted message (if any) goes back to the tenant - it was approved under authority
@@ -698,9 +701,12 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
   if (started.calibrated) {
     const { audience, exclusions } = started.policy
     const like = (d: string) => '%@' + d.replace(/[\\%_]/g, c => '\\' + c)
+    // Exclusions judge the address the draft would use, never where a contact happens to be stored: a stored contact
+    // is filtered here, a lead whose recipient lives only in the crawl (contact NULL) reaches the loop, where the
+    // same policy judges the projected address (below) and the send gate judges the draft's real recipient.
     scopeSql = ` AND j.id IN (${audience.playIds.map(() => '?').join(', ')})`
-      + (exclusions.emails.length ? ` AND lower(l.contact) NOT IN (${exclusions.emails.map(() => '?').join(', ')})` : '')
-      + exclusions.domains.map(() => " AND lower(l.contact) NOT LIKE ? ESCAPE '\\'").join('')
+      + (exclusions.emails.length ? ` AND (l.contact IS NULL OR lower(l.contact) NOT IN (${exclusions.emails.map(() => '?').join(', ')}))` : '')
+      + exclusions.domains.map(() => " AND (l.contact IS NULL OR lower(l.contact) NOT LIKE ? ESCAPE '\\')").join('')
     scopeArgs = [...audience.playIds, ...exclusions.emails, ...exclusions.domains.map(like)]
   }
   const leads = db.prepare(newLeadsSql(scopeSql)).all(tenantId, now - ENRICH_STALE_S, MIN_CONFIDENCE, tenantId, tenantId, tenantId, now - SKIP_ERROR_S, now - SKIP_RETRY_S, ...scopeArgs) as { id: string; contact: string }[]
@@ -717,6 +723,15 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     try { beforeLaunch = launchStop(gate, l.id, null) } catch (e) { captureError(e, { source: 'worker', where: 'autopilot:launch-stop', tenantId }); tryPause('stop_check_unavailable'); return stop('stop_check_unavailable') }
     if (beforeLaunch === 'not_in_audience' || beforeLaunch === 'excluded') { out.skipped++; attempt(() => audit(db, tenantId, 'skipped', beforeLaunch, l.id)); continue }
     if (beforeLaunch) return launchEnded(beforeLaunch, l.id)
+    if (gate.calibrated) {
+      // The launch's audience/exclusions on the ONE projected recipient (published-email.ts): a crawl-only or
+      // phone-only lead is judged by the address createDraft would use, exactly as calibration's samples are.
+      const leadRow = db.prepare('SELECT contact, source_url, scan_job_id AS play FROM leads WHERE id = ?').get(l.id) as { contact: string | null; source_url: string | null; play: string } | undefined
+      const crawled = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl'").all(l.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[]
+      const pc = publishedContact({ contact: leadRow?.contact ?? null, source_url: leadRow?.source_url ?? undefined, enrichments: crawled })
+      const out2 = pc ? outsidePolicy(gate.policy, leadRow?.play ?? '', pc.email) : null
+      if (out2) { out.skipped++; attempt(() => audit(db, tenantId, 'skipped', out2, l.id)); continue }
+    }
     let id: string
     let context: string | null
     try {
@@ -789,7 +804,7 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
     const m2 = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { to_email: string; subject: string; body: string } | undefined
     const outside = outsidePolicy(g2.policy, row?.play ?? '', m2?.to_email ?? row?.contact ?? '')
     if (outside) return 'launch_policy_changed'
-    if (m2 && claimIssuesFor(g2.policy, `${m2.subject}\n${m2.body}`, row?.source_url ? [row.source_url] : []).length) return 'launch_policy_changed'
+    if (m2 && claimIssuesFor(g2.policy, `${m2.subject}\n${m2.body}`, draftEvidenceUrlsFor(db, tenantId, leadId)).length) return 'launch_policy_changed'
     return null
   }
   // Caller-side authority for each drain send, checked by the send path as its last word before Gmail (the service
@@ -828,7 +843,7 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
       const play = db.prepare('SELECT scan_job_id AS play, source_url FROM leads WHERE id = ?').get(m.lead_id) as { play: string; source_url: string | null } | undefined
       const words = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(m.id, tenantId) as { subject: string; body: string } | undefined
       // Out of the policy's scope, or claims it did not allow: never sent by the drain; left held for the tenant.
-      if (!play || !words || outsidePolicy(gate.policy, play.play, m.to_email) || claimIssuesFor(gate.policy, `${words.subject}\n${words.body}`, play.source_url ? [play.source_url] : []).length) { out.held++; continue }
+      if (!play || !words || outsidePolicy(gate.policy, play.play, m.to_email) || claimIssuesFor(gate.policy, `${words.subject}\n${words.body}`, draftEvidenceUrlsFor(db, tenantId, m.lead_id)).length) { out.held++; continue }
     }
     const domain = m.to_email.split('@')[1]
     if (autoSent24h(db, tenantId, now) >= Math.min(st.daily_cap, gate.calibrated ? gate.cap : Number.MAX_SAFE_INTEGER)) { setHold(db, tenantId, m.id, m.lead_id, 'daily_cap', dailyCapDueAt(db, tenantId, now)); out.held++; continue }
