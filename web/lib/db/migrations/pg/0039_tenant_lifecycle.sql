@@ -3,8 +3,8 @@
 -- BEFORE UPDATE OF the tenant column or parent key, that refuse a row for a deleted tenant (or under one of its deleted
 -- parents) whether it is inserted or moved there, so in-flight work or a late write cannot recreate erased data and no
 -- row can change hands into a deleted tenant. Generated from lib/db/tenant-guard.ts through scripts/pg-migrate
--- (translate-schema.ts): 172 guard triggers on current main (86 guarded tables incl. autopilot_work, seller_decisions
--- and connector_claims, which postdate the fork). Do not edit by hand; regenerate.
+-- (translate-schema.ts): 174 guard triggers on current main (87 guarded tables, incl. autopilot_launch_policy since
+-- #553). Do not edit by hand; regenerate.
 CREATE TABLE tenant_tombstone_keys (
       deleted_tenant TEXT NOT NULL,
       tbl            TEXT NOT NULL,
@@ -39,6 +39,15 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_autopilot_audit ON autopilot_audit;
 CREATE TRIGGER tomb_autopilot_audit BEFORE INSERT ON autopilot_audit FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_autopilot_audit();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_autopilot_launch_policy() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_autopilot_launch_policy ON autopilot_launch_policy;
+CREATE TRIGGER tomb_autopilot_launch_policy BEFORE INSERT ON autopilot_launch_policy FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_autopilot_launch_policy();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_autopilot_settings() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -770,6 +779,16 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_autopilot_audit ON autopilot_audit;
 CREATE TRIGGER tomb_upd_autopilot_audit BEFORE UPDATE OF tenant_id ON autopilot_audit FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_autopilot_audit();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_autopilot_launch_policy() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  PERFORM pg_advisory_xact_lock_shared(hashtext(OLD.tenant_id));
+  IF (NEW.tenant_id IS DISTINCT FROM OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_autopilot_launch_policy ON autopilot_launch_policy;
+CREATE TRIGGER tomb_upd_autopilot_launch_policy BEFORE UPDATE OF tenant_id ON autopilot_launch_policy FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_autopilot_launch_policy();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_autopilot_settings() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
