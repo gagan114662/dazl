@@ -92,6 +92,7 @@ try {
       const stepText = await page.getByTestId('free-site-read').locator('..').innerText()
       assert.match(stepText, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').slice(0, 60)), `${name}: the real reason`)
       assert.doesNotMatch(stepText, /free search|free scans? to start|3 free/i, `${name}: no free-start promise`)
+      assert.doesNotMatch(stepText, /yourself\.Your provider/, `${name}: a space between the reason and the provider line`)
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${width}px`)
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`), fullPage: true })
       assert.deepEqual(writes, ['POST /api/scan/icp-from-url'], `${name}: only the one site-read request`)
