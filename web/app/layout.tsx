@@ -3,18 +3,18 @@ import { Geist } from 'next/font/google'
 import './globals.css'
 import { chunkRecoveryScript } from '@/lib/chunk-recovery'
 import { isStaging, STAGING_BANNER } from '@/lib/staging'
-import { SITE_BASE } from '@/lib/site'
+import { SITE_BASE, SITE_DESCRIPTION, SITE_TITLE } from '@/lib/site'
 import ClientErrorReporter from './client-error-reporter'
 
 const geist = Geist({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_BASE),
-  title: 'dazl - find leads with proof',
-  description: 'Say who you are looking for. dazl finds buyers showing intent and verifies each lead against its source.',
-  // #534: social previews on every public page (pages keep their own title/canonical).
-  openGraph: { type: 'website', siteName: 'dazl', url: SITE_BASE, title: 'dazl - find leads with proof', description: 'Say who you are looking for. dazl finds buyers showing intent and verifies each lead against its source.' },
-  twitter: { card: 'summary_large_image', title: 'dazl - find leads with proof', description: 'Say who you are looking for. dazl finds buyers showing intent and verifies each lead against its source.' },
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+  // #534: the fallback social preview. Public pages set their own (lib/site.ts publicMeta) so og:url/og:title are theirs.
+  openGraph: { type: 'website', siteName: 'dazl', title: SITE_TITLE, description: SITE_DESCRIPTION },
+  twitter: { card: 'summary_large_image', title: SITE_TITLE, description: SITE_DESCRIPTION },
   // staging is never indexed (also app/robots.ts and the X-Robots-Tag header in next.config.ts)
   ...(isStaging() ? { robots: { index: false, follow: false } } : {}),
 }

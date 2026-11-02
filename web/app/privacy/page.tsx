@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
-import { SITE_BASE } from '@/lib/site'
+import { SITE_BASE, publicMeta } from '@/lib/site'
 import { DRAFT_NOTICE, PRIVACY } from '@/lib/legal/policy'
-export const metadata: Metadata = { title: 'Privacy Policy - dazl', alternates: { canonical: `${SITE_BASE}/privacy` } }
+export const metadata: Metadata = { ...publicMeta('/privacy', 'Privacy Policy - dazl', 'What data dazl collects, how it is used and shared, and your rights.'), alternates: { canonical: `${SITE_BASE}/privacy` } }
 
 // Text and facts live in lib/legal/policy.ts, held to the code by test/legal-policy.test.ts (#535).
 export default function Privacy() {

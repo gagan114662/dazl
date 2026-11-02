@@ -72,7 +72,7 @@ body { font-size: 16px; line-height: 1.5; }
   --line: rgba(44, 0, 42, 0.08);
   --line-2: rgba(44, 0, 42, 0.16);
   --soft: #f8e5d4;    /* the peach secondary button */
-  --live: #1f8a5b;
+  --live: #1b7a51;   /* #534: was #1f8a5b (4.3:1 on white); now 5.3:1 for the 12px live-dot text */
   --peach: #ffbd7a; --peach-bg: #fdeedf;
   --pink: #e8456e; --pink-bg: #fde7ec;
   --lav: #8a4dff; --lav-bg: #f1eaff;
@@ -202,3 +202,5 @@ body { font-size: 16px; line-height: 1.5; }
 .skip-link:focus-visible { left: 0; outline: 2px solid #fff; outline-offset: 2px; }
 /* #534: marketing nav links meet the 44px touch target. */
 .lp-navlink { display: inline-flex; align-items: center; min-height: 2.75rem; }
+/* #534: the app's mobile Menu toggle is a visually hidden checkbox; show its keyboard focus on the visible label. */
+#navtoggle:focus-visible ~ header label[for="navtoggle"] { outline: 3px solid rgba(138,77,255,.4); outline-offset: 2px; }

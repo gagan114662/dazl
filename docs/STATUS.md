@@ -153,6 +153,7 @@ Updated by the builder on every branch. Newest first.
   tenant) recoverable through GET /api/leads/evidence. CSV origin cells say only what is recorded (copy / unreadable / confirmed by
   you); blank claims nothing. Limits: SQLite-only table (deletion requests: see b/evidence-purge), English wall-phrase list, silent truncation
   undetected, no live-yield evidence.
+- PR #567 b/534-frontend-baseline (Refs #534): axe/keyboard/overflow check on 9 pages x desktop + EMULATED iPhone 13/Pixel 7 and served-HTML metadata check (web/docs/FRONTEND-BASELINE.md); physical-device, screen-reader and live social-preview checks not done.
 
 ## In progress (interactive Claude session, do not duplicate)
 

@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
-import { SITE_BASE } from '@/lib/site'
+import { SITE_BASE, publicMeta } from '@/lib/site'
 import { DRAFT_NOTICE, TERMS } from '@/lib/legal/policy'
-export const metadata: Metadata = { title: 'Terms of Service - dazl', alternates: { canonical: `${SITE_BASE}/terms` } }
+export const metadata: Metadata = { ...publicMeta('/terms', 'Terms of Service - dazl', 'The terms of service for using dazl.ai.'), alternates: { canonical: `${SITE_BASE}/terms` } }
 
 // Text and facts live in lib/legal/policy.ts, held to the code by test/legal-policy.test.ts (#535).
 export default function Terms() {

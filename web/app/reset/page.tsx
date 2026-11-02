@@ -9,5 +9,5 @@ async function RuntimeReset() {
   return <ResetForm mailAvailable={systemMailAvailable()} />
 }
 export default function Reset() {
-  return <Suspense fallback={<main className="min-h-screen flex items-center justify-center">Loading account recovery...</main>}><RuntimeReset /></Suspense>
+  return <Suspense fallback={<main id="main" className="min-h-screen flex items-center justify-center">Loading account recovery...</main>}><RuntimeReset /></Suspense>
 }

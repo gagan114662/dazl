@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 
 // A page opened from an emailed one-time link: never indexed.
-export const metadata: Metadata = { robots: { index: false, follow: false } }
+export const metadata: Metadata = { title: 'Reset your password - dazl', robots: { index: false, follow: false } }
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   return children

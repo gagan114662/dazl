@@ -3,12 +3,13 @@ import Link from 'next/link'
 import Banner from './banner'
 import LandingDemo from './landing-demo'
 
-import { SITE_BASE } from '@/lib/site'
+import { SITE_BASE, SITE_TITLE, publicMeta } from '@/lib/site'
 
 // Self-referencing canonical (Indexing audit finding: the homepage had none, so the
 // apex and www duplicates competed). Kept on the page, not the root layout, so child
 // routes don't inherit a canonical pointing at the homepage.
 export const metadata: Metadata = {
+  ...publicMeta('/', SITE_TITLE),
   alternates: { canonical: SITE_BASE },
 }
 
