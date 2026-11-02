@@ -20,6 +20,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -36,7 +37,7 @@ const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions 
 db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query) VALUES (?, 'u1', 'Synthetic Co', 'i', 'l', 'running', 'Synthetic buyers hiring')").run(JOB)
 db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, evidence_excerpt, confidence, fit, intent, why) VALUES ('lead-synth-1', ?, 'Synthetic Buyer International Holdings', 'Pat Example', 'pat@buyer.example', 'Hiring a sales lead', 'https://news.example/a', 'Synthetic Buyer is hiring a sales lead.', 80, 4, 4, 'synthetic')").run(JOB)
 db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(JOB); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
