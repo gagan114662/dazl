@@ -31,6 +31,30 @@ The v1 score does not yet prove buyer need, that the contact is the right decisi
    the builder fixes them on the same branch before starting anything new.
 3. Instinct approves and merges on GitHub. `docs/STATUS.md` is updated in every branch.
 
+## Parallel work (task graph, not a flat queue)
+
+`docs/STATUS.md`'s queues are a dependency graph, not just an ordered list. When more than one queued item is
+ready to start:
+
+1. **Don't assume parallel.** An item that explicitly depends on an earlier one (for example #393's own
+   targeting → retrieval → contacts → ranking order) stays serial. Only items touching unrelated code paths run
+   as independent lanes.
+2. **One worktree per independent lane**, each on its own branch, against a shared brief file describing the
+   task and a shared test Postgres instance. This is the pattern that already worked on 2026-10-31 (one agent
+   per PR in its own worktree; a PR landed ~8 minutes after handoff with council + probe still run in full).
+3. **Serialize anything that adds a database migration.** Migrations must stay contiguous with no gaps. A lane
+   that needs a new migration claims the next number from a single shared counter before starting, not after;
+   a second lane needing one waits for the first to land. This is what broke #513 against #564 — two lanes each
+   picked a migration number without checking the other.
+4. **The verify gate stays full, per lane.** Council review and CI green on the exact head, same as any other
+   change. Parallel lanes never skip or shorten review to go faster.
+5. **Show the graph, not just the queue.** When `docs/STATUS.md` is updated, state which items are running in
+   parallel right now, which are blocked on what, and which are serialized behind a migration claim — not only
+   a flat ordered list.
+6. **Post progress per lane, immediately.** A PR comment and a WhatsApp line the moment each lane's work pushes,
+   not after the whole batch finishes. More parallel lanes means more surface area for a crash to lose state
+   silently (see the 2026-10-31 14:15 EDT crash, where 7 pushed heads sat without a comment or message).
+
 ## Memory
 
 Nothing important lives only in a chat. State is in `docs/STATUS.md`, decisions in `docs/DECISIONS.md`, this
