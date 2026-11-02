@@ -9,10 +9,21 @@ export const latinUsable = (s: string) => { const t = latinRun(s); return t.leng
 
 export interface FetchOptions { cookie?: string; headers?: Record<string, string>; timeoutMs?: number }
 
+// Why a supported fetch produced no list. Each is its own outcome, never a zero-result search:
+// the platform rejected the session (auth), throttled it, or answered with something that is not
+// the JSON this fetcher reads (schema). Anything else (network, 5xx, timeout) is upstream.
+export type FailureKind = 'auth_failed' | 'throttled' | 'schema_error' | 'upstream_error'
+export class FetchFailure extends Error {
+  readonly kind: FailureKind
+  constructor(kind: FailureKind) { super(kind); this.kind = kind }
+}
+
 // Plain GET JSON with the tenant's session cookie. 15s cap, 1MB body cap, no redirects off-site.
-export async function getJson(url: string, opts: FetchOptions = {}): Promise<unknown | null> {
+// Returns the parsed body or throws FetchFailure - a failed request is never an empty result.
+export async function getJson(url: string, opts: FetchOptions = {}): Promise<unknown> {
+  let res: Response
   try {
-    const res = await fetch(url, {
+    res = await fetch(url, {
       headers: {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         accept: 'application/json',
@@ -22,11 +33,14 @@ export async function getJson(url: string, opts: FetchOptions = {}): Promise<unk
       redirect: 'error',
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     })
-    if (!res.ok) return null
-    const text = await res.text()
-    if (text.length > 1_000_000) return null
-    return JSON.parse(text)
-  } catch { return null }
+  } catch { throw new FetchFailure('upstream_error') }
+  if (res.status === 401 || res.status === 403) throw new FetchFailure('auth_failed')
+  if (res.status === 429) throw new FetchFailure('throttled')
+  if (!res.ok) throw new FetchFailure('upstream_error')
+  let text: string
+  try { text = await res.text() } catch { throw new FetchFailure('upstream_error') }
+  if (text.length > 1_000_000) throw new FetchFailure('schema_error')
+  try { return JSON.parse(text) } catch { throw new FetchFailure('schema_error') }
 }
 
 export const item = (url: string, title: string, quote: string, date: string | null, login_walled = true): WorkerItem | null => {
