@@ -12,6 +12,8 @@ import { getMasterKey } from '../secrets.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection } from '../scan/contact-agreement.ts'
 import { roleContradicted } from '../people/rank.ts'
+import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
+import { norm } from '../scan/evidence.ts'
 
 export const ENRICH_APOLLO = 'enrich:apollo'
 export const ENRICH_PDL = 'enrich:pdl'
@@ -178,19 +180,35 @@ export async function enrichLeadContacts(
 
 interface Ctx { db: Database.Database; tenantId: string; jobId: string; lead: LeadRow; where: string[]; evidence: string; established: boolean; src: string; today: string; now: number; fetchImpl: typeof fetch; buyerTitles: string[] }
 
-// The REVIEWED buyer persona for the job: the who list of a tenant-submitted profile only (#383).
-// Provenance is load-bearing: scan_jobs.icp_inferred=1 means the model worked the ICP out, =2 means a
-// request-text fallback, and the UI itself labels both as not user-approved ("worked out by dazl",
-// "approval not recorded", "interpretation not verified"). An unreviewed persona must never narrow
-// retrieval: with a wrong model-invented title set the filtered page fills with wrong-role people and
-// the actual buyer is lost. Only icp_inferred=0 (the tenant's own submitted profile) gates the filter.
-// Nothing is derived or expanded here either - an invented seniority/function would narrow the query.
+// The REVIEWED buyer titles for the job (#383): only an explicit seller_decisions 'confirm' row is review
+// evidence - a submitted profile (icp_inferred=0), a 'reviewed' status string or a model grade are NOT
+// (lib/scan/intelligence.ts: authorship evidence is the actor's own action payload, and the route takes
+// actor/tenant from requireUser(), never from the request body). The latest decision wins per hypothesis
+// AND per normalized text, so a later reject supersedes an earlier confirm of the same title. Scope is the
+// job's research site and its one identifiable offer - decisions never cross offer IDs.
+// An UNREVIEWED persona (no confirm rows: model-inferred, request-fallback, or merely submitted) never
+// narrows retrieval: with a wrong title set the filtered page fills with wrong-role people and the actual
+// buyer is lost. Nothing is derived or expanded here either - an invented seniority/function would narrow the query.
 export function reviewedBuyerTitles(db: Database.Database, jobId: string): string[] {
   try {
-    const j = db.prepare('SELECT icp, icp_inferred FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null; icp_inferred: number | null } | undefined
-    if (j?.icp_inferred !== 0) return []
-    const who = j.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null
-    return Array.isArray(who) ? who.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map(x => x.trim()).slice(0, 10) : []
+    const j = db.prepare('SELECT user_id, icp, offer FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string; icp: string | null; offer: string | null } | undefined
+    const icp = j?.icp ? JSON.parse(j.icp) as { research?: { site?: unknown; offers?: { i: string; n: string }[] } } : null
+    const site = typeof icp?.research?.site === 'string' ? siteKey(icp.research.site) : null
+    if (!j?.user_id || !site) return []
+    const offers = Array.isArray(icp?.research?.offers) ? icp.research.offers : []
+    const offerName = j.offer && j.offer !== '-' ? j.offer : null
+    const matches = offers.filter(o => o && typeof o.n === 'string' && offerName && norm(o.n) === norm(offerName))
+    const selected = matches.length === 1 ? matches[0].i : (!offerName && offers.length === 1 ? offers[0].i : null)
+    if (!selected) return []
+    const rows = db.prepare("SELECT offer_id, hypothesis_id, kind, text, action FROM seller_decisions WHERE tenant_id = ? AND site = ? AND kind = 'persona' ORDER BY created_at DESC, action DESC, id DESC LIMIT ?").all(j.user_id, site, RECALL_LIMIT + 1) as { offer_id: string; hypothesis_id: string; kind: string; text: string; action: string }[]
+    const seen = new Set<string>(), titles: string[] = []
+    for (const r of rows.slice(0, RECALL_LIMIT)) {
+      const hypKey = `${r.offer_id}|id:${r.hypothesis_id}`, textKey = `${r.offer_id}|${r.kind}|text:${norm(r.text)}`
+      if (seen.has(hypKey) || seen.has(textKey)) continue // superseded by a newer decision
+      seen.add(hypKey); seen.add(textKey)
+      if (r.offer_id === selected && r.action === 'confirm' && r.text.trim() && titles.length < 10) titles.push(r.text.trim())
+    }
+    return titles
   } catch { return [] }
 }
 
