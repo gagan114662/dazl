@@ -1,4 +1,5 @@
 // #359 part 2 through the real route handlers: the request flow (GET scope + POST export + POST delete),
+// covers 'POST /api/tenant/lifecycle/export' for the isolation manifest (both tenants export; each gets only its own),
 // role and fresh-auth gates, confirmation and policy validation, and two-tenant isolation. Any outbound fetch
 // fails the test: the lifecycle must never reach outside the store.
 import { test } from 'node:test'
@@ -83,6 +84,14 @@ test('tenant lifecycle routes: request flow, gates, and isolation', async () => 
   assert.equal((await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A, suppressions: 'erase' }))).status, 400, "B cannot name A's tenant")
   const bg = await (await lifecycle.GET()).json()
   assert.equal(bg.tenant, B); assert.ok(bg.tables.leads > 0); assert.equal(bg.deletion, null)
+
+  // B's own export is B's data only: nothing of A's - not even A's retained records after the deletion
+  const bev = await exportRoute.POST(req('/api/tenant/lifecycle/export', 'POST', {}))
+  assert.equal(bev.status, 200)
+  const bx = JSON.parse(await bev.text())
+  assert.equal(bx.tenant, B, "B's export names B's own tenant")
+  assert.equal(bx.tables.users?.[0]?.id, B, "B's export profile is B's own")
+  assert.ok(!JSON.stringify(bx).includes('ta~'), "B's export holds nothing of A's rows")
 })
 
 console.log('TENANT LIFECYCLE ROUTES ok')

@@ -174,7 +174,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'unsubscribe', method: 'POST', auth: 'public', note: "HMAC token; acts only on the token's own message" },
   { path: 'usage', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'tenant/lifecycle', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
-  { path: 'tenant/lifecycle/export', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'export', fresh: true },
+  { path: 'tenant/lifecycle/export', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-lifecycle-routes-runtime.mts' }, role: 'export', fresh: true },
   { path: 'tenant/lifecycle/delete', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'owners', fresh: true },
   { path: 'warm/connections', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'warm/connections', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },

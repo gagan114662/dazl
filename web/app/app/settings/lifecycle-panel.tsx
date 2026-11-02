@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 type Deletion = { state: string; requested_at: number; requested_by: string; policy: { suppressions: 'retain' | 'erase' }; retained: Record<string, number> | null; completed_at: number | null }
@@ -10,6 +10,7 @@ type Status = { tenant: string; tables: Record<string, number>; always_retained:
 // visible after completion. A failed deletion step resumes from the same button - nothing half-applies.
 export default function LifecyclePanel() {
   const router = useRouter()
+  const doneRef = useRef<HTMLDivElement>(null)
   const [s, setS] = useState<Status | null>(null)
   const [msg, setMsg] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -17,6 +18,17 @@ export default function LifecyclePanel() {
   // The completed deletion's own response: after it the session is gone, so a refetch would 401 and the
   // pre-delete snapshot would keep the delete form on screen. Render completion from the response itself.
   const [done, setDone] = useState<{ retained: Record<string, number> | null } | null>(null)
+  // Focus-managed completion: the dialog is the only live control (the session is gone), so focus starts on
+  // Sign out and Tab stays inside the dialog; the settings page behind it is presentation only (aria-modal).
+  useEffect(() => {
+    if (!done) return
+    const root = doneRef.current
+    const btn = root?.querySelector('button') as HTMLElement | null
+    btn?.focus()
+    const trap = (e: KeyboardEvent) => { if (e.key === 'Tab' && root) { e.preventDefault(); btn?.focus() } }
+    root?.addEventListener('keydown', trap)
+    return () => root?.removeEventListener('keydown', trap)
+  }, [done])
   useEffect(() => {
     void fetch('/api/tenant/lifecycle').then(async r => { if (r.ok) setS(await r.json()) }).catch(() => null)
   }, [])
@@ -31,7 +43,7 @@ export default function LifecyclePanel() {
   }
   async function signOut() { await fetch('/api/auth/signout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null); router.push('/') }
   if (done) return (
-    <div className="fixed inset-0 z-50 bg-[#faf7f2] overflow-y-auto">
+    <div ref={doneRef} role="dialog" aria-modal="true" aria-label="Account deleted" className="fixed inset-0 z-50 bg-[#faf7f2] overflow-y-auto">
       <div className="max-w-xl mx-auto p-6 pt-24">
         <div className="card p-6">
       <h2 className="font-semibold mb-1">Your data</h2>
