@@ -8,8 +8,10 @@ import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 
 export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
-export type CareersReason = 'job_role_mismatch' | 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'found' | 'robots_unreachable' | 'robots_disallow' | 'no_careers_page' | 'no_open_sales_role' | 'closed_marker' | 'wrong_domain'
-export interface CareersResult { vacancy: CareersVacancy | null; reason: CareersReason; pages: number }
+// roleMatchAsked: the caller asked for a specific requested role; matched tells whether the returned vacancy source-matched it.
+// A returned vacancy with matched=false is GENERIC careers hiring only: recordable, never role-qualified (AC3).
+export interface CareersResult { vacancy: CareersVacancy | null; reason: CareersReason; pages: number; matched?: boolean }
+export type CareersReason = 'job_role_mismatch' | 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'found' | 'robots_unreachable' | 'robots_disallow' | 'no_careers_page' | 'no_open_sales_role' | 'closed_marker' | 'wrong_domain' | 'no_matching_requested_role'
 
 const PATHS = ['/careers', '/jobs', '/join-us', '/join', '/about/careers', '/company/careers', '/work-with-us']
 const MAX_PAGES = 4
@@ -149,7 +151,7 @@ async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site:
   return { ok: true, text, title: heading.slice(0, 120) }
 }
 
-export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string } = {}): Promise<CareersResult> {
+export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean } = {}): Promise<CareersResult> {
   const site = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '')
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(site)) return { vacancy: null, reason: 'no_careers_page', pages: 0 }
   const origin = `https://${site}`
@@ -177,12 +179,20 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
     const hits = openJobsFor(r.body, r.finalUrl, site)
     if (hits.length === 0) continue // titles with no link to that specific job (team listings, alerts, newsletters) are mentions, not vacancies
     // The index link is never enough: the selected job's own page / posting is fetched and must prove the vacancy (open, this company's, still showing the role).
+    // When the caller asks for a requested role, every verified hit (same cap of 3) is considered: the first whose POSTING title
+    // source-matches wins; verified non-matching roles are remembered so generic careers hiring can be recorded without ever
+    // being role-qualified, and 'no_matching_requested_role' names that outcome honestly instead of 'no_open_sales_role'.
+    let generic: CareersVacancy | null = null
     for (const hit of hits.slice(0, 3)) {
       const v = await verifyJob(hit, get, site, opts.company, robots)
       if (!v.ok) { verdict = v.reason; continue }
       const shown = v.title, vt = v.text, at = vt.indexOf(shown)
-      return { vacancy: { url: hit.jobUrl.slice(0, 500), title: shown, quote: (at >= 0 ? vt.slice(Math.max(0, at - 60), at + shown.length + 160) : shown).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000) }, reason: 'found', pages }
+      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: (at >= 0 ? vt.slice(Math.max(0, at - 60), at + shown.length + 160) : shown).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000) }
+      if (!opts.roleMatch) return { vacancy, reason: 'found', pages }
+      if (opts.roleMatch(shown)) return { vacancy, reason: 'found', pages, matched: true }
+      if (!generic) generic = vacancy
     }
+    if (generic) return { vacancy: generic, reason: 'no_matching_requested_role', pages, matched: false }
   }
   if (verdict) return { vacancy: null, reason: verdict, pages }
   return { vacancy: null, reason: closed ? 'closed_marker' : sawPage ? 'no_open_sales_role' : wrongDomain ? 'wrong_domain' : 'no_careers_page', pages }
