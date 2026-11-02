@@ -11,7 +11,7 @@
 //      even on a double click against a slow server; after a failure it can be retried; nothing else is written;
 //   3. Approve is disabled with the reason on leads the existing gates hold (no email, window, timing);
 //   4. Reject opens an optional-reason step (presets, free text, Cancel/Escape writes nothing); Confirm reject sends the
-//      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none); the card leaves To review, the
+//      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none); the card leaves To decide, the
 //      result line says so and the card shows its reason under Rejected; Undo (on the card or the result) sends its DELETE;
 //   5. an interrupted (HELD) enrichment lookup surfaces with its exact cost wording; the owner's Retry posts
 //      /api/leads/<id>/enrich-retry once, and the notice clears when nothing is held.
@@ -146,7 +146,7 @@ try {
   assert.equal(outreachBodies.length, 1, 'a double click while the request is in flight sends one request')
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isEnabled(), true, 'retry is possible after a failure')
   await bright.getByRole('button', { name: 'Approve' }).dblclick()
-  // Success: a one-line result, and the card moves from To review to Approved (it is a draft now).
+  // Success: a one-line result, and the card moves from To decide to Approved (it is a draft now).
   await page.getByTestId('card-result').getByText(/Bright Dental: draft created/).waitFor()
   assert.deepEqual(outreachBodies, [{ lead_id: 'a'.repeat(24) }, { lead_id: 'a'.repeat(24) }], 'one request per attempt: the failed one and the retry')
   await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid=lead-card]')].some(c => c.textContent.includes('Bright Dental')))

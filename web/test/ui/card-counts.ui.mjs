@@ -5,10 +5,15 @@
 //   1. a full card shows company, contact, one line of why, "source · claimed event date 1 Oct 2026", Approve and Reject;
 //   2. a card with no contact says "No contact found yet"; an undated lead says "No dated source" (a published-only lead
 //      says "published ..., event date unknown"), never an invented date;
-//   3. the tabs read Approved / Rejected / To review from this scan's complete campaign record (a draft older than the
-//      newest 200 Outreach emails still counts as approved), says it excludes Needs your review, and
-//      follows Approve (one POST /api/outreach), Reject (one quarantine POST) and Undo (one DELETE);
-//   4. if this scan's emails cannot be read, Approved and To review show "?" with the reason, never a guess.
+//   3. the tabs read Approved / Rejected / To decide (the cards still awaiting your decision) from this scan's
+//      complete campaign record (a draft older than the newest 200 Outreach emails still counts as approved),
+//      and follow Approve (one POST /api/outreach), Reject (one quarantine POST) and Undo (one DELETE);
+//   4. if this scan's emails cannot be read, Approved and To decide show "?" with the reason, never a guess;
+//   5. the scan-quality badge says "1 needs your review" - the scan's static funnel outcome, in the same
+//      words as the "Needs your review" section below the cards where those gate-routed leads are listed.
+//      The buckets are disjoint: tabs count only decision cards (visibleLeads excludes review_reason
+//      leads), the badge counts the scan record's needs_review funnel number. The fixture carries one
+//      review-routed lead (River Dental) so both buckets are exercised.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -43,6 +48,10 @@ const LEADS = [
   lead(DRAFTED, 'Grove Dental', { contact: 'hello@grove.example' }),
   // Seen in an earlier scan and hidden by default: not a card, so not counted; the label says so.
   lead('f'.repeat(24), 'Seen Dental', { contact: 'hi@seen.example', seen_before: 1 }),
+  // Routed to review by the evidence gates: never a card, never in the tab counts; listed under
+  // "Needs your review" below the cards. This is the lead the scan-quality badge's "1 needs your
+  // review" refers to - the two buckets are disjoint, and this fixture exercises both.
+  lead('7'.repeat(24), 'River Dental', { review_reason: 'quote_unconfirmed' }),
 ]
 const msg = lead_id => ({ id: lead_id.slice(0, 6) + 'm', lead_id, to_email: 'x@example.test', subject: 'Hi', body: 'Hi', status: 'draft', error: null, created_at: 1, sent_at: null, test: 0, evidence_state: 'machine', currentness_held: false, provenance: null, send_footer: null })
 const state = { msgs: [msg(DRAFTED)], outreachFail: false }
@@ -55,7 +64,7 @@ await ctx.route('**/*', async route => {
   if (!p.startsWith('/api/')) return route.continue()
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${p}`)
-  if (p === '/api/scan/status') return json({ job_id: JOB, status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location', enrichment: { state: 'none' } })
+  if (p === '/api/scan/status') return json({ job_id: JOB, status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location', enrichment: { state: 'none' }, quality: { candidates: 6, passed: 5, needs_review: 1, dropped: 0, drop_reasons: {} } })
   if (p === '/api/leads' && m === 'GET') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
   if (p === '/api/scan/jobs') return json({ jobs: [] })
   // The account-wide list is capped at the newest 200: here it is full of other scans' emails, and this scan's older
@@ -69,8 +78,8 @@ await ctx.route('**/*', async route => {
 const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 const card = company => page.getByTestId('lead-card').filter({ hasText: company })
-// The counts sit on the To review / Approved / Rejected tabs; read back in the old bar's order.
-const counts = async () => { const n = async t => (await page.getByTestId(`tab-${t}`).textContent()).trim().split(' ').pop(); return `Approved ${await n('approved')} · Rejected ${await n('rejected')} · To review ${await n('review')}` }
+// The counts sit on the To decide / Approved / Rejected tabs; read back in the old bar's order.
+const counts = async () => { const n = async t => (await page.getByTestId(`tab-${t}`).textContent()).trim().split(' ').pop(); return `Approved ${await n('approved')} · Rejected ${await n('rejected')} · To decide ${await n('review')}` }
 try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
   await card('Bright Dental').waitFor({ timeout: 15000 })
@@ -90,30 +99,40 @@ try {
   // 3. Counts from real state: Grove already has a draft in Outreach.
   await page.getByTestId('lead-tabs').waitFor()
   await page.waitForFunction(() => /Approved 1/.test(document.querySelector('[data-testid=tab-approved]')?.textContent ?? ''))
-  assert.equal(await counts(), 'Approved 1 · Rejected 0 · To review 3', "Instinct #285: Grove's draft is older than the newest 200 emails and still counts")
+  assert.equal(await counts(), 'Approved 1 · Rejected 0 · To decide 3', "Instinct #285: Grove's draft is older than the newest 200 emails and still counts")
+  const qualityText = (await page.getByTestId('scan-quality').textContent()).replace(/\s+/g, ' ').trim()
+  assert.ok(qualityText.includes('1 needs your review'), `the scan-quality badge names the scan-time gate outcome in the words of the section it counts ("1 needs your review"), got: ${qualityText}`)
+  assert.ok(!/to (review|decide)/.test(qualityText), `the badge must not borrow the tabs' action words for a different bucket, got: ${qualityText}`)
+  // The badge's bucket is real and disjoint from the cards: River Dental sits under "Needs your
+  // review", is not a card, and the tab counts above (To decide 3) never included it.
+  await page.getByRole('heading', { name: 'Needs your review' }).waitFor()
+  assert.ok((await page.textContent('body')).includes('River Dental'), 'the gate-routed lead renders under Needs your review')
+  assert.equal(await card('River Dental').count(), 0, 'a Needs-your-review lead is never a decision card')
+  assert.match((await page.getByTestId('tab-review').textContent()).trim(), /^To decide \d+$/, "the undecided-cards tab says To decide (your pending decisions), not the gates' review word")
   assert.equal(await page.getByTestId('card-counts-scope').textContent(), 'Cards below, not counting Needs your review or hidden already-seen leads. ')
   assert.match(await page.getByTestId('card-counts-note').textContent(), /Approving a card makes a draft; each email is still approved in Outreach before it sends/, 'a card approval is never presented as an approved email')
   await shot('counts-initial')
   await card('Bright Dental').getByRole('button', { name: 'Approve' }).click()
   await page.getByTestId('card-result').getByText(/Bright Dental: draft created/).waitFor()
   await page.waitForFunction(() => /Approved 2/.test(document.querySelector('[data-testid=tab-approved]')?.textContent ?? ''))
-  assert.equal(await counts(), 'Approved 2 · Rejected 0 · To review 2')
+  assert.equal(await counts(), 'Approved 2 · Rejected 0 · To decide 2')
   await card('Lakeside Smiles').getByRole('button', { name: 'Reject' }).click()
   await card('Lakeside Smiles').getByRole('button', { name: 'Confirm reject' }).click()
   await page.getByTestId('card-result').getByRole('button', { name: 'Undo' }).waitFor()
-  assert.equal(await counts(), 'Approved 2 · Rejected 1 · To review 1')
+  assert.equal(await counts(), 'Approved 2 · Rejected 1 · To decide 1')
   await shot('counts-after')
+  if (process.env.SHOTS) { await page.getByRole('heading', { name: 'Needs your review' }).scrollIntoViewIfNeeded(); await shot('counts-review-section') }
   await page.getByTestId('card-result').getByRole('button', { name: 'Undo' }).click()
   await card('Lakeside Smiles').getByRole('button', { name: 'Reject' }).waitFor()
-  assert.equal(await counts(), 'Approved 2 · Rejected 0 · To review 2')
+  assert.equal(await counts(), 'Approved 2 · Rejected 0 · To decide 2')
   assert.deepEqual(writes, ['POST /api/outreach', `POST /api/leads/${'c'.repeat(24)}/quarantine`, `DELETE /api/leads/${'c'.repeat(24)}/quarantine`], 'only the approve, reject and undo writes')
   // 4. Emails unreadable: Approved is unknown, not guessed.
   state.outreachFail = true
   await page.reload({ waitUntil: 'networkidle' })
   await card('Bright Dental').waitFor({ timeout: 15000 })
-  assert.equal(await counts(), 'Approved ? · Rejected 0 · To review ?')
+  assert.equal(await counts(), 'Approved ? · Rejected 0 · To decide ?')
   assert.equal(await page.getByTestId('card-counts-note').textContent(), 'Drafts could not be loaded, so Approved is unknown.')
-  console.log('card counts UI check passed: full and no-contact cards, "No dated source", published-only date, Approved/Rejected/To review follow approve, reject and undo; unknown when drafts cannot load')
+  console.log('card counts UI check passed: full and no-contact cards, "No dated source", published-only date, Approved/Rejected/To decide follow approve, reject and undo; unknown when drafts cannot load')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
