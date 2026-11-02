@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 
 type Deletion = { state: string; requested_at: number; requested_by: string; policy: { suppressions: 'retain' | 'erase' }; retained: Record<string, number> | null; completed_at: number | null }
 type Status = { tenant: string; tables: Record<string, number>; always_retained: string[]; deletion: Deletion | null }
@@ -8,6 +9,7 @@ type Status = { tenant: string; tables: Record<string, number>; always_retained:
 // as confirmation and a decision on the opt-out list; the record of what was kept (retention exceptions) stays
 // visible after completion. A failed deletion step resumes from the same button - nothing half-applies.
 export default function LifecyclePanel() {
+  const router = useRouter()
   const [s, setS] = useState<Status | null>(null)
   const [msg, setMsg] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -27,7 +29,7 @@ export default function LifecyclePanel() {
     else setMsg(j.error === 'reauth_required' ? 'Confirm it is you first (top of this page).' : `${j.error || 'A step failed'}${j.state ? ` (at "${j.state}"; press again to resume)` : ''}`)
     await refresh()
   }
-  async function signOut() { await fetch('/api/auth/signout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null); window.location.href = '/' }
+  async function signOut() { await fetch('/api/auth/signout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null); router.push('/') }
   if (done) return (
     <div className="fixed inset-0 z-50 bg-[#faf7f2] overflow-y-auto">
       <div className="max-w-xl mx-auto p-6 pt-24">
@@ -64,7 +66,7 @@ export default function LifecyclePanel() {
       ) : (
         <div className="mt-4 text-sm border-t border-[#e5e2dc] pt-3">
           <p className="font-medium">Delete this account</p>
-          <p className="text-xs text-[#777] mt-1">This deletes this workspace's records. Kept after deletion: the append-only audit records {s.always_retained.join(', ')} - plus the opt-out list if you choose to keep it below. This cannot be undone.</p>
+          <p className="text-xs text-[#777] mt-1">This deletes the records this workspace holds. Kept after deletion: the append-only audit records {s.always_retained.join(', ')} - plus the opt-out list if you choose to keep it below. This cannot be undone.</p>
           <p className="text-xs text-[#777] mt-1">Workspace id: <code>{s.tenant}</code></p>
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <label className="text-xs"><input type="radio" name="sup" checked={sup === 'retain'} onChange={() => setSup('retain')} /> Keep the opt-out list (stays suppressed if this workspace id is ever restored)</label>
