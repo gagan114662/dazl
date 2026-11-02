@@ -9,7 +9,9 @@ import { rateLimit, refundRateLimit } from '../lib/rate-limit.ts'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 
 const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
+// Every account this file admits positively, on the allowlist the funded path requires (#409 bounded activation).
 const ENV = { DAZL_TRIAL_ANTHROPIC_KEY: OP, DAZL_TRIAL_SITE_READS_PER_DAY: '5', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
+  DAZL_TRIAL_SITE_READ_ALLOWLIST: 'Owner@Corp.example,a@gmail.com,a@nogoogle.example,at@gmail.com,colleague@corp2.example,d0@gmail.com,d1@gmail.com,d2@gmail.com,d3@gmail.com,d4@gmail.com,d5@gmail.com,drain@gmail.com,founder@corp2.example,fresh@gmail.com,g1@gmail.com,g2@gmail.com,mn1@gmail.com,mn2@gmail.com,mn3@gmail.com,n0@gmail.com,n1@gmail.com,n2@gmail.com,n3@gmail.com,n4@gmail.com,n5@gmail.com,n6@gmail.com,ng@gmail.com,one@firm.example,one@samedomain.example,ov@gmail.com,owner@acme.example,poor2@gmail.com,r21a@gmail.com,r21b@gmail.com,r21p@gmail.com,r21q@gmail.com,r22a@gmail.com,r22f@gmail.com,r22p@gmail.com,r6@gmail.com,r6b@gmail.com,rel@gmail.com,relfail@gmail.com,rr0@gmail.com,rr1@gmail.com,rr2@gmail.com,rr3@gmail.com,rs@gmail.com,st@gmail.com,two@firm.example,two@samedomain.example,w@gmail.com,x@else.example,x@gmail.com,z@gmail.com',
   DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.004', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' }
 const user = async (db: Db, id: string, email: string, google = true) => {
   await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])
@@ -61,6 +63,26 @@ bothEngines('#409 trial site read: the trial scan rules apply (Google sign-in, o
     const used = await user(db, uid(5), 'x@gmail.com')
     for (let i = 0; i < 3; i++) assert.equal((await admitTrialScan(db, used, { env: { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '100' } })).ok, true)
     assert.deepEqual(await admitTrialSiteRead(db, used, '203.0.113.9', { env: { ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '100' }, limit: limiter() }), { ok: false, reason: 'attempts_cap' })
+  })
+})
+
+bothEngines('#409 bounded activation: admission is allowlist-only, so a ceiling flip alone never funds the public', async ({ db }) => {
+  await withKey(OP, async () => {
+    const noList = { ...ENV } as Record<string, string | undefined>
+    delete noList.DAZL_TRIAL_SITE_READ_ALLOWLIST
+    const a = await user(db, uid(700), 'qa@example.test')
+    // The gap this closes: the daily ceiling set, the account fully eligible - and still refused, because no
+    // allowlist names it. Unset and empty both refuse.
+    assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.70', { env: noList, limit: limiter() }), { ok: false, reason: 'not_in_allowlist' }, 'ceiling set, allowlist unset')
+    assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.70', { env: { ...noList, DAZL_TRIAL_SITE_READ_ALLOWLIST: '  ' }, limit: limiter() }), { ok: false, reason: 'not_in_allowlist' }, 'allowlist empty')
+    assert.deepEqual(await admitTrialSiteRead(db, a, '203.0.113.70', { env: { ...noList, DAZL_TRIAL_SITE_READ_ALLOWLIST: 'someone-else@example.test' }, limit: limiter() }), { ok: false, reason: 'not_in_allowlist' }, 'eligible but not listed')
+    // Listed by email or by user id, case-insensitive on the entry: admitted.
+    assert.equal((await admitTrialSiteRead(db, a, '203.0.113.70', { env: { ...noList, DAZL_TRIAL_SITE_READ_ALLOWLIST: 'QA@example.test' }, limit: limiter() })).ok, true, 'listed by email')
+    const b = await user(db, uid(701), 'qb@other.example')
+    assert.equal((await admitTrialSiteRead(db, b, '203.0.113.71', { env: { ...noList, DAZL_TRIAL_SITE_READ_ALLOWLIST: uid(701) }, limit: limiter() })).ok, true, 'listed by user id')
+    // The allowlist gates spend, not eligibility: a listed account without Google still hears google_required.
+    const noGoogle = await user(db, uid(702), 'qc@example.test', false)
+    assert.deepEqual(await admitTrialSiteRead(db, noGoogle, '203.0.113.72', { env: { ...noList, DAZL_TRIAL_SITE_READ_ALLOWLIST: 'qc@example.test' }, limit: limiter() }), { ok: false, reason: 'google_required' })
   })
 })
 
