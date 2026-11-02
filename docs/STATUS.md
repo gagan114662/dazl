@@ -41,6 +41,11 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- PR #568 b/359-lifecycle-flow (#359 part 2): authenticated, audited request flow for tenant export/deletion
+  (session-scoped routes, owner+fresh-auth delete with explicit opt-out policy and resume, viewer+fresh-auth
+  export), the settings completion UI reporting retained exceptions, and operator list/resume/reapply controls
+  (dry-run default). Real-route tests through the session loader; B byte-equivalent. No live run yet.
+
 - PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
   `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
   and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the recovery-runbook
@@ -138,8 +143,10 @@ Updated by the builder on every branch. Newest first.
 closed, their code shipped via #554/#552/#553/#556/#557, but none of the five issues below is fully verified
 complete — do not start new issues until each is closed or explicitly re-queued with what's still missing)
 
-1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Missing: the
-   customer-facing request flow, the completion UI, and operator controls.
+1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Part 2 in
+   review (PR #568, b/359-lifecycle-flow): the request flow (GET scope inventory, POST export, POST delete with
+   policy choice + resume), the settings completion UI with retention exceptions, and operator controls
+   (scripts/tenant-lifecycle.mts list/resume/reapply). Missing: live acceptance on a disposable tenant.
 2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
    default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
    holds.
