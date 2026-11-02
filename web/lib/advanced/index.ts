@@ -46,7 +46,12 @@ export interface WorkerItem { url: string; title: string; quote: string; date: s
 // never counts as a zero-result search. When it is null the list is the whole outcome: non-empty is
 // ok, empty is a genuine successful search that found nothing.
 export type WorkerOutcome = { items: WorkerItem[]; unsupported: string | null }
-export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerOutcome | null>
+// A supported fetch that failed, with the worker's reason. Each kind is audited as its own status
+// and never as a zero-result search: the platform rejected the session, throttled it, answered in
+// a shape the fetcher cannot read, or the request failed upstream.
+export const WORKER_FAILURES = ['auth_failed', 'throttled', 'schema_error', 'upstream_error'] as const
+export type WorkerFailure = { failed: (typeof WORKER_FAILURES)[number] }
+export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerOutcome | WorkerFailure | null>
 
 // Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled}]}.
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
@@ -60,9 +65,9 @@ export function httpWorker(env: Record<string, string | undefined> = process.env
         redirect: 'error',
         signal: AbortSignal.timeout(45_000),
       })
-      if (!res.ok) return null
       const text = await res.text()
       if (text.length > 1_000_000) return null
+      if (!res.ok) return parseWorkerFailure(JSON.parse(text))
       return parseWorkerReply(JSON.parse(text))
     } catch { return null }
   }
@@ -75,6 +80,13 @@ export function parseWorkerReply(raw: unknown): WorkerOutcome {
   const o = raw as { outcome?: unknown; reason?: unknown } | null
   const unsupported = o?.outcome === 'unsupported' ? (typeof o.reason === 'string' && o.reason.length > 0 ? o.reason.slice(0, 200) : 'not implemented by the worker') : null
   return { items: parseWorkerItems(raw), unsupported }
+}
+
+// A non-200 worker reply: only an exact known failure outcome is kept; anything else is null
+// (worker_error). Either way the caller records a failure, never an empty result.
+export function parseWorkerFailure(raw: unknown): WorkerFailure | null {
+  const o = (raw as { outcome?: unknown } | null)?.outcome
+  return (WORKER_FAILURES as readonly unknown[]).includes(o) ? { failed: o as WorkerFailure['failed'] } : null
 }
 
 export function parseWorkerItems(raw: unknown): WorkerItem[] {
@@ -92,7 +104,7 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
 }
 
 async function callsLastHour(db: Db, tenantId: string, platform: AdvPlatform, now: number): Promise<number> {
-  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
+  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','auth_failed','throttled','schema_error','upstream_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
 }
 
 // X search AND-matches every token, so a full natural-language scan sentence returns
@@ -155,6 +167,8 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
     const r = await worker({ platform: p, query: q.slice(0, 300), session })
     if (r === null) { await skip('worker_error'); continue }
+    // The platform call failed for a known reason: audit that reason, not 'empty'.
+    if ('failed' in r) { await skip(r.failed); continue }
     // Version skew: the worker refuses a platform this build still offers. Record it the same
     // honest way; a refusal carries no items to use.
     if (r.unsupported) { await skip('unsupported'); continue }

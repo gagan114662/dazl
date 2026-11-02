@@ -81,6 +81,7 @@ async function complaints(store: ComplaintStore, tenantId: string, jobId: string
     const q = complaintQuery(name)
     const r = await worker({ platform: 'reddit', query: q.slice(0, 300), session }).catch(() => null)
     if (r === null) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'worker_error', results: 0 }); continue }
+    if ('failed' in r) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: r.failed, results: 0 }); continue }
     // Version skew: a worker refusal is 'unsupported', never a fake empty result.
     if (r.unsupported) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'unsupported', results: 0 }); continue }
     const items = r.items
