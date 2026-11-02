@@ -36,6 +36,7 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
 }
 
 import { formatPlace } from '../scan/contact-agreement.ts'
+import { isMailboxShaped } from './person-name.ts'
 const clean = (v: unknown, max = 200) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max) : null)
 
 // 1 credit per call.
@@ -85,5 +86,5 @@ export async function apolloPeopleSearch(apiKey: string, org: { domain?: string 
     linkedin: clean(p.linkedin_url),
     organization: orgOf(p),
     // p.email / p.phone_numbers deliberately never read
-  })).filter(p => p.name)
+  })).filter(p => p.name && !isMailboxShaped(p.name))
 }
