@@ -113,7 +113,13 @@ try {
   const brightDetails = bright.locator('xpath=following-sibling::details[1]')
   await brightDetails.getByText('Details', { exact: true }).click()
   await brightDetails.getByText("Hiring for Senior Sales Ops Manager. This may relate to your offer; buying need isn't verified.", { exact: true }).waitFor()
+  // AC5: the matched posting's title and its own board date sit beside the qualified line
+  await brightDetails.getByText(/posting date 2026-10-01/).waitFor()
+  // AC3: generic GTM hiring that never matched the requested role is labeled generic, never role-qualified
+  await brightDetails.getByText('Hiring activity only. A requested-role match and buying need are not verified.', { exact: true }).waitFor()
   await brightDetails.getByText(/checked 2026-10-20; original posting date unknown/).waitFor()
+  // AC5: a hiring signal alone never produces a high-intent-style claim
+  assert.equal(await page.getByText(/high.intent/i).count(), 0, 'no high-intent-style claim anywhere on the page')
   await shot('hiring-provenance')
   await brightDetails.getByText('Details', { exact: true }).click()
   assert.equal(await bright.getByRole('link', { name: 'news.example' }).getAttribute('href'), 'https://www.news.example/aaaa')
