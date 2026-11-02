@@ -28,7 +28,10 @@ for (const t of [A, B]) {
   saveSettings(db, t, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   db.prepare('INSERT INTO autopilot_settings (tenant_id, enabled, paused, consent_version, consent_at, followups_enabled) VALUES (?, 1, 0, ?, ?, 1)').run(t, CONSENT_VERSION, Math.floor(Date.now() / 1000))
 }
-// B can read replies (stub Gmail + read consent); A has no mailbox connected, so its reply sync fails every tick
+// B can read replies (stub Gmail + read consent). A has no mailbox connected (the recorded production class,
+// tenant 53d74a4b Oct 30 - Nov 2): its reply sync REFUSES before any provider call - recorded as a hold, the
+// tenant's own consent/mailbox state - while its follow-up run fails genuinely (autopilot on, no sender
+// identity/mailbox: gmail_or_identity) and blocks it after BLOCKED_AFTER_FAILURES ticks.
 startOAuth(db, B, { env: { DAZL_ENV: 'staging', PUBLIC_BASE_URL: 'https://staging.example.test' } as never }); acceptReadConsent(db, B)
 // C is first-touch-only with read consent: connected mailbox, no autopilot row, no follow-ups - replies must still be
 // ingested on tick (#413: read authority is not send authority). D has a mailbox but no read consent: never selected.
@@ -50,10 +53,13 @@ test('tick heartbeats: cron off, a stalled tenant, a crashed tick, recovery; no 
 
   // one tick: recorded with its lease generation; A's reply sync failed, B's work succeeded
   const r1 = await (await call('test-tick-secret')).json()
-  assert.equal(r1.ok, true); assert.equal(r1.tenant_failures, 1)
+  assert.equal(r1.ok, true); assert.equal(r1.tenant_failures, 1, "A's follow-up run, not its reply sync")
   assert.deepEqual(runs().map(r => [r.status, r.lease_generation, r.tenants_attempted, r.tenants_failed]), [['partial', 1, 3, 1]])
-  const p = (t: string, k: string) => db.prepare('SELECT * FROM scheduler_progress WHERE tenant_id = ? AND kind = ?').get(t, k) as { last_success_at: number | null; consecutive_failures: number; last_error: string | null } | undefined
-  assert.equal(p(A, 'reply_sync')?.consecutive_failures, 1); assert.match(p(A, 'reply_sync')!.last_error!, /reading_not_enabled/)
+  const p = (t: string, k: string) => db.prepare('SELECT * FROM scheduler_progress WHERE tenant_id = ? AND kind = ?').get(t, k) as { last_success_at: number | null; consecutive_failures: number; last_error: string | null; last_outcome: string; last_hold: string | null } | undefined
+  // the production pin: an autopilot-enabled tenant with no read authority is attempted first (the tick syncs
+  // every selected tenant), refuses before any provider call, and the refusal is a HOLD - never a failure
+  assert.equal(p(A, 'reply_sync')?.last_outcome, 'hold'); assert.equal(p(A, 'reply_sync')?.last_hold, 'reading_not_enabled'); assert.equal(p(A, 'reply_sync')?.consecutive_failures, 0); assert.equal(p(A, 'reply_sync')?.last_error, null)
+  assert.equal(p(A, 'followups')?.consecutive_failures, 1); assert.match(p(A, 'followups')!.last_error!, /gmail_or_identity/)
   assert.ok(p(B, 'reply_sync')?.last_success_at); assert.ok(p(B, 'followups')?.last_success_at)
   // #413: C (read consent, sending never enabled) got its reply sync; follow-ups never ran for it; D (no read consent)
   // was never selected, so nothing about it exists - and with consent absent syncReplies makes zero provider calls.
@@ -61,13 +67,17 @@ test('tick heartbeats: cron off, a stalled tenant, a crashed tick, recovery; no 
   assert.equal(p(C, 'followups'), undefined, 'no follow-up run without send-side enablement')
   assert.equal(p(D, 'reply_sync'), undefined, 'no consent, no read')
 
-  // A stalls: after BLOCKED_AFTER_FAILURES ticks it is blocked; B stays healthy
+  // health after tick 1: A is held (its sync hold), not blocked; nothing is a problem yet
+  const h1 = await schedulerHealth(db)
+  assert.equal(h1.ok, true); assert.equal(h1.tenants.blocked, 0); assert.equal(h1.tenants.held, 1, 'A')
+
+  // A stalls: after BLOCKED_AFTER_FAILURES ticks it is blocked on the GENUINE failure; B stays healthy
   for (let i = 1; i < BLOCKED_AFTER_FAILURES; i++) await call('test-tick-secret')
-  assert.equal((await tenantFreshness(db, A)).state, 'blocked'); assert.deepEqual((await tenantFreshness(db, A)).reasons, ['reply_sync_failing'])
+  assert.equal((await tenantFreshness(db, A)).state, 'blocked'); assert.deepEqual((await tenantFreshness(db, A)).reasons, ['followups_failing'])
   assert.equal((await tenantFreshness(db, B)).state, 'healthy')
   const h = await schedulerHealthResponse(db); const body = await h.text()
   assert.equal(h.status, 503); assert.match(body, /1 tenant\(s\) blocked/)
-  for (const leak of [A, B, 'reading_not_enabled', 'business']) assert.ok(!body.includes(leak), `operator view leaks ${leak}`)
+  for (const leak of [A, B, 'reading_not_enabled', 'gmail_or_identity', 'business']) assert.ok(!body.includes(leak), `operator view leaks ${leak}`)
 
   // each tenant's own view: only its rows
   setUser({ id: B, business_name: '' })
