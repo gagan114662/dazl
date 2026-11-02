@@ -3,7 +3,8 @@
 -- BEFORE UPDATE OF the tenant column or parent key, that refuse a row for a deleted tenant (or under one of its deleted
 -- parents) whether it is inserted or moved there, so in-flight work or a late write cannot recreate erased data and no
 -- row can change hands into a deleted tenant. Generated from lib/db/tenant-guard.ts through scripts/pg-migrate
--- (translate-schema.ts): 166 guard triggers. Do not edit by hand; regenerate.
+-- (translate-schema.ts): 172 guard triggers on current main (86 guarded tables incl. autopilot_work, seller_decisions
+-- and connector_claims, which postdate the fork). Do not edit by hand; regenerate.
 CREATE TABLE tenant_tombstone_keys (
       deleted_tenant TEXT NOT NULL,
       tbl            TEXT NOT NULL,
@@ -47,6 +48,15 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_autopilot_settings ON autopilot_settings;
 CREATE TRIGGER tomb_autopilot_settings BEFORE INSERT ON autopilot_settings FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_autopilot_settings();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_autopilot_work() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_autopilot_work ON autopilot_work;
+CREATE TRIGGER tomb_autopilot_work BEFORE INSERT ON autopilot_work FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_autopilot_work();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_calcom_bookings() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -101,6 +111,15 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_connector_audit ON connector_audit;
 CREATE TRIGGER tomb_connector_audit BEFORE INSERT ON connector_audit FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_connector_audit();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_connector_claims() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_connector_claims ON connector_claims;
+CREATE TRIGGER tomb_connector_claims BEFORE INSERT ON connector_claims FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_connector_claims();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_consent_ledger() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -507,6 +526,15 @@ END $$;
 DROP TRIGGER IF EXISTS tomb_scheduler_progress ON scheduler_progress;
 CREATE TRIGGER tomb_scheduler_progress BEFORE INSERT ON scheduler_progress FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_scheduler_progress();
 
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_seller_decisions() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_seller_decisions ON seller_decisions;
+CREATE TRIGGER tomb_seller_decisions BEFORE INSERT ON seller_decisions FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seller_decisions();
+
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_seo_audits() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
@@ -753,6 +781,16 @@ END $$;
 DROP TRIGGER IF EXISTS tomb_upd_autopilot_settings ON autopilot_settings;
 CREATE TRIGGER tomb_upd_autopilot_settings BEFORE UPDATE OF tenant_id ON autopilot_settings FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_autopilot_settings();
 
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_autopilot_work() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  PERFORM pg_advisory_xact_lock_shared(hashtext(OLD.tenant_id));
+  IF (NEW.tenant_id IS DISTINCT FROM OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_autopilot_work ON autopilot_work;
+CREATE TRIGGER tomb_upd_autopilot_work BEFORE UPDATE OF tenant_id ON autopilot_work FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_autopilot_work();
+
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_calcom_bookings() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
@@ -812,6 +850,16 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_connector_audit ON connector_audit;
 CREATE TRIGGER tomb_upd_connector_audit BEFORE UPDATE OF tenant_id ON connector_audit FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_connector_audit();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_connector_claims() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  PERFORM pg_advisory_xact_lock_shared(hashtext(OLD.tenant_id));
+  IF (NEW.tenant_id IS DISTINCT FROM OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_connector_claims ON connector_claims;
+CREATE TRIGGER tomb_upd_connector_claims BEFORE UPDATE OF tenant_id ON connector_claims FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_connector_claims();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_consent_ledger() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -1262,6 +1310,16 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_scheduler_progress ON scheduler_progress;
 CREATE TRIGGER tomb_upd_scheduler_progress BEFORE UPDATE OF tenant_id ON scheduler_progress FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_scheduler_progress();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_seller_decisions() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  PERFORM pg_advisory_xact_lock_shared(hashtext(OLD.tenant_id));
+  IF (NEW.tenant_id IS DISTINCT FROM OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_seller_decisions ON seller_decisions;
+CREATE TRIGGER tomb_upd_seller_decisions BEFORE UPDATE OF tenant_id ON seller_decisions FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_seller_decisions();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_seo_audits() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
