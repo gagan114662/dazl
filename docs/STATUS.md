@@ -134,6 +134,22 @@ Updated by the builder on every branch. Newest first.
   until the owner chooses a retention period (`AUDIT_RETENTION_DAYS`). Support access needs an owner decision.
 
 
+## Finish before new work (Instinct's 2026-11-02 verification after the zombie-PR cleanup: #455/#444/#467/#463/#464
+closed, their code shipped via #554/#552/#553/#556/#557, but none of the five issues below is fully verified
+complete — do not start new issues until each is closed or explicitly re-queued with what's still missing)
+
+1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Missing: the
+   customer-facing request flow, the completion UI, and operator controls.
+2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
+   default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
+   holds.
+3. #405 (calibrated launch / preflight): code shipped (ex-#467/#553) but inactive. Missing: activation, and proof
+   the "no routine hand-approvals" journey actually works end to end.
+4. #394 (agent evals / autonomous evaluation): the evaluation tooling shipped (ex-#463/#556). Missing: the complete
+   evaluation contract and at least one executed autonomous evaluation proving it.
+5. #371 (audit trail): most audit-event logging shipped (ex-#464/#557). Missing: remaining action coverage, and a
+   live check that a readable audit record actually comes out the other end.
+
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
 1. Decision-maker sources beyond the company site: GitHub org members for software companies (SEC Form D officers: in review, b/sec-officers). Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
