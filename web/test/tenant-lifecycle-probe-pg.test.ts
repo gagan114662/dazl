@@ -237,7 +237,10 @@ test('pg lock order: a closing event never holds the gate row before the tenant 
     let queued = false
     for (let i = 0; i < 200 && !queued; i++) {
       await sleep(25)
-      queued = (await n(f.db, "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")) > 0
+      // scoped to this tenant's advisory key in this database, so an unrelated advisory wait (another test running
+      // concurrently in CI) cannot trip it early and weaken the interleaving; objid is unsigned oid, hashtext is
+      // signed int4 - mask to 32 bits so a negative hash still matches
+      queued = (await n(f.db, "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND classid = 0 AND objsubid = 1 AND objid::bigint = (hashtext(?)::bigint & 4294967295)", [A])) > 0
     }
     assert.ok(queued, 'the request side never queued on the tenant advisory lock')
     // the step finishes its closing event (same statements as closingEventTx, explicit so the interleaving is forced)
