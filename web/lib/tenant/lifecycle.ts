@@ -49,6 +49,20 @@ export const ALWAYS_RETAINED: Record<string, string> = {
   audit_events: 'append-only audit trail (lib/audit.ts); redacted at the source, and its delete trigger would refuse the erase anyway',
 }
 
+// Row counts per tenant-owned table for one tenant: the request UI's scope inventory (what an export or a
+// deletion covers), same ownership resolution the deletion itself uses.
+export async function tenantTableCounts(d: DbLike, tenant: string): Promise<Record<string, number>> {
+  const db = asDb(d)
+  const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
+  const counts: Record<string, number> = {}
+  for (const t of [...scope.keys()].sort()) {
+    const w = owned(scope, t, tenant)
+    const n = Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM "${t}" WHERE ${w.sql}`, w.params))?.n ?? 0)
+    if (n > 0) counts[t] = n
+  }
+  return counts
+}
+
 export interface DeletionPolicy {
   // An explicit decision on opt-outs: keep the suppression list (so the addresses are never mailed again if the
   // account is restored or recreated under the same id) or erase it with everything else.
