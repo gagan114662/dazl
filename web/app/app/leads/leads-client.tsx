@@ -13,6 +13,7 @@ import { contactsFromEnrichments, PEOPLE_SOURCE } from '@/lib/people/rank'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
+import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
@@ -1196,14 +1197,21 @@ export default function LeadsClient() {
       )}
       {leads.some(l => l.review_reason) && (
         <>
+          {/* #352: when no row's action can make a lead usable (every one is Keep as research), this is research, not a review task - the copy never asks the user to check or confirm. */}
+          {leads.some(l => l.review_reason && reviewAction(l).label !== 'Keep as research') ? <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
           <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked. Rows with only "Keep as research" have no verified, dated event or are someone else's customer: checking them does not make them ready.</p>
+          </> : <>
+          <h2 className="text-sm font-semibold mt-8 mb-2" data-testid="research-heading">Research only</h2>
+          <p className="text-gray-500 text-xs mb-3" data-testid="research-intro">dazl could not verify a current, dated event of their own for these leads (no usable date, or older than your time window), so they will not be emailed, and checking their sources does not make them ready. Where dazl already searched other sources automatically, each row says so. To change the result, search again with a different signal or source.</p>
+          </>}
           <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm">
                 <div className="font-medium">{l.company || l.name}</div>
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
                 <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (REVIEW[l.review_reason ?? ''] ?? 'Not verified')}</span>
+                {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 {l.timing_note && <span className="text-[#333] text-xs mr-3" data-testid="timing-note-review">Researched opportunity - {l.timing_note}.</span>}
                 <DiscoveredVia l={l} />
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
