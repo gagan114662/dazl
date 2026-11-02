@@ -71,7 +71,7 @@ export interface Inventory {
 const AREAS: [RegExp, string][] = [
   [/auth|gmail\/(oauth|connect|callback|disconnect)|secrets-rewrap|llm\/key-store/, 'auth & keys'],
   [/billing|plans|checkout|stripe/, 'billing'],
-  [/outreach\/(service|send|send-budget|ledger|autopilot|followups|sequences|attribution|conversion)|unsubscribe|app\/api\/outreach\/(route|\[id\]|autopilot|sequences|settings|conversion)/, 'sends'],
+  [/outreach\/(service|send|send-budget|ledger|autopilot|followups|sequences|attribution|conversion)|unsubscribe|app\/api\/(outreach\/(route|\[id\]|autopilot|sequences|settings|conversion)|onboarding\/)/, 'sends'],
   [/replies|inbox|reopen|threads/, 'inbox'],
   [/outreach|crm/, 'drafts & CRM'],
   [/memory/, 'profile & memory'],

@@ -415,6 +415,32 @@ CREATE TABLE oauth_states (
       expires_at INTEGER NOT NULL
     , read_scope INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE onboarding_audit (
+      id         TEXT PRIMARY KEY,
+      tenant_id  TEXT NOT NULL,
+      action     TEXT NOT NULL,
+      detail     TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+CREATE TABLE onboarding_audit_purge_gate (id INTEGER PRIMARY KEY CHECK (id = 1));
+
+CREATE TABLE onboarding_enrollments (
+      tenant_id   TEXT NOT NULL,
+      email       TEXT NOT NULL,
+      source      TEXT NOT NULL,
+      enrolled_at INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, email)
+    );
+
+CREATE TABLE onboarding_policies (
+      tenant_id      TEXT PRIMARY KEY,
+      policy_version TEXT NOT NULL,
+      opted_in_by    TEXT NOT NULL,
+      opted_in_at    INTEGER NOT NULL,
+      withdrawn_at   INTEGER
+    );
+
 CREATE TABLE organizations (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 150),
@@ -1031,6 +1057,8 @@ CREATE INDEX monitors_due ON monitors (enabled, next_run_at);
 
 CREATE INDEX newsjacks_tenant ON newsjacks (tenant_id, created_at);
 
+CREATE INDEX onboarding_audit_tenant ON onboarding_audit (tenant_id, created_at);
+
 CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
 
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
@@ -1128,6 +1156,14 @@ CREATE TRIGGER leads_only_while_running
     BEFORE INSERT ON leads
     WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
+
+CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit
+      WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
+      BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+
+CREATE TRIGGER onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit
+      WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
+      BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
 
 CREATE TRIGGER outreach_messages_insert_seq AFTER INSERT ON outreach_messages WHEN NEW.insert_seq IS NULL BEGIN UPDATE outreach_messages SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM outreach_messages) WHERE rowid = NEW.rowid; END;
 
@@ -1239,6 +1275,12 @@ CREATE TRIGGER tomb_newsjacks BEFORE INSERT ON newsjacks BEGIN SELECT NEW.tenant
 CREATE TRIGGER tomb_oauth_identities BEFORE INSERT ON oauth_identities BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
 
 CREATE TRIGGER tomb_oauth_states BEFORE INSERT ON oauth_states BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_onboarding_audit BEFORE INSERT ON onboarding_audit BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_onboarding_enrollments BEFORE INSERT ON onboarding_enrollments BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_onboarding_policies BEFORE INSERT ON onboarding_policies BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_organizations BEFORE INSERT ON organizations BEGIN SELECT NEW.id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id); END;
 
@@ -1411,6 +1453,12 @@ CREATE TRIGGER tomb_upd_newsjacks BEFORE UPDATE OF tenant_id ON newsjacks BEGIN 
 CREATE TRIGGER tomb_upd_oauth_identities BEFORE UPDATE OF user_id ON oauth_identities BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_oauth_states BEFORE UPDATE OF tenant_id ON oauth_states BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_onboarding_audit BEFORE UPDATE OF tenant_id ON onboarding_audit BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_onboarding_enrollments BEFORE UPDATE OF tenant_id ON onboarding_enrollments BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_onboarding_policies BEFORE UPDATE OF tenant_id ON onboarding_policies BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_organizations BEFORE UPDATE OF id ON organizations BEGIN SELECT NEW.id; SELECT OLD.id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.id IS NOT OLD.id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.id))); END;
 
