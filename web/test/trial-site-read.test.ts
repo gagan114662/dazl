@@ -164,6 +164,7 @@ bothEngines('#444 R2-1: a failed read ends at its reserve and a never-settled re
   assert.ok(dead.ok)
   assert.equal(await trialRefusal(db, probe, { env, now: NOW }), 'global_daily_cap', 'day D: the pending read counts')
   assert.equal(await trialRefusal(db, probe, { env, now: NOW + READ_GRACE_S - 1 }), 'global_daily_cap', 'within the grace window: still counts')
+  assert.equal(await trialRefusal(db, probe, { env, now: NOW + 2 * READ_GRACE_S }), 'global_daily_cap', 'same admission day, past the grace window: the full reserve still counts (Instinct probe on #552)')
   assert.equal(await trialRefusal(db, probe, { env, now: dayStart + 2 * 86400 + 60 }), null, 'D+2: a never-settled read no longer eats the day ceiling')
   // ... but it stays on the account at its full reserve for good.
   assert.deepEqual(await admitTrialScan(db, a, { env: { ...wallet('0.34', '10'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.30' }, now: dayStart + 400 * 86400 }), { ok: false, reason: 'account_total_cap' }, '$0.05 + $0.30 > $0.34 on day D+400')

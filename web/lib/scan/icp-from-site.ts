@@ -74,7 +74,7 @@ export function fitPromptBytes(host: string, pages: { url: string; kind: string;
 }
 const RESEARCH_TIME_MS = 10_000   // total latency budget for the extra same-site reads; the draft never waits longer
 // A trial-funded read is deliberately smaller than an own-key research pass: the homepage alone, prompt and output
-// capped so the worst-case call stays under the read's reserve ((11,700 x $3 + 700 x $15) / 1e6 = $0.0456 < $0.05).
+// capped so the worst-case call stays under the read's reserve (((11,700 + 1,000 guard margin) x $3 + 700 x $15) / 1e6 = $0.0486 < $0.05).
 export const TRIAL_SITE_READ_PROMPT_MAX_BYTES = 11_700
 export const TRIAL_SITE_READ_MAX_OUTPUT_TOKENS = 700
 export const TRIAL_SITE_READ_MAX_USD = TRIAL_SITE_READ_RESERVE_USD

@@ -1,12 +1,14 @@
-// Website-first onboarding without the user's own AI key (#409). NOT part of `npm test`.
+// Website-first onboarding without the user's own AI key (#409, the #444 port's contract). NOT part of `npm test`.
 // Run:  cd web && npm run build && node test/ui/site-trial.ui.mjs   (SHOTS=<dir> saves desktop and 390px screenshots)
 // Production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed in the browser:
 // no site fetch, no model call, no scan. (The trial-funded read itself is test/icp-from-site.test.ts and
 // test/trial-site-read.test.ts; the trial path to the first lead card is test/ui/one-sentence.ui.mjs.) It proves:
-//   1. when the free trial cannot read the site, the page says the real reason (not available here, reads used, busy,
-//      Google required), never a free-start promise, and offers the key AND the manual profile right there;
-//   2. "Describe your business yourself instead" opens the profile form with nothing paid and nothing saved;
-//   3. a trial-side read failure is not reported as the user's key; 4. no horizontal overflow at 390px.
+//   1. the free read ALWAYS answers - the page's own facts render with their sources (the floor);
+//   2. when the trial could not fund the read, the key form says the real reason (each refusal, read_failed included),
+//      never a free-start promise, and the manual profile is right there;
+//   3. flag off / no trial path at all: the free read with the generic key line;
+//   4. a funded read lands the editable draft (and saves it, as a keyed read does);
+//   5. an owner-side error (spend_limit) keeps main's 429 fallback copy; 6. no horizontal overflow at 390px.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -30,21 +32,28 @@ const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
+const FREE = { free: true, site: 'ledgerline.example', source: 'https://ledgerline.example/', facts: [
+  { kind: 'title', text: 'Ledgerline - books that close themselves', source: 'https://ledgerline.example/' },
+  { kind: 'description', text: 'Monthly bookkeeping for busy founders, reconciled automatically.', source: 'https://ledgerline.example/' },
+] }
+const OWN = 'Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'
 const CASES = [
-  ['not-configured', 400, { error: 'no_api_key', trial: 'not_configured' }, "The free trial isn't available here right now. Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
-  ['reads-used', 400, { error: 'no_api_key', trial: 'site_reads_used' }, 'You have used your three free website reads for now; they come back together, 30 days after the first. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  ['busy', 400, { error: 'no_api_key', trial: 'site_reads_busy' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  ['google', 400, { error: 'no_api_key', trial: 'google_required' }, 'The free trial needs an account that signs in with Google. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  // #444 council R3-3/R3-4: the domain rule names the other account; every cap and throttle reason has its own honest line.
-  ['domain-used', 400, { error: 'no_api_key', trial: 'domain_used' }, "Another account at your company's email domain has already started the free trial, and it belongs to that account. Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
-  ['attempts-cap', 400, { error: 'no_api_key', trial: 'attempts_cap' }, 'Your free trial is used up. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  ['account-cap', 400, { error: 'no_api_key', trial: 'account_cap' }, 'Your free trial is used up. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  ['account-total-cap', 400, { error: 'no_api_key', trial: 'account_total_cap' }, "Your free trial's spending allowance is used up (website reads on the trial count toward it). Add your own Anthropic or OpenAI key to read it, or describe your business yourself."],
-  ['global-daily-cap', 400, { error: 'no_api_key', trial: 'global_daily_cap' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  ['ip-throttle', 400, { error: 'no_api_key', trial: 'ip_throttle' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  ['limit-unavailable', 400, { error: 'no_api_key', trial: 'limit_unavailable' }, 'The free trial is busy right now. Try again later. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
-  ['workspace', 400, { error: 'no_api_key', trial: 'workspace_not_eligible' }, 'The free trial belongs to the account that created this workspace. Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'],
+  ['not-configured', 'not_configured', `The free trial isn't available here right now. ${OWN}`],
+  ['reads-used', 'site_reads_used', `You have used your three free website reads for now; they come back together, 30 days after the first. ${OWN}`],
+  ['busy', 'site_reads_busy', `The free trial is busy right now. Try again later. ${OWN}`],
+  ['google', 'google_required', `The free trial needs an account that signs in with Google. ${OWN}`],
+  ['domain-used', 'domain_used', `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${OWN}`],
+  ['attempts-cap', 'attempts_cap', `Your free trial is used up. ${OWN}`],
+  ['account-total-cap', 'account_total_cap', `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${OWN}`],
+  ['global-daily-cap', 'global_daily_cap', `The free trial is busy right now. Try again later. ${OWN}`],
+  ['ip-throttle', 'ip_throttle', `The free trial is busy right now. Try again later. ${OWN}`],
+  ['limit-unavailable', 'limit_unavailable', `The free trial is busy right now. Try again later. ${OWN}`],
+  ['workspace', 'workspace_not_eligible', `The free trial belongs to the account that created this workspace. ${OWN}`],
+  // The port's two new reasons: guard refused before any call (nothing used); the funded call failed (that read counted).
+  ['spend-unavailable', 'spend_unavailable', `The free trial could not fund this read just now; nothing was used up. Try again later. ${OWN}`],
+  ['read-failed', 'read_failed', `dazl's free trial could not read your site just now. Try again, or describe your business yourself.`],
 ]
+const FUNDED = { icp: { summary: 'Founders at small agencies that want hands-off books.', who: ['Agency founders'], industries: ['Professional services'], sizes: ['1-10'], where: [], signals: ['Hiring a bookkeeper'], exclude: [] }, source: 'https://ledgerline.example/', sells: 'Hands-off monthly bookkeeping', funded: 'trial' }
 const b = await chromium.launch()
 async function open(width, height, answer) {
   const ctx = await b.newContext({ viewport: { width, height } })
@@ -58,6 +67,7 @@ async function open(width, height, answer) {
     if (m !== 'GET') writes.push(`${m} ${p}`)
     if (p === '/api/scan/icp-from-url') return json(answer.body, answer.status)
     if (p === '/api/settings/profile' && m === 'GET') return json({ business_name: '', sells: '', website: '', buyer: null })
+    if (p === '/api/settings/profile' && m === 'POST') return json({ ok: true })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 0, cap: 3, blocked: 'not_configured' } })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     return json({}, 404)
@@ -71,37 +81,50 @@ async function open(width, height, answer) {
 }
 try {
   for (const [width, height, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
-    for (const [name, status, body, text] of CASES) {
-      const { ctx, page, writes } = await open(width, height, { status, body })
-      const box = page.getByTestId('site-key')
-      await box.waitFor({ timeout: 15000 })
-      assert.match(await box.innerText(), new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), name)
-      assert.doesNotMatch(await page.getByTestId('site-step').innerText(), /free search|free scans? to start|3 free/i, `${name}: no free-start promise`)
+    // The floor + every refusal: 200, the page's own facts, the key form with the real reason. Only the read request.
+    for (const [name, reason, text] of CASES) {
+      const { ctx, page, writes } = await open(width, height, { status: 200, body: { ...FREE, trial: reason } })
+      const panel = page.getByTestId('free-site-read')
+      await panel.waitFor({ timeout: 15000 })
+      assert.match(await panel.innerText(), /books that close themselves/, `${name}: the page's own facts render`)
+      assert.match(await panel.innerText(), /reconciled automatically/, `${name}: the description fact renders`)
+      const stepText = await page.getByTestId('free-site-read').locator('..').innerText()
+      assert.match(stepText, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').slice(0, 60)), `${name}: the real reason`)
+      assert.doesNotMatch(stepText, /free search|free scans? to start|3 free/i, `${name}: no free-start promise`)
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${width}px`)
-      if (process.env.SHOTS && (name === 'not-configured' || name === 'busy')) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`) })
-      if (name === 'not-configured') {
-        // The manual path, right there: the profile form opens; nothing is paid for or saved by the click.
-        await page.getByTestId('site-manual').click()
-        await page.getByText("Here's what we think you sell and who buys it").waitFor({ timeout: 10000 })
-        assert.equal(await page.getByRole('button', { name: 'Looks right, continue' }).count(), 1)
-        assert.equal(await page.getByTestId('site-key').count(), 0)
-        if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `manual-${tag}.png`) })
-      }
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`), fullPage: true })
       assert.deepEqual(writes, ['POST /api/scan/icp-from-url'], `${name}: only the one site-read request`)
       await ctx.close()
     }
-    // A failure on the trial side is dazl's, not the user's key, and the manual path is offered right there (R3-8).
-    const { ctx, page } = await open(width, height, { status: 502, body: { error: 'trial_read_failed' } })
-    await page.getByTestId('site-step').getByRole('alert').waitFor({ timeout: 15000 })
-    assert.equal(await page.getByTestId('site-step').getByRole('alert').textContent(), "dazl's free trial could not read your site just now. Try again, or describe your business yourself.")
-    assert.doesNotMatch(await page.getByTestId('site-step').innerText(), /your key/i)
-    assert.equal(await page.getByTestId('site-key').count(), 0, 'no key panel for a trial-side failure')
-    await page.getByTestId('site-manual').click()
-    await page.getByText("Here's what we think you sell and who buys it").waitFor({ timeout: 10000 })
-    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `trial-failed-manual-${tag}.png`) })
-    await ctx.close()
+    // Flag off / no trial path: the free read with the generic key line, nothing trial-flavored.
+    {
+      const { ctx, page } = await open(width, height, { status: 200, body: FREE })
+      await page.getByTestId('free-site-read').waitFor({ timeout: 15000 })
+      assert.match(await page.getByTestId('free-site-read').locator('..').innerText(), /The full automatic read runs on your own Anthropic or OpenAI key\./, 'flag off: the generic key line')
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `flag-off-${tag}.png`), fullPage: true })
+      await ctx.close()
+    }
+    // A funded read: the editable draft lands and is saved exactly as read (the same POST a keyed read makes).
+    {
+      const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED })
+      await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
+      assert.ok(writes.includes('POST /api/settings/profile'), 'the funded draft is saved like a keyed read')
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `funded-${tag}.png`), fullPage: true })
+      await ctx.close()
+    }
+    // An owner-side error keeps main's own copy (nothing trial-flavored, no key blame).
+    {
+      const { ctx, page } = await open(width, height, { status: 429, body: { error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' } })
+      // main's copy for an owner-side 429 is the generic fallback (knownErrorCopy has no spend_limit entry); the
+      // Next route announcer also carries role=alert, so scope to the site step.
+      const alert = page.getByTestId('site-step').getByRole('alert')
+      await alert.waitFor({ timeout: 15000 })
+      assert.match(await alert.innerText(), /Too many website reads\. Try again later/, 'spend_limit: main copy')
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `spend-limit-${tag}.png`), fullPage: true })
+      await ctx.close()
+    }
   }
-  console.log(`site trial UI check passed: real reason for each of the ${CASES.length} refusals (not available, reads used, busy, Google, domain, caps, throttles, workspace), key + manual profile offered, trial failure not blamed on a key and offers the manual path, desktop + 390px`)
+  console.log(`site trial UI check passed: free-read floor with facts for each of the ${CASES.length} reasons (incl. spend_unavailable and read_failed), flag-off generic line, funded draft lands and saves, spend_limit keeps main copy, desktop + 390px`)
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
