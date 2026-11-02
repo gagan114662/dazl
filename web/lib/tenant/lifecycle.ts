@@ -101,11 +101,15 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
 // who asked for the deletion; the kind is service, the lifecycle machine acting on that request.
 export function* closingEventTx(tx: Tx, tenant: string, requestedBy: string, action: string, now: number, summary?: Record<string, unknown>): TxBody<void> {
   // Lock order is advisory -> gate -> event for every caller. A deletion step already holds the tenant's advisory
-  // lock (this re-takes it, re-entrant); the request transaction takes it here, before the gate. The other order
-  // (gate first, then the audit guard's shared advisory on the event insert) deadlocked a request against a step on
-  // Postgres (CI test-postgres on 32290eee): request held the gate row wanting the lock, step held the lock wanting
-  // the gate row.
-  if (tx.kind === 'pg') yield* tx.get('SELECT pg_advisory_xact_lock(hashtext(?))', [tenant])
+  // lock exclusively (this re-takes it, re-entrant); the request transaction takes it here, before the gate, so
+  // either side waiting on the other does so BEFORE any gate row exists - the other order (gate first, then the
+  // audit guard's shared advisory on the event insert) deadlocked a request against a step on Postgres (CI
+  // test-postgres on 32290eee): request held the gate row wanting the lock, step held the lock wanting the gate row.
+  // The lock is SHARED here, not exclusive: shared orders against a step's exclusive lock just the same (the wait
+  // happens before the gate row), but it does not conflict with the shared locks of the tenant's ordinary in-flight
+  // writers, which must not delay RECORDING the request - waiting for them is the steps' job
+  // (test/tenant-lifecycle-race.test.ts pins: the tombstone is written promptly, no step has run).
+  if (tx.kind === 'pg') yield* tx.get('SELECT pg_advisory_xact_lock_shared(hashtext(?))', [tenant])
   yield* tx.run('INSERT INTO audit_closing_gate (tenant) VALUES (?)', [tenant])
   yield* recordTx(tx, { tenantId: tenant, actorId: requestedBy, actorKind: 'service', action, resourceType: 'tenant', resourceId: tenant, summary }, now)
   yield* tx.run('DELETE FROM audit_closing_gate WHERE tenant = ?', [tenant])
