@@ -17,9 +17,10 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GmailSendError } from '../lib/gmail/oauth.ts'
-import { saveSettings, type Deps } from '../lib/outreach/service.ts'
+import { approve, createDraft, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
+import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot, pause, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
+import { migrateSchedulerRuns } from '../lib/ops/scheduler-runs.ts'
 
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
@@ -524,4 +525,103 @@ test("#448 parity: the autopilot settings read fails once during the token refre
   assert.equal(s.calls.length, 1)
   assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
   assert.equal(workRow(db).reason, 'authority_unreadable')
+})
+
+test('#448 parity: disable() hands every held first touch back: unapproved, work rows gone, one released row each; nothing sends after re-enable', async () => {
+  const db = await setup(); cap1(db); warmed(db)
+  const s = sendStub(NOW)
+  lead(db, 'a@one.example'); lead(db, 'b@two.example')
+  assert.equal((await runAutopilot(db, 'A', 'Acme', s.d)).sent, 1)
+  lead(db, 'c@three.example')
+  await runAutopilot(db, 'A', 'Acme', s.d) // drafts and holds the third at the cap
+  assert.equal(work(db).length, 2)
+  disable(db, 'A')
+  assert.equal(work(db).length, 0)
+  const m = msgRow(db)
+  for (const r of m) if (r.status !== 'sent') assert.deepEqual([r.status, r.approved_hash], ['draft', null])
+  assert.equal(audits(db).filter(a => a.action === 'released').length, 2) // one each
+  enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 3 })
+  const r = await runAutopilot(db, 'A', 'Acme', at(s.d, NOW + DAY + 1))
+  assert.equal(r.sent, 0) // handed-back drafts are never sent on a new grant
+  assert.equal(s.calls.length, 1)
+})
+
+test('#448 parity: disable() leaves warm-up holds as they are and releases only the held first touches that were due', async () => {
+  const { db, s } = await heldAfterOneSend()
+  // A warm-up hold (next_at NULL): the user's own already, not autopilot's to release.
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('w1a2b3c4d5e6f7a8b9c0d1e2','A','xw','warm@up.example','s','bodybodybodybodybodybody','draft')").run()
+  db.prepare("INSERT INTO autopilot_work (message_id, tenant_id, lead_id, reason, next_at, authority, attempts, claimed_at, created_at) VALUES ('w1a2b3c4d5e6f7a8b9c0d1e2','A','xw','warmup',NULL,'x',0,NULL,?)").run(NOW)
+  disable(db, 'A')
+  const w = work(db)
+  assert.equal(w.length, 1)
+  assert.equal(w[0].reason, 'warmup') // untouched
+  assert.equal(s.calls.length, 1)
+})
+
+test('#448 parity: disable() while the Gmail request is open (after the commitment): the send completes and is recorded as sent', async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  const calls: string[] = []
+  const d: Deps & { flags: Record<string, string> } = { flags: { ...ON }, env: genv, master, now: NOW + DAY + 1, baseUrl: 'https://app.test', fetchImpl: tokenOk, sendFn: (async (_t: string, raw: string) => { calls.push(raw); disable(db, 'A'); return { id: 'g' } }) as never }
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 1) // in flight when the off landed: its own pass settles it
+  assert.equal(calls.length, 1)
+  assert.equal(heldRow(db, heldTo).status, 'sent')
+  assert.equal(work(db).length, 0)
+})
+
+test('#448 parity: disable then re-enable during a held draft\'s token refresh: not sent under the new grant, unapproved, slot released, one released row', async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  const d = injectAtToken(at(s.d, NOW + DAY + 1), () => { disable(db, 'A'); enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 3 }) })
+  const r = await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(r.sent, 0)
+  assert.equal(s.calls.length, 1)
+  assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
+  assert.equal(work(db).length, 0)
+  assert.equal((db.prepare("SELECT count(*) AS n FROM autopilot_audit a JOIN outreach_messages m ON m.lead_id = a.lead_id WHERE a.action = 'released' AND m.to_email = ?").get(heldTo) as { n: number }).n, 1)
+})
+
+test('#448 parity: disable() writes one autopilot progress hold row (off, nothing failing) when the scheduler table exists; and turns autopilot off even when the kind check is not widened yet', async () => {
+  { const db = await setup(); ok(db); migrateSchedulerRuns(db)
+    disable(db, 'A')
+    const p = db.prepare("SELECT last_outcome, last_hold, consecutive_failures FROM scheduler_progress WHERE tenant_id = 'A' AND kind = 'autopilot'").get() as { last_outcome: string; last_hold: string; consecutive_failures: number }
+    assert.deepEqual(p, { last_outcome: 'hold', last_hold: 'off', consecutive_failures: 0 }) }
+  { const db = await setup(); ok(db)
+    // A store whose kind CHECK has no 'autopilot' value yet: the row is refused, the off switch never depends on it.
+    db.exec("CREATE TABLE scheduler_progress (tenant_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('scan','digest')), last_attempt_at INTEGER, last_success_at INTEGER, last_error TEXT, last_outcome TEXT, last_hold TEXT, consecutive_failures INTEGER, last_run_id TEXT, PRIMARY KEY (tenant_id, kind))")
+    disable(db, 'A') // must not throw
+    assert.equal((db.prepare("SELECT enabled FROM autopilot_settings WHERE tenant_id = 'A'").get() as { enabled: number }).enabled, 0) }
+})
+
+test('#448 parity: positive controls - a pause during the token refresh holds as before (then resumes); a manual send needs no autopilot', async () => {
+  { const { db, s, heldTo } = await heldAfterOneSend()
+    const d = injectAtToken(at(s.d, NOW + DAY + 1), () => pause(db, 'A'))
+    const r = await runAutopilot(db, 'A', 'Acme', d)
+    assert.equal(r.sent, 0)
+    assert.equal(s.calls.length, 1)
+    assert.equal(work(db).length, 1) // still autopilot's, held for the resume
+    assert.deepEqual(heldRow(db, heldTo), { status: 'draft', approved_hash: null })
+    assert.ok(!audits(db).some(a => a.action === 'released'))
+    resume(db, 'A')
+    const r2 = await runAutopilot(db, 'A', 'Acme', at(s.d, NOW + DAY + 2))
+    assert.equal(r2.sent, 1) }
+  { const { db, s, heldTo } = await heldAfterOneSend()
+    disable(db, 'A') // autopilot entirely off: the user's own send never needs it
+    const id = (db.prepare('SELECT id FROM outreach_messages WHERE to_email = ?').get(heldTo) as { id: string }).id
+    approve(db, 'A', id)
+    const out = await sendMessage(db, 'A', id, at(s.d, NOW + DAY + 1))
+    assert.equal(out, 'sent')
+    assert.equal(s.calls.length, 2) }
+})
+
+test('#448 parity: a manual send whose recheck read fails after the token refresh: refused, approved again with the reason recorded, not sent', async () => {
+  const { db, s, heldTo } = await heldAfterOneSend()
+  disable(db, 'A')
+  const id = (db.prepare('SELECT id FROM outreach_messages WHERE to_email = ?').get(heldTo) as { id: string }).id
+  approve(db, 'A', id)
+  const d = injectAtToken(at(s.d, NOW + DAY + 1), () => breakPrepare(db, 'autopilot_settings'))
+  await assert.rejects(() => sendMessage(db, 'A', id, d), (e: unknown) => (e as { code?: string }).code === 'authority_unreadable')
+  assert.equal(s.calls.length, 1) // nothing reached Gmail
+  const m = db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id) as { status: string; error: string | null }
+  assert.equal(m.status, 'approved') // back with the user, still approved
+  assert.equal(m.error, 'authority_unreadable')
 })
