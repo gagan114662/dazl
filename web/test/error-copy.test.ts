@@ -13,6 +13,7 @@ test('knownErrorCopy: key_unreadable maps to the friendly message, never the raw
 test('knownErrorCopy: shared codes map, context-specific and unknown codes return null', () => {
   assert.match(knownErrorCopy('key_rejected')!, /rejected/)
   assert.match(knownErrorCopy('trial_key_invalid')!, /try again later/i)
+  assert.match(knownErrorCopy('spend_limit')!, /spend limit.*nothing was charged/) // a money cap, never 'too many requests'
   assert.equal(knownErrorCopy('no_api_key'), null) // callers phrase this per surface
   assert.equal(knownErrorCopy('some_future_code'), null)
   assert.equal(knownErrorCopy(undefined), null)

@@ -41,6 +41,16 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- dazl-takeover/b/444-trial-site-read (#552, for #409): "read my website" on the free trial for a keyless account, one
+  bounded read at a time on dazl's key (explicit operator ceiling, per-read $0.05 wallet reservation settled to the
+  provider-reported cost in full, three reads per account per 30 days, priced-model-only spend guard; the worst priced
+  call is $0.0486 with the guard's 1,000-token input margin, under the reserve), with the honest reason and the manual
+  profile when it cannot run. Own-key reads stay on the owner's spend pool (#363). A failed or unreported read settles
+  at its full reserve and ends; a never-settled read counts in full against its admission day's ceiling and stays on
+  the account (the 1h grace bounds only the cross-day day ceiling). The served model and usage are provider-reported:
+  a trust residual, not a proven cap. The funded path stays OFF until DAZL_TRIAL_SITE_READS_PER_DAY is set; enabling it
+  is a new paid step that needs the owner's explicit approval (the trial pool names scans only). Migration 0037.
+
 - b/first5 (#324) review fix (Instinct 2026-10-28 23:08): first5 no longer runs the post-finish TinyFish people search (runner gate, trace note `skipped`); the first5 budget disclosure reports search_and_fetch as `off` (and says model calls are not free). Pinned by a real-runner test with tinyfish tables initialised plus a non-first5 control that does search.
 
 - b/cost-bounds (#221) review fixes (Instinct 2026-10-27): BYOK enrichment disclosure now says it is off only for max_usd or credit_enrichment=false (what the runner does), pinned by a real-runner test per budget form; profile-generation bound now built from the largest JSON-escaped prompt (control chars, 6 bytes each), checked against ASCII/quote/backslash/BMP/astral/control/newline inputs, and states that unlisted models are not covered. No behaviour change.

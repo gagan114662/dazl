@@ -13,5 +13,5 @@ test('POST /api/scan on the free trial: three paid attempts, failures included, 
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 2\b/); assert.match(r.stdout, /# fail 0/)
+  assert.match(r.stdout, /# pass 3\b/); assert.match(r.stdout, /# fail 0/)
 })
