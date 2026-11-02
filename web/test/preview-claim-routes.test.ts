@@ -13,7 +13,7 @@ test('preview claim routes', () => {
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined, String(r.error))
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /PREVIEW_START_OK[\s\S]*PREVIEW_GOOGLE_CLAIM_OK[\s\S]*PREVIEW_FOREIGN_OK[\s\S]*PREVIEW_CLAIM_ROUTE_OK[\s\S]*PREVIEW_ISSUE_ROUTE_OK/)
+  assert.match(r.stdout, /PREVIEW_START_OK[\s\S]*PREVIEW_GOOGLE_CLAIM_OK[\s\S]*PREVIEW_FOREIGN_OK[\s\S]*PREVIEW_CLAIM_ROUTE_OK[\s\S]*PREVIEW_ISSUE_ROUTE_OK[\s\S]*PREVIEW_AUTH_FAILURE_INTENT_OK/)
 })
 
 test('claiming is an intentional act: the claim page never POSTs on landing, only from its button', () => {

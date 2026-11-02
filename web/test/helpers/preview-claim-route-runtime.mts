@@ -192,3 +192,18 @@ test('the issue route: the selected proof of the workspace’s own run enters th
   assert.equal(signedOut.status, 401)
   console.log('PREVIEW_ISSUE_ROUTE_OK')
 })
+
+test('a failed Google round trip keeps the claim and return intent (#416): only the spent oauth cookie is cleared', async () => {
+  const r0 = await issueFor('retry@example.test')
+  const s = await start.GET(req('https://app.test/api/auth/google'))
+  const cookie = /dazl_oauth=([^;]+)/.exec(s.headers.get('set-cookie')!)![1]
+  const r = await callback.GET(req(`https://app.test/api/auth/callback/google?code=c&state=WRONG`, `dazl_oauth=${cookie}; dazl_return=preview; dazl_claim=${r0.token}`))
+  const loc = new URL(r.headers.get('location')!)
+  assert.equal(loc.pathname, '/sign-in'); assert.equal(loc.searchParams.get('error'), 'google_failed')
+  const set = r.headers.getSetCookie()
+  assert.ok(set.some(c => /^dazl_oauth=;.*Max-Age=0/.test(c)), 'the spent oauth cookie is cleared')
+  assert.ok(!set.some(c => /^dazl_return=;.*Max-Age=0/.test(c)), 'return intent survives a failed attempt, so retry resumes')
+  assert.ok(!set.some(c => /^dazl_claim=;.*Max-Age=0/.test(c)), 'claim intent survives a failed attempt, so retry resumes')
+  assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'nothing claimed by the failed attempt')
+  console.log('PREVIEW_AUTH_FAILURE_INTENT_OK')
+})
