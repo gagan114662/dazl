@@ -133,6 +133,22 @@ test('retryable: staged steps, a failed step rolls back and resumes from the las
   assert.deepEqual(emptyExcept(snapshotSqlite(db, A), ['suppressions']), [])
 })
 
+test('retained consent proof: completion commits the 3-field redaction atomically, or not at all', async () => {
+  const db = fixture(), d = sqliteDb(db)
+  db.prepare("INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES ('oa-scope-1', ?, 'opted_in', 'policy 2026-11-02', ?)").run(A, NOW - 10)
+  db.exec("CREATE TRIGGER fail_redact BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'simulated redaction failure'); END;")
+  await assert.rejects(deleteTenant(d, A, { policy: POLICY, requestedBy: 'test', now: NOW }), /simulated redaction failure/)
+  let t = (await tombstone(d, A))!
+  assert.notEqual(t.state, 'completed', 'completion is not acknowledged before the redaction commits')
+  assert.equal(t.completed_at, null)
+  assert.equal((db.prepare("SELECT detail FROM onboarding_audit WHERE id = 'oa-scope-1'").get() as { detail: string }).detail, 'policy 2026-11-02', 'the failed completion rolled back as a whole')
+  db.exec('DROP TRIGGER fail_redact')
+  t = await deleteTenant(d, A)
+  assert.equal(t.state, 'completed', 'resumes to completion once the store stops failing')
+  assert.deepEqual(db.prepare("SELECT tenant_id, action, detail, created_at FROM onboarding_audit WHERE id = 'oa-scope-1'").get() as Record<string, unknown>,
+    { tenant_id: A, action: 'opted_in', detail: null, created_at: NOW - 10 }, 'retained record is exactly tenant id + event type + timestamp')
+})
+
 test('restored backup: the deletion is re-applied from the off-database ledger before the store serves', async () => {
   const file = path.join(T, 'live.db'), backup = path.join(T, 'backup.db')
   const db = fixture(file)

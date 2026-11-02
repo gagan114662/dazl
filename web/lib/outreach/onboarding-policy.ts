@@ -115,9 +115,11 @@ export async function purgeOnboardingAudit(db: Db, o: { now?: number; limit?: nu
 }
 
 // The other half of the retained-record scope: live rows may carry operational detail, but the proof kept
-// after erasure is exactly tenant_id + action + created_at. Once a tombstone completes, null detail on that
-// tenant's rows. Same gated transaction as the purge (the update trigger's only allowance), bounded, fenced
-// by the tick lease, idempotent. Live and still-deleting tenants keep their operational detail.
+// after erasure is exactly tenant_id + action + created_at. The deletion-completion step in lifecycle.ts
+// redacts atomically with the completed tombstone; THIS tick call is the backstop for tenants whose erasure
+// completed before that hook shipped. Same gated transaction as the purge (the update trigger's only
+// allowance), bounded, fenced by the tick lease, idempotent. Live and still-deleting tenants keep their
+// operational detail.
 export async function redactOnboardingAuditDetails(db: Db, o: { limit?: number; fence?: (t: Tx) => TxBody<void> } = {}): Promise<number> {
   const limit = Math.max(1, Math.min(o.limit ?? 1000, 10000))
   return db.tx(function* (t) {
