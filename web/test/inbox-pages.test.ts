@@ -151,3 +151,21 @@ bothEngines('a malformed cursor is refused, never guessed', async ({ db }) => {
   }
   assert.deepEqual(decodeCursor(encodeCursor(NOW, 't1')), { at: NOW, threadId: 't1' })
 })
+
+bothEngines('#415 safe hold: a correlated bounce_review notice surfaces as needs_owner on its own notice thread; unmatched noise never flags', async ({ db }) => {
+  const playA = hex(9)
+  await job(db, 'T', playA)
+  await lead(db, playA, 'la', 'Buyer Co')
+  // The DSN arrived on its OWN thread (no followup_threads row): correlated to a send, provenance unverified.
+  await reply(db, 'T', 'th-dsn-1', 'la', 'bounce_review', NOW)
+  // An unmatched notice carries no addresses and no lead: counted, never an owner flag.
+  await db.run('INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)',
+    ['g-unmatched', 'T', 'th-dsn-x', '', '', 'bounce_unmatched', NOW + 1])
+  const p = await inboxPage(db, 'T', { status: 'needs_owner', limit: 100 })
+  assert.equal(p.counts.needs_owner, 1, 'the review notice waits for the owner exactly once')
+  const row = p.threads.find(t => t.classification === 'bounce_review')!
+  assert.ok(row, 'the bounce_review row is in the needs_owner page')
+  assert.equal(row.company, 'Buyer Co', 'the correlated lead gives the owner the company to act on')
+  assert.equal(row.needs_owner, true)
+  assert.equal(p.threads.some(t => t.classification === 'bounce_unmatched' && t.needs_owner), false, 'unmatched mail never asks for the owner')
+})

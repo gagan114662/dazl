@@ -24,6 +24,7 @@ const domainReview = await import('../../app/api/leads/[lead]/domain-review/rout
 const quarantine = await import('../../app/api/leads/[lead]/quarantine/route.ts')
 const warm = await import('../../app/api/leads/[lead]/warm-path/route.ts')
 const findContact = await import('../../app/api/leads/[lead]/find-contact/route.ts')
+const enrichRetry = await import('../../app/api/leads/[lead]/enrich-retry/route.ts')
 const evidence = await import('../../app/api/leads/evidence/route.ts')
 const pageSignals = await import('../../app/api/leads/page-signals/route.ts')
 const evidenceRecheck = await import('../../app/api/leads/evidence-recheck/route.ts')
@@ -103,6 +104,7 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   await asB('GET /api/leads/[lead]/warm-path', () => warm.GET(req(`/api/leads/${L}/warm-path`, 'GET'), ctx({ lead: L })), s => s === 200 || s === 404)
   await asB('POST /api/leads/[lead]/warm-path', () => warm.POST(req(`/api/leads/${L}/warm-path`, 'POST', { contact_url: 'https://www.linkedin.com/in/b-someone', mutual_name: 'B mutual' }), ctx({ lead: L })), s => s === 404 || s === 422) // 422 is also what a nonexistent lead gets: no existence oracle
   await asB('DELETE /api/leads/[lead]/warm-path', () => warm.DELETE(req(`/api/leads/${L}/warm-path`, 'DELETE', { id: f.warmPath }), ctx({ lead: L })), s => s === 404 || s === 200)
+  await asB('POST /api/leads/[lead]/enrich-retry', () => enrichRetry.POST(req(`/api/leads/${L}/enrich-retry`, 'POST', { provider: 'apollo', step: 'org' }), ctx({ lead: L })), is404)
   await asB('POST /api/leads/[lead]/find-contact', () => findContact.POST(req(`/api/leads/${f.confirmed}/find-contact`, 'POST', {}), ctx({ lead: f.confirmed })), is404)
   await asB('GET /api/leads/evidence', () => evidence.GET(req(`/api/leads/evidence?lead_id=${L}`, 'GET')), is404)
   await asB('GET /api/leads/page-signals', () => pageSignals.GET(req(`/api/leads/page-signals?lead_id=${L}`, 'GET')), is404)
@@ -123,6 +125,7 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   setUser(A)
   const st = async (p: Promise<Response>) => (await p).status
   assert.equal(await st(confirm.POST(req(`/api/leads/${L}/confirm`, 'POST', {}), ctx({ lead: L }))), 200)
+  assert.equal(await st(enrichRetry.POST(req(`/api/leads/${L}/enrich-retry`, 'POST', { provider: 'apollo', step: 'org' }), ctx({ lead: L }))), 409)
   assert.equal(await st(quarantine.POST(req(`/api/leads/${L}/quarantine`, 'POST', { reason: 'x' }), ctx({ lead: L }))), 200)
   assert.equal(await st(quarantine.DELETE(req(`/api/leads/${f.quarantined}/quarantine`, 'DELETE'), ctx({ lead: f.quarantined }))), 200)
   const wg = await warm.GET(req(`/api/leads/${L}/warm-path`, 'GET'), ctx({ lead: L }))

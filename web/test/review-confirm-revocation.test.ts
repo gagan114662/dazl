@@ -55,6 +55,7 @@ function mock() {
     const url = String(u)
     if (url.includes('oauth2')) return json({ access_token: 'at' })
     if (url.includes('/threads/')) return json({ messages: [] })
+    if (url.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as typeof fetch
   const sendFn = (async (_t: string, raw: string) => { calls.push(Buffer.from(raw, 'base64url').toString('utf8')); return { id: `gm${calls.length}`, threadId: 'thread-1' } })
@@ -171,6 +172,7 @@ test('withdraw during a due sequence step token fetch: zero send, claim released
     const url = String(u)
     if (url.includes('oauth2')) { await unconfirmLeadReview(sqliteDb(db), 'A', lead); return json({ access_token: 'at' }) }
     if (url.includes('/threads/')) return json({ messages: [] })
+    if (url.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as typeof fetch
   const r = await runSequences(db, 'A', 'Acme', { ...m, fetchImpl: withdrawFetch, now: NOW + 3 * DAY })
@@ -228,6 +230,7 @@ test('withdraw during a follow-up token fetch: zero send, claim row deleted, thr
     const url = String(u)
     if (url.includes('oauth2')) { await unconfirmLeadReview(sqliteDb(db), 'A', lead); return json({ access_token: 'at' }) }
     if (url.includes('/threads/')) return json({ messages: [] })
+    if (url.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as typeof fetch
   const r = await runFollowups(db, 'A', 'Acme', { ...m, flags: followupFlags, fetchImpl: withdrawFetch })
@@ -273,6 +276,7 @@ test('legacy hold appears during send token await and releases claim without sen
  const draft=createDraft(db,'A',lead,'Acme');approve(db,'A',draft)
  const m=mock(),fetchImpl=(async(u:unknown)=>{
   if(String(u).includes('oauth2')){db.prepare('UPDATE leads SET human_confirmed_at=NULL,human_confirmed_from=NULL,confidence=85 WHERE id=?').run(lead);return json({access_token:'at'})}
+  if (String(u).includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
   return json({},404)
  }) as typeof fetch
  await assert.rejects(sendMessage(db,'A',draft,{...m,fetchImpl}),/lead_currentness_unconfirmed/)
@@ -363,7 +367,7 @@ test('withdrawn website confirmation during the step token await releases the cl
   approveSequence(db, 'A', seq, id => approve(db, 'A', id, true), NOW)
   await sendMessage(db, 'A', draftId, m)
   await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 1 })
-  const f = (async (u: unknown) => { const url = String(u); if (url.includes('oauth2')) { setDomainReview(db, 'A', lead, 'withdraw'); return json({ access_token: 'at' }) }; if (url.includes('/threads/')) return json({ messages: [] }); return json({}, 404) }) as typeof fetch
+  const f = (async (u: unknown) => { const url = String(u); if (url.includes('oauth2')) { setDomainReview(db, 'A', lead, 'withdraw'); return json({ access_token: 'at' }) }; if (url.includes('/threads/')) return json({ messages: [] }); if (url.includes('messages?q=')) return json({ messages: [] }); return json({}, 404) }) as typeof fetch
   const r = await runSequences(db, 'A', 'Acme', { ...m, fetchImpl: f, now: NOW + 3 * DAY })
   assert.equal(r.sent, 0); assert.equal(m.calls.length, 1)
   assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id = ?').get(seq) as { stop_reason: string }).stop_reason, 'domain_unconfirmed')

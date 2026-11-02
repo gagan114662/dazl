@@ -127,10 +127,27 @@ const linkedin: Fetcher = async (query, session) => {
   return out
 }
 
-// --- Not fetchable without a real browser or request signing. Honest stubs: they return nothing,
-// so the app records worker_error and the platform stays "Needs worker" in the UI until done. ---
+// --- Not fetchable without a real browser or request signing. Declared unsupported in CAPABILITY:
+// the server refuses them before any fetch, so the app records 'unsupported' - never a fake
+// zero-result 'empty' search. The stubs stay so FETCHERS remains total; the gate makes them
+// unreachable, and they never make a network call. ---
 const facebook: Fetcher = async () => [] // FB has no cookie-only JSON search; needs a browser worker
 const xiaohongshu: Fetcher = async () => [] // XHS signs every web request (x-s/x-t); signing is not implemented
+
+// What this worker build can actually fetch. The app mirrors this declaration
+// (web/lib/advanced/config.ts PLATFORM_SUPPORT; pinned equal by test/advanced-capability-sync.test.ts):
+// 'unsupported' is its own outcome, distinct from a genuine successful empty result, an auth
+// failure, throttling, or a schema failure.
+export interface PlatformCapability { supported: boolean; reason: string | null }
+export const CAPABILITY: Record<Platform, PlatformCapability> = {
+  x: { supported: true, reason: null },
+  reddit: { supported: true, reason: null },
+  instagram: { supported: true, reason: null },
+  facebook: { supported: false, reason: 'Facebook has no cookie-only JSON search; it needs a browser worker that is not built' },
+  bilibili: { supported: true, reason: null },
+  xiaohongshu: { supported: false, reason: 'XiaoHongShu signs every web request (x-s/x-t); signing is not implemented' },
+  linkedin: { supported: true, reason: null },
+}
 
 export const FETCHERS: Record<Platform, Fetcher> = { x, reddit, instagram, facebook, bilibili, xiaohongshu, linkedin }
 export const isPlatform = (v: unknown): v is Platform => typeof v === 'string' && Object.hasOwn(FETCHERS, v)

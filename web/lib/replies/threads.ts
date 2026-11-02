@@ -3,6 +3,7 @@ import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
 import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
+import { PLATFORM_SUPPORT } from '../advanced/config.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
 import { getAuthDb, getSellerProfile } from '../auth-db.ts'
@@ -162,7 +163,7 @@ export interface RefreshResult {
   // honest backlog still keyword-only after the per-refresh cap - one click may not grade all.
   graded: number
   ungraded_remaining: number
-  platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'rate_limited' | 'worker_error'>>
+  platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'rate_limited' | 'worker_error' | 'unsupported'>>
 }
 
 export async function refreshReplies(db: Database.Database, tenantId: string, deps: { worker?: WorkerFetch; fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {}): Promise<RefreshResult> {
@@ -188,15 +189,21 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
   let gradesLeft = MAX_INTENT_GRADES_PER_REFRESH
   for (const p of REPLY_PLATFORMS) {
     if (!platformAllowed(p, flags)) { out.platforms[p] = 'disabled'; continue }
+    // A platform this build cannot fetch is 'unsupported', never a silently successful read.
+    if (!PLATFORM_SUPPORT[p].supported) { out.platforms[p] = 'unsupported'; continue }
     if (!hasConsent(db, tenantId, scopeFor(p))) { out.platforms[p] = 'no_consent'; continue }
     const budget = maxCallsPerHour(p, env) - platformCallsLastHour(db, tenantId, p)
     if (budget <= 0) { out.platforms[p] = 'rate_limited'; continue }
     const session = getEnabledCredential(db, tenantId, connectorId(p), deps.master) || ''
     const connector = `adv:${p}-replies`
     let anyError = false
+    let anyUnsupported = false
     for (const q of queries.slice(0, budget)) {
-      const items = await worker({ platform: p, query: q, session }).catch(() => null)
-      if (items === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
+      const r = await worker({ platform: p, query: q, session }).catch(() => null)
+      if (r === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
+      // Version skew: the worker refuses a platform this build still reads. Not an error, not ok.
+      if (r.unsupported) { audit(db, { tenantId, connector, lookup: q, status: 'unsupported', results: 0 }); anyUnsupported = true; continue }
+      const items = r.items
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
       let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
       out.filtered += fresh.length - qualified.length
@@ -218,7 +225,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
         out.added += ins.run(id24(), tenantId, p, it.url, it.title, it.quote, q, it.date, it.login_walled ? 1 : 0, (it as { buyer_intent?: string | null }).buyer_intent ?? null).changes
       }
     }
-    out.platforms[p] = anyError ? 'worker_error' : 'ok'
+    out.platforms[p] = anyError ? 'worker_error' : anyUnsupported ? 'unsupported' : 'ok'
   }
   // Re-grade older keyword-only rows with whatever of the manual-refresh cap remains, so a
   // tenant who adds a key later is not stuck with pre-grading rows (like the internship

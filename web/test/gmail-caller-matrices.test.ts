@@ -16,6 +16,7 @@ import { seedOffers } from './helpers/seed-offer.ts'
 import { startOAuth, completeOAuth } from '../lib/gmail/oauth.ts'
 import { approve, createDraft, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { runFollowups, GAPS_DAYS } from '../lib/outreach/followups.ts'
+import { acceptReadConsent } from '../lib/outreach/replies.ts'
 import { CONSENT_VERSION } from '../lib/outreach/autopilot.ts'
 
 const master = randomBytes(32)
@@ -74,6 +75,11 @@ test('PROBE runFollowups: malformed success -> uncertain + paused, thread stoppe
     raw.prepare("INSERT INTO consent_ledger (id, tenant_id, contact, channel, scope, basis, evidence_ref, granted_at, expires_at) VALUES (?, ?, ?, 'email', 'followup', 'reply_interest', 'gmail:x', ?, ?)").run(`c-${t}-1`, t, 'sam1@buyer.example', NOW - DAY, NOW + 90 * DAY)
     raw.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at) VALUES (?, ?, ?, ?, 'Intro', 'Thanks for the earlier conversation note.', 'sent', ?)").run(`orig-${t}-1`, t, `lead-${t}-1`, 'sam1@buyer.example', NOW - 4 * DAY)
     await connect(raw, t)
+    // #413: a thread-bound follow-up to a contacted recipient requires fresh reply ingest - grant read authority
+    // and a fresh reply_sync row so this probe reaches the transport it exists to probe.
+    raw.prepare('UPDATE gmail_accounts SET read_granted = 1 WHERE tenant_id = ?').run(t)
+    acceptReadConsent(raw, t)
+    raw.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_outcome, consecutive_failures) VALUES (?, 'reply_sync', ?, ?, 'success', 0)").run(t, NOW, NOW)
     let calls = 0
     const d = { env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenOk, flags: { AUTOPILOT_ENABLED: '1' }, sendFn: (async () => { calls++; return bad }) as never }
     const r1 = await runFollowups(raw, t, 'Biz', d)

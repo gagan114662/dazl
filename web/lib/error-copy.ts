@@ -25,6 +25,9 @@ export function knownErrorCopy(code: unknown): string | null {
       return 'The cost of an earlier AI call could not be recorded, so paid generation is paused until that record settles. That call may still be billed to your key. No new charge was made for this request.'
     case 'spend_unavailable':
       return 'Your spend budget could not be checked just now, so nothing was generated and nothing was charged. Try again shortly.'
+    // A money cap, not a rate cap: the route's own message (app/api/scan/icp-from-url), true on every surface.
+    case 'spend_limit':
+      return 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.'
     default:
       return null
   }

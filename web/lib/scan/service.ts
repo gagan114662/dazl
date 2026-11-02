@@ -1,6 +1,7 @@
 import {migratePlayResearch} from '../db/play-research-schema.ts'
 import { migrateSourceReview } from './source-review.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateTenantLifecycle } from '../db/tenant-guard.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { cookies } from 'next/headers'
@@ -25,6 +26,7 @@ import { migrateBounceLedger } from '../outreach/bounce-ledger.ts'
 import { migrateBounceScan } from '../outreach/bounce-scan.ts'
 import { migrateThreadReplies } from '../replies/threads.ts'
 import { migrateTrial } from './trial.ts'
+import { migratePreviewClaim } from './preview-claim.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
 import { migrateEvents } from '../events/store.ts'
 import { migrateSeo } from '../seo/audit.ts'
@@ -36,6 +38,7 @@ export function getScanDb() {
   if (!ready) {
     migrateSchedulerRuns(db)
     migrateScan(db)
+    migratePreviewClaim(db)
     migrateSourceReview(db)
     migratePlayResearch(db)
     migrateWatch(db)
@@ -63,6 +66,7 @@ export function getScanDb() {
     migrateMemory(db)
     migrateReopen(db)
     migrateInsertionOrder(db) // last: adds insert_seq to tables created above
+    migrateTenantLifecycle(db) // after it: a deleted-tenant guard trigger on every tenant-scoped table that now exists
     ready = true
   }
   return db

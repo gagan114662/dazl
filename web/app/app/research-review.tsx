@@ -7,7 +7,7 @@
 import { useState } from 'react'
 
 export type ResearchHyp = { i: string; o: string; k: string; t: string; s: string; u: string | null; q: string | null; at: number | null }
-export type ResearchBlock = { v: 1; site: string; q: string | null; ans: { q: string; o: string; t?: string } | null; offers: { i: string; n: string }[]; hyps: ResearchHyp[] }
+export type ResearchBlock = { v: 1; site: string; q: string | null; ans: { q: string; o: string; t?: string } | null; offers: { i: string; n: string }[]; hyps: ResearchHyp[]; decisions?: { offer: string; hypothesis: string; action: 'confirm' | 'reject' }[] }
 
 const FIELD_OF: Record<string, 'who' | 'industries' | 'sizes' | 'where' | 'exclude'> = { persona: 'who', industry: 'industries', size: 'sizes', location: 'where', disqualifier: 'exclude' }
 const OFFER_QUESTION = 'Which of your offers is this play for?'
@@ -20,22 +20,35 @@ export function asResearchBlock(x: unknown): ResearchBlock | null {
   return Array.isArray(r.offers) && Array.isArray(r.hyps) ? r : null
 }
 
-export default function ResearchReview({ research, onChange, onAdd, onRemove }: {
+export default function ResearchReview({ research, onChange, onAdd, onRemove, onOfferPick }: {
   research: ResearchBlock
   onChange: (r: ResearchBlock) => void
   onAdd: (field: 'who' | 'industries' | 'sizes' | 'where' | 'exclude', text: string) => void
   onRemove: (field: 'who' | 'industries' | 'sizes' | 'where' | 'exclude', text: string) => void
+  // "Which of your offers is this play for?" is answered BY binding this play's offer - the server treats the play's
+  // offer as the answer (applyReviewedDraft), so the click must set the same field the run sends, never only the block.
+  onOfferPick?: (offerName: string) => void
 }) {
   const [answer, setAnswer] = useState('')
   // Dismiss rejects the statement AND removes its exact text from the visible field in the same action: the draft the
   // person sees is the authority, with no hidden contradiction a later exact-match could resurrect.
+  const decide = (h: ResearchHyp, action: 'confirm' | 'reject') => [...(research.decisions ?? []).filter(d => d.offer !== h.o || d.hypothesis !== h.i), { offer: h.o, hypothesis: h.i, action }]
+  const add = (h: ResearchHyp) => {
+    onAdd(FIELD_OF[h.k], h.t)
+    onChange({ ...research, hyps: research.hyps.map(x => x.i === h.i ? { ...x, s: 'reviewed' } : x), decisions: decide(h, 'confirm') })
+  }
   const dismiss = (id: string) => {
     const h = research.hyps.find(x => x.i === id)
     const field = h ? FIELD_OF[h.k] : undefined
     if (h && field) onRemove(field, h.t)
-    onChange({ ...research, hyps: research.hyps.map(x => x.i === id ? { ...x, s: 'rejected' } : x) })
+    if (h) onChange({ ...research, hyps: research.hyps.map(x => x.i === id ? { ...x, s: 'rejected' } : x), decisions: decide(h, 'reject') })
   }
-  const answerOffer = (offerId: string) => research.q ? onChange({ ...research, ans: { q: research.q, o: offerId } }) : null
+  const answerOffer = (offerId: string) => {
+    if (!research.q) return
+    onChange({ ...research, ans: { q: research.q, o: offerId } })
+    const o = research.offers.find(x => x.i === offerId)
+    if (o) onOfferPick?.(o.n)
+  }
   const answerWho = () => {
     const t = answer.trim()
     if (!t || !research.q) return
@@ -44,7 +57,7 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove }: 
     setAnswer('')
   }
   const visible = research.hyps.filter(h => h.k !== 'offer' && h.s !== 'rejected')
-  if (visible.length === 0 && !research.q) return null
+  if (research.hyps.length === 0 && !research.q) return null
   return (
     <div className="border border-[var(--line,#333)] rounded p-3 mb-3" data-testid="research-review">
       <p className="text-xs uppercase tracking-wide text-[var(--ink-2,#888)] mb-2">From your website ({research.site}) - review before the scan</p>
@@ -62,10 +75,10 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove }: 
                     {h.q && (h.s === 'sourced' || h.s === 'reviewed')
                       ? <span className="block text-xs text-[var(--ink-2,#888)]">on your site: &ldquo;{h.q}&rdquo;{h.u ? <> - <a className="underline" href={h.u} target="_blank" rel="noreferrer">{h.u}</a></> : null}</span>
                       : h.s === 'reviewed'
-                        ? <span className="block text-xs text-[var(--ink-2,#888)]">added by you</span>
+                        ? <span className="block text-xs text-[var(--ink-2,#888)]"> Added by you</span>
                         : <span className="block text-xs text-[var(--ink-2,#888)]">inferred - not stated on your site</span>}
                   </span>
-                  {FIELD_OF[h.k] && <button type="button" className="text-xs underline shrink-0" onClick={() => onAdd(FIELD_OF[h.k], h.t)}>Add</button>}
+                  {FIELD_OF[h.k] && <button type="button" className="text-xs underline shrink-0" onClick={() => add(h)}>Add</button>}
                   <button type="button" className="text-xs underline shrink-0" onClick={() => dismiss(h.i)}>Dismiss</button>
                 </li>
               ))}
@@ -73,11 +86,14 @@ export default function ResearchReview({ research, onChange, onAdd, onRemove }: 
           </div>
         )
       })}
+      {research.hyps.some(h => h.s === 'rejected') && <details className="mt-2 text-xs"><summary>Dismissed targeting (restore explicitly)</summary>
+        {research.hyps.filter(h => h.s === 'rejected').map(h => <p key={h.i}>{research.offers.find(o => o.i === h.o)?.n}: {h.t} {FIELD_OF[h.k] && <button type="button" className="underline ml-2" onClick={() => add(h)}> Restore</button>}</p>)}
+      </details>}
       {research.q && !research.ans && (
         <div className="mt-2" data-testid="research-question">
           <p className="text-sm mb-1">{research.q}</p>
           {research.q === OFFER_QUESTION
-            ? <div className="flex gap-2 flex-wrap">{research.offers.map(o => <button key={o.i} type="button" className="text-xs underline" onClick={() => answerOffer(o.i)}>{o.n}</button>)}</div>
+            ? <div className="flex gap-2 flex-wrap">{research.offers.map(o => <button key={o.i} type="button" data-testid={`research-offer-pick-${o.i}`} className="text-xs underline" onClick={() => answerOffer(o.i)}>{o.n}</button>)}</div>
             : research.q === WHO_QUESTION
               ? <div className="flex gap-2"><input className="border border-[var(--line,#333)] bg-transparent px-2 py-1 text-sm flex-1" maxLength={120} value={answer} onChange={e => setAnswer(e.target.value)} placeholder="e.g. practice managers at dental clinics" /><button type="button" className="text-xs underline" onClick={answerWho} disabled={!answer.trim()}>Save</button></div>
               : null}

@@ -48,7 +48,7 @@ test('buyer-intent grading: buyer thread stored with verdict, internship thread 
       const word = /internship/i.test(init?.body ?? '') ? 'no' : 'yes'
       return new Response(JSON.stringify({ content: [{ type: 'text', text: word }] }), { status: 200 })
     }) as unknown as typeof fetch
-    const worker = async () => CANDIDATES
+    const worker = async () => ({ items: CANDIDATES, unsupported: null })
     const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
     assert.equal(r.added, 1)
     assert.equal(r.filtered, 2) // the internship thread is graded 'no' once per platform pass
@@ -63,7 +63,7 @@ test('provider error: thread stored keyword-matched only (buyer_intent NULL), ne
   const { d, master } = setup()
   {
     const fetchImpl = (async () => { throw new Error('upstream down') }) as unknown as typeof fetch
-    const worker = async () => [CANDIDATES[0]]
+    const worker = async () => ({ unsupported: null, items: [CANDIDATES[0]] })
     const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
     assert.equal(r.added, 1)
     assert.equal(listThreads(d, 't1')[0].buyer_intent, null)
@@ -75,7 +75,7 @@ test('no AI key: no grading calls, keyword behavior unchanged', async () => {
   migrateThreadReplies(d); migrateOutreach(d); migrateScan(d); migrateSequences(d); migrateConnectors(d); migrateAdvanced(d); migrateKeys(d)
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['cold email software'])
-  const worker = async () => [CANDIDATES[1]] // internship thread passes the keyword gate
+  const worker = async () => ({ unsupported: null, items: [CANDIDATES[1]] }) // internship thread passes the keyword gate
   const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
   assert.equal(r.added, 1) // keyword-only storage, honestly labelled (buyer_intent NULL)
   assert.equal(listThreads(d, 't1')[0].buyer_intent, null)
@@ -93,7 +93,7 @@ test('existing keyword-only rows are re-graded inside a manual refresh: internsh
     const word = /internship/i.test(init?.body ?? '') ? 'no' : 'yes'
     return new Response(JSON.stringify({ content: [{ type: 'text', text: word }] }), { status: 200 })
   }) as unknown as typeof fetch
-  const worker = async () => [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[]
+  const worker = async () => ({ unsupported: null, items: [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[] })
   await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
   const rows = d.prepare('SELECT id, buyer_intent FROM reply_threads ORDER BY id').all() as { id: string; buyer_intent: string | null }[]
   assert.deepEqual(rows, [{ id: 'old1', buyer_intent: 'no' }, { id: 'old2', buyer_intent: 'yes' }])
@@ -110,7 +110,7 @@ test('refresh reports graded count: new candidates graded once each, no backlog 
     const word = /internship/i.test(init?.body ?? '') ? 'no' : 'yes'
     return new Response(JSON.stringify({ content: [{ type: 'text', text: word }] }), { status: 200 })
   }) as unknown as typeof fetch
-  const worker = async () => CANDIDATES
+  const worker = async () => ({ items: CANDIDATES, unsupported: null })
   const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
   // The mock worker returns the same 2 candidates for both platforms (reddit + x), and each
   // platform pass grades them independently: 2 candidates x 2 platforms = 4 verdicts.
@@ -122,7 +122,7 @@ test('per-refresh cap is honest: 12 backlog rows, cap 10 - graded 10, ungraded_r
   const { d, master } = setup()
   const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', ?, 0, NULL)")
   for (let i = 0; i < 12; i++) ins.run(`old${i}`, `https://reddit.com/r/sysadmin/${i}`, `deliverability question ${i}`, `scaling cold email, filters got harder ${i}`, DAY)
-  const worker = async () => [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[]
+  const worker = async () => ({ unsupported: null, items: [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[] })
   const r = await refreshReplies(d, 't1', { worker, fetchImpl: fetchSays('yes'), master, env: ENV_ON, now: NOW })
   assert.equal(r.graded, 10)
   assert.equal(r.ungraded_remaining, 2)
@@ -140,7 +140,7 @@ test('provider errors count nothing: graded 0, rows stay NULL, ungraded_remainin
   ins.run('old1', 'https://reddit.com/r/sysadmin/1', 'deliverability one', 'scaling cold email', DAY)
   ins.run('old2', 'https://reddit.com/r/sysadmin/2', 'deliverability two', 'spam filters got harder', DAY)
   const fetchImpl = (async () => { throw new Error('upstream down') }) as unknown as typeof fetch
-  const worker = async () => [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[]
+  const worker = async () => ({ unsupported: null, items: [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[] })
   const r = await refreshReplies(d, 't1', { worker, fetchImpl, master, env: ENV_ON, now: NOW })
   assert.equal(r.graded, 0)
   assert.equal(r.ungraded_remaining, 2)
@@ -150,7 +150,7 @@ test('provider errors count nothing: graded 0, rows stay NULL, ungraded_remainin
 test('unreadable stored key: refresh completes keyword-only, rows stay NULL, graded 0, backlog counted', async () => {
   const { d, master } = setup()
   d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
-  const worker = async () => [CANDIDATES[1]] // internship thread passes the keyword gate
+  const worker = async () => ({ unsupported: null, items: [CANDIDATES[1]] }) // internship thread passes the keyword gate
   const r = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })
   assert.equal(r.added, 1)
   assert.equal(r.graded, 0)

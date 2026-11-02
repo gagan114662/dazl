@@ -35,6 +35,7 @@ function mock() {
     const url = String(u)
     if (url.includes('oauth2')) return json({ access_token: 'at' })
     if (url.includes('/threads/')) return json({ messages: [] })
+    if (url.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as typeof fetch
   const sendFn = (async (_t: string, raw: string) => { calls.push(Buffer.from(raw, 'base64url').toString('utf8')); return { id: `gm${calls.length}`, threadId: 'thread-1' } })

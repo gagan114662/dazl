@@ -20,6 +20,7 @@ import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
+import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
@@ -666,7 +667,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[] }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -699,7 +700,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
-  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), charge: trialCharges.get(job) }); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) }); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
   if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)).hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
@@ -716,7 +717,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
-  const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), charge: trialCharges.get(job) })
+  const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   if (diag && f.ok) diag.held = HeldText.seal(`${job.id}:${job.attempts}`, urls, f.pages) // sealed for THIS attempt: only text already fetched, never re-fetched
   if (diag) { // run report: every result URL, whether it was selected for fetching and whether TinyFish returned text for it
@@ -826,6 +827,13 @@ export function parseRunBudget(raw: string | null | undefined): RunBudget | null
     return Object.keys(out).length ? out : null
   } catch { return null }
 }
+// Whether a finished scan's leads are autopilot's to draft: a job that carries a budget never starts autopilot (its
+// model drafting and sends are outside the budget, run-budget.ts), nor does a free-trial scan (dazl's keys). The same
+// rule in SQL, for the scheduler's drain: lib/outreach/autopilot.ts NEW_LEADS_SQL (run_budget IS NULL, which is
+// stricter than parseRunBudget for a budget string that parses to nothing; funded_by <> 'trial').
+export function jobStartsAutopilot(job: { run_budget?: string | null; funded_by?: string | null }): boolean {
+  return !parseRunBudget(job.run_budget) && job.funded_by !== 'trial'
+}
 function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
   if (!budget) return deps
   return {
@@ -839,6 +847,8 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 
 export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
+  // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
+  trace?: import('../evals/trace.ts').TraceRecorder
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
@@ -865,7 +875,16 @@ function holdTrialBudget(db: Database.Database, job: Job): void {
   }).immediate()
 }
 
+// Production trace capture (lib/evals/capture.ts) is OFF unless DAZL_TRACE_CAPTURE=1: then this attempt is recorded and,
+// once it ends, its redacted trace is stored. Off, the run is exactly runJobUntraced.
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
+  const capture = beginScanTrace(job, deps)
+  if (!capture) return runJobUntraced(db, job, deps)
+  let outcome = 'threw'
+  try { const r = await runJobUntraced(db, job, capture.deps); outcome = r; return r } finally { await capture.finish(outcome) }
+}
+
+async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
   let trialGuard: SpendGuard | null = null
   const ledger = new SourceRunLedger()
@@ -912,11 +931,17 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
-    const rawProviders = deps.providers ?? providers
+    const rawProviders = deps.trace ? deps.trace.providers(deps.providers ?? providers) : deps.providers ?? providers
     const baseProviders = { ...rawProviders, [vendor]: meterProvider(rawProviders[vendor], c => ledger.model(c)) } as Record<Vendor, Provider>
     // A trial scan reserves each paid step's maximum (lib/billing/trial-budget.ts): model calls by their prompt's bytes,
     // not the token counter's estimate, and the model's own web search, whose cost has no bound, is refused. Its web
     // research is TinyFish, charged per call below. A run with its own max_usd refuses research too (run-budget.ts).
+    // Fail closed (#379): the web-search research fallback is retired at the provider boundary - both real providers
+    // refuse it unconditionally (lib/llm/provider.ts), before any network call, because its search-result tokens are
+    // bounded by nothing dazl sends and it can never run priced. The runner deliberately does NOT wrap or replace the
+    // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
+    // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
+    // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
     const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
@@ -956,7 +981,9 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
     const newsOn = !!deps.newsHttp || newsEnabled()
-    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined }
+    // recordFetch: only while a trace is recorded (lib/evals/capture.ts) do the TinyFish search/fetch calls go through the
+    // recorder; otherwise they keep using the global fetch exactly as before.
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: deps.trace ? deps.fetchImpl : undefined }
     if (job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) {   // first5: free sources only
       try {
         ledger.record('search:tinyfish', 'started')
@@ -981,7 +1008,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
-    const fetchP = cachedFetcher(recordingFetcher(deps.fetchPage ?? fetchPageDetailed, verifierFetch))
+    const fetchP = cachedFetcher(recordingFetcher(deps.trace ? deps.trace.pageFetcher(deps.fetchPage ?? fetchPageDetailed) : deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
     if (!leads && !budgetRefused && job.query && icpForSources && complete && newsOn) {
@@ -1328,7 +1355,7 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
-    if (!parseRunBudget(job.run_budget) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    if (jobStartsAutopilot(job) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }
@@ -1384,7 +1411,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // leads, never part of verification; failures are silent.
     const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
     if (process.env.SIGNALS_ENRICH === '0') trace.note('signals', 'skipped', 'SIGNALS_ENRICH=0')
-    else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else { const a = auditSummary(db, job.user_id, job.id, 'apollo%').total + auditSummary(db, job.user_id, job.id, 'pdl%').total; trace.note('paid_enrichment', a > 0 ? 'ok' : 'unavailable', a > 0 ? null : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', { lookups: a }) }
   } finally {

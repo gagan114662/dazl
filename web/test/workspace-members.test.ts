@@ -100,6 +100,8 @@ bothEngines('roles and removal: admins never touch owners, the last owner cannot
   await removeMember(db, act('A', 'D', 'owner'), 'O')
   assert.equal(await roleIn(db, 'A', 'O'), null)
   assert.equal(await roleIn(db, 'B2', 'O'), 'viewer', 'only this workspace')
+  // A's own workspace is its only one, so it may not leave it; with another membership it may
+  await assert.rejects(leave(db, act('A', 'A', 'admin')), code('only_workspace'))
   await add(db, 'B2', 'A', 'viewer')
   await leave(db, act('A', 'A', 'admin'))
   assert.deepEqual((await listMembers(db, 'A')).map(m => [m.member_id, m.role]), [['D', 'owner']])

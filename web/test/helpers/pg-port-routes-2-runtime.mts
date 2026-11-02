@@ -9,7 +9,7 @@ import crypto from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
+import { getDb, setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
@@ -196,6 +196,7 @@ async function onPg() {
     await runPgMigrations(pg.pool)
     setScanDb(null as unknown as Database.Database) // getScanDb() now throws 'test database unset'
     setDb(pg)
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await seed(pg)
     return await scenario(pg)
   } finally { await pg.close(); await s.drop() }
@@ -225,7 +226,7 @@ test('batch 2 routes on SQLite: settings, Cal.com and warm paths behave, and ten
   assert.equal((o('B memory').body as { memory: unknown }).memory, null)
   assert.deepEqual((o('B competitors').body as { competitors: unknown[] }).competitors, [])
   assert.deepEqual((o('B calcom').body as { bookings: unknown[] }).bookings, [])
-  assert.deepEqual((o('B enrichment').body as { connectors: unknown[]; audit: unknown[] }), { connectors: [], audit: [] })
+  assert.deepEqual((o('B enrichment').body as { connectors: unknown[]; audit: unknown[]; fallback: boolean }), { connectors: [], audit: [], fallback: false })
   assert.equal((o('B warm status').body as { count: number }).count, 0)
   assert.deepEqual((o('B warm path of A').body as { first_degree: unknown[]; user_reported: unknown[] }).first_degree, [])
   assert.deepEqual((o('B warm path of A').body as { user_reported: unknown[] }).user_reported, [])

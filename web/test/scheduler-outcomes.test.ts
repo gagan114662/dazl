@@ -56,9 +56,12 @@ const MATRIX: [string, Work, string][] = [
 
 test('classification table: every worker result maps to success, hold or failure', () => {
   for (const [worker, r, want] of MATRIX) assert.equal(out(classifyWork(r)), want, `${worker} ${JSON.stringify(r)}`)
-  // syncReplies reports errors, never a hold: without reply reading the tenant's follow-up work cannot run
+  // syncReplies: reading_not_enabled is the tenant's own consent/mailbox state (a hold, never a provider call);
+  // active work blocked by it fails under the followups/sequences kinds (the table above). Provider/store
+  // failures stay failures.
   assert.equal(out(classifySync({})), 'success')
-  for (const error of ['reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed']) assert.equal(out(classifySync({ error })), `failure:${error}`)
+  assert.equal(out(classifySync({ error: 'reading_not_enabled' })), 'hold:reading_not_enabled')
+  for (const error of ['gmail_unavailable', 'reply_sync_failed']) assert.equal(out(classifySync({ error })), `failure:${error}`)
 })
 
 // Every stop reason the workers' source can return is in the table above and named in one of the two sets, so a new
@@ -105,13 +108,15 @@ bothEngines('progress rows: a hold keeps the success time and the failure count;
   a = await row(db, 'A', 'sequences')
   assert.deepEqual(a, { last_attempt_at: N + 20, last_success_at: N, last_error: 'Error: reading_not_enabled', last_outcome: 'hold', last_hold: 'paused', consecutive_failures: BLOCKED_AFTER_FAILURES, last_run_id: r2 })
   assert.deepEqual(await runRow(db, r2), { attempted: 1, failed: 0 }, 'a held tenant is attempted, not failed')
+  await finishRun(db, r1, 'ok', undefined, N + 25)
   const held = await tenantFreshness(db, 'A', N + 30)
-  assert.equal(held.state, 'blocked', 'pausing does not resolve the failures'); assert.deepEqual(held.holds, ['sequences:paused'])
+  assert.equal(held.state, 'held', 'a hold after failures means not currently failing, not recovered: the count stands'); assert.deepEqual(held.holds, ['sequences:paused'])
   // a failure after the hold continues the count: holds do not reset it
   await recordProgress(db, r2, 'A', 'sequences', failure('reading_not_enabled'), N + 40)
   a = await row(db, 'A', 'sequences')
   assert.equal(a.consecutive_failures, BLOCKED_AFTER_FAILURES + 1); assert.equal(a.last_hold, null); assert.equal(a.last_outcome, 'failure')
   assert.deepEqual(await runRow(db, r2), { attempted: 1, failed: 1 })
+  assert.equal((await tenantFreshness(db, 'A', N + 45)).state, 'blocked', 'failing again re-blocks immediately on the standing count')
   // success clears everything
   await recordProgress(db, r2, 'A', 'sequences', success, N + 50)
   assert.deepEqual(await row(db, 'A', 'sequences'), { last_attempt_at: N + 50, last_success_at: N + 50, last_error: null, last_outcome: 'success', last_hold: null, consecutive_failures: 0, last_run_id: r2 })
@@ -119,6 +124,28 @@ bothEngines('progress rows: a hold keeps the success time and the failure count;
   const f = await tenantFreshness(db, 'A', N + 70)
   assert.equal(f.state, 'healthy'); assert.deepEqual(f.holds, [])
   assert.deepEqual(await runRow(db, r2), { attempted: 1, failed: 0 })
+})
+
+bothEngines('reading-revoked idle tenant: sync holds, old failure chain does not block, health stays ok (production class, Oct 30-Nov 2)', async ({ db }) => {
+  const r = await startRun(db, lease, N)
+  // rows as the old classification wrote them: reply_sync 'failing' on reading_not_enabled every tick
+  for (let i = 1; i <= BLOCKED_AFTER_FAILURES + 1; i++) await recordProgress(db, r, 'Q', 'reply_sync', failure('reading_not_enabled'), N + i)
+  assert.equal((await tenantFreshness(db, 'Q', N + 10)).state, 'blocked', 'the old chain blocks while it is the last outcome')
+  // the fixed classification: the same refusal is now a hold - attempted, not failed, count left standing
+  const r2 = await startRun(db, lease, N + 20)
+  await recordProgress(db, r2, 'Q', 'reply_sync', hold('reading_not_enabled'), N + 20)
+  const q = await row(db, 'Q', 'reply_sync')
+  assert.equal(q.consecutive_failures, BLOCKED_AFTER_FAILURES + 1, 'no row reset: the recorded history stands')
+  assert.equal(q.last_outcome, 'hold'); assert.equal(q.last_hold, 'reading_not_enabled'); assert.equal(q.last_success_at, null)
+  await finishRun(db, r2, 'ok', undefined, N + 25)
+  const f = await tenantFreshness(db, 'Q', N + 30)
+  assert.equal(f.state, 'held'); assert.deepEqual(f.holds, ['reply_sync:reading_not_enabled']); assert.deepEqual(f.reasons, [])
+  const h = await schedulerHealth(db, N + 30)
+  assert.equal(h.tenants.blocked, 0); assert.equal(h.tenants.held, 1); assert.equal(h.ok, true)
+  // a genuine provider failure after the hold re-blocks immediately, nothing hidden
+  await recordProgress(db, r2, 'Q', 'reply_sync', failure('gmail_unavailable'), N + 40)
+  assert.equal((await tenantFreshness(db, 'Q', N + 45)).state, 'blocked')
+  assert.equal((await schedulerHealth(db, N + 45)).tenants.blocked, 1)
 })
 
 bothEngines('a tenant that has only ever been held is held, not healthy and not failing; the operator sees counts only', async ({ db }) => {

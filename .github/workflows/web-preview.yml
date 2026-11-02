@@ -39,6 +39,12 @@ jobs:
       # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
       - name: Rendered research-review checks (first-run + leads draft editor)
         run: SHOTS=preview/research-review node test/ui/research-review.ui.mjs | tee /tmp/rr1.out && ! grep -q '^NOT RUN' /tmp/rr1.out && SHOTS=preview/research-review node test/ui/leads-research-review.ui.mjs | tee /tmp/rr2.out && ! grep -q '^NOT RUN' /tmp/rr2.out
+      # The #436 unsupported-adapter gates in Settings > Connectors (stubbed: no worker, session or network; screenshots into preview/settings-advanced). It must run, not skip.
+      - name: Rendered settings connectors unsupported-adapter check
+        run: SHOTS=preview/settings-advanced node test/ui/settings-advanced-unsupported.ui.mjs | tee /tmp/sa.out && ! grep -q '^NOT RUN' /tmp/sa.out
+      # The #379 offer-question binding: picking an offer binds the play's offer on both surfaces (stubbed; screenshots into preview/offer-question). It must run, not skip.
+      - name: Rendered offer-question binding check (first-run + leads draft editor)
+        run: SHOTS=preview/offer-question node test/ui/offer-question-binding.ui.mjs | tee /tmp/oq.out && ! grep -q '^NOT RUN' /tmp/oq.out
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out && ! grep -q '^NOT RUN' /tmp/it.out
@@ -54,6 +60,9 @@ jobs:
       # The #409 website-first free read: a keyless account gets the page's own source-labeled facts and the manual profile - no inference, no auto-save, no key demand; the keyed path keeps the AI fill; a failed read says the true reason and leaves the manual path. It must run, not skip.
       - name: Free site read (keyless facts with sources, keyed AI fill, failed read manual path)
         run: SHOTS=preview/free-site-read node test/ui/free-site-read.ui.mjs | tee /tmp/fsr.out && ! grep -q '^NOT RUN' /tmp/fsr.out
+      # The #409 KeyInline nested-form regression: inside the first-run brain form, 'Save key' (click AND Enter) must run the real llm-key PUT with zero native document POSTs. It must run, not skip.
+      - name: KeyInline save inside the brain form (no nested-form capture, click + Enter)
+        run: SHOTS=preview/key-inline node test/ui/key-inline-save.ui.mjs | tee /tmp/ki.out && ! grep -q '^NOT RUN' /tmp/ki.out
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:

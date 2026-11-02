@@ -23,10 +23,11 @@ const BADGE: Record<string, string> = {
   negative: 'text-[#333] border-black/40',
   opt_out: 'text-[#333] border-black/40',
   uncertain: 'text-[#8a5a00] border-[#e8b04a]',
+  bounce_review: 'text-[#8a5a00] border-[#e8b04a]',
   auto: 'text-gray-400 border-black/10',
   other: 'text-gray-500 border-black/10',
 }
-const LABEL: Record<string, string> = { positive: 'interested', negative: 'not interested', opt_out: 'opted out', auto: 'auto-reply', uncertain: 'needs your review', other: 'other' }
+const LABEL: Record<string, string> = { positive: 'interested', negative: 'not interested', opt_out: 'opted out', auto: 'auto-reply', uncertain: 'needs your review', bounce_review: 'possible bounce - unverified', other: 'other' }
 
 export default function InboxClient() {
   // ?status=needs_owner&job_id=<play> (the Outcomes page links here with both).
@@ -79,13 +80,13 @@ export default function InboxClient() {
   return (
     <div className="p-8 max-w-4xl">
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
-      <p className="text-[#555] text-sm mb-6">Replies to the email threads dazl started for you. Nothing else in your mailbox is read.</p>
+      <p className="text-[#555] text-sm mb-6">Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.</p>
       <ConversionPanel />
       {i.read_granted && i.account && (
-        <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. Nothing else in the mailbox is read.</p>
+        <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. With your consent, dazl also checks delivery-failure notices for its sends. Unmatched notices are not kept as replies.</p>
       )}
       {(!i.consent_accepted || !i.read_granted) && (
-        <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. Only replies to outreach threads dazl started are read - nothing else in your mailbox." />
+        <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. With your consent, dazl reads replies in its outreach threads and checks delivery-failure notices for its sends." />
       )}
       {i.consent_accepted && i.read_granted && (
         <div className="flex flex-wrap items-center gap-2 mb-4" data-testid="inbox-filters">

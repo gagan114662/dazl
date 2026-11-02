@@ -236,7 +236,7 @@ test('#349 live records: drafting, rewrite, follow-ups and scoring use the denta
     db.prepare("INSERT INTO leads(id,scan_job_id,name,company,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,human_confirmed_from,event_date) VALUES(?,?,'Pat','Synthetic Buyer','sales@buyer.invalid',?,'https://buyer.invalid/news',?,70,1800000000,'test_review',?)").run(`lead-${id}`, id, QUOTES[id], QUOTES[id], recent)
     db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
     // the London request needs the sales-hiring proof: a durable recorded pass, as the scan gate writes it
-    if (id === LONDON_ID) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('g-london', ?, ?, 'scan:gate', 'gate_passed', 'quote', 'https://buyer.invalid/news', ?, 1800000000)").run(`lead-${id}`, T, recent)
+    if (id === LONDON_ID) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('g-london', ?, ?, 'scan:gate', 'gate_passed', 'requested_role_v1', 'https://buyer.invalid/news', ?, 1800000000)").run(`lead-${id}`, T, recent)
   }
   const prompts: string[] = []
   const providers = { anthropic: { completeDetailed: async (_k: string, prompt: string) => { prompts.push(prompt); return { text: 'x', model: 'm' } } } } as unknown as Record<string, Provider>

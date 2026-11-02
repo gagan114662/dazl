@@ -33,3 +33,4 @@ coding-plans/
 
 # Scoreboard results hold lead and contact data: never commit them
 scoreboard/results/
+quality-report.json

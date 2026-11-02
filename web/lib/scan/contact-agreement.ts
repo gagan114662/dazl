@@ -181,8 +181,9 @@ export function firstPlaceLabel(rawText: string, opts: { structured?: boolean } 
 // ---- the refusal is recorded on the lead, and the lead is regraded from the evidence actually kept ----
 export const REJECTED_KIND = 'contact_rejected'
 // The structured marker stored beside a refusal (the enrichment's label): why the record was not attached.
-export type RejectionCode = 'contact_address_mismatch' | 'contact_location_mismatch' | 'contact_location_unconfirmed' | 'contact_domain_mismatch' | 'contact_unconfirmed'
+export type RejectionCode = 'contact_address_mismatch' | 'contact_location_mismatch' | 'contact_location_unconfirmed' | 'contact_domain_mismatch' | 'contact_role_mismatch' | 'contact_unconfirmed'
 export function contactRejectionCode(reason: string): RejectionCode {
+  if (/contradicts the reviewed buyer role/i.test(reason)) return 'contact_role_mismatch'
   if (/address mismatch/i.test(reason)) return 'contact_address_mismatch'
   if (/location mismatch/i.test(reason)) return 'contact_location_mismatch'
   if (/location unconfirmed/i.test(reason)) return 'contact_location_unconfirmed'

@@ -7,7 +7,7 @@ const user = { id: 'u1', email: 'a@x.com', name: 'A', business_name: 'Biz', pass
 bothEngines('password user: created once, the same email again reports exists, lookup by email', async ({ db }) => {
   assert.equal(await createPasswordUser(user, db), 'created')
   assert.equal(await createPasswordUser({ ...user, id: 'u2' }, db), 'exists')
-  assert.deepEqual(await findPasswordUser('a@x.com', db), { id: 'u1', password_hash: user.password_hash, salt: user.salt })
+  assert.deepEqual(await findPasswordUser('a@x.com', db), { id: 'u1', password_hash: user.password_hash, salt: user.salt, email_verified_at: null })
   assert.equal(await findPasswordUser('nobody@x.com', db), undefined)
 })
 

@@ -4,6 +4,7 @@ import path from 'path'
 import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
 import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
+import { AUDIT_DDL } from './audit.ts'
 import type { Role } from './workspaces.ts'
 import { INVITATIONS_DDL } from './workspace-members.ts'
 import { EMAIL_TOKENS_DDL } from './email-ownership.ts'
@@ -57,6 +58,8 @@ export function migrateAuth(d: Database.Database): void {
   try { d.exec('ALTER TABLE users ADD COLUMN email_verified_at INTEGER') } catch { /* exists */ }
   d.exec(EMAIL_TOKENS_DDL)
   d.exec(OUTBOX_DDL)
+  // Durable audit trail (lib/audit.ts). PG: 0041_audit_events.sql.
+  d.exec(AUDIT_DDL)
   d.exec(WORKSPACE_DDL)
   d.exec(INVITATIONS_DDL)
 
@@ -95,8 +98,8 @@ export async function createSession(userId: string, d?: Db, meta: { device?: str
 }
 
 // Password sign-in lookup. Unknown email -> undefined (the route still spends the same scrypt time).
-export async function findPasswordUser(email: string, d?: Db): Promise<{ id: string; password_hash: string; salt: string } | undefined> {
-  return (d ?? await getDb()).get('SELECT id, password_hash, salt FROM users WHERE email = ?', [email])
+export async function findPasswordUser(email: string, d?: Db): Promise<{ id: string; password_hash: string; salt: string; email_verified_at: number | null } | undefined> {
+  return (d ?? await getDb()).get('SELECT id, password_hash, salt, email_verified_at FROM users WHERE email = ?', [email])
 }
 
 // 'exists' when the email is taken; the route must not reveal which. The account and its personal workspace are made

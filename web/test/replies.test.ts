@@ -46,6 +46,7 @@ function gmail(threads: Record<string, unknown[]>, calls: string[] = []) {
     const u = String(url); calls.push(u)
     if (u.includes('oauth2')) return json({ access_token: 'at' })
     const m = u.match(/threads\/([^?]+)/); if (m) return json({ messages: threads[m[1]] ?? [] })
+    if (u.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({}, 404)
   }) as unknown as typeof fetch
 }
@@ -76,8 +77,10 @@ test('reading needs consent and the read grant; it opens only threads dazl start
   assert.equal(calls.length, 0)
   const db2 = await setup(true); const s = sentLead(db2, 'a@co.example'); const calls2: string[] = []
   await syncReplies(db2, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({ [s.thread]: [] }, calls2) })
-  assert.ok(calls2.filter(u => u.includes('gmail.googleapis.com')).every(u => u.includes(`threads/${s.thread}`)))
-  assert.ok(!calls2.some(u => /messages\?|q=|labels/.test(u)))
+  // #415 widened reading to daemon delivery-failure notices only: the one permitted non-thread call is the
+  // bounded mailer-daemon/postmaster search. Nothing else in the mailbox may be listed, searched or labelled.
+  assert.ok(calls2.filter(u => u.includes('gmail.googleapis.com')).every(u => u.includes(`threads/${s.thread}`) || (u.includes('messages?q=') && u.includes('mailer-daemon'))))
+  assert.ok(!calls2.some(u => /labels/.test(u) || (u.includes('messages?') && !u.includes('mailer-daemon'))))
   db2.prepare('DELETE FROM mail_read_consent').run()
   assert.equal((await syncReplies(db2, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({}) })).error, 'reading_not_enabled')
 })

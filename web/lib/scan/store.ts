@@ -1,3 +1,5 @@
+import { SELLER_DECISION_INSERT, sellerDecisionArgs, type SellerDecision } from './intelligence.ts'
+import { migrateSellerDecisions } from './intelligence-schema.ts'
 import { randomBytes } from 'node:crypto'
 import { migrateSpendPools } from '../llm/spend-pool.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
@@ -26,6 +28,7 @@ export interface QueryInput { id?: string; query: string; icp?: string | null; s
 //  - lengths are capped by CHECK
 //  - a lead needs a signal (reason) and an http(s) source_url
 export function migrateScan(db: Database.Database): void {
+  migrateSellerDecisions(db)
   migrateSpendPools(db) // the owner day/month spend pools the scan runner reserves against (lib/llm/spend-pool.ts)
   db.exec(`
     CREATE TABLE IF NOT EXISTS scan_jobs (
@@ -402,4 +405,10 @@ export function cancelJob(db: Database.Database, userId: string, id: string): Ca
     const r = db.prepare("UPDATE scan_jobs SET status='failed', error='cancelled', claimed_at=NULL, finished_at=CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND user_id = ? AND status='running'").run(id, userId)
     return r.changes === 1 ? { ok: true, was_running: wasRunning } : { ok: false, reason: 'already_finished' }
   }).immediate()
+}
+
+// Called only in the existing atomic scan-admission transaction. This raw write stays at that legacy boundary;
+// intelligence retrieval and standalone persistence use Db and the same SQL on both engines.
+export function captureSellerDecisions(db: Database.Database, rows: SellerDecision[]): void {
+  for (const r of rows) db.prepare(SELLER_DECISION_INSERT).run(...sellerDecisionArgs(r))
 }

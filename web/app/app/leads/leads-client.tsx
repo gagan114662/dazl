@@ -3,6 +3,8 @@ import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
 import { useEffect, useRef, useState } from 'react'
+import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
+import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
@@ -144,7 +146,10 @@ export default function LeadsClient() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [error, setError] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
-  const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null } | null>(null)
+  const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
+  // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
+  const [providerIssues, setProviderIssues] = useState<ProviderIssue[] | null>(null)
+  const [providerIssuesUnknown, setProviderIssuesUnknown] = useState(false) // API said null: record unreadable - not an all-clear
   const [jobError, setJobError] = useState('')
   const [enrichInterrupted, setEnrichInterrupted] = useState(false) // enrichment started but never ended (crash/restart): contacts and fit may be incomplete
   const [emptyReason, setEmptyReason] = useState<string | null>(null) // why a scan that read pages still extracted nothing (counts only)
@@ -358,6 +363,12 @@ export default function LeadsClient() {
       const ansT = asResearchBlock((filled as { research?: unknown }).research)?.ans?.t?.trim()
       if (ansT && !filled.who.some(x => x.trim().toLowerCase() === ansT.toLowerCase())) filled.who = [...filled.who, ansT]
       setDraft(filled)
+      // The play's offer starts from the request, then the business profile (same precedence as preview()), then -
+      // only while still empty - the one-line sells this read generated, which the form shows for review. The field
+      // stays the person's input: editable, nothing saved until they run with it (#379).
+      const genSells = typeof j.sells === 'string' ? j.sells.trim() : ''
+      startOffer(query)
+      if (genSells) setOfferText(prev => (prev.trim().length >= 3 ? prev : genSells))
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
       setDraftNote(`Filled from ${host}. Edit anything that is off, then run the scan.`)
@@ -424,7 +435,7 @@ export default function LeadsClient() {
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, query, ...(withIcp ? { icp: withIcp } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
       if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer }); return }
@@ -458,7 +469,7 @@ export default function LeadsClient() {
       statusFails.current = 0
       const s = await r.json()
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
-      setQuality(s.quality ?? null); setCost(s.cost ?? null)
+      setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
     }
@@ -473,6 +484,22 @@ export default function LeadsClient() {
     if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
   }
   useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
+  // Interrupted enrichment lookups (a rate limit or crash left the outcome unknown): nothing retried itself, so a
+  // lookup that may have been charged is never re-billed on its own. The owner retries each one explicitly, with
+  // the cost and limits stated next to the button (GET /api/enrich/held -> costText).
+  const [heldEnrich, setHeldEnrich] = useState<{ leadId: string; company: string; provider: 'apollo' | 'pdl'; step: 'org' | 'people' | 'legacy'; since: number; costText: string; retryable?: boolean }[]>([])
+  const [retryingEnrich, setRetryingEnrich] = useState<string | null>(null)
+  const loadHeldEnrich = () => fetch('/api/enrich/held').then(r => r.ok ? r.json() : null).then(j => { if (j) setHeldEnrich(j.held ?? []) }).catch(() => {})
+  useEffect(() => { void loadHeldEnrich() }, [])
+  // One button per held item: the action is scoped to exactly that provider+step, whose cost/limits are the
+  // costText shown beside it - retrying Apollo never releases or runs a PDL lookup.
+  const retryEnrich = async (h: { leadId: string; provider: 'apollo' | 'pdl'; step: 'org' | 'people' | 'legacy' }) => {
+    const k = `${h.leadId}:${h.provider}:${h.step}`
+    setRetryingEnrich(k)
+    const r = await fetch(`/api/leads/${h.leadId}/enrich-retry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: h.provider, step: h.step }) }).catch(() => null)
+    setRetryingEnrich(null)
+    if (r?.ok) { void loadHeldEnrich(); void loadLeads() }
+  }
   // The Review drafts bar: this scan's unsent emails by state (drafts to review, approved not sent), read back from
   // Outreach so it survives a reload and counts drafts made with Draft email too. Read-only; null when it could not load.
   const [scanDrafts, setScanDrafts] = useState<{ drafts: number; approved: number } | null>(null)
@@ -756,7 +783,7 @@ export default function LeadsClient() {
               <textarea className={`${input} w-full mb-2`} rows={2} value={draft[k].join('\n')} onChange={e => setDraft({ ...draft, [k]: lines(e.target.value) })} />
             </div>
           ))}
-          {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} />}
+          {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={n => setOfferText(n)} />}
           <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
@@ -872,9 +899,24 @@ export default function LeadsClient() {
           Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start. {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
         </p>
       )}
+      {cost?.per_verification_pass && (status === 'done' || status === 'failed') && (
+        <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost-per-pass" data-unavailable={cost.per_verification_pass.unavailable ?? ''}>
+          {cost.per_verification_pass.usd_per_pass !== null
+            ? <>Model cost per lead that passed verification: ${cost.per_verification_pass.usd_per_pass < 0.01 ? cost.per_verification_pass.usd_per_pass.toFixed(4) : cost.per_verification_pass.usd_per_pass.toFixed(2)} across {cost.per_verification_pass.verified} {cost.per_verification_pass.verified === 1 ? 'lead' : 'leads'}. {cost.model_scope ?? COST_PER_PASS_SCOPE} Passing verification is hygiene, not proof of a good lead.</>
+            : <>No per-lead cost to show: {cost.per_verification_pass.unavailable}.{cost.per_verification_pass.model_usd !== null ? ` The model cost ($${cost.per_verification_pass.model_usd < 0.01 ? cost.per_verification_pass.model_usd.toFixed(4) : cost.per_verification_pass.model_usd.toFixed(2)}) is still shown above.` : ''} Passing verification is hygiene, not proof of a good lead.</>}
+        </p>
+      )}
+      {providerIssuesUnknown && (status === 'done' || status === 'failed') && (
+        <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-provider-issues-unknown">Provider failures can&apos;t be shown for this scan: the record of provider calls isn&apos;t available. This is not an all-clear.</p>
+      )}
+      {providerIssues && providerIssues.length > 0 && (
+        <div className="text-xs mb-3 rounded border border-[#e8b04a] bg-[#fff8e6] text-[#8a5a00] px-3 py-2" data-testid="scan-provider-issues" role="status">
+          {providerIssues.map((i, k) => <p key={`${i.connector}:${i.status}:${k}`}>{providerIssueText(i)}</p>)}
+        </div>
+      )}
       {quality && status === 'done' && (
         <p className="text-xs text-[var(--ink-2)] mb-3 flex flex-wrap items-center gap-1.5" data-testid="scan-quality">
-          <span className="tag">{quality.candidates} found</span><span className="tag">{quality.passed ?? 0} source-checked</span><span className="tag">{quality.needs_review ?? 0} to review</span><span className="tag">{quality.dropped ?? 0} dropped</span>
+          <span className="tag">{quality.candidates} found</span><span className="tag">{quality.passed ?? 0} source-checked</span><span className="tag">{quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review</span><span className="tag">{quality.dropped ?? 0} dropped</span>
           {Object.keys(quality.drop_reasons).length > 0 && <InfoTip label="Why leads were dropped">Dropped: {Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')}.</InfoTip>}
         </p>
       )}
@@ -922,12 +964,28 @@ export default function LeadsClient() {
           <a className="btn-primary text-xs px-3 py-1.5 shrink-0" href={`/app/outreach?job_id=${jobId}`}>{scanDrafts.drafts > 0 ? 'Review drafts' : 'Open in Outreach'}</a>
         </div>
       )}
+      {heldEnrich.length > 0 && (
+        <section className="card p-4 mb-4 text-sm" aria-label="Contact enrichment needs attention" data-testid="enrich-held">
+          <p className="font-semibold mb-1">Contact enrichment needs attention</p>
+          <p className="text-[var(--ink-2)] mb-3">A company or contact lookup was interrupted (a rate limit or a crash) and was not retried automatically, so a lookup that may have been charged is never re-billed on its own.</p>
+          <ul className="space-y-3">
+            {heldEnrich.map(h => (
+              <li key={`${h.leadId}:${h.provider}:${h.step}`} className="flex flex-wrap items-center gap-3">
+                <span className="font-semibold">{h.company}</span>
+                <span className="text-[var(--ink-3)]">{h.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} &middot; interrupted {new Date(h.since * 1000).toLocaleString()}</span>
+                <span className="basis-full text-[var(--ink-2)]" data-testid="enrich-held-cost">{h.costText}</span>
+                <button type="button" className="btn-primary btn-sm" disabled={h.retryable !== true || retryingEnrich === `${h.leadId}:${h.provider}:${h.step}`} onClick={() => void retryEnrich(h)} data-testid={`enrich-retry-${h.leadId}-${h.provider}-${h.step}`}>{retryingEnrich === `${h.leadId}:${h.provider}:${h.step}` ? 'Retrying…' : 'Retry lookup'}</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {jobId && visibleLeads.length > 0 && (() => {
         const n = cardCounts(visibleLeads, draftedLeads, approved)
         const count = { review: n.toReview, approved: n.approved, rejected: n.rejected }
         return <div className="flex flex-wrap items-center gap-2 mb-3">
           <div className="seg" role="tablist" aria-label="Filter leads" data-testid="lead-tabs">
-            {(['review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)} data-testid={`tab-${t}`}>{{ review: 'To review', approved: 'Approved', rejected: 'Rejected' }[t]} <span className="text-[var(--ink-3)]">{count[t] ?? '?'}</span></button>)}
+            {(['review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)} data-testid={`tab-${t}`}>{{ review: 'To decide', approved: 'Approved', rejected: 'Rejected' }[t]} <span className="text-[var(--ink-3)]">{count[t] ?? '?'}</span></button>)}
           </div>
           {/* "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends. */}
           <InfoTip label="About these counts"><span data-testid="card-counts-scope">Cards below, not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}. </span>{n.approved === null ? <span data-testid="card-counts-note">Drafts could not be loaded, so Approved is unknown.</span> : <span data-testid="card-counts-note">Approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}</InfoTip>
@@ -1030,7 +1088,8 @@ export default function LeadsClient() {
               <div className="text-xs mt-1 space-y-0.5">
                 {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review' && e.kind !== 'domain_check').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
-                    <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, seen {e.source_date}</span>{' '}
+                    {e.kind === 'hiring' && <div className="text-[#555]">{e.label?.startsWith('Requested role:') ? `Hiring for ${e.value.includes(' - posted ') ? e.value.split(' - posted ')[0] : e.value.startsWith('Open role on its careers page: ') ? e.value.slice('Open role on its careers page: '.length) : e.value}. This may relate to your offer; buying need isn't verified.` : 'Hiring activity only. A requested-role match and buying need are not verified.'}</div>}
+                    <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, {e.kind === 'hiring' && !e.value.includes(' - posted ') && !e.value.includes('sales/GTM role') ? `checked ${e.source_date}; original posting date unknown` : e.kind === 'hiring' ? `posting date ${e.source_date}` : `seen ${e.source_date}`}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}

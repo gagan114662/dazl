@@ -7,6 +7,8 @@ import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { deviceLabel } from '@/lib/sessions'
+import { getScanDb } from '@/lib/scan/service'
+import { activateLifecycleFor } from '@/lib/outreach/lifecycle'
 
 // Fixed dummy salt/hash so unknown emails cost the same time as known ones.
 const DUMMY_SALT = '00000000000000000000000000000000'
@@ -34,6 +36,9 @@ export async function POST(req: NextRequest) {
 
     const token = await createPasswordSession(user, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
     if (!token) return fail()
+    // #417 safety net: a verified account signing in completes any pending conversion queued for its address,
+    // so a drain lost at the verification boundary still lands. Best-effort; never blocks the sign-in.
+    if (user.email_verified_at !== null) { try { activateLifecycleFor(getScanDb(), email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signin:lifecycle', method: 'POST', requestId: requestIdOf(req) }) } }
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     return NextResponse.json({ ok: true, redirect: '/app' })

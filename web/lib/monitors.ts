@@ -76,8 +76,11 @@ export function listMonitors(db: Db, userId: string) {
      FROM monitors m WHERE m.user_id = ? ORDER BY m.created_at DESC, m.id DESC`, [userId])
 }
 
+// true when this tenant's monitor was in the other state and is now `enabled`; false when it is missing or already
+// there. The decision is made in the statement itself, so two interleaved toggles cannot both see "unchanged" or both
+// see "changed" for one flip: the caller that changed the row is the one that records it.
 export async function setMonitorEnabled(db: Db, userId: string, id: string, enabled: boolean): Promise<boolean> {
-  return (await db.run('UPDATE monitors SET enabled = ?, paused_reason = CASE WHEN ? = 1 THEN NULL ELSE paused_reason END WHERE id = ? AND user_id = ?', [enabled ? 1 : 0, enabled ? 1 : 0, id, userId])).changes === 1
+  return (await db.run('UPDATE monitors SET enabled = ?, paused_reason = CASE WHEN ? = 1 THEN NULL ELSE paused_reason END WHERE id = ? AND user_id = ? AND enabled <> ?', [enabled ? 1 : 0, enabled ? 1 : 0, id, userId, enabled ? 1 : 0])).changes === 1
 }
 
 export async function deleteMonitor(db: Db, userId: string, id: string): Promise<boolean> {

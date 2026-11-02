@@ -5,6 +5,7 @@ import { READ_CONSENT_TEXT } from '@/lib/outreach/replies'
 import { DAILY_CAP, getSettings, OutreachError, saveSettings, sentLast24h } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { accountSendCount } from '@/lib/outreach/send-budget'
+import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 
 // account_sent_24h is the whole rolling budget the daily cap is checked against (first touches, follow-ups, sequence steps,
@@ -25,6 +26,8 @@ export async function PUT(req: NextRequest) {
   if (typeof body?.sender_name !== 'string' || typeof body?.postal_address !== 'string') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
     saveSettings(getScanDb(), user.tenantId, { sender_name: body.sender_name, postal_address: body.postal_address, booking_url: body.booking_url })
+    // which settings, never the sender name, address or link themselves
+    await audit(user, req, { action: 'settings.changed', resource: 'sender', summary: { booking_link: typeof body.booking_url === 'string' && body.booking_url.trim() !== '' } })
     return NextResponse.json({ ok: true })
   } catch (e) {
     if (e instanceof OutreachError) return NextResponse.json({ error: e.code === 'bad_postal_address' ? 'Enter your full mailing address (required by anti-spam law).' : e.code === 'bad_booking_url' ? 'The booking link must be a full https URL (or leave it empty).' : 'Enter the name recipients will see.' }, { status: 400 })

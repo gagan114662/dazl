@@ -2,7 +2,7 @@
 // The app sends {platform, query, session} with a bearer token; the worker replies {items:[...]}.
 // The request carries one tenant's own session cookie and nothing else. Nothing is stored.
 import http from 'node:http'
-import { FETCHERS, isPlatform } from './fetchers.ts'
+import { CAPABILITY, FETCHERS, isPlatform } from './fetchers.ts'
 
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
@@ -25,6 +25,10 @@ const server = http.createServer((req, res) => {
     let parsed: { platform?: unknown; query?: unknown; session?: unknown }
     try { parsed = JSON.parse(body) } catch { return reply(400, { error: 'bad json' }) }
     if (!isPlatform(parsed.platform)) return reply(400, { error: 'unknown platform' })
+    // An adapter this build cannot run is refused before any platform request and reported as
+    // 'unsupported' - distinct from a genuine empty result and from a failure.
+    const capability = CAPABILITY[parsed.platform]
+    if (!capability.supported) return reply(200, { items: [], outcome: 'unsupported', reason: capability.reason })
     const query = typeof parsed.query === 'string' ? parsed.query.slice(0, 300) : ''
     const session = typeof parsed.session === 'string' ? parsed.session.slice(0, 8000) : ''
     if (!query || !session) return reply(400, { error: 'missing query or session' })
@@ -35,7 +39,9 @@ const server = http.createServer((req, res) => {
       ])
       return reply(200, { items: items.slice(0, 20) })
     } catch {
-      return reply(200, { items: [] }) // the app records worker_error / empty, never a crash
+      // A crash or timeout is a worker error, not an empty result: the app records worker_error
+      // for a non-200, so a failed fetch is never reported as a successful zero-result search.
+      return reply(502, { error: 'fetch_failed' })
     }
   })
 })

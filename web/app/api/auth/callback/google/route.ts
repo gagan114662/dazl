@@ -2,10 +2,14 @@ import { connection, NextRequest } from 'next/server'
 import { createSession, getSessionUser, replacedSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { FRESH_AUTH_S } from '@/lib/sessions'
 import { getDb } from '@/lib/db/client'
+import { getScanDb } from '@/lib/scan/service'
+import { activateLifecycleFor, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, redirectNoStore, RETURN_COOKIE, setSessionCookie } from '@/lib/auth-google-response'
+import { clearClaimCookie, clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
+import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
+import { captureError } from '@/lib/ops/errors'
 
 const back = (base: string, err: string) => {
   const res = redirectNoStore(new URL(`/sign-in?error=${err}`, base))
@@ -47,13 +51,29 @@ export async function GET(req: NextRequest) {
   const r = await resolveUser(db, id)
   if ('error' in r) return back(base, 'google_email_exists')
 
+  // #417: a newly created account (not a re-sign-in) is a converted prospect; stop queued acquisition work
+  // for its exact, Google-verified email. Best-effort: never blocks the sign-in, failures are surfaced.
+  if (r.created) { try { recordLifecycleEvent(getScanDb(), 'signup', id.email, r.user_id) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle', method: 'GET' }) } }
+  // Google just proved ownership of this address (auth-google requires email_verified): complete any pending
+  // conversion queued for it (e.g. an earlier unverified password signup of the same account).
+  try { activateLifecycleFor(getScanDb(), id.email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle-drain', method: 'GET' }) }
+
   // Signing in again on a browser already signed in to this same account (a re-authentication) replaces that session
   // rather than leaving it behind; another account's session in the cookie is left alone.
   await replacedSession(req.cookies.get('dazl_session')?.value, r.user_id, db)
-  const landing = req.cookies.get(RETURN_COOKIE)?.value === 'settings' ? '/app/settings' : '/app'
+  const ret = req.cookies.get(RETURN_COOKIE)?.value
+  let landing = ret === 'settings' ? '/app/settings' : '/app'
+  const session = await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
+  // #416: returning from a preview claim. A GET never consumes: the claim binds only on the confirm page's explicit
+  // POST, same as the password path. The intent cookie is re-scoped so the claim route can read it there.
+  let claimToken = ''
+  if (ret === 'preview') claimToken = req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value ?? ''
+  if (ret === 'preview') landing = isClaimToken(claimToken) ? '/preview/claim' : '/app' // lost intent cookie: safe landing, the link still works
   const res = redirectNoStore(new URL(landing, base))
-  setSessionCookie(res, base, await createSession(r.user_id, undefined, { device: deviceLabel(req.headers.get('user-agent')) }), SESSION_TTL_S)
+  setSessionCookie(res, base, session, SESSION_TTL_S)
   clearOauthCookie(res, base)
   clearReturnCookie(res, base)
+  if (ret === 'preview' && isClaimToken(claimToken)) setClaimCookie(res, claimToken)
+  else clearClaimCookie(res)
   return res
 }

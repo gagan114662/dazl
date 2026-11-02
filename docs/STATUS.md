@@ -41,6 +41,23 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
+  `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
+  and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the recovery-runbook
+  step are part 2. Council rounds 1-3 and probe fixes are in the ported head 277a5ec7. Guard table list is derived
+  from the live schema, so tables main added since the fork are guarded automatically; the scope registry carries
+  main's lifecycle_events / preview_claims / preview_claim_events entries.
+
+- dazl-takeover/b/444-trial-site-read (#552, for #409): "read my website" on the free trial for a keyless account, one
+  bounded read at a time on dazl's key (explicit operator ceiling, per-read $0.05 wallet reservation settled to the
+  provider-reported cost in full, three reads per account per 30 days, priced-model-only spend guard; the worst priced
+  call is $0.0486 with the guard's 1,000-token input margin, under the reserve), with the honest reason and the manual
+  profile when it cannot run. Own-key reads stay on the owner's spend pool (#363). A failed or unreported read settles
+  at its full reserve and ends; a never-settled read counts in full against its admission day's ceiling and stays on
+  the account (the 1h grace bounds only the cross-day day ceiling). The served model and usage are provider-reported:
+  a trust residual, not a proven cap. The funded path stays OFF until DAZL_TRIAL_SITE_READS_PER_DAY is set; enabling it
+  is a new paid step that needs the owner's explicit approval (the trial pool names scans only). Migration 0037.
+
 - b/first5 (#324) review fix (Instinct 2026-10-28 23:08): first5 no longer runs the post-finish TinyFish people search (runner gate, trace note `skipped`); the first5 budget disclosure reports search_and_fetch as `off` (and says model calls are not free). Pinned by a real-runner test with tinyfish tables initialised plus a non-first5 control that does search.
 
 - b/cost-bounds (#221) review fixes (Instinct 2026-10-27): BYOK enrichment disclosure now says it is off only for max_usd or credit_enrichment=false (what the runner does), pinned by a real-runner test per budget form; profile-generation bound now built from the largest JSON-escaped prompt (control chars, 6 bytes each), checked against ASCII/quote/backslash/BMP/astral/control/newline inputs, and states that unlisted models are not covered. No behaviour change.
@@ -111,6 +128,10 @@ Updated by the builder on every branch. Newest first.
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review; next: #371.
+- Audit trail (#371, part): design in docs/design/audit.md. Append-only `audit_events` (PG 0041), events for
+  credential, billing, Stripe plan, sending, CRM, pipeline, consent, export and deletion actions, Settings > Audit
+  trail and `GET /api/workspace/audit` (owners and admins; CSV). Automatic deletion is off: the tick purges nothing
+  until the owner chooses a retention period (`AUDIT_RETENTION_DAYS`). Support access needs an owner decision.
 
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)

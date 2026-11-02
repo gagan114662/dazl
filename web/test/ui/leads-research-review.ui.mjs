@@ -1,4 +1,4 @@
-// The website-research review block (#379) in the Leads draft editor ("Fill from my website"). NOT part of `npm test`.
+// The website-research review block (#379) in the Leads draft editor ("Fill from my website"). Runs in release-gate browser CI, not `npm test`.
 // Run:  cd web && npm run build && node test/ui/leads-research-review.ui.mjs   (SHOTS=<dir> saves screenshots)
 // Production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed in the
 // browser: no site is fetched, no model is called, no scan runs. It proves:
@@ -14,6 +14,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? (process.exit(0), '') : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -25,7 +26,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-leads-research-')); const DB =
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -57,7 +58,7 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (p === '/api/usage') return json({ plan: 'pro', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
   if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
-  if (p === '/api/settings/profile') return json({ business_name: 'Acme', sells: 'Acme Booking', website: 'acme.example', buyer: null })
+  if (p === '/api/settings/profile') return json({ business_name: 'Acme', sells: null, website: 'acme.example', buyer: null }) // no profile offer: only the read's sells line can fill the play offer
   if (p === '/api/scan/jobs') return json({ jobs: [] })
   if (p === '/api/scan/icp-from-url') return json(READ)
   if (p === '/api/scan/estimate' && m === 'POST') return json(EST)
@@ -103,7 +104,15 @@ try {
   await shot('leads-draft-research-reviewed')
 
   // 3. Estimate, confirm, run: the POST carries the reviewed draft with the answer's words and the play's offer.
-  await page.locator('#play-offer').fill('Acme Booking')
+  // #379: the play's offer is prefilled after a site read - request first, then the business profile (null in this
+  // fixture), then the read's generated sells line - so the required field is never left empty by a generation.
+  // It stays the person's input; here the prefilled default is what runs.
+  const offerInput = page.locator('#play-offer')
+  for (let i = 0; i < 50 && (await offerInput.inputValue()) !== 'Acme Booking'; i++) await page.waitForTimeout(100)
+  assert.equal(await offerInput.inputValue(), 'Acme Booking', 'the play offer is prefilled from the site read sells line, not left empty')
+  await offerInput.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(200)
+  await shot('leads-draft-offer-prefilled')
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   await page.getByTestId('estimate-confirm').waitFor()
   await page.getByTestId('estimate-confirm-run').click()
@@ -115,9 +124,14 @@ try {
   assert.deepEqual(sent.icp.who, ['practice managers', 'office managers'], 'Who is exactly the reviewed draft')
   const hyps = Object.fromEntries(sent.icp.research.hyps.map(h => [h.i, h]))
   assert.equal(hyps.h2.s, 'rejected', 'the dismissal is an explicit rejection')
-  assert.equal(hyps.h1.s, 'sourced', 'un-acted statement keeps its truth status')
+  assert.equal(hyps.h1.s, 'reviewed', 'Add records human review, not source verification')
+  assert.equal(hyps.h3.s, 'inferred', 'untouched inferred statement keeps its truth status')
+  assert.equal(hyps.h1.u, SITE, 'Add preserves the existing source URL without inventing evidence')
+  assert.equal(hyps.h1.q, RESEARCH.hyps[0].q, 'Add preserves the existing quote, not new source verification')
+  assert.equal(hyps.h1.at, RESEARCH.hyps[0].at, 'Add does not refresh the source check timestamp')
+  assert.deepEqual(sent.icp.research.decisions, [{ offer: 'o1', hypothesis: 'h1', action: 'confirm' }, { offer: 'o1', hypothesis: 'h2', action: 'reject' }], 'only explicit Add/Dismiss actions create seller decisions')
   assert.deepEqual(sent.icp.research.ans, { q: 'Who buys this?', o: 'o1', t: 'office managers' }, 'the typed answer goes WITH ITS WORDS')
-  console.log('PASS leads-research-review: render, add, dismiss, answer, estimated run carries the reviewed draft')
+  console.log('PASS leads-research-review: render, add, dismiss, answer, prefilled play offer, estimated run carries the reviewed draft')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

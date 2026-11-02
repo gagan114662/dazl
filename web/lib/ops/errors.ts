@@ -149,7 +149,9 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'C
   // allowlisted built-in type before capture, so this class name itself is never what is sent.
   'ClientReport',
   // lib/crm/index.ts (#365): a CRM push that failed (nothing created) or has an unknown outcome
-  'CrmPushError'])
+  'CrmPushError',
+  // lib/tenant/lifecycle.ts (#359/#455): a refused ledger re-application during tenant deletion
+  'TombstoneReapplyError'])
 export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'
 export interface OutboundFrame { filename: string; lineno: number; colno: number }
 // A frame's file only when it is this build's own code (lib/ops/emitted.ts): a server file that exists under the app

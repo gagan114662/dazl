@@ -1,3 +1,4 @@
+import { requiredGateHeld } from '../lib/scan/held-state.ts'
 // "Seed funding AND hiring sales": the funding quote alone no longer carries a lead. A dated sales / GTM posting on a public Greenhouse /
 // Lever / Ashby board bound to the lead's own domain (or the source quote itself naming the hiring) keeps it; otherwise it goes to review as
 // `no_sales_hiring_evidence`. Stubbed board JSON, invented companies, no network. The quote / date / identity gates are untouched.
@@ -46,11 +47,14 @@ function seed(over: { extra?: number; domain?: string | null; excerpt?: string; 
 const lead = (db: Database.Database) => db.prepare("SELECT review_reason, confidence, why FROM leads WHERE id = 'L1'").get() as { review_reason: string | null; confidence: number | null; why: string }
 const counts = (db: Database.Database) => db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
 
-test('when is the sales-hiring proof required: only seed/event + sales hiring requests; seed-only and hiring-only are untouched', () => {
+test('when is the sales-hiring proof required: compound sales hiring and specifically requested sales roles, not seed-only or broad hiring', () => {
   assert.equal(salesHiringRequired(REQUEST, ICP), true)
   assert.equal(salesHiringRequired('Find London UK startups that announced seed funding within the past 90 days.', JSON.stringify({ signals: ['announced seed funding'] })), false, 'seed only')
-  assert.equal(salesHiringRequired('Find London UK companies hiring sales account executives.', JSON.stringify({ signals: ['hiring sales account executives'] })), false, 'hiring only')
+  assert.equal(salesHiringRequired('Find London UK companies hiring sales account executives.', JSON.stringify({ signals: ['hiring sales account executives'] })), true, 'explicit account-executive title requires source matching even without funding')
   assert.equal(salesHiringRequired('Find dental practices that opened a new location or posted a front desk receptionist job', JSON.stringify({ signals: ['opened a new location', 'posted a receptionist job'] })), false, 'not a sales role')
+  assert.equal(salesHiringRequired('Independent dental practices in New York City hiring a front-desk coordinator', null), false, 'a requested non-GTM title is a buying signal, not the sales-hiring proof')
+  assert.equal(salesHiringRequired('Find Ohio companies hiring payroll roles', JSON.stringify({ signals: ['payroll job'] })), false, 'payroll roles: not a sales/GTM request')
+  assert.equal(salesHiringRequired('Companies hiring a CRM administrator', JSON.stringify({ signals: ['hiring a CRM administrator'] })), true, 'CRM administrator is a requested GTM-systems title')
   assert.equal(salesHiringRequired(null, null), false)
   assert.equal(quoteNamesSalesHiring('Brightloop raised a seed round and is hiring two account executives.', null), true)
   assert.equal(quoteNamesSalesHiring(QUOTE, 'raised a seed round'), false)
@@ -354,4 +358,300 @@ test('FAIL-CLOSED in memory: failClosedSalesHiring still returns the held lead w
   const held = failClosedSalesHiring(db, job, 'database is locked')
   assert.deepEqual(held.map(h => [h.id, h.reason, h.written]), [['L1', 'sales_hiring_check_failed', false]])
   assert.equal(lead(db).review_reason, null, 'the row did not change - the in-memory set is the truth')
+})
+
+test('specific roles: generic AE cannot satisfy SalesOps/CRM, pure hiring or compound event', async () => {
+  for (const compound of [false, true]) {
+    const query = `${compound ? 'Companies raised seed funding and ' : 'Companies '}hiring a sales operations manager or CRM administrator`
+    const icp = JSON.stringify({ signals: [compound ? 'seed funding and hiring a sales operations manager' : 'hiring a sales operations manager'], where: [] })
+    const { db, job } = seed({ query, icp })
+    const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+    assert.equal(r.required, true); assert.equal(r.passed, 0); assert.equal(r.demoted, 1)
+    assert.match(lead(db).why, /source-matched requested role/)
+    db.close()
+  }
+})
+test('specific role survives top3 truncation: filter requested title BEFORE detail cap; persist term, title, URL and original date', async () => {
+  const query = 'Companies hiring a sales operations manager or CRM administrator'
+  const { db, job } = seed({ query, icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const jobs = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: i === 5 ? 'Senior Sales Ops Manager' : 'Account Executive' }))
+  const r = await applySalesHiringGate(db, job, serve(board({
+    [`${GH}/jobs`]: { jobs },
+    [`${GH}/jobs/6`]: { id: 6, title: 'Senior Sales Ops Manager', first_published: d(20), updated_at: d(1), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/6', content: 'Brightloop careers https://brightloop.io', location: { name: 'London' } },
+  })), { now: NOW })
+  assert.equal(r.passed, 1)
+  const rows = enrichmentsForLeads(db, 'u1', ['L1']).L1
+  const proof = rows.find(e => e.source_url.endsWith('/jobs/6') && e.value.includes('Senior Sales Ops Manager'))!
+  assert.ok(proof); assert.match(proof.label!, /Requested role: sales operations manager/)
+  assert.equal(proof.source_date, d(20).slice(0, 10)); assert.match(proof.label!, /board updated/)
+  assert.match(lead(db).why, /buying need isn't verified/)
+  db.close()
+})
+test('named hiring role cannot use model signal, unrelated quote, undated post or recent update to revive old post', async () => {
+  for (const date of [undefined, d(120)]) {
+    const { db, job } = seed({ query: 'Companies hiring a CRM administrator', icp: JSON.stringify({ signals: ['hiring a CRM administrator'] }), excerpt: 'Brightloop is hiring account executives' })
+    const r = await applySalesHiringGate(db, job, serve(board({
+      [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'CRM Admin' }] },
+      [`${GH}/jobs/1`]: { id: 1, title: 'CRM Admin', first_published: date, updated_at: d(1), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: 'https://brightloop.io' },
+    })), { now: NOW })
+    assert.equal(r.passed, 0); assert.equal(r.demoted, 1)
+    db.close()
+  }
+})
+
+ test('legacy generic gate pass never silently upgrades to requested-role proof', () => {
+  const { db } = seed({ query: 'Companies hiring a CRM administrator', icp: JSON.stringify({ signals: ['hiring a CRM administrator'] }) })
+  db.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,source_url,source_date,retrieved_at) VALUES ('legacy','L1','u1','scan:gate','gate_passed','sales_hiring','https://invalid.example/','2026-10-28',1)").run()
+  assert.equal(requiredGateHeld(db, 'u1', 'L1'), 'sales_hiring_check_failed')
+  db.close()
+})
+
+test('#533 breadth: a requested role absent from the sampled listing leaves an audit row for every sampled title, so absence within the stored sample is provable', async () => {
+  const { db, job } = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const r = await applySalesHiringGate(db, job, serve(board({
+    [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'Account Executive' }, { id: 2, title: 'Backend Engineer' }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: d(12), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', location: { name: 'London' }, content: 'x https://brightloop.io' },
+  })), { now: NOW })
+  assert.equal(r.required, true); assert.equal(r.passed, 0); assert.equal(r.demoted, 1)
+  const rows = enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []
+  const audit = rows.filter(x => x.kind === 'hiring-role' && /all listed titles/.test(x.label ?? ''))
+  assert.deepEqual(audit.map(x => x.value).sort(), ['Account Executive', 'Backend Engineer'], 'every title on the listing gets an audit row, matching or not')
+  for (const x of audit) assert.equal(x.confidence, null)
+  const cov = rows.filter(x => x.kind === 'hiring-board-coverage' && /all listed titles/.test(x.value))
+  assert.equal(cov.length, 1); assert.match(cov[0].value, /2 all listed titles, 2 sampled: 0 already covered by dated posting or filtered audit rows \+ 2 more as audit rows/)
+  db.close()
+})
+
+test('#533 breadth: a stale requested-role title is covered by the zero-match audit row, never duplicated by the full-listing store; the split stays honest', async () => {
+  const { db, job } = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const r = await applySalesHiringGate(db, job, serve(board({
+    [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'Sales Operations Manager', updated_at: d(1) }, { id: 2, title: 'Backend Engineer', updated_at: d(1) }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'Sales Operations Manager', first_published: d(200), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', location: { name: 'London' }, content: 'x https://brightloop.io' },
+  })), { now: NOW })
+  assert.equal(r.passed, 0); assert.equal(r.demoted, 1)
+  const rows = enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []
+  const audit = rows.filter(x => x.kind === 'hiring-role')
+  const som = audit.filter(x => x.value === 'Sales Operations Manager')
+  assert.equal(som.length, 1, 'the stale role-match title is stored exactly once')
+  assert.match(som[0].label ?? '', /long-open/, 'and it is the zero-match audit row carrying the stale reading, not a full-listing row')
+  const be = audit.filter(x => x.value === 'Backend Engineer')
+  assert.equal(be.length, 1); assert.match(be[0].label ?? '', /all listed titles/)
+  const cov = rows.filter(x => x.kind === 'hiring-board-coverage' && /all listed titles/.test(x.value))
+  assert.equal(cov.length, 1); assert.match(cov[0].value, /2 all listed titles, 2 sampled: 1 already covered by dated posting or filtered audit rows \+ 1 more as audit rows/)
+  db.close()
+})
+
+test('#533 check-history: each completed board check leaves exactly one check:ats-board row with the real outcome; never-attempted leaves none', async () => {
+  // bound: the default board has one fresh dated AE posting
+  const a = seed()
+  await applySalesHiringGate(a.db, a.job, serve(board()), { now: NOW })
+  let rows = a.db.prepare("SELECT lookup, status, results, scan_job_id FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_bound'); assert.equal(rows[0].results, 1); assert.equal(rows[0].lookup, 'L1 (gate) greenhouse'); assert.equal(rows[0].scan_job_id, a.job.id)
+  a.db.close()
+  // zero-match: the requested role is absent from the sampled listing
+  const b = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  await applySalesHiringGate(b.db, b.job, serve(board()), { now: NOW })
+  rows = b.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match'); assert.equal(rows[0].results, 1)
+  b.db.close()
+  // fetch failure: every board probe errored (network); an honest failure row PER BOARD, no count claimed, no 'no board' claim
+  const c = seed()
+  const boom = (async () => { throw new Error('network down') }) as never
+  await applySalesHiringGate(c.db, c.job, boom, { now: NOW })
+  rows = c.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board' ORDER BY lookup").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) ashby', 'fetch_failed', -1], ['L1 (gate) greenhouse', 'fetch_failed', -1], ['L1 (gate) lever', 'fetch_failed', -1]])
+  c.db.close()
+  // partial failure: greenhouse errored, lever/ashby answered cleanly - ONLY greenhouse gets a failure row, and 'no_board_found' is NOT claimed
+  const p1 = seed()
+  const ghDown = (async (u: RequestInfo | URL) => { if (String(u).startsWith(GH)) throw new Error('network down'); return no() }) as never
+  await applySalesHiringGate(p1.db, p1.job, ghDown, { now: NOW })
+  rows = p1.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) greenhouse', 'fetch_failed', -1]])
+  p1.db.close()
+  // settled + failed probe: greenhouse errored but lever settled with a dated posting - the bound outcome AND the greenhouse failure are both facts of this check
+  const p2 = seed()
+  const leverOk = (async (u: RequestInfo | URL) => {
+    const s2 = String(u)
+    if (s2.startsWith(GH)) throw new Error('network down')
+    if (s2 === 'https://api.lever.co/v0/postings/brightloop?mode=json') return ok([{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, categories: { location: 'London' }, descriptionPlain: 'Join us at brightloop.io' }])
+    return no()
+  }) as never
+  await applySalesHiringGate(p2.db, p2.job, leverOk, { now: NOW })
+  rows = p2.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board' ORDER BY lookup").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) greenhouse', 'fetch_failed', -1], ['L1 (gate) lever', 'checked_bound', 1]])
+  p2.db.close()
+  // no board anywhere: every probe answered cleanly - one explicit 'no_board_found' row, no board named
+  const n1 = seed()
+  await applySalesHiringGate(n1.db, n1.job, serve({}), { now: NOW })
+  rows = n1.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate)', 'no_board_found', -1]])
+  n1.db.close()
+  // never attempted (no company domain): NO row - absence of a row means never checked, never 'checked and absent'
+  const d0 = seed({ domain: null })
+  await applySalesHiringGate(d0.db, d0.job, serve(board()), { now: NOW })
+  rows = d0.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 0)
+  d0.db.close()
+  // capped: 60 listed titles, none matching - the sample cap is explicit in the status, the pre-cap count is the true fetched count
+  const e0 = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const many = { [`${GH}/jobs`]: { jobs: Array.from({ length: 60 }, (_, i) => ({ id: i + 1, title: `Engineer ${i}` })) } }
+  await applySalesHiringGate(e0.db, e0.job, serve(many), { now: NOW })
+  rows = e0.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match_partial_capped'); assert.equal(rows[0].results, 60)
+  e0.db.close()
+})
+
+test('#533 ownership: a reclaim DURING a lead\'s async fetch refuses that lead\'s writes after resolve; between leads it stops the next one', async () => {
+  // mid-fetch: the board fetch resolves AFTER the job was re-claimed - the stale attempt writes nothing at all
+  const s = seed({ extra: 1 })
+  const job = { ...s.job, attempts: 0 } // the live runner always carries attempts; the guard matches on it
+  let flipped = false
+  const flip = (async (u: RequestInfo | URL) => {
+    if (!flipped) { flipped = true; s.db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(s.job.id) } // re-claimed while the first fetch is in flight
+    const m: Record<string, unknown> = board(); const k = String(u); return m[k] ? ok(m[k]) : no()
+  }) as never
+  const r = await applySalesHiringGate(s.db, job, flip, { now: NOW })
+  assert.equal(r.passed, 0); assert.equal(r.demoted, 0)
+  assert.equal((s.db.prepare("SELECT COUNT(*) c FROM connector_audit WHERE connector = 'check:ats-board'").get() as { c: number }).c, 0, 'no check rows from the stale attempt')
+  assert.equal((enrichmentsForLeads(s.db, 'u1', ['L1', 'L2']).L1 ?? []).filter(x => x.connector.startsWith('signals:')).length, 0, 'L1 evidence refused after the mid-fetch reclaim (the seeded sitecrawl row predates the run)')
+  const l1 = s.db.prepare("SELECT why, review_reason, confidence FROM leads WHERE id = 'L1'").get() as { why: string; review_reason: string | null; confidence: number }
+  assert.equal(l1.review_reason, null); assert.equal(l1.why, 'Seed-funded London SaaS.'); assert.equal(l1.confidence, 80) // untouched
+  s.db.close()
+  // between leads: L1 fully processed before the reclaim, L2 never written
+  const t = seed({ extra: 1 })
+  const tjob = { ...t.job, attempts: 0 }
+  let calls = 0
+  const flipLater = (async (u: RequestInfo | URL) => {
+    calls++
+    if (calls === 3) t.db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(t.job.id) // L1 done (2 fetches); re-claimed as L2's fetch starts
+    const m: Record<string, unknown> = board(); const k = String(u); return m[k] ? ok(m[k]) : no()
+  }) as never
+  const r2 = await applySalesHiringGate(t.db, tjob, flipLater, { now: NOW })
+  assert.equal(r2.passed, 1) // L1 passed before the reclaim
+  assert.equal((enrichmentsForLeads(t.db, 'u1', ['L2']).L2 ?? []).filter(x => x.connector.startsWith('signals:')).length, 0, 'the stale attempt wrote no evidence for L2')
+  const lookups = (t.db.prepare("SELECT lookup FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string }[]).map(x => x.lookup)
+  assert.ok(lookups.length > 0 && lookups.every(x => x.startsWith('L1 ')), 'check rows for L1 only, none for L2')
+  const l2 = t.db.prepare("SELECT why, review_reason, confidence FROM leads WHERE id = 'L2'").get() as { why: string; review_reason: string | null; confidence: number }
+  assert.equal(l2.review_reason, null); assert.equal(l2.why, 'Seed-funded.'); assert.equal(l2.confidence, 80) // untouched
+  t.db.close()
+})
+
+test('#533 honest dated count: more datable postings than the detail cap reads as "4+", never a masked total', async () => {
+  const s = seed()
+  const jobs = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: 'Account Executive' }))
+  const m: Record<string, unknown> = { [`${GH}/jobs`]: { jobs } }
+  for (const j of jobs) m[`${GH}/jobs/${j.id}`] = { ...j, first_published: d(10), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${j.id}`, content: 'https://brightloop.io', location: { name: 'London' } }
+  const r = await applySalesHiringGate(s.db, s.job, serve(m), { now: NOW })
+  assert.equal(r.passed, 1)
+  const agg = (enrichmentsForLeads(s.db, 'u1', ['L1']).L1 ?? []).find(x => x.kind === 'hiring' && /sales\/GTM role/.test(x.value))
+  assert.match(agg!.value, /^4\+ sales\/GTM roles posted/, 'the detail cap (4) is a lower bound, marked, never a total')
+  assert.match(agg!.label ?? '', /of 4\+ dated shown/)
+  s.db.close()
+})
+
+// ---- #533 direct-career auditability: the own-careers-page path gets the same role-match evidence, check-history rows and ownership guards as the ATS path ----
+const cGet = (pages: Record<string, string>, over: Record<string, { status: number; body: string } | null> = {}) => (async (url: string) => {
+  const u = new URL(url); const key = u.pathname
+  if (key in over) { const o = over[key]; return o ? { status: o.status, body: o.body, finalUrl: url } : null }
+  if (key === '/robots.txt') return { status: 404, body: '', finalUrl: url }
+  return key in pages ? { status: 200, body: `<html><body>${pages[key]}</body></html>`, finalUrl: url } : { status: 404, body: '', finalUrl: url }
+}) as import('../lib/connectors/sitecrawl.ts').Get
+const CAREERS = (title: string, slug: string) => ({
+  '/': '<a href="/careers">Careers</a>',
+  '/careers': `<h2>Open roles at Brightloop</h2><ul><li><a href="/careers/${slug}">${title}</a></li></ul>`,
+  [`/careers/${slug}`]: `<h1>${title}</h1><p>Join Brightloop in London as ${title}. Write to jobs@brightloop.io</p>`,
+})
+// the ORIGINAL Oct-22 ask named CRM administrator - a requested title that is NOT a generic GTM role (isGtmRole false);
+// the careers path must still discover it when it is explicitly requested.
+const ROLE_QUERY = 'Companies hiring a CRM administrator'
+const ROLE_ICP = JSON.stringify({ signals: ['hiring a CRM administrator'], where: [] })
+const careersRows = (db: Database.Database) => db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:careers-page'").all() as { lookup: string; status: string; results: number }[]
+const careersEvidence = (db: Database.Database) => db.prepare("SELECT value, label FROM lead_enrichments WHERE lead_id = 'L1' AND connector = 'signals:careers-gtm'").all() as { value: string; label: string }[]
+
+test('#533 direct-career role-match: a requested role verified on the own careers page qualifies with Requested-role evidence and a check row', async () => {
+  const s = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
+  await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet(CAREERS('CRM Administrator', 'crm')) })
+  const l = lead(s.db)
+  assert.equal(l.review_reason, null, 'the careers-page role match qualifies the lead - even for a requested title outside the generic GTM set')
+  assert.match(l.why, /Hiring for CRM Administrator \(requested: CRM administrator\) on its careers page \(brightloop\.io\), checked \d{4}-\d{2}-\d{2}\. This may relate to your offer; buying need isn't verified\./)
+  const ev = careersEvidence(s.db)
+  assert.equal(ev.length, 1); assert.match(ev[0].label!, /^Requested role: CRM administrator;/)
+  assert.equal(ev[0].value, 'Open role on its careers page: CRM Administrator')
+  assert.deepEqual(careersRows(s.db).map(r => [r.status, r.results]), [['checked_vacancy_requested_role', 1]])
+  const board = s.db.prepare("SELECT status FROM connector_audit WHERE connector = 'check:ats-board'").all() as { status: string }[]
+  assert.deepEqual(board.map(r => r.status), ['no_board_found'], 'the ATS check row stands beside the careers row')
+  s.db.close()
+})
+
+test('#533 direct-career AC3: a non-matching verified careers vacancy under a role request is generic evidence only, never role-qualified, and the lead is held', async () => {
+  const s = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
+  await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet(CAREERS('Account Executive', 'ae')) })
+  const l = lead(s.db)
+  assert.equal(l.review_reason, 'no_sales_hiring_evidence', 'a generic careers vacancy never satisfies a requested role')
+  assert.match(l.why, /its careers page lists Account Executive, a sales\/GTM role; no requested-role match among the sampled open roles \(up to 3 verified per page across 1 page read - a match outside the sample is not excluded\)/)
+  const ev = careersEvidence(s.db)
+  assert.equal(ev.length, 1)
+  assert.equal(ev[0].value, 'Open sales role on its careers page: Account Executive'); assert.match(ev[0].label!, /^generic hiring - no requested-role match in the sampled roles;/); assert.doesNotMatch(ev[0].label!, /Requested role:/)
+  assert.deepEqual(careersRows(s.db).map(r => [r.status, r.results]), [['checked_vacancy', 1]])
+  s.db.close()
+})
+
+test('#533 direct-career check-history: clean absence, closed marker and fetch failure each leave an honest row; generic request keeps legacy pass', async () => {
+  // clean absence: every page answered, nothing there - results 0, never -1
+  const a = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
+  await applySalesHiringGate(a.db, a.job, serve({}), { now: NOW, careersGet: cGet({}) })
+  assert.deepEqual(careersRows(a.db).map(r => [r.status, r.results]), [['checked_no_careers_page', 0]])
+  a.db.close()
+  // closed marker: the page says it is not hiring - a clean 0
+  const b = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
+  await applySalesHiringGate(b.db, b.job, serve({}), { now: NOW, careersGet: cGet({ '/careers': '<p>There are no open positions right now.</p>' }) })
+  assert.deepEqual(careersRows(b.db).map(r => [r.status, r.results]), [['checked_closed_marker', 0]])
+  b.db.close()
+  // fetch threw: failure is -1, never reported as absence
+  const c = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
+  const boom = (async () => { throw new Error('network down') }) as import('../lib/connectors/sitecrawl.ts').Get
+  await applySalesHiringGate(c.db, c.job, serve({}), { now: NOW, careersGet: boom })
+  assert.deepEqual(careersRows(c.db).map(r => [r.status, r.results]), [['fetch_failed', -1]])
+  c.db.close()
+  // generic request (no roles): the legacy pass is unchanged and now leaves its check row
+  const g = seed()
+  await applySalesHiringGate(g.db, g.job, serve({}), { now: NOW, careersGet: cGet(CAREERS('Account Executive', 'ae')) })
+  const lg = lead(g.db)
+  assert.equal(lg.review_reason, null); assert.match(lg.why, /Hiring sales: Account Executive listed on its careers page/)
+  const evg = careersEvidence(g.db)
+  assert.equal(evg.length, 1); assert.doesNotMatch(evg[0].label!, /Requested role:|generic hiring/)
+  assert.deepEqual(careersRows(g.db).map(r => [r.status, r.results]), [['checked_vacancy', 1]])
+  g.db.close()
+})
+
+test('#533 direct-career coverage: a requested role on a LATER careers path is still found - a generic first page never ends the search', async () => {
+  const s = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
+  const pages = {
+    ...CAREERS('Account Executive', 'ae'), // /careers lists a generic sales role
+    '/jobs': '<h2>More roles</h2><ul><li><a href="/jobs/crm-admin">CRM Administrator</a></li></ul>',
+    '/jobs/crm-admin': '<h1>CRM Administrator</h1><p>Join Brightloop as our CRM Administrator.</p>',
+  }
+  await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet(pages) })
+  const l = lead(s.db)
+  assert.equal(l.review_reason, null, 'the match on the later page qualifies the lead')
+  assert.match(l.why, /Hiring for CRM Administrator \(requested: CRM administrator\)/)
+  assert.deepEqual(careersRows(s.db).map(r => [r.status, r.results]), [['checked_vacancy_requested_role', 1]])
+  s.db.close()
+})
+
+test('#533 direct-career ownership: a reclaim DURING the careers fetch refuses all careers writes; rows completed before the reclaim stand', async () => {
+  const s = seed()
+  const job = { ...s.job, attempts: 0 }
+  let flipped = false
+  const flipGet = (async (url: string) => {
+    if (!flipped) { flipped = true; s.db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(s.job.id) } // re-claimed while the careers fetch is in flight
+    return { status: 404, body: '', finalUrl: url }
+  }) as import('../lib/connectors/sitecrawl.ts').Get
+  await applySalesHiringGate(s.db, job, serve({}), { now: NOW, careersGet: flipGet })
+  assert.equal(careersRows(s.db).length, 0, 'no careers check row written by the stale attempt')
+  assert.equal(careersEvidence(s.db).length, 0, 'no careers evidence written by the stale attempt')
+  assert.equal(lead(s.db).why, 'Seed-funded London SaaS.', 'the lead row is untouched')
+  const board = s.db.prepare("SELECT status FROM connector_audit WHERE connector = 'check:ats-board'").all() as { status: string }[]
+  assert.deepEqual(board.map(r => r.status), ['no_board_found'], 'the ATS check completed BEFORE the reclaim: its row stands')
+  s.db.close()
 })

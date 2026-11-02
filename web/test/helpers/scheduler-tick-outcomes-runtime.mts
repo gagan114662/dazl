@@ -172,7 +172,8 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   assert.equal(r4.sequences, 1, 'S step 3'); assert.equal(stepStatus(seqS, 3), 'sent')
   const f4 = p(F, 'followups')!
   assert.equal(f4.last_outcome, 'hold'); assert.equal(f4.last_hold, 'autopilot_off'); assert.equal(f4.consecutive_failures, 3); assert.equal(f4.last_success_at, null); assert.match(f4.last_error ?? '', /not_available/)
-  assert.equal((await tenantFreshness(db, F)).state, 'blocked', 'a hold does not resolve the failures')
+  const fFresh4 = await tenantFreshness(db, F)
+  assert.equal(fFresh4.state, 'held', 'a hold means not currently failing, not recovered: the count stands'); assert.deepEqual(fFresh4.holds, ['first_touch:consent_required', 'followups:autopilot_off'])
   const r4r = p(R, 'sequences')!
   assert.equal(r4r.last_outcome, 'success'); assert.equal(r4r.consecutive_failures, 0); assert.ok(r4r.last_success_at); assert.equal(r4r.last_error, null)
   assert.equal((await tenantFreshness(db, R)).reasons.includes('sequences_failing'), false)
@@ -192,6 +193,7 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   await call()
   const f5 = p(F, 'followups')!
   assert.equal(f5.last_outcome, 'failure'); assert.equal(f5.consecutive_failures, 4); assert.match(f5.last_error ?? '', /gmail_or_identity/); assert.equal(f5.last_hold, null)
+  assert.equal((await tenantFreshness(db, F)).state, 'blocked', 'a failure after the hold re-blocks at once on the standing count')
   // W: the second thread is due but today's cap is spent: a cap wait that sent nothing, keeping yesterday's success
   assert.equal(followupsSent(W), 1)
   const w5 = p(W, 'followups')!
@@ -228,7 +230,7 @@ test('two ticks at once: one runs, one is skipped, one run row, one attempt per 
   // every tenant with work has exactly one row per kind, all stamped with the one run (the primary key allows no second);
   // #413: every consenting tenant also has its reply_sync row, independent of send-side work
   const rows = db.prepare('SELECT tenant_id, kind FROM scheduler_progress WHERE last_run_id = ? ORDER BY tenant_id, kind').all(ran[0].run) as { tenant_id: string; kind: string }[]
-  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/followups`, `${F}/reply_sync`, `${N}/reply_sync`, `${N}/sequences`, `${P}/reply_sync`, `${P}/sequences`, `${R}/reply_sync`, `${S}/reply_sync`, `${U}/reply_sync`, `${U}/sequences`, `${W}/followups`, `${W}/reply_sync`])
+  assert.deepEqual(rows.map(r => `${r.tenant_id}/${r.kind}`), [`${F}/first_touch`, `${F}/followups`, `${F}/reply_sync`, `${N}/reply_sync`, `${N}/sequences`, `${P}/reply_sync`, `${P}/sequences`, `${R}/reply_sync`, `${S}/reply_sync`, `${U}/reply_sync`, `${U}/sequences`, `${W}/first_touch`, `${W}/followups`, `${W}/reply_sync`])
   assert.deepEqual(lastRun(), { status: 'ok', tenants_attempted: 7, tenants_failed: 0 })
 })
 

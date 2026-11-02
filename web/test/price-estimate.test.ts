@@ -12,7 +12,9 @@ test('menu: every provider/source has a unit price and a projected range; the to
   assert.deepEqual(e.total, sum); assert.ok(e.total.max > e.total.min && e.total.min > 0)
   assert.match(row(e, 'extraction').unit_usd, /\$3\.00 in \/ \$15\.00 out per 1M tokens/)
   assert.equal(e.verdict.ok, true); assert.match(e.verdict.message, /No dollar limit/)
-  assert.ok(e.unpriced.includes('Web-search research fallback'), 'what cannot be priced is named, not hidden')
+  // #379: the unpriceable fallback is refused on every run, so it costs $0 and is no longer an unpriced row
+  assert.ok(!e.unpriced.includes('Web-search research fallback'))
+  assert.deepEqual(row(e, 'fallback_research').usd, { min: 0, max: 0 }); assert.match(row(e, 'fallback_research').note ?? '', /Never run/)
 })
 
 test('the estimate prices a model call exactly as the spend guard reserves it, so the estimate and the hard cap agree', () => {

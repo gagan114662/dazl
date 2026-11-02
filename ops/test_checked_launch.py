@@ -170,6 +170,41 @@ class RequireCiFixtures(unittest.TestCase):
             checked.require_ci('gagan114662/dazl', 'xyz', get=stub_get(all_green()))
 
 
+class StaticQualityRolloutTests(unittest.TestCase):
+    def test_static_quality_is_required_without_retiring_existing_checks(self):
+        self.assertEqual(checked.REQUIRED_CI, frozenset({
+            'browser', 'migrations', 'test-sqlite', 'test-postgres',
+            'fail-closed', 'static-quality'}))
+
+    def test_static_quality_absence_is_not_success(self):
+        checks = [c for c in all_green() if c['name'] != 'static-quality']
+        with self.assertRaisesRegex(ValueError, '^ci_missing$'):
+            checked.require_ci('gagan114662/dazl', COMMIT, get=stub_get(checks))
+
+    def test_static_quality_non_success_states_refuse(self):
+        for conclusion in ['failure', 'cancelled', 'skipped', 'neutral', 'timed_out', None]:
+            with self.subTest(conclusion=conclusion), self.assertRaises(ValueError):
+                checked.require_ci('gagan114662/dazl', COMMIT,
+                    get=stub_get(all_green(**{'static-quality': {'conclusion': conclusion}})))
+        for state in ['queued', 'in_progress']:
+            with self.subTest(status=state), self.assertRaises(ValueError):
+                checked.require_ci('gagan114662/dazl', COMMIT,
+                    get=stub_get(all_green(**{'static-quality': {'status': state, 'conclusion': None, 'completed_at': None}})))
+
+    def test_static_quality_wrong_identity_refuses(self):
+        for values in [{'head_sha': 'e'*40}, {'slug': 'not-github-actions'}, {'suite': None}]:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                checked.require_ci('gagan114662/dazl', COMMIT,
+                    get=stub_get(all_green(**{'static-quality': values})))
+
+    def test_static_quality_independent_failure_not_masked(self):
+        checks = all_green()
+        checks.append(run_obj('static-quality', conclusion='failure', suite=2,
+                              rid=1000, completed_at='2026-10-31T20:00:00Z'))
+        with self.assertRaisesRegex(ValueError, '^ci_not_passed$'):
+            checked.require_ci('gagan114662/dazl', COMMIT, get=stub_get(checks))
+
+
 class TokenlessPathTests(unittest.TestCase):
     def test_tokenless_request_sends_no_authorization_header(self):
         sent = {}
@@ -200,7 +235,7 @@ class CheckedLaunchTests(unittest.TestCase):
             launch = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(sentinel)]
             second = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(later)]
             for first in [[sys.executable, '-c', 'raise SystemExit(23)'], ['/nonexistent/preflight'], [sys.executable, '-c', 'import time; time.sleep(5)']]:
-                with patch.object(checked, 'require_ci'), patch.object(checked, 'bind_launch'):
+                with patch.object(checked, 'require_ci'), patch.object(checked, 'bind_launch'), patch.object(checked, 'bind_target'):
                     report, code = checked.run([first,second],launch,timeout=0.2)
                 p = subprocess.CompletedProcess([],code,json.dumps(report))
                 self.assertEqual(p.returncode, 1, p.stdout)
@@ -213,7 +248,7 @@ class CheckedLaunchTests(unittest.TestCase):
             sentinel = Path(tmp) / 'launched'
             launch = [sys.executable, '-c', 'from pathlib import Path; Path(__import__("sys").argv[1]).touch()', str(sentinel)]
             good = [sys.executable, '-c', 'pass']
-            with patch.object(checked, 'bind_launch'), patch.object(checked, 'require_ci', side_effect=ValueError('ci_pending')):
+            with patch.object(checked, 'bind_launch'), patch.object(checked, 'bind_target'), patch.object(checked, 'require_ci', side_effect=ValueError('ci_pending')):
                 report, code = checked.run([good], launch)
             self.assertEqual(code, 1)
             self.assertFalse(report['launch_reached'])
@@ -224,12 +259,12 @@ class CheckedLaunchTests(unittest.TestCase):
             target = Path(tmp) / 'count'
             launch = [sys.executable, '-c', 'from pathlib import Path; p=Path(__import__("sys").argv[1]); p.write_text(p.read_text()+"x" if p.exists() else "x")', str(target)]
             good = [sys.executable, '-c', 'pass']
-            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'):
+            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'),patch.object(checked,'bind_target'):
                 report,code=checked.run([good,good],launch)
             p=subprocess.CompletedProcess([],code,json.dumps(report))
             self.assertEqual(p.returncode, 0)
             self.assertEqual(target.read_text(), 'x')
-            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'):
+            with patch.object(checked,'require_ci'), patch.object(checked,'bind_launch'),patch.object(checked,'bind_target'):
                 report,code=checked.run([good],[sys.executable,'-c','raise SystemExit(3)'])
             p=subprocess.CompletedProcess([],code,json.dumps(report))
             self.assertEqual(p.returncode, 1)

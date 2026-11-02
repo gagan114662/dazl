@@ -46,6 +46,9 @@ import { migrateEmailGuess } from '../people/email-pattern.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { migrateTrialBudget } from '../billing/trial-budget.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateTenantLifecycle } from './tenant-guard.ts'
+import { migratePreviewClaim } from '../scan/preview-claim.ts'
+import { migrateTraceStore } from '../evals/trace-tables.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
@@ -58,11 +61,13 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
     migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
-    migrateTrialBudget, migrateSchedulerRuns,
+    migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore,
   ]
   for (const m of migrates) m(db)
   // The queue adapter owns its tables and creates them in its constructor.
   new SqliteQueue(db)
   // Last: it adds a column to tables the migrations above create.
   migrateInsertionOrder(db)
+  // After every table exists: the deleted-tenant guard is a trigger on each tenant-scoped table.
+  migrateTenantLifecycle(db)
 }

@@ -13,7 +13,7 @@
 // contact-page crawl, and SEC/job-board signals.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { addEnrichment, audit, getEnabledCredential } from '../connectors/store.ts'
+import { addEnrichment, audit, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection, regradeFromKeptContacts } from './contact-agreement.ts'
@@ -216,30 +216,36 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
   for (const g of [...byCompany.values()].slice(0, MAX_COMPANY_LOOKUPS)) {
     if (apolloKey) {
       let org: Awaited<ReturnType<typeof apolloOrgEnrich>> = null
-      try {
+      // Same paid-replay class as the scan waterfall (#382): claim the org lookup ATOMICALLY before the call -
+      // this route holds no job lease, so a double-run (or a crash between call and write) must never pay twice.
+      // A lost race replays the winner's outcome: the org call is skipped and the people search below still runs
+      // under its own gate (it is 0-credit and keyed on the lead's own domain, not the org record).
+      const orgGate = auditTryReserve(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: 'reserved', results: 0 })
+      if (!('prior' in orgGate)) try {
         org = await apolloOrgEnrich(apolloKey, { domain: g.domain, name: g.company }, fetchImpl)
         // Company-level facts attach only when the organisation record is on the lead's own domain: a name-only match may be a same-name company elsewhere.
         const sameSite = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '').toLowerCase() === b.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '').toLowerCase()
         if (org && !sameSite(g.domain, org.website)) {
           const reason = g.domain ? `contact rejected: domain mismatch ${(org.website ?? 'unknown site').replace(/^https?:\/\/(?:www\.)?/, '').replace(/[/?#].*$/, '')} vs ${g.domain}` : 'contact rejected: no domain to confirm the company'
-          audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: reason, results: 0 })
+          auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: reason, results: 0 }, orgGate.id, reason, 0)
           for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:apollo', reason, sourceUrl: org.website ?? `https://www.linkedin.com/company/${encodeURIComponent(g.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}` })
         } else if (org && (org.employees || org.industry)) {
           const bits = [org.employees ? `${org.employees} employees` : null, org.industry, org.founded ? `founded ${org.founded}` : null].filter(Boolean).join(' · ')
           for (const leadId of g.leadIds) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'firmographic', value: bits.slice(0, 254), label: org.name, confidence: 75, source_url: org.linkedin ?? org.website ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         }
-        audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`, status: org ? 'ok' : 'empty', results: org ? 1 : 0 })
+        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: org ? 'ok' : 'empty', results: org ? 1 : 0 }, orgGate.id, org ? 'ok' : 'empty', org ? 1 : 0)
       } catch (e) {
-        audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`, status: e instanceof EnrichError ? e.code : 'error', results: 0 })
+        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, orgGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
-      try {
+      const peopleGate = auditTryReserve(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'reserved', results: 0 })
+      if (!('prior' in peopleGate)) try {
         // A name-only organisation match NEVER supplies the lead's domain: its website is the other company's. Only the lead's own known domain keys the people search.
         const orgDomain = g.domain
         // A commenter's company is found by NAME, and a same-name company elsewhere shares it. Contacts attach only when the company's domain is known (the lead's own, or the one
         // Apollo's organisation record gives) and the person's own organisation agrees with it; otherwise nothing is attached and the refusal is recorded on the lead.
         if (!orgDomain) {
-          audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'contact rejected: no domain to confirm the company', results: 0 })
+          auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'contact rejected: no domain to confirm the company', results: 0 }, peopleGate.id, 'contact rejected: no domain to confirm the company', 0)
           for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:apollo', reason: 'contact rejected: no domain to confirm the company', sourceUrl: `https://www.linkedin.com/company/${encodeURIComponent(g.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}` })
           continue
         }
@@ -252,13 +258,15 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
           for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:apollo', reason: why, sourceUrl: `https://${orgDomain}/` })
         }
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
-        audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`, status: people.length ? 'ok' : 'empty', results: people.length })
+        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : 'empty', results: people.length }, peopleGate.id, people.length ? 'ok' : 'empty', people.length)
       } catch (e) {
-        audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`, status: e instanceof EnrichError ? e.code : 'error', results: 0 })
+        auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, peopleGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
     } else if (pdlKey) {
-      try {
+      // PDL charges 1 credit per profile RETURNED: the same atomic gate makes a replay or double-run cost nothing.
+      const pdlGate = auditTryReserve(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'reserved', results: 0 })
+      if (!('prior' in pdlGate)) try {
         const found = await pdlPeopleSearch(pdlKey, g.company, fetchImpl, 5)
         // PDL matches on the company NAME only. With no scan geography, only the company's DOMAIN can confirm it: the person's employer domain must equal the lead's.
         const people: typeof found = []
@@ -271,9 +279,9 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
           for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:pdl', reason, sourceUrl: `https://www.linkedin.com/company/${encodeURIComponent(g.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}` })
         }
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:pdl', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
-        audit(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`, status: people.length ? 'ok' : 'empty', results: people.length })
+        auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), results: people.length }, pdlGate.id, people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), people.length)
       } catch (e) {
-        audit(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`, status: e instanceof EnrichError ? e.code : 'error', results: 0 })
+        auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, pdlGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
     }

@@ -1,3 +1,4 @@
+import { READ_CONSENT_TEXT } from '../../lib/outreach/read-consent.ts'
 // After the first lead cards: review them and start outreach, end to end on the production build with seeded data.
 // NOT part of `npm test`. Run:  cd web && npm run build && node test/ui/first-review.ui.mjs   (SHOTS=<dir> saves shots)
 // Throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed in the browser (website read,
@@ -19,6 +20,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -30,7 +32,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-firstreview-')); const DB = pa
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -68,7 +70,7 @@ const ROWS = [
   row(3, 'Clearline Tax', null, null, 'Clearline Tax is advertising for a senior bookkeeper and a payroll clerk.', 'reed.example', '2026-10-16'),
   row(4, 'Ashworth Partners', 'Helen Ashworth, Managing partner', 'helen@ashworthpartners.example', 'Ashworth Partners announced a merger and a move to larger offices in Leeds.', 'yorkshirepost.example', '2026-10-12'),
 ]
-const NOTICE = ['dazl reads only replies and delivery-failure notices in the email threads it started for you.', 'Nothing else in your mailbox is read, stored or used.']
+const NOTICE = READ_CONSENT_TEXT
 async function run({ width, height, tag, drafted = [] }) {
   const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0, drafts: [...drafted], failNext4: true, sender: { sender_name: '', postal_address: '', booking_url: null } }
   const ctx = await b.newContext({ viewport: { width, height } })

@@ -14,4 +14,7 @@ export function setUser(u: { id: string; business_name: string; role?: Role; act
 
 }
 export function getScanDb(): Database.Database { if (!db) throw new Error('test database unset'); return db }
+// Postgres deployments have no raw SQLite handle: trap it so a route still reaching for getScanDb fails here, as it
+// would in production, instead of silently reading a fixture store.
+export function trapScanDb() { db = null }
 export async function requireUser() { return user }

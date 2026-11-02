@@ -84,6 +84,13 @@ export async function sendVerification(db: Db, userId: string, now = nowS()): Pr
   return true
 }
 
+// Read-only peek at a token's owner (no consumption): routes that act on a successful open need the account
+// and address the token bound. Unknown or malformed token: null.
+export async function tokenOwner(db: Db, token: unknown): Promise<{ user_id: string; email: string; purpose: Purpose } | null> {
+  if (!isEmailToken(token)) return null
+  return (await db.get<{ user_id: string; email: string; purpose: Purpose }>('SELECT user_id, email, purpose FROM email_tokens WHERE token_hash = ?', [sha256(token)])) ?? null
+}
+
 // Opens a verification link: either the account's own address (valid only while the account still has the email it
 // was sent to), or a change of address (the account's email becomes the new one, verified; refused if another account
 // took that address meanwhile).

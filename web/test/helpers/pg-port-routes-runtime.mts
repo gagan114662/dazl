@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
+import { getDb, setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
@@ -56,6 +56,8 @@ async function seed(db: Db, { J, L, E, M }: Ids): Promise<void> {
   const run = (sql: string, p: (string | number | null)[] = []) => db.run(sql, p)
   await run("INSERT INTO users (id, email, password_hash, salt, business_name, sells, website, created_at) VALUES (?, 'a@example.test', 'h', 's', 'Acme Co', 'dental software', 'https://acme.example', ?)", [A, T])
   await run("INSERT INTO users (id, email, password_hash, salt, business_name, created_at) VALUES (?, 'b@example.test', 'h', 's', 'Beta', ?)", [B, T])
+  // each account's personal workspace, as sign-in creates it (the trial's principal is its founder: lib/billing/trial-budget.ts)
+  for (const id of [A, B]) await run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'w', 'personal', ?, ?)", [id, id, T])
   await run("INSERT INTO tenant_plans (tenant_id, plan, subscription_status) VALUES (?, 'pro', 'past_due')", [A])
   await run("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at, created_at) VALUES (?, 'anthropic', 'x', '1234', ?, ?)", [A, T, T])
   const job = async (id: string, user: string, query: string, at: number, icp: string | null = null) => {
@@ -156,6 +158,7 @@ async function onPg(ids: Ids) {
     await runPgMigrations(pg.pool)
     setScanDb(null as unknown as Database.Database) // getScanDb() now throws 'test database unset'
     setDb(pg)
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await seed(pg, ids)
     return await scenario(pg, ids)
   } finally { await pg.close(); await s.drop() }
