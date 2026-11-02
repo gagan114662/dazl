@@ -133,6 +133,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   const hasKey = !!usage?.has_key
   const trialLeft = !hasKey && usage?.trial?.funded ? usage.trial.remaining : 0
+  // Keyless with no trial searches: no path on the ready step may promise or start a search this account cannot run.
+  const noPool = !hasKey && usage !== null && trialLeft === 0
 
   // Website only: dazl reads it, shows each inferred fact landing on the brain, saves the profile it inferred (the user
   // can edit it any time; nothing is asked up front) and opens the ready screen.
@@ -306,10 +308,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   {/* Keyless with no trial searches: the key form is up front, before any commitment - the CTA below
                       does not promise a search this account cannot start (the server fails closed, but the button
                       must not rely on that). A trial account (trialLeft > 0) keeps the plain CTA. */}
-                  {!hasKey && (needKey || (usage !== null && trialLeft === 0)) && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
+                  {!hasKey && (needKey || noPool) && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
-                    {!first ? (!hasKey && usage !== null && trialLeft === 0 ? null
+                    {!first ? (noPool ? null
                       : <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>)
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
                       // With leads on the ready bar, reaching out starts here: review them one by one (the review step).
@@ -348,14 +350,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     </dl>
                     {/* One sentence. It starts as the top suggestion, so the website stays the only thing typed; a click on a
                         suggestion starts that one at once. */}
-                    <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); void start(sentence, true) }}>
+                    <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); if (!noPool) void start(sentence, true) }}>
                       <label className="block text-sm font-semibold" htmlFor="first-ask-input">Describe who you want in one sentence</label>
                       <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} value={sentence} data-testid="first-ask"
                         onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
                     </form>
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
                     <div className="mt-2 flex flex-col gap-2">
-                      {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
+                      {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy || noPool} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); if (!noPool) void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
                     </div>
                   </>}
                   {/* Live: which source is being read and how many candidates so far, from the scan's own progress record. */}

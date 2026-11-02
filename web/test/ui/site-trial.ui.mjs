@@ -125,6 +125,8 @@ try {
       assert.match(plan, /Add your AI key to start/, 'keyless, trial spent: the heading says so')
       assert.match(plan, /Searches run on your own Anthropic or OpenAI key\./, 'keyless, trial spent: the key form is up front, before any commitment')
       assert.equal(await page.getByTestId('ready-cta').count(), 0, 'keyless, trial spent: no bare Find-my-first-leads button')
+      assert.equal(await page.getByTestId('first-play').count(), 3, 'three suggestion chips render')
+      assert.ok(await page.getByTestId('first-play').first().isDisabled(), 'keyless, trial spent: suggestion chips cannot start a search either')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyless-${tag}.png`), fullPage: true })
       await ctx.close()
     }
