@@ -92,3 +92,64 @@ test('#412 contact NULL but verified company-published crawl email: eligible on 
   assert.equal(r.held, 1)
   assert.equal((db.prepare("SELECT to_email FROM outreach_messages WHERE lead_id = ?").get(id2) as { to_email: string }).to_email, `sales@${dom}`, 'autopilot drafts the same address manual readiness approved')
 })
+
+// A lead autopilot refused for its recipient route (no address, a restricted-purpose or personal one) is re-judged once
+// the crawl records an email after that refusal (the on-request company-site search, a re-crawl): manual readiness
+// turns draftable at that moment, so autopilot eligibility must too. Without a new crawl email the refusal stands.
+function crawlEmail(db: Database.Database, leadId: string, email: string, at: number) {
+  const dom = email.split('@')[1]
+  db.prepare("INSERT OR IGNORE INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-10-28', ?)").run(`${leadId}d`, leadId, `${dom}|evidence_own_domain`, `https://${dom}/`, at)
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'sitecrawl', 'email', ?, 'x', NULL, ?, '2026-10-28', ?)").run(randomBytes(12).toString('hex'), leadId, email, `https://${dom}/contact`, at)
+  db.prepare("INSERT OR IGNORE INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-10-28', ?)").run(`${leadId}g`, leadId, at)
+}
+const draftsFor = (db: Database.Database, id: string) => (db.prepare('SELECT to_email FROM outreach_messages WHERE lead_id = ?').all(id) as { to_email: string }[]).map(r => r.to_email)
+const skipsFor = (db: Database.Database, id: string) => recentAutopilotAudit(db, 'A').filter(a => a.lead_id === id && a.action === 'skipped')
+
+test('#412 phone-only lead refused for no_email_contact becomes a candidate once the crawl records an email', async () => {
+  const db = await setup()
+  const id = provenLead(db, '+1 416 555 0100')
+  const { sent, d } = deps()
+  await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(skipsFor(db, id)[0]?.detail, 'no_email_contact')
+  // Control: nothing new recorded - the refusal stands on later passes (no re-draft, no new audit row).
+  await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7200 })
+  assert.deepEqual(draftsFor(db, id), []); assert.equal(skipsFor(db, id).length, 1)
+  // The company's own sales inbox is found afterwards: manual readiness says draftable, and autopilot agrees.
+  crawlEmail(db, id, 'sales@brightloop.io', NOW + 7300)
+  assert.equal(draftBlockReason(db, 'A', id), null)
+  const r = await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7400 })
+  assert.deepEqual(draftsFor(db, id), ['sales@brightloop.io'], 'autopilot drafts the crawled address')
+  assert.equal(r.held, 1); assert.equal(sent.length, 0, 'warmup: held for approval, never auto-sent')
+})
+
+test('#412 a restricted-purpose crawl route stays refused; a newer company sales inbox re-opens the lead', async () => {
+  const db = await setup()
+  const id = provenLead(db, null)
+  crawlEmail(db, id, 'support@brightloop.io', NOW - 100)
+  const { sent, d } = deps()
+  await runAutopilot(db, 'A', 'Acme', d)
+  assert.equal(skipsFor(db, id)[0]?.detail, 'not_sales_contact', 'support inbox refused by the purpose gate')
+  await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7200 })
+  assert.deepEqual(draftsFor(db, id), []); assert.equal(skipsFor(db, id).length, 1, 'refusal stands without a new crawl record')
+  crawlEmail(db, id, 'sales@brightloop.io', NOW + 7300)
+  assert.equal(draftBlockReason(db, 'A', id), null)
+  await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7400 })
+  assert.deepEqual(draftsFor(db, id), ['sales@brightloop.io'])
+  assert.equal(sent.length, 0)
+})
+
+test('#412 a new crawl record that is still a refused route is re-judged once and stays refused', async () => {
+  const db = await setup()
+  const id = provenLead(db, null)
+  crawlEmail(db, id, 'support@brightloop.io', NOW - 100)
+  const { sent, d } = deps()
+  await runAutopilot(db, 'A', 'Acme', d)
+  crawlEmail(db, id, 'careers@brightloop.io', NOW + 7300) // newest route is a recruiting inbox
+  assert.equal(draftBlockReason(db, 'A', id), 'not_sales_contact')
+  await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7400 })
+  await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7500 })
+  assert.deepEqual(draftsFor(db, id), [], 'never drafted to a restricted-purpose inbox')
+  const skips = skipsFor(db, id)
+  assert.equal(skips.length, 1, 'the same refusal is recorded once (its time moves), not once per pass')
+  assert.equal(skips[0].detail, 'not_sales_contact'); assert.equal(sent.length, 0)
+})

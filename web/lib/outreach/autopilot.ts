@@ -360,15 +360,20 @@ export function newLeadsSql(scope = ''): string {
        AND ${LIFECYCLE_NOT_CONVERTED}
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
-         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+         AND ((a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+             AND NOT EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = a.tenant_id AND e.connector = 'sitecrawl' AND e.kind = 'email' AND e.retrieved_at > a.created_at))
            OR (a.detail IN ('error','offer_unreadable') AND a.created_at > ?)
            OR (a.detail NOT IN ('error','offer_unreadable') AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
      ORDER BY l.score DESC LIMIT 25`
   return scope ? base.replace('ORDER BY l.score DESC LIMIT 25', `${scope}
      ORDER BY l.score DESC LIMIT 25`) : base
 }
-// Refusals of the draft path that never change for a lead (createDraft's draftChecks: a personal address, not a sales
-// contact, suppressed, no address): recorded once, the lead is the user's from then on. Every other refusal (currentness
+// Refusals of the draft path on the lead's recipient route (createDraft's draftChecks: a personal address, not a sales
+// contact, suppressed, no address): recorded once, the lead is the user's from then on - until the crawl records an
+// email after that refusal (the on-request company-site search, a re-crawl). The route draftChecks would pick may then
+// differ, so the lead is judged again by the same draft gate (#412: autopilot eligibility follows manual readiness,
+// whatever row the address is stored in); refused again for the same reason, the one skipped row's time moves past
+// the crawl record and the refusal stands. Every other refusal (currentness
 // or domain to confirm, ungraded, a sales/hiring gate not passed yet (held-state.ts: a held lead clears when the gate
 // runs again and passes), evidence the user can confirm, an offer conflict) is tried again: after SKIP_RETRY_S, or at
 // once when the lead was confirmed by the user at or after the refusal; a store error ('error') or an unreadable offer
