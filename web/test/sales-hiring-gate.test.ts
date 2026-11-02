@@ -561,20 +561,22 @@ const CAREERS = (title: string, slug: string) => ({
   '/careers': `<h2>Open roles at Brightloop</h2><ul><li><a href="/careers/${slug}">${title}</a></li></ul>`,
   [`/careers/${slug}`]: `<h1>${title}</h1><p>Join Brightloop in London as ${title}. Write to jobs@brightloop.io</p>`,
 })
-const ROLE_QUERY = 'Companies hiring a sales operations manager'
-const ROLE_ICP = JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] })
+// the ORIGINAL Oct-22 ask named CRM administrator - a requested title that is NOT a generic GTM role (isGtmRole false);
+// the careers path must still discover it when it is explicitly requested.
+const ROLE_QUERY = 'Companies hiring a CRM administrator'
+const ROLE_ICP = JSON.stringify({ signals: ['hiring a CRM administrator'], where: [] })
 const careersRows = (db: Database.Database) => db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:careers-page'").all() as { lookup: string; status: string; results: number }[]
 const careersEvidence = (db: Database.Database) => db.prepare("SELECT value, label FROM lead_enrichments WHERE lead_id = 'L1' AND connector = 'signals:careers-gtm'").all() as { value: string; label: string }[]
 
 test('#533 direct-career role-match: a requested role verified on the own careers page qualifies with Requested-role evidence and a check row', async () => {
   const s = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
-  await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet(CAREERS('Sales Operations Manager', 'som')) })
+  await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet(CAREERS('CRM Administrator', 'crm')) })
   const l = lead(s.db)
-  assert.equal(l.review_reason, null, 'the careers-page role match qualifies the lead')
-  assert.match(l.why, /Hiring for Sales Operations Manager \(requested: sales operations manager\) on its careers page \(brightloop\.io\), checked \d{4}-\d{2}-\d{2}\. This may relate to your offer; buying need isn't verified\./)
+  assert.equal(l.review_reason, null, 'the careers-page role match qualifies the lead - even for a requested title outside the generic GTM set')
+  assert.match(l.why, /Hiring for CRM Administrator \(requested: CRM administrator\) on its careers page \(brightloop\.io\), checked \d{4}-\d{2}-\d{2}\. This may relate to your offer; buying need isn't verified\./)
   const ev = careersEvidence(s.db)
-  assert.equal(ev.length, 1); assert.match(ev[0].label!, /^Requested role: sales operations manager;/)
-  assert.equal(ev[0].value, 'Open role on its careers page: Sales Operations Manager')
+  assert.equal(ev.length, 1); assert.match(ev[0].label!, /^Requested role: CRM administrator;/)
+  assert.equal(ev[0].value, 'Open role on its careers page: CRM Administrator')
   assert.deepEqual(careersRows(s.db).map(r => [r.status, r.results]), [['checked_vacancy_requested_role', 1]])
   const board = s.db.prepare("SELECT status FROM connector_audit WHERE connector = 'check:ats-board'").all() as { status: string }[]
   assert.deepEqual(board.map(r => r.status), ['no_board_found'], 'the ATS check row stands beside the careers row')
@@ -586,10 +588,10 @@ test('#533 direct-career AC3: a non-matching verified careers vacancy under a ro
   await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet(CAREERS('Account Executive', 'ae')) })
   const l = lead(s.db)
   assert.equal(l.review_reason, 'no_sales_hiring_evidence', 'a generic careers vacancy never satisfies a requested role')
-  assert.match(l.why, /its careers page lists Account Executive, a sales\/GTM role that does not source-match the requested role/)
+  assert.match(l.why, /its careers page lists Account Executive, a sales\/GTM role; no requested-role match among the sampled open roles \(up to 3 verified per page across 1 page read - a match outside the sample is not excluded\)/)
   const ev = careersEvidence(s.db)
   assert.equal(ev.length, 1)
-  assert.match(ev[0].value, /\(generic - not a requested-role match\)$/); assert.match(ev[0].label!, /^generic hiring, requested role not matched;/); assert.doesNotMatch(ev[0].label!, /Requested role:/)
+  assert.equal(ev[0].value, 'Open sales role on its careers page: Account Executive'); assert.match(ev[0].label!, /^generic hiring - no requested-role match in the sampled roles;/); assert.doesNotMatch(ev[0].label!, /Requested role:/)
   assert.deepEqual(careersRows(s.db).map(r => [r.status, r.results]), [['checked_vacancy', 1]])
   s.db.close()
 })
@@ -620,6 +622,21 @@ test('#533 direct-career check-history: clean absence, closed marker and fetch f
   assert.equal(evg.length, 1); assert.doesNotMatch(evg[0].label!, /Requested role:|generic hiring/)
   assert.deepEqual(careersRows(g.db).map(r => [r.status, r.results]), [['checked_vacancy', 1]])
   g.db.close()
+})
+
+test('#533 direct-career coverage: a requested role on a LATER careers path is still found - a generic first page never ends the search', async () => {
+  const s = seed({ query: ROLE_QUERY, icp: ROLE_ICP })
+  const pages = {
+    ...CAREERS('Account Executive', 'ae'), // /careers lists a generic sales role
+    '/jobs': '<h2>More roles</h2><ul><li><a href="/jobs/crm-admin">CRM Administrator</a></li></ul>',
+    '/jobs/crm-admin': '<h1>CRM Administrator</h1><p>Join Brightloop as our CRM Administrator.</p>',
+  }
+  await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet(pages) })
+  const l = lead(s.db)
+  assert.equal(l.review_reason, null, 'the match on the later page qualifies the lead')
+  assert.match(l.why, /Hiring for CRM Administrator \(requested: CRM administrator\)/)
+  assert.deepEqual(careersRows(s.db).map(r => [r.status, r.results]), [['checked_vacancy_requested_role', 1]])
+  s.db.close()
 })
 
 test('#533 direct-career ownership: a reclaim DURING the careers fetch refuses all careers writes; rows completed before the reclaim stand', async () => {

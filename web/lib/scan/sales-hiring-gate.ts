@@ -310,8 +310,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
             // AC3: requested roles were named and this verified vacancy matched none - generic careers hiring is recorded as
             // generic (never role-qualified) and the lead is still demoted below for the missing role match.
             const day2 = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
-            addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title} (generic - not a requested-role match)`.slice(0, 254), label: `generic hiring, requested role not matched; ${v.quote}`.slice(0, 200), confidence: 60, source_url: v.url, source_date: day2, retrieved_at: v.retrievedAt })
-            careersNote = `its careers page lists ${v.title}, a sales/GTM role that does not source-match the requested role. `
+            addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: `generic hiring - no requested-role match in the sampled roles; ${v.quote}`.slice(0, 200), confidence: 60, source_url: v.url, source_date: day2, retrieved_at: v.retrievedAt })
+            careersNote = `its careers page lists ${v.title}, a sales/GTM role; no requested-role match among the sampled open roles (up to 3 verified per page across ${c.readPages ?? c.pages} page${(c.readPages ?? c.pages) === 1 ? '' : 's'} read - a match outside the sample is not excluded). `
           } else {
             audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'checked_rejected', results: -1 })
             careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `

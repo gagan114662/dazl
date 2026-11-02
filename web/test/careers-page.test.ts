@@ -163,4 +163,21 @@ test('#533 direct-career roleMatch: the requested role wins over an earlier gene
     '/careers/ae': JOB('Account Executive'),
   }, { '/careers/som': { status: 404, body: 'gone' } }), { now: NOW, company: 'Brightloop', roleMatch: isSalesOps })
   assert.equal(dead.reason, 'no_matching_requested_role'); assert.equal(dead.matched, false); assert.equal(dead.vacancy!.title, 'Account Executive')
+  // the ORIGINAL ask: CRM administrator is NOT a generic GTM role (isGtmRole false) - as a requested role it is still a candidate and verifies
+  const crm = await careersSalesVacancy('brightloop.io', site({
+    '/careers': '<ul><li><a href="/careers/crm">CRM Administrator</a></li></ul>', '/careers/crm': JOB('CRM Administrator'),
+  }), { now: NOW, company: 'Brightloop', roleMatch: t => /crm administrator/i.test(t) })
+  assert.equal(crm.reason, 'found'); assert.equal(crm.matched, true); assert.equal(crm.vacancy!.title, 'CRM Administrator')
+  // without the requested-role ask the same page stays undiscovered (legacy GTM-only discovery unchanged)
+  const crmPlain = await careersSalesVacancy('brightloop.io', site({
+    '/careers': '<ul><li><a href="/careers/crm">CRM Administrator</a></li></ul>', '/careers/crm': JOB('CRM Administrator'),
+  }), { now: NOW, company: 'Brightloop' })
+  assert.equal(crmPlain.vacancy, null); assert.equal(crmPlain.reason, 'no_open_sales_role')
+  // a generic first page never ends a requested-role search: the match on a LATER careers path still wins
+  const later = await careersSalesVacancy('brightloop.io', site({
+    '/careers': '<ul><li><a href="/careers/ae">Account Executive</a></li></ul>', '/careers/ae': JOB('Account Executive'),
+    '/jobs': '<ul><li><a href="/jobs/som">Sales Operations Manager</a></li></ul>', '/jobs/som': JOB('Sales Operations Manager'),
+  }), { now: NOW, company: 'Brightloop', roleMatch: isSalesOps })
+  assert.equal(later.reason, 'found'); assert.equal(later.matched, true); assert.equal(later.vacancy!.title, 'Sales Operations Manager')
+  assert.equal(later.pages, 2, 'both careers paths were sampled before the match settled')
 })

@@ -10,7 +10,7 @@ import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
 // roleMatchAsked: the caller asked for a specific requested role; matched tells whether the returned vacancy source-matched it.
 // A returned vacancy with matched=false is GENERIC careers hiring only: recordable, never role-qualified (AC3).
-export interface CareersResult { vacancy: CareersVacancy | null; reason: CareersReason; pages: number; matched?: boolean }
+export interface CareersResult { vacancy: CareersVacancy | null; reason: CareersReason; pages: number; readPages?: number; matched?: boolean }
 export type CareersReason = 'job_role_mismatch' | 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'found' | 'robots_unreachable' | 'robots_disallow' | 'no_careers_page' | 'no_open_sales_role' | 'closed_marker' | 'wrong_domain' | 'no_matching_requested_role'
 
 const PATHS = ['/careers', '/jobs', '/join-us', '/join', '/about/careers', '/company/careers', '/work-with-us']
@@ -23,11 +23,15 @@ const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').r
 const flat = (html: string) => decode(visible(html).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
 
 // Role-shaped titles in a page: the text of headings, links, list items and table cells that is short, names a role noun and is a sales / GTM role.
-export function salesRoleTitles(html: string): string[] {
+// `accept` widens the candidate set to titles matching the caller's requested role: an explicit user ask (e.g. CRM administrator)
+// is a candidate even when it is not a generic sales / GTM title - GTM-only discovery never quietly drops a named role.
+export function salesRoleTitles(html: string, accept?: (title: string) => boolean): string[] {
   const out: string[] = []
   for (const m of visible(html).matchAll(/<(h[1-6]|a|li|td|span|strong|p|div)\b[^>]*>([^<]{4,100})<\/\1>/gi)) {
     const t = decode(m[2]).replace(/\s+/g, ' ').trim().replace(/^[-–—•·\s]+|[-–—•·\s]+$/g, '')
-    if (t.length < 4 || t.length > 80 || t.split(' ').length > 10 || !ROLE_NOUN.test(t) || !isGtmRole(t)) continue
+    if (t.length < 4 || t.length > 80 || t.split(' ').length > 10) continue
+    const asked = accept?.(t) ?? false // an explicitly requested role title (e.g. CRM administrator) needs neither the role-noun nor the GTM gate
+    if (!asked && (!ROLE_NOUN.test(t) || !isGtmRole(t))) continue
     if (/\b(?:we are|we're|is hiring|are hiring|our|you'll|you will|looking for)\b/i.test(t) || /[.!?]$/.test(t)) continue // a sentence about hiring, not a role title
     if (!out.includes(t)) out.push(t)
   }
@@ -53,10 +57,10 @@ function specificJobUrl(href: string, base: string, site: string): string | null
   if (/alert|newsletter|subscribe|notify|login|signin|contact|about|team|blog|press/i.test(u.pathname)) return null
   return segs.length >= 2 || /job|role|position|opening|vacanc/i.test(u.pathname) ? u.toString() : null
 }
-export function openJobsFor(html: string, pageUrl: string, site: string): { title: string; jobUrl: string }[] {
+export function openJobsFor(html: string, pageUrl: string, site: string, accept?: (title: string) => boolean): { title: string; jobUrl: string }[] {
   const body = visible(html)
   const anchors = [...body.matchAll(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)].map(m => ({ href: decode(m[1]), text: decode(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim(), end: (m.index ?? 0) + m[0].length, start: m.index ?? 0 }))
-  const titles = salesRoleTitles(html)
+  const titles = salesRoleTitles(html, accept)
   const hits: { title: string; jobUrl: string }[] = []
   for (const t of titles) {
     // (a) the title is itself a link to that job
@@ -86,8 +90,8 @@ export type JobVerdict = { ok: true; text: string; title: string } | { ok: false
 // behind the same link (a Backend Engineer behind "Account Executive") is rejected.
 const coreRole = (t: string) => norm2(t.split(/\s[-\u2013\u2014|\u00b7]\s|\s*[,(\[]/)[0] ?? t)
 const norm2 = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim()
-export function roleAgrees(indexTitle: string, postingTitle: string): boolean {
-  if (!isGtmRole(postingTitle)) return false
+export function roleAgrees(indexTitle: string, postingTitle: string, accept?: (title: string) => boolean): boolean {
+  if (!isGtmRole(postingTitle) && !accept?.(postingTitle)) return false
   const a = coreRole(indexTitle), b = coreRole(postingTitle)
   if (!a || !b) return false
   if (a === b) return true
@@ -95,7 +99,7 @@ export function roleAgrees(indexTitle: string, postingTitle: string): boolean {
   const sub = (x: Set<string>, y: Set<string>) => [...x].every(w => y.has(w))
   return sub(wa, wb) || sub(wb, wa)
 }
-async function verifyAtsJob(url: URL, get: Get, site: string, company: string | undefined, indexTitle: string): Promise<JobVerdict> {
+async function verifyAtsJob(url: URL, get: Get, site: string, company: string | undefined, indexTitle: string, accept?: (title: string) => boolean): Promise<JobVerdict> {
   const host = url.hostname.toLowerCase(), segs = url.pathname.split('/').filter(Boolean), token = (segs[0] ?? '').toLowerCase()
   let title = '', body = '', open = false
   if (host.endsWith('greenhouse.io')) {
@@ -126,12 +130,12 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
   const ownBoard = tokenN.length >= 3 && tokenN === slug
   const namesCompany = !!company && norm(company).length >= 3 && norm(plain).includes(norm(company))
   if (!ownBoard && !namesCompany) return { ok: false, reason: 'job_company_mismatch' }
-  if (!roleAgrees(indexTitle, title)) return { ok: false, reason: 'job_role_mismatch' } // the posting is a different role (or not a sales / GTM one) than the index claimed
+  if (!roleAgrees(indexTitle, title, accept)) return { ok: false, reason: 'job_role_mismatch' } // the posting is a different role (or not a sales / GTM one) than the index claimed
   return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120) }
 }
-async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }): Promise<JobVerdict> {
+async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }, accept?: (title: string) => boolean): Promise<JobVerdict> {
   let u: URL; try { u = new URL(hit.jobUrl) } catch { return { ok: false, reason: 'job_unverified' } }
-  if (ATS_HOST.test(u.hostname.toLowerCase())) return verifyAtsJob(u, get, site, company, hit.title)
+  if (ATS_HOST.test(u.hostname.toLowerCase())) return verifyAtsJob(u, get, site, company, hit.title, accept)
   if (!robots.allows(u.pathname)) return { ok: false, reason: 'job_unverified' }
   const r = await get(u.toString())
   if (!r) return { ok: false, reason: 'job_unverified' }
@@ -147,7 +151,7 @@ async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site:
   // the role is read from the page's OWN heading (h1, else <title>), never from the index label
   const heading = decode((/<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(r.body)?.[1] ?? /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(r.body)?.[1] ?? '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
   if (!heading) return { ok: false, reason: 'job_unverified' }
-  if (!roleAgrees(hit.title, heading)) return { ok: false, reason: 'job_role_mismatch' }
+  if (!roleAgrees(hit.title, heading, accept)) return { ok: false, reason: 'job_role_mismatch' }
   return { ok: true, text, title: heading.slice(0, 120) }
 }
 
@@ -164,7 +168,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
   if (home && home.status < 400) for (const m of home.body.matchAll(/href\s*=\s*["']([^"'#?]*(?:careers?|jobs|join(?:-us)?|work-with-us)[^"'#?]*)["']/gi)) {
     try { const u = new URL(m[1], home.finalUrl); if (registrable(u.hostname) === registrable(site) && !paths.includes(u.pathname)) paths.unshift(u.pathname) } catch { /* ignore */ }
   }
-  let pages = 0, sawPage = false, closed = false, wrongDomain = false, verdict: CareersReason | null = null
+  let pages = 0, readPages = 0, sawPage = false, closed = false, wrongDomain = false, verdict: CareersReason | null = null, generic: CareersVacancy | null = null
   for (const p of paths) {
     if (pages >= MAX_PAGES || opts.signal?.aborted) break
     if (!robots.allows(p)) continue
@@ -172,28 +176,30 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
     if (!r || r.status >= 400) continue
     let host = ''; try { host = new URL(r.finalUrl).hostname } catch { continue }
     if (registrable(host) !== registrable(site)) { wrongDomain = true; continue } // redirected to another site (an ATS board is checked by ats-gtm.ts)
-    sawPage = true
+    sawPage = true; readPages++
     const text = flat(r.body)
     // Closed-status wording is checked BEFORE any title is accepted: a page that says it is not hiring does not have a vacancy, whatever else it lists.
     if (CLOSED.test(text)) { closed = true; continue }
-    const hits = openJobsFor(r.body, r.finalUrl, site)
+    const hits = openJobsFor(r.body, r.finalUrl, site, opts.roleMatch)
     if (hits.length === 0) continue // titles with no link to that specific job (team listings, alerts, newsletters) are mentions, not vacancies
     // The index link is never enough: the selected job's own page / posting is fetched and must prove the vacancy (open, this company's, still showing the role).
     // When the caller asks for a requested role, every verified hit (same cap of 3) is considered: the first whose POSTING title
     // source-matches wins; verified non-matching roles are remembered so generic careers hiring can be recorded without ever
     // being role-qualified, and 'no_matching_requested_role' names that outcome honestly instead of 'no_open_sales_role'.
-    let generic: CareersVacancy | null = null
     for (const hit of hits.slice(0, 3)) {
-      const v = await verifyJob(hit, get, site, opts.company, robots)
+      const v = await verifyJob(hit, get, site, opts.company, robots, opts.roleMatch)
       if (!v.ok) { verdict = v.reason; continue }
       const shown = v.title, vt = v.text, at = vt.indexOf(shown)
       const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: (at >= 0 ? vt.slice(Math.max(0, at - 60), at + shown.length + 160) : shown).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000) }
-      if (!opts.roleMatch) return { vacancy, reason: 'found', pages }
-      if (opts.roleMatch(shown)) return { vacancy, reason: 'found', pages, matched: true }
+      if (!opts.roleMatch) return { vacancy, reason: 'found', pages, readPages }
+      if (opts.roleMatch(shown)) return { vacancy, reason: 'found', pages, readPages, matched: true }
       if (!generic) generic = vacancy
     }
-    if (generic) return { vacancy: generic, reason: 'no_matching_requested_role', pages, matched: false }
+    // a generic find never ends a requested-role search: the remaining careers paths are still scanned (same MAX_PAGES
+    // bound) before 'no_matching_requested_role' is claimed - the cap-3-per-page sample is annotated by the caller, never read as absence
+    if (generic) continue
   }
+  if (generic) return { vacancy: generic, reason: 'no_matching_requested_role', pages, readPages, matched: false }
   if (verdict) return { vacancy: null, reason: verdict, pages }
   return { vacancy: null, reason: closed ? 'closed_marker' : sawPage ? 'no_open_sales_role' : wrongDomain ? 'wrong_domain' : 'no_careers_page', pages }
 }

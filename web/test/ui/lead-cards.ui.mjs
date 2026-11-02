@@ -45,7 +45,7 @@ const lead = (id, company, over = {}) => ({ id, name: '', company, contact: null
 const dom = (site, token, url = 'https://www.news.example/x') => ({ connector: 'sitecrawl', kind: 'domain', value: `${site}|${token}`, label: `domain-basis-v1:${token}`, source_url: url, source_date: '2026-10-20', confidence: null })
 const row = (kind, value) => ({ connector: 'sitecrawl', kind, value, label: null, source_url: 'https://name-guessed.example/team', source_date: '2026-10-20', confidence: null })
 const LEADS = [
-  lead('a'.repeat(24), 'Bright Dental', { contact: 'hello@brightdental.example', enrichments: [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Senior Sales Ops Manager - posted 2026-10-01', label: 'Requested role: sales operations manager; London', confidence: 70, source_url: 'https://boards.greenhouse.io/bright/jobs/1', source_date: '2026-10-01' }, { connector: 'signals:greenhouse', kind: 'hiring', value: '6 open roles', label: 'Account Executive', confidence: 70, source_url: 'https://boards.greenhouse.io/bright', source_date: '2026-10-20' }] }),
+  lead('a'.repeat(24), 'Bright Dental', { contact: 'hello@brightdental.example', enrichments: [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Senior Sales Ops Manager - posted 2026-10-01', label: 'Requested role: sales operations manager; London', confidence: 70, source_url: 'https://boards.greenhouse.io/bright/jobs/1', source_date: '2026-10-01' }, { connector: 'signals:greenhouse', kind: 'hiring', value: '6 open roles', label: 'Account Executive', confidence: 70, source_url: 'https://boards.greenhouse.io/bright', source_date: '2026-10-20' }, { connector: 'signals:careers-gtm', kind: 'hiring', value: 'Open role on its careers page: CRM Administrator', label: 'Requested role: CRM administrator; CRM Administrator listed on the Bright Dental careers page', confidence: 60, source_url: 'https://brightdental.example/careers/crm', source_date: '2026-10-28' }] }),
   lead('c'.repeat(24), 'Lakeside Smiles'),
   lead('d'.repeat(24), 'Old Town Dental', { contact: 'info@oldtown.example', window_held: true }),
   // Instinct's repro: website guessed from the name, crawled address on it, a listed person.
@@ -120,6 +120,10 @@ try {
   await brightDetails.getByText(/checked 2026-10-20; original posting date unknown/).waitFor()
   // AC5: a hiring signal alone never produces a high-intent-style claim
   assert.equal(await page.getByText(/high.intent/i).count(), 0, 'no high-intent-style claim anywhere on the page')
+  // direct-career render arm: the careers-page role match renders the same qualified line with the clean posting title,
+  // and its date arm is unambiguous - the check day is labeled checked, the original posting date is honestly unknown
+  await brightDetails.getByText("Hiring for CRM Administrator. This may relate to your offer; buying need isn't verified.", { exact: true }).waitFor()
+  await brightDetails.getByText(/checked 2026-10-28; original posting date unknown/).waitFor()
   await shot('hiring-provenance')
   await brightDetails.getByText('Details', { exact: true }).click()
   assert.equal(await bright.getByRole('link', { name: 'news.example' }).getAttribute('href'), 'https://www.news.example/aaaa')
