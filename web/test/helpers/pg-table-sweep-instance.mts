@@ -17,7 +17,8 @@ import { readFileSync } from 'node:fs'
 import { withJar, type Jar } from './pg-session-headers.ts'
 import { pgDb, setDb } from '../../lib/db/client.ts'
 import { ROUTES } from '../tenant-isolation-manifest.ts'
-import { seedTenant, snapshot } from './tenant-seed.ts'
+import { seedTenant, snapshot, tenantTables } from './tenant-seed.ts'
+import { TENANT_COLUMNS } from './tenant-tables.ts'
 
 process.env.DB_PATH = '/nonexistent-dazl-dir/app.db'
 Object.assign(process.env, { PUBLIC_BASE_URL: 'https://app.dazl.test', DAZL_MASTER_KEY: Buffer.alloc(32, 9).toString('base64') })
@@ -83,10 +84,12 @@ const me = (await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?',
 const seeded = await seedTenant(db, me, tag)
 const other = await barrier('seeded', { tenant: me, ids: seeded.ids, texts: seeded.texts }) as { tenant: string; ids: Record<string, string[]>; texts: string[] }
 const ownIds = [...new Set(Object.values(seeded.ids).flat())], otherIds = [...new Set([...Object.values(other.ids).flat(), ...other.texts])]
-// every value this instance sends at some point in its sweep (each one is substituted into path, query and body in
-// turn): a route that stored what it was given (a monitor domain, a keyword) may return it later - a full tenant
-// export returns the caller's own rows, and a foreign-looking string the caller planted there itself is its own data
-const sentEver = new Set(otherIds)
+// The caller's own rows as JSON (ownership resolved by snapshot(): direct tenant columns, parent chains for tables
+// without one, and the identity tables), refreshed lazily after any write. Provenance for the leak check below: a
+// foreign-looking string is the caller's own data only when it is present in THIS set and the response carrying it
+// also carries the caller's own tenant identity. No token ever enters a query - the search is in-memory.
+let ownRows: string | null = null
+const own = async () => { ownRows ??= Object.values(await watch()).join('\n'); return ownRows }
 
 // ---- own: which tables each route returns to their owner ----
 const reads: Record<string, string[]> = {}   // route -> tables whose own marker came back
@@ -115,20 +118,29 @@ const sweep = async () => {
     for (const action of r.method === 'GET' ? [undefined] : [undefined, ...actions(r.path)]) for (const id of [null, ...otherIds]) {
       const res = await call(jar, r, id, action)
       calls.total++
-      if (leak(res.text, id)) violations.push(`${key}${action ? ` ${action}` : ''} ${id ?? '(no id)'} -> ${res.status}: ${res.text.slice(0, 300)}`)
+      if (r.method !== 'GET' && res.status >= 200 && res.status < 300) ownRows = null
+      if (await leak(res.text, id)) violations.push(`${key}${action ? ` ${action}` : ''} ${id ?? '(no id)'} -> ${res.status}: ${res.text.slice(0, 300)}`)
       else calls.refusedOrEmpty++
       if (r.method !== 'GET' && status[key] !== 'ok') status[key] = res.status > 0 && res.status < 500 ? 'ok' : SQLITE.test(res.text + res.log) || status[key] === 'sqlite' ? 'sqlite' : 'error'
     }
   }
 }
-// Anything of the other tenant's in a response that the caller did not send itself - in this call or an earlier
-// one: a token carrying the other tenant's tag that was never sent, or its tenant id echoed beyond this call's own
-// id. A route echoing or returning a value it was given (a domain parsed from the URL it was sent, a stored keyword
-// in the caller's own export) leaks nothing; the other tenant's tenant id is never the caller's data.
-const leak = (text: string, sent: string | null) => {
+// Anything of the other tenant's in a response that the caller did not send itself: a token carrying the other
+// tenant's tag, or its tenant id echoed beyond this call's own id. A token is excused only when (a) this very call
+// sent it (a route echoing what it was given leaks nothing), or (b) the response itself carries the caller's own
+// tenant identity AND the exact token is present in the caller's own current rows - a value the caller's own writes
+// stored (a monitor domain it was handed), returned in the caller's own-data context. A foreign token anywhere else
+// is a leak. Residual, for the reviewer: a foreign row bundled into an own-identity response, carrying only a token
+// the caller also stored and omitting its own tenant_id, is indistinguishable from the caller's copy by content.
+const leak = async (text: string, sent: string | null) => {
   const plain = text.replace(/\\u007e|%7E/gi, '~')
   if (plain.includes(other.tenant) && !(sent ?? '').includes(other.tenant)) return true
-  return [...plain.matchAll(new RegExp(`[A-Za-z0-9_.~-]*${otherTag}[A-Za-z0-9_.~-]*`, 'g'))].some(m => !(sent ?? '').includes(m[0]) && !sentEver.has(m[0]))
+  for (const m of plain.matchAll(new RegExp(`[A-Za-z0-9_.~-]*${otherTag}[A-Za-z0-9_.~-]*`, 'g'))) {
+    if ((sent ?? '').includes(m[0])) continue
+    if (plain.includes(me) && (await own()).includes(m[0])) continue
+    return true
+  }
+  return false
 }
 const watch = async () => snapshot(db, me)
 let changed: string[] = []
@@ -140,6 +152,29 @@ const phase = async (sweeping: boolean, n: number) => {
 }
 await phase(first, 1)
 await phase(!first, 2)
+
+// detector self-test, every run: red plants must be caught; the caller's own stored marker in its own-identity
+// response must not be; a value that has LEFT the caller's rows is foreign again.
+{
+  const redToken = `${otherTag}~redplant-${tag}`
+  if (!(await leak(JSON.stringify({ domain: redToken }), null))) violations.push(`detector red plant NOT caught: unsent unstored foreign token excused`)
+  if (!(await leak(JSON.stringify({ tenant_id: other.tenant }), null))) violations.push(`detector red plant NOT caught: foreign tenant identity excused`)
+  const planted = `${otherTag}~selfstored-${tag}`
+  const tts = await tenantTables(db)
+  const t = [...tts.keys()][0]
+  const cols = tts.get(t)!
+  const tenantCol = cols.find(c => TENANT_COLUMNS.includes(c.column))?.column
+  const textCol = cols.find(c => c.type === 'text' && c.column !== tenantCol)?.column
+  if (tenantCol && textCol) {
+    const prev = (await db.get<{ v: string }>(`SELECT ${textCol} AS v FROM ${t} WHERE ${tenantCol} = ? LIMIT 1`, [me]))!.v
+    await db.run(`UPDATE ${t} SET ${textCol} = ? WHERE ${tenantCol} = ?`, [planted, me])
+    ownRows = null
+    if (await leak(JSON.stringify({ tenant: me, rows: [{ [textCol]: planted }] }), null)) violations.push(`detector false positive: caller's own stored value in its own-identity response flagged`)
+    await db.run(`UPDATE ${t} SET ${textCol} = ? WHERE ${tenantCol} = ?`, [prev, me])
+    ownRows = null
+    if (!(await leak(JSON.stringify({ tenant: me, rows: [{ [textCol]: planted }] }), null))) violations.push(`detector provenance wrong: value excused after it left the caller's own rows`)
+  }
+}
 
 console.log(JSON.stringify({ tag, tenant: me, seeded: Object.keys(seeded.ids).sort(), failed: seeded.failed, reads, status, violations, changed, calls }))
 await db.close()
