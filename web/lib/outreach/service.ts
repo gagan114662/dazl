@@ -14,6 +14,7 @@ import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
 import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
+import { deliverabilityBlocked } from './contact-route.ts'
 import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
@@ -179,6 +180,10 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
 // taken before the lead, enrichment and identity-review rows are read, so a concurrent confirm, withdraw or crawl write on the same
 // SQLite file cannot land between the identity gate and the draft insert. A thrown OutreachError rolls back nothing, since nothing was written yet.
 type CrawledRows = NonNullable<Parameters<typeof domainReviewFor>[1]>
+// Recorded deliverability checks for a lead (contact-route.ts format). A missing table reads as no checks.
+function readDeliverabilityRows(db: Database.Database, tenantId: string, leadId: string): { connector: string; kind: string; value: string; retrieved_at: number | null }[] {
+  try { return db.prepare("SELECT connector, kind, value, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind = 'deliverability'").all(leadId, tenantId) as { connector: string; kind: string; value: string; retrieved_at: number | null }[] } catch (e) { if (isMissingSchema(e)) return []; throw e }
+}
 // The crawled address and domain evidence plus the user's domain review for one lead. Shared by the draft entry and the
 // approve and send checks so all three read the same rows.
 function readCrawledRows(db: Database.Database, tenantId: string, leadId: string): CrawledRows {
@@ -274,6 +279,9 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   // A crawled address whose website rests only on a name match or a link needs the user's identity review first (see domain-review.ts).
   // This is the single draft entry for the API and for autopilot, so neither can skip it. An address printed on the cited page is unaffected.
   if (domainReviewFor({ id: lead.id, contact: lead.contact }, crawled).state === 'required') throw new OutreachError('domain_unconfirmed')
+  // #384: an address on a domain that cannot receive mail, or with a recorded failed mailbox check, is never drafted to.
+  // Same rule as the lead card's Approve (contact-route.ts deliverabilityBlocked). Not checked / catch-all do not block.
+  if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
