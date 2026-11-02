@@ -162,7 +162,9 @@ const leak = async (text: string, sent: string | null) => {
   const scopes = tagScopes(plain)
   if (scopes === null) { const tok = tokensOf(plain).find(t => !(sent ?? '').includes(t)); if (tok) leakWhy = `branch=unstructured token=${tok}`; return !!tok }   // no row structure: echo only
   for (const obj of scopes) {
-    const id = ID_KEYS.map(k => obj[k]).find((v): v is string => typeof v === 'string')
+    // the identity rows (users, organizations) carry the tenant as their own `id`: such a row self-identifies only
+    // when that id is this caller's (any other id is not an identity, so the row stays unidentified)
+    const id = ID_KEYS.map(k => obj[k]).find((v): v is string => typeof v === 'string') ?? (obj.id === me ? me : undefined)
     for (const [k, v] of Object.entries(obj)) {
       if (typeof v !== 'string') continue
       for (const tok of tokensOf(v)) {
@@ -214,6 +216,13 @@ await phase(!first, 2)
     // R5: once the value has left the caller's rows it is foreign again
     if (!(await leak(JSON.stringify({ tenant: me, tables: { [t]: [{ [tenantCol]: me, [textCol]: planted }] } }), null))) violations.push(`detector provenance wrong: value excused after it left the caller's rows`)
   }
+  // identity rows: the caller's own users row (its id is the tenant) carrying a value the caller stored there is NOT a
+  // leak (L2); the same row shape under another id is unidentified, so the token is a leak (R6)
+  const prevName = (await db.get<{ v: string | null }>('SELECT business_name AS v FROM users WHERE id = ?', [me]))?.v ?? null
+  await db.run('UPDATE users SET business_name = ? WHERE id = ?', [planted, me]); ownRows = null
+  if (await leak(JSON.stringify({ tenant: me, tables: { users: [{ id: me, business_name: planted }] } }), null)) violations.push(`detector false positive: caller's own users row flagged`)
+  if (!(await leak(JSON.stringify({ tenant: me, tables: { users: [{ id: `not-${me}`, business_name: planted }] } }), null))) violations.push(`detector red plant NOT caught: identity row under another id excused`)
+  await db.run('UPDATE users SET business_name = ? WHERE id = ?', [prevName, me]); ownRows = null
 }
 
 console.log(JSON.stringify({ tag, tenant: me, seeded: Object.keys(seeded.ids).sort(), failed: seeded.failed, reads, status, violations, changed, calls }))
