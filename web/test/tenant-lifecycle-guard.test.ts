@@ -217,11 +217,14 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
   const want = guardTriggers(scope).map(g => g.name).sort()
   const accountCols = Object.entries(ACCOUNT_COLUMNS).filter(([t]) => scope.some(s => s.table === t)).reduce((n, [, cs]) => n + cs.length, 0)
   assert.equal(want.length, 2 * (scope.length + 2 + accountCols), `${scope.length} guarded tables, users and organizations, ${accountCols} account column(s): two guards each`)
-  assert.equal(want.length, 174) // 455's 166 + two guards each for main's post-fork tenant tables: autopilot_work (0032), seller_decisions (0034), connector_claims (0035), autopilot_launch_policy (#553's 0038)
-  // The static Postgres migration must carry exactly this generated set, not the fork's: only the sqlite path derives
-  // its guards from the live schema, so a stale 0038 leaves post-fork tables unguarded on pg (#554 review).
-  const pgNames = [...readFileSync(new URL('../lib/db/migrations/pg/0039_tenant_lifecycle.sql', import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1]).sort()
-  assert.deepEqual(pgNames, want, 'the static PG migration drifted from the generated guard set')
+  assert.equal(want.length, 176) // 455's 166 + two guards each for main's post-fork tenant tables: autopilot_work (0032), seller_decisions (0034), connector_claims (0035), autopilot_launch_policy (#553's 0038), scan_traces (#463's 0040)
+  // The static Postgres migrations must carry exactly this generated set, not the fork's: only the sqlite path derives
+  // its guards from the live schema, so a stale migration leaves post-fork tables unguarded on pg (#554 review). Tables
+  // added after 0039 carry their own guards in their own migration (migrations are immutable once applied): 0040 guards
+  // scan_traces (#463).
+  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql']
+    .flatMap(f => [...readFileSync(new URL(`../lib/db/migrations/pg/${f}`, import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1])).sort()
+  assert.deepEqual(pgNames, want, 'the static PG migrations drifted from the generated guard set')
   const live = c.kind === 'sqlite'
     ? (await c.db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'tomb_%'")).map(r => r.name)
     : (await c.db.all<{ name: string }>("SELECT DISTINCT trigger_name AS name FROM information_schema.triggers WHERE trigger_schema = current_schema() AND trigger_name LIKE 'tomb_%'")).map(r => r.name)
