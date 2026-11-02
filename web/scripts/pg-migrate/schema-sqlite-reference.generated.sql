@@ -617,6 +617,16 @@ CREATE TABLE scan_source_stats (
     PRIMARY KEY (job_id, attempt, collector)
   );
 
+CREATE TABLE scan_traces (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      bytes INTEGER NOT NULL,
+      trace TEXT NOT NULL
+    );
+
 CREATE TABLE scheduler_progress (
       tenant_id            TEXT NOT NULL,
       kind                 TEXT NOT NULL CHECK (kind IN ('reply_sync','followups','sequences','first_touch','autopilot')),
@@ -1010,6 +1020,10 @@ CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
 
+CREATE INDEX scan_traces_created ON scan_traces (created_at);
+
+CREATE INDEX scan_traces_tenant ON scan_traces (tenant_id, created_at);
+
 CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
 
 CREATE INDEX seller_decisions_recall ON seller_decisions(tenant_id,site,created_at,id);
@@ -1211,6 +1225,8 @@ CREATE TRIGGER tomb_scan_source_runs BEFORE INSERT ON scan_source_runs BEGIN SEL
 
 CREATE TRIGGER tomb_scan_source_stats BEFORE INSERT ON scan_source_stats BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id); END;
 
+CREATE TRIGGER tomb_scan_traces BEFORE INSERT ON scan_traces BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_scheduler_progress BEFORE INSERT ON scheduler_progress BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_seller_decisions BEFORE INSERT ON seller_decisions BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1374,6 +1390,8 @@ CREATE TRIGGER tomb_upd_scan_run_report BEFORE UPDATE OF job_id ON scan_run_repo
 CREATE TRIGGER tomb_upd_scan_source_runs BEFORE UPDATE OF job_id ON scan_source_runs BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT (SELECT user_id FROM scan_jobs WHERE id = OLD.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.job_id IS NOT OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id))); END;
 
 CREATE TRIGGER tomb_upd_scan_source_stats BEFORE UPDATE OF job_id ON scan_source_stats BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT (SELECT user_id FROM scan_jobs WHERE id = OLD.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.job_id IS NOT OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id))); END;
+
+CREATE TRIGGER tomb_upd_scan_traces BEFORE UPDATE OF tenant_id ON scan_traces BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_scheduler_progress BEFORE UPDATE OF tenant_id ON scheduler_progress BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
