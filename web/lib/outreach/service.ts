@@ -474,6 +474,10 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     return db.prepare("UPDATE outreach_messages SET status = 'sending', attempts = attempts + 1, claimed_at = ?, error = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(nowS(d), id, tenantId)
   }).immediate()
   if (claim.changes !== 1) throw new OutreachError('already_sending')
+  // #405: an accepted launch policy and the tenant switches must still be readable at the handoff: a store that
+  // vanishes during the token refresh fails the check there, it is never silently skipped.
+  const hadLaunch = tableExists(db, 'autopilot_launch_policy') && !!db.prepare('SELECT 1 FROM autopilot_launch_policy WHERE tenant_id = ?').get(tenantId)
+  const hadSettings = tableExists(db, 'autopilot_settings') && !!db.prepare('SELECT 1 FROM autopilot_settings WHERE tenant_id = ?').get(tenantId)
   const release = (code: string): never => {
     db.prepare("UPDATE outreach_messages SET status = 'approved', claimed_at = NULL, error = ? WHERE id = ? AND status = 'sending'").run(code, id)
     throw new OutreachError(code)
@@ -539,12 +543,19 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
+  if (hadSettings && !tableExists(db,'autopilot_settings')) release('stop_check_unavailable')
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
-  if (d.authorize) { const why = d.authorize(); if (why) release(why) }
+  if (d.authorize) {
+    // The caller's own final check is separate from the service's reads above: when it cannot answer the refusal
+    // keeps the service's name for an unreadable caller authority.
+    let why: string | null
+    try { why = d.authorize() } catch (e) { captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId }); release('authority_unreadable') }
+    if (why!) release(why!)
+  }
   } catch (e) {
     if (e instanceof OutreachError) throw e
     captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId })
-    release('authority_unreadable')
+    release(hadLaunch ? 'stop_check_unavailable' : 'authority_unreadable')
   }
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
