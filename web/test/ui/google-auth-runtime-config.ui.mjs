@@ -13,6 +13,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -21,7 +22,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-gauth-ui-'))
 const SID = 'staging-signin-123.apps.googleusercontent.com'
 const servers = []
 async function serve(extra) {
-  const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+  const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
   // the fence scrubs every *SECRET* variable it inherits, so the synthetic configuration is applied after it
   const runtimeEnv = path.join(tmp, `env${port}.mjs`); writeFileSync(runtimeEnv, `Object.assign(process.env, ${JSON.stringify(extra)})\n`)
   const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: path.join(tmp, `app${port}.db`), SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')} --import ${runtimeEnv}` }, stdio: 'ignore' })
