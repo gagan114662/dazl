@@ -86,7 +86,8 @@ export function openJobsFor(html: string, pageUrl: string, site: string, accept?
 //   public ATS posting:   read through the board's public JSON (Greenhouse / Lever / Ashby). 404 or unlisted = closed. The board must be the lead's: its token equals the
 //                         domain's name, or the posting itself names the company (never a board that merely exists). Another company's posting is rejected.
 const norm = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|plc|corp|co|the|gmbh)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
-const json = (b: string): any => { try { return JSON.parse(b) } catch { return null } }
+type Json = { [k: string]: unknown }
+const json = (b: string): Json | null => { try { return JSON.parse(b) } catch { return null } }
 // The board's own publish date as a day (ISO string or epoch ms); anything else is unknown, never guessed.
 const boardDay = (v: unknown): string | null => { const t = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null }
 export type JobVerdict = { ok: true; text: string; title: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
@@ -124,7 +125,7 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
     const r = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`)
     if (!r || r.status >= 500) return { ok: false, reason: 'job_unverified' }; if (r.status === 404) return { ok: false, reason: 'job_closed' }
     const j = json(r.body); const jobs = Array.isArray(j?.jobs) ? j.jobs : null; if (!jobs) return { ok: false, reason: 'job_unverified' }
-    const job = jobs.find((x: any) => typeof x?.jobUrl === 'string' && x.jobUrl.split('/').filter(Boolean).pop() === id)
+    const job = jobs.find((x: Json) => typeof x?.jobUrl === 'string' && x.jobUrl.split('/').filter(Boolean).pop() === id)
     if (!job || job.isListed !== true) return { ok: false, reason: 'job_closed' }
     title = String(job.title ?? ''); body = `${title} ${String(job.descriptionPlain ?? job.descriptionHtml ?? '')}`; open = true; posted = boardDay(job.publishedAt); postedBoard = 'ashby'
   } else return { ok: false, reason: 'job_unverified' }
