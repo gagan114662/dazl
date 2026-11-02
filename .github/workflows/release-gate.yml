@@ -20,6 +20,11 @@ on:
   push:
     branches: [main]
     paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
+  # Manual run at an exact ref: a merged commit whose diff touched no gated path (for example a docs-only STATUS
+  # update) must still get the full gate on the exact SHA Instinct deploys (checked_launch REQUIRED_CI binds browser
+  # and migrations to the commit). A dispatched run checks out github.sha, so its check runs and its release-<sha>
+  # artifact carry that commit; the migrations base falls back to the commit's first parent. No check is skipped.
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

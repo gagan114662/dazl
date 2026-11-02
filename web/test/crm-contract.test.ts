@@ -63,6 +63,22 @@ test('Pipedrive: success needs success:true and a positive integer person id; an
   for (const s of [400, 401, 403, 429]) assert.equal(await outcome(PD, json({ success: false }, s)), 'failed', String(s))
 })
 
+// #569: the audit repro, verbatim. An empty `{}` 200 is never reported as "created" by either CRM, and a HubSpot 409 whose
+// body names no existing contact is a refusal decided without any read-back request.
+test('#569 repro: an empty {} 200 is never "created"; a 409 naming no contact is failed with no read-back', async () => {
+  for (const cfg of [HS, PD]) {
+    const calls: string[] = []
+    const err = await pushLead(cfg, LEAD, (async (u: RequestInfo | URL) => { calls.push(String(u)); return new Response('{}', { status: 200 }) }) as never).then(() => null, (e: unknown) => e)
+    assert.ok(err instanceof CrmPushError && err.outcome === 'unknown', cfg.provider)
+    assert.doesNotMatch(err.message, /^(Contact|Person) created/)
+    assert.equal(calls.length, 1, 'one create request, nothing else')
+  }
+  const calls: string[] = []
+  const err = await pushLead(HS, LEAD, (async (u: RequestInfo | URL) => { calls.push(String(u)); return new Response('{}', { status: 409 }) }) as never).then(() => null, (e: unknown) => e)
+  assert.ok(err instanceof CrmPushError && err.outcome === 'failed')
+  assert.deepEqual(calls, ['https://api.hubapi.com/crm/v3/objects/contacts'])
+})
+
 test('a thrown fetch is unknown, unless it says no connection was made', async () => {
   const thrown = (cause?: { code: string }) => async () => { throw Object.assign(new TypeError('fetch failed'), cause ? { cause } : {}) }
   for (const cfg of [HS, PD]) {

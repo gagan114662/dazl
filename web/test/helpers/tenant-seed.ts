@@ -13,7 +13,7 @@ type Col = { table: string; column: string; type: string; nullable: boolean; has
 export const marker = (tag: string, table: string) => `${tag}~${table}`
 
 // Values the schema's triggers need while seeding (a lead is written only to a running scan).
-const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' } }
+const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' }, onboarding_audit: { event: 'conversion:seeded' } } // onboarding_audit: its CHECK wants a conversion:<kind> event
 
 // A value for `col` that satisfies the CHECK constraint `def`, or undefined when the definition is not one of the
 // shapes the schema uses.

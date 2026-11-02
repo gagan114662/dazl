@@ -100,6 +100,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'preview/claim', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/preview-claim-route-runtime.mts' }, role: 'read' },
   { path: 'preview/issue', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/preview-claim-route-runtime.mts' }, role: 'read' },
   { path: 'monitors', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'onboarding/policy', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'onboarding/policy', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'outreach/[id]', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'outreach/[id]', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'outreach/autopilot', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },

@@ -48,6 +48,11 @@ Updated by the builder on every branch. Newest first.
   unset) with the RECOVERY.md re-apply step. Real-route tests through the session loader; B byte-equivalent; a
   restored pre-deletion copy re-applied from the route-written ledger. No live run yet.
 
+- b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
+  same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
+  fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
+  and never ask the user to check or confirm. Stubbed fixtures only; not verified live.
+
 - PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
   `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
   and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the recovery-runbook
@@ -159,6 +164,29 @@ complete — do not start new issues until each is closed or explicitly re-queue
    evaluation contract and at least one executed autonomous evaluation proving it.
 5. #371 (audit trail): most audit-event logging shipped (ex-#464/#557). Missing: remaining action coverage, and a
    live check that a readable audit record actually comes out the other end.
+
+## Beat Gojiberry/Pancake (#393) — after the list above, in #393's own priority order
+
+2026-11-02 audit: of the 16 issues #393 scoped as required to actually beat Gojiberry/Pancake, only #378
+(scoreboard counts leads correctly) is closed — it fixes measurement, not the product. The other 15 are open
+and nothing in targeting, retrieval, contacts or ranking has shipped. The benchmark itself (#372) has never
+been run: `docs/STATUS.md` Score section above is last updated 2026-10-26, shows 0 verified qualified leads in
+every recorded run, and `scripts/scoreboard.mts` has never run with a real key. There is currently no evidence,
+formal or informal, that dazl beats either competitor. Work in this order (#393's own sequencing):
+
+1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
+2. #380 explicit AND/OR/NOT targeting with per-condition proof.
+3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
+4. #382 real Apollo-to-PDL enrichment fallback waterfall.
+5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
+6. #384 separate published provenance from deliverability/person-route status.
+7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop).
+8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+   advantages, start once 1-7 ship.
+9. #386 real lookalikes, #388 tested source coverage, #389 technographics, #390 first-party signals, #391
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
+    as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
