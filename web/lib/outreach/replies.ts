@@ -8,7 +8,6 @@ import { grantConsent, revokeAll } from './ledger.ts'
 import { norm, READ_CONSENT_VERSION } from './store.ts'
 import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
-import { resolveMx } from 'node:dns/promises'
 import { dsnProvenance } from './dsn.ts'
 import { applyBounceVerdict, migrateBounceLedger } from './bounce-ledger.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
@@ -311,7 +310,11 @@ export function referencedSendIds(refs: string[], senderDomain: string): string[
 // domain must align with the recorded recipient's domain or its MX hosts (resolved by DNS at sync time, never taken
 // from the notice). resolveMxFor is injectable for fixtures.
 const TRUSTED_AUTHSERV_IDS = ['mx.google.com', 'google.com']
-const defaultResolveMx = async (domain: string): Promise<string[]> => (await resolveMx(domain)).map(r => r.exchange.toLowerCase())
+// node:dns/promises is loaded lazily so importing this module never needs a DNS module (route harnesses stub it).
+const defaultResolveMx = async (domain: string): Promise<string[]> => {
+  const { resolveMx } = await import('node:dns/promises')
+  return (await resolveMx(domain)).map(r => r.exchange.toLowerCase())
+}
 
 export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number; resolveMxFor?: (domain: string) => Promise<string[]> }
 // remaining: background threads (no automated send can reach them) not read this call because of the per-call cap or
