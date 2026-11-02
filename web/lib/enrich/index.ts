@@ -178,15 +178,27 @@ export async function enrichLeadContacts(
 
 interface Ctx { db: Database.Database; tenantId: string; jobId: string; lead: LeadRow; where: string[]; evidence: string; established: boolean; src: string; today: string; now: number; fetchImpl: typeof fetch; buyerTitles: string[] }
 
-// The reviewed buyer persona for the job: its ICP's who list, exactly as the tenant reviewed it (#383).
-// Nothing is derived or expanded here - an invented seniority/function would narrow the provider query
-// and could exclude the very buyer the role filter exists to find.
+// The REVIEWED buyer persona for the job: the who list of a tenant-submitted profile only (#383).
+// Provenance is load-bearing: scan_jobs.icp_inferred=1 means the model worked the ICP out, =2 means a
+// request-text fallback, and the UI itself labels both as not user-approved ("worked out by dazl",
+// "approval not recorded", "interpretation not verified"). An unreviewed persona must never narrow
+// retrieval: with a wrong model-invented title set the filtered page fills with wrong-role people and
+// the actual buyer is lost. Only icp_inferred=0 (the tenant's own submitted profile) gates the filter.
+// Nothing is derived or expanded here either - an invented seniority/function would narrow the query.
 export function reviewedBuyerTitles(db: Database.Database, jobId: string): string[] {
   try {
-    const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined
-    const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null
+    const j = db.prepare('SELECT icp, icp_inferred FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null; icp_inferred: number | null } | undefined
+    if (j?.icp_inferred !== 0) return []
+    const who = j.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null
     return Array.isArray(who) ? who.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map(x => x.trim()).slice(0, 10) : []
   } catch { return [] }
+}
+
+// Shared post-fetch role classification (#383): no provider call, applied to whatever a search returned.
+// roleContradicted's past/retired/negated/assistant patterns are persona-independent, so this is safe
+// with an empty icpText; an unreviewed (inferred/fallback) persona is never passed as icpText.
+export function roleRejection(title: string | null, icpText: string): string | null {
+  return title && roleContradicted(title, icpText) ? `contact rejected: title contradicts the reviewed buyer role (past, retired, negated or assistant-to): ${title}`.slice(0, 200) : null
 }
 
 type AttemptOutcome =
@@ -321,15 +333,12 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   let found: Awaited<ReturnType<typeof apolloPeopleSearch>>
   try { found = await apolloPeopleSearch(key, { domain: orgDomain, name: lead.company }, fetchImpl, MAX_CONTACTS, c.buyerTitles.length ? { titles: c.buyerTitles } : undefined) }
   catch (e) { const code = e instanceof EnrichError ? e.code : 'error'; auditSettleClaim(db, { ...peopleClaim, status: code, results: 0 }, pgate.id, code, 0); throw e }
-  // The role filter narrows by the provider's title words, which need not match the reviewed persona's
-  // words: an empty filtered page falls back to the unfiltered query (0-credit, audited) so recall is
-  // never lost to the filter. The fallback runs at most once per people claim and only when filtered
-  // returned NOTHING - a filtered page with results is trusted, never padded.
-  if (found.length === 0 && c.buyerTitles.length) {
-    audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: 'role-filtered people search empty; unfiltered fallback', results: 0 })
-    try { found = await apolloPeopleSearch(key, { domain: orgDomain, name: lead.company }, fetchImpl, MAX_CONTACTS) }
-    catch (e) { const code = e instanceof EnrichError ? e.code : 'error'; auditSettleClaim(db, { ...peopleClaim, status: code, results: 0 }, pgate.id, code, 0); throw e }
-  }
+  // No unfiltered fallback (#383 review): an extra query per lead is a NEW call shape whose cost is not
+  // account-verified (Apollo pricing is plan-dependent), so it cannot ship as a free fact. The recall
+  // contract instead: an unreviewed persona never filters at all (the old unfiltered query, unchanged);
+  // a reviewed persona with an empty filtered page attaches nobody this pass, visibly.
+  if (found.length === 0 && c.buyerTitles.length)
+    audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: 'role-filtered people search empty; no unfiltered fallback: extra query cost not account-verified', results: 0 })
   // A person whose own organization contradicts the requested company (another name, another domain) is
   // not attached; neither is one whose title contradicts the reviewed buyer role - past, retired, negated
   // or assistant-to (#383: former employees and assistants-to-the-buyer are rejected at the source, not
@@ -337,8 +346,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   const icpText = c.buyerTitles.join('; ')
   const people = []
   for (const p of found) {
-    const why = organizationContradicts(lead.company, orgDomain, p.organization)
-      ?? (p.title && roleContradicted(p.title, icpText) ? `contact rejected: title contradicts the reviewed buyer role (past, retired, negated or assistant-to): ${p.title}`.slice(0, 200) : null)
+    const why = organizationContradicts(lead.company, orgDomain, p.organization) ?? roleRejection(p.title, icpText)
     if (!why) { people.push(p); continue }
     audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: why, results: 0 })
     recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: why, sourceUrl: src })
@@ -360,13 +368,16 @@ async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: n
   catch (e) { auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: e instanceof EnrichError ? e.code : 'error', results: 0 }, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
   charged.n += found.length
   // PDL matches on the company NAME only: each person's company must agree with the lead on its domain or place.
+  // Post-fetch role classification is shared with the Apollo path (#383): no extra PDL query, the
+  // returned profiles are simply classified before attach - past/assistant titles never attach.
   const people = []
   for (const p of found) {
     const a = contactAgreement({ company_domain: lead.company_domain, where, evidence, domainEstablished: established }, { domain: p.domain, place: p.place, address: p.address })
-    if (a.ok) people.push(p); else { audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: a.reason, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_PDL, reason: a.reason, sourceUrl: src }) }
+    const why = a.ok ? roleRejection(p.title, c.buyerTitles.join('; ')) : a.reason
+    if (!why) people.push(p); else { audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: why, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_PDL, reason: why, sourceUrl: src }) }
   }
   for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
-  auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), results: people.length }, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company' : 'empty'), people.length)
+  auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), results: people.length }, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), people.length)
   return people.length
 }
 

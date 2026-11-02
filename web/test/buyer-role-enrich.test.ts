@@ -19,12 +19,12 @@ const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 }
 const ORG_RESP = { organization: { name: 'Acme Inc', estimated_num_employees: 86, industry: 'Software', founded_year: 2019, website_url: 'https://acme.com' } }
 const person = (name: string, title: string | null, org: string | null = 'Acme Inc') => ({ name, title, linkedin_url: `https://linkedin.com/in/${name.replace(/\W+/g, '').toLowerCase()}`, organization: org ? { name: org, primary_domain: 'acme.com' } : null })
 
-function seed(opts: { who?: string[]; leads?: { id: string; company: string; score: number }[] } = {}) {
+function seed(opts: { who?: string[]; inferred?: number; leads?: { id: string; company: string; score: number }[] } = {}) {
   const db = new Database(':memory:')
   migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
-  if (opts.who) db.prepare('UPDATE scan_jobs SET icp = ? WHERE id = ?').run(JSON.stringify({ who: opts.who }), jobId)
+  if (opts.who) db.prepare('UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ?').run(JSON.stringify({ who: opts.who }), opts.inferred ?? 0, jobId)
   const leads = (opts.leads ?? [{ id: 'lead1', company: 'Acme', score: 50 }])
   for (const l of leads) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, score) VALUES (?, ?, '', ?, ?, 'hiring', 'https://x.com/1', ?)").run(l.id, jobId, l.company, `${l.company.toLowerCase()}.com`, l.score)
   saveCredential(db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
@@ -60,23 +60,63 @@ test('buyer beyond the first five unfiltered people is returned by the role-filt
   assert.deepEqual(contacts.map(r => r.value), ['Jane Buyer - VP Sales'], 'the buyer the unfiltered page omitted is attached')
 })
 
-test('an empty role-filtered page falls back to the unfiltered query once, audited; recall is never lost', async () => {
+test('an empty role-filtered page makes NO extra query: the fallback cost is not account-verified, so it fails closed, audited', async () => {
   const { db, jobId, leads } = seed({ who: ['VP Sales'] })
   const bodies: Record<string, unknown>[] = []
   const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
     const u = String(url)
     if (u.includes('organizations/enrich')) return ok(ORG_RESP)
     const body = JSON.parse(String(init?.body)); bodies.push(body)
-    if (body.person_titles) return ok({ people: [] })
-    return ok({ people: [person('Jane Buyer', 'Revenue Lead')] })
+    return ok({ people: [] })
   }) as never
   await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl, master })
-  assert.equal(bodies.length, 2, 'filtered then exactly one unfiltered fallback')
-  assert.ok(bodies[0].person_titles && !bodies[1].person_titles)
+  assert.equal(bodies.length, 1, 'exactly one people query: no unfiltered fallback burn')
+  assert.ok(bodies[0].person_titles)
   const rows = enrichmentsForLeads(db, 'u1', ['lead1']).lead1
-  assert.deepEqual(rows.filter(r => r.kind === 'contact').map(r => r.value), ['Jane Buyer - Revenue Lead'], 'a buyer whose provider title words differ from the reviewed persona is still found')
+  assert.deepEqual(rows.filter(r => r.kind === 'contact'), [], 'nobody is attached when the reviewed persona matches no one')
   const st = (recentAudit(db, 'u1', 20) as { status: string }[]).map(a => a.status)
-  assert.ok(st.includes('role-filtered people search empty; unfiltered fallback'), 'the fallback is visible, never silent')
+  assert.ok(st.includes('role-filtered people search empty; no unfiltered fallback: extra query cost not account-verified'), 'the held fallback is visible, never silent')
+  assert.ok(st.includes('enrich:apollo:empty') || st.includes('empty'), 'the people claim settles empty, not ok')
+})
+
+test('an UNREVIEWED persona never narrows retrieval: model-inferred and request-fallback ICPs get the plain unfiltered query', async () => {
+  for (const [inferred, label] of [[1, 'model-inferred'], [2, 'request-fallback']] as const) {
+    const { db, jobId, leads } = seed({ who: ['VP Sales'], inferred })
+    const bodies: Record<string, unknown>[] = []
+    await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('organizations/enrich')) return ok(ORG_RESP)
+      bodies.push(JSON.parse(String(init?.body)))
+      return ok({ people: [person('Jane Buyer', 'Revenue Lead')] })
+    }) as never, master })
+    assert.equal(bodies.length, 1, `${label}: one unfiltered query`)
+    assert.ok(!('person_titles' in bodies[0]), `${label}: the unreviewed persona is not sent to the provider`)
+    assert.deepEqual(reviewedBuyerTitles(db, jobId), [], `${label}: no reviewed persona`)
+    const rows = enrichmentsForLeads(db, 'u1', ['lead1']).lead1
+    assert.deepEqual(rows.filter(r => r.kind === 'contact').map(r => r.value), ['Jane Buyer - Revenue Lead'], `${label}: recall is the pre-filter behavior, unchanged`)
+  }
+})
+
+test('PDL parity: the same post-fetch role classification rejects past/assistant titles with no extra PDL query', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateConnectors(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Acme', 'acme.com', 'hiring', 'https://x.com/1')").run(jobId)
+  saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
+  let pdlCalls = 0
+  await enrichLeadContacts(db, 'u1', jobId, [{ id: 'lead1', company: 'Acme', company_domain: 'acme.com' }], { fetchImpl: (async () => {
+    pdlCalls++
+    return ok({ data: [
+      { full_name: 'Aide Adams', job_title: 'Executive Assistant to the CEO', linkedin_url: 'https://li/aide' },
+      { full_name: 'Past Pam', job_title: 'Former VP of Sales', linkedin_url: 'https://li/pam' },
+      { full_name: 'Jane Buyer', job_title: 'VP Sales', linkedin_url: 'https://li/jane' },
+    ] })
+  }) as never, master })
+  assert.equal(pdlCalls, 1, 'one PDL query: classification is post-fetch, no new paid call shape')
+  const rows = enrichmentsForLeads(db, 'u1', ['lead1']).lead1
+  assert.deepEqual(rows.filter(r => r.kind === 'contact').map(r => r.value), ['Jane Buyer - VP Sales'])
+  assert.equal(rows.filter(r => r.kind === 'contact_rejected' && r.label === 'contact_role_mismatch').length, 2, 'both wrong-person profiles rejected with the named code')
 })
 
 test('no reviewed buyer roles: one unfiltered query, no fallback burn', async () => {
@@ -95,7 +135,7 @@ test('no reviewed buyer roles: one unfiltered query, no fallback burn', async ()
 
 test('assistant-to and former-employee candidates are rejected at the source with named reasons, never attached', async () => {
   const { db, jobId, leads } = seed({ who: ['VP Sales'] })
-  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: (async (url: RequestInfo | URL, init?: RequestInit) => {
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: (async (url: RequestInfo | URL) => {
     const u = String(url)
     if (u.includes('organizations/enrich')) return ok(ORG_RESP)
     return ok({ people: [
