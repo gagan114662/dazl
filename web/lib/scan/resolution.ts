@@ -29,7 +29,7 @@ export interface ResolutionSummary { candidates: number; resolved: number; unres
 type JobLike = { id: string; user_id: string; query?: string | null; icp?: string | null }
 type Row = { id: string; company: string; company_domain: string | null; event_date: string | null; review_reason: string | null; signal: string; evidence_excerpt: string | null; source_url: string | null }
 const DATE_REASONS = new Set(['outside_window_undated', 'outside_window', 'event_date_future_date', 'event_date_bad_date', 'event_timing_unconfirmed'])
-const CONFLICT = new Set(['contact_location_mismatch', 'contact_domain_mismatch', 'contact_address_mismatch'])
+const CONFLICT = new Set(['contact_location_mismatch', 'contact_domain_mismatch', 'contact_address_mismatch', 'contact_role_mismatch']) // role mismatch is a definitive wrong-person, not an unconfirmed contact (#383)
 
 function dateState(d: string | null, reason: string | null, windowDays: number | null, now: Date): CandidateResolution['date'] {
   if (reason === 'event_date_bad_date') return 'invalid'

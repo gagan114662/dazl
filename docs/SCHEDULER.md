@@ -38,10 +38,11 @@ The workers report ordinary refusals as a result (`stopped`), not an exception. 
 | both | `uncertain_send`, `gmail_unavailable`, `gmail_or_identity` | failure (an uncertain send outranks earlier progress in the same tick) |
 | `runFollowups` | `not_available` (operator switch off or kill switch, while the tenant has follow-ups on) | failure |
 | `runSequences` | `sequences_disabled` (operator switch off or kill switch, while the tenant has approved or active sequences), `reading_not_enabled`, `reply_sync_failed` | failure |
-| `syncReplies` | `error` (`reading_not_enabled`, `gmail_unavailable`, `reply_sync_failed`) | failure; follow-ups are not attempted that tick |
+| `syncReplies` | `error` (`gmail_unavailable`, `reply_sync_failed`) | failure; follow-ups are not attempted that tick |
+| `syncReplies` | `error` = `reading_not_enabled` | hold: the tenant's own consent/mailbox state, never a provider call that failed. Active work blocked by it fails under `followups`/`sequences` (their selectors pick tenants with work), so an idle tenant does not count as failing |
 | any | a thrown error, or a `stopped` reason the tick does not know | failure (an unknown refusal is never read as progress) |
 
-An operator switch that is off while tenants have work is deliberate, and still a failure here: the tick is running and refusing the work, and the alert after three ticks is the reminder. A tenant's own pause, cap or withdrawn consent is a hold: it is not progress, but nothing is failing. A hold does not resolve earlier failures either: a tenant blocked by three failures stays blocked while paused, until a run succeeds.
+An operator switch that is off while tenants have work is deliberate, and still a failure here: the tick is running and refusing the work, and the alert after three ticks is the reminder. A tenant's own pause, cap or withdrawn consent is a hold: it is not progress, but nothing is failing. A hold after failures means the tenant is not currently failing - the state shows held, not blocked - but it does not resolve the failures either: the count stands, a failure after the hold re-blocks immediately, and only a success clears the count.
 
 A run is `partial` when some work failed; holds alone leave it `ok`. The tick's response carries `tenant_failures` and `tenant_holds`.
 
@@ -60,7 +61,7 @@ The tick is expected every 15 minutes.
 Separately from the state, the health response carries `unresolved_failure`: the latest finished run ended `failed` or `lease_lost`, and no run has completed `ok` or `partial` since. It is a problem, and so an alert, even while an earlier success keeps the state `fresh`: a recent success proves the scheduler was making progress, not that the newer tick worked. A run in progress does not clear it; the next successful run does.
 
 A tenant is:
-- **blocked** when one kind of work has failed `BLOCKED_AFTER_FAILURES` = 3 times in a row;
+- **blocked** when one kind of work has failed `BLOCKED_AFTER_FAILURES` = 3 times in a row and the last attempt is still failing;
 - **stale** in any of these cases:
   - its reply sync has had no success for `REPLY_SYNC_STALE_S` = 2 h while still being attempted;
   - a due step is more than `OVERDUE_ALERT_S` = 1 h overdue;
@@ -93,7 +94,7 @@ It contains no tenant id, name or error text. It is not part of `/api/ready`, so
 | `scheduler stale` | The cron/timer journal: does the call return 200? `last_error_class` in the health response. | fix the caller or the failing step. A 404 means the secret is missing or mismatched. |
 | `latest scheduler run failed` / `lease_lost` | The app journal for the failed tick; `last_error_class` in the health response. `lease_lost`: another process took the tick lease mid-run (two schedulers, or a run slower than the 30 min lease). | Fix the failing step, or make sure only one scheduler calls the tick. The alert clears on the next successful run. |
 | `scheduler crashed` | The app journal around `running_since`: OOM, restart or deploy. | Nothing to clean up. The next tick takes over once the lease expires (at most 30 min after the crash) at a new generation, and its run reads fresh. Unfinished sends from the dead run are handled by the claim machinery: `sending` claims older than 10 min become `uncertain` and are never resent automatically (docs/STAGING.md send-safety scenarios). Resolve those before resuming. |
-| `N tenant(s) blocked` | `scheduler_progress` rows with `consecutive_failures >= 3` and their `last_error` (operator DB access only; never in alerts). | Usually a disconnected Gmail account, withdrawn reply consent, a missing sender identity, or an uncertain send waiting for the tenant. `not_available` / `sequences_disabled`: the operator switch is off (or the kill switch on) while tenants have work turned on. The tenant sees "Scheduled work is blocked" on their Outreach page. A tenant's pause does not clear this: the next successful run does. |
+| `N tenant(s) blocked` | `scheduler_progress` rows with `consecutive_failures >= 3` and their `last_error` (operator DB access only; never in alerts). | Usually a disconnected Gmail account, withdrawn reply consent, a missing sender identity, or an uncertain send waiting for the tenant. `not_available` / `sequences_disabled`: the operator switch is off (or the kill switch on) while tenants have work turned on. The tenant sees "Scheduled work is blocked" on their Outreach page. A tenant's pause or hold does not clear the count and does not keep the tenant blocked while holding: the next successful run clears it, and a resumed failure re-blocks at once. |
 | `reply sync stale` | the same rows, `kind = 'reply_sync'` | Same as blocked. Gmail token refresh failing, or rate limits. |
 | `due work overdue` | Is the scheduler fresh? If yes, look at the tenant's `sequences` progress: `last_outcome` and `last_hold` say whether a pause or a cap is holding it, `last_error` whether it is failing; the gates in `GET /api/outreach/sequences` say what is configured. | A configured hold (pause, uncertain send, kill switch) is expected to leave work due, so check the hold and the gates first. |
 

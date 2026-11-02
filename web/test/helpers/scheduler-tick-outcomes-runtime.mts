@@ -172,7 +172,8 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   assert.equal(r4.sequences, 1, 'S step 3'); assert.equal(stepStatus(seqS, 3), 'sent')
   const f4 = p(F, 'followups')!
   assert.equal(f4.last_outcome, 'hold'); assert.equal(f4.last_hold, 'autopilot_off'); assert.equal(f4.consecutive_failures, 3); assert.equal(f4.last_success_at, null); assert.match(f4.last_error ?? '', /not_available/)
-  assert.equal((await tenantFreshness(db, F)).state, 'blocked', 'a hold does not resolve the failures')
+  const fFresh4 = await tenantFreshness(db, F)
+  assert.equal(fFresh4.state, 'held', 'a hold means not currently failing, not recovered: the count stands'); assert.deepEqual(fFresh4.holds, ['first_touch:consent_required', 'followups:autopilot_off'])
   const r4r = p(R, 'sequences')!
   assert.equal(r4r.last_outcome, 'success'); assert.equal(r4r.consecutive_failures, 0); assert.ok(r4r.last_success_at); assert.equal(r4r.last_error, null)
   assert.equal((await tenantFreshness(db, R)).reasons.includes('sequences_failing'), false)
@@ -192,6 +193,7 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   await call()
   const f5 = p(F, 'followups')!
   assert.equal(f5.last_outcome, 'failure'); assert.equal(f5.consecutive_failures, 4); assert.match(f5.last_error ?? '', /gmail_or_identity/); assert.equal(f5.last_hold, null)
+  assert.equal((await tenantFreshness(db, F)).state, 'blocked', 'a failure after the hold re-blocks at once on the standing count')
   // W: the second thread is due but today's cap is spent: a cap wait that sent nothing, keeping yesterday's success
   assert.equal(followupsSent(W), 1)
   const w5 = p(W, 'followups')!

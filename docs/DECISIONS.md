@@ -3,6 +3,22 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-11-02: consent/onboarding audit retention at tenant erasure
+
+Resolves the owner decision #564 held open (`onboarding_audit` row contract for #417).
+
+On `deleteTenant`, consent/onboarding audit rows do **not** erase with the tenant. They are retained,
+content-free (no email, no actor — only `conversion:<kind>` and its timestamp), for **2 years** after
+erasure, then purged. Reasoning: the row carries no PII, so retaining it costs ~nothing on privacy, while
+erasing it removes the only evidence that consent was obtained right when a dispute is most likely to
+surface (complaint, chargeback, regulator inquiry) — which can occur well after a tenant deletes their
+account. 2 years is a practical window, not a specific statute; the exact period should be confirmed
+against counsel as part of #535 (public legal policy / outbound-compliance disclosures) rather than
+re-litigated per branch.
+
+This settles the branch #564's `d39a7d72` provisional `ALWAYS_RETAINED` + append-only trigger structure
+chose: that structure may now be treated as the settled default, not provisional.
+
 ## 2026-10-26: guessed email addresses (US only, verified only)
 
 Contacts may include a pattern-guessed business address (for example first.last@company.com) only when all of these hold:
