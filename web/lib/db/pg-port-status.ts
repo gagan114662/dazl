@@ -66,6 +66,8 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/ops/scheduler-runs.ts': 0,
   'lib/outreach/attribution.ts': 1,
   'lib/outreach/autopilot.ts': 3,
+  'lib/outreach/bounce-ledger.ts': 1,
+  'lib/outreach/bounce-scan.ts': 1,
   'lib/outreach/calibration.ts': 0,
   'lib/outreach/campaigns.ts': 0,
   'lib/outreach/contact-purpose-db.ts': 0,

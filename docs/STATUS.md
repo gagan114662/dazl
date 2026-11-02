@@ -134,6 +134,45 @@ Updated by the builder on every branch. Newest first.
   until the owner chooses a retention period (`AUDIT_RETENTION_DAYS`). Support access needs an owner decision.
 
 
+## Finish before new work (Instinct's 2026-11-02 verification after the zombie-PR cleanup: #455/#444/#467/#463/#464
+closed, their code shipped via #554/#552/#553/#556/#557, but none of the five issues below is fully verified
+complete — do not start new issues until each is closed or explicitly re-queued with what's still missing)
+
+1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Missing: the
+   customer-facing request flow, the completion UI, and operator controls.
+2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
+   default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
+   holds.
+3. #405 (calibrated launch / preflight): code shipped (ex-#467/#553) but inactive. Missing: activation, and proof
+   the "no routine hand-approvals" journey actually works end to end.
+4. #394 (agent evals / autonomous evaluation): the evaluation tooling shipped (ex-#463/#556). Missing: the complete
+   evaluation contract and at least one executed autonomous evaluation proving it.
+5. #371 (audit trail): most audit-event logging shipped (ex-#464/#557). Missing: remaining action coverage, and a
+   live check that a readable audit record actually comes out the other end.
+
+## Beat Gojiberry/Pancake (#393) — after the list above, in #393's own priority order
+
+2026-11-02 audit: of the 16 issues #393 scoped as required to actually beat Gojiberry/Pancake, only #378
+(scoreboard counts leads correctly) is closed — it fixes measurement, not the product. The other 15 are open
+and nothing in targeting, retrieval, contacts or ranking has shipped. The benchmark itself (#372) has never
+been run: `docs/STATUS.md` Score section above is last updated 2026-10-26, shows 0 verified qualified leads in
+every recorded run, and `scripts/scoreboard.mts` has never run with a real key. There is currently no evidence,
+formal or informal, that dazl beats either competitor. Work in this order (#393's own sequencing):
+
+1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
+2. #380 explicit AND/OR/NOT targeting with per-condition proof.
+3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
+4. #382 real Apollo-to-PDL enrichment fallback waterfall.
+5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
+6. #384 separate published provenance from deliverability/person-route status.
+7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop).
+8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+   advantages, start once 1-7 ship.
+9. #386 real lookalikes, #388 tested source coverage, #389 technographics, #390 first-party signals, #391
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
+    as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
+
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
 1. Decision-maker sources beyond the company site: GitHub org members for software companies (SEC Form D officers: in review, b/sec-officers). Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
