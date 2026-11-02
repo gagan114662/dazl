@@ -150,6 +150,29 @@ complete — do not start new issues until each is closed or explicitly re-queue
 5. #371 (audit trail): most audit-event logging shipped (ex-#464/#557). Missing: remaining action coverage, and a
    live check that a readable audit record actually comes out the other end.
 
+## Beat Gojiberry/Pancake (#393) — after the list above, in #393's own priority order
+
+2026-11-02 audit: of the 16 issues #393 scoped as required to actually beat Gojiberry/Pancake, only #378
+(scoreboard counts leads correctly) is closed — it fixes measurement, not the product. The other 15 are open
+and nothing in targeting, retrieval, contacts or ranking has shipped. The benchmark itself (#372) has never
+been run: `docs/STATUS.md` Score section above is last updated 2026-10-26, shows 0 verified qualified leads in
+every recorded run, and `scripts/scoreboard.mts` has never run with a real key. There is currently no evidence,
+formal or informal, that dazl beats either competitor. Work in this order (#393's own sequencing):
+
+1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
+2. #380 explicit AND/OR/NOT targeting with per-condition proof.
+3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
+4. #382 real Apollo-to-PDL enrichment fallback waterfall.
+5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
+6. #384 separate published provenance from deliverability/person-route status.
+7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop).
+8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+   advantages, start once 1-7 ship.
+9. #386 real lookalikes, #388 tested source coverage, #389 technographics, #390 first-party signals, #391
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
+    as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
+
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
 1. Decision-maker sources beyond the company site: GitHub org members for software companies (SEC Form D officers: in review, b/sec-officers). Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
