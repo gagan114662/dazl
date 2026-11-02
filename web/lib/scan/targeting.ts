@@ -12,7 +12,6 @@
 //     relative to another condition's event ("within 30 days of the raise").
 // Place, industry, size and buyer role stay with the gates that already enforce them (the verifier's place check, the ICP grade);
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
-import { requestedHiringRoles } from './hiring-role-match.ts'
 
 export type Truth = 'pass' | 'fail' | 'unknown'
 export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category'
@@ -231,32 +230,49 @@ export function planConditions(root: PlanNode | null): { cond: Condition; negate
   return out
 }
 
-// How the plan combines the event half and the sales-hiring half the sales-hiring gate checks.
-//   'and'       : the gate's existing rule (both halves), also the reading for anything this compiler cannot read;
-//   'or'        : the request explicitly says EITHER (event or funding OR hiring), so either half carries the lead;
-//   'plan_owns' : the request's hiring condition is not an open sales role (a completed hire, or hiring under a NOT): the targeting
-//                 gate proves it from source quotes and the open-role board check would be the wrong test.
-export function salesHiringCombination(query: string | null | undefined, icp?: string | null): 'and' | 'or' | 'plan_owns' {
-  const plan = compileTargeting(query, icp)
-  if (!plan.explicit || !plan.root) return 'and'
-  const conds = planConditions(plan.root)
-  const openHiring = conds.filter(c => c.cond.kind === 'hiring')
-  if (openHiring.length === 0 && conds.some(c => c.cond.kind === 'hire_made')) return 'plan_owns'
-  if (openHiring.length > 0 && openHiring.every(c => c.negated)) return 'plan_owns'
-  const r = plan.root
-  const trig = r.op === 'and' ? r.of.find(n => n.op === 'or') ?? null : r.op === 'or' ? r : null
-  if (trig && trig.op === 'or' && trig.of.every(n => n.op === 'cond') && trig.of.some(n => n.op === 'cond' && n.cond.kind === 'hiring') && trig.of.some(n => n.op === 'cond' && (n.cond.kind === 'funding' || n.cond.kind === 'event'))
-    && conds.filter(c => c.cond.kind === 'hiring' || c.cond.kind === 'funding' || c.cond.kind === 'event').every(c => trig.of.some(n => n.op === 'cond' && n.cond.id === c.cond.id))) return 'or'
-  return 'and'
-}
-
-// Roles the request names for an open-role condition, in the same shape the sales-hiring gate reads them.
-export const hiringRoleTerms = (query: string | null | undefined, icp?: string | null) => requestedHiringRoles(query, icp)
-
 // One line per condition for a card or a log: "C1 seed funding (within 90 days) AND C2 ...".
 export function describePlan(n: PlanNode | null): string {
   if (!n) return '(no targeting conditions)'
   if (n.op === 'cond') return `${n.cond.id} ${n.cond.text}${n.cond.within_days && n.cond.window_source !== 'clause' ? ` (within ${n.cond.within_days} days)` : ''}`
   if (n.op === 'not') return `NOT ${describePlan(n.of)}`
   return `(${n.of.map(describePlan).join(n.op === 'and' ? ' AND ' : ' OR ')})`
+}
+
+// ---- Evaluation: three-valued, clause by clause. ----
+// Each condition gets its own proof: 'pass' (a verified source shows it, inside its own clock), 'fail' (a verified fact rules it out) or 'unknown'
+// (nothing proves either way). Unknown is never read as false: NOT unknown is unknown, and only a plan that evaluates to 'pass' qualifies a lead.
+export interface ClauseProof { id: string; text: string; truth: Truth; negated: boolean; reason: string; source_url?: string; date?: string }
+export function combine(op: 'and' | 'or', xs: Truth[]): Truth {
+  if (op === 'and') return xs.includes('fail') ? 'fail' : xs.every(x => x === 'pass') ? 'pass' : 'unknown'
+  return xs.includes('pass') ? 'pass' : xs.every(x => x === 'fail') ? 'fail' : 'unknown'
+}
+export const negate = (t: Truth): Truth => t === 'pass' ? 'fail' : t === 'fail' ? 'pass' : 'unknown'
+export function evaluateNode(n: PlanNode | null, facts: Readonly<Record<string, Truth>>): Truth {
+  if (!n) return 'pass'   // no conditions: nothing for this gate to hold; the other gates still apply
+  if (n.op === 'cond') return facts[n.cond.id] ?? 'unknown'
+  if (n.op === 'not') return negate(evaluateNode(n.of, facts))
+  return combine(n.op, n.of.map(c => evaluateNode(c, facts)))
+}
+// The whole plan against per-condition proofs. `missing` lists, in order, every clause that is not yet in the direction the plan needs
+// (a positive condition that is not 'pass', a negated one that is not 'fail'), so a held lead says exactly what is missing.
+export function evaluatePlan(plan: QueryPlan, proofs: Readonly<Record<string, Omit<ClauseProof, 'id' | 'text' | 'negated'>>>): { truth: Truth; clauses: ClauseProof[]; missing: ClauseProof[] } {
+  const facts: Record<string, Truth> = {}
+  const clauses = planConditions(plan.root).map(({ cond, negated }) => {
+    const p = proofs[cond.id] ?? { truth: 'unknown' as Truth, reason: 'no verified source checked for this condition' }
+    facts[cond.id] = p.truth
+    return { id: cond.id, text: cond.text, negated, ...p }
+  })
+  const truth = evaluateNode(plan.root, facts)
+  return { truth, clauses, missing: truth === 'pass' ? [] : clauses.filter(c => c.truth !== (c.negated ? 'fail' : 'pass')) }
+}
+
+// Whether a text shows the event family (and object, when the request names one) a condition asks for: the same patterns the compiler reads.
+export function eventMatches(event: string | undefined, object: string | undefined, text: string): boolean {
+  const e = EVENTS.find(x => x.event === event)
+  if (!e) return false
+  for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
+    if (!object || !e.object) return true
+    if ((m[e.object] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return true
+  }
+  return false
 }
