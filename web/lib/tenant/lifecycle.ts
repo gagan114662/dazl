@@ -168,14 +168,15 @@ function validPolicy(p: DeletionPolicy | undefined, scope: Map<string, Scope>): 
 
 // Delete (or resume deleting) one tenant. `until` stops after a given state (staged deletion, and the tests' crash
 // points). `requestedAt` is the time of the original request when a deletion is re-applied from the ledger (default:
-// now). `lockTimeoutMs` (Postgres) bounds how long a step waits for the tenant's in-flight writers before giving up
-// with nothing changed (default 5 s). Returns the tombstone after the run.
+// now). `lockTimeoutMs` (Postgres) bounds how long the request and each step wait for the tenant's in-flight writers before
+// giving up with nothing changed (default 5 s). Returns the tombstone after the run.
 export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: DeletionPolicy; requestedBy?: string; now?: number; requestedAt?: number; until?: DeletionState; lockTimeoutMs?: number } = {}): Promise<Tombstone> {
   const db = asDb(d)
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   const cols = await tableColumns(db)
   let t = await tombstone(db, tenant)
+  const lockTimeoutMs = o.lockTimeoutMs ?? 5000
   if (t && o.policy) {
     // a second request must not silently resolve to the first one's policy: resume without a policy, or decide first
     const asked = JSON.stringify(validPolicy(o.policy, scope)), recorded = JSON.parse(t.policy) as DeletionPolicy
@@ -191,18 +192,26 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     if (unsatisfiable.length) throw new Error(`retention policy cannot be honoured: ${unsatisfiable.join('; ')}`)
     if (!o.requestedBy) throw new Error('requestedBy is required (who asked, for the audit record)')
     const requestedBy = o.requestedBy.slice(0, 200), requestedAt = o.requestedAt ?? now
-    await db.tx(function* (tx) {
-      yield* refuseSharedWorkspace(tx, cols, tenant)
-      yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
-        [tenant, requestedAt, requestedBy, JSON.stringify(policy)])
-      yield* closingEventTx(tx, tenant, requestedBy, 'tenant.deletion_requested', requestedAt)
-    })
+    try {
+      await db.tx(function* (tx) {
+        // the closing event takes the tenant's advisory lock (closingEventTx): bound that wait like a step's, or a
+        // hung writer of this tenant would block a new request indefinitely. On timeout the whole request rolls
+        // back: no tombstone, gate row or event survives.
+        if (tx.kind === 'pg') yield* tx.get("SELECT set_config('lock_timeout', ?, true)", [`${lockTimeoutMs}ms`])
+        yield* refuseSharedWorkspace(tx, cols, tenant)
+        yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
+          [tenant, requestedAt, requestedBy, JSON.stringify(policy)])
+        yield* closingEventTx(tx, tenant, requestedBy, 'tenant.deletion_requested', requestedAt)
+      })
+    } catch (e) {
+      if (/lock timeout/.test(e instanceof Error ? e.message : String(e))) throw new Error(`tenant deletion: the request waited ${lockTimeoutMs} ms for in-flight writes of this tenant and gave up; nothing changed, retry`, { cause: e })
+      throw e
+    }
     t = (await tombstone(db, tenant))!
   }
   const policy = JSON.parse(t.policy) as DeletionPolicy
   const retain = new Set([...(policy.retainTables ?? []), ...(policy.suppressions === 'retain' ? ['suppressions'] : []), ...Object.keys(ALWAYS_RETAINED)])
   const has = (x: string) => scope.has(x)
-  const lockTimeoutMs = o.lockTimeoutMs ?? 5000
   // One step: its statements and the state change commit together, or not at all. On Postgres a write for this tenant
   // that passed the guard before the tombstone committed can still be open when a step runs (READ COMMITTED waits for
   // nothing), and would commit after the step deleted around it. Every guard trigger holds a shared advisory lock on
