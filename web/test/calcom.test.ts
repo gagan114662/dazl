@@ -80,7 +80,15 @@ test('recordBooking: one address emailed for two leads stays unmatched (#364)', 
   seedOutreach(db, 'lead-Acme2', 'shared@acme.com')
   seedOutreach(db, 'lead-Acme3', 'shared@acme.com')
   assert.equal(await recordBooking(sqliteDb(db), 'u1', { uid: 'b1', email: 'shared@acme.com', name: null }), 'unmatched')
-  assert.ok(db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get().n === 0)
+  assert.ok((db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get() as { n: number }).n === 0)
+})
+
+test('recordBooking: an unsent draft row does not associate a booking - only actual mail counts (#364)', async () => {
+  const db = setup()
+  seedLead(db, null)
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('om-draft', 'u1', 'lead-Acme', 'draftonly@acme.com', 'Quick question', 'Saw your site and had one idea for it.', 'draft')").run()
+  assert.equal(await recordBooking(sqliteDb(db), 'u1', { uid: 'b1', email: 'draftonly@acme.com', name: null }), 'unmatched')
+  assert.ok((db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get() as { n: number }).n === 0)
 })
 
 test('recordBooking: conflicting sources stay unmatched - emailed for one lead, contact of another (#364)', async () => {
@@ -89,7 +97,7 @@ test('recordBooking: conflicting sources stay unmatched - emailed for one lead, 
   seedLead(db, null, 'Acme3')
   seedOutreach(db, 'lead-Acme3', 'jane@acme.com') // but emailed for the other lead
   assert.equal(await recordBooking(sqliteDb(db), 'u1', { uid: 'b1', email: 'jane@acme.com', name: null }), 'unmatched')
-  assert.ok(db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get().n === 0)
+  assert.ok((db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get() as { n: number }).n === 0)
 })
 
 test('recordBooking: no match and ambiguous match stay unmatched, never guessed', async () => {
