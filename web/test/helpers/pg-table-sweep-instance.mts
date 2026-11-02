@@ -126,19 +126,48 @@ const sweep = async () => {
   }
 }
 // Anything of the other tenant's in a response that the caller did not send itself: a token carrying the other
-// tenant's tag, or its tenant id echoed beyond this call's own id. A token is excused only when (a) this very call
-// sent it (a route echoing what it was given leaks nothing), or (b) the response itself carries the caller's own
-// tenant identity AND the exact token is present in the caller's own current rows - a value the caller's own writes
-// stored (a monitor domain it was handed), returned in the caller's own-data context. A foreign token anywhere else
-// is a leak. Residual, for the reviewer: a foreign row bundled into an own-identity response, carrying only a token
-// the caller also stored and omitting its own tenant_id, is indistinguishable from the caller's copy by content.
+// tenant's tag, or its tenant id echoed beyond this call's own id. Ownership is judged PER ENCLOSING ROW OBJECT,
+// never from the whole response: a token is excused only when (a) this very call sent it (a route echoing what it
+// was given leaks nothing), or (b) the row object carrying it self-identifies as the caller's (a tenant identity
+// field equal to this tenant) AND the exact token is present in the caller's own current rows. A token in a row
+// with no caller identity - including a foreign row that omits its tenant_id while the caller happens to have stored
+// the same string - is a leak; so is any token in a non-JSON response beyond the call's own echo.
+const ID_KEYS = [...TENANT_COLUMNS, 'tenant']
+// The (object, key, value) scopes of every string carrying the other tenant's tag in a JSON response: ownership is
+// judged per enclosing row object, never from the whole response. null when the response is not JSON.
+const tagScopes = (plain: string): Record<string, unknown>[] | null => {
+  let doc: unknown
+  try { doc = JSON.parse(plain) } catch { return null }
+  const out: Record<string, unknown>[] = []
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) { for (const v of x) walk(v); return }
+    if (x && typeof x === 'object') {
+      let has = false
+      for (const v of Object.values(x)) if (typeof v === 'string' && v.includes(otherTag)) has = true
+      if (has) out.push(x as Record<string, unknown>)
+      for (const v of Object.values(x)) walk(v)
+    }
+  }
+  walk(doc)
+  return out
+}
+const tokensOf = (x: string) => [...x.matchAll(new RegExp(`[A-Za-z0-9_.~-]*${otherTag}[A-Za-z0-9_.~-]*`, 'g'))].map(m => m[0])
 const leak = async (text: string, sent: string | null) => {
   const plain = text.replace(/\\u007e|%7E/gi, '~')
   if (plain.includes(other.tenant) && !(sent ?? '').includes(other.tenant)) return true
-  for (const m of plain.matchAll(new RegExp(`[A-Za-z0-9_.~-]*${otherTag}[A-Za-z0-9_.~-]*`, 'g'))) {
-    if ((sent ?? '').includes(m[0])) continue
-    if (plain.includes(me) && (await own()).includes(m[0])) continue
-    return true
+  if (!plain.includes(otherTag)) return false
+  const scopes = tagScopes(plain)
+  if (scopes === null) return tokensOf(plain).some(tok => !(sent ?? '').includes(tok))   // no row structure: echo only
+  for (const obj of scopes) {
+    const id = ID_KEYS.map(k => obj[k]).find((v): v is string => typeof v === 'string')
+    for (const v of Object.values(obj)) {
+      if (typeof v !== 'string') continue
+      for (const tok of tokensOf(v)) {
+        if ((sent ?? '').includes(tok)) continue                    // (a) this very call's echo
+        if (id === me && (await own()).includes(tok)) continue     // (b) the row self-identifies as the caller's AND the value is in its rows
+        return true                                                 // (c) foreign or unidentified row: leak
+      }
+    }
   }
   return false
 }
@@ -153,11 +182,12 @@ const phase = async (sweeping: boolean, n: number) => {
 await phase(first, 1)
 await phase(!first, 2)
 
-// detector self-test, every run: red plants must be caught; the caller's own stored marker in its own-identity
-// response must not be; a value that has LEFT the caller's rows is foreign again.
+// detector self-test, every run: the red plants must be caught, the caller's own identified row must pass.
 {
   const redToken = `${otherTag}~redplant-${tag}`
+  // R1: unsent, unstored foreign token, no row identity
   if (!(await leak(JSON.stringify({ domain: redToken }), null))) violations.push(`detector red plant NOT caught: unsent unstored foreign token excused`)
+  // R2: foreign tenant identity
   if (!(await leak(JSON.stringify({ tenant_id: other.tenant }), null))) violations.push(`detector red plant NOT caught: foreign tenant identity excused`)
   const planted = `${otherTag}~selfstored-${tag}`
   const tts = await tenantTables(db)
@@ -169,10 +199,16 @@ await phase(!first, 2)
     const prev = (await db.get<{ v: string }>(`SELECT ${textCol} AS v FROM ${t} WHERE ${tenantCol} = ? LIMIT 1`, [me]))!.v
     await db.run(`UPDATE ${t} SET ${textCol} = ? WHERE ${tenantCol} = ?`, [planted, me])
     ownRows = null
-    if (await leak(JSON.stringify({ tenant: me, rows: [{ [textCol]: planted }] }), null)) violations.push(`detector false positive: caller's own stored value in its own-identity response flagged`)
+    // L1: the caller's own row, self-identified, carrying its own stored value: NOT a leak
+    if (await leak(JSON.stringify({ tenant: me, tables: { [t]: [{ [tenantCol]: me, [textCol]: planted }] } }), null)) violations.push(`detector false positive: caller's own identified row flagged`)
+    // R3: a foreign row carrying the other tenant's id, bundled into an own-identity export
+    if (!(await leak(JSON.stringify({ tenant: me, tables: { [t]: [{ [tenantCol]: me, [textCol]: planted }, { [tenantCol]: other.tenant, [textCol]: `${otherTag}~other-row` }] } }), null))) violations.push(`detector red plant NOT caught: identified foreign row bundled into own export excused`)
+    // R4: the collision case - a foreign row OMITTING its id, carrying a token the caller also stored
+    if (!(await leak(JSON.stringify({ tenant: me, tables: { [t]: [{ [tenantCol]: me, [textCol]: prev }, { [textCol]: planted }] } }), null))) violations.push(`detector red plant NOT caught: unidentified foreign row with colliding own-stored token excused`)
     await db.run(`UPDATE ${t} SET ${textCol} = ? WHERE ${tenantCol} = ?`, [prev, me])
     ownRows = null
-    if (!(await leak(JSON.stringify({ tenant: me, rows: [{ [textCol]: planted }] }), null))) violations.push(`detector provenance wrong: value excused after it left the caller's own rows`)
+    // R5: once the value has left the caller's rows it is foreign again
+    if (!(await leak(JSON.stringify({ tenant: me, tables: { [t]: [{ [tenantCol]: me, [textCol]: planted }] } }), null))) violations.push(`detector provenance wrong: value excused after it left the caller's rows`)
   }
 }
 
