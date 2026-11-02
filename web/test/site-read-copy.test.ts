@@ -30,7 +30,7 @@ test('site read reason copy: each refusal says the real reason, the account coun
   assert.equal(siteKeyReason('spend_unavailable'), `The free trial could not fund this read just now; nothing was used up. Try again later. ${OWN}`)
   assert.doesNotMatch(siteKeyReason('spend_unavailable'), /used your|used up\. ${''}/)
   // A funded read that failed DID count: the reason says it failed and offers the manual path, never "nothing used".
-  assert.equal(siteKeyReason('read_failed'), "dazl's free trial could not read your site just now. Try again, or describe your business yourself.")
+  assert.equal(siteKeyReason('read_failed'), "dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another, or describe your business yourself.")
   assert.doesNotMatch(siteKeyReason('read_failed'), /nothing was used|used up\./)
   // No trial reason at all (an account with its own key, or an unknown reason): the key is the way, nothing free promised.
   for (const r of [null, 'something_new']) { assert.equal(siteKeyReason(r), 'Reading your site runs on your own Anthropic or OpenAI key.'); assert.doesNotMatch(siteKeyReason(r), /free/) }

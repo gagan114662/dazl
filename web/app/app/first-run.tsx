@@ -35,6 +35,8 @@ const SITE_ERR: Record<string, string> = {
   js_only: 'We could not read enough text from that page (it may need JavaScript). Try your about page, or fill in the profile yourself.',
   not_html: 'We could not read enough text from that page. Try your about page, or fill in the profile yourself.',
   blocked: 'That site did not let us read it. Fill in the profile yourself instead.', timeout: 'That site took too long to answer. Try again, or fill in the profile yourself.',
+  // A 429 spend_limit is a money cap, not a rate cap: say so (the route's own message, app/api/scan/icp-from-url).
+  spend_limit: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.',
 }
 
 // First run on Home: website -> editable "what you sell and who buys it" -> one sentence (3 suggested plays) -> Run.
@@ -301,10 +303,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   <ul className="mt-5 space-y-3 text-[15px]">
                     {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
                   </ul>
-                  {needKey && !hasKey && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
+                  {/* Keyless with no trial searches: the key form is up front, before any commitment - the CTA below
+                      does not promise a search this account cannot start (the server fails closed, but the button
+                      must not rely on that). A trial account (trialLeft > 0) keeps the plain CTA. */}
+                  {!hasKey && (needKey || (usage !== null && trialLeft === 0)) && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
-                    {!first ? <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
+                    {!first ? (!hasKey && usage !== null && trialLeft === 0 ? null
+                      : <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>)
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
                       // With leads on the ready bar, reaching out starts here: review them one by one (the review step).
                       : (f5 ? f5Ready > 0 : first.status === 'done' && (ready?.length ?? 0) > 0) ? <button type="button" className="btn-primary btn-lg w-full justify-center" onClick={() => setStep('review')} data-testid="ready-cta">Start reaching out</button>

@@ -3,12 +3,13 @@
 // Production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed in the browser:
 // no site fetch, no model call, no scan. (The trial-funded read itself is test/icp-from-site.test.ts and
 // test/trial-site-read.test.ts; the trial path to the first lead card is test/ui/one-sentence.ui.mjs.) It proves:
-//   1. the free read ALWAYS answers - the page's own facts render with their sources (the floor);
+//   1. on a readable page, below the route's own rate limit, the free read always answers 200 - the page's own
+//      facts render with their sources (the floor);
 //   2. when the trial could not fund the read, the key form says the real reason (each refusal, read_failed included),
 //      never a free-start promise, and the manual profile is right there;
 //   3. flag off / no trial path at all: the free read with the generic key line;
 //   4. a funded read lands the editable draft (and saves it, as a keyed read does);
-//   5. an owner-side error (spend_limit) keeps main's 429 fallback copy; 6. no horizontal overflow at 390px.
+//   5. an owner-side 429 spend_limit shows the money-cap copy, never the rate-cap fallback; 6. no overflow at 390px.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -51,11 +52,11 @@ const CASES = [
   ['workspace', 'workspace_not_eligible', `The free trial belongs to the account that created this workspace. ${OWN}`],
   // The port's two new reasons: guard refused before any call (nothing used); the funded call failed (that read counted).
   ['spend-unavailable', 'spend_unavailable', `The free trial could not fund this read just now; nothing was used up. Try again later. ${OWN}`],
-  ['read-failed', 'read_failed', `dazl's free trial could not read your site just now. Try again, or describe your business yourself.`],
+  ['read-failed', 'read_failed', `dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another, or describe your business yourself.`],
 ]
 const FUNDED = { icp: { summary: 'Founders at small agencies that want hands-off books.', who: ['Agency founders'], industries: ['Professional services'], sizes: ['1-10'], where: [], signals: ['Hiring a bookkeeper'], exclude: [] }, source: 'https://ledgerline.example/', sells: 'Hands-off monthly bookkeeping', funded: 'trial' }
 const b = await chromium.launch()
-async function open(width, height, answer) {
+async function open(width, height, answer, usage) {
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
@@ -68,7 +69,7 @@ async function open(width, height, answer) {
     if (p === '/api/scan/icp-from-url') return json(answer.body, answer.status)
     if (p === '/api/settings/profile' && m === 'GET') return json({ business_name: '', sells: '', website: '', buyer: null })
     if (p === '/api/settings/profile' && m === 'POST') return json({ ok: true })
-    if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 0, cap: 3, blocked: 'not_configured' } })
+    if (p === '/api/usage') return json(usage ?? { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 0, cap: 3, blocked: 'not_configured' } })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     return json({}, 404)
   })
@@ -106,25 +107,41 @@ try {
     }
     // A funded read: the editable draft lands and is saved exactly as read (the same POST a keyed read makes).
     {
-      const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED })
+      // A funded trial read leaves the scan trial intact (reads never consume scans): the account still has its
+      // three trial searches, so the ready step must say so - not 'Add your AI key to start'.
+      const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED }, { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } })
       await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
+      assert.match(await page.getByTestId('ready-step').innerText(), /3 free searches to start/, 'funded: the intact scan trial heads the ready step')
       assert.ok(writes.includes('POST /api/settings/profile'), 'the funded draft is saved like a keyed read')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `funded-${tag}.png`), fullPage: true })
+      await ctx.close()
+    }
+    // A funded read by an account whose scan trial is spent lands on ready with no key and no trial searches left:
+    // the key form is up front and there is no bare 'Find my first leads' button to fail closed behind.
+    {
+      const { ctx, page } = await open(width, height, { status: 200, body: FUNDED }, { plan: 'free', scans_used: 3, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 0, cap: 3, blocked: null } })
+      await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
+      const plan = await page.getByTestId('ready-plan').innerText()
+      assert.match(plan, /Add your AI key to start/, 'keyless, trial spent: the heading says so')
+      assert.match(plan, /Searches run on your own Anthropic or OpenAI key\./, 'keyless, trial spent: the key form is up front, before any commitment')
+      assert.equal(await page.getByTestId('ready-cta').count(), 0, 'keyless, trial spent: no bare Find-my-first-leads button')
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyless-${tag}.png`), fullPage: true })
       await ctx.close()
     }
     // An owner-side error keeps main's own copy (nothing trial-flavored, no key blame).
     {
       const { ctx, page } = await open(width, height, { status: 429, body: { error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' } })
-      // main's copy for an owner-side 429 is the generic fallback (knownErrorCopy has no spend_limit entry); the
-      // Next route announcer also carries role=alert, so scope to the site step.
+      // A 429 spend_limit is a money cap, not 'too many reads' (the port's SITE_ERR entry, the route's own message);
+      // the Next route announcer also carries role=alert, so scope to the site step.
       const alert = page.getByTestId('site-step').getByRole('alert')
       await alert.waitFor({ timeout: 15000 })
-      assert.match(await alert.innerText(), /Too many website reads\. Try again later/, 'spend_limit: main copy')
+      assert.match(await alert.innerText(), /AI spend limit/, 'spend_limit: the money-cap copy, not a rate-cap line')
+      assert.doesNotMatch(await alert.innerText(), /Too many website reads/, 'spend_limit: never the rate-cap fallback')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `spend-limit-${tag}.png`), fullPage: true })
       await ctx.close()
     }
   }
-  console.log(`site trial UI check passed: free-read floor with facts for each of the ${CASES.length} reasons (incl. spend_unavailable and read_failed), flag-off generic line, funded draft lands and saves, spend_limit keeps main copy, desktop + 390px`)
+  console.log(`site trial UI check passed: free-read floor with facts for each of the ${CASES.length} reasons (incl. spend_unavailable and read_failed), flag-off generic line, funded draft lands and saves, keyless/no-trial ready shows the key form up front, spend_limit money-cap copy, desktop + 390px`)
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

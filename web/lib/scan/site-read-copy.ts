@@ -18,7 +18,8 @@ export function siteKeyReason(why: string | null): string {
   if (why === 'ip_throttle' || why === 'global_daily_cap' || why === 'site_reads_busy' || why === 'limit_unavailable') return `The free trial is busy right now. Try again later. ${own}`
   // The read's own spend guard refused before any call: nothing was spent and nothing was used up.
   if (why === 'spend_unavailable') return `The free trial could not fund this read just now; nothing was used up. Try again later. ${own}`
-  // The funded read ran and failed: that read counted, so the copy never urges a blind retry.
-  if (why === 'read_failed') return `dazl's free trial could not read your site just now. Try again, or describe your business yourself.`
+  // The funded read ran and failed: that read counted toward the three, so the copy says what it cost and never
+  // urges a blind retry (a retry is another read of the three).
+  if (why === 'read_failed') return `dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another, or describe your business yourself.`
   return 'Reading your site runs on your own Anthropic or OpenAI key.'
 }
