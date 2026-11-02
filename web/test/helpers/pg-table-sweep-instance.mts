@@ -119,7 +119,7 @@ const sweep = async () => {
       const res = await call(jar, r, id, action)
       calls.total++
       if (r.method !== 'GET' && res.status >= 200 && res.status < 300) ownRows = null
-      if (await leak(res.text, id)) violations.push(`${key}${action ? ` ${action}` : ''} ${id ?? '(no id)'} -> ${res.status}: ${res.text.slice(0, 300)}`)
+      if (await leak(res.text, id)) violations.push(`${key}${action ? ` ${action}` : ''} ${id ?? '(no id)'} -> ${res.status} [${leakWhy}]: ${res.text.slice(0, 300)}`)
       else calls.refusedOrEmpty++
       if (r.method !== 'GET' && status[key] !== 'ok') status[key] = res.status > 0 && res.status < 500 ? 'ok' : SQLITE.test(res.text + res.log) || status[key] === 'sqlite' ? 'sqlite' : 'error'
     }
@@ -152,19 +152,23 @@ const tagScopes = (plain: string): Record<string, unknown>[] | null => {
   return out
 }
 const tokensOf = (x: string) => [...x.matchAll(new RegExp(`[A-Za-z0-9_.~-]*${otherTag}[A-Za-z0-9_.~-]*`, 'g'))].map(m => m[0])
+// diagnostics for the last leak() verdict: which branch fired, the exact token, and the row that carried it
+let leakWhy = ''
 const leak = async (text: string, sent: string | null) => {
+  leakWhy = ''
   const plain = text.replace(/\\u007e|%7E/gi, '~')
-  if (plain.includes(other.tenant) && !(sent ?? '').includes(other.tenant)) return true
+  if (plain.includes(other.tenant) && !(sent ?? '').includes(other.tenant)) { leakWhy = `branch=tenant-identity token=${other.tenant}`; return true }
   if (!plain.includes(otherTag)) return false
   const scopes = tagScopes(plain)
-  if (scopes === null) return tokensOf(plain).some(tok => !(sent ?? '').includes(tok))   // no row structure: echo only
+  if (scopes === null) { const tok = tokensOf(plain).find(t => !(sent ?? '').includes(t)); if (tok) leakWhy = `branch=unstructured token=${tok}`; return !!tok }   // no row structure: echo only
   for (const obj of scopes) {
     const id = ID_KEYS.map(k => obj[k]).find((v): v is string => typeof v === 'string')
-    for (const v of Object.values(obj)) {
+    for (const [k, v] of Object.entries(obj)) {
       if (typeof v !== 'string') continue
       for (const tok of tokensOf(v)) {
         if ((sent ?? '').includes(tok)) continue                    // (a) this very call's echo
         if (id === me && (await own()).includes(tok)) continue     // (b) the row self-identifies as the caller's AND the value is in its rows
+        leakWhy = `branch=row token=${tok} key=${k} rowIdentity=${id ?? 'NONE'} rowKeys=${Object.keys(obj).join(',')} row=${JSON.stringify(obj).slice(0, 300)} inOwnRows=${id === me ? (await own()).includes(tok) : 'n/a'}`
         return true                                                 // (c) foreign or unidentified row: leak
       }
     }
