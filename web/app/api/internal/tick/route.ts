@@ -143,8 +143,8 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let sessionsReaped = 0
   try { sessionsReaped = (await reapAccountHistory(shared, { fence })).sessions } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:sessions', requestId }) }
   // Captured scan traces (lib/evals/capture.ts): every tenant's rows older than DAZL_TRACE_RETENTION_DAYS are deleted,
-  // but only when capture is on or a retention was set explicitly; with capture unset, off or misconfigured nothing is
-  // deleted (traces_purged: 0). At most PURGE_LIMIT (500) rows per tick, oldest first, under the lease's fence like the
+  // but only under an explicit valid retention - capture on alone purges nothing (retention hold); with capture unset,
+  // off, on alone, or misconfigured nothing is deleted (traces_purged: 0). At most PURGE_LIMIT (500) rows per tick, oldest first, under the lease's fence like the
   // session reap: a lost lease deletes nothing and stops the tick. Otherwise best-effort: a failure never stops the tick.
   let tracesPurged = 0
   await lease.keep()

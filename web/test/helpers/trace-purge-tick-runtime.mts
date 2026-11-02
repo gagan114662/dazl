@@ -36,6 +36,7 @@ if (process.env.TRACE_PURGE_TICK_ENGINE === 'pg') {
   await runPgMigrations(pg.pool)
   setDb(pg)
   drop = async () => { await pg.close(); await s.drop() }
+  assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb') // pg-fixture-honesty
 }
 const shared: Db = await getDb()
 after(async () => { await drop?.() })
