@@ -10,6 +10,7 @@ Required (`/api/ready` answers 503 until every one is set and well-formed, so `o
 - `STRIPE_SECRET_KEY` - sk_test_ until you go live, then sk_live_
 - `STRIPE_PRICE_PRO` - the Pro price ID (copy it from the Stripe dashboard)
 - `STRIPE_WEBHOOK_SECRET` - whsec_ for https://dazl.ai/api/billing/webhook (or https://dazl.ai/api/stripe, the same handler)
+Account deletion (#359): `DAZL_TOMBSTONE_LEDGER` - an append-only file outside the database and backup directories (for example /var/lib/dazl-ledger/tombstones.jsonl, app user only); keep a copy off-host with the backups (the `ops/backup` units do not copy it yet). Unset = the settings page refuses account deletion (503); export still works. docs/TENANT-LIFECYCLE.md.
 Optional: `OPS_ALERT_WEBHOOK_URL` (https; receives each scrubbed error record, throttled; see `lib/ops/errors.ts`), `SENTRY_DSN` (https; the same records as Sentry events, throttled; `SENTRY_ENVIRONMENT` optional), `DAZL_SCAN_SHARED_QUEUE` (`1` claims scans through the shared work queue, `lib/queue/scan-claimer.ts`; default off, see docs/PLATFORM.md), `SCAN_MAX_CONCURRENT` (3), `SCAN_RENDER_URL` and `SCAN_RENDER_TOKEN` (separate renderer container only), `DAZL_ANTHROPIC_MODEL`, `DAZL_OPENAI_MODEL`, `SCAN_STALE_RUNNING_S`, `SCAN_PAGE_TIMEOUT_MS`, `SCAN_LLM_TIMEOUT_MS`, `SCAN_MAX_AGE_DAYS`.
 Not used in this release: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Gmail is PR #13, separate).
 

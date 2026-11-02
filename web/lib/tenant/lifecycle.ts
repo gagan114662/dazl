@@ -25,8 +25,8 @@
 //
 // Backups: a restore brings back rows deleted after the backup was taken, and loses tombstones written since.
 // tombstoneLedgerEntry() is the off-database record of a deletion and reapplyTombstones() re-runs every ledgered
-// deletion on a restored store; both are library functions in this part: nothing writes the line or calls the
-// re-application yet (the request flow and the recovery runbook of part 2 do; docs/TENANT-LIFECYCLE.md).
+// deletion on a restored store. The request flow writes the line (lib/tenant/ledger.ts) before any data step, and the
+// recovery plan re-applies it (scripts/tenant-lifecycle.mts --reapply; docs/TENANT-LIFECYCLE.md, docs/RECOVERY.md).
 //
 // No retention policy is decided here: deleteTenant() takes the policy as an argument and refuses to run without an
 // explicit decision on opt-outs (suppressions). The owner's decisions are listed in docs/TENANT-LIFECYCLE.md.

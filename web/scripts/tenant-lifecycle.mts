@@ -5,13 +5,15 @@
 //   ... --reapply --ledger <file of ledger lines> [--execute]
 //
 // --list prints every tombstone (state, requester, retained counts). --resume drives a stalled deletion to
-// completion under its recorded policy (DRY RUN without --execute prints the current state only). --reapply
+// completion under its recorded policy, after making sure its line is in the off-database ledger (DAZL_TOMBSTONE_LEDGER,
+// lib/tenant/ledger.ts; refused without it) (DRY RUN without --execute prints the current state only). --reapply
 // re-runs the off-database ledger after a restore; a restored store must not serve until every line applies.
 import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { deleteTenant, reapplyTombstones, tombstone, TombstoneReapplyError } from '../lib/tenant/lifecycle.ts'
+import { ensureLedgered } from '../lib/tenant/ledger.ts'
 
 const arg = (n: string) => { const i = process.argv.indexOf(`--${n}`); return i > 0 ? process.argv[i + 1] : undefined }
 const file = process.env.DAZL_DB_PATH
@@ -27,12 +29,13 @@ try {
   if (process.argv.includes('--resume')) {
     const tenant = arg('tenant') ?? '', confirm = arg('confirm') ?? '', operator = arg('operator') ?? ''
     if (!tenant || tenant !== confirm) { console.error('--tenant and --confirm must both name the tenant exactly'); process.exit(2) }
-    if (!operator) { console.error('--operator "<your name>" is required (the audit record names who resumed)'); process.exit(2) }
+    if (!operator) { console.error('--operator "<your name>" is required (printed with the result for the operator log; the tenant audit trail is closed to new events once deletion is requested)'); process.exit(2) }
     const t = await tombstone(db, tenant)
     if (!t) { console.error('no deletion is recorded for this tenant'); process.exit(1) }
-    if (!execute) { console.log(JSON.stringify({ dryRun: true, state: t.state, policy: JSON.parse(t.policy) })); console.log('dry run: nothing changed. Re-run with --execute to resume.'); process.exit(0) }
+    if (!execute) { console.log(JSON.stringify({ dryRun: true, operator, state: t.state, policy: JSON.parse(t.policy) })); console.log('dry run: nothing changed. Re-run with --execute to resume.'); process.exit(0) }
+    ensureLedgered(t) // no data step runs for a deletion a restore could undo
     const done = await deleteTenant(db, tenant) // resumes under the recorded policy
-    console.log(JSON.stringify({ state: done.state, retained: done.retained ? JSON.parse(done.retained) : null, completed_at: done.completed_at }))
+    console.log(JSON.stringify({ operator, state: done.state, retained: done.retained ? JSON.parse(done.retained) : null, completed_at: done.completed_at }))
     process.exit(done.state === 'completed' ? 0 : 1)
   }
   if (process.argv.includes('--reapply')) {

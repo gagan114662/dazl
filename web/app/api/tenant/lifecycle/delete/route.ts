@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied, stale } from '@/lib/workspace-access'
 import { deleteTenant, tombstone, ALWAYS_RETAINED } from '@/lib/tenant/lifecycle'
+import { ensureLedgered, ledgerPath } from '@/lib/tenant/ledger'
 import { captureError } from '@/lib/ops/errors'
 
 // Request (or resume) deletion of the whole account. Owner role only, fresh sign-in, and the confirmation must
@@ -23,16 +24,23 @@ export async function POST(req: NextRequest) {
   const existing = await tombstone(db, user.tenantId)
   const sup = body?.suppressions
   if (!existing && sup !== 'retain' && sup !== 'erase') return NextResponse.json({ error: 'suppressions must be "retain" or "erase"' }, { status: 400 })
+  // A deletion a restored backup could silently undo is not offered: without the off-database ledger nothing is written.
+  if (!ledgerPath()) return NextResponse.json({ error: 'Account deletion is not available yet. Contact support to delete this account.' }, { status: 503 })
   try {
-    const t = existing
-      ? await deleteTenant(db, user.tenantId) // resume: the recorded policy holds; a second one must not silently replace it
-      : await deleteTenant(db, user.tenantId, {
-          requestedBy: `user:${user.actorId}`,
-          policy: {
-            suppressions: sup as 'retain' | 'erase',
-            retainTables: Array.isArray(body?.retain_tables) ? body.retain_tables.filter((x: unknown) => typeof x === 'string').slice(0, 20) : undefined,
-          },
-        })
+    // 1. the tombstone alone (from here nothing new can be written for this tenant); a resume keeps the recorded
+    //    policy, since a second one must not silently replace it
+    const requested = existing ?? await deleteTenant(db, user.tenantId, {
+      until: 'requested',
+      requestedBy: `user:${user.actorId}`,
+      policy: {
+        suppressions: sup as 'retain' | 'erase',
+        retainTables: Array.isArray(body?.retain_tables) ? body.retain_tables.filter((x: unknown) => typeof x === 'string').slice(0, 20) : undefined,
+      },
+    })
+    // 2. the off-database ledger line, before any data step: no data is erased for a deletion a restore would undo
+    ensureLedgered(requested)
+    // 3. the data steps, resumed under the recorded policy
+    const t = await deleteTenant(db, user.tenantId)
     return NextResponse.json({ ok: true, state: t.state, retained: t.retained ? JSON.parse(t.retained) : null, completed_at: t.completed_at, always_retained: Object.keys(ALWAYS_RETAINED) })
   } catch (e) {
     // driver/SQL details never reach the client; the full error goes to the server error record

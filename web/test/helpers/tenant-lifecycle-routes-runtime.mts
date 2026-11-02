@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
@@ -13,9 +13,13 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { seedTenantSqlite, snapshotSqlite } from './tenant-seed-sqlite.ts'
+import { sqliteDb } from '../../lib/db/client.ts'
+import { reapplyTombstones, tombstone } from '../../lib/tenant/lifecycle.ts'
 
 process.env.DB_PATH ??= path.join(mkdtempSync(path.join(tmpdir(), 'dazl-lifecycle-')), 'app.db')
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
+const LEDGER = path.join(mkdtempSync(path.join(tmpdir(), 'dazl-ledger-')), 'tombstones.jsonl')
+delete process.env.DAZL_TOMBSTONE_LEDGER
 
 const lifecycle = await import('../../app/api/tenant/lifecycle/route.ts')
 const exportRoute = await import('../../app/api/tenant/lifecycle/export/route.ts')
@@ -67,12 +71,34 @@ test('tenant lifecycle routes: request flow, gates, and isolation', async () => 
   setUser({ id: A, business_name: 'Acme' })
   assert.equal((await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: 'not-the-tenant', suppressions: 'retain' }))).status, 400, 'the confirmation must name the session tenant')
   assert.equal((await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A }))).status, 400, 'the opt-out policy choice is required')
+  // no off-database ledger configured: refused before anything is written (a restore could undo the deletion)
+  const off = await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A, suppressions: 'retain' }))
+  assert.equal(off.status, 503)
+  assert.equal(await tombstone(sqliteDb(db), A), undefined, 'no tombstone without the ledger')
+  assert.ok(gj.tables.leads === (await (await lifecycle.GET()).json()).tables.leads, 'nothing of A was touched')
+  process.env.DAZL_TOMBSTONE_LEDGER = LEDGER
+  const backup = db.serialize() // a backup taken before the deletion
   const del = await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A, suppressions: 'retain' }))
   const dj = await del.json()
   assert.equal(del.status, 200, JSON.stringify(dj)); assert.equal(dj.state, 'completed')
   assert.ok(dj.retained.suppressions > 0, 'the opt-out list is kept under the chosen policy')
   assert.equal((db.prepare('SELECT count(*) AS n FROM users WHERE id = ?').get(A) as { n: number }).n, 0, 'A is gone')
   assert.equal((db.prepare("SELECT count(*) AS n FROM audit_events WHERE action = 'tenant.deletion_completed' AND tenant_id = ?").get(A) as { n: number }).n, 1, 'the completion is audited')
+
+  // the request wrote one off-database ledger line (no tenant data); a resume of a completed deletion adds none
+  const lines = readFileSync(LEDGER, 'utf8').split(/\n/).filter(Boolean)
+  assert.equal(lines.length, 1); assert.equal(JSON.parse(lines[0]).deleted_tenant, A); assert.ok(!lines[0].includes('ta~'), 'the ledger line carries no tenant data')
+  assert.equal((await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A }))).status, 200, 'resuming a completed deletion is a no-op')
+  assert.equal(readFileSync(LEDGER, 'utf8').split(/\n/).filter(Boolean).length, 1, 'the line is written once')
+  // restored backup: the pre-deletion copy has A back and no tombstone; the route-written ledger re-applies it
+  const restored = new Database(backup); migrateAllSqlite(restored)
+  assert.ok(Number((restored.prepare('SELECT count(*) AS n FROM users WHERE id = ?').get(A) as { n: number }).n) === 1, 'the restore brought A back')
+  const bRestored = snapshotSqlite(restored, B)
+  assert.deepEqual(await reapplyTombstones(sqliteDb(restored), lines), [{ tenant: A, state: 'completed' }])
+  assert.equal((restored.prepare('SELECT count(*) AS n FROM users WHERE id = ?').get(A) as { n: number }).n, 0, 'A is gone again after the re-application')
+  assert.equal((restored.prepare('SELECT count(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ?').get(A) as { n: number }).n, 0)
+  assert.deepEqual(snapshotSqlite(restored, B), bRestored, 'the re-application did not touch B')
+  restored.close()
 
   // GET after completion: the UI reads state, retained counts and the policy exception
   const g2 = await (await lifecycle.GET()).json()
