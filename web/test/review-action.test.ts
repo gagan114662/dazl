@@ -51,3 +51,19 @@ test('not held: date problems vouch for the date; others are confirmed by you, n
     assert.match(a.hint, /confirmed by you \(never shown as source-checked\), and it can be drafted\. The other draft checks still apply\./)
   }
 })
+
+// Instinct, #352 post-deploy: Home called a different-place lead research ("checking cannot make it ready") while its card offered
+// "I checked the source - use it ... it can be drafted". The card now uses the same research classification as Home (lib/lead-state.ts).
+test('#352: someone else\'s customer, a different place, a closed opening: Keep as research, never an offer to draft, matching the home journey', async () => {
+  const { heldState } = await import('../lib/lead-state.ts')
+  const cause: Record<string, RegExp> = { counterparty_signal: /only another company's page names it, as their customer/, location_mismatch: /evidence names a different place/, job_closed: /the opening is closed/ }
+  for (const r of Object.keys(cause)) {
+    const l = { review_reason: r, window_held: false, event_date: '2026-10-01', date_status: 'verified', confidence: null }
+    assert.equal(heldState(l as never)?.state, 'research', r)
+    const a = act(l)
+    assert.equal(a.label, 'Keep as research', r)
+    assert.match(a.hint, cause[r], r)
+    assert.match(a.hint, /which checking the source cannot change, so it stays out of drafting\.$/, r)
+    assert.doesNotMatch(a.hint, /can be drafted|wider|widen/i, r)
+  }
+})
