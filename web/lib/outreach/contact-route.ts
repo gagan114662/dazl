@@ -46,9 +46,9 @@ type Verdict = typeof DELIVERABILITY_VERDICTS[number]
 const DOMAIN_VERDICTS = new Set<string>(['no_mx', 'mx_found', 'catch_all'])
 
 // Domains that can never receive mail (RFC 2606 / 6761 reserved names, single-label hosts, IP literals).
-// '.example' and '.test' are reserved too, but every synthetic fixture in this repo uses them; they stay valid here so
-// fixtures exercise the real paths.
-const RESERVED_TLD = new Set(['invalid', 'localhost', 'local', 'internal', 'onion'])
+// '.example', '.test' and '.invalid' are reserved too, but the synthetic fixtures in this repo use them as recipients (and
+// lib/scan/review-draft-fixture.ts drafts to @dazl.invalid); they stay valid here so fixtures exercise the real paths.
+const RESERVED_TLD = new Set(['localhost', 'local', 'internal', 'onion'])
 export function emailDomainInvalid(email: string): boolean {
   const host = (email.split('@')[1] ?? '').trim().toLowerCase().replace(/\.$/, '')
   if (!host || !host.includes('.') || /^\[|^\d+(\.\d+){3}$/.test(host)) return true

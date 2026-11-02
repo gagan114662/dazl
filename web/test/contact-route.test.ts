@@ -47,11 +47,12 @@ test('an address read years ago keeps its age and an unknown first-published dat
 })
 
 test('an invalid domain fails; a recorded failed check fails; catch-all and mail-server-found stay uncertain', () => {
-  assert.equal(emailDomainInvalid('a@shop.invalid'), true)
+  assert.equal(emailDomainInvalid('a@shop.internal'), true)
+  assert.equal(emailDomainInvalid('a@shop.invalid'), false, 'the repo-wide synthetic fixture TLD, like .example and .test')
   assert.equal(emailDomainInvalid('a@localhost'), true)
   assert.equal(emailDomainInvalid('a@10.0.0.1'), true)
   assert.equal(emailDomainInvalid('a@brightdental.example'), false)
-  const bad = contactRoute(lead({ contact: 'hello@brightdental.invalid' }), null, NOW_MS)
+  const bad = contactRoute(lead({ contact: 'hello@brightdental.internal' }), null, NOW_MS)
   assert.equal(bad.deliverability.state, 'domain_invalid')
   assert.equal(bad.emailReadiness, 'blocked')
   assert.equal(contactRoute(lead({ enrichments: [check('@brightdental.example|no_mx')] }), null, NOW_MS).deliverability.state, 'domain_invalid')
@@ -103,7 +104,7 @@ test('the lead card carries the three facts separately and Approve refuses an un
   const rejected = approveState({ ...card, enrichments: [{ connector: 'checker', kind: 'deliverability', value: 'hello@brightdental.example|rejected', label: null, source_url: '', retrieved_at: SEC(2026, 10, 1) }] as CardLead['enrichments'] })
   assert.equal(rejected.ok, false)
   assert.match((rejected as { reason: string }).reason, /cannot receive mail/)
-  assert.equal(approveState({ ...card, contact: 'hello@brightdental.invalid' }).ok, false)
+  assert.equal(approveState({ ...card, contact: 'hello@brightdental.internal' }).ok, false)
 })
 
 test('createDraft refuses an undeliverable address; catch-all still drafts', () => {
@@ -117,7 +118,7 @@ test('createDraft refuses an undeliverable address; catch-all still drafts', () 
     return id
   }
   const rec = (id: string, value: string) => addEnrichment(db, 'A', id, { connector: 'checker', kind: 'deliverability', value, label: null, confidence: null, source_url: 'https://checker.example/run', source_date: '2026-10-01', retrieved_at: SEC(2026, 10, 1) })
-  assert.throws(() => createDraft(db, 'A', add('info@northside.invalid'), 'Acme'), /undeliverable/)
+  assert.throws(() => createDraft(db, 'A', add('info@northside.internal'), 'Acme'), /undeliverable/)
   const rejected = add('info@northside.example'); rec(rejected, 'info@northside.example|rejected')
   assert.throws(() => createDraft(db, 'A', rejected, 'Acme'), /undeliverable/)
   const catchAll = add('sales@northside.example'); rec(catchAll, '@northside.example|catch_all')
