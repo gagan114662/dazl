@@ -2,7 +2,8 @@
 // NOT part of `npm test`. Run:  cd web && npm run build && node test/ui/plays.ui.mjs   (SHOTS=<dir> saves desktop and
 // 390px screenshots). Production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call
 // stubbed in the browser with synthetic rows: no scan, no send. It proves:
-//   1. the sidebar's Plays opens /app/plays (not the latest results) and is the current page there; Leads opens results;
+//   1. from a held lead run, clicking the sidebar's Plays (phone: inside Menu) lands on /app/plays with the saved-play
+//      list (not the latest results) and is the current page there; Leads opens results;
 //   2. each saved play (weekly watch or scheduled monitor) shows its audience, signal, schedule, last and next run,
 //      status, and links to its last run's leads in Leads;
 //   3. Pause / Resume / Delete send only the existing route actions, and Delete asks first (cancel sends nothing);
@@ -43,6 +44,7 @@ const WATCHES = [
 ]
 // Three runs of the first watch, newest first (#351).
 const RUNS = [{ job_id: RUN, at: T, status: 'done', leads: 5, new_leads: 3 }, { job_id: 'd'.repeat(24), at: T - 7 * 86400, status: 'done', leads: 4, new_leads: 4 }, { job_id: 'f'.repeat(24), at: T - 14 * 86400, status: 'failed', leads: 0, new_leads: null }]
+const HELD = { id: '9'.repeat(24), name: '', company: 'Synthetic Dental Leeds', contact: null, signal: 'Synthetic Dental Leeds opening a second location', source_url: 'https://news.example/synthetic', score: 70, evidence_excerpt: 'Synthetic Dental Leeds is opening a second location', event_date: '2026-10-20', date_status: 'unverified', confidence: 60, review_reason: 'currentness_review', currentness_held: true, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 3, action: 3, why: 'A Leeds practice opening a second site.', signals: null, icp_match: null, enrichments: [], events: [] }
 const MONITORS = [{ id: M, query: 'Accounting firms in Bristol hiring payroll staff', icp: JSON.stringify({ summary: 'Accounting firms', where: ['Bristol, UK'], signals: ['hiring payroll staff'] }), interval_hours: 24, enabled: 1, paused_reason: null, last_run_at: null, next_run_at: T + 86400, last_new_count: null, run_count: 0, last_job_id: null }]
 
 const b = await chromium.launch()
@@ -59,6 +61,9 @@ async function open({ width, height, watches = WATCHES, monitors = MONITORS, fai
     if (p === '/api/watch') return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches })
     if (p === '/api/monitors') return fail === 'monitors' ? json({ error: 'x' }, 500) : json({ monitors })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
+    // The held lead run the audit started from (#351): a finished run whose one lead is held for source review.
+    if (p === '/api/scan/status' && u.searchParams.get('job_id') === RUN) return json({ status: 'done', lead_count: 1, icp: { industries: [], sizes: [], exclude: [], ...WATCHES[0].icp }, icp_source: 'user', attempts: 1, max_attempts: 3, query: WATCHES[0].query })
+    if (p === '/api/leads' && u.searchParams.get('job_id') === RUN) return json({ job_id: RUN, status: 'done', hidden_count: 0, leads: [HELD] })
     if (p === `/api/plays/watch/${W}/runs`) return json({ runs: RUNS, more: true })
     // the paused play's runs answer late, so hiding them first can be checked; then it has none
     if (p === `/api/plays/watch/${W2}/runs`) { await new Promise(r => setTimeout(r, 600)); return json({ runs: [], more: false }) }
@@ -80,8 +85,18 @@ try {
     await nav.waitFor({ state: 'attached', timeout: 15000 })
     assert.equal(await nav.getAttribute('href'), '/app/plays')
     assert.equal(await page.locator('nav[aria-label=Main]').getByRole('link', { name: 'Leads', includeHidden: true }).getAttribute('href'), '/app/leads?latest=1', 'Leads opens results')
-    await page.goto(`${base}/app/plays`, { waitUntil: 'networkidle' })
-    assert.equal(await page.locator('h1').last().textContent(), 'Plays')
+    // The audit's exact steps: the held run is on screen (heading "Leads", its held lead), then a real click on Plays.
+    await page.getByText('Synthetic Dental Leeds', { exact: true }).first().waitFor({ timeout: 15000 })
+    assert.equal(await page.locator('h1').last().textContent(), 'Leads')
+    await shot(page, `held-run-${tag}`)
+    if (width <= 800) await page.locator('label[for=navtoggle]').click() // phone: the same link, inside Menu
+    await page.locator('nav[aria-label=Main]').getByRole('link', { name: 'Plays' }).click()
+    await page.waitForURL(u => u.pathname === '/app/plays', { timeout: 15000 })
+    await page.getByTestId('saved-play').first().waitFor({ timeout: 10000 })
+    assert.equal(new URL(page.url()).search, '', 'Plays is the play list itself, not a results deep link')
+    // Next keeps the page just left mounted but hidden, so only what is visible counts.
+    assert.deepEqual(await page.locator('h1:visible').allTextContents(), ['Plays'])
+    assert.equal(await page.getByText('Synthetic Dental Leeds').filter({ visible: true }).count(), 0, "the run's leads are not shown as Plays")
     if (width > 800) assert.equal(await page.locator('aside').getByRole('link', { name: 'Plays' }).getAttribute('aria-current'), 'page')
     const cards = page.getByTestId('saved-play')
     await cards.first().waitFor({ timeout: 10000 })
