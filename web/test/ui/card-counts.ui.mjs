@@ -8,7 +8,9 @@
 //   3. the tabs read Approved / Rejected / To review from this scan's complete campaign record (a draft older than the
 //      newest 200 Outreach emails still counts as approved), says it excludes Needs your review, and
 //      follows Approve (one POST /api/outreach), Reject (one quarantine POST) and Undo (one DELETE);
-//   4. if this scan's emails cannot be read, Approved and To review show "?" with the reason, never a guess.
+//   4. if this scan's emails cannot be read, Approved and To review show "?" with the reason, never a guess;
+//   5. the scan-quality badge says "1 needs your review" (leads the gates routed to review) - never "to review",
+//      which is the tabs' word for undecided cards (a different count).
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -55,7 +57,7 @@ await ctx.route('**/*', async route => {
   if (!p.startsWith('/api/')) return route.continue()
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${p}`)
-  if (p === '/api/scan/status') return json({ job_id: JOB, status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location', enrichment: { state: 'none' } })
+  if (p === '/api/scan/status') return json({ job_id: JOB, status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location', enrichment: { state: 'none' }, quality: { candidates: 5, passed: 4, needs_review: 1, dropped: 0, drop_reasons: {} } })
   if (p === '/api/leads' && m === 'GET') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
   if (p === '/api/scan/jobs') return json({ jobs: [] })
   // The account-wide list is capped at the newest 200: here it is full of other scans' emails, and this scan's older
@@ -91,6 +93,9 @@ try {
   await page.getByTestId('lead-tabs').waitFor()
   await page.waitForFunction(() => /Approved 1/.test(document.querySelector('[data-testid=tab-approved]')?.textContent ?? ''))
   assert.equal(await counts(), 'Approved 1 · Rejected 0 · To review 3', "Instinct #285: Grove's draft is older than the newest 200 emails and still counts")
+  const qualityText = (await page.getByTestId('scan-quality').textContent()).replace(/\s+/g, ' ').trim()
+  assert.ok(qualityText.includes('1 needs your review'), `the scan-quality badge names the review-queue outcome ("1 needs your review"), got: ${qualityText}`)
+  assert.ok(!qualityText.includes('to review'), `the badge must not reuse the tab's "to review" words for a different count, got: ${qualityText}`)
   assert.equal(await page.getByTestId('card-counts-scope').textContent(), 'Cards below, not counting Needs your review or hidden already-seen leads. ')
   assert.match(await page.getByTestId('card-counts-note').textContent(), /Approving a card makes a draft; each email is still approved in Outreach before it sends/, 'a card approval is never presented as an approved email')
   await shot('counts-initial')
