@@ -281,21 +281,46 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       // No usable job board: the company's OWN careers page (https, robots.txt obeyed, same domain) may list an open sales role. The domain must be established, or the careers
       // page itself must name the company and agree on the requested place (a same-name company elsewhere does not). Saved: URL, quote, retrieval time (not a posting date).
       let careersNote = ''
-      if (!roles.length && l.company_domain && opts.careersGet) {
-        const c = await careersSalesVacancy(l.company_domain, opts.careersGet, { now: opts.now, company: l.company }).catch(() => null)
-        if (c?.vacancy) {
+      if (l.company_domain && opts.careersGet) {
+        const c = await careersSalesVacancy(l.company_domain, opts.careersGet, { now: opts.now, company: l.company, ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => null)
+        if (!owned()) { stopped = true; break } // reclaimed DURING the careers fetch: nothing the stale attempt resolved may be written (audit rows included)
+        // #533 direct-career check-history: the same append-only discipline as the ATS board check. A clean absence answer
+        // (page read, no open sales role / closed marker / no careers page) gets results 0; anything uncertain (fetch failed,
+        // robots unreachable, unverified job, wrong domain, rejected) is -1 - never reported as 'none found'.
+        if (c === null) audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'fetch_failed', results: -1 })
+        else if (c.vacancy) {
           const v = c.vacancy
           const established = domainRelationship(db, job.user_id, l.id, l.company_domain) === 'established'
           const namesCompany = norm(v.pageText).includes(norm(l.company).replace(/\s/g, '')) || norm(v.pageText).replace(/\s/g, '').includes(norm(l.company).replace(/\s/g, ''))
           const place = whereOf(job.icp).length ? placeAgreement(v.pageText, whereOf(job.icp), l.company) : 'no_geography'
           if (established || (namesCompany && (place === 'agrees' || place === 'no_geography'))) {
             const day = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
-            setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), checked ${day}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-            addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: v.quote.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
-            passed++; passedIds.push(l.id); continue
+            const roleMatch = roles.length ? matchedHiringRole(v.title, roles) : null
+            audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: roleMatch ? 'checked_vacancy_requested_role' : 'checked_vacancy', results: 1 })
+            if (roleMatch) {
+              setWhy.run((`Hiring for ${v.title} (requested: ${roleMatch.term}) on its careers page (${l.company_domain}), checked ${day}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+              addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open role on its careers page: ${v.title}`.slice(0, 254), label: `Requested role: ${roleMatch.term}; ${v.quote}`.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
+              passed++; passedIds.push(l.id); continue
+            }
+            if (!roles.length) {
+              setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), checked ${day}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+              addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: v.quote.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
+              passed++; passedIds.push(l.id); continue
+            }
+            // AC3: requested roles were named and this verified vacancy matched none - generic careers hiring is recorded as
+            // generic (never role-qualified) and the lead is still demoted below for the missing role match.
+            const day2 = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
+            addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title} (generic - not a requested-role match)`.slice(0, 254), label: `generic hiring, requested role not matched; ${v.quote}`.slice(0, 200), confidence: 60, source_url: v.url, source_date: day2, retrieved_at: v.retrievedAt })
+            careersNote = `its careers page lists ${v.title}, a sales/GTM role that does not source-match the requested role. `
+          } else {
+            audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'checked_rejected', results: -1 })
+            careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `
           }
-          careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `
-        } else if (c) careersNote = `its careers page was checked: ${c.reason.replace(/_/g, ' ')}. `
+        } else {
+          const clean = c.reason === 'no_open_sales_role' || c.reason === 'closed_marker' || c.reason === 'no_careers_page'
+          audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: `checked_${c.reason}`.slice(0, 100), results: clean ? 0 : -1 })
+          careersNote = `its careers page was checked: ${c.reason.replace(/_/g, ' ')}. `
+        }
       }
       const line = heuristic
         ? `No sales-hiring evidence: a job board was found only through ${l.company_domain}, a domain matched by company name, so it is not established as this company's board. `
