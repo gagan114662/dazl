@@ -3,6 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { autopilotAvailable, CONSENT_TEXT, CONSENT_VERSION, disable, enable, getState, pause, recentAutopilotAudit, resume, withdrawLaunch, WARMUP_SENDS, MAX_DAILY } from '@/lib/outreach/autopilot'
 import { OutreachError } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
+import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 import { acceptLaunchPolicy, LAUNCH_POLICY_VERSION, launchPolicyView } from '@/lib/outreach/launch-policy'
 import { runCalibration } from '@/lib/outreach/calibration'
@@ -28,6 +29,7 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const db = getScanDb()
+  const before = getState(db, user.tenantId)
   try {
     // Pause, turn off and withdrawing the launch policy always work, even when the operator has switched autopilot off.
     if (body?.action === 'pause') pause(db, user.tenantId)
@@ -54,7 +56,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: r.ok, preflight: r, state: getState(db, user.tenantId) }, { status: r.ok ? 200 : 409 })
     }
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-    return NextResponse.json({ ok: true, state: getState(db, user.tenantId) })
+    // budget and send automation: the action, and on enable the daily cap as applied (clamped and defaulted), not as asked.
+    // A pause, resume or disable that leaves the state as it was changes nothing, so it records nothing; enable always
+    // re-records consent, so it is always a change.
+    const state = getState(db, user.tenantId)
+    const changed = body.action === 'enable' || before.enabled !== state.enabled || before.paused !== state.paused || before.pause_reason !== state.pause_reason
+    if (changed) await audit(user, req, { action: `autopilot.${body.action}`, resource: 'autopilot', summary: body.action === 'enable' ? { daily_cap: state.daily_cap } : {} })
+    return NextResponse.json({ ok: true, state })
   } catch (e) {
     if (e instanceof OutreachError) return NextResponse.json({ error: ERR[e.code] ?? 'Could not do that', code: e.code }, { status: 400 })
     throw e

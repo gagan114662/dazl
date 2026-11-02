@@ -6,7 +6,8 @@
 // redacted (the export is for the tenant; it never carries a secret, a password hash or a session token).
 //
 // Deletion is a resumable state machine, one transaction per step, recorded in tenant_tombstones:
-//   requested  the tombstone exists: from here no write can add rows for this tenant (triggers, below)
+//   requested  the tombstone exists: from here no write can add rows for this tenant (triggers, below) except
+//              this flow's own closing audit events (audit_closing_gate, below)
 //   revoked    credentials and sign-in state deleted: Gmail tokens, LLM keys, connector secrets, sessions, OAuth
 //              identities and states. (Revoking a Gmail grant at Google is a network call the operator makes; see docs.)
 //   cancelled  queued work deleted (work queue rows), and the ids of every parent row (scan jobs, leads, batches,
@@ -32,6 +33,7 @@
 import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/client.ts'
 import { classify, type Scope } from './scope.ts'
 import { foreignKeys, tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
+import { recordTx } from '../audit.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
@@ -42,7 +44,10 @@ export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session toke
 export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash|claim_token)$|secret/
 // Kept whatever the policy: append-only audit records that hold no tenant content (lib/scan/evidence-copies.ts: who
 // purged evidence, why, and counts). Reported on the tombstone as retained, like any policy retention.
-export const ALWAYS_RETAINED: Record<string, string> = { evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content' }
+export const ALWAYS_RETAINED: Record<string, string> = {
+  evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content',
+  audit_events: 'append-only audit trail (lib/audit.ts); redacted at the source, and its delete trigger would refuse the erase anyway',
+}
 
 export interface DeletionPolicy {
   // An explicit decision on opt-outs: keep the suppression list (so the addresses are never mailed again if the
@@ -88,6 +93,26 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
     if (rows.length) tables[t] = rows.map(r => clean(t, r))
   }
   return { format: 'dazl-tenant-export', version: 1, tenant, exported_at: now.toISOString(), tables, excluded: EXPORT_EXCLUDED, redacted_columns: [...redacted].sort() }
+}
+
+// The deletion's own closing events, the only rows a tombstoned tenant may still gain: the audit_events INSERT guard
+// (lib/db/tenant-guard.ts) allows one only while the tenant's audit_closing_gate row exists, and it exists inside the
+// transaction that writes the event (inserted before, deleted after; a rolled-back step leaves neither). The actor is
+// who asked for the deletion; the kind is service, the lifecycle machine acting on that request.
+export function* closingEventTx(tx: Tx, tenant: string, requestedBy: string, action: string, now: number, summary?: Record<string, unknown>): TxBody<void> {
+  // Lock order is advisory -> gate -> event for every caller. A deletion step already holds the tenant's advisory
+  // lock exclusively (this re-takes it, re-entrant); the request transaction takes it here, before the gate, so
+  // either side waiting on the other does so BEFORE any gate row exists - the other order (gate first, then the
+  // audit guard's shared advisory on the event insert) deadlocked a request against a step on Postgres (CI
+  // test-postgres on 32290eee): request held the gate row wanting the lock, step held the lock wanting the gate row.
+  // The lock is SHARED here, not exclusive: shared orders against a step's exclusive lock just the same (the wait
+  // happens before the gate row), but it does not conflict with the shared locks of the tenant's ordinary in-flight
+  // writers, which must not delay RECORDING the request - waiting for them is the steps' job
+  // (test/tenant-lifecycle-race.test.ts pins: the tombstone is written promptly, no step has run).
+  if (tx.kind === 'pg') yield* tx.get('SELECT pg_advisory_xact_lock_shared(hashtext(?))', [tenant])
+  yield* tx.run('INSERT INTO audit_closing_gate (tenant) VALUES (?)', [tenant])
+  yield* recordTx(tx, { tenantId: tenant, actorId: requestedBy, actorKind: 'service', action, resourceType: 'tenant', resourceId: tenant, summary }, now)
+  yield* tx.run('DELETE FROM audit_closing_gate WHERE tenant = ?', [tenant])
 }
 
 export interface Tombstone { deleted_tenant: string; requested_at: number; requested_by: string; state: DeletionState; policy: string; retained: string | null; completed_at: number | null }
@@ -147,14 +172,15 @@ function validPolicy(p: DeletionPolicy | undefined, scope: Map<string, Scope>): 
 
 // Delete (or resume deleting) one tenant. `until` stops after a given state (staged deletion, and the tests' crash
 // points). `requestedAt` is the time of the original request when a deletion is re-applied from the ledger (default:
-// now). `lockTimeoutMs` (Postgres) bounds how long a step waits for the tenant's in-flight writers before giving up
-// with nothing changed (default 5 s). Returns the tombstone after the run.
+// now). `lockTimeoutMs` (Postgres) bounds how long the request and each step wait for the tenant's in-flight writers before
+// giving up with nothing changed (default 5 s). Returns the tombstone after the run.
 export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: DeletionPolicy; requestedBy?: string; now?: number; requestedAt?: number; until?: DeletionState; lockTimeoutMs?: number } = {}): Promise<Tombstone> {
   const db = asDb(d)
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   const cols = await tableColumns(db)
   let t = await tombstone(db, tenant)
+  const lockTimeoutMs = o.lockTimeoutMs ?? 5000
   if (t && o.policy) {
     // a second request must not silently resolve to the first one's policy: resume without a policy, or decide first
     const asked = JSON.stringify(validPolicy(o.policy, scope)), recorded = JSON.parse(t.policy) as DeletionPolicy
@@ -170,17 +196,26 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     if (unsatisfiable.length) throw new Error(`retention policy cannot be honoured: ${unsatisfiable.join('; ')}`)
     if (!o.requestedBy) throw new Error('requestedBy is required (who asked, for the audit record)')
     const requestedBy = o.requestedBy.slice(0, 200), requestedAt = o.requestedAt ?? now
-    await db.tx(function* (tx) {
-      yield* refuseSharedWorkspace(tx, cols, tenant)
-      yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
-        [tenant, requestedAt, requestedBy, JSON.stringify(policy)])
-    })
+    try {
+      await db.tx(function* (tx) {
+        // the closing event takes the tenant's advisory lock (closingEventTx): bound that wait like a step's, or a
+        // hung writer of this tenant would block a new request indefinitely. On timeout the whole request rolls
+        // back: no tombstone, gate row or event survives.
+        if (tx.kind === 'pg') yield* tx.get("SELECT set_config('lock_timeout', ?, true)", [`${lockTimeoutMs}ms`])
+        yield* refuseSharedWorkspace(tx, cols, tenant)
+        yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
+          [tenant, requestedAt, requestedBy, JSON.stringify(policy)])
+        yield* closingEventTx(tx, tenant, requestedBy, 'tenant.deletion_requested', requestedAt)
+      })
+    } catch (e) {
+      if (/lock timeout/.test(e instanceof Error ? e.message : String(e))) throw new Error(`tenant deletion: the request waited ${lockTimeoutMs} ms for in-flight writes of this tenant and gave up; nothing changed, retry`, { cause: e })
+      throw e
+    }
     t = (await tombstone(db, tenant))!
   }
   const policy = JSON.parse(t.policy) as DeletionPolicy
   const retain = new Set([...(policy.retainTables ?? []), ...(policy.suppressions === 'retain' ? ['suppressions'] : []), ...Object.keys(ALWAYS_RETAINED)])
   const has = (x: string) => scope.has(x)
-  const lockTimeoutMs = o.lockTimeoutMs ?? 5000
   // One step: its statements and the state change commit together, or not at all. On Postgres a write for this tenant
   // that passed the guard before the tombstone committed can still be open when a step runs (READ COMMITTED waits for
   // nothing), and would commit after the step deleted around it. Every guard trigger holds a shared advisory lock on
@@ -240,10 +275,14 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     if (cols.has('rate_limits')) yield* tx.run("DELETE FROM rate_limits WHERE (':' || key || ':') LIKE ? ESCAPE '\\'", [`%:${tenant.replace(/[\\%_]/g, m => `\\${m}`)}:%`])
     yield* tx.run('DELETE FROM users WHERE id = ?', [tenant])
     if (has('memberships')) yield* tx.run('DELETE FROM organizations WHERE id = ?', [tenant])
+    yield* closingEventTx(tx, tenant, t!.requested_by, 'tenant.deletion_erased', now)
   })) return t
   await advance('erased', 'completed', function* (tx) {
     const kept: Record<string, number> = {}
     for (const x of [...retain].sort()) if (has(x)) { const w = owned(scope, x, tenant); kept[x] = Number((yield* tx.get<{ n: number }>(`SELECT count(*) AS n FROM "${x}" WHERE ${w.sql}`, w.params))?.n ?? 0) }
+    // the completed marker is part of the retained trail it reports: write it, then count it in
+    yield* closingEventTx(tx, tenant, t!.requested_by, 'tenant.deletion_completed', now, { retained_tables: Object.keys(kept).length })
+    if (kept.audit_events !== undefined) kept.audit_events += 1
     yield* tx.run('UPDATE tenant_tombstones SET retained = ?, completed_at = ? WHERE deleted_tenant = ?', [JSON.stringify(kept), now, tenant])
   })
   return t

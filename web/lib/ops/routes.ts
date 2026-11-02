@@ -103,6 +103,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/warm/connections',
   '/api/watch',
   '/api/workspace',
+  '/api/workspace/audit',
   '/api/workspace/invitations',
   '/api/workspace/invitations/accept',
   '/api/workspace/leave',

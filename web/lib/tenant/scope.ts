@@ -25,6 +25,8 @@ export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: st
   rate_limits: { global: 'counters keyed by caller; a key can embed a tenant id, an account or an IP, nothing else of the tenant, and no route reads it back; the deletion erases every key naming the tenant' },
   app_leases: { global: 'named locks for platform jobs (the scheduled tick); no tenant data' },
   preview_claim_events: { global: "claim-attempt audit (#416): outcome codes keyed by claim id only; holds no tenant data, email, IP or token" },
+  audit_purge_gate: { global: 'one row that exists only inside the audit retention purge transaction (lib/audit.ts); no tenant data' },
+  audit_closing_gate: { global: "one row per closing tenant deletion, existing only inside deleteTenant's own closing transactions (lib/tenant/lifecycle.ts); never at rest, so the audit INSERT exception it gates stays closed" },
   preview_claims: { global: "issued proof previews bound to a recipient email (#416): run/seller/recipient/expiry are immutable at insert, claimed_by_tenant is set once atomically; served by token, per-tenant reads use claimed_by_tenant" },
   trial_budget_lock: { global: 'one row every free-trial admission locks in turn (lib/billing/trial-budget.ts); a counter, no tenant data' },
 }

@@ -37,13 +37,13 @@ const POLICY = { suppressions: 'retain' as const }
 function leftovers(db: Database.Database, tag: string, keep: string[]): string[] {
   const out: string[] = []
   for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]) {
-    if ([...keep, 'evidence_purge_audit'].includes(name)) continue
+    if ([...keep, 'evidence_purge_audit', 'audit_events'].includes(name)) continue // audit_events: ALWAYS_RETAINED too (port note)
     for (const r of db.prepare(`SELECT * FROM "${name}"`).all() as Record<string, unknown>[]) if (Object.values(r).some(v => typeof v === 'string' && v.startsWith(`${tag}~`))) { out.push(name); break }
   }
   return out
 }
-// evidence_purge_audit is always kept (append-only audit, ALWAYS_RETAINED)
-const emptyExcept = (snap: Record<string, string>, keep: string[]) => Object.entries(snap).filter(([t, rows]) => ![...keep, 'evidence_purge_audit'].includes(t) && rows !== '[]').map(([t]) => t)
+// evidence_purge_audit and audit_events are always kept (append-only audits, ALWAYS_RETAINED)
+const emptyExcept = (snap: Record<string, string>, keep: string[]) => Object.entries(snap).filter(([t, rows]) => ![...keep, 'evidence_purge_audit', 'audit_events'].includes(t) && rows !== '[]').map(([t]) => t)
 
 test('the registry covers the live schema: every tenant-scoped table is in scope (every one seeded for each tenant)', async () => {
   const db = fixture()
@@ -73,7 +73,7 @@ test('deletion: refuses without a decision on opt-outs; erases only the target; 
   await assert.rejects(deleteTenant(d, A, { requestedBy: 'test', policy: { suppressions: 'retain', retainTables: ['app_leases'] } }), /not a tenant-scoped table/)
   const bBefore = snapshotSqlite(db, B)
   const t = await deleteTenant(d, A, { policy: POLICY, requestedBy: 'operator (synthetic test)', now: NOW })
-  assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { evidence_purge_audit: 1, suppressions: 1 })
+  assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { audit_events: 4, evidence_purge_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events (requested, erased, completed), retained by ALWAYS_RETAINED
   const after = snapshotSqlite(db, A)
   assert.deepEqual(emptyExcept(after, ['suppressions']), [], 'every other table is empty for the deleted tenant')
   assert.notEqual(after.suppressions, '[]', 'opt-outs retained by policy')
@@ -108,6 +108,7 @@ test('no recreation: late inserts for the deleted tenant, under its deleted pare
     ["INSERT INTO leads (id, scan_job_id, company, source_url) VALUES ('late-lead', ?, 'Late', 'https://late.example.test')", [oldJob.id]],
     ["INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, 'new@x.example', 'manual')", [A]],
     ["INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'again@x.example', 'x', 'y')", [A]],
+    ["INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, decision, at, seq) VALUES ('late-audit', ?, 'x', 'user', 'credential.saved', 'credential', 'allowed', 1, 1)", [A]],
   ] as [string, unknown[]][]) assert.throws(() => db.prepare(sql).run(...args), /tenant deleted/, sql)
   assert.deepEqual(emptyExcept(snapshotSqlite(db, A), ['suppressions']), [])
   // the other tenant is unaffected

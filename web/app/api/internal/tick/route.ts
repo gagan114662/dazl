@@ -17,6 +17,7 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { DRAIN_HOLD_REASONS, classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
 import { purgeExpiredTraces } from '@/lib/evals/capture'
+import { auditRetention, purgeAudit } from '@/lib/audit'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
@@ -149,6 +150,15 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let tracesPurged = 0
   await lease.keep()
   try { tracesPurged = await purgeExpiredTraces(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:trace-purge', requestId }) }
+  // Audit retention (lib/audit.ts) is OFF until the owner sets AUDIT_RETENTION_DAYS: unset, off and invalid purge
+  // nothing (invalid is reported, so a typo is an alert, not a policy). A valid period deletes events older than it,
+  // a bounded batch per tick, inside the only transaction the delete trigger allows, fenced like every other write here.
+  await lease.keep()
+  const retention = auditRetention()
+  let auditPurged = 0
+  if (retention.state === 'on') {
+    try { auditPurged = await purgeAudit(shared, { retainS: retention.retainS, fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:audit-retention', requestId }) }
+  } else if (retention.state === 'invalid') captureError(new Error('AUDIT_RETENTION_DAYS is not a retention period; audit purge skipped'), { source: 'worker', where: 'tick:audit-retention', requestId })
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged })
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged })
 }

@@ -12,8 +12,8 @@ const A = 'both-tenant-aaaa', B = 'both-tenant-bbbb', C = 'both-team-cccc', NOW 
 const BY = 'operator (synthetic both-engines test)'
 const POLICY = { suppressions: 'retain' as const }
 const fixture = (c: Parameters<Parameters<typeof bothEngines>[1]>[0]) => tenantFixture(c, [[A, 'ba'], [B, 'bb']])
-// evidence_purge_audit is always kept (append-only audit, ALWAYS_RETAINED); users and organizations are in the snapshot
-const emptyExcept = (snap: Record<string, string>, keep: string[]) => Object.entries(snap).filter(([t, r]) => ![...keep, 'evidence_purge_audit'].includes(t) && r !== '[]').map(([t]) => t)
+// evidence_purge_audit and audit_events are always kept (append-only audits, ALWAYS_RETAINED); users and organizations are in the snapshot
+const emptyExcept = (snap: Record<string, string>, keep: string[]) => Object.entries(snap).filter(([t, r]) => ![...keep, 'evidence_purge_audit', 'audit_events'].includes(t) && r !== '[]').map(([t]) => t)
 
 bothEngines('state machine: staged to revoked (credentials gone, data kept); a failed erase rolls back whole and the deletion resumes to completed', async c => {
   const f = await fixture(c)
@@ -30,7 +30,7 @@ bothEngines('state machine: staged to revoked (credentials gone, data kept); a f
   await dropTrigger(c, 'fail_erase', 'scan_jobs')
   const t = await deleteTenant(c.db, A)
   assert.equal(t.state, 'completed', 'resumed without the policy being given again')
-  assert.deepEqual(JSON.parse(t.retained!), { evidence_purge_audit: 1, suppressions: 1 })
+  assert.deepEqual(JSON.parse(t.retained!), { audit_events: 4, evidence_purge_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events (requested, erased, completed)
   assert.deepEqual(emptyExcept(await f.snap(A), ['suppressions']), [], 'every other table, users and organizations included, is empty for A')
   assert.deepEqual(await f.snap(B), bBefore, 'B byte-identical, identity rows included')
   assert.equal((await deleteTenant(c.db, A)).state, 'completed', 'a completed deletion re-run is a no-op')

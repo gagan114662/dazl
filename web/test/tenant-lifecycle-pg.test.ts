@@ -39,9 +39,9 @@ test('postgres: export complete, deletion erases only the target, other tenant b
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM tenant_tombstones'))?.n), 0)
     const bBefore = await snapshot(db, B)
     const t = await deleteTenant(db, A, { policy: { suppressions: 'retain', retainTables: ['scan_jobs', 'leads', 'lead_sources'] }, requestedBy: 'synthetic pg test' })
-    assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { evidence_purge_audit: 1, lead_sources: 1, leads: 1, scan_jobs: 1, suppressions: 1 })
+    assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { audit_events: 4, evidence_purge_audit: 1, lead_sources: 1, leads: 1, scan_jobs: 1, suppressions: 1 }) // audit_events: the seeded row + the deletion's own three closing events
     const after = await snapshot(db, A)
-    const kept = ['suppressions', 'evidence_purge_audit', 'scan_jobs', 'leads', 'lead_sources']
+    const kept = ['suppressions', 'evidence_purge_audit', 'audit_events', 'scan_jobs', 'leads', 'lead_sources']
     assert.deepEqual(Object.entries(after).filter(([k, v]) => !kept.includes(k) && v !== '[]').map(([k]) => k), [])
     for (const k of ['scan_jobs', 'leads', 'lead_sources']) assert.equal(after[k], aBefore[k], `${k} retained byte-identical`)
     assert.deepEqual(await snapshot(db, B), bBefore, 'the other tenant is byte-identical')

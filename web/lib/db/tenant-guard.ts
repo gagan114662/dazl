@@ -6,8 +6,12 @@
 import type Database from 'better-sqlite3'
 import type { Db } from './client.ts'
 import { classify, type Scope } from '../tenant/scope.ts'
-// A transient lock row, not data (the evidence purge gate exists only inside one transaction): no deletion guard.
-export const UNGUARDED = new Set(['evidence_purge_gate'])
+// A transient lock row, not data (the purge gates exist only inside one transaction): no deletion guard. audit_events
+// IS guarded like every other tenant-scoped table, with one bounded exception on its INSERT guard: a row is allowed
+// while the tenant's audit_closing_gate row exists, and that row exists only inside deleteTenant's own closing
+// transaction (lib/tenant/lifecycle.ts) - the deletion's closing events are the only rows a tombstoned tenant can
+// still gain. Its UPDATE guard stays vacuous (the append-only trigger refuses every UPDATE) and is carried for parity.
+export const UNGUARDED = new Set(['evidence_purge_gate', 'audit_purge_gate'])
 // Columns that name an account without being the row's tenant column (no foreign key): guarded against tombstoned
 // tenants too, so a deleted account can neither be added to another workspace nor have a membership moved onto it
 // (decision 9 in docs/TENANT-LIFECYCLE.md, which the deletion also re-checks before erasing).
@@ -113,14 +117,18 @@ export function guardTriggers(scope: Scope[]): { name: string; table: string; sq
     `DROP TRIGGER IF EXISTS ${name}; CREATE TRIGGER ${name} BEFORE ${event} ON ${table} BEGIN ${locks.map(l => `SELECT ${l}; `).join('')}SELECT RAISE(ABORT, 'tenant deleted') WHERE ${when}; END;`
   // `deleted(row)` says whether the row's value of `col` (NEW or OLD) belongs to a tombstoned tenant; `tenant(row)` is
   // that tenant's id (the advisory lock key)
-  const guard = (table: string, col: string, deleted: (row: 'NEW' | 'OLD') => string, tenant: (row: 'NEW' | 'OLD') => string, suffix = '') => {
-    out.push({ name: `tomb_${table}${suffix}`, table, sql: ddl(`tomb_${table}${suffix}`, 'INSERT', table, [tenant('NEW')], deleted('NEW')) })
+  const guard = (table: string, col: string, deleted: (row: 'NEW' | 'OLD') => string, tenant: (row: 'NEW' | 'OLD') => string, suffix = '', insertWhen?: string) => {
+    out.push({ name: `tomb_${table}${suffix}`, table, sql: ddl(`tomb_${table}${suffix}`, 'INSERT', table, [tenant('NEW')], insertWhen ?? deleted('NEW')) })
     out.push({ name: `tomb_upd_${table}${suffix}`, table, sql: ddl(`tomb_upd_${table}${suffix}`, `UPDATE OF ${col}`, table, [tenant('NEW'), tenant('OLD')], `NEW.${col} IS NOT OLD.${col} AND ((${deleted('NEW')}) OR (${deleted('OLD')}))`) })
   }
   const tenantOf = (col: string) => (row: string) => `EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = ${row}.${col})`
   const own = (col: string) => (row: string) => `${row}.${col}`
   for (const s of scope) {
-    if (s.how === 'direct') { guard(s.table, s.col, tenantOf(s.col), own(s.col)); continue }
+    if (s.how === 'direct') {
+      // the bounded closing exception (the UNGUARDED comment above): only the deletion flow's own closing events
+      if (s.table === 'audit_events') { guard(s.table, s.col, tenantOf(s.col), own(s.col), '', `(${tenantOf(s.col)('NEW')}) AND NOT EXISTS (SELECT 1 FROM audit_closing_gate WHERE tenant = NEW.${s.col})`); continue }
+      guard(s.table, s.col, tenantOf(s.col), own(s.col)); continue
+    }
     guard(s.table, s.col, row => { const live = tombstonedRow(s.parent, `${row}.${s.col}`); return `EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = '${s.parent}' AND key = ${row}.${s.col})${live ? ` OR ${live}` : ''}` },
       row => tenantId(s.table, `${row}.`) ?? `${row}.${s.col}`)
   }
