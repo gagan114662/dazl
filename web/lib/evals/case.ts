@@ -5,6 +5,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { validateWorld, type World } from './world.ts'
+import { validateContract, type Contract } from './contract.ts'
 
 export const CASE_VERSION = 1
 export type LeadOutcome = 'verified' | 'held' | 'absent'
@@ -13,6 +14,7 @@ export interface Case {
   path: 'scan.discovery'
   world: string                                   // path to the World file, relative to the case file
   provenance: { from_trace: string; synthetic: boolean; why: string }
+  contract?: string                             // path to the evaluation contract (#394), relative to the case file
   input: { request: string; icp: unknown; score?: boolean; ground?: boolean }
   expect: {
     leads: { company: string; outcome: LeadOutcome; review_reason?: string; why?: string }[]
@@ -37,10 +39,14 @@ export function validateCase(c: unknown): Case {
   return o as Case
 }
 
-export function loadCase(file: string): { kase: Case; world: World } {
+export function loadCase(file: string): { kase: Case; world: World; contract?: Contract } {
   const kase = validateCase(JSON.parse(readFileSync(file, 'utf8')))
   const world = validateWorld(JSON.parse(readFileSync(resolve(dirname(file), kase.world), 'utf8')))
   if (kase.provenance.synthetic && world.origin !== 'synthetic') throw new CaseError(`case ${kase.id}: marked synthetic but its world is ${world.origin}`)
   if (!kase.provenance.synthetic && world.origin === 'synthetic') throw new CaseError(`case ${kase.id}: a synthetic world cannot back a recorded case`)
-  return { kase, world }
+  // a case that names its evaluation contract shares the one frozen artifact with the standalone evaluator (#394);
+  // an invalid or unreadable contract fails the case load - the runner never scores against a drifted contract
+  const contract = kase.contract === undefined ? undefined
+    : validateContract(JSON.parse(readFileSync(resolve(dirname(file), kase.contract), 'utf8')))
+  return { kase, world, contract }
 }

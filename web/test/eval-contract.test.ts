@@ -4,9 +4,10 @@
 // determinism of the whole evaluation.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { validateContract, evaluateLead, ContractError } from '../lib/evals/contract.ts'
+import { loadCase } from '../lib/evals/case.ts'
 
 const CONTRACT_PATH = 'test/fixtures/evals/contract/toronto-office.contract.json'
 const LEADS_PATH = 'test/fixtures/evals/contract/toronto-office.leads.json'
@@ -72,4 +73,19 @@ test('evaluation is byte-deterministic: the script produces the committed golden
   const a = run(), b = run()
   assert.equal(a, b)
   assert.equal(a, readFileSync('test/fixtures/evals/contract/toronto-office.expected.json', 'utf8'))
+})
+
+test('a case naming its contract shares the validated artifact; a broken reference fails the load', () => {
+  const abs = (p: string) => new URL(p, import.meta.url).pathname
+  const withContract = { ...JSON.parse(readFileSync('test/fixtures/evals/cases/scan-toronto-office-traps.case.json', 'utf8')), world: abs('fixtures/evals/worlds/scan-toronto-office-traps.world.json'), contract: abs('fixtures/evals/contract/toronto-office.contract.json') }
+  const dir = mkdtempSync('/tmp/case-contract-')
+  writeFileSync(`${dir}/c.case.json`, JSON.stringify(withContract))
+  const { contract } = loadCase(`${dir}/c.case.json`)
+  assert.equal(contract!.id, 'eval-contract-toronto-office-v1')
+  const broken = { ...withContract, contract: `${dir}/does-not-exist.contract.json` }
+  writeFileSync(`${dir}/b.case.json`, JSON.stringify(broken))
+  assert.throws(() => loadCase(`${dir}/b.case.json`))
+  const invalid = { ...withContract, contract: abs('fixtures/evals/contract/toronto-office.leads.json') }
+  writeFileSync(`${dir}/i.case.json`, JSON.stringify(invalid))
+  assert.throws(() => loadCase(`${dir}/i.case.json`), ContractError)
 })
