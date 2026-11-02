@@ -161,6 +161,7 @@ test('enrichJobSignals: ownership lost (alive false) stops the stale attempt - n
   let calls2 = 0
   await enrichJobSignals(db2, 'u1', jobId2, { fetchImpl, alive: () => { calls2++; return calls2 <= 1 } })
   assert.equal((db2.prepare('SELECT COUNT(*) c FROM lead_enrichments').get() as { c: number }).c, 0, 'a mid-lead reclaim refuses that lead\'s writes after resolve')
+  assert.equal((db2.prepare('SELECT COUNT(*) c FROM connector_audit').get() as { c: number }).c, 0, 'and zero audit rows - the guard sits before the generic writer')
   db2.close()
   let calls = 0
   await enrichJobSignals(db, 'u1', jobId, { fetchImpl, alive: () => { calls++; return calls <= 2 } }) // alive through lead1 (loop-top + post-fetch), lost before lead2

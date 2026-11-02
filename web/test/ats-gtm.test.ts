@@ -578,3 +578,29 @@ test('#533 probe classification: 404 is a clean no-board answer; 500/429 are pro
   assert.deepEqual(r429.probeErrors.sort(), ['ashby', 'greenhouse', 'lever'], 'rate-limited is a failure, not a clean answer')
   void board404
 })
+
+test('#533 ownership: a reclaim DURING the role-match fetch refuses role-match rows; the generic check completed before the reclaim stands', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status='running',query=?,icp=? WHERE id=?").run('Companies hiring a CRM administrator', JSON.stringify({ signals: ['hiring a CRM administrator'] }), jobId)
+  db.prepare("INSERT INTO leads (id,scan_job_id,company,company_domain,signal,source_url,why,confidence) VALUES ('lead1',?,'Brightloop','brightloop.io','hiring','https://news.example/1','Seed-funded.',80)").run(jobId)
+  db.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,confidence,source_url,source_date,retrieved_at) VALUES ('D1','lead1','u1','sitecrawl','domain','brightloop.io|evidence_own_domain',NULL,'https://brightloop.io/','2026-10-28',1)").run()
+  const jobs = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: i === 5 ? 'CRM Admin' : 'Account Executive' }))
+  const m: Record<string, unknown> = { [`${GH}/jobs`]: { jobs } }
+  for (const j of jobs) m[`${GH}/jobs/${j.id}`] = { ...j, first_published: d(20), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${j.id}`, content: 'https://brightloop.io', location: { name: 'London' } }
+  const realNow = Date.now; Date.now = () => NOW
+  try {
+    let calls = 0
+    // alive at loop top (1) and after the generic fetch (2); lost by the post-role-match-fetch check (3)
+    await enrichJobSignals(db, 'u1', jobId, { fetchImpl: route(m), creditEnrichment: false, alive: () => { calls++; return calls <= 2 } })
+    const rows = db.prepare("SELECT lookup, status FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string }[]
+    assert.ok(rows.some(r => r.lookup.startsWith('lead1 (gtm)')), 'the generic check completed BEFORE the reclaim: its row stands')
+    assert.ok(!rows.some(r => r.lookup.includes('(role-match)')), 'the role-match result resolved after the reclaim: no row')
+    const roleEvidence = db.prepare("SELECT COUNT(*) c FROM lead_enrichments WHERE lead_id = 'lead1' AND label LIKE 'Requested role:%'").get() as { c: number }
+    assert.equal(roleEvidence.c, 0, 'no role-match evidence written by the stale attempt')
+    const l = db.prepare("SELECT why, confidence FROM leads WHERE id = 'lead1'").get() as { why: string; confidence: number }
+    assert.equal(l.why, 'Seed-funded.'); assert.equal(l.confidence, 80) // lead fields never touched
+    assert.equal(calls, 3, 'the guard ran immediately after the role-match await')
+  } finally { Date.now = realNow }
+  db.close()
+})

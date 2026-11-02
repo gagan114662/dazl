@@ -154,6 +154,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     const h = hb?.signal ?? null
     // Postings naming contradictory company domains cannot corroborate this company: neither the dated sales / GTM roles nor the older open-role count.
     const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false, checked: null, probeErrors: [] as string[], fetchAborted: true }))
+    if (deps.alive && !deps.alive()) return // reclaimed DURING this lead's fetches: nothing the stale attempt resolved may be written - checked immediately after the await, before ANY write (audit rows included)
     if (lead.company_domain) {
       // #533: the generic GTM pass performs the same live board check and leaves the same per-board rows (same failure
       // class as the gate / role-match writers): settled board gets the outcome row; every probed-and-errored board its own
@@ -171,7 +172,6 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       else if (gb.probeErrors.length === 0 && !gb.fetchAborted) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (gtm)`.slice(0, 200), status: 'no_board_found', results: -1 })
       if (!gb.fetchAborted) for (const b of gb.probeErrors) if (b !== settled0?.board) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (gtm) ${b}`.slice(0, 200), status: 'fetch_failed', results: -1 })
     }
-    if (deps.alive && !deps.alive()) return // reclaimed DURING this lead's fetches: nothing the stale attempt resolved may be written
     // A filing far from the claimed round date is a real fact about the entity but not
     // corroboration of THIS raise (fund filings and stale filings both collide here).
     // People named in the entity-matched filing (executive officers/directors): a fact about the entity, so it uses f0, not the round-date-gated f.
@@ -225,6 +225,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     }
     if (requestedRoles.length) {
       const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false, checked: null, probeErrors: [] as string[], fetchAborted: true }))
+      if (deps.alive && !deps.alive()) return // reclaimed DURING the role-match fetch: the resolved result must not be written by the stale attempt (audit rows included)
       // #533 check-history: one append-only row per completed requested-role board check, inline in the live-fetch path only;
       // an aborted attempt writes nothing (no observation), a real failure says fetch_failed, results is the exact pre-cap
       // listing count from the actual response or -1 when no count is honestly attributable.
