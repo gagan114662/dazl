@@ -36,6 +36,7 @@ import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -85,7 +86,7 @@ const read = () => { const d = new Database(DB, { readonly: true }); try { retur
 } } finally { d.close() } }
 const s0 = read()
 
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', SCAN_MAX_CONCURRENT: '0', DAZL_UI_SYNTHETIC_MASTER: MASTER.toString('base64'), DAZL_UI_PROVIDER_LOG: PROVIDER_LOG, DAZL_UI_RESEARCH_URL: RESEARCH_URL, NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')} --import ${path.join(dir, 'test/helpers/ui-provider-stub.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 const b = await chromium.launch()
