@@ -6,6 +6,7 @@ import { getState } from '@/lib/outreach/autopilot'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
 
 export async function GET() {
   const user = await requireUser()
@@ -23,16 +24,34 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const db = getScanDb()
   switch (body?.action) {
-    case 'consent':
+    case 'consent': {
       if (body.accept !== true || body.version !== READ_CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
-      acceptReadConsent(db, user.tenantId); return NextResponse.json({ ok: true })
-    case 'revoke': revokeReadConsent(db, user.tenantId); return NextResponse.json({ ok: true })
-    case 'followups_off': setFollowups(db, user.tenantId, false); return NextResponse.json({ ok: true })
+      // accepting the version already on record changes nothing, so it records nothing
+      const had = hasReadConsent(db, user.tenantId)
+      acceptReadConsent(db, user.tenantId)
+      if (!had) await audit(user, req, { action: 'consent.accepted', resource: 'reply_reading', summary: { version: READ_CONSENT_VERSION } })
+      return NextResponse.json({ ok: true })
+    }
+    case 'revoke': {
+      // revoking consent that is not on record (any version) changes nothing, so it records nothing; follow-ups being on
+      // without consent cannot happen (followups_on requires it)
+      if (revokeReadConsent(db, user.tenantId)) await audit(user, req, { action: 'consent.revoked', resource: 'reply_reading' })
+      return NextResponse.json({ ok: true })
+    }
+    case 'followups_off': {
+      const was = followupsEnabled(db, user.tenantId)
+      setFollowups(db, user.tenantId, false)
+      if (was) await audit(user, req, { action: 'followups.disabled', resource: 'followups' })
+      return NextResponse.json({ ok: true })
+    }
     case 'followups_on': {
       const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
       if (!hasReadConsent(db, user.tenantId) || acc?.read_granted !== 1) return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })
       if (!getState(db, user.tenantId).enabled || !getState(db, user.tenantId).consent_current) return NextResponse.json({ error: 'Turn on autopilot first' }, { status: 400 })
-      setFollowups(db, user.tenantId, true); return NextResponse.json({ ok: true })
+      const was = followupsEnabled(db, user.tenantId)
+      setFollowups(db, user.tenantId, true)
+      if (!was) await audit(user, req, { action: 'followups.enabled', resource: 'followups' })
+      return NextResponse.json({ ok: true })
     }
     case 'sync': {
       if (!(await rateLimit(`sync:${user.tenantId}`, 6, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })

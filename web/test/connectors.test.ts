@@ -21,6 +21,7 @@ test('credentials are encrypted, tenant bound, and only returned when enabled', 
   assert.throws(() => getEnabledCredential(db, 't2', 'hunter', master))
   db.prepare("UPDATE tenant_connectors SET tenant_id = 't1'").run()
   assert.equal(await setEnabled(sqliteDb(db), 't1', 'hunter', false), true)
+  assert.equal(await setEnabled(sqliteDb(db), 't1', 'hunter', false), false, 'the same state again is not a change')
   assert.equal(getEnabledCredential(db, 't1', 'hunter', master), null)
   assert.deepEqual(await connectorStatus(sqliteDb(db), 't1'), [{ connector: 'hunter', last4: 'hhhh', enabled: false }])
 })

@@ -14,10 +14,15 @@ import TeamPanel from './team-panel'
 import SessionsPanel from './sessions-panel'
 import ReauthGate from './reauth-gate'
 import AccountPanel from './account-panel'
+import AuditPanel from './audit-panel'
+import { requireUser } from '@/lib/scan/service'
+import { can } from '@/lib/workspaces'
 
 const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
-export default function Settings() {
+export default async function Settings() {
+  // the audit trail is for owners and admins; nobody else's page load asks for it (a refused read is a recorded event)
+  const user = await requireUser()
   return (
     <div className="p-8 max-w-2xl">
       <h1 className="text-2xl font-semibold tracking-tight mb-1">Settings</h1>
@@ -41,6 +46,7 @@ export default function Settings() {
       <div id="crm" className="scroll-mt-6"><CrmPanel /></div>
       <CalcomPanel />
       <div id="enrichment" className="scroll-mt-6"><EnrichmentPanel /></div>
+      {user && can(user.role, 'members') && <AuditPanel />}
     </div>
   )
 }

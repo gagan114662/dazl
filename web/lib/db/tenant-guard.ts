@@ -6,8 +6,10 @@
 import type Database from 'better-sqlite3'
 import type { Db } from './client.ts'
 import { classify, type Scope } from '../tenant/scope.ts'
-// A transient lock row, not data (the evidence purge gate exists only inside one transaction): no deletion guard.
-export const UNGUARDED = new Set(['evidence_purge_gate'])
+// A transient lock row, not data (the purge gates exist only inside one transaction): no deletion guard. audit_events is
+// append-only: no UPDATE exists to move it under another tenant, and the deletion flow itself must be able to append the
+// tenant's own closing events, so the move guard is vacuous there and its insert guard would refuse the trail.
+export const UNGUARDED = new Set(['evidence_purge_gate', 'audit_purge_gate', 'audit_events'])
 // Columns that name an account without being the row's tenant column (no foreign key): guarded against tombstoned
 // tenants too, so a deleted account can neither be added to another workspace nor have a membership moved onto it
 // (decision 9 in docs/TENANT-LIFECYCLE.md, which the deletion also re-checks before erasing).

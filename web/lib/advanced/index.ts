@@ -28,8 +28,9 @@ export async function writeConsent(db: Db, tenantId: string, scope: ConsentScope
 export function revokeConsent(db: Database.Database, tenantId: string, scope: ConsentScope): void {
   db.prepare(REVOKE_SQL).run(tenantId, scope)
 }
-export async function removeConsent(db: Db, tenantId: string, scope: ConsentScope): Promise<void> {
-  await db.run(REVOKE_SQL, [tenantId, scope])
+// Whether a consent row was removed (any version), so the caller can tell a revoke from a no-op.
+export async function removeConsent(db: Db, tenantId: string, scope: ConsentScope): Promise<boolean> {
+  return (await db.run(REVOKE_SQL, [tenantId, scope])).changes > 0
 }
 // Consent only counts for the current wording; a new version asks again.
 export function hasConsent(db: Database.Database, tenantId: string, scope: ConsentScope): boolean {

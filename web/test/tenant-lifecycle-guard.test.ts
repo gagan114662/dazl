@@ -16,7 +16,7 @@ const A = 'guard-tenant-aaaa', B = 'guard-tenant-bbbb', NOW = 1_900_000_000
 const BY = 'operator (synthetic guard test)'
 // Tables whose own triggers also refuse every UPDATE (append-only audit, immutable evidence copies): an ownership move
 // there is refused with whichever guard fires first, which differs by engine.
-const IMMUTABLE: Record<string, RegExp> = { evidence_purge_audit: /tenant deleted|append-only/, lead_evidence_copies: /tenant deleted|immutable/ }
+const IMMUTABLE: Record<string, RegExp> = { evidence_purge_audit: /tenant deleted|append-only/, lead_evidence_copies: /tenant deleted|immutable/, audit_events: /tenant deleted|append-only/ } // port note: audit_events is append-only like evidence_purge_audit
 // Tables with another BEFORE INSERT trigger: Postgres fires them in name order, so leads_only_while_running (the
 // parent scan is gone) answers before tomb_leads there; the guard itself on a leads INSERT is held by the "late inserts
 // under a deleted parent" and "parent chain onto a retained parent" cases.
@@ -60,7 +60,7 @@ bothEngines('every guarded table: direct ownership moves and parent-key moves un
   await refused(c, 'UPDATE users SET id = ? WHERE id = ?', [A, B], 'users.id')
   await refused(c, 'UPDATE organizations SET id = ? WHERE id = ?', [A, B], 'organizations.id')
   assert.deepEqual(await f.snap(B), bBefore, 'the other tenant is byte-identical after every refused move')
-  assert.deepEqual(Object.entries(await f.snap(A)).filter(([t, v]) => t !== 'evidence_purge_audit' && v !== '[]').map(([t]) => t), [], 'nothing exists for the deleted tenant')
+  assert.deepEqual(Object.entries(await f.snap(A)).filter(([t, v]) => t !== 'evidence_purge_audit' && t !== 'audit_events' && v !== '[]').map(([t]) => t), [], 'nothing exists for the deleted tenant') // port note: audit_events is ALWAYS_RETAINED (lib/tenant/lifecycle.ts) - the deletion's own trail survives
 })
 
 bothEngines('parent chain onto a retained parent: a lead moved to the deleted tenant\'s kept scan, a source to its kept lead, are refused; retained rows stay editable', async c => {
@@ -100,7 +100,7 @@ bothEngines('during a staged deletion (requested, revoked, cancelled): moves und
   }
   assert.equal((await deleteTenant(c.db, A)).state, 'completed', 'the staged deletion resumes and completes after the refused moves')
   await probe('completed')
-  assert.deepEqual(Object.entries(await f.snap(A)).filter(([t, v]) => t !== 'evidence_purge_audit' && v !== '[]').map(([t]) => t), [])
+  assert.deepEqual(Object.entries(await f.snap(A)).filter(([t, v]) => t !== 'evidence_purge_audit' && t !== 'audit_events' && v !== '[]').map(([t]) => t), [])
 })
 
 bothEngines('allowed: the other tenant\'s ordinary updates still succeed: other columns, the same owner, one of its own parents', async c => {

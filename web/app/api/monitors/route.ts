@@ -7,6 +7,7 @@ import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { normalizeSources } from '@/lib/sources'
 import { createMonitor, listMonitors } from '@/lib/monitors'
 import { denied } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
 
 export async function GET() {
   const user = await requireUser()
@@ -31,5 +32,7 @@ export async function POST(req: NextRequest) {
     r.error === 'limit' ? { error: 'monitor_limit', limit: r.limit } : { error: 'interval_too_short', min: r.min },
     { status: 400 },
   )
+  // a monitor runs scans on a schedule, so it is recorded like any other standing spend; the query is the user's text
+  await audit(user, req, { action: 'monitor.created', resource: 'monitor', id: r.id, summary: { interval_hours: intervalHours } })
   return NextResponse.json({ id: r.id }, { status: 201 })
 }

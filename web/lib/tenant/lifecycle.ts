@@ -42,7 +42,10 @@ export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session toke
 export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash|claim_token)$|secret/
 // Kept whatever the policy: append-only audit records that hold no tenant content (lib/scan/evidence-copies.ts: who
 // purged evidence, why, and counts). Reported on the tombstone as retained, like any policy retention.
-export const ALWAYS_RETAINED: Record<string, string> = { evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content' }
+export const ALWAYS_RETAINED: Record<string, string> = {
+  evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content',
+  audit_events: 'append-only audit trail (lib/audit.ts); redacted at the source, and its delete trigger would refuse the erase anyway',
+}
 
 export interface DeletionPolicy {
   // An explicit decision on opt-outs: keep the suppression list (so the addresses are never mailed again if the
