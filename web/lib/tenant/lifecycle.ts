@@ -47,6 +47,7 @@ export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token
 export const ALWAYS_RETAINED: Record<string, string> = {
   evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content',
   audit_events: 'append-only audit trail (lib/audit.ts); redacted at the source, and its delete trigger would refuse the erase anyway',
+  onboarding_audit: 'append-only opt-in/withdrawal/enrollment evidence (lib/outreach/onboarding-policy.ts); content-free at the source (no emails), and its delete trigger would refuse the erase anyway',
 }
 
 export interface DeletionPolicy {

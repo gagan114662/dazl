@@ -13,6 +13,15 @@
 //
 // Marketing suppression stays separate: this module never writes suppressions, so transactional service
 // mail to a customer is unaffected by anything here.
+//
+// Two decisions, made now rather than at first activation:
+// - onboarding_audit is APPEND-ONLY consent evidence (update and delete refused, both engines) and content-free
+//   at the source: it records action/actor/time and non-PII detail (never an email), so it is retained on tenant
+//   erasure like audit_events (lib/tenant/lifecycle.ts ALWAYS_RETAINED). The erasable enrollments table carries
+//   the email; audit rows correlate by tenant and time.
+// - policy versions RECONSENT, never grandfather: the gate and enrollment accept only the CURRENT
+//   ONBOARDING_POLICY_VERSION. A future policy/copy change bumps the version and every earlier opt-in stops
+//   counting until the actor opts in again - silent continuation under changed terms is not consent.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { conversionEventFor } from './lifecycle.ts'
@@ -43,6 +52,8 @@ export function migrateOnboardingPolicy(db: Database.Database): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS onboarding_audit_tenant ON onboarding_audit (tenant_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
   `)
 }
 
@@ -55,7 +66,8 @@ function auditOnboarding(db: Database.Database, tenantId: string, action: string
 
 export function activeOnboardingPolicy(db: Database.Database, tenantId: string): { policy_version: string; opted_in_by: string; opted_in_at: number } | null {
   migrateOnboardingPolicy(db)
-  const r = db.prepare('SELECT policy_version, opted_in_by, opted_in_at FROM onboarding_policies WHERE tenant_id = ? AND withdrawn_at IS NULL').get(tenantId) as { policy_version: string; opted_in_by: string; opted_in_at: number } | undefined
+  // Current version only: an opt-in under older terms is recorded but no longer active (reconsent, never grandfather).
+  const r = db.prepare('SELECT policy_version, opted_in_by, opted_in_at FROM onboarding_policies WHERE tenant_id = ? AND withdrawn_at IS NULL AND policy_version = ?').get(tenantId, ONBOARDING_POLICY_VERSION) as { policy_version: string; opted_in_by: string; opted_in_at: number } | undefined
   return r ?? null
 }
 
@@ -67,7 +79,7 @@ export function optInOnboarding(db: Database.Database, tenantId: string, actorUs
     db.prepare(`INSERT INTO onboarding_policies (tenant_id, policy_version, opted_in_by, opted_in_at, withdrawn_at) VALUES (?, ?, ?, ?, NULL)
       ON CONFLICT (tenant_id) DO UPDATE SET policy_version = excluded.policy_version, opted_in_by = excluded.opted_in_by, opted_in_at = excluded.opted_in_at, withdrawn_at = NULL`)
       .run(tenantId, ONBOARDING_POLICY_VERSION, actorUserId, now)
-    auditOnboarding(db, tenantId, 'opted_in', `policy ${ONBOARDING_POLICY_VERSION} by ${actorUserId}`.slice(0, 200), now)
+    auditOnboarding(db, tenantId, 'opted_in', `policy ${ONBOARDING_POLICY_VERSION}`, now)
   })()
 }
 
@@ -76,7 +88,7 @@ export function withdrawOnboarding(db: Database.Database, tenantId: string, acto
   let changed = 0
   db.transaction(() => {
     changed = (db.prepare('UPDATE onboarding_policies SET withdrawn_at = ? WHERE tenant_id = ? AND withdrawn_at IS NULL').run(now, tenantId) as { changes: number }).changes
-    if (changed) auditOnboarding(db, tenantId, 'withdrawn', `by ${actorUserId}`.slice(0, 200), now)
+    if (changed) auditOnboarding(db, tenantId, 'withdrawn', null, now)
   })()
   return changed === 1
 }
@@ -94,7 +106,7 @@ export function enrollOnboarding(db: Database.Database, tenantId: string, rawEma
   if (!conv) return 'not_customer'
   const ins = db.prepare('INSERT INTO onboarding_enrollments (tenant_id, email, source, enrolled_at) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, email) DO NOTHING')
     .run(tenantId, email, `conversion:${conv.kind}`.slice(0, 60), now) as { changes: number }
-  if (ins.changes === 1) auditOnboarding(db, tenantId, 'enrolled', email.slice(0, 200), now)
+  if (ins.changes === 1) auditOnboarding(db, tenantId, 'enrolled', `conversion:${conv.kind}`, now) // never the email: audit is content-free consent evidence
   return ins.changes === 1 ? 'enrolled' : 'already'
 }
 

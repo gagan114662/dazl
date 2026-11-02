@@ -1147,6 +1147,10 @@ CREATE TRIGGER leads_only_while_running
     WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
 
+CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+
+CREATE TRIGGER onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+
 CREATE TRIGGER outreach_messages_insert_seq AFTER INSERT ON outreach_messages WHEN NEW.insert_seq IS NULL BEGIN UPDATE outreach_messages SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM outreach_messages) WHERE rowid = NEW.rowid; END;
 
 CREATE TRIGGER outreach_sent_is_final

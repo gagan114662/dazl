@@ -62,6 +62,38 @@ test('an unrelated same-name signup enrolls nothing and gates nothing', () => {
   assert.equal(onboardingSendAllowed(db, 't1', 'jane@acme.com'), false)
 })
 
+test('onboarding_audit is append-only consent evidence: update and delete refused', () => {
+  const db = setup()
+  optInOnboarding(db, 't1', 'user-1', 1000)
+  assert.throws(() => db.prepare("UPDATE onboarding_audit SET action = 'withdrawn'").run(), /append-only/)
+  assert.throws(() => db.prepare('DELETE FROM onboarding_audit').run(), /append-only/)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_audit').get() as { n: number }).n, 1, 'the evidence row survived both attempts')
+})
+
+test('policy versions reconsent, never grandfather: an older-version opt-in is recorded but inactive', () => {
+  const db = setup()
+  optInOnboarding(db, 't1', 'user-1', 1000)
+  converted(db, 'jane@acme.com')
+  enrollOnboarding(db, 't1', 'jane@acme.com', 1001)
+  assert.equal(onboardingSendAllowed(db, 't1', 'jane@acme.com'), true)
+  // simulate the next policy version shipping: the stored opt-in predates it
+  db.prepare("UPDATE onboarding_policies SET policy_version = '1999-01-01'").run()
+  assert.equal(activeOnboardingPolicy(db, 't1'), null, 'old-version opt-in is not active')
+  assert.equal(enrollOnboarding(db, 't1', 'jane@acme.com', 1002), 'no_policy')
+  assert.equal(onboardingSendAllowed(db, 't1', 'jane@acme.com'), false, 'the gate fails closed until re-opt-in')
+})
+
+test('audit evidence is content-free at the source: no email or actor detail is stored', () => {
+  const db = setup()
+  converted(db, 'jane@acme.com')
+  optInOnboarding(db, 't1', 'user-1', 900)
+  enrollOnboarding(db, 't1', 'jane@acme.com', 1000)
+  withdrawOnboarding(db, 't1', 'user-1', 2000)
+  const rows = db.prepare('SELECT action, detail FROM onboarding_audit').all() as { action: string; detail: string | null }[]
+  assert.deepEqual(rows.map(r => r.action), ['opted_in', 'enrolled', 'withdrawn'])
+  for (const r of rows) { assert.ok(!String(r.detail ?? '').includes('@'), `detail holds no email: ${r.detail}`); assert.ok(!String(r.detail ?? '').includes('user-1'), `detail holds no actor: ${r.detail}`) }
+})
+
 test('marketing suppression stays separate: nothing here writes suppressions', () => {
   const db = setup()
   converted(db, 'jane@acme.com')
