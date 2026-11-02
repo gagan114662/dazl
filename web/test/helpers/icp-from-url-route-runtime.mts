@@ -10,6 +10,7 @@ import { migrateScan } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migratePlatform } from '../../lib/db/platform-tables.ts'
+import { migrateAuth } from '../../lib/auth-db.ts'
 import { setErrorSinks, type ErrorRecord } from '../../lib/ops/errors.ts'
 import { POST } from '../../app/api/scan/icp-from-url/route.ts'
 
@@ -44,7 +45,9 @@ globalThis.fetch = (async (u: unknown, init?: { headers?: Record<string, string>
 }) as unknown as typeof fetch
 
 function setup() {
-  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migratePlatform(db); setScanDb(db); modelCalls = 0; seenKey = null
+  // migrateAuth too: the route's trialPrincipal joins organizations/users (no rows inserted here = no trial
+  // principal, which is the point of the keyless leg).
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migratePlatform(db); migrateAuth(db); setScanDb(db); modelCalls = 0; seenKey = null
   return db
 }
 const post = (body: unknown) => POST(new NextRequest('http://localhost/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost' }, body: JSON.stringify(body) }))
