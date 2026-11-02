@@ -12,7 +12,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE, GmailSendError } from '../lib/gmail/oauth.ts'
 import { approve, createDraft, OutreachError, saveSettings, sendMessage, suppress, type Deps } from '../lib/outreach/service.ts'
-import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, enable, getState, migrateAutopilot, pause, recentAutopilotAudit, runAutopilot, withdrawLaunch } from '../lib/outreach/autopilot.ts'
+import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, drainFirstTouch, enable, getState, migrateAutopilot, offerHashFor, pause, recentAutopilotAudit, runAutopilot, withdrawLaunch } from '../lib/outreach/autopilot.ts'
 import { acceptLaunchPolicy, calibratedStop, launchGate, launchPolicyView, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { callCostUsd } from '../lib/llm/spend-guard.ts'
@@ -873,4 +873,97 @@ test('HOLD: unchanged state at the same boundary sends exactly once; two competi
   assert.deepEqual(to, ['d@four.example', 'e@five.example'], 'each lead is sent exactly once across both passes')
   assert.equal(r1.sent + r2.sent, 2)
   assert.deepEqual(statuses(b.db).filter(s => s !== 'draft'), ['sent', 'sent'])
+})
+
+// ---------- the drain re-checks its caller authority at the actual send boundary (#405 review): a policy withdrawn,
+// re-accepted, stopped or gone unreadable during the token await refuses the send by name; it never widens to warmup.
+const TN = NOW + 86400 + 60 // a day later: calibration sends are outside the 24h volume window
+async function drainFixture() {
+  const { db, job } = await launched()
+  const leadId = (db.prepare("SELECT id FROM leads WHERE contact = 'd@four.example'").get() as { id: string }).id
+  const id = createDraft(db, 'A', leadId, 'Acme')
+  db.prepare("UPDATE outreach_messages SET hold_reason = 'send_failed', hold_policy = ?, hold_until = ?, offer_hash = ? WHERE id = ?").run(CONSENT_VERSION, NOW - 1, offerHashFor(db, 'A', leadId), id)
+  return { db, job, leadId, id }
+}
+const drainRun = async (db: Database.Database, change: ((db: Database.Database, job: string) => void) | null, job: string) => {
+  const g = gmail(); let changed = false
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes('token') && !changed && change) { changed = true; change(db, job) }
+    return (g.d.fetchImpl as typeof fetch)(url, init)
+  }) as typeof fetch
+  const r = await drainFirstTouch(db, 'A', { ...g.d, fetchImpl, now: TN })
+  if (change) assert.ok(changed, 'the change happened inside the send path')
+  return { r, g }
+}
+const msgRow = (db: Database.Database, id: string) => db.prepare('SELECT status, error FROM outreach_messages WHERE id = ?').get(id) as { status: string; error: string | null }
+
+test('drain boundary: control - a still-valid authority sends the held first touch', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, null, '')
+  assert.deepEqual([r.sent, g.sent.length, msgRow(db, id).status], [1, 1, 'sent'])
+})
+
+test('drain boundary: the policy withdrawn during the token refresh refuses the send', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => withdrawLaunch(d, 'A'), '')
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'launch_policy_changed'])
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'launch_policy_changed' })
+})
+
+test('drain boundary: the policy re-accepted during the token refresh refuses the send (a new acceptance needs a new preflight)', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, (d, job) => acceptLaunchPolicy(d, 'A', policy([job]), TN), (db.prepare("SELECT scan_job_id AS j FROM leads WHERE contact = 'd@four.example'").get() as { j: string }).j)
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'launch_policy_changed'])
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'launch_policy_changed' })
+})
+
+test('drain boundary: a policy stop landing during the token refresh refuses the send and pauses', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => d.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES ('r1', 'A', 't1', NULL, 's0@cal0.example', 'thanks', 'positive', ?)").run(TN - 1), '')
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'reply_received'])
+  assert.equal(getState(db, 'A').pause_reason, 'reply_received')
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'reply_received' })
+})
+
+test('drain boundary: the launch store unreadable during the token refresh fails closed and pauses', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => d.exec('DROP TABLE autopilot_launch_policy'), '')
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'stop_check_unavailable'])
+  assert.equal(getState(db, 'A').pause_reason, 'stop_check_unavailable')
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'stop_check_unavailable' })
+})
+
+test('drain boundary: autopilot disabled during the token refresh refuses the send', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => disable(d, 'A'), '')
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'autopilot_off'])
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'autopilot_off' })
+})
+
+test('drain boundary: the consent version changing during the token refresh refuses the send', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => d.prepare("UPDATE autopilot_settings SET consent_version = '2000-01-01' WHERE tenant_id = 'A'").run(), '')
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'consent_required'])
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'consent_required' })
+})
+
+test('drain boundary: the sending mailbox changing during the token refresh refuses the send as a launch change', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => d.prepare("UPDATE gmail_accounts SET email = 'other@acme.example' WHERE tenant_id = 'A'").run(), '')
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'launch_policy_changed'])
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'sender_changed' })
+})
+
+test('drain boundary: the rollout cap consumed during the token refresh holds the send, nothing goes out', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => { for (let i = 0; i < ROLLOUT_DAILY_CAP; i++) auditAt(d, 'A', 'sent', undefined, undefined, undefined, TN - 50 + i) }, '')
+  assert.deepEqual([g.sent.length, r.sent, r.held, r.stopped ?? null], [0, 0, 1, null])
+  assert.equal(msgRow(db, id).status === 'sent', false)
+})
+
+test('drain boundary: a pause during the token refresh is refused by the service itself (already commitment-fresh)', async () => {
+  const { db, id } = await drainFixture()
+  const { r, g } = await drainRun(db, d => pause(d, 'A'), '')
+  assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'paused'])
+  assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'paused' })
 })

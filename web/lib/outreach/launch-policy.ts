@@ -153,15 +153,16 @@ const strs = (v: unknown, max: number) => Array.isArray(v) ? v.filter((x): x is 
 const num = (v: unknown) => typeof v === 'number' ? v : NaN // a number is a number: no coercion (true is not a cap of 1)
 // A policy from untrusted input, with every field typed; anything missing becomes a problem policyProblems reports.
 export function parsePolicy(v: unknown): LaunchPolicy {
-  const o = (v && typeof v === 'object' ? v : {}) as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+  const rec = (x: unknown): Record<string, unknown> => (x && typeof x === 'object' ? x : {}) as Record<string, unknown>
+  const o = rec(v), audience = rec(o.audience), exclusions = rec(o.exclusions), claims = rec(o.claims), stops = rec(o.stops)
   return {
     version: typeof o.version === 'string' ? o.version : '',
     sender: typeof o.sender === 'string' ? o.sender.trim().toLowerCase() : '',
-    audience: { playIds: strs(o.audience?.playIds, MAX_AUDIENCE_PLAYS) },
-    exclusions: { domains: strs(o.exclusions?.domains, MAX_EXCLUSIONS).map(d => d.toLowerCase()), emails: strs(o.exclusions?.emails, MAX_EXCLUSIONS).map(e => e.toLowerCase()) },
+    audience: { playIds: strs(audience.playIds, MAX_AUDIENCE_PLAYS) },
+    exclusions: { domains: strs(exclusions.domains, MAX_EXCLUSIONS).map(d => d.toLowerCase()), emails: strs(exclusions.emails, MAX_EXCLUSIONS).map(e => e.toLowerCase()) },
     dailyCap: num(o.dailyCap), spendCapUsd: num(o.spendCapUsd),
-    claims: { mayStatePrice: o.claims?.mayStatePrice === true, benchmarkUrls: strs(o.claims?.benchmarkUrls, MAX_BENCHMARKS) },
-    stops: { pauseOnAnyReply: o.stops?.pauseOnAnyReply !== false, maxBounceRate: num(o.stops?.maxBounceRate) },
+    claims: { mayStatePrice: claims.mayStatePrice === true, benchmarkUrls: strs(claims.benchmarkUrls, MAX_BENCHMARKS) },
+    stops: { pauseOnAnyReply: stops.pauseOnAnyReply !== false, maxBounceRate: num(stops.maxBounceRate) },
     testInbox: typeof o.testInbox === 'string' ? o.testInbox.trim().toLowerCase() : '',
   }
 }

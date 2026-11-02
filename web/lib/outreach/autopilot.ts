@@ -772,6 +772,43 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
   if (!gate.calibrated && gate.accepted) return stop('launch_not_calibrated')
   if (gate.calibrated) { const halt = calibratedStop(db, tenantId, gate); if (halt) return stop(halt) }
   if (!gate.calibrated && sentTotal(db, tenantId) < WARMUP_SENDS(env)) return stop('warmup') // first sends stay manually approved
+  // The drain-start gate is the authority the sends below run under; the send path re-reads it at the actual Gmail
+  // commitment (post-refresh), so a policy accepted, re-accepted, withdrawn, stopped or gone unreadable during the
+  // drain or a token await refuses the send by name - never an invisible widening back to the warmup rules.
+  const started = gate
+  const drainStopAt = (g2: LaunchGate, leadId: string, messageId: string): string | null => {
+    if (g2.calibrated !== started.calibrated || (g2.calibrated && started.calibrated && g2.acceptanceId !== started.acceptanceId)) return 'launch_policy_changed'
+    if (!g2.calibrated) {
+      if (g2.accepted) return 'launch_not_calibrated'
+      // The policy the drain started under is gone entirely (withdrawn mid-drain): never widen to the warmup rules.
+      return started.calibrated || started.accepted ? 'launch_policy_changed' : null
+    }
+    if (db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status = 'uncertain'").get(tenantId)) return 'uncertain_send'
+    const halt = calibratedStop(db, tenantId, g2); if (halt) return halt
+    const row = db.prepare('SELECT contact, source_url, scan_job_id AS play FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null; play: string } | undefined
+    const m2 = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { to_email: string; subject: string; body: string } | undefined
+    const outside = outsidePolicy(g2.policy, row?.play ?? '', m2?.to_email ?? row?.contact ?? '')
+    if (outside) return 'launch_policy_changed'
+    if (m2 && claimIssuesFor(g2.policy, `${m2.subject}\n${m2.body}`, row?.source_url ? [row.source_url] : []).length) return 'launch_policy_changed'
+    return null
+  }
+  // Caller-side authority for each drain send, checked by the send path as its last word before Gmail (the service
+  // already re-reads pause/sender/suppression itself; this adds enabled/consent, the launch and the volume limits):
+  // every read fails closed, an unreadable launch store by its own name.
+  const drainAuthorize = (leadId: string, messageId: string, domain: string): (() => string | null) => () => {
+    try { const s2 = getState(db, tenantId); if (!autopilotAvailable(env)) return 'autopilot_unavailable'; if (!s2.enabled) return 'autopilot_off'; if (!s2.consent_current) return 'consent_required' }
+    catch { return started.calibrated || started.accepted ? 'stop_check_unavailable' : 'authority_unreadable' }
+    let g2: LaunchGate
+    try { g2 = launchGate(db, tenantId, launchMailbox(db, tenantId), now); const ls = drainStopAt(g2, leadId, messageId); if (ls) return ls } catch { return 'stop_check_unavailable' }
+    try {
+      // The launch's rollout cap as the store has it NOW (the fresh gate), on top of the tenant's own daily cap.
+      if (autoSent24h(db, tenantId, now) >= Math.min(getState(db, tenantId).daily_cap, g2.calibrated ? g2.cap : Number.MAX_SAFE_INTEGER)) return 'volume_daily_cap'
+      // ...and the one-email-per-company-per-7-days rule, this send's own claim left out (it counts for every other
+      // send, never for itself - the claim is already 'sending' when the send path asks).
+      if (db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND to_email LIKE ? AND claimed_at >= ? AND id != ?").get(tenantId, `%@${domain}`, now - 7 * 86400, messageId)) return 'volume_domain_cap'
+    } catch { return started.calibrated || started.accepted ? 'stop_check_unavailable' : 'authority_unreadable' }
+    return null
+  }
   const rows = db.prepare(
     `SELECT id, lead_id, to_email, status, offer_hash FROM outreach_messages
      WHERE tenant_id = ? AND status IN ('draft','approved') AND hold_reason IN ('daily_cap','held_domain_cap','send_failed','reply_sync_stale')
@@ -802,7 +839,7 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
     }
     try {
       if (m.status === 'draft') approve(db, tenantId, m.id) // a released retry is already approved; approve() is draft-only
-      const r = await sendMessage(db, tenantId, m.id, d)
+      const r = await sendMessage(db, tenantId, m.id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: drainAuthorize(m.lead_id, m.id, domain) })
       if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id) }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', m.lead_id, m.id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
@@ -811,6 +848,15 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
       audit(db, tenantId, 'send_failed', code, m.lead_id, m.id)
       if (code === 'gmail_reconnect_needed' || code === 'gmail_not_connected') { pause(db, tenantId, code); return stop(code) }
       if (code === 'paused' || code === 'already_uncertain') return stop(code)
+      // Refusals from the drain's own commitment authority: the launch changed or is unreadable, autopilot's own
+      // authority lapsed, or a volume limit tightened during the await. Every later row this pass would answer the
+      // same, so the drain ends (or holds) by name instead of sending one message too many.
+      if (code === 'launch_policy_changed' || code === 'launch_not_calibrated') return stop(code)
+      if (code === 'stop_check_unavailable' || code === 'uncertain_send' || code === 'reply_received' || code === 'bounce_rate') { pause(db, tenantId, code); return stop(code) }
+      if (code === 'autopilot_off' || code === 'autopilot_unavailable' || code === 'consent_required' || code === 'authority_unreadable') return stop(code)
+      if (code === 'sender_changed') return stop(started.calibrated || started.accepted ? 'launch_policy_changed' : code)
+      if (code === 'volume_daily_cap') { setHold(db, tenantId, m.id, m.lead_id, 'daily_cap', dailyCapDueAt(db, tenantId, now)); out.held++; continue }
+      if (code === 'volume_domain_cap') { setHold(db, tenantId, m.id, m.lead_id, 'held_domain_cap', domainCapDueAt(db, tenantId, domain, now)); out.held++; continue }
       if (holdSendFailure(db, tenantId, m.id, m.lead_id, code, now) === 'skipped') out.skipped++; else out.held++
     }
   }
