@@ -137,3 +137,30 @@ test('wrong role behind a sales label: the index says Account Executive, the com
   assert.equal(roleAgrees('Backend Engineer', 'Backend Engineer'), false, 'agreeing but not a sales / GTM role')
   assert.equal(roleAgrees('Head of Sales', 'Account Executive'), false)
 })
+
+test('#533 direct-career roleMatch: the requested role wins over an earlier generic role; a non-matching verified vacancy is generic, never role-qualified', async () => {
+  // careers-page candidates are GTM roles by design (salesRoleTitles filters on isGtmRole), so roleMatch applies within that set
+  const isSalesOps = (t: string) => /sales operations manager/i.test(t)
+  // the page lists Account Executive FIRST, Sales Operations Manager second: roleMatch keeps verifying past the generic hit
+  const both = await careersSalesVacancy('brightloop.io', site({
+    '/careers': '<h2>Open roles</h2><ul><li><a href="/careers/ae">Account Executive</a></li><li><a href="/careers/som">Sales Operations Manager</a></li></ul>',
+    '/careers/ae': JOB('Account Executive'), '/careers/som': JOB('Sales Operations Manager'),
+  }), { now: NOW, company: 'Brightloop', roleMatch: isSalesOps })
+  assert.equal(both.reason, 'found'); assert.equal(both.matched, true); assert.equal(both.vacancy!.title, 'Sales Operations Manager')
+  // only a generic sales role: the vacancy is returned as GENERIC (matched false), honestly named no_matching_requested_role
+  const generic = await careersSalesVacancy('brightloop.io', site({
+    '/careers': '<h2>Open roles</h2><ul><li><a href="/careers/ae">Account Executive</a></li></ul>', '/careers/ae': JOB('Account Executive'),
+  }), { now: NOW, company: 'Brightloop', roleMatch: isSalesOps })
+  assert.equal(generic.reason, 'no_matching_requested_role'); assert.equal(generic.matched, false); assert.equal(generic.vacancy!.title, 'Account Executive')
+  // no roleMatch asked: unchanged legacy behavior, first verified vacancy, no matched flag
+  const plain = await careersSalesVacancy('brightloop.io', site({
+    '/careers': '<ul><li><a href="/careers/ae">Account Executive</a></li></ul>', '/careers/ae': JOB('Account Executive'),
+  }), { now: NOW, company: 'Brightloop' })
+  assert.equal(plain.reason, 'found'); assert.equal(plain.matched, undefined)
+  // an UNVERIFIED matching title behind a dead link does not count; a later verified generic is returned generic
+  const dead = await careersSalesVacancy('brightloop.io', site({
+    '/careers': '<ul><li><a href="/careers/som">Sales Operations Manager</a></li><li><a href="/careers/ae">Account Executive</a></li></ul>',
+    '/careers/ae': JOB('Account Executive'),
+  }, { '/careers/som': { status: 404, body: 'gone' } }), { now: NOW, company: 'Brightloop', roleMatch: isSalesOps })
+  assert.equal(dead.reason, 'no_matching_requested_role'); assert.equal(dead.matched, false); assert.equal(dead.vacancy!.title, 'Account Executive')
+})
