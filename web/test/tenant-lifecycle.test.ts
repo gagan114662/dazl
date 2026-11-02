@@ -73,7 +73,7 @@ test('deletion: refuses without a decision on opt-outs; erases only the target; 
   await assert.rejects(deleteTenant(d, A, { requestedBy: 'test', policy: { suppressions: 'retain', retainTables: ['app_leases'] } }), /not a tenant-scoped table/)
   const bBefore = snapshotSqlite(db, B)
   const t = await deleteTenant(d, A, { policy: POLICY, requestedBy: 'operator (synthetic test)', now: NOW })
-  assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { audit_events: 1, evidence_purge_audit: 1, suppressions: 1 }) // audit_events: the deletion's own audited event is retained (port note)
+  assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { audit_events: 4, evidence_purge_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events (requested, erased, completed), retained by ALWAYS_RETAINED
   const after = snapshotSqlite(db, A)
   assert.deepEqual(emptyExcept(after, ['suppressions']), [], 'every other table is empty for the deleted tenant')
   assert.notEqual(after.suppressions, '[]', 'opt-outs retained by policy')
@@ -108,6 +108,7 @@ test('no recreation: late inserts for the deleted tenant, under its deleted pare
     ["INSERT INTO leads (id, scan_job_id, company, source_url) VALUES ('late-lead', ?, 'Late', 'https://late.example.test')", [oldJob.id]],
     ["INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, 'new@x.example', 'manual')", [A]],
     ["INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'again@x.example', 'x', 'y')", [A]],
+    ["INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, decision, at, seq) VALUES ('late-audit', ?, 'x', 'user', 'credential.saved', 'credential', 'allowed', 1, 1)", [A]],
   ] as [string, unknown[]][]) assert.throws(() => db.prepare(sql).run(...args), /tenant deleted/, sql)
   assert.deepEqual(emptyExcept(snapshotSqlite(db, A), ['suppressions']), [])
   // the other tenant is unaffected

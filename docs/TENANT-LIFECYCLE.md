@@ -26,7 +26,7 @@ Each step is one transaction and moves the tombstone (`tenant_tombstones`) to th
 
 | state | done in that step |
 |---|---|
-| `requested` | the tombstone is written; from here **no write can add rows** for the tenant (guard, below) |
+| `requested` | the tombstone is written; from here **no write can add rows** for the tenant (guard, below) except the deletion flow's own closing audit events (audit_events: `tenant.deletion_requested` / `tenant.deletion_erased` / `tenant.deletion_completed`, written only inside the transaction holding the tenant's `audit_closing_gate` row) |
 | `revoked` | credentials and sign-in state deleted: sessions, OAuth identities and states, Gmail tokens, LLM keys, connector secrets |
 | `cancelled` | queued work deleted (`work_queue`), and the ids of every parent row (scan jobs, leads, batches, monitors, watches) recorded in `tenant_tombstone_keys` |
 | `erased` | every tenant-scoped row deleted, children first, except retained tables; unexpired evidence copies are deleted under the tenant's purge gate |

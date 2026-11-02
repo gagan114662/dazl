@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs'
 import { bothEngines, type EngineCtx } from './helpers/engines.ts'
 import { deleteTenant, tenantScope, tombstone, type Scope } from '../lib/tenant/lifecycle.ts'
 import { guardTriggers, tableColumns, ACCOUNT_COLUMNS, UNGUARDED } from '../lib/db/tenant-guard.ts'
+import { record } from '../lib/audit.ts'
 import { tenantFixture, type Fixture } from './helpers/tenant-fixture.ts'
 
 const A = 'guard-tenant-aaaa', B = 'guard-tenant-bbbb', NOW = 1_900_000_000
@@ -212,17 +213,45 @@ bothEngines('allowed: a same-value SET of the guarded column on the deleted tena
   await refused(c, 'UPDATE leads SET scan_job_id = ? WHERE scan_job_id = ?', [f.ids[B].scan_jobs, f.ids[A].scan_jobs], 'and so is moving the child out')
 })
 
+
+// The bounded closing exception (review FAIL on 7970dfe2: the carveout was unbounded and its closing-trail
+// justification was unimplemented). Only deleteTenant's own three closing events can be appended for a tombstoned
+// tenant, only inside the transaction holding its audit_closing_gate row; every other append - including one
+// pretending to be a closing event - is refused, and the gate is never left behind.
+bothEngines('audit closing trail: the deletion flow writes exactly its closing events; any other append after the tombstone is refused', async c => {
+  await fixture(c)
+  // before any tombstone an ordinary append works (positive control)
+  await record(c.db, { tenantId: A, actorId: 'ga@example.test', action: 'credential.saved', resourceType: 'credential' })
+  const t = await deleteTenant(c.db, A, { policy: { suppressions: 'erase' }, requestedBy: BY, now: NOW })
+  assert.equal(t.state, 'completed')
+  const closing = await c.db.all<{ action: string; actor_id: string; actor_kind: string; resource_type: string; resource_id: string; decision: string }>(
+    "SELECT action, actor_id, actor_kind, resource_type, resource_id, decision FROM audit_events WHERE tenant_id = ? AND action LIKE 'tenant.deletion_%' ORDER BY at, seq", [A])
+  assert.deepEqual(closing.map(e => e.action), ['tenant.deletion_requested', 'tenant.deletion_erased', 'tenant.deletion_completed'])
+  for (const e of closing) {
+    assert.equal(e.actor_id, BY); assert.equal(e.actor_kind, 'service')
+    assert.equal(e.resource_type, 'tenant'); assert.equal(e.resource_id, A); assert.equal(e.decision, 'allowed')
+  }
+  // the retained report counts the seeded fixture row, the control event and the three closing events
+  assert.equal(JSON.parse(t.retained!).audit_events, 5)
+  // the gate is closed again: an arbitrary append is refused, and so is one masquerading as a closing event
+  await assert.rejects(record(c.db, { tenantId: A, actorId: 'anyone', action: 'credential.saved', resourceType: 'credential' }), /tenant deleted/)
+  await assert.rejects(record(c.db, { tenantId: A, actorId: 'anyone', action: 'tenant.deletion_requested', resourceType: 'tenant' }), /tenant deleted/)
+  assert.equal(await rows(c, 'SELECT count(*) AS n FROM audit_closing_gate', []), 0, 'no gate row left behind')
+  // the other tenant's trail still takes ordinary appends
+  await record(c.db, { tenantId: B, actorId: 'gb@example.test', action: 'credential.saved', resourceType: 'credential' })
+})
+
 bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard, users and organizations too', async c => {
   const scope = await guarded(c)
   const want = guardTriggers(scope).map(g => g.name).sort()
   const accountCols = Object.entries(ACCOUNT_COLUMNS).filter(([t]) => scope.some(s => s.table === t)).reduce((n, [, cs]) => n + cs.length, 0)
   assert.equal(want.length, 2 * (scope.length + 2 + accountCols), `${scope.length} guarded tables, users and organizations, ${accountCols} account column(s): two guards each`)
-  assert.equal(want.length, 176) // 455's 166 + two guards each for main's post-fork tenant tables: autopilot_work (0032), seller_decisions (0034), connector_claims (0035), autopilot_launch_policy (#553's 0038), scan_traces (#463's 0040)
+  assert.equal(want.length, 178) // 455's 166 + two guards each for main's post-fork tenant tables: autopilot_work (0032), seller_decisions (0034), connector_claims (0035), autopilot_launch_policy (#553's 0038), scan_traces (#463's 0040), audit_events (#464's 0041; its INSERT guard carries the bounded audit_closing_gate exception)
   // The static Postgres migrations must carry exactly this generated set, not the fork's: only the sqlite path derives
   // its guards from the live schema, so a stale migration leaves post-fork tables unguarded on pg (#554 review). Tables
   // added after 0039 carry their own guards in their own migration (migrations are immutable once applied): 0040 guards
-  // scan_traces (#463).
-  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql']
+  // scan_traces (#463), 0041 guards audit_events (#464).
+  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql']
     .flatMap(f => [...readFileSync(new URL(`../lib/db/migrations/pg/${f}`, import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1])).sort()
   assert.deepEqual(pgNames, want, 'the static PG migrations drifted from the generated guard set')
   const live = c.kind === 'sqlite'

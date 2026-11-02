@@ -6,7 +6,8 @@
 // redacted (the export is for the tenant; it never carries a secret, a password hash or a session token).
 //
 // Deletion is a resumable state machine, one transaction per step, recorded in tenant_tombstones:
-//   requested  the tombstone exists: from here no write can add rows for this tenant (triggers, below)
+//   requested  the tombstone exists: from here no write can add rows for this tenant (triggers, below) except
+//              this flow's own closing audit events (audit_closing_gate, below)
 //   revoked    credentials and sign-in state deleted: Gmail tokens, LLM keys, connector secrets, sessions, OAuth
 //              identities and states. (Revoking a Gmail grant at Google is a network call the operator makes; see docs.)
 //   cancelled  queued work deleted (work queue rows), and the ids of every parent row (scan jobs, leads, batches,
@@ -32,6 +33,7 @@
 import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/client.ts'
 import { classify, type Scope } from './scope.ts'
 import { foreignKeys, tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
+import { recordTx } from '../audit.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
@@ -91,6 +93,16 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
     if (rows.length) tables[t] = rows.map(r => clean(t, r))
   }
   return { format: 'dazl-tenant-export', version: 1, tenant, exported_at: now.toISOString(), tables, excluded: EXPORT_EXCLUDED, redacted_columns: [...redacted].sort() }
+}
+
+// The deletion's own closing events, the only rows a tombstoned tenant may still gain: the audit_events INSERT guard
+// (lib/db/tenant-guard.ts) allows one only while the tenant's audit_closing_gate row exists, and it exists inside the
+// transaction that writes the event (inserted before, deleted after; a rolled-back step leaves neither). The actor is
+// who asked for the deletion; the kind is service, the lifecycle machine acting on that request.
+export function* closingEventTx(tx: Tx, tenant: string, requestedBy: string, action: string, now: number, summary?: Record<string, unknown>): TxBody<void> {
+  yield* tx.run('INSERT INTO audit_closing_gate (tenant) VALUES (?)', [tenant])
+  yield* recordTx(tx, { tenantId: tenant, actorId: requestedBy, actorKind: 'service', action, resourceType: 'tenant', resourceId: tenant, summary }, now)
+  yield* tx.run('DELETE FROM audit_closing_gate WHERE tenant = ?', [tenant])
 }
 
 export interface Tombstone { deleted_tenant: string; requested_at: number; requested_by: string; state: DeletionState; policy: string; retained: string | null; completed_at: number | null }
@@ -177,6 +189,7 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
       yield* refuseSharedWorkspace(tx, cols, tenant)
       yield* tx.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES (?, ?, ?, 'requested', ?) ON CONFLICT (deleted_tenant) DO NOTHING",
         [tenant, requestedAt, requestedBy, JSON.stringify(policy)])
+      yield* closingEventTx(tx, tenant, requestedBy, 'tenant.deletion_requested', requestedAt)
     })
     t = (await tombstone(db, tenant))!
   }
@@ -243,10 +256,14 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
     if (cols.has('rate_limits')) yield* tx.run("DELETE FROM rate_limits WHERE (':' || key || ':') LIKE ? ESCAPE '\\'", [`%:${tenant.replace(/[\\%_]/g, m => `\\${m}`)}:%`])
     yield* tx.run('DELETE FROM users WHERE id = ?', [tenant])
     if (has('memberships')) yield* tx.run('DELETE FROM organizations WHERE id = ?', [tenant])
+    yield* closingEventTx(tx, tenant, t!.requested_by, 'tenant.deletion_erased', now)
   })) return t
   await advance('erased', 'completed', function* (tx) {
     const kept: Record<string, number> = {}
     for (const x of [...retain].sort()) if (has(x)) { const w = owned(scope, x, tenant); kept[x] = Number((yield* tx.get<{ n: number }>(`SELECT count(*) AS n FROM "${x}" WHERE ${w.sql}`, w.params))?.n ?? 0) }
+    // the completed marker is part of the retained trail it reports: write it, then count it in
+    yield* closingEventTx(tx, tenant, t!.requested_by, 'tenant.deletion_completed', now, { retained_tables: Object.keys(kept).length })
+    if (kept.audit_events !== undefined) kept.audit_events += 1
     yield* tx.run('UPDATE tenant_tombstones SET retained = ?, completed_at = ? WHERE deleted_tenant = ?', [JSON.stringify(kept), now, tenant])
   })
   return t

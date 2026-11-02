@@ -10,6 +10,8 @@ CREATE TABLE app_leases (
       expires_at INTEGER NOT NULL
     , generation INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE audit_closing_gate (tenant TEXT PRIMARY KEY);
+
 CREATE TABLE audit_events (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
@@ -1144,6 +1146,8 @@ CREATE TRIGGER sequence_sent_final
 
 CREATE TRIGGER tomb_advanced_consent BEFORE INSERT ON advanced_consent BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_audit_events BEFORE INSERT ON audit_events BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) AND NOT EXISTS (SELECT 1 FROM audit_closing_gate WHERE tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_autopilot_audit BEFORE INSERT ON autopilot_audit BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_autopilot_launch_policy BEFORE INSERT ON autopilot_launch_policy BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1309,6 +1313,8 @@ CREATE TRIGGER tomb_trial_reservations BEFORE INSERT ON trial_reservations BEGIN
 CREATE TRIGGER tomb_trial_scans BEFORE INSERT ON trial_scans BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_upd_advanced_consent BEFORE UPDATE OF tenant_id ON advanced_consent BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_audit_events BEFORE UPDATE OF tenant_id ON audit_events BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_autopilot_audit BEFORE UPDATE OF tenant_id ON autopilot_audit BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

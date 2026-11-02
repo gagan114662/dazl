@@ -214,7 +214,7 @@ bothEngines('probe: state machine: request twice with a different policy, until 
   // resume without any policy
   const t3 = await deleteTenant(c.db, A)
   assert.equal(t3.state, 'completed')
-  assert.deepEqual(JSON.parse(t3.retained!), { evidence_purge_audit: 1, suppressions: 1 })
+  assert.deepEqual(JSON.parse(t3.retained!), { audit_events: 4, evidence_purge_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events
   assert.equal(await n(c, 'SELECT count(*) AS n FROM suppressions WHERE tenant_id = ?', [A]), 1, 'retained')
   // re-request with erase after completion: refused, nothing changes (no silent widening)
   await assert.rejects(deleteTenant(c.db, A, { policy: { suppressions: 'erase' }, requestedBy: 'later', now: NOW + 9 }), /different policy/)
@@ -293,7 +293,12 @@ bothEngines('probe: reapplyTombstones on a store with the tombstone already pres
   // a backup taken mid-way (state revoked, data still present): the line resumes it
   await c.db.run("UPDATE tenant_tombstones SET state = 'revoked', retained = NULL, completed_at = NULL WHERE deleted_tenant = ?", [A])
   assert.deepEqual(await reapplyTombstones(c.db, [line]), [{ tenant: A, state: 'completed' }])
-  assert.deepEqual(await f.snap(A), aAfter)
+  // the resume runs the remaining steps, so it appends its own closing events; every other retained row is untouched
+  const resumed = await f.snap(A)
+  assert.deepEqual({ ...resumed, audit_events: '[]' }, { ...aAfter, audit_events: '[]' })
+  const beforeEv = (JSON.parse(aAfter.audit_events) as string[]).map(r => JSON.parse(r) as Record<string, unknown>)
+  const addedEv = (JSON.parse(resumed.audit_events) as string[]).map(r => JSON.parse(r) as Record<string, unknown>).filter(r => !beforeEv.some(b => JSON.stringify(b) === JSON.stringify(r)))
+  assert.deepEqual(addedEv.map(e => e.action).sort(), ['tenant.deletion_completed', 'tenant.deletion_erased'], 'the resume appends exactly its own closing events')
   await assert.rejects(reapplyTombstones(c.db, ['{"kind":"something-else"}']), /not a tenant tombstone ledger line/)
   await assert.rejects(reapplyTombstones(c.db, ['not json']), /JSON|not re-applied/)
   // a line whose policy cannot be honoured today is refused, not silently widened (fail closed)

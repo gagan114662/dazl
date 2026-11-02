@@ -1,6 +1,9 @@
 // Durable audit trail (#371): who did what to which resource in which workspace, when, under which request, and
 // whether policy allowed it. Append-only in the database itself: an UPDATE is refused by a trigger, and a DELETE is
-// refused except inside the retention purge's own transaction (the audit_purge_gate row exists only there). No API
+// refused except inside the retention purge's own transaction (the audit_purge_gate row exists only there). After a
+// tenant's tombstone, the only rows it can still gain are the deletion flow's own closing events, written inside the
+// transaction holding that tenant's audit_closing_gate row (lib/tenant/lifecycle.ts); every other append is refused.
+// No API
 // writes or edits events; members read them through GET /api/workspace/audit, scoped to their own workspace.
 // Automatic deletion is OFF until the owner chooses a retention period (auditRetention, below).
 //
@@ -30,6 +33,7 @@ export const AUDIT_DDL = `
   CREATE INDEX IF NOT EXISTS audit_events_seq ON audit_events (seq);
   CREATE INDEX IF NOT EXISTS audit_events_at ON audit_events (at);
   CREATE TABLE IF NOT EXISTS audit_purge_gate (id INTEGER PRIMARY KEY CHECK (id = 1));
+  CREATE TABLE IF NOT EXISTS audit_closing_gate (tenant TEXT PRIMARY KEY);
   CREATE TRIGGER IF NOT EXISTS audit_events_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
   CREATE TRIGGER IF NOT EXISTS audit_events_no_delete BEFORE DELETE ON audit_events
     WHEN NOT EXISTS (SELECT 1 FROM audit_purge_gate)
