@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied, stale } from '@/lib/workspace-access'
 import { deleteTenant, tombstone, ALWAYS_RETAINED } from '@/lib/tenant/lifecycle'
+import { captureError } from '@/lib/ops/errors'
 
 // Request (or resume) deletion of the whole account. Owner role only, fresh sign-in, and the confirmation must
 // name the session's own tenant id - the route never takes a tenant from the caller. The policy choice on
@@ -34,8 +35,9 @@ export async function POST(req: NextRequest) {
         })
     return NextResponse.json({ ok: true, state: t.state, retained: t.retained ? JSON.parse(t.retained) : null, completed_at: t.completed_at, always_retained: Object.keys(ALWAYS_RETAINED) })
   } catch (e) {
+    // driver/SQL details never reach the client; the full error goes to the server error record
+    captureError(e, { source: 'route', where: '/api/tenant/lifecycle/delete', method: 'POST', tenantId: user.tenantId })
     const t = await tombstone(db, user.tenantId)
-    // a step failed: report where it stands; the same POST resumes it
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : 'deletion failed', state: t?.state ?? null }, { status: 409 })
+    return NextResponse.json({ ok: false, error: 'A deletion step failed before completing. Nothing half-applied: press again to resume it, and contact support if it keeps failing.', state: t?.state ?? null }, { status: 409 })
   }
 }
