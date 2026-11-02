@@ -65,7 +65,8 @@ A tenant is:
 - **stale** in any of these cases:
   - its reply sync has had no success for `REPLY_SYNC_STALE_S` = 2 h while still being attempted;
   - a due step is more than `OVERDUE_ALERT_S` = 1 h overdue;
-  - the scheduler itself is stale, crashed or never ran while the tenant has work.
+  - the scheduler itself is stale, crashed or never ran while the tenant has work;
+  - the scheduler has an `unresolved_failure` (reason `scheduler_failed` or `scheduler_lease_lost`) while the tenant has work: a tick that threw or lost its lease is not healthy for the tenant either, even while an earlier success keeps the state `fresh`.
 
 - **held** when nothing is failing or stale and the last attempt at some kind of work was a hold: neither progress nor a problem. `holds` names them as `kind:reason` (for example `sequences:paused`).
 
