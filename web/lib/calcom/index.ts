@@ -3,9 +3,12 @@ import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 
 // Cal.com booking webhooks -> pipeline stage. A booking is matched to a lead by the attendee's
-// normalized email against lead.contact. Zero or several matches stay "unmatched" - a booking is
-// never guessed onto a lead. Idempotent on (tenant, booking uid): Cal.com retries are safe.
-// Reads and writes run on the Db layer (SQLite or Postgres); migrateCalcom is the SQLite schema.
+// normalized email against the addresses that plausibly own it: leads we EMAILED at that address
+// (outreach recipient, which includes contact-page crawled addresses, #364) plus leads storing it
+// as their contact. Exactly one candidate lead across both -> booked; zero or several stay
+// "unmatched" - a booking is never guessed onto a lead. Idempotent on (tenant, booking uid):
+// Cal.com retries are safe. Reads and writes run on the Db layer (SQLite or Postgres);
+// migrateCalcom is the SQLite schema.
 
 export function migrateCalcom(db: Database.Database): void {
   db.exec(`
@@ -67,9 +70,14 @@ export function recordBooking(db: Db, tenantId: string, b: { uid: string; email:
   return db.tx(function* (t: Tx): TxBody<'duplicate' | 'matched' | 'unmatched'> {
     const ins = yield* t.run('INSERT INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, booking_uid) DO NOTHING', [tenantId, b.uid, email, b.name])
     if (ins.changes === 0) return 'duplicate'
-    // Exactly one lead with this contact email across the tenant's jobs -> book it. Anything else stays unmatched.
-    const rows = yield* t.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?', [tenantId, email])
-    if (rows.length === 1) {
+    // Candidate leads for this address: ones we emailed at it (a contact-page crawled address counts as much as a
+    // stored one, #364) plus ones storing it as their contact. Exactly one candidate -> book it; anything else
+    // (zero, or conflicting candidates from either source) stays unmatched - never guessed.
+    const emailed = yield* t.all<{ lead_id: string }>('SELECT DISTINCT lead_id FROM outreach_messages WHERE tenant_id = ? AND lower(to_email) = ? AND lead_id IS NOT NULL', [tenantId, email])
+    const stored = yield* t.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?', [tenantId, email])
+    const candidates = new Set([...emailed.map((r) => r.lead_id), ...stored.map((r) => r.id)])
+    if (candidates.size === 1) {
+      const rows = [{ id: [...candidates][0] }]
       yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [rows[0].id])
       yield* t.run('UPDATE calcom_bookings SET lead_id = ? WHERE tenant_id = ? AND booking_uid = ?', [rows[0].id, tenantId, b.uid])
       return 'matched'
