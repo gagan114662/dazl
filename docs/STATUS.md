@@ -41,6 +41,13 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
+  `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
+  and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the recovery-runbook
+  step are part 2. Council rounds 1-3 and probe fixes are in the ported head 277a5ec7. Guard table list is derived
+  from the live schema, so tables main added since the fork are guarded automatically; the scope registry carries
+  main's lifecycle_events / preview_claims / preview_claim_events entries.
+
 - dazl-takeover/b/444-trial-site-read (#552, for #409): "read my website" on the free trial for a keyless account, one
   bounded read at a time on dazl's key (explicit operator ceiling, per-read $0.05 wallet reservation settled to the
   provider-reported cost in full, three reads per account per 30 days, priced-model-only spend guard; the worst priced

@@ -30,7 +30,7 @@ test('fresh database: the migrations create every app table; a second run applie
   const first = await runPgMigrations(db.pool)
   assert.deepEqual(first.applied, loadMigrations().map(m => m.version))
   const tables = (await db.all<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = current_schema() AND table_name <> 'dazl_schema_migrations' ORDER BY 1")).map(r => r.t)
-  assert.equal(SQLITE_TABLES.length, 96) // includes play_research_sources (0024) and autopilot_launch_policy (0038); 76 + trial_reservations, trial_budget_lock (0012), crm_push_claims (0014) + organizations, memberships (0015), inbox_thread_reads (0016), tenant_spend_pools (0017) + scheduler_runs, scheduler_progress (0018) + lifecycle_events (0029) + preview_claims, preview_claim_events (0030) + autopilot_work (0032) + seller_decisions (0034) + connector_claims (0035)
+  assert.equal(SQLITE_TABLES.length, 98) // includes play_research_sources (0024), autopilot_launch_policy (0038) and tenant_tombstones, tenant_tombstone_keys (0039); 76 + trial_reservations, trial_budget_lock (0012), crm_push_claims (0014) + organizations, memberships (0015), inbox_thread_reads (0016), tenant_spend_pools (0017) + scheduler_runs, scheduler_progress (0018) + lifecycle_events (0029) + preview_claims, preview_claim_events (0030) + autopilot_work (0032) + seller_decisions (0034) + connector_claims (0035)
 
   assert.deepEqual(tables, SQLITE_TABLES)
   const second = await runPgMigrations(db.pool)
