@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateOnboardingPolicy, activeOnboardingPolicy, optInOnboarding, withdrawOnboarding, enrollOnboarding, onboardingSendAllowed, purgeOnboardingAudit, ONBOARDING_POLICY_VERSION, ONBOARDING_AUDIT_RETAIN_S } from '../lib/outreach/onboarding-policy.ts'
+import { migrateOnboardingPolicy, activeOnboardingPolicy, optInOnboarding, withdrawOnboarding, enrollOnboarding, onboardingSendAllowed, purgeOnboardingAudit, onboardingAuditCutoff, ONBOARDING_POLICY_VERSION } from '../lib/outreach/onboarding-policy.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateLifecycle } from '../lib/outreach/lifecycle.ts'
@@ -115,18 +115,33 @@ test('retention purge: only rows of tenants whose erasure completed over 2 years
     optInOnboarding(raw, 't-recent', 'user-1', 1000)
     optInOnboarding(raw, 't-old', 'user-1', 1000)
     optInOnboarding(raw, 't-mid', 'user-1', 1000)
-    const now = 1000 + 800 * DAY
+    const now = Date.UTC(2026, 5, 15) / 1000
     const tomb = "INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy, completed_at) VALUES (?, ?, 'test', 'completed', '{}', ?)"
-    raw.prepare(tomb).run('t-recent', now - 200 * DAY, now - 100 * DAY)
-    raw.prepare(tomb).run('t-old', now - 740 * DAY, now - 731 * DAY)
+    raw.prepare(tomb).run('t-recent', Date.UTC(2024, 5, 20) / 1000, Date.UTC(2024, 5, 21) / 1000) // erased within the last 2 years
+    raw.prepare(tomb).run('t-old', Date.UTC(2024, 5, 13) / 1000, Date.UTC(2024, 5, 14) / 1000) // erased over 2 years ago
     // an erasure that never completed is not "after account deletion"
-    raw.prepare("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES ('t-mid', ?, 'test', 'erased', '{}')").run(now - 740 * DAY)
+    raw.prepare("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES ('t-mid', ?, 'test', 'erased', '{}')").run(Date.UTC(2024, 5, 13) / 1000)
 
-    assert.equal(await purgeOnboardingAudit(db, { now }), 1, 'only the tenant erased more than 730 days ago')
+    assert.equal(await purgeOnboardingAudit(db, { now }), 1, 'only the tenant erased more than 2 calendar years ago')
     const left = raw.prepare('SELECT tenant_id FROM onboarding_audit ORDER BY tenant_id').all() as { tenant_id: string }[]
     assert.deepEqual(left.map(r => r.tenant_id), ['t-live', 't-mid', 't-recent'], 'live, mid-deletion and recently erased tenants keep their proof')
     assert.equal((raw.prepare('SELECT count(*) AS n FROM onboarding_audit_purge_gate').get() as { n: number }).n, 0, 'the gate row never survives the purge transaction')
     assert.equal(await purgeOnboardingAudit(db, { now }), 0, 'idempotent: nothing left to purge')
     assert.throws(() => raw.prepare('DELETE FROM onboarding_audit').run(), /append-only/, 'ungated delete still refused')
+  } finally { await db.close() }
+})
+
+test('the 2-year boundary is a calendar anniversary: a Feb 29 erasure is never purged early across leap years', async () => {
+  // erased 2024-02-29 (leap day): two calendar years later is 2026-03-01, not 2026-02-28
+  const raw = new Database(':memory:')
+  migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  try {
+    optInOnboarding(raw, 't-leap', 'user-1', 1000)
+    raw.prepare("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy, completed_at) VALUES ('t-leap', ?, 'test', 'completed', '{}', ?)")
+      .run(Date.UTC(2024, 1, 28) / 1000, Date.UTC(2024, 1, 29) / 1000)
+    assert.equal(await purgeOnboardingAudit(db, { now: Date.UTC(2026, 1, 28, 23, 59, 59) / 1000 }), 0, '2026-02-28 is not yet the 2-year anniversary of a 2024-02-29 erasure')
+    assert.equal(await purgeOnboardingAudit(db, { now: Date.UTC(2026, 2, 1) / 1000 }), 1, '2026-03-01 is past it')
+    assert.equal((raw.prepare('SELECT count(*) AS n FROM onboarding_audit').get() as { n: number }).n, 0)
   } finally { await db.close() }
 })

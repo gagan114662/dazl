@@ -18,7 +18,7 @@
 // - onboarding_audit is APPEND-ONLY consent evidence (update refused, delete refused outside the retention
 //   purge's own gated transaction, both engines) and content-free at the source: it records action/actor/time and
 //   non-PII detail (never an email). Retention is the owner decision of 2026-11-02 (docs/DECISIONS.md, #564):
-//   rows survive tenant erasure (lib/tenant/lifecycle.ts ALWAYS_RETAINED) and are purged ONBOARDING_AUDIT_RETAIN_S
+//   rows survive tenant erasure (lib/tenant/lifecycle.ts ALWAYS_RETAINED) and are purged 2 calendar years
 //   after the erasure completed - the rows are the only proof consent was obtained, and disputes can surface after
 //   an account is gone. The period is PROVISIONAL pending #535's compliance review. The erasable enrollments
 //   table carries the email; audit rows correlate by tenant and time.
@@ -73,16 +73,25 @@ function auditOnboarding(db: Database.Database, tenantId: string, action: string
 }
 
 // Owner decision 2026-11-02 (docs/DECISIONS.md, #564): content-free consent proof (action + time, never an email)
-// is retained 2 years after the tenant's erasure completed, then purged. PROVISIONAL pending #535's compliance
-// review - a different outcome changes this constant, nothing else. 730 days, epoch seconds.
-export const ONBOARDING_AUDIT_RETAIN_S = 730 * 24 * 60 * 60
+// is retained 2 YEARS after the tenant's erasure completed, then purged. PROVISIONAL pending #535's compliance
+// review. Two years is a CALENDAR anniversary, never a fixed-second interval: 730 days can fall short of two
+// years across a leap day, and purging early is destroying consent proof before the promised period.
+export const ONBOARDING_AUDIT_RETAIN_YEARS = 2
 
-// The purge path for that decision: only rows whose tenant's deletion COMPLETED more than ONBOARDING_AUDIT_RETAIN_S
+// The purge cutoff for `now`: the same instant two calendar years earlier. A Feb 29 reference rolls to Mar 1
+// (never Feb 28), so the boundary can only retain longer, never purge early.
+export function onboardingAuditCutoff(nowS: number): number {
+  const d = new Date(nowS * 1000)
+  d.setUTCFullYear(d.getUTCFullYear() - ONBOARDING_AUDIT_RETAIN_YEARS)
+  return Math.floor(d.getTime() / 1000)
+}
+
+// The purge path for that decision: only rows whose tenant's deletion COMPLETED more than 2 calendar years
 // ago (tenant_tombstones.completed_at anchors "after account deletion"); rows of any live or still-deleting tenant
 // never match. At most `limit` per call (1000 default, never over 10000), inside the only transaction the delete
 // trigger allows (its gate row exists only here), fenced by the tick's lease like every purge in lib/audit.ts.
 export async function purgeOnboardingAudit(db: Db, o: { now?: number; limit?: number; fence?: (t: Tx) => TxBody<void> }): Promise<number> {
-  const cutoff = (o.now ?? Math.floor(Date.now() / 1000)) - ONBOARDING_AUDIT_RETAIN_S
+  const cutoff = onboardingAuditCutoff(o.now ?? Math.floor(Date.now() / 1000))
   const limit = Math.max(1, Math.min(o.limit ?? 1000, 10000))
   return db.tx(function* (t) {
     if (o.fence) yield* o.fence(t)
