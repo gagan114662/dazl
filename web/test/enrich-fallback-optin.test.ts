@@ -19,11 +19,18 @@ test('route: the fallback toggle is separate from keys and the flag is returned 
 test('panel: opt-in is explicit, default-off, honest about credits, and keeps the PDL-only contract', () => {
   assert.ok(panel.includes("byId['enrich:apollo']?.enabled && byId['enrich:pdl']?.enabled"), 'checkbox only when BOTH keys are connected')
   assert.ok(panel.includes('Off by default'), 'default-off is stated at the control')
-  assert.ok(panel.includes('1 of your PDL credits'), 'the paid nature of the fallback is stated at the control')
+  assert.ok(panel.includes('1 PDL credit'), 'the paid nature of the fallback is stated at the control')
   assert.ok(panel.includes('Used only when no Apollo key is saved'), 'the original PDL-only contract is preserved')
   assert.ok(panel.includes('act({ fallback: e.target.checked })'), 'the control toggles via the route, not a key write')
 })
 test('store: the flag row is never a connector or a credential', () => {
   assert.ok(store.includes("connector != 'enrich:fallback'"), 'connectorStatus hides the flag row')
   assert.ok(store.includes('if (!r || !r.ciphertext) return null'), 'empty ciphertext never decrypts into a key')
+})
+
+test('panel: no unqualified fixed-cost or free claims - the account cost is stated as not verified (#544 restriction)', () => {
+  assert.ok(!/people search is free/.test(panel), 'no unqualified free claim')
+  assert.ok(!/Organization lookups cost 1 credit/.test(panel), 'no unqualified fixed cost')
+  assert.ok(!/spends 1 of your PDL credits/.test(panel), 'no unqualified fallback spend claim')
+  assert.ok((panel.match(/not verified/g) ?? []).length >= 3, 'apollo, pdl and the fallback each state the unverified account cost')
 })

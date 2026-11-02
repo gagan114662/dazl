@@ -27,7 +27,7 @@ export const NO_EVENT = 'no_event_evidence'
 export const SALES_GATE_FAILED = 'sales_hiring_check_failed'
 const MAX_BOARD_LOOKUPS = 20 // network lookups per run; a lead beyond it is NOT passed, it is held as unchecked
 
-interface JobLike { id: string; user_id: string; query?: string | null; icp?: string | null }
+interface JobLike { id: string; user_id: string; query?: string | null; icp?: string | null; attempts?: number }
 
 // The source quote itself says the company is hiring for a sales / GTM role.
 // The saved quote / claim itself shows the event half (funding, an opening ...): a job ad alone does not show that a company raised money.
@@ -169,7 +169,18 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
   let passed = 0, demoted = 0, lookups = 0
   const passedIds: string[] = []
+  // Ownership (the reclaim failure class): a reaped and re-claimed job has a higher attempts number; the stale attempt must
+  // STOP writing (evidence, demotions, check rows alike - the class, not one slice). Checked per lead, inline, not assumed
+  // from an earlier assert. Fail-open on a DB error: the write itself would throw loudly if the store were gone.
+  const owned = () => {
+    try {
+      const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined
+      return !!r && (r.status === 'running' || r.status === 'done') && (typeof job.attempts !== 'number' || r.attempts === job.attempts)
+    } catch { return true }
+  }
+  let stopped = false
   for (const l of leads) {
+    if (!owned()) { stopped = true; break } // a newer attempt owns the job and will re-run the whole check; write nothing more
     try {
     // Evidence for THIS lead: its own saved quote, plus other verified candidates' quotes for the same company that are identity-compatible (see evidenceCompatible).
       const others = (l.dedup_key ? opts.quotes?.get(l.dedup_key) ?? [] : []).filter(q => evidenceCompatible(q.url, l.company, l.company_domain))
@@ -197,19 +208,46 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         continue
       }
       if (l.company_domain) lookups++
-      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => null) : null
+      let boardFetchThrew = false
+      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => { boardFetchThrew = true; return null }) : null
+      if (l.company_domain && !owned()) { stopped = true; break } // reclaimed DURING this lead's async fetch: the resolved result is this attempt's observation but must not be WRITTEN by it - the new owner re-runs
       const g = gbz?.hiring ?? null
       // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
       // by company name (a probe, a link label) could belong to a larger same-name company: its roles are not this lead's hiring.
       // The board is bound to the lead's domain when the cited page is hosted on it / the user confirmed it, or when the board's OWN postings name that same
       // domain (a company-site address or link inside the posting text).
       const heuristic = !!g && g.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(g.domain && l.company_domain && g.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
+      // #533 check-history: ONE append-only row per lead per completed board check, inline in the live-fetch path (never from a
+      // cached/replayed payload, so created_at is seconds after the real fetch and no replay can masquerade as a fresh check). Never
+      // attempted (no domain, lookup cap, quote proof) = NO row. results is the exact pre-cap deduped listing count read from the
+      // actual response; -1 when no count is honestly attributable (failure, unbound board, contradiction). A genuinely re-executed
+      // fetch (new attempt, new scan) truthfully appends a second row; evidence rows stay immutable and are never rewritten.
+      if (l.company_domain && gbz) {
+        // Per-board truth: the SETTLED board gets the outcome row; EVERY probed-and-errored board gets its own
+        // fetch_failed row (even when a later board settled - the failure is still a fact of this check); a board never
+        // probed gets no row; 'no_board_found' is claimed only when every probe answered cleanly. results = the exact
+        // pre-cap count of DEDUPED LISTED TITLES read from the actual response (identical titles collapse; it is not a
+        // posting count), -1 when no count is honestly attributable to this lead (failure / unbound / rejected).
+        const capped = (x: { listedCountAll: number; allListed: string[] }) => x.listedCountAll > x.allListed.length ? '_partial_capped' : ''
+        let settled: { status: string; results: number; board: string } | null = null
+        if (gbz.contradictory) settled = { status: 'checked_rejected', results: -1, board: g?.board ?? gbz.checked?.board ?? 'unknown' }
+        else if (g) settled = g.via === 'domain' && !heuristic ? { status: `checked_bound${capped(g)}`, results: g.listedCountAll, board: g.board } : { status: 'checked_unbound', results: -1, board: g.board }
+        else if (gbz.checked) {
+          const cc = gbz.checked
+          const heuristicC = cc.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(cc.domain && l.company_domain && cc.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
+          settled = cc.via === 'domain' && !heuristicC ? { status: `checked_zero_match${capped(cc)}`, results: cc.listedCountAll, board: cc.board } : { status: 'checked_unbound', results: -1, board: cc.board }
+        }
+        if (settled) audit(db, { tenantId: job.user_id, connector: 'check:ats-board', jobId: job.id, lookup: `${l.id} (gate) ${settled.board}`.slice(0, 200), status: settled.status, results: settled.results })
+        else if (gbz.probeErrors.length === 0 && !gbz.fetchAborted) audit(db, { tenantId: job.user_id, connector: 'check:ats-board', jobId: job.id, lookup: `${l.id} (gate)`.slice(0, 200), status: 'no_board_found', results: -1 })
+        if (!gbz.fetchAborted) for (const b of gbz.probeErrors) if (b !== settled?.board) audit(db, { tenantId: job.user_id, connector: 'check:ats-board', jobId: job.id, lookup: `${l.id} (gate) ${b}`.slice(0, 200), status: 'fetch_failed', results: -1 }) // aborted mid-check: our own cancel is not a board failure; a COMPLETED check's row above still writes
+      } else if (l.company_domain && boardFetchThrew) audit(db, { tenantId: job.user_id, connector: 'check:ats-board', jobId: job.id, lookup: `${l.id} (gate)`.slice(0, 200), status: 'fetch_failed', results: -1 })
       if (g && g.via === 'domain' && !heuristic) {
         const p = g.postings[0]
         const match = matchedHiringRole(p.title, roles)
         const line = roles.length ? `Hiring for ${p.title} (requested: ${match!.term}), posted ${p.date}. This may relate to your offer; buying need isn't verified. ` : `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
         setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-        addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: g.postings.map(x => x.title).slice(0, 3).join('; ').slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
+        { const dn = g.postings.length // dated postings actually READ; a '+' when the detail read itself was capped - never a masked total
+          addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${dn}${g.datedCapped ? '+' : ''} sales/GTM role${dn === 1 && !g.datedCapped ? '' : 's'} posted, newest ${g.newest}`, label: (g.postings.map(x => x.title).slice(0, 3).join('; ') + ` (${Math.min(dn, 3)} of ${dn}${g.datedCapped ? '+' : ''} dated shown; ${g.listedCount} listed titles${g.listedCount > g.allTitles.length ? `, sample capped at ${g.allTitles.length}` : ''})`).slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now }) }
         const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
         for (const e of withRepostHistory(postingEvidence(g, now, null), g.board, existingEvidence)) addEnrichment(db, job.user_id, l.id, { ...e, label: roles.length ? `Requested role: ${matchedHiringRole(e.value.split(' - posted ')[0], roles)!.term}; ${e.label}`.slice(0, 200) : e.label })
         { const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
@@ -268,6 +306,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       if (demote.run(SALES_GATE_FAILED, `Sales-hiring check failed (${(e instanceof Error ? e.message : 'error').slice(0, 80)}): not verified. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason: SALES_GATE_FAILED }) }
     }
   }
+  if (stopped) return { required: true, checked: passed + demoted, passed, demoted, demotions } // stale attempt: the new owner re-runs the whole gate; nothing more is written
   // The gate ran again and PASSED these leads: a failed-gate marker from an earlier run no longer holds them.
   releaseHeld(db, job.user_id, job.id, passedIds)
   // The DURABLE pass record. A lead the gate passed but whose record could not be written is held by default (held-state.ts), never assumed passed.

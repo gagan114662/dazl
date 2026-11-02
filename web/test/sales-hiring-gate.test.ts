@@ -440,3 +440,111 @@ test('#533 breadth: a stale requested-role title is covered by the zero-match au
   assert.equal(cov.length, 1); assert.match(cov[0].value, /2 all listed titles, 2 sampled: 1 already covered by dated posting or filtered audit rows \+ 1 more as audit rows/)
   db.close()
 })
+
+test('#533 check-history: each completed board check leaves exactly one check:ats-board row with the real outcome; never-attempted leaves none', async () => {
+  // bound: the default board has one fresh dated AE posting
+  const a = seed()
+  await applySalesHiringGate(a.db, a.job, serve(board()), { now: NOW })
+  let rows = a.db.prepare("SELECT lookup, status, results, scan_job_id FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_bound'); assert.equal(rows[0].results, 1); assert.equal(rows[0].lookup, 'L1 (gate) greenhouse'); assert.equal(rows[0].scan_job_id, a.job.id)
+  a.db.close()
+  // zero-match: the requested role is absent from the sampled listing
+  const b = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  await applySalesHiringGate(b.db, b.job, serve(board()), { now: NOW })
+  rows = b.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match'); assert.equal(rows[0].results, 1)
+  b.db.close()
+  // fetch failure: every board probe errored (network); an honest failure row PER BOARD, no count claimed, no 'no board' claim
+  const c = seed()
+  const boom = (async () => { throw new Error('network down') }) as never
+  await applySalesHiringGate(c.db, c.job, boom, { now: NOW })
+  rows = c.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board' ORDER BY lookup").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) ashby', 'fetch_failed', -1], ['L1 (gate) greenhouse', 'fetch_failed', -1], ['L1 (gate) lever', 'fetch_failed', -1]])
+  c.db.close()
+  // partial failure: greenhouse errored, lever/ashby answered cleanly - ONLY greenhouse gets a failure row, and 'no_board_found' is NOT claimed
+  const p1 = seed()
+  const ghDown = (async (u: RequestInfo | URL) => { if (String(u).startsWith(GH)) throw new Error('network down'); return no() }) as never
+  await applySalesHiringGate(p1.db, p1.job, ghDown, { now: NOW })
+  rows = p1.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) greenhouse', 'fetch_failed', -1]])
+  p1.db.close()
+  // settled + failed probe: greenhouse errored but lever settled with a dated posting - the bound outcome AND the greenhouse failure are both facts of this check
+  const p2 = seed()
+  const leverOk = (async (u: RequestInfo | URL) => {
+    const s2 = String(u)
+    if (s2.startsWith(GH)) throw new Error('network down')
+    if (s2 === 'https://api.lever.co/v0/postings/brightloop?mode=json') return ok([{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, categories: { location: 'London' }, descriptionPlain: 'Join us at brightloop.io' }])
+    return no()
+  }) as never
+  await applySalesHiringGate(p2.db, p2.job, leverOk, { now: NOW })
+  rows = p2.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board' ORDER BY lookup").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) greenhouse', 'fetch_failed', -1], ['L1 (gate) lever', 'checked_bound', 1]])
+  p2.db.close()
+  // no board anywhere: every probe answered cleanly - one explicit 'no_board_found' row, no board named
+  const n1 = seed()
+  await applySalesHiringGate(n1.db, n1.job, serve({}), { now: NOW })
+  rows = n1.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate)', 'no_board_found', -1]])
+  n1.db.close()
+  // never attempted (no company domain): NO row - absence of a row means never checked, never 'checked and absent'
+  const d0 = seed({ domain: null })
+  await applySalesHiringGate(d0.db, d0.job, serve(board()), { now: NOW })
+  rows = d0.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 0)
+  d0.db.close()
+  // capped: 60 listed titles, none matching - the sample cap is explicit in the status, the pre-cap count is the true fetched count
+  const e0 = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
+  const many = { [`${GH}/jobs`]: { jobs: Array.from({ length: 60 }, (_, i) => ({ id: i + 1, title: `Engineer ${i}` })) } }
+  await applySalesHiringGate(e0.db, e0.job, serve(many), { now: NOW })
+  rows = e0.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match_partial_capped'); assert.equal(rows[0].results, 60)
+  e0.db.close()
+})
+
+test('#533 ownership: a reclaim DURING a lead\'s async fetch refuses that lead\'s writes after resolve; between leads it stops the next one', async () => {
+  // mid-fetch: the board fetch resolves AFTER the job was re-claimed - the stale attempt writes nothing at all
+  const s = seed({ extra: 1 })
+  const job = { ...s.job, attempts: 0 } // the live runner always carries attempts; the guard matches on it
+  let flipped = false
+  const flip = (async (u: RequestInfo | URL) => {
+    if (!flipped) { flipped = true; s.db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(s.job.id) } // re-claimed while the first fetch is in flight
+    const m: Record<string, unknown> = board(); const k = String(u); return m[k] ? ok(m[k]) : no()
+  }) as never
+  const r = await applySalesHiringGate(s.db, job, flip, { now: NOW })
+  assert.equal(r.passed, 0); assert.equal(r.demoted, 0)
+  assert.equal((s.db.prepare("SELECT COUNT(*) c FROM connector_audit WHERE connector = 'check:ats-board'").get() as { c: number }).c, 0, 'no check rows from the stale attempt')
+  assert.equal((enrichmentsForLeads(s.db, 'u1', ['L1', 'L2']).L1 ?? []).filter(x => x.connector.startsWith('signals:')).length, 0, 'L1 evidence refused after the mid-fetch reclaim (the seeded sitecrawl row predates the run)')
+  const l1 = s.db.prepare("SELECT why, review_reason, confidence FROM leads WHERE id = 'L1'").get() as { why: string; review_reason: string | null; confidence: number }
+  assert.equal(l1.review_reason, null); assert.equal(l1.why, 'Seed-funded London SaaS.'); assert.equal(l1.confidence, 80) // untouched
+  s.db.close()
+  // between leads: L1 fully processed before the reclaim, L2 never written
+  const t = seed({ extra: 1 })
+  const tjob = { ...t.job, attempts: 0 }
+  let calls = 0
+  const flipLater = (async (u: RequestInfo | URL) => {
+    calls++
+    if (calls === 3) t.db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(t.job.id) // L1 done (2 fetches); re-claimed as L2's fetch starts
+    const m: Record<string, unknown> = board(); const k = String(u); return m[k] ? ok(m[k]) : no()
+  }) as never
+  const r2 = await applySalesHiringGate(t.db, tjob, flipLater, { now: NOW })
+  assert.equal(r2.passed, 1) // L1 passed before the reclaim
+  assert.equal((enrichmentsForLeads(t.db, 'u1', ['L2']).L2 ?? []).filter(x => x.connector.startsWith('signals:')).length, 0, 'the stale attempt wrote no evidence for L2')
+  const lookups = (t.db.prepare("SELECT lookup FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string }[]).map(x => x.lookup)
+  assert.ok(lookups.length > 0 && lookups.every(x => x.startsWith('L1 ')), 'check rows for L1 only, none for L2')
+  const l2 = t.db.prepare("SELECT why, review_reason, confidence FROM leads WHERE id = 'L2'").get() as { why: string; review_reason: string | null; confidence: number }
+  assert.equal(l2.review_reason, null); assert.equal(l2.why, 'Seed-funded.'); assert.equal(l2.confidence, 80) // untouched
+  t.db.close()
+})
+
+test('#533 honest dated count: more datable postings than the detail cap reads as "4+", never a masked total', async () => {
+  const s = seed()
+  const jobs = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, title: 'Account Executive' }))
+  const m: Record<string, unknown> = { [`${GH}/jobs`]: { jobs } }
+  for (const j of jobs) m[`${GH}/jobs/${j.id}`] = { ...j, first_published: d(10), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${j.id}`, content: 'https://brightloop.io', location: { name: 'London' } }
+  const r = await applySalesHiringGate(s.db, s.job, serve(m), { now: NOW })
+  assert.equal(r.passed, 1)
+  const agg = (enrichmentsForLeads(s.db, 'u1', ['L1']).L1 ?? []).find(x => x.kind === 'hiring' && /sales\/GTM role/.test(x.value))
+  assert.match(agg!.value, /^4\+ sales\/GTM roles posted/, 'the detail cap (4) is a lower bound, marked, never a total')
+  assert.match(agg!.label ?? '', /of 4\+ dated shown/)
+  s.db.close()
+})
