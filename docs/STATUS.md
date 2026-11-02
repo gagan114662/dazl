@@ -154,7 +154,7 @@ complete — do not start new issues until each is closed or explicitly re-queue
    review (PR #568, b/359-lifecycle-flow): the request flow (GET scope inventory, POST export, POST delete with
    policy choice + resume), the settings completion UI with retention exceptions, and operator controls
    (scripts/tenant-lifecycle.mts list/resume/reapply), the tombstone ledger writer. Missing: live acceptance on a
-   disposable tenant, DAZL_TOMBSTONE_LEDGER set on the host and copied off-host, the owner's retention decisions.
+   disposable tenant, DAZL_TOMBSTONE_LEDGER set on the host (ops/backup now copies it off-host), the owner's retention decisions.
 2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
    default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
    holds.
