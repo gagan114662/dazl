@@ -135,3 +135,26 @@ test('atsHiring: a single role with no posting url falls back to the board page'
   assert.equal(gh?.openRoles, 1)
   assert.equal(gh?.url, 'https://boards.greenhouse.io/acme')
 })
+
+test('enrichJobSignals: ownership lost (alive false) stops the stale attempt - nothing written; a mid-run flip stops after the current lead', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateConnectors(db); migrateEvents(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Zymtrace', 'zymtrace.com', 'raised seed', 'https://x.com/1')").run(jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead2', ?, '', 'Vesta', 'vesta.com', 'raised seed', 'https://x.com/2')").run(jobId)
+  const fetchImpl = (async (url: RequestInfo | URL) => {
+    const u = String(url)
+    if (u.includes('efts.sec.gov')) return ok(EDGAR_HIT)
+    if (u.includes('greenhouse')) return ok(GH_OK)
+    return notFound()
+  }) as never
+  await enrichJobSignals(db, 'u1', jobId, { fetchImpl, alive: () => false })
+  assert.equal((db.prepare('SELECT COUNT(*) c FROM lead_enrichments').get() as { c: number }).c, 0, 'a stale attempt writes no evidence')
+  assert.equal((db.prepare('SELECT COUNT(*) c FROM connector_audit').get() as { c: number }).c, 0, 'and no audit rows')
+  let calls = 0
+  await enrichJobSignals(db, 'u1', jobId, { fetchImpl, alive: () => { calls++; return calls <= 1 } }) // alive for lead1, lost before lead2
+  assert.ok((db.prepare('SELECT COUNT(*) c FROM lead_enrichments WHERE lead_id = ?').get('lead1') as { c: number }).c > 0, 'lead1 written before the loss')
+  assert.equal((db.prepare('SELECT COUNT(*) c FROM lead_enrichments WHERE lead_id = ?').get('lead2') as { c: number }).c, 0, 'lead2 never written by the stale attempt')
+  db.close()
+})

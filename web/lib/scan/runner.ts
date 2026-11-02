@@ -1397,7 +1397,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // leads, never part of verification; failures are silent.
     const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
     if (process.env.SIGNALS_ENRICH === '0') trace.note('signals', 'skipped', 'SIGNALS_ENRICH=0')
-    else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else { const a = auditSummary(db, job.user_id, job.id, 'apollo%').total + auditSummary(db, job.user_id, job.id, 'pdl%').total; trace.note('paid_enrichment', a > 0 ? 'ok' : 'unavailable', a > 0 ? null : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', { lookups: a }) }
   } finally {

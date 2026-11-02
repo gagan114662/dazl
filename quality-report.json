@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "policyVersion": "1",
+  "status": "unavailable",
+  "coverage": {},
+  "limitations": [
+    "Static analysis is not proof of correctness, consent, tenant isolation, atomicity, UI placement or lead quality.",
+    "Existing findings are debt, not a clean bill of health. Exact source-span identities prevent count-only swapping; edits to legacy findings may require fixing them.",
+    "Typed async rules cover web/app and web/lib TypeScript. Other web JS/TS uses the untyped Next/ESLint policy. Python, shell, SQL, workers and dependencies are not analyzed here.",
+    "Existing full engine, browser, migration, negative and live acceptance gates remain required. Quality-policy changes need independent review."
+  ],
+  "error": "tracked working tree must be clean"
+}

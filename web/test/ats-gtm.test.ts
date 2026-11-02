@@ -182,11 +182,11 @@ test('HTML link: a posting that SAYS brightloop.io while its company-website lin
   assert.deepEqual(domainsInText('<a href="brightloop.io/jobs">Apply</a> <a href="mailto:jobs@brightloop.io">mail</a> at brightloop.io', 'brightloop'), ['brightloop.io'], 'agreeing text and links stay one domain')
   const html = '<p>Join Brightloop at brightloop.io</p><a href="https://brightloop.com">Company website</a>'
   const gh = await atsGtmBoard('Brightloop', 'brightloop.io', route({ ...ghBoard, [`${GH}/jobs/1`]: { ...(ghBoard[`${GH}/jobs/1`] as object), content: html.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') } }), { now: NOW })
-  assert.deepEqual(gh, { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false })
+  assert.deepEqual(gh, { hiring: null, contradictory: true, probeErrors: [], fetchAborted: false })
   const lever = await atsGtmBoard('Brightloop', 'brightloop.io', route({ 'https://api.lever.co/v0/postings/brightloop?mode=json': [{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, description: html }] }), { now: NOW })
-  assert.deepEqual(lever, { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false })
+  assert.deepEqual(lever, { hiring: null, contradictory: true, probeErrors: [], fetchAborted: false })
   const ashby = await atsGtmBoard('Brightloop', 'brightloop.io', route({ 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionHtml: html }] } }), { now: NOW })
-  assert.deepEqual(ashby, { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false })
+  assert.deepEqual(ashby, { hiring: null, contradictory: true, probeErrors: [], fetchAborted: false })
 })
 
 test('plain text AND html both supplied: the plain text says brightloop.io, the HTML link says brightloop.com -> contradictory on Lever and Ashby (and Greenhouse content+description), through real enrichment', async () => {
@@ -195,7 +195,7 @@ test('plain text AND html both supplied: the plain text says brightloop.io, the 
   const ashby = { 'https://api.ashbyhq.com/posting-api/job-board/brightloop': { jobs: [{ title: 'Account Executive', jobUrl: 'https://jobs.ashbyhq.com/brightloop/1', isListed: true, publishedAt: d(7), descriptionPlain: plain, descriptionHtml: html }] } }
   const green = gh('&lt;p&gt;Apply at brightloop.io&lt;/p&gt;'); (green[`${GH}/jobs/1`] as Record<string, unknown>).description = html
   for (const [name, board] of [['lever', lever], ['ashby', ashby], ['greenhouse', green]] as const) {
-    assert.deepEqual(await atsGtmBoard('Brightloop', 'brightloop.io', route(board), { now: NOW }), { hiring: null, contradictory: true, fetchFailed: false, fetchAborted: false }, name)
+    assert.deepEqual(await atsGtmBoard('Brightloop', 'brightloop.io', route(board), { now: NOW }), { hiring: null, contradictory: true, probeErrors: [], fetchAborted: false }, name)
     for (const basis of ['evidence_own_domain', 'name_probe', null]) {
       const { db, jobId } = leadDb('brightloop.io', basis); const r = await enrich(db, jobId, board)
       assert.deepEqual(r.gtm, [], `${name}/${basis}: a contradictory board writes nothing`); assert.equal(r.events, 0)
@@ -552,13 +552,13 @@ test('#533 check-history: the requested-role pass records one check:ats-board ro
     for (const j of jobs) m[`${GH}/jobs/${j.id}`] = { ...j, first_published: d(20), absolute_url: `https://boards.greenhouse.io/brightloop/jobs/${j.id}`, content: 'https://brightloop.io', location: { name: 'London' } }
     await enrichJobSignals(a.db, 'u1', a.jobId, { fetchImpl: route(m), creditEnrichment: false })
     const ra = rows(a.db)
-    assert.equal(ra.length, 1); assert.equal(ra[0].lookup, 'lead1 (role-match)'); assert.equal(ra[0].status, 'checked_bound'); assert.equal(ra[0].results, 2, 'pre-cap DEDUPED count: 5 identical AE titles collapse, CRM Admin + AE = 2')
+    assert.deepEqual(ra.map(r => [r.lookup, r.status, r.results]).sort(), [['lead1 (gtm) greenhouse', 'checked_bound', 2], ['lead1 (role-match) greenhouse', 'checked_bound', 2]], 'the generic GTM pass and the role-match pass are two real checks, each recorded; pre-cap DEDUPED count: 5 identical AE titles collapse, CRM Admin + AE = 2')
     a.db.close()
-    // fetch failure: every board fetch throws - honest failure row, no count
+    // fetch failure: every board fetch throws - one honest failure row PER probed board, no count
     const b = setup()
     await enrichJobSignals(b.db, 'u1', b.jobId, { fetchImpl: (async () => { throw new Error('network down') }) as never, creditEnrichment: false })
     const rb = rows(b.db)
-    assert.equal(rb.length, 1); assert.equal(rb[0].status, 'fetch_failed'); assert.equal(rb[0].results, -1)
+    assert.deepEqual(rb.map(r => [r.lookup, r.status, r.results]).sort(), [['lead1 (gtm) ashby', 'fetch_failed', -1], ['lead1 (gtm) greenhouse', 'fetch_failed', -1], ['lead1 (gtm) lever', 'fetch_failed', -1], ['lead1 (role-match) ashby', 'fetch_failed', -1], ['lead1 (role-match) greenhouse', 'fetch_failed', -1], ['lead1 (role-match) lever', 'fetch_failed', -1]], 'both passes record every probed-and-errored board')
     b.db.close()
     // aborted attempt (post-finish budget / stale attempt): NO row - no observation exists to record
     const c0 = setup()
@@ -566,4 +566,15 @@ test('#533 check-history: the requested-role pass records one check:ats-board ro
     assert.equal(rows(c0.db).length, 0)
     c0.db.close()
   } finally { Date.now = realNow }
+})
+
+test('#533 probe classification: 404 is a clean no-board answer; 500/429 are probe FAILURES, never absence', async () => {
+  const board404 = { probeErrors: [] as string[], aborted: false }
+  const r404 = await atsGtmBoard('Brightloop', 'brightloop.io', (async () => new Response('nope', { status: 404 })) as never, { now: NOW })
+  assert.deepEqual([r404.hiring, r404.contradictory, r404.checked ?? null, r404.probeErrors, r404.fetchAborted], [null, false, null, [], false])
+  const r500 = await atsGtmBoard('Brightloop', 'brightloop.io', (async () => new Response('err', { status: 500 })) as never, { now: NOW })
+  assert.deepEqual([r500.probeErrors.sort(), r500.fetchAborted], [['ashby', 'greenhouse', 'lever'], false], 'every probed board errored - none may be reported as checked or absent')
+  const r429 = await atsGtmBoard('Brightloop', 'brightloop.io', (async () => new Response('slow', { status: 429 })) as never, { now: NOW })
+  assert.deepEqual(r429.probeErrors.sort(), ['ashby', 'greenhouse', 'lever'], 'rate-limited is a failure, not a clean answer')
+  void board404
 })

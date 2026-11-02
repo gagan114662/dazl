@@ -129,7 +129,7 @@ export async function atsHiring(company: string, domain: string | null, fetchImp
 
 // Post-scan pass over a job's verified leads. Bounded, parallel within a lead,
 // never throws into the runner. Audited per connector for the settings page.
-export async function enrichJobSignals(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean } = {}): Promise<void> {
+export async function enrichJobSignals(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean; alive?: () => boolean } = {}): Promise<void> {
   if (process.env.SIGNALS_ENRICH === '0') return
   const fetchImpl = deps.fetchImpl ?? fetch
   const leads = (listLeads(db, tenantId, jobId, MAX_LEADS) as { id: string; company: string; company_domain: string | null }[]).filter(l => l.company)
@@ -142,6 +142,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
   const today = new Date().toISOString().slice(0, 10)
   const now = Math.floor(Date.now() / 1000)
   for (const lead of leads) {
+    if (deps.alive && !deps.alive()) return // ownership lost (reclaim): the new attempt re-runs; this stale attempt writes nothing more (the reclaim failure class)
     // Company event write-through: the same fact, stored once per company for account-level
     // history. Skipped when no reliable company key exists - never guessed.
     const ck = companyKey(lead.company_domain, lead.id)
@@ -152,7 +153,24 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     ])
     const h = hb?.signal ?? null
     // Postings naming contradictory company domains cannot corroborate this company: neither the dated sales / GTM roles nor the older open-role count.
-    const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false, checked: null }))
+    const gb = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl).catch(() => ({ hiring: null, contradictory: false, checked: null, probeErrors: [] as string[], fetchAborted: true }))
+    if (lead.company_domain) {
+      // #533: the generic GTM pass performs the same live board check and leaves the same per-board rows (same failure
+      // class as the gate / role-match writers): settled board gets the outcome row; every probed-and-errored board its own
+      // fetch_failed row; never-probed boards none; 'no_board_found' only when every probe answered cleanly; on abort the
+      // COMPLETED check's row still writes but a cancel is never recorded as a board failure. results = pre-cap DEDUPED
+      // LISTED TITLE count (identical titles collapse; not a posting count), -1 when not honestly attributable.
+      const rel0 = domainRelationship(db, tenantId, lead.id, lead.company_domain)
+      const dom0 = (x: string | null | undefined) => !!x && !!lead.company_domain && x.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')
+      const gh0 = gb.hiring, cc0 = gb.checked
+      let settled0: { status: string; results: number; board: string } | null = null
+      if (gb.contradictory) settled0 = { status: 'checked_rejected', results: -1, board: gh0?.board ?? cc0?.board ?? 'unknown' }
+      else if (gh0) settled0 = gh0.via === 'domain' && (rel0 === 'established' || dom0(gh0.domain)) ? { status: `checked_bound${gh0.listedCountAll > gh0.allListed.length ? '_partial_capped' : ''}`, results: gh0.listedCountAll, board: gh0.board } : { status: 'checked_unbound', results: -1, board: gh0.board }
+      else if (cc0) settled0 = cc0.via === 'domain' && (rel0 === 'established' || dom0(cc0.domain)) ? { status: `checked_zero_match${cc0.listedCountAll > cc0.allListed.length ? '_partial_capped' : ''}`, results: cc0.listedCountAll, board: cc0.board } : { status: 'checked_unbound', results: -1, board: cc0.board }
+      if (settled0) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (gtm) ${settled0.board}`.slice(0, 200), status: settled0.status, results: settled0.results })
+      else if (gb.probeErrors.length === 0 && !gb.fetchAborted) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (gtm)`.slice(0, 200), status: 'no_board_found', results: -1 })
+      if (!gb.fetchAborted) for (const b of gb.probeErrors) if (b !== settled0?.board) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (gtm) ${b}`.slice(0, 200), status: 'fetch_failed', results: -1 })
+    }
     // A filing far from the claimed round date is a real fact about the entity but not
     // corroboration of THIS raise (fund filings and stale filings both collide here).
     // People named in the entity-matched filing (executive officers/directors): a fact about the entity, so it uses f0, not the round-date-gated f.
@@ -189,7 +207,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       // A board's own NAME (even token-identical to the company) is a claim by the board, not proof of ownership: only an established domain, or the board's
       // postings all naming the lead's own domain, binds it. Otherwise: Unconfirmed, no confidence, nothing written to the company's history.
       const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
-      const titles = g.postings.map(p => p.title).slice(0, 3).join('; ') + (g.postings.length > 3 ? ` (+${g.postings.length - 3} more)` : '')
+      const titles = g.postings.map(p => p.title).slice(0, 3).join('; ') + ` (${Math.min(g.postings.length, 3)} of ${g.postings.length} dated shown; ${g.listedCount} listed titles${g.listedCount > g.allTitles.length ? ', sample capped at 50' : ''})`
       addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       for (const e of withRepostHistory(postingEvidence(g, now, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
       { const auditRows = withRepostHistory(boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)
@@ -205,20 +223,22 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       addEnrichment(db, tenantId, lead.id, checkedCoverageRow(c, WINDOW_DAYS, now, today))
     }
     if (requestedRoles.length) {
-      const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false, checked: null, fetchFailed: true, fetchAborted: false }))
+      const specific = await atsGtmBoard(lead.company, lead.company_domain, fetchImpl, { roleMatch: title => !!matchedHiringRole(title, requestedRoles) }).catch(() => ({ hiring: null, contradictory: false, checked: null, probeErrors: [] as string[], fetchAborted: true }))
       // #533 check-history: one append-only row per completed requested-role board check, inline in the live-fetch path only;
       // an aborted attempt writes nothing (no observation), a real failure says fetch_failed, results is the exact pre-cap
       // listing count from the actual response or -1 when no count is honestly attributable.
-      if (!specific.fetchAborted) {
+      {
+        // Same per-board truth rules as the gate writer; results = pre-cap DEDUPED LISTED TITLE count, not a posting count.
         const sc = specific.checked
         const boundS = !!specific.hiring && !specific.contradictory && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!specific.hiring.domain && specific.hiring.domain === lead.company_domain))
         const boundSC = !!sc && sc.via === 'domain' && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!sc.domain && !!lead.company_domain && sc.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, '')))
-        const row = specific.contradictory ? { status: 'checked_rejected', results: -1 }
-          : specific.hiring ? (boundS ? { status: `checked_bound${specific.hiring.listedCountAll > specific.hiring.allListed.length ? '_partial_capped' : ''}`, results: specific.hiring.listedCountAll } : { status: 'checked_unbound', results: -1 })
-          : sc ? (boundSC ? { status: `checked_zero_match${sc.listedCountAll > sc.allListed.length ? '_partial_capped' : ''}`, results: sc.listedCountAll } : { status: 'checked_unbound', results: -1 })
-          : specific.fetchFailed ? { status: 'fetch_failed', results: -1 } // a listing fetch errored: absence unknown
-          : { status: 'no_board_found', results: -1 } // every probe answered cleanly: no board on any provider
-        audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (role-match)`.slice(0, 200), status: row.status, results: row.results })
+        let settled: { status: string; results: number; board: string } | null = null
+        if (specific.contradictory) settled = { status: 'checked_rejected', results: -1, board: specific.hiring?.board ?? sc?.board ?? 'unknown' }
+        else if (specific.hiring) settled = boundS ? { status: `checked_bound${specific.hiring.listedCountAll > specific.hiring.allListed.length ? '_partial_capped' : ''}`, results: specific.hiring.listedCountAll, board: specific.hiring.board } : { status: 'checked_unbound', results: -1, board: specific.hiring.board }
+        else if (sc) settled = boundSC ? { status: `checked_zero_match${sc.listedCountAll > sc.allListed.length ? '_partial_capped' : ''}`, results: sc.listedCountAll, board: sc.board } : { status: 'checked_unbound', results: -1, board: sc.board }
+        if (settled) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (role-match) ${settled.board}`.slice(0, 200), status: settled.status, results: settled.results })
+        else if (specific.probeErrors.length === 0 && !specific.fetchAborted) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (role-match)`.slice(0, 200), status: 'no_board_found', results: -1 })
+        if (!specific.fetchAborted) for (const b of specific.probeErrors) if (b !== settled?.board) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (role-match) ${b}`.slice(0, 200), status: 'fetch_failed', results: -1 })
       }
       const matched = specific.hiring
       const bound = matched && !specific.contradictory && (domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!matched.domain && matched.domain === lead.company_domain))

@@ -319,7 +319,7 @@ export function latestAuditStatus(db: Database.Database, a: { tenantId: string; 
 
 // Newest first; same-second rows newest-inserted first (insert_seq: the order rowid gave). Sync for the pipeline's
 // tests and tools on the raw handle; readRecentAudit for the settings routes.
-const RECENT_AUDIT_SQL = 'SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? ORDER BY created_at DESC, insert_seq DESC LIMIT ?'
+const RECENT_AUDIT_SQL = "SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? AND connector NOT LIKE 'check:%' ORDER BY created_at DESC, insert_seq DESC LIMIT ?" // 'check:%' rows (per-lead board-check history, #533) would flood the settings status list and displace real connector audits; they stay DB/support-readable, never displayed here
 export function recentAudit(db: Database.Database, tenantId: string, limit = 20) {
   return db.prepare(RECENT_AUDIT_SQL).all(tenantId, limit)
 }

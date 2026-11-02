@@ -446,7 +446,7 @@ test('#533 check-history: each completed board check leaves exactly one check:at
   const a = seed()
   await applySalesHiringGate(a.db, a.job, serve(board()), { now: NOW })
   let rows = a.db.prepare("SELECT lookup, status, results, scan_job_id FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
-  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_bound'); assert.equal(rows[0].results, 1); assert.equal(rows[0].lookup, 'L1 (gate)'); assert.equal(rows[0].scan_job_id, a.job.id)
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_bound'); assert.equal(rows[0].results, 1); assert.equal(rows[0].lookup, 'L1 (gate) greenhouse'); assert.equal(rows[0].scan_job_id, a.job.id)
   a.db.close()
   // zero-match: the requested role is absent from the sampled listing
   const b = seed({ query: 'Companies hiring a sales operations manager', icp: JSON.stringify({ signals: ['hiring a sales operations manager'], where: [] }) })
@@ -454,13 +454,38 @@ test('#533 check-history: each completed board check leaves exactly one check:at
   rows = b.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
   assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match'); assert.equal(rows[0].results, 1)
   b.db.close()
-  // fetch failure: the board fetch itself threw (network); an honest failure row, no count claimed
+  // fetch failure: every board probe errored (network); an honest failure row PER BOARD, no count claimed, no 'no board' claim
   const c = seed()
   const boom = (async () => { throw new Error('network down') }) as never
   await applySalesHiringGate(c.db, c.job, boom, { now: NOW })
-  rows = c.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
-  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'fetch_failed'); assert.equal(rows[0].results, -1)
+  rows = c.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board' ORDER BY lookup").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) ashby', 'fetch_failed', -1], ['L1 (gate) greenhouse', 'fetch_failed', -1], ['L1 (gate) lever', 'fetch_failed', -1]])
   c.db.close()
+  // partial failure: greenhouse errored, lever/ashby answered cleanly - ONLY greenhouse gets a failure row, and 'no_board_found' is NOT claimed
+  const p1 = seed()
+  const ghDown = (async (u: RequestInfo | URL) => { if (String(u).startsWith(GH)) throw new Error('network down'); return no() }) as never
+  await applySalesHiringGate(p1.db, p1.job, ghDown, { now: NOW })
+  rows = p1.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) greenhouse', 'fetch_failed', -1]])
+  p1.db.close()
+  // settled + failed probe: greenhouse errored but lever settled with a dated posting - the bound outcome AND the greenhouse failure are both facts of this check
+  const p2 = seed()
+  const leverOk = (async (u: RequestInfo | URL) => {
+    const s2 = String(u)
+    if (s2.startsWith(GH)) throw new Error('network down')
+    if (s2 === 'https://api.lever.co/v0/postings/brightloop?mode=json') return ok([{ text: 'Account Executive', hostedUrl: 'https://jobs.lever.co/brightloop/a', createdAt: NOW - 5 * 86_400_000, categories: { location: 'London' }, descriptionPlain: 'Join us at brightloop.io' }])
+    return no()
+  }) as never
+  await applySalesHiringGate(p2.db, p2.job, leverOk, { now: NOW })
+  rows = p2.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board' ORDER BY lookup").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate) greenhouse', 'fetch_failed', -1], ['L1 (gate) lever', 'checked_bound', 1]])
+  p2.db.close()
+  // no board anywhere: every probe answered cleanly - one explicit 'no_board_found' row, no board named
+  const n1 = seed()
+  await applySalesHiringGate(n1.db, n1.job, serve({}), { now: NOW })
+  rows = n1.db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
+  assert.deepEqual(rows.map(r => [r.lookup, r.status, r.results]), [['L1 (gate)', 'no_board_found', -1]])
+  n1.db.close()
   // never attempted (no company domain): NO row - absence of a row means never checked, never 'checked and absent'
   const d0 = seed({ domain: null })
   await applySalesHiringGate(d0.db, d0.job, serve(board()), { now: NOW })
@@ -474,4 +499,22 @@ test('#533 check-history: each completed board check leaves exactly one check:at
   rows = e0.db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string; status: string; results: number; scan_job_id: string }[]
   assert.equal(rows.length, 1); assert.equal(rows[0].status, 'checked_zero_match_partial_capped'); assert.equal(rows[0].results, 60)
   e0.db.close()
+})
+
+test('#533 ownership: a reaped and re-claimed job stops the stale attempt mid-gate - the failure class is guarded, not one write', async () => {
+  const s = seed({ extra: 1 })
+  const job = { ...s.job, attempts: 0 } // the live runner always carries attempts; the guard matches on it
+  let flipped = false
+  const flip = (async (u: RequestInfo | URL) => {
+    if (!flipped) { flipped = true; s.db.prepare('UPDATE scan_jobs SET attempts = attempts + 1 WHERE id = ?').run(s.job.id) } // a newer attempt re-claims the job mid-fetch
+    const m: Record<string, unknown> = board(); const k = String(u); return m[k] ? ok(m[k]) : no()
+  }) as never
+  const r = await applySalesHiringGate(s.db, job, flip, { now: NOW })
+  assert.equal(r.passed, 1) // L1 was fully processed before the reclaim
+  assert.equal((enrichmentsForLeads(s.db, 'u1', ['L2']).L2 ?? []).length, 0, 'the stale attempt wrote no evidence for L2')
+  const lookups = (s.db.prepare("SELECT lookup FROM connector_audit WHERE connector = 'check:ats-board'").all() as { lookup: string }[]).map(x => x.lookup)
+  assert.ok(lookups.length > 0 && lookups.every(x => x.startsWith('L1 ')), 'check rows for L1 only, none for L2')
+  const l2 = s.db.prepare("SELECT why, review_reason, confidence FROM leads WHERE id = 'L2'").get() as { why: string; review_reason: string | null; confidence: number }
+  assert.equal(l2.review_reason, null); assert.equal(l2.why, 'Seed-funded.'); assert.equal(l2.confidence, 80) // untouched
+  s.db.close()
 })
