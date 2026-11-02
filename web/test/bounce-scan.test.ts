@@ -5,7 +5,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateReplies, acceptReadConsent, hasReadConsent } from '../lib/outreach/replies.ts'
 import { migrateBounceLedger, bounceCount } from '../lib/outreach/bounce-ledger.ts'
-import { migrateBounceScan, acceptBounceScanConsent, hasBounceScanConsent, revokeBounceScanConsent, BOUNCE_SCAN_CONSENT_VERSION, syncBounceNotices, type BounceScanDeps } from '../lib/outreach/bounce-scan.ts'
+import { migrateBounceScan, acceptBounceScanConsent, hasBounceScanConsent, revokeBounceScanConsent, syncBounceNotices, type BounceScanDeps } from '../lib/outreach/bounce-scan.ts'
 
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64url')
 const SEND_ID = 'a1a2b3c4d5e6f7a8b9c0d1e2'

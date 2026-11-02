@@ -1,6 +1,6 @@
 -- Bounce handling (#415): per-send bounce ledger (the dedup unit is the original send + recipient, never the
 -- Gmail notice id) and the separate, exact-version consent for the delivery-failure scan. Next number on this
--- branch; main already carries 0026-0028, so this file is RENUMBERED at merge reconcile (as #512's was).
+-- branch; main already carries through 0041, so this file was RENUMBERED 0026 -> 0042 at merge reconcile.
 CREATE TABLE bounce_records (
       tenant_id TEXT NOT NULL, outreach_message_id TEXT NOT NULL, recipient TEXT NOT NULL,
       status TEXT NOT NULL, source TEXT NOT NULL, source_gmail_id TEXT, created_at BIGINT NOT NULL,

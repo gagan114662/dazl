@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseDsn, decideDsn, firstAuthenticationResults, dsnProvenance, type DsnVerdict } from '../lib/outreach/dsn.ts'
+import { parseDsn, decideDsn } from '../lib/outreach/dsn.ts'
 import type { GPart } from '../lib/outreach/reply-text.ts'
 
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64url')

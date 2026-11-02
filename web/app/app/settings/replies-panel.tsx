@@ -7,7 +7,11 @@ export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
   const [msg, setMsg] = useState('')
   async function load() { const r = await fetch('/api/outreach/replies'); if (r.ok) setI(await r.json()) }
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    let alive = true
+    void (async () => { const r = await fetch('/api/outreach/replies'); if (r.ok && alive) setI(await r.json()) })()
+    return () => { alive = false }
+  }, [])
   async function act(action: string, version?: string) {
     const r = await fetch('/api/outreach/replies', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, accept: true, version: version ?? i?.consent.version }) })
     const j = await r.json().catch(() => ({})); setMsg(r.ok ? (action === 'sync' ? 'Checked replies.' : '') : j.error || 'Something went wrong'); void load()
