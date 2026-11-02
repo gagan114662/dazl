@@ -83,6 +83,10 @@ const me = (await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?',
 const seeded = await seedTenant(db, me, tag)
 const other = await barrier('seeded', { tenant: me, ids: seeded.ids, texts: seeded.texts }) as { tenant: string; ids: Record<string, string[]>; texts: string[] }
 const ownIds = [...new Set(Object.values(seeded.ids).flat())], otherIds = [...new Set([...Object.values(other.ids).flat(), ...other.texts])]
+// every value this instance sends at some point in its sweep (each one is substituted into path, query and body in
+// turn): a route that stored what it was given (a monitor domain, a keyword) may return it later - a full tenant
+// export returns the caller's own rows, and a foreign-looking string the caller planted there itself is its own data
+const sentEver = new Set(otherIds)
 
 // ---- own: which tables each route returns to their owner ----
 const reads: Record<string, string[]> = {}   // route -> tables whose own marker came back
@@ -117,12 +121,14 @@ const sweep = async () => {
     }
   }
 }
-// Anything of the other tenant's in a response that the caller did not send itself: a token carrying the other tenant's
-// tag, or its tenant id. A route echoing the value it was given (a domain parsed from the URL it was sent) leaks nothing.
+// Anything of the other tenant's in a response that the caller did not send itself - in this call or an earlier
+// one: a token carrying the other tenant's tag that was never sent, or its tenant id echoed beyond this call's own
+// id. A route echoing or returning a value it was given (a domain parsed from the URL it was sent, a stored keyword
+// in the caller's own export) leaks nothing; the other tenant's tenant id is never the caller's data.
 const leak = (text: string, sent: string | null) => {
   const plain = text.replace(/\\u007e|%7E/gi, '~')
   if (plain.includes(other.tenant) && !(sent ?? '').includes(other.tenant)) return true
-  return [...plain.matchAll(new RegExp(`[A-Za-z0-9_.~-]*${otherTag}[A-Za-z0-9_.~-]*`, 'g'))].some(m => !(sent ?? '').includes(m[0]))
+  return [...plain.matchAll(new RegExp(`[A-Za-z0-9_.~-]*${otherTag}[A-Za-z0-9_.~-]*`, 'g'))].some(m => !(sent ?? '').includes(m[0]) && !sentEver.has(m[0]))
 }
 const watch = async () => snapshot(db, me)
 let changed: string[] = []
