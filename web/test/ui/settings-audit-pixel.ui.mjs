@@ -40,7 +40,12 @@ await page.route('**/*', async route => {
   const u = new URL(route.request().url())
   if (route.request().resourceType() === 'document') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><style>${CSS}</style></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>` })
   if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
-  if (u.pathname === '/api/settings/enrichment') return json(route, { connectors: [], audit: AUDIT, fallback: false })
+  // Both-key fixture: the fallback opt-in line only renders when Apollo AND PDL are both connected,
+  // so an empty-connectors fixture would hide the changed copy line from the pixels.
+  if (u.pathname === '/api/settings/enrichment') return json(route, { connectors: [
+    { connector: 'enrich:apollo', enabled: true, last4: 'a1b2' },
+    { connector: 'enrich:pdl', enabled: true, last4: 'c3d4' },
+  ], audit: AUDIT, fallback: false })
   if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })
   return json(route, {}, 404)
 })
@@ -48,7 +53,10 @@ await page.goto('http://dazl.test/app/settings')
 const el = page.getByText('Recent enrichment lookups')
 await el.waitFor({ timeout: 15000 })
 assert.equal(await page.getByText(/check:ats-board/).count(), 0, 'no per-lead check row can appear in this list')
+await page.getByText(/Also use People Data Labs as a fallback/).waitFor({ timeout: 5000 })
+assert.ok(await page.getByText(/1 PDL credit \(up to 5 per scan - documented terms; the cost on your account is not verified\)/).count() === 1, 'the changed fallback cost line renders')
 await page.screenshot({ path: '/downloads/pr548-settings-pixel-full.png', fullPage: true })
 await page.locator('div.card').first().screenshot({ path: '/downloads/pr548-settings-pixel-panel.png' })
+await page.getByText(/Also use People Data Labs as a fallback/).screenshot({ path: '/downloads/pr548-settings-pixel-fallback.png' })
 await browser.close()
 console.log('OK: settings enrichment panel renders the filtered recent-lookups list; no check: rows possible; screenshots saved')
