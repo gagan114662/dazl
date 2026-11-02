@@ -415,6 +415,8 @@ CREATE TABLE onboarding_audit (
       created_at INTEGER NOT NULL
     );
 
+CREATE TABLE onboarding_audit_purge_gate (id INTEGER PRIMARY KEY CHECK (id = 1));
+
 CREATE TABLE onboarding_enrollments (
       tenant_id   TEXT NOT NULL,
       email       TEXT NOT NULL,
@@ -1147,7 +1149,9 @@ CREATE TRIGGER leads_only_while_running
     WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
 
-CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit
+      WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
+      BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
 
 CREATE TRIGGER onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
 

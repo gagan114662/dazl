@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateOnboardingPolicy, activeOnboardingPolicy, optInOnboarding, withdrawOnboarding, enrollOnboarding, onboardingSendAllowed, ONBOARDING_POLICY_VERSION } from '../lib/outreach/onboarding-policy.ts'
+import { migrateOnboardingPolicy, activeOnboardingPolicy, optInOnboarding, withdrawOnboarding, enrollOnboarding, onboardingSendAllowed, purgeOnboardingAudit, ONBOARDING_POLICY_VERSION, ONBOARDING_AUDIT_RETAIN_S } from '../lib/outreach/onboarding-policy.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { migrateLifecycle } from '../lib/outreach/lifecycle.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 
@@ -101,4 +103,30 @@ test('marketing suppression stays separate: nothing here writes suppressions', (
   enrollOnboarding(db, 't1', 'jane@acme.com', 1000)
   withdrawOnboarding(db, 't1', 'user-1', 2000)
   assert.equal((db.prepare('SELECT count(*) AS n FROM suppressions').get() as { n: number }).n, 0)
+})
+
+test('retention purge: only rows of tenants whose erasure completed over 2 years ago, and only inside the gated transaction', async () => {
+  const DAY = 24 * 60 * 60
+  const raw = new Database(':memory:')
+  migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  try {
+    optInOnboarding(raw, 't-live', 'user-1', 1000)
+    optInOnboarding(raw, 't-recent', 'user-1', 1000)
+    optInOnboarding(raw, 't-old', 'user-1', 1000)
+    optInOnboarding(raw, 't-mid', 'user-1', 1000)
+    const now = 1000 + 800 * DAY
+    const tomb = "INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy, completed_at) VALUES (?, ?, 'test', 'completed', '{}', ?)"
+    raw.prepare(tomb).run('t-recent', now - 200 * DAY, now - 100 * DAY)
+    raw.prepare(tomb).run('t-old', now - 740 * DAY, now - 731 * DAY)
+    // an erasure that never completed is not "after account deletion"
+    raw.prepare("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES ('t-mid', ?, 'test', 'erased', '{}')").run(now - 740 * DAY)
+
+    assert.equal(await purgeOnboardingAudit(db, { now }), 1, 'only the tenant erased more than 730 days ago')
+    const left = raw.prepare('SELECT tenant_id FROM onboarding_audit ORDER BY tenant_id').all() as { tenant_id: string }[]
+    assert.deepEqual(left.map(r => r.tenant_id), ['t-live', 't-mid', 't-recent'], 'live, mid-deletion and recently erased tenants keep their proof')
+    assert.equal((raw.prepare('SELECT count(*) AS n FROM onboarding_audit_purge_gate').get() as { n: number }).n, 0, 'the gate row never survives the purge transaction')
+    assert.equal(await purgeOnboardingAudit(db, { now }), 0, 'idempotent: nothing left to purge')
+    assert.throws(() => raw.prepare('DELETE FROM onboarding_audit').run(), /append-only/, 'ungated delete still refused')
+  } finally { await db.close() }
 })

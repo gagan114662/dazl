@@ -15,15 +15,19 @@
 // mail to a customer is unaffected by anything here.
 //
 // Two decisions, made now rather than at first activation:
-// - onboarding_audit is APPEND-ONLY consent evidence (update and delete refused, both engines) and content-free
-//   at the source: it records action/actor/time and non-PII detail (never an email), so it is retained on tenant
-//   erasure like audit_events (lib/tenant/lifecycle.ts ALWAYS_RETAINED). The erasable enrollments table carries
-//   the email; audit rows correlate by tenant and time.
+// - onboarding_audit is APPEND-ONLY consent evidence (update refused, delete refused outside the retention
+//   purge's own gated transaction, both engines) and content-free at the source: it records action/actor/time and
+//   non-PII detail (never an email). Retention is the owner decision of 2026-11-02 (docs/DECISIONS.md, #564):
+//   rows survive tenant erasure (lib/tenant/lifecycle.ts ALWAYS_RETAINED) and are purged ONBOARDING_AUDIT_RETAIN_S
+//   after the erasure completed - the rows are the only proof consent was obtained, and disputes can surface after
+//   an account is gone. The period is PROVISIONAL pending #535's compliance review. The erasable enrollments
+//   table carries the email; audit rows correlate by tenant and time.
 // - policy versions RECONSENT, never grandfather: the gate and enrollment accept only the CURRENT
 //   ONBOARDING_POLICY_VERSION. A future policy/copy change bumps the version and every earlier opt-in stops
 //   counting until the actor opts in again - silent continuation under changed terms is not consent.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import type { Db, Tx, TxBody } from '../db/client.ts'
 import { conversionEventFor } from './lifecycle.ts'
 
 export const ONBOARDING_POLICY_VERSION = '2026-11-02'
@@ -52,8 +56,12 @@ export function migrateOnboardingPolicy(db: Database.Database): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS onboarding_audit_tenant ON onboarding_audit (tenant_id, created_at);
+    CREATE TABLE IF NOT EXISTS onboarding_audit_purge_gate (id INTEGER PRIMARY KEY CHECK (id = 1));
     CREATE TRIGGER IF NOT EXISTS onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
-    CREATE TRIGGER IF NOT EXISTS onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+    DROP TRIGGER IF EXISTS onboarding_audit_no_delete;
+    CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit
+      WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
+      BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
   `)
 }
 
@@ -62,6 +70,33 @@ const norm = (email: string): string => email.trim().toLowerCase().slice(0, 200)
 function auditOnboarding(db: Database.Database, tenantId: string, action: string, detail: string | null, now: number): void {
   db.prepare('INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)')
     .run(randomBytes(12).toString('hex'), tenantId, action, detail, now)
+}
+
+// Owner decision 2026-11-02 (docs/DECISIONS.md, #564): content-free consent proof (action + time, never an email)
+// is retained 2 years after the tenant's erasure completed, then purged. PROVISIONAL pending #535's compliance
+// review - a different outcome changes this constant, nothing else. 730 days, epoch seconds.
+export const ONBOARDING_AUDIT_RETAIN_S = 730 * 24 * 60 * 60
+
+// The purge path for that decision: only rows whose tenant's deletion COMPLETED more than ONBOARDING_AUDIT_RETAIN_S
+// ago (tenant_tombstones.completed_at anchors "after account deletion"); rows of any live or still-deleting tenant
+// never match. At most `limit` per call (1000 default, never over 10000), inside the only transaction the delete
+// trigger allows (its gate row exists only here), fenced by the tick's lease like every purge in lib/audit.ts.
+export async function purgeOnboardingAudit(db: Db, o: { now?: number; limit?: number; fence?: (t: Tx) => TxBody<void> }): Promise<number> {
+  const cutoff = (o.now ?? Math.floor(Date.now() / 1000)) - ONBOARDING_AUDIT_RETAIN_S
+  const limit = Math.max(1, Math.min(o.limit ?? 1000, 10000))
+  return db.tx(function* (t) {
+    if (o.fence) yield* o.fence(t)
+    yield* t.run('INSERT INTO onboarding_audit_purge_gate (id) VALUES (1)')
+    const r = yield* t.run(
+      `DELETE FROM onboarding_audit WHERE id IN (
+         SELECT o.id FROM onboarding_audit o
+         JOIN tenant_tombstones tt ON tt.deleted_tenant = o.tenant_id
+         WHERE tt.completed_at IS NOT NULL AND tt.completed_at < ?
+         ORDER BY o.created_at LIMIT ?)`,
+      [cutoff, limit])
+    yield* t.run('DELETE FROM onboarding_audit_purge_gate WHERE id = 1')
+    return r.changes
+  })
 }
 
 export function activeOnboardingPolicy(db: Database.Database, tenantId: string): { policy_version: string; opted_in_by: string; opted_in_at: number } | null {
