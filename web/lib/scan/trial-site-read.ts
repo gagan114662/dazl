@@ -11,6 +11,11 @@ import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from '
 //   - only an account the trial would admit right now (lib/scan/trial.ts and lib/billing/trial-budget.ts: operator
 //     key, trial budget configured, Google sign-in, one trial per company domain, attempt and spend caps);
 //   - the deployment must set its own daily ceiling for these reads (DAZL_TRIAL_SITE_READS_PER_DAY); unset = off;
+//   - admission is ALLOWLIST-ONLY until a deliberate public launch: DAZL_TRIAL_SITE_READ_ALLOWLIST must name the
+//     accounts (comma-separated emails or user ids) that may be funded at all. Unset or empty = nobody is admitted,
+//     whatever the daily ceiling says, so setting the ceiling alone can never fund a new public signup (#409
+//     bounded activation: QA acceptance runs with the QA account listed; opening to the public is a code change,
+//     not an environment flip);
 //   - at most TRIAL_SITE_READS_PER_ACCOUNT per account per 30 days and TRIAL_SITE_READS_PER_IP_PER_DAY per network,
 //     counted in the shared rate-limit store, which refuses when it cannot answer (lib/rate-limit.ts: 'closed'). The
 //     account's reads are counted after eligibility and before the shared counters, and every slot a refused admission
@@ -33,6 +38,9 @@ export const TRIAL_SITE_READS_PER_IP_PER_DAY = 6
 const DAY_MS = 86_400_000
 
 export type SiteReadRefusal = TrialDeny | TrialRefusal | 'site_reads_used' | 'site_reads_busy' | 'limit_unavailable' | 'workspace_not_eligible'
+  // The account is not on the deployment's funded-read allowlist (DAZL_TRIAL_SITE_READ_ALLOWLIST unset, empty, or
+  // not naming it): admission stays QA/allowlist-only until a deliberate public launch.
+  | 'not_in_allowlist'
   // The read's own spend guard refused before any call (an unpriced or pricier operator model), or the trial key was
   // missing after admission: nothing was spent, the reservation and slots were given back, the page got the free read.
   | 'spend_unavailable'
@@ -52,6 +60,15 @@ export function trialSiteReadsPerDay(env: Record<string, string | undefined> = p
   return n > 0 ? n : null
 }
 
+// The allowlist: comma-separated account emails or user ids, case-insensitive. null when unset or empty - and then
+// NOBODY is admitted, whatever the daily ceiling says.
+export function trialSiteReadAllowlist(env: Record<string, string | undefined> = process.env): Set<string> | null {
+  const v = env.DAZL_TRIAL_SITE_READ_ALLOWLIST?.trim() ?? ''
+  if (!v) return null
+  const entries = v.split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
+  return entries.length ? new Set(entries) : null
+}
+
 export interface SiteReadDeps { env?: Record<string, string | undefined>; limit?: (key: string, max: number, windowMs: number) => Promise<Limit>; refund?: (key: string, resetAt?: number) => Promise<boolean> }
 
 // Order (council on #444): nothing is counted or reserved for an account the trial would refuse anyway; the account's
@@ -69,6 +86,10 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   if (!status.funded) return { ok: false, reason: status.reason ?? 'not_configured' }
   const why = await trialRefusal(db, user, { env, reserveUsd: TRIAL_SITE_READ_RESERVE_USD })
   if (why) return { ok: false, reason: why }
+  // The allowlist gates SPEND, not eligibility reporting: an ineligible account still hears its real reason above,
+  // and an eligible account off the list stops here, before any counter or wallet slot is taken.
+  const allow = trialSiteReadAllowlist(env)
+  if (!allow || (!allow.has(user.email.toLowerCase()) && !allow.has(user.id.toLowerCase()))) return { ok: false, reason: 'not_in_allowlist' }
   // 2. The counters: the account's own reads first (an account at its cap stops here and burns nothing shared), then the
   //    network throttle, then the deployment-wide ceiling. A refusal gives back every slot this call took.
   const limit = deps.limit ?? rateLimit, refund = deps.refund ?? ((k: string, resetAt?: number) => refundRateLimit(k, undefined, Date.now(), resetAt))
