@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateOnboardingPolicy, activeOnboardingPolicy, optInOnboarding, withdrawOnboarding, enrollOnboarding, onboardingSendAllowed, purgeOnboardingAudit, onboardingAuditCutoff, ONBOARDING_POLICY_VERSION } from '../lib/outreach/onboarding-policy.ts'
+import { migrateOnboardingPolicy, activeOnboardingPolicy, optInOnboarding, withdrawOnboarding, enrollOnboarding, onboardingSendAllowed, purgeOnboardingAudit, redactOnboardingAuditDetails, ONBOARDING_POLICY_VERSION } from '../lib/outreach/onboarding-policy.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateLifecycle } from '../lib/outreach/lifecycle.ts'
@@ -106,7 +106,6 @@ test('marketing suppression stays separate: nothing here writes suppressions', (
 })
 
 test('retention purge: only rows of tenants whose erasure completed over 2 years ago, and only inside the gated transaction', async () => {
-  const DAY = 24 * 60 * 60
   const raw = new Database(':memory:')
   migrateAllSqlite(raw)
   const db = sqliteDb(raw)
@@ -128,6 +127,32 @@ test('retention purge: only rows of tenants whose erasure completed over 2 years
     assert.equal((raw.prepare('SELECT count(*) AS n FROM onboarding_audit_purge_gate').get() as { n: number }).n, 0, 'the gate row never survives the purge transaction')
     assert.equal(await purgeOnboardingAudit(db, { now }), 0, 'idempotent: nothing left to purge')
     assert.throws(() => raw.prepare('DELETE FROM onboarding_audit').run(), /append-only/, 'ungated delete still refused')
+  } finally { await db.close() }
+})
+
+test('retained record scope: detail is nulled once erasure completes; live and mid-deletion rows keep theirs', async () => {
+  const raw = new Database(':memory:')
+  migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  try {
+    optInOnboarding(raw, 't-erased', 'user-1', 1000)   // detail: policy <version>
+    optInOnboarding(raw, 't-live', 'user-1', 1000)
+    optInOnboarding(raw, 't-mid', 'user-1', 1000)
+    raw.prepare("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy, completed_at) VALUES ('t-erased', ?, 'test', 'completed', '{}', ?)")
+      .run(Date.UTC(2026, 5, 13) / 1000, Date.UTC(2026, 5, 14) / 1000)
+    raw.prepare("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES ('t-mid', ?, 'test', 'erased', '{}')").run(Date.UTC(2026, 5, 13) / 1000)
+
+    assert.equal(await redactOnboardingAuditDetails(db), 1, "only the completed tenant's detailed row")
+    const rows = raw.prepare('SELECT tenant_id, action, detail, created_at FROM onboarding_audit ORDER BY tenant_id').all() as { tenant_id: string; action: string; detail: string | null; created_at: number }[]
+    const byTenant = Object.fromEntries(rows.map(r => [r.tenant_id, r]))
+    assert.equal(byTenant['t-erased'].detail, null, 'retained record is exactly tenant_id + action + created_at')
+    assert.equal(byTenant['t-erased'].action, 'opted_in', 'event type survives')
+    assert.ok(byTenant['t-erased'].created_at > 0, 'timestamp survives')
+    assert.ok(String(byTenant['t-live'].detail).startsWith('policy '), 'live tenants keep operational detail')
+    assert.ok(String(byTenant['t-mid'].detail).startsWith('policy '), 'mid-deletion tenants keep theirs until completion')
+    assert.equal((raw.prepare('SELECT count(*) AS n FROM onboarding_audit_purge_gate').get() as { n: number }).n, 0, 'the gate row never survives the redaction transaction')
+    assert.equal(await redactOnboardingAuditDetails(db), 0, 'idempotent')
+    assert.throws(() => raw.prepare("UPDATE onboarding_audit SET detail = NULL").run(), /append-only/, 'ungated update still refused')
   } finally { await db.close() }
 })
 

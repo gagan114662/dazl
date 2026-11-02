@@ -17,7 +17,10 @@
 // Two decisions, made now rather than at first activation:
 // - onboarding_audit is APPEND-ONLY consent evidence (update refused, delete refused outside the retention
 //   purge's own gated transaction, both engines) and content-free at the source: it records action/actor/time and
-//   non-PII detail (never an email). Retention is the owner decision of 2026-11-02 (docs/DECISIONS.md, #564):
+//   non-PII detail (never an email). The RETAINED record after erasure is exactly tenant_id + action + created_at
+//   (owner scope 2026-11-02, DECISIONS.md): redactOnboardingAuditDetails nulls live operational detail
+//   (policy version, conversion kind) once the tenant's erasure completes. Retention period is the owner
+//   decision of 2026-11-02 (docs/DECISIONS.md, #564):
 //   rows survive tenant erasure (lib/tenant/lifecycle.ts ALWAYS_RETAINED) and are purged 2 calendar years
 //   after the erasure completed - the rows are the only proof consent was obtained, and disputes can surface after
 //   an account is gone. The period is PROVISIONAL pending #535's compliance review. The erasable enrollments
@@ -57,7 +60,10 @@ export function migrateOnboardingPolicy(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS onboarding_audit_tenant ON onboarding_audit (tenant_id, created_at);
     CREATE TABLE IF NOT EXISTS onboarding_audit_purge_gate (id INTEGER PRIMARY KEY CHECK (id = 1));
-    CREATE TRIGGER IF NOT EXISTS onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+    DROP TRIGGER IF EXISTS onboarding_audit_no_update;
+    CREATE TRIGGER onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit
+      WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
+      BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
     DROP TRIGGER IF EXISTS onboarding_audit_no_delete;
     CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit
       WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
@@ -103,6 +109,27 @@ export async function purgeOnboardingAudit(db: Db, o: { now?: number; limit?: nu
          WHERE tt.completed_at IS NOT NULL AND tt.completed_at < ?
          ORDER BY o.created_at LIMIT ?)`,
       [cutoff, limit])
+    yield* t.run('DELETE FROM onboarding_audit_purge_gate WHERE id = 1')
+    return r.changes
+  })
+}
+
+// The other half of the retained-record scope: live rows may carry operational detail, but the proof kept
+// after erasure is exactly tenant_id + action + created_at. Once a tombstone completes, null detail on that
+// tenant's rows. Same gated transaction as the purge (the update trigger's only allowance), bounded, fenced
+// by the tick lease, idempotent. Live and still-deleting tenants keep their operational detail.
+export async function redactOnboardingAuditDetails(db: Db, o: { limit?: number; fence?: (t: Tx) => TxBody<void> } = {}): Promise<number> {
+  const limit = Math.max(1, Math.min(o.limit ?? 1000, 10000))
+  return db.tx(function* (t) {
+    if (o.fence) yield* o.fence(t)
+    yield* t.run('INSERT INTO onboarding_audit_purge_gate (id) VALUES (1)')
+    const r = yield* t.run(
+      `UPDATE onboarding_audit SET detail = NULL WHERE id IN (
+         SELECT o.id FROM onboarding_audit o
+         JOIN tenant_tombstones tt ON tt.deleted_tenant = o.tenant_id
+         WHERE tt.completed_at IS NOT NULL AND o.detail IS NOT NULL
+         ORDER BY o.created_at LIMIT ?)`,
+      [limit])
     yield* t.run('DELETE FROM onboarding_audit_purge_gate WHERE id = 1')
     return r.changes
   })

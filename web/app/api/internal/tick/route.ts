@@ -18,7 +18,7 @@ import { requestIdOf } from '@/lib/ops/request-log'
 import { DRAIN_HOLD_REASONS, classifySync, classifyWork, finishRun, migrateSchedulerRuns, recordProgress, startRun, type Kind, type Outcome } from '@/lib/ops/scheduler-runs'
 import { purgeExpiredTraces } from '@/lib/evals/capture'
 import { auditRetention, purgeAudit } from '@/lib/audit'
-import { purgeOnboardingAudit } from '@/lib/outreach/onboarding-policy'
+import { purgeOnboardingAudit, redactOnboardingAuditDetails } from '@/lib/outreach/onboarding-policy'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
@@ -165,8 +165,10 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // completed, then purges them (period provisional pending #535). Rows of live or still-deleting tenants never
   // match. Bounded batch, gated transaction, fenced like the audit purge above.
   await lease.keep()
+  let onboardingAuditRedacted = 0
+  try { onboardingAuditRedacted = await redactOnboardingAuditDetails(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:onboarding-audit-redaction', requestId }) }
   let onboardingAuditPurged = 0
   try { onboardingAuditPurged = await purgeOnboardingAudit(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:onboarding-audit-retention', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_purged: onboardingAuditPurged })
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_redacted: onboardingAuditRedacted, onboarding_audit_purged: onboardingAuditPurged })
 }
