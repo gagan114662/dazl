@@ -2976,7 +2976,7 @@ CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit FOR 
 
 CREATE OR REPLACE FUNCTION dazl_guard_onboarding_audit_no_update() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF (TRUE) THEN RAISE EXCEPTION 'onboarding audit is append-only'; END IF;
+  IF (NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)) THEN RAISE EXCEPTION 'onboarding audit is append-only'; END IF;
   RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS onboarding_audit_no_update ON onboarding_audit;

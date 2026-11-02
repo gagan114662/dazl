@@ -1153,7 +1153,9 @@ CREATE TRIGGER onboarding_audit_no_delete BEFORE DELETE ON onboarding_audit
       WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
       BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
 
-CREATE TRIGGER onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
+CREATE TRIGGER onboarding_audit_no_update BEFORE UPDATE ON onboarding_audit
+      WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
+      BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
 
 CREATE TRIGGER outreach_messages_insert_seq AFTER INSERT ON outreach_messages WHEN NEW.insert_seq IS NULL BEGIN UPDATE outreach_messages SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM outreach_messages) WHERE rowid = NEW.rowid; END;
 
