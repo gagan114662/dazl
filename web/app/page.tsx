@@ -25,13 +25,13 @@ const PROOF = [
 
 export default function Home() {
   return (
-    <main className="app-ui lp min-h-screen flex flex-col">
+    <main id="main" className="app-ui lp min-h-screen flex flex-col">
       <Banner />
       <nav className="flex items-center justify-between gap-4 px-4 sm:px-6 md:px-10 py-5 max-w-6xl mx-auto w-full">
         <span className="text-[22px] font-semibold tracking-tight">dazl</span>
         <div className="hidden md:flex gap-8 text-sm font-medium">
-          <a href="#how" className="hover:opacity-70">How it works</a>
-          <a href="#pricing" className="hover:opacity-70">Pricing</a>
+          <a href="#how" className="lp-navlink hover:opacity-70">How it works</a>
+          <a href="#pricing" className="lp-navlink hover:opacity-70">Pricing</a>
         </div>
         <div className="flex gap-2">
           <Link href="/sign-in" className="btn-ghost">Sign in</Link>
