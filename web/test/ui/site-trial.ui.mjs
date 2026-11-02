@@ -57,6 +57,7 @@ const CASES = [
 const FUNDED = { icp: { summary: 'Founders at small agencies that want hands-off books.', who: ['Agency founders'], industries: ['Professional services'], sizes: ['1-10'], where: [], signals: ['Hiring a bookkeeper'], exclude: [] }, source: 'https://ledgerline.example/', sells: 'Hands-off monthly bookkeeping', funded: 'trial' }
 const b = await chromium.launch()
 async function open(width, height, answer, usage) {
+  const state = { saved: false } // a saved key flips has_key on later /api/usage reads
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
@@ -69,7 +70,15 @@ async function open(width, height, answer, usage) {
     if (p === '/api/scan/icp-from-url') return json(answer.body, answer.status)
     if (p === '/api/settings/profile' && m === 'GET') return json({ business_name: '', sells: '', website: '', buyer: null })
     if (p === '/api/settings/profile' && m === 'POST') return json({ ok: true })
-    if (p === '/api/usage') return json(usage ?? { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 0, cap: 3, blocked: 'not_configured' } })
+    if (p === '/api/settings/llm-key' && m === 'PUT') { state.saved = true; return json({ ok: true }) }
+    if (p === '/api/usage') {
+      if (usage === 'fail') {
+        if (!state.usageFailed) { state.usageFailed = true; return json({ error: 'down' }, 500) }
+        return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } })
+      }
+      const u = usage ?? { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 0, cap: 3, blocked: 'not_configured' } }
+      return json(state.saved ? { ...u, has_key: true } : u)
+    }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     return json({}, 404)
   })
@@ -129,6 +138,30 @@ try {
       assert.equal(await page.getByTestId('first-play').count(), 3, 'three suggestion chips render')
       assert.ok(await page.getByTestId('first-play').first().isDisabled(), 'keyless, trial spent: suggestion chips cannot start a search either')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyless-${tag}.png`), fullPage: true })
+      // The key form is reachable on a phone (below the fold) and saving a key unblocks every start path without a reload.
+      await page.getByText('Searches run on your own Anthropic or OpenAI key.').first().scrollIntoViewIfNeeded()
+      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyform-${tag}.png`) })
+      await page.getByLabel('Your AI key').fill('sk-ant-fixture-key-123')
+      await page.getByRole('button', { name: 'Save key' }).click()
+      await page.getByTestId('ready-cta').waitFor({ timeout: 15000 })
+      assert.ok(!(await page.getByTestId('first-play').first().isDisabled()), 'a saved key re-enables the suggestion chips')
+      await ctx.close()
+    }
+    // If /api/usage fails, the pool is unknown: no start path renders or fires (the CTA must not race a keyless submit).
+    {
+      const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED }, 'fail')
+      await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
+      assert.equal(await page.getByTestId('ready-cta').count(), 0, 'usage failed: no CTA while the pool is unknown')
+      assert.ok(await page.getByTestId('first-play').first().isDisabled(), 'usage failed: suggestion chips disabled')
+      await page.getByTestId('first-ask').fill('Agency founders hiring a bookkeeper')
+      await page.getByTestId('first-ask').press('Enter')
+      await page.waitForTimeout(300)
+      assert.ok(!writes.includes('POST /api/scan'), 'usage failed: Enter does not start a search')
+      // Recovery: the retry re-checks the allowance and the start paths come back.
+      await page.getByTestId('usage-retry').click()
+      await page.getByTestId('ready-cta').waitFor({ timeout: 15000 })
+      assert.match(await page.getByTestId('ready-plan').innerText(), /3 free searches to start/, 'usage recovered: the real pool heads the ready step')
+      assert.ok(!(await page.getByTestId('first-play').first().isDisabled()), 'usage recovered: chips re-enabled')
       await ctx.close()
     }
     // An owner-side error keeps main's own copy (nothing trial-flavored, no key blame).
@@ -144,7 +177,7 @@ try {
       await ctx.close()
     }
   }
-  console.log(`site trial UI check passed: free-read floor with facts for each of the ${CASES.length} reasons (incl. spend_unavailable and read_failed), flag-off generic line, funded draft lands and saves, keyless/no-trial ready shows the key form up front, spend_limit money-cap copy, desktop + 390px`)
+  console.log(`site trial UI check passed: free-read floor with facts for each of the ${CASES.length} reasons (incl. spend_unavailable and read_failed), flag-off generic line, funded draft lands and saves, keyless/no-trial ready shows the key form up front (key save unblocks without reload), usage-fail gates every start path (retry recovers), spend_limit money-cap copy, desktop + 390px`)
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
