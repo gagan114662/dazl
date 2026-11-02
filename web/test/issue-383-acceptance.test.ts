@@ -6,8 +6,10 @@
 //   2. A former employee and an assistant-to-the-buyer are rejected, never attached.
 //   3. No person is inferred from a generic inbox (mailbox-shaped names never attach; a lead whose
 //      only contact is a generic inbox gets EMPTY best-person fields, never an invented person).
-//   4. Named verified-gated vs search-result-only contacts are shown separately (distinct named
-//      sources; the public search result keeps its "not verified as current" label).
+//   4. PARTIAL. "Show named verified-current versus search-result-only contacts separately": pinned here is only
+//      the offline half (distinct named sources per contact; the public search result keeps its "not verified as
+//      current" label). NOT met: no contact class is verified-current (every source is labelled not verified) and the
+//      leads page shows one mixed "Right people" list. What evidence counts as verified-current is an owner decision.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -63,24 +65,26 @@ test('criterion 2: the former employee and the assistant-to-the-buyer are reject
   const { db, jobId, leads } = seed({ confirmed: ['VP Sales'] })
   await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: (async (url: RequestInfo | URL) => {
     if (String(url).includes('organizations/enrich')) return ok(ORG_RESP)
-    return ok({ people: [person('Aide Adams', 'Executive Assistant to the CEO'), person('Former Fred', 'VP Sales', 'Other Corp'), person('Past Pam', 'Former VP of Sales'), person('Jane Buyer', 'VP Sales')] })
+    return ok({ people: [person('Aide Adams', 'Executive Assistant to the CEO'), person('Asa Assist', 'Assistant to the VP Sales'), person('Former Fred', 'VP Sales', 'Other Corp'), person('Past Pam', 'Former VP of Sales'), person('Jane Buyer', 'VP Sales')] })
   }) as never, master })
   const rows = enrichmentsForLeads(db, 'u1', ['lead1']).lead1
   assert.deepEqual(rows.filter(r => r.kind === 'contact').map(r => r.value), ['Jane Buyer - VP Sales'])
   const rejected = rows.filter(r => r.kind === 'contact_rejected')
-  assert.equal(rejected.filter(r => r.label === 'contact_role_mismatch').length, 2, 'assistant-to and past-title both named as role rejections')
+  assert.equal(rejected.filter(r => r.label === 'contact_role_mismatch').length, 3, 'assistant-to (incl. assistant to the buyer role itself) and past-title all named as role rejections')
+  assert.ok(!rows.some(r => r.kind === 'contact' && /Asa Assist|Aide Adams|Past Pam/.test(r.value)), 'no assistant or past-title candidate is attached')
   assert.ok(!JSON.stringify(rows).includes('Former Fred'), 'the former employee is never attached')
 })
 
 test('criterion 3a: a mailbox-shaped provider result is not a person (Apollo and PDL boundaries)', async () => {
   const apollo = await apolloPeopleSearch('k', { domain: 'acme.com', name: 'Acme' }, (async (_u: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body))
-    if (body.q_organization_domains) return ok({ people: [person('info@acme.com', 'VP Sales'), person('Jane Buyer', 'VP Sales')] })
+    if (body.q_organization_domains) return ok({ people: [person('info@acme.com', 'VP Sales'), person('Info', 'VP Sales'), person('Sales Team', 'VP Sales'), person('Jane Buyer', 'VP Sales'), person('Ana Sales', 'VP Sales')] })
     return ok({ people: [] })
   }) as never, 5, { titles: ['VP Sales'] })
-  assert.deepEqual(apollo.map(p => p.name), ['Jane Buyer'], 'a generic inbox never becomes an Apollo person')
-  const pdl = await pdlPeopleSearch('k', 'Acme', (async () => ok({ data: [{ full_name: 'sales@acme.com', job_title: 'VP Sales', job_company_name: 'acme', job_company_website: 'acme.com' }, { full_name: 'Jane Buyer', job_title: 'VP Sales', job_company_name: 'acme', job_company_website: 'acme.com' }] })) as never, 5)
-  assert.deepEqual(pdl.map(p => p.name), ['Jane Buyer'], 'a generic inbox never becomes a PDL person')
+  assert.deepEqual(apollo.map(p => p.name), ['Jane Buyer', 'Ana Sales'], 'a generic inbox (address or bare inbox name) never becomes an Apollo person; a real name containing a role word is kept')
+  const pdlRow = (full_name: string) => ({ full_name, job_title: 'VP Sales', job_company_name: 'acme', job_company_website: 'acme.com' })
+  const pdl = await pdlPeopleSearch('k', 'Acme', (async () => ok({ data: [pdlRow('sales@acme.com'), pdlRow('support'), pdlRow('sales.support'), pdlRow('Jane Buyer')] })) as never, 5)
+  assert.deepEqual(pdl.map(p => p.name), ['Jane Buyer'], 'a generic inbox (address or bare inbox name) never becomes a PDL person')
 })
 
 test('criterion 3b: a lead whose only contact is a generic inbox gets EMPTY best-person fields, not an invented person', async () => {
@@ -90,7 +94,7 @@ test('criterion 3b: a lead whose only contact is a generic inbox gets EMPTY best
   assert.deepEqual(best.get('lead1'), { best_person: '', best_person_title: '', best_person_link: '', best_person_found_via: '' }, 'nothing is invented from a generic inbox')
 })
 
-test('criterion 4: named provider-verified-gated and search-result-only contacts are shown separately', async () => {
+test('criterion 4 (PARTIAL - offline half only): provider and search-result-only contacts each carry their own named source; no verified-current class exists yet', async () => {
   const { db, jobId, leads } = seed({ confirmed: ['VP Sales'] })
   await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: (async (url: RequestInfo | URL) => {
     if (String(url).includes('organizations/enrich')) return ok(ORG_RESP)
