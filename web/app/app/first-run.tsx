@@ -10,6 +10,7 @@ import { Avatar, Pill, Stepper } from './ui/bits'
 import BrainGraph from './onboarding/brain-graph'
 import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
+import { siteKeyReason } from '@/lib/scan/site-read-copy'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import ResearchReview, { asResearchBlock, type ResearchBlock } from './research-review'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
@@ -66,7 +67,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [needKey, setNeedKey] = useState(false)
   // The free website read (#409): only facts the page itself states, each with its source URL. Set when the account
   // has no AI key; the profile form below stays the user's to fill - nothing here is inferred.
-  const [freeRead, setFreeRead] = useState<{ site: string; source: string; facts: { kind: string; text: string; source: string }[] } | null>(null)
+  const [freeRead, setFreeRead] = useState<{ site: string; source: string; facts: { kind: string; text: string; source: string }[]; trial?: string } | null>(null)
   // The brain: facts from the website read, revealed one by one while it builds.
   const [facts, setFacts] = useState<BrainFact[]>([])
   const [shown, setShown] = useState(0)
@@ -153,7 +154,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       if (j.free === true) {
         // Keyless free read: show the page's own facts, route to the reviewable manual profile. No brain facts, no
         // inferred draft, no auto-save - and no promise of a free search (the ask step prices key/trial honestly).
-        setFreeRead({ site: String(j.site ?? ''), source: String(j.source ?? ''), facts: Array.isArray(j.facts) ? j.facts : [] })
+        setFreeRead({ site: String(j.site ?? ''), source: String(j.source ?? ''), facts: Array.isArray(j.facts) ? j.facts : [], ...(typeof j.trial === 'string' ? { trial: j.trial } : {}) })
         // Research from any earlier keyed read was already cleared when this read began; the profile fields keep
         // their values (keyed reads save them; the person's edits are their own), and nothing here re-infers them.
         try { setReadFrom(new URL(String(j.source ?? '')).hostname) } catch { setReadFrom('your website') }
@@ -416,7 +417,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
             ? <p className="text-[#555]">The page did not state a title or description in readable HTML.</p>
             : <ul className="flex flex-col gap-2">{freeRead.facts.map((fact, i) => <li key={i}><span className="text-xs uppercase tracking-wide text-[#777]">{fact.kind === 'title' ? 'Page title' : 'Page description'}</span><br />{fact.text} <a className="underline text-xs" href={fact.source} target="_blank" rel="noreferrer">source</a></li>)}</ul>}
         </div>}
-        {freeRead && !hasKey && <KeyInline reason="The full automatic read runs on your own Anthropic or OpenAI key." onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
+        {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on your own Anthropic or OpenAI key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#777]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>

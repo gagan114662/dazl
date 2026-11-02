@@ -147,6 +147,102 @@ test('icpFromWebsite: keyless fetches the public page but never reaches a model 
 })
 
 
+
+// ---------- #409: the trial-funded read (port of #444 onto the free-read floor) ----------
+const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
+const ICP_JSON = JSON.stringify({ sells: 'CRM cleanup', summary: 'Sales ops teams at B2B SaaS companies that need CRM cleanup.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: ['Hiring a CRM admin'], exclude: [] })
+// Records the key, the output cap and the prompt size of every detailed call; fails or reports usage as asked.
+const trialProvider = (seen: { keys: string[]; max: number[]; bytes: number[] }, o: { model?: string; fail?: boolean; usage?: { input_tokens: number; output_tokens: number } | null } = {}): Provider => ({
+  research: async () => { throw new Error('unused') },
+  configuredModel: () => o.model ?? 'claude-sonnet-4-5',
+  completeDetailed: async (k, prompt, _f, max = 10) => {
+    seen.keys.push(k); seen.max.push(max); seen.bytes.push(Buffer.byteLength(prompt))
+    if (o.fail) throw new Error('provider 500')
+    return { text: ICP_JSON, model: o.model ?? 'claude-sonnet-4-5', ...(o.usage === null ? {} : { usage: o.usage ?? { input_tokens: 2000, output_tokens: 300 } }) }
+  },
+})
+// A trial admission that records how often it was asked and what the read settled or released into the wallet.
+const admitted = (calls: { n: number }, settled: (number | null)[] = [], released = { n: 0 }) => async () => { calls.n++; return { ok: true as const, key: { vendor: 'anthropic' as const, key: OP }, settle: async (usd: number | null) => { settled.push(usd) }, release: async () => { released.n++ } } }
+const COST = (2000 * 3 + 300 * 15) / 1e6
+
+test('#409 port: a keyless account reads on the trial key, admitted only after a readable page, one bounded call', async () => {
+  const { TRIAL_SITE_READ_MAX_OUTPUT_TOKENS, TRIAL_SITE_READ_PROMPT_MAX_BYTES } = await import('../lib/scan/icp-from-site.ts')
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const seen = { keys: [] as string[], max: [] as number[], bytes: [] as number[] }, calls = { n: 0 }, settled: (number | null)[] = []
+  const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen) }, trial: admitted(calls, settled) })
+  assert.ok('icp' in out && out.funded === 'trial', JSON.stringify(out))
+  if ('icp' in out) assert.match(out.icp.summary, /Sales ops/)
+  assert.deepEqual([calls.n, seen.keys, seen.max], [1, [OP], [TRIAL_SITE_READ_MAX_OUTPUT_TOKENS]], 'one admission, one bounded call on the admission\'s key')
+  assert.ok(seen.bytes[0] <= TRIAL_SITE_READ_PROMPT_MAX_BYTES, `prompt under the byte bound: ${seen.bytes[0]}`)
+  assert.deepEqual(settled, [COST], 'settled to the reported usage at the listed price')
+})
+
+test('#409 port: with its own key the read never touches the trial, even when a trial path is offered', async () => {
+  const calls = { n: 0 }
+  const out = await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: goodProvider }, trial: admitted(calls) })
+  assert.ok('icp' in out && out.funded === 'own')
+  assert.equal(calls.n, 0, 'no admission asked for an own-key read')
+})
+
+test('#409 port: a refused trial never hides the free read - it answers with the reason, and the model is never called', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const seen = { keys: [] as string[], max: [] as number[], bytes: [] as number[] }
+  for (const reason of ['not_configured', 'attempts_cap', 'global_daily_cap', 'site_reads_used', 'workspace_not_eligible'] as const) {
+    const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen) }, trial: async () => ({ ok: false as const, reason }) })
+    assert.ok('free' in out && out.trial === reason, `${reason}: ${JSON.stringify(out)}`)
+    assert.equal(out.facts.length > 0, true, 'the page\'s own facts still answer')
+  }
+  // A JS-only page or a fetch failure never asks for (or uses up) a trial read.
+  const calls = { n: 0 }
+  const tiny = (async () => htmlResponse('<html><body><script>app()</script></body></html>')) as unknown as typeof fetch
+  assert.deepEqual(await icpFromWebsite(empty, 'A', 'https://spa.example', { master, lookup: pubLookup, fetchImpl: tiny, providers: { anthropic: trialProvider(seen) }, trial: admitted(calls) }), { error: 'js_only' })
+  const down = (async () => htmlResponse('nope', 503)) as unknown as typeof fetch
+  const failed = await icpFromWebsite(empty, 'A', 'https://down.example', { master, lookup: pubLookup, fetchImpl: down, providers: { anthropic: trialProvider(seen) }, trial: admitted(calls) })
+  assert.ok('error' in failed, JSON.stringify(failed))
+  assert.equal(calls.n, 0, 'no admission for an unreadable page')
+  assert.deepEqual(seen.keys, [], 'no paid call in any of these')
+})
+
+test('#409 port: guard refusal before any call releases (free read + spend_unavailable); a failed call settles null (free read + read_failed)', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const seen = { keys: [] as string[], max: [] as number[], bytes: [] as number[] }
+  // An operator model the guard cannot price: admitted, but refused before any call - released, never settled.
+  const released = { n: 0 }, settled: (number | null)[] = []
+  const refused = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen, { model: 'some-new-model' }) }, trial: admitted({ n: 0 }, settled, released) })
+  assert.ok('free' in refused && refused.trial === 'spend_unavailable', JSON.stringify(refused))
+  assert.deepEqual([seen.keys.length, settled.length, released.n], [0, 0, 1], 'no call, nothing settled, the admission released')
+  // A provider error after the call: the reservation ends at the full reserve (settle null) and the read counted.
+  const failed = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen, { fail: true }) }, trial: admitted({ n: 0 }, settled) })
+  assert.ok('free' in failed && failed.trial === 'read_failed', JSON.stringify(failed))
+  assert.deepEqual(settled, [null], 'failed call: ends at the full reserve, never left pending')
+  // No usage reported: the same - the read ends at its reserve (settle null), never left pending.
+  const settled2: (number | null)[] = []
+  const noUsage = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: trialProvider(seen, { usage: null }) }, trial: admitted({ n: 0 }, settled2) })
+  assert.ok('icp' in noUsage, JSON.stringify(noUsage))
+  assert.deepEqual(settled2, [null])
+})
+
+test('#409 port: a provider without the detailed call cannot run a trial read (refused before any call, released)', async () => {
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const released = { n: 0 }, settled: (number | null)[] = []
+  const plain: Provider = { research: async () => { throw new Error('unused') }, configuredModel: () => 'claude-sonnet-4-5', complete: async () => ICP_JSON }
+  const out = await icpFromWebsite(empty, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: plain }, trial: admitted({ n: 0 }, settled, released) })
+  assert.ok('free' in out && out.trial === 'spend_unavailable', JSON.stringify(out))
+  assert.deepEqual([settled.length, released.n], [0, 1])
+})
+
+test('#409 port: a CJK page at the character cap reads on the trial under the per-read ceiling (the prompt is byte-capped)', async () => {
+  const { TRIAL_SITE_READ_PROMPT_MAX_BYTES } = await import('../lib/scan/icp-from-site.ts')
+  const empty = new Database(':memory:'); migrateKeys(empty)
+  const cjk = (async () => htmlResponse('<html><head><title>客户关系</title></head><body>' + '我们为销售团队提供客户关系管理工具。'.repeat(400) + '</body></html>')) as unknown as typeof fetch
+  const seen = { keys: [] as string[], max: [] as number[], bytes: [] as number[] }, settled: (number | null)[] = []
+  const out = await icpFromWebsite(empty, 'A', 'https://cjk.example', { master, lookup: pubLookup, fetchImpl: cjk, providers: { anthropic: trialProvider(seen) }, trial: admitted({ n: 0 }, settled) })
+  assert.ok('icp' in out && out.funded === 'trial', JSON.stringify(out))
+  assert.equal(seen.keys.length, 1, 'one call')
+  assert.ok(seen.bytes[0] <= TRIAL_SITE_READ_PROMPT_MAX_BYTES, `CJK prompt byte-capped: ${seen.bytes[0]}`)
+  assert.deepEqual(settled, [COST])
+})
+
 test('pinned lookup never asks DNS again when the transport connects', async () => {
   const lookup = pinnedLookup({ address: '93.184.216.34', family: 4 })
   const address = await new Promise<string>((resolve, reject) => lookup('rebind.example', {}, (err, address) => err ? reject(err) : resolve(typeof address === 'string' ? address : address[0].address)))

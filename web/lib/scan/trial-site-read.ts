@@ -36,6 +36,9 @@ export type SiteReadRefusal = TrialDeny | TrialRefusal | 'site_reads_used' | 'si
   // The read's own spend guard refused before any call (an unpriced or pricier operator model), or the trial key was
   // missing after admission: nothing was spent, the reservation and slots were given back, the page got the free read.
   | 'spend_unavailable'
+  // The funded call itself failed after being made (provider error): its read counted (settled, never released), and
+  // the page still gets the free read - told that the trial read ran and failed, so a retry is an informed choice.
+  | 'read_failed'
 // settle: the read's call ended, with the cost the provider reported (USD), or null when the call failed or reported no
 // usable cost: the reservation then counts its full reserve, but has ended (lib/billing/trial-budget.ts).
 // release: no call was made at all (the read's own guard refused first): the reservation and the account's read go back.

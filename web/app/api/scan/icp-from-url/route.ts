@@ -55,8 +55,12 @@ export async function POST(req: NextRequest) {
   // a team workspace or a workspace without its founder's row has no trial path, so the read is the free one. The
   // admission itself (eligibility, counters, wallet) still runs only after the page was fetched and found readable.
   const db = getScanDb()
-  const principal = hasKey(db, user.tenantId) ? null : await trialPrincipal(await getDb(), user)
+  const keyed = hasKey(db, user.tenantId)
+  const principal = keyed ? null : await trialPrincipal(await getDb(), user)
   const trial = principal ? (() => getDb().then(d => admitTrialSiteRead(d, principal, clientIp(req)))) : undefined
+  // A member, a team workspace or a workspace without its founder's row has no trial path. The free read still
+  // answers - it needs no key and no one's money - with the reason the funded read was never tried.
+  const ineligible = !keyed && !principal
   const out = await icpFromWebsite(db, user.tenantId, url, { prior, decisions, ...(trial ? { trial } : {}) })
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
@@ -67,5 +71,5 @@ export async function POST(req: NextRequest) {
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
     return NextResponse.json({ error: out.error, ...('trial' in out && out.trial ? { trial: out.trial } : {}) }, { status })
   }
-  return NextResponse.json({ ...out, intelligence: decisions.trace })
+  return NextResponse.json({ ...out, ...(ineligible && 'free' in out && !('trial' in out) ? { trial: 'workspace_not_eligible' } : {}), intelligence: decisions.trace })
 }
