@@ -10,6 +10,7 @@ import { bothEngines } from './helpers/engines.ts'
 
 const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
 const ENV = { DAZL_TRIAL_ANTHROPIC_KEY: OP, DAZL_TRIAL_SITE_READS_PER_DAY: '1000', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
+  DAZL_TRIAL_SITE_READ_ALLOWLIST: 'b1a@gmail.com,b1b@gmail.com,b1z@gmail.com,b2@gmail.com,b2b@gmail.com,b2d@gmail.com,b3@gmail.com,b3b-o@gmail.com,b3b@gmail.com,b3f@gmail.com',
   DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.004', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' }
 const wallet = (account: string, daily: string, extra: Record<string, string> = {}) => ({ ...ENV, DAZL_TRIAL_ACCOUNT_TOTAL_USD: account, DAZL_TRIAL_GLOBAL_DAILY_USD: daily, ...extra })
 const user = async (db: Db, id: string, email: string) => {
