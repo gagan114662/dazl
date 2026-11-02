@@ -1,0 +1,28 @@
+{
+  "v": 1,
+  "kind": "dazl.eval-contract",
+  "id": "eval-contract-toronto-office-v1",
+  "brief": {
+    "request": "Find me Toronto marketing agencies that opened a new office in the last 90 days, with a way to reach them.",
+    "icp_summary": "Marketing agencies with a fresh office opening - a hiring/brand moment that signals spend."
+  },
+  "constraints": [
+    { "field": "place", "op": "equals", "value": "Toronto", "source": "brief.request" },
+    { "field": "industry", "op": "in", "value": ["marketing agency"], "source": "brief.request" },
+    { "field": "event_kind", "op": "equals", "value": "office_opening", "source": "brief.request" },
+    { "field": "window_days", "op": "within_days", "value": 90, "source": "brief.request" }
+  ],
+  "offer": { "summary": "A website and brand refresh timed to the move-in moment." },
+  "event_predicates": [
+    { "kind": "office_opening", "description": "the company opened or announced a new office" }
+  ],
+  "window": { "days": 90 },
+  "identity": {
+    "entity": ["company", "entity_domains"],
+    "person": ["contact"],
+    "contact": ["email"]
+  },
+  "consent": { "policy": "b2b-legitimate-interest-v1", "channels": ["email"] },
+  "as_of": "2026-10-20T12:00:00.000Z",
+  "scorer": { "id": "dazl.eval-contract-scorer", "version": 1 }
+}

@@ -1,0 +1,39 @@
+[
+  {
+    "company": "Maple Leaf Digital",
+    "entity_domains": ["mapleleafdigital.ca"],
+    "source_url": "https://news.example/toronto/maple-leaf-office",
+    "quote_on_page": true,
+    "event": { "kind": "office_opening", "date": "2026-10-19", "place": "Toronto", "industry": "marketing agency" },
+    "contact": { "email": "hello@mapleleafdigital.ca", "kind": "sales" },
+    "consent": { "channel": "email", "status": "granted" }
+  },
+  {
+    "company": "Northern Lights Media",
+    "entity_domains": ["northernlightsmedia.ca"],
+    "source_url": "https://news.example/toronto/northern-lights-profile",
+    "quote_on_page": true,
+    "event": { "kind": "office_opening", "place": "Toronto", "industry": "marketing agency" },
+    "contact": { "email": "hello@northernlightsmedia.ca", "kind": "generic" },
+    "consent": { "channel": "email", "status": "granted" }
+  },
+  {
+    "company": "Lakeshore Creative",
+    "entity_domains": ["lakeshorecreative.ca"],
+    "source_url": "https://news.example/toronto/lakeshore-creative",
+    "quote_on_page": true,
+    "event": { "kind": "office_opening", "date": "2026-10-14", "place": "Toronto", "industry": "marketing agency" },
+    "contact": { "email": "talent@lakeshorecreative.ca", "kind": "recruiting" },
+    "consent": { "channel": "email", "status": "granted" }
+  },
+  {
+    "company": "Harbourfront Studio",
+    "entity_domains": ["harbourfrontstudio.ca"],
+    "source_url": "https://news.example/toronto/harbourfront-studio",
+    "quote_on_page": true,
+    "event": { "kind": "office_opening", "date": "2026-10-18", "place": "Toronto", "industry": "marketing agency" },
+    "page_says": { "place": "Montreal" },
+    "contact": { "email": "hello@harbourfrontstudio.ca", "kind": "sales" },
+    "consent": { "channel": "email", "status": "granted" }
+  }
+]
