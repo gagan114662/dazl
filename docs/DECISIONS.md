@@ -8,11 +8,13 @@ Newest first. A decision changes only when the owner says so.
 Resolves the owner decision #564 held open (`onboarding_audit` row contract for #417).
 
 On `deleteTenant`, consent/onboarding audit rows do **not** erase with the tenant. They are retained,
-content-free (no email, no actor — only `conversion:<kind>` and its timestamp), for **2 years** after
-erasure, then purged. Reasoning: the row carries no PII, so retaining it costs ~nothing on privacy, while
-erasing it removes the only evidence that consent was obtained right when a dispute is most likely to
-surface (complaint, chargeback, regulator inquiry) — which can occur well after a tenant deletes their
-account. 2 years is a practical window, not a specific statute; the exact period should be confirmed
+content-free (no email, no person name — only the internal account/tenant ID, `conversion:<kind>`, and its
+timestamp), for **2 years** after erasure, then purged. The internal ID is required: without it the record
+cannot be tied to the account it is proof for and has no evidentiary value; it is not itself PII once
+decoupled from the erased email/name. Reasoning: the row carries no PII, so retaining it costs ~nothing on
+privacy, while erasing it removes the only evidence that consent was obtained right when a dispute is most
+likely to surface (complaint, chargeback, regulator inquiry) — which can occur well after a tenant deletes
+their account. 2 years is a practical window, not a specific statute; the exact period should be confirmed
 against counsel as part of #535 (public legal policy / outbound-compliance disclosures) rather than
 re-litigated per branch.
 
