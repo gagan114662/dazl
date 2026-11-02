@@ -185,7 +185,7 @@ Updated by the builder on every branch. Newest first.
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review; next: #371.
 - Audit trail (#371, part): design in docs/design/audit.md. Append-only `audit_events` (PG 0041), events for
-  credential, billing, Stripe plan, sending, CRM, pipeline, consent, export and deletion actions, Settings > Audit
+  credential, billing, Stripe plan, sending, CRM, pipeline, consent, export, deletion, team and device actions, Settings > Audit
   trail and `GET /api/workspace/audit` (owners and admins; CSV). Automatic deletion is off: the tick purges nothing
   until the owner chooses a retention period (`AUDIT_RETENTION_DAYS`). Support access needs an owner decision.
 

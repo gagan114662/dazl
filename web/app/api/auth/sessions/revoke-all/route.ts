@@ -6,6 +6,7 @@ import { hashToken } from '@/lib/auth-db'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { revokeAllSessions } from '@/lib/sessions'
+import { audit } from '@/lib/audit-route'
 
 // Sign the account out everywhere else ({ keep_current: true }, the default) or everywhere, this session included.
 export async function POST(req: NextRequest) {
@@ -19,5 +20,7 @@ export async function POST(req: NextRequest) {
   const token = store.get('dazl_session')?.value
   const revoked = await revokeAllSessions(await getDb(), user.actorId, { by: user.actorId, reason: 'revoked_all', keepHash: keepCurrent && token ? hashToken(token) : null })
   if (!keepCurrent) store.delete('dazl_session')
+  // in the account's own workspace (as session.revoked); signing out nothing records nothing
+  if (revoked > 0) await audit({ tenantId: user.actorId, actorId: user.actorId }, req, { action: 'session.revoked_all', resource: 'session', summary: { sessions: revoked, kept_current: keepCurrent } })
   return NextResponse.json({ ok: true, revoked })
 }

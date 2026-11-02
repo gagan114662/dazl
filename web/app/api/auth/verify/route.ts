@@ -6,6 +6,7 @@ import { tokenOwner, verifyEmail } from '@/lib/email-ownership'
 import { activateLifecycleForDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { audit } from '@/lib/audit-route'
 
 // Opens a verification link (the token from /verify#t=...). Public: the link may be opened in another browser. An
 // unknown, used or expired link answers the same 410.
@@ -16,6 +17,8 @@ export async function POST(req: NextRequest) {
   const owner = await tokenOwner(await getDb(), body?.token)
   const ok = await verifyEmail(await getDb(), body?.token)
   if (ok && owner) {
+    // a changed sign-in address is account security: recorded in the account's own workspace, without either address
+    if (owner.purpose === 'change') await audit({ tenantId: owner.user_id, actorId: owner.user_id }, req, { action: 'account.email_changed', resource: 'account', id: owner.user_id })
     // #417: verification is the ownership boundary. The account's conversion activates now (a queued pending
     // signup completes; an already-verified account that changed address records an activation), and any other
     // pending conversion for the address (a payment made while unverified) drains with it. Best-effort: the
