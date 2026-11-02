@@ -985,7 +985,7 @@ export default function LeadsClient() {
         const count = { review: n.toReview, approved: n.approved, rejected: n.rejected }
         return <div className="flex flex-wrap items-center gap-2 mb-3">
           <div className="seg" role="tablist" aria-label="Filter leads" data-testid="lead-tabs">
-            {(['review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)} data-testid={`tab-${t}`}>{{ review: 'To review', approved: 'Approved', rejected: 'Rejected' }[t]} <span className="text-[var(--ink-3)]">{count[t] ?? '?'}</span></button>)}
+            {(['review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)} data-testid={`tab-${t}`}>{{ review: 'To decide', approved: 'Approved', rejected: 'Rejected' }[t]} <span className="text-[var(--ink-3)]">{count[t] ?? '?'}</span></button>)}
           </div>
           {/* "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends. */}
           <InfoTip label="About these counts"><span data-testid="card-counts-scope">Cards below, not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}. </span>{n.approved === null ? <span data-testid="card-counts-note">Drafts could not be loaded, so Approved is unknown.</span> : <span data-testid="card-counts-note">Approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}</InfoTip>

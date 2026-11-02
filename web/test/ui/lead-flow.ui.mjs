@@ -2,9 +2,9 @@
 // of `npm test`.  Run:  cd web && npm run build && node test/ui/lead-flow.ui.mjs   (SHOTS=<dir> saves screenshots)
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call answered from a
 // stub in the browser: no scan, no draft is really created, nothing is sent. It proves:
-//   1. the cards open on "To review" with counts on the tabs; each card shows company, contact name + role, one line of
+//   1. the cards open on "To decide" with counts on the tabs; each card shows company, contact name + role, one line of
 //      why, source + date, and Approve / Reject; no caveat paragraph is on screen (the limits sit behind (i));
-//   2. Approve sends exactly one POST /api/outreach { lead_id }; the card leaves To review for Approved, and a one-line
+//   2. Approve sends exactly one POST /api/outreach { lead_id }; the card leaves To decide for Approved, and a one-line
 //      result says the draft was created with a link to review it (this play's Outreach);
 //   3. Reject with a reason sends the existing quarantine POST ("Rejected: <reason>"); the card leaves the list, the result
 //      line says so, and Undo (its DELETE) brings it back; nothing else is written.
@@ -69,8 +69,8 @@ try {
   await cards().first().waitFor({ timeout: 15000 })
   if (process.env.BEFORE_ONLY) { await cards().first().scrollIntoViewIfNeeded(); await page.locator('main').evaluate(m => m.scrollBy(0, -140)); await shot('before'); console.log('before shot'); process.exit(0) }
   // 1. What a card shows, and no caveat paragraphs.
-  assert.equal(await tab('review').getAttribute('aria-selected'), 'true', 'opens on To review')
-  assert.deepEqual(await Promise.all(['review', 'approved', 'rejected'].map(t => tab(t).textContent())), ['To review 3', 'Approved 0', 'Rejected 0'])
+  assert.equal(await tab('review').getAttribute('aria-selected'), 'true', 'opens on To decide')
+  assert.deepEqual(await Promise.all(['review', 'approved', 'rejected'].map(t => tab(t).textContent())), ['To decide 3', 'Approved 0', 'Rejected 0'])
   assert.equal(await cards().count(), 3)
   const bright = card('Bright Dental')
   const t = await bright.textContent()
@@ -92,7 +92,7 @@ try {
   assert.match(await result.innerText(), /Bright Dental: draft created\./)
   assert.equal(await result.getByRole('link', { name: 'Review draft' }).getAttribute('href'), `/app/outreach?job_id=${JOB}`)
   await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid=lead-card]')].some(c => c.textContent.includes('Bright Dental')))
-  assert.deepEqual(await Promise.all(['review', 'approved'].map(t => tab(t).textContent())), ['To review 2', 'Approved 1'])
+  assert.deepEqual(await Promise.all(['review', 'approved'].map(t => tab(t).textContent())), ['To decide 2', 'Approved 1'])
   await shot('after-approve')
   await tab('approved').click()
   const approvedCards = await cards().allTextContents()
@@ -106,7 +106,7 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid=card-result]')?.getAttribute('data-kind') === 'rejected')
   assert.match(await result.innerText(), /Maple Family Dentistry \(Not a fit\) left the list\./)
   assert.equal(await card('Maple Family Dentistry').count(), 0, 'the rejected card leaves the list')
-  assert.deepEqual(await Promise.all(['review', 'rejected'].map(t => tab(t).textContent())), ['To review 1', 'Rejected 1'])
+  assert.deepEqual(await Promise.all(['review', 'rejected'].map(t => tab(t).textContent())), ['To decide 1', 'Rejected 1'])
   await shot('after-reject')
   await result.getByRole('button', { name: 'Undo' }).click()
   await card('Maple Family Dentistry').waitFor()
