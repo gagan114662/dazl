@@ -152,8 +152,18 @@ test('enrichJobSignals: ownership lost (alive false) stops the stale attempt - n
   await enrichJobSignals(db, 'u1', jobId, { fetchImpl, alive: () => false })
   assert.equal((db.prepare('SELECT COUNT(*) c FROM lead_enrichments').get() as { c: number }).c, 0, 'a stale attempt writes no evidence')
   assert.equal((db.prepare('SELECT COUNT(*) c FROM connector_audit').get() as { c: number }).c, 0, 'and no audit rows')
+  // lost DURING lead1's fetches (alive at loop top, lost by the post-fetch check): nothing written even for lead1
+  const db2 = new Database(':memory:')
+  migrateScan(db2); migrateConnectors(db2); migrateEvents(db2)
+  const jobId2 = createJob(db2, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db2.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId2)
+  db2.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Zymtrace', 'zymtrace.com', 'raised seed', 'https://x.com/1')").run(jobId2)
+  let calls2 = 0
+  await enrichJobSignals(db2, 'u1', jobId2, { fetchImpl, alive: () => { calls2++; return calls2 <= 1 } })
+  assert.equal((db2.prepare('SELECT COUNT(*) c FROM lead_enrichments').get() as { c: number }).c, 0, 'a mid-lead reclaim refuses that lead\'s writes after resolve')
+  db2.close()
   let calls = 0
-  await enrichJobSignals(db, 'u1', jobId, { fetchImpl, alive: () => { calls++; return calls <= 1 } }) // alive for lead1, lost before lead2
+  await enrichJobSignals(db, 'u1', jobId, { fetchImpl, alive: () => { calls++; return calls <= 2 } }) // alive through lead1 (loop-top + post-fetch), lost before lead2
   assert.ok((db.prepare('SELECT COUNT(*) c FROM lead_enrichments WHERE lead_id = ?').get('lead1') as { c: number }).c > 0, 'lead1 written before the loss')
   assert.equal((db.prepare('SELECT COUNT(*) c FROM lead_enrichments WHERE lead_id = ?').get('lead2') as { c: number }).c, 0, 'lead2 never written by the stale attempt')
   db.close()

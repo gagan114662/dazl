@@ -210,6 +210,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       if (l.company_domain) lookups++
       let boardFetchThrew = false
       const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => { boardFetchThrew = true; return null }) : null
+      if (l.company_domain && !owned()) { stopped = true; break } // reclaimed DURING this lead's async fetch: the resolved result is this attempt's observation but must not be WRITTEN by it - the new owner re-runs
       const g = gbz?.hiring ?? null
       // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
       // by company name (a probe, a link label) could belong to a larger same-name company: its roles are not this lead's hiring.
@@ -245,7 +246,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const match = matchedHiringRole(p.title, roles)
         const line = roles.length ? `Hiring for ${p.title} (requested: ${match!.term}), posted ${p.date}. This may relate to your offer; buying need isn't verified. ` : `Hiring sales: ${p.title} posted ${p.date} on its ${BOARD_LABEL[g.board]} job board (${l.company_domain}). `
         setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-        addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${g.postings.length} sales/GTM role${g.postings.length === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (g.postings.map(x => x.title).slice(0, 3).join('; ') + ` (${Math.min(g.postings.length, 3)} of ${g.postings.length} dated shown; ${g.listedCount} listed titles${g.listedCount > g.allTitles.length ? ', sample capped at 50' : ''})`).slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now })
+        { const dn = g.postings.length // dated postings actually READ; a '+' when the detail read itself was capped - never a masked total
+          addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${dn}${g.datedCapped ? '+' : ''} sales/GTM role${dn === 1 && !g.datedCapped ? '' : 's'} posted, newest ${g.newest}`, label: (g.postings.map(x => x.title).slice(0, 3).join('; ') + ` (${Math.min(dn, 3)} of ${dn}${g.datedCapped ? '+' : ''} dated shown; ${g.listedCount} listed titles${g.listedCount > g.allTitles.length ? `, sample capped at ${g.allTitles.length}` : ''})`).slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now }) }
         const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
         for (const e of withRepostHistory(postingEvidence(g, now, null), g.board, existingEvidence)) addEnrichment(db, job.user_id, l.id, { ...e, label: roles.length ? `Requested role: ${matchedHiringRole(e.value.split(' - posted ')[0], roles)!.term}; ${e.label}`.slice(0, 200) : e.label })
         { const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)

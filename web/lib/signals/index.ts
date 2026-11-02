@@ -171,6 +171,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       else if (gb.probeErrors.length === 0 && !gb.fetchAborted) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (gtm)`.slice(0, 200), status: 'no_board_found', results: -1 })
       if (!gb.fetchAborted) for (const b of gb.probeErrors) if (b !== settled0?.board) audit(db, { tenantId, connector: 'check:ats-board', jobId, lookup: `${lead.id} (gtm) ${b}`.slice(0, 200), status: 'fetch_failed', results: -1 })
     }
+    if (deps.alive && !deps.alive()) return // reclaimed DURING this lead's fetches: nothing the stale attempt resolved may be written
     // A filing far from the claimed round date is a real fact about the entity but not
     // corroboration of THIS raise (fund filings and stale filings both collide here).
     // People named in the entity-matched filing (executive officers/directors): a fact about the entity, so it uses f0, not the round-date-gated f.
@@ -207,8 +208,8 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
       // A board's own NAME (even token-identical to the company) is a claim by the board, not proof of ownership: only an established domain, or the board's
       // postings all naming the lead's own domain, binds it. Otherwise: Unconfirmed, no confidence, nothing written to the company's history.
       const est = domainRelationship(db, tenantId, lead.id, lead.company_domain) === 'established' || (!!g.domain && !!lead.company_domain && g.domain.replace(/^www\./, '') === lead.company_domain.replace(/^www\./, ''))
-      const titles = g.postings.map(p => p.title).slice(0, 3).join('; ') + ` (${Math.min(g.postings.length, 3)} of ${g.postings.length} dated shown; ${g.listedCount} listed titles${g.listedCount > g.allTitles.length ? ', sample capped at 50' : ''})`
-      addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n} sales/GTM role${n === 1 ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
+      const titles = g.postings.map(p => p.title).slice(0, 3).join('; ') + ` (${Math.min(n, 3)} of ${n}${g.datedCapped ? '+' : ''} dated shown; ${g.listedCount} listed titles${g.listedCount > g.allTitles.length ? `, sample capped at ${g.allTitles.length}` : ''})`
+      addEnrichment(db, tenantId, lead.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${est ? '' : 'Unconfirmed: '}${n}${g.datedCapped ? '+' : ''} sales/GTM role${n === 1 && !g.datedCapped ? '' : 's'} posted, newest ${g.newest}`, label: (est ? titles : `${titles} (${HEURISTIC_NOTE})`).slice(0, 200) || null, confidence: est ? 70 : null, source_url: g.url, source_date: g.newest, retrieved_at: now })
       for (const e of withRepostHistory(postingEvidence(g, now, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)) addEnrichment(db, tenantId, lead.id, e)
       { const auditRows = withRepostHistory(boardTitleAudit(g, now, today, est ? null : HEURISTIC_NOTE), g.board, existingEvidence)
         for (const e of auditRows) addEnrichment(db, tenantId, lead.id, e)

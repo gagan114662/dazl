@@ -16,6 +16,17 @@ const bundle = await esbuild.build({
   alias: { '@': root },
   plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = (n) => ({ toString: () => "x".repeat(n * 2) })', loader: 'js' })) } }], define: { 'process.env.NODE_ENV': '"development"' }, external: [],
 })
+// Real app styles: compile globals.css with the repo's own Tailwind v4 (candidates scanned from app/), inline <style>.
+import fs from 'node:fs'
+const tw = require('tailwindcss')
+const twc = await tw.compile(fs.readFileSync(path.join(root, 'app/globals.css'), 'utf8'), { base: root, onDependency: () => {}, loadStylesheet: async (id, base) => {
+  const p = id === 'tailwindcss' ? require.resolve('tailwindcss/index.css') : require.resolve(id, { paths: [base] })
+  return { content: fs.readFileSync(p, 'utf8'), path: p, base: path.dirname(p) }
+} })
+const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(d, e.name)) : /\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : [])
+const toks = new Set()
+for (const f of walk(path.join(root, 'app'))) { const src = fs.readFileSync(f, 'utf8'); for (const m of src.matchAll(/className="([^"]+)"|className=\{?['`]([^'`]+)['`]/g)) for (const tok of (m[1] || m[2] || '').split(/\s+/)) if (tok && !tok.includes('${')) toks.add(tok) }
+const CSS = twc.build([...toks])
 const js = bundle.outputFiles[0].text
 // Exactly what the API returns after the RECENT_AUDIT_SQL filter: connector audits only, never per-lead check:% rows.
 const AUDIT = [
@@ -27,7 +38,7 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 900, height: 800 } })
 await page.route('**/*', async route => {
   const u = new URL(route.request().url())
-  if (route.request().resourceType() === 'document') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body><div id="root"></div><script src="/bundle.js"></script></body></html>` })
+  if (route.request().resourceType() === 'document') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><style>${CSS}</style></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>` })
   if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
   if (u.pathname === '/api/settings/enrichment') return json(route, { connectors: [], audit: AUDIT, fallback: false })
   if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })

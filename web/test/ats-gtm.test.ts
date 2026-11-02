@@ -436,7 +436,7 @@ test('#533 F-E fresh-but-closed is outside the 0-fresh claim: a closed fresh pos
 })
 
 test('#533 AC4 repost labeling: a board re-dating a previously stored title is labeled repost-unknown, never renewed demand; stored history is untouched', () => {
-  const rows = postingEvidence({ board: 'greenhouse', postings: [{ title: 'Account Executive', date: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', location: 'London', updated: null }], newest: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', domain: 'brightloop.io', via: 'domain', allTitles: ['Account Executive'], boardUrl: 'https://boards.greenhouse.io/brightloop', listedCount: 1, titleFilter: 'gtm', allListed: ['Account Executive'], listedCountAll: 1 }, NOW / 1000, null)
+  const rows = postingEvidence({ board: 'greenhouse', postings: [{ title: 'Account Executive', date: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', location: 'London', updated: null }], newest: '2026-10-20', url: 'https://boards.greenhouse.io/brightloop/jobs/9', domain: 'brightloop.io', via: 'domain', allTitles: ['Account Executive'], boardUrl: 'https://boards.greenhouse.io/brightloop', listedCount: 1, titleFilter: 'gtm', allListed: ['Account Executive'], listedCountAll: 1, datedCapped: false }, NOW / 1000, null)
   const existing = [
     { kind: 'hiring', connector: 'signals:greenhouse-gtm', value: 'Account Executive - posted 2026-08-01', source_date: '2026-08-01', retrieved_at: Date.parse('2026-08-02T00:00:00Z') / 1000 },
     { kind: 'hiring-role', connector: 'signals:lever-gtm', value: 'Account Executive', source_date: '2026-09-01', retrieved_at: Date.parse('2026-09-01T00:00:00Z') / 1000 },
