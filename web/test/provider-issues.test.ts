@@ -51,3 +51,16 @@ test('issue text names the provider and the fix for a rejected key', () => {
   assert.equal(providerIssueText({ connector: 'enrich:apollo', status: 'auth', lookups_affected: 3, latest_at: 1 }), 'Apollo could not be used in this scan: the saved key was rejected. Check Settings > Enrichment.')
   assert.equal(providerIssueText({ connector: 'enrich:pdl', status: 'rate_limited', lookups_affected: 1, latest_at: 1 }), 'People Data Labs rate limit reached during this scan (1 lookup affected).')
 })
+
+test('#382 timeouts and enrichment waterfall skips reach the scan view; skip statuses on other connectors do not', async () => {
+  const d = await setup()
+  audit(d, { tenantId: 't1', connector: 'enrich:apollo', jobId: 'j1', lookup: 'org Acme', status: 'timeout', results: 0 })
+  audit(d, { tenantId: 't1', connector: 'enrich:apollo', jobId: 'j1', lookup: 'people Acme', status: 'budget_exhausted', results: 0 })
+  audit(d, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: 'people Acme', status: 'fallback_off', results: 0 })
+  audit(d, { tenantId: 't1', connector: 'other:thing', jobId: 'j1', lookup: 'x', status: 'circuit_open', results: 0 })
+  const issues = (await providerIssues('t1', 'j1'))!
+  assert.deepEqual(issues.map(i => `${i.connector}:${i.status}`).sort(), ['enrich:apollo:budget_exhausted', 'enrich:apollo:timeout', 'enrich:pdl:fallback_off'])
+  for (const i of issues) assert.ok(!/could not be used in this scan \(/.test(providerIssueText(i)), `specific text for ${i.status}`)
+  assert.match(providerIssueText({ connector: 'enrich:pdl', status: 'fallback_off', lookups_affected: 1, latest_at: 1 }), /fallback is off/)
+  assert.match(providerIssueText({ connector: 'enrich:apollo', status: 'timeout', lookups_affected: 2, latest_at: 1 }), /did not answer in time.*2 lookups affected/)
+})

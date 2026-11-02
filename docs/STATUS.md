@@ -162,7 +162,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
 2. #380 explicit AND/OR/NOT targeting with per-condition proof.
 3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
-4. #382 real Apollo-to-PDL enrichment fallback waterfall.
+4. #382 real Apollo-to-PDL enrichment fallback waterfall (per-lead per-provider outcomes, timeout/skip notices in the scan view: PR on `b/382-enrich-waterfall`, in review; stubbed providers only, not run live).
 5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
 6. #384 separate published provenance from deliverability/person-route status.
 7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop).
