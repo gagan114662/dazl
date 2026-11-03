@@ -183,6 +183,7 @@ export async function register(db: Db, actor: string, req: { name: unknown; vers
   const def = entry.module.definition
   const bad = checkDefinition(def)
   if (bad || def.name !== req.name || def.version !== req.version || typeof entry.module.run !== 'function') return refuse(db, base, 'bad_definition', bad ?? 'name/version/run mismatch')
+  if (JSON.stringify(def).length > 65_536) return refuse(db, base, 'bad_definition', 'definition too large')
   const onDisk = fileHash(entry)
   if (req.codeHash !== entry.sha256 || onDisk !== entry.sha256) return refuse(db, base, 'hash_mismatch', onDisk === null ? 'file unreadable' : undefined)
   const prior = await catalogEntry(db, req.name, req.version)
@@ -371,7 +372,8 @@ export async function grant(db: Db, actor: string, tenantId: unknown, name: unkn
   if (typeof tenantId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(tenantId) || !okName(name)) return refuse(db, base, 'bad_request')
   if (!await db.get("SELECT 1 FROM worker_catalog WHERE name = ?", [name])) return refuse(db, base, 'unknown')
   const exists = await db.get('SELECT 1 AS x FROM organizations WHERE id = ? UNION SELECT 1 AS x FROM users WHERE id = ?', [tenantId, tenantId])
-  if (!exists) return refuse(db, base, 'no_tenant')
+  const deleted = await db.get('SELECT 1 AS x FROM tenant_tombstones WHERE deleted_tenant = ?', [tenantId])
+  if (!exists || deleted) return refuse(db, base, 'no_tenant')
   return db.tx(function* (t) {
     const r = yield* t.run('INSERT INTO worker_grants (tenant_id, name, granted_by, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, name) DO NOTHING', [tenantId, name, actor, now])
     if (r.changes === 1) {

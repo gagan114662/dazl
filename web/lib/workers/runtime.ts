@@ -76,7 +76,16 @@ type RunRow = { id: string; tenant_id: string; name: string; status: string; inp
 export async function getRun(db: Db, user: RunUser, id: unknown): Promise<RunView | null> {
   if (typeof id !== 'string' || !/^[a-f0-9]{24}$/.test(id)) return null
   const r = await db.get<RunRow>('SELECT * FROM worker_runs WHERE id = ? AND tenant_id = ?', [id, user.tenantId])
-  if (!r) return null
+  return r ? view(r) : null
+}
+
+// The session tenant's most recent runs, newest first.
+export async function listRuns(db: Db, user: { tenantId: string }, limit = 50): Promise<RunView[]> {
+  const rows = await db.all<RunRow>('SELECT * FROM worker_runs WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ?', [user.tenantId, Math.max(1, Math.min(200, limit))])
+  return rows.map(view)
+}
+
+function view(r: RunRow): RunView {
   let output: unknown = null
   if (r.output !== null) { try { output = JSON.parse(r.output) } catch { output = null } }
   return { id: r.id, name: r.name, status: r.status, version: r.version, output, error: r.error, createdAt: Number(r.created_at), finishedAt: r.finished_at === null ? null : Number(r.finished_at) }

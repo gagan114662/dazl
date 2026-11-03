@@ -9,7 +9,7 @@ import type { Db } from '../lib/db/client.ts'
 import { checkDefinition, key, type Registry } from '../lib/workers/definition.ts'
 import { REVIEWED } from '../lib/workers/registry.ts'
 import { MAX_DEPTH } from '../lib/workers/schema.ts'
-import { enqueueRun, getRun, WorkerHost, CRASH_LOOP_FAILURES, MAX_AUTO_RESTARTS, type RunUser } from '../lib/workers/runtime.ts'
+import { enqueueRun, getRun, listRuns, WorkerHost, CRASH_LOOP_FAILURES, MAX_AUTO_RESTARTS, type RunUser } from '../lib/workers/runtime.ts'
 import { activate, deployment, events, grant, register, restart, revoke, setLimits, start, stop, WorkerError } from '../lib/workers/store.ts'
 import { DbQueue } from '../lib/queue/db.ts'
 import { bothEngines } from './helpers/engines.ts'
@@ -134,6 +134,10 @@ bothEngines('grant: a real tenant only; written to the tenant audit trail; revok
   await register(db, OP, { name: 'echo', version: '1.0.0', codeHash: pin('echo', '1.0.0') }, TEST_REGISTRY, NOW)
   await start(db, OP, 'echo', '1.0.0', NOW)
   await refused(grant(db, OP, 'no-such-tenant', 'echo', NOW), 'no_tenant')
+  // a deleted tenant (tombstoned) cannot be granted anything, and the refusal is recorded
+  await db.run('INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, ?, ?)', ['tenant-gone', 'gone@example.test', 'x', 'y'])
+  await db.run("INSERT INTO tenant_tombstones (deleted_tenant, requested_at, requested_by, state, policy) VALUES ('tenant-gone', 1, 'test', 'requested', '{}')")
+  await refused(grant(db, OP, 'tenant-gone', 'echo', NOW), 'no_tenant')
   for (const t of [null, 42, ['tenant-a'], { id: 'tenant-a' }, '', 'tenant a', "tenant-a' OR 1=1", 'x'.repeat(65)]) await refused(grant(db, OP, t, 'echo', NOW), 'bad_request')
   await refused(grant(db, OP, A.tenantId, 'not-registered', NOW), 'unknown')
   assert.deepEqual(await grant(db, OP, A.tenantId, 'echo', NOW), { created: true })
@@ -178,6 +182,8 @@ bothEngines('enqueue: tenant from the session only, role-checked, input schema-c
   // the host runs it; B still sees nothing, A sees the output
   assert.equal(await host(db).tick(), 'done')
   assert.equal(await getRun(db, B, id), null)
+  assert.ok((await listRuns(db, B)).every(r => r.id !== id))
+  assert.ok((await listRuns(db, A)).some(r => r.id === id && r.status === 'done'))
   assert.deepEqual((await getRun(db, A, id))?.output, { n: 7, by: '1.0.0' })
 })
 
