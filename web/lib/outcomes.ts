@@ -6,6 +6,7 @@
 //              row per thread, filtered and paginated on the server (lib/outreach/inbox.ts), with the exact total
 // Anything that did not load is null and shown as unknown, never as zero.
 import { previewSplit, type PreviewLead, type PreviewSplit } from './journey.ts'
+import { needsOwner as isNeedsOwner, NOT_A_PERSON as MACHINE } from './outreach/needs-owner.ts'
 
 export interface OutcomeMsg { id: string; lead_id: string; to_email: string; subject: string; status: string; created_at: number; sent_at: number | null }
 export interface OutcomeReply { gmail_id: string; thread_id: string; lead_id: string | null; from_email: string; excerpt: string; classification: string; received_at: number; company: string | null; lead_name: string | null; stopped: string | null }
@@ -20,15 +21,13 @@ export interface Outcomes {
   exceptions: { kind: 'scan' | 'send' | 'held'; text: string; href: string }[] | null
 }
 
-// Replies that need the owner: an interested answer, a human answer the rules could not sort, or one held for review
-// (uncertain: unreadable or unclear). A "no", an opt-out (already honoured by the send rails) and auto-replies are not
-// counted as needing the owner. A stopped thread is not either, except one held for review, or an uncertain reply on a
-// thread stopped for a weaker reason (re-opened, evidence withdrawn...): a person still has to read it. Only an
-// opt-out, a "no", a bounce or a suppression settles a thread.
-const NEEDS_OWNER = new Set(['positive', 'other', 'uncertain'])
-const SETTLED = new Set(['opt_out', 'negative', 'bounce', 'suppressed'])
-const NOT_A_PERSON = new Set(['auto', 'soft_bounce'])
-const needsOwner = (r: OutcomeReply) => NEEDS_OWNER.has(r.classification) && (!r.stopped || r.stopped === 'review' || (r.classification === 'uncertain' && !SETTLED.has(r.stopped)))
+// Replies that need the owner: the same rule the server counts with (lib/outreach/needs-owner.ts), so this tile and the
+// Inbox "Needs you" total reconcile. An interested answer, a human answer the rules could not sort, one held for review
+// (uncertain), or a correlated delivery notice held for review (bounce_review). A "no", an opt-out and auto-replies are
+// not; a stopped thread is not either, except one held for review, or an uncertain reply on a thread stopped for a
+// weaker reason. Only an opt-out, a "no", a bounce or a suppression settles a thread.
+const NOT_A_PERSON: ReadonlySet<string> = new Set(MACHINE)
+const needsOwner = (r: OutcomeReply) => isNeedsOwner(r.classification, r.stopped)
 const FAILED_SEND = new Set(['failed', 'uncertain'])
 
 export interface RepliesPage { threads: OutcomeReply[]; complete: boolean; needsOwner: number }
