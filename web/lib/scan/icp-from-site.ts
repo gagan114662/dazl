@@ -179,6 +179,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     const sub = await fetchPublicHtml(l.url, deps).catch(() => null)
     if (!sub || 'error' in sub) continue
     try { if (new URL(sub.finalUrl).hostname.toLowerCase().replace(/^www\./, '') !== site) continue } catch { continue }
+    if (pages.some(p => p.url === sub.finalUrl)) continue   // a link that redirects to an already-read page is not new evidence
     const { title, text } = extractSiteText(sub.html)
     if (text.length >= 80) pages.push({ url: sub.finalUrl, kind: l.kind, title, text: text.slice(0, RESEARCH_PAGE_TEXT), fetched_at: Math.floor(Date.now() / 1000) })
   }
