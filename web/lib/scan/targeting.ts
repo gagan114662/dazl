@@ -13,8 +13,10 @@
 // Place, industry, size and buyer role stay with the gates that already enforce them (the verifier's place check, the ICP grade);
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
+import { TECH_WORDS, techNameOf } from '../connectors/techstack.ts'
+
 export type Truth = 'pass' | 'fail' | 'unknown'
-export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category'
+export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category' | 'tech'
 export interface Condition {
   id: string
   kind: CondKind
@@ -25,6 +27,8 @@ export interface Condition {
   event?: string                     // event: family (open, launch, expand, acquire, relocate, contract, permit, partner, rebrand)
   object?: string                    // event: the object the request names (location, office, website ...), '' = any
   names?: string[]                   // company_named: the names to exclude; category: the category word
+  tech?: string                      // tech (#389): the canonical name of a technology the site crawl can detect
+  change?: 'uses' | 'adopted' | 'removed'   // tech: a current state, or a dated change between comparable observations
   within_days: number | null         // this condition's own clock; null = no window stated
   window_source: 'clause' | 'request' | 'narrowest' | 'default' | null
   relative_to?: string               // the window counts from this condition's event date (event relationship), not from now
@@ -46,7 +50,42 @@ const FUNDING_CUE = /\b(?:fund(?:ing|ed|s)?|rais(?:e|ed|es|ing)|round|invest(?:e
 const STAGE = '(?:pre-?seed|seed|series\\s+[a-e])'
 const RAISE = '(?:raised|closed|secured|announced|landed|completed|received)'
 
-interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; stage?: string; role?: string; first?: boolean; event?: string; object?: string }
+interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean }
+
+// #389: technology conditions, only for technologies the site crawl can detect (techstack.ts). A technology word becomes a condition only
+// after a technology cue ("using", "built on", "migrated from", "switched to" ...) or before a platform noun ("Shopify stores"); words
+// that are also plain English (Ghost, Segment, Bootstrap, Stripe, Framer) need a strong cue, never a bare "on"/"with" or a noun after them.
+const TECH = `(?:${TECH_WORDS.map(w => w.re).join('|')})`
+const AMBIGUOUS_TECH = new Set(['Ghost', 'Segment', 'Bootstrap', 'Stripe', 'Framer'])
+function techAtoms(q: string, add: (a: Atom) => void): void {
+  const name = (w: string) => techNameOf(w)
+  // Removal, optionally with the adoption it was a move to: "migrated from WordPress to Webflow", "moved off HubSpot".
+  for (const m of q.matchAll(new RegExp(`\\b(?:migrat\\w*|mov(?:e|ed|es|ing)|switch\\w*|transition\\w*|chang\\w*)\\s+(?:away\\s+)?(?:from|off(?:\\s+of)?)\\s+(${TECH})\\b(?:\\s+(?:to|onto|for)\\s+(${TECH})\\b)?`, 'gi'))) {
+    const from = name(m[1]); if (!from) continue
+    const s = m.index ?? 0, e1 = s + m[0].indexOf(m[1]) + m[1].length
+    add({ kind: 'tech', start: s, end: e1, tech: from, change: 'removed' })
+    const to = m[2] ? name(m[2]) : null
+    const tail = m[0].slice(e1 - s), at = e1 + tail.length - tail.trimStart().length
+    if (to && m[2]) add({ kind: 'tech', start: at, end: s + m[0].length, tech: to, change: 'adopted' })
+  }
+  for (const m of q.matchAll(new RegExp(`\\b(?:dropp\\w*|remov\\w*|ditch\\w*|abandon\\w*|stopp?\\w*\\s+using|churn\\w*\\s+(?:from|off))\\s+(${TECH})\\b`, 'gi'))) {
+    const t = name(m[1]); if (t) add({ kind: 'tech', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, tech: t, change: 'removed' })
+  }
+  // Adoption: "switched to Webflow", "adopted Intercom", "started using HubSpot".
+  for (const m of q.matchAll(new RegExp(`\\b(?:(?:migrat\\w*|mov(?:e|ed|es|ing)|switch\\w*|transition\\w*)\\s+(?:over\\s+)?(?:to|onto)|adopt\\w*|install\\w*|implement\\w*|(?:start(?:ed|s|ing)?|began|begun)\\s+using|roll\\w*\\s+out)\\s+(${TECH})\\b`, 'gi'))) {
+    const t = name(m[1]); if (t) add({ kind: 'tech', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, tech: t, change: 'adopted' })
+  }
+  // Current use. "without X" / "don't use X" carry their own negation (the shared negation reader looks only BEFORE a condition).
+  for (const m of q.matchAll(new RegExp(`\\b(?:(without|(?:don'?t|doesn'?t|do\\s+not|does\\s+not)\\s+use)|using|uses|use|built\\s+(?:on|with)|running(?:\\s+on)?|runs\\s+on|run\\s+on|powered\\s+by|hosted\\s+on|(on|with))\\s+(${TECH})\\b`, 'gi'))) {
+    const t = name(m[3]); if (!t || (m[2] && AMBIGUOUS_TECH.has(t))) continue
+    // A self-negated phrase keeps only the technology as its text, so the plan reads "NOT C1 HubSpot", never a double negative.
+    const end = (m.index ?? 0) + m[0].length
+    add({ kind: 'tech', start: m[1] ? end - m[3].length : m.index ?? 0, end, tech: t, change: 'uses', ...(m[1] ? { neg: true } : {}) })
+  }
+  for (const m of q.matchAll(new RegExp(`\\b(${TECH})\\s+(?:stores?|shops?|sites?|websites?|merchants?|brands?|sellers?|customers?|users?)\\b`, 'gi'))) {
+    const t = name(m[1]); if (t && !AMBIGUOUS_TECH.has(t)) add({ kind: 'tech', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, tech: t, change: 'uses' })
+  }
+}
 
 const EVENTS: { event: string; re: RegExp; object?: number }[] = [
   { event: 'open', re: /\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b/gi, object: 1 },
@@ -66,6 +105,8 @@ const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|t
 function findAtoms(q: string): Atom[] {
   const atoms: Atom[] = []
   const add = (a: Atom) => { if (!atoms.some(b => a.start < b.end && b.start < a.end)) atoms.push(a) }   // first (higher-priority) reading of a span wins
+  // 0. Technologies (#389) first: a technology phrase wins its span over a looser event reading ("launched on Shopify").
+  techAtoms(q, add)
   // 1. A completed hire ("hired their first VP of Sales", "first VP hired"): a fact in the past, never an open role.
   for (const m of q.matchAll(/\b(?:hired|appointed|named|brought\s+on|onboarded|welcomed)\s+((?:(?:a|an|its|their|the)\s+)?((?:first|founding|inaugural|new)\s+)?[a-z][a-z&\s-]{1,60})/gi)) {
     const role = cleanRole(m[1]); if (!ROLE_WORD.test(role)) continue
@@ -120,7 +161,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   }
   const owner = (w: { at: number }) => { let k = -1; for (let i = 0; i < atoms.length; i++) if (atoms[i].start < w.at) k = i; return k }
   const conds: Condition[] = atoms.map((a, i) => ({ id: `C${i + 1}`, kind: a.kind, text: q.slice(a.start, a.end), within_days: null, window_source: null,
-    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}) }))
+    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
   const requestLevel: number[] = []
   for (const w of windows) {
     const k = owner(w)
@@ -144,7 +185,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     } else if (c.kind === 'hiring' || c.kind === 'hire_made') { c.within_days = 90; c.window_source = 'default' }   // the same 90-day default the sales-hiring gate applies
   }
   // Negation, then the connective between each pair of neighbouring conditions.
-  const negated = atoms.map((a, i) => NEG_BEFORE.test(q.slice(i === 0 ? Math.max(0, a.start - 40) : Math.max(atoms[i - 1].end, a.start - 40), a.start)))
+  const negated = atoms.map((a, i) => !!a.neg || NEG_BEFORE.test(q.slice(i === 0 ? Math.max(0, a.start - 40) : Math.max(atoms[i - 1].end, a.start - 40), a.start)))
   const gaps = atoms.slice(1).map((a, i) => q.slice(atoms[i].end, a.start))
   const conn: ('and' | 'or')[] = gaps.map((g, i) => {
     const t = g.replace(WINDOW_RE, ' ')
@@ -200,7 +241,8 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   }
   const parts = [...(trigger ? [trigger] : []), ...exclusions]
   const root: PlanNode | null = parts.length === 0 ? null : parts.length === 1 ? parts[0] : trigger?.op === 'and' ? { op: 'and', of: [...trigger.of, ...exclusions] } : { op: 'and', of: parts }
-  const explicit = conds.length >= 2 || exclusions.length > 0 || negated.some(Boolean) || conds.some(c => c.kind === 'hire_made' || !!c.relative_to)
+  // A technology condition (#389) is always an explicit filter: no other gate checks it.
+  const explicit = conds.length >= 2 || exclusions.length > 0 || negated.some(Boolean) || conds.some(c => c.kind === 'hire_made' || c.kind === 'tech' || !!c.relative_to)
   return { v: 1, root, filters: filtersOf(icp), ambiguities, explicit }
 }
 
