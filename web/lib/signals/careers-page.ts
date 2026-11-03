@@ -7,7 +7,10 @@
 import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 
-export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
+export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
+// posted (#533 AC4): when the careers link IS a public Greenhouse / Lever / Ashby posting, the board's OWN first-published date read from that
+// posting (Greenhouse first_published, Lever createdAt, Ashby publishedAt - never updated_at). null = the posting supplies no date (an own-domain
+// job page never does): the date stays unknown and the retrieval day is never used in its place.
 // roleMatchAsked: the caller asked for a specific requested role; matched tells whether the returned vacancy source-matched it.
 // A returned vacancy with matched=false is GENERIC careers hiring only: recordable, never role-qualified (AC3).
 export interface CareersResult { vacancy: CareersVacancy | null; reason: CareersReason; pages: number; readPages?: number; matched?: boolean }
@@ -83,8 +86,11 @@ export function openJobsFor(html: string, pageUrl: string, site: string, accept?
 //   public ATS posting:   read through the board's public JSON (Greenhouse / Lever / Ashby). 404 or unlisted = closed. The board must be the lead's: its token equals the
 //                         domain's name, or the posting itself names the company (never a board that merely exists). Another company's posting is rejected.
 const norm = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|plc|corp|co|the|gmbh)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
-const json = (b: string): any => { try { return JSON.parse(b) } catch { return null } }
-export type JobVerdict = { ok: true; text: string; title: string } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
+type Json = { [k: string]: unknown }
+const json = (b: string): Json | null => { try { return JSON.parse(b) } catch { return null } }
+// The board's own publish date as a day (ISO string or epoch ms); anything else is unknown, never guessed.
+const boardDay = (v: unknown): string | null => { const t = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null }
+export type JobVerdict = { ok: true; text: string; title: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
 // The role comes from the POSTING itself (its JSON title or its own heading), never from the index label. It must be a sales / GTM role and agree with what the index
 // claimed: same role once locations / levels after a dash, pipe, comma or bracket are dropped ("Account Executive - London" ~ "Account Executive"); a different role
 // behind the same link (a Backend Engineer behind "Account Executive") is rejected.
@@ -101,27 +107,27 @@ export function roleAgrees(indexTitle: string, postingTitle: string, accept?: (t
 }
 async function verifyAtsJob(url: URL, get: Get, site: string, company: string | undefined, indexTitle: string, accept?: (title: string) => boolean): Promise<JobVerdict> {
   const host = url.hostname.toLowerCase(), segs = url.pathname.split('/').filter(Boolean), token = (segs[0] ?? '').toLowerCase()
-  let title = '', body = '', open = false
+  let title = '', body = '', open = false, posted: string | null = null, postedBoard: 'greenhouse' | 'lever' | 'ashby' | null = null
   if (host.endsWith('greenhouse.io')) {
     const id = segs[2]; if (!id || segs[1] !== 'jobs') return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${id}`)
     if (!r) return { ok: false, reason: 'job_unverified' }; if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
     const j = json(r.body); if (r.status >= 400 || !j || typeof j.title !== 'string') return { ok: false, reason: 'job_unverified' }
-    title = j.title; body = `${j.title} ${j.company_name ?? ''} ${String(j.content ?? '')}`; open = true
+    title = j.title; body = `${j.title} ${j.company_name ?? ''} ${String(j.content ?? '')}`; open = true; posted = boardDay(j.first_published); postedBoard = 'greenhouse'
   } else if (host === 'jobs.lever.co') {
     const id = segs[1]; if (!id) return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://api.lever.co/v0/postings/${token}/${id}`)
     if (!r) return { ok: false, reason: 'job_unverified' }; if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
     const j = json(r.body); if (r.status >= 400 || !j || typeof j.text !== 'string') return { ok: false, reason: 'job_unverified' }
-    title = j.text; body = `${j.text} ${String(j.descriptionPlain ?? j.description ?? '')} ${String(j.additionalPlain ?? '')}`; open = true
+    title = j.text; body = `${j.text} ${String(j.descriptionPlain ?? j.description ?? '')} ${String(j.additionalPlain ?? '')}`; open = true; posted = boardDay(j.createdAt); postedBoard = 'lever'
   } else if (host === 'jobs.ashbyhq.com') {
     const id = segs[1]; if (!id) return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`)
     if (!r || r.status >= 500) return { ok: false, reason: 'job_unverified' }; if (r.status === 404) return { ok: false, reason: 'job_closed' }
     const j = json(r.body); const jobs = Array.isArray(j?.jobs) ? j.jobs : null; if (!jobs) return { ok: false, reason: 'job_unverified' }
-    const job = jobs.find((x: any) => typeof x?.jobUrl === 'string' && x.jobUrl.split('/').filter(Boolean).pop() === id)
+    const job = jobs.find((x: Json) => typeof x?.jobUrl === 'string' && x.jobUrl.split('/').filter(Boolean).pop() === id)
     if (!job || job.isListed !== true) return { ok: false, reason: 'job_closed' }
-    title = String(job.title ?? ''); body = `${title} ${String(job.descriptionPlain ?? job.descriptionHtml ?? '')}`; open = true
+    title = String(job.title ?? ''); body = `${title} ${String(job.descriptionPlain ?? job.descriptionHtml ?? '')}`; open = true; posted = boardDay(job.publishedAt); postedBoard = 'ashby'
   } else return { ok: false, reason: 'job_unverified' }
   if (!open) return { ok: false, reason: 'job_unverified' }
   const plain = decode(body.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ')
@@ -131,7 +137,7 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
   const namesCompany = !!company && norm(company).length >= 3 && norm(plain).includes(norm(company))
   if (!ownBoard && !namesCompany) return { ok: false, reason: 'job_company_mismatch' }
   if (!roleAgrees(indexTitle, title, accept)) return { ok: false, reason: 'job_role_mismatch' } // the posting is a different role (or not a sales / GTM one) than the index claimed
-  return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120) }
+  return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120), posted, postedBoard: posted ? postedBoard : null }
 }
 async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }, accept?: (title: string) => boolean): Promise<JobVerdict> {
   let u: URL; try { u = new URL(hit.jobUrl) } catch { return { ok: false, reason: 'job_unverified' } }
@@ -190,7 +196,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
       const v = await verifyJob(hit, get, site, opts.company, robots, opts.roleMatch)
       if (!v.ok) { verdict = v.reason; continue }
       const shown = v.title, vt = v.text, at = vt.indexOf(shown)
-      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: (at >= 0 ? vt.slice(Math.max(0, at - 60), at + shown.length + 160) : shown).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000) }
+      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: (at >= 0 ? vt.slice(Math.max(0, at - 60), at + shown.length + 160) : shown).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
       if (!opts.roleMatch) return { vacancy, reason: 'found', pages, readPages }
       if (opts.roleMatch(shown)) return { vacancy, reason: 'found', pages, readPages, matched: true }
       if (!generic) generic = vacancy

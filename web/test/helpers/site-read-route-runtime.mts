@@ -18,7 +18,9 @@ import { admitTrialScan } from '../../lib/billing/trial-budget.ts'
 import { POST } from '../../app/api/scan/icp-from-url/route.ts'
 
 const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
-Object.assign(process.env, { DAZL_TRIAL_ANTHROPIC_KEY: OP, DAZL_TRIAL_SITE_READS_PER_DAY: '50', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
+// Every fixture account these subtests carry past eligibility, on the allowlist the funded path requires (#409 bounded
+// activation); the gate itself is pinned in test/trial-site-read.test.ts.
+Object.assign(process.env, { DAZL_TRIAL_ANTHROPIC_KEY: OP, DAZL_TRIAL_SITE_READS_PER_DAY: '50', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_SITE_READ_ALLOWLIST: 'a@corp.example,solo@gmail.com,invited@gmail.com,c@corp.example,f@gmail.com,nc@gmail.com,cap@gmail.com,poor@gmail.com,net0@gmail.com,net1@gmail.com,net2@gmail.com,net3@gmail.com,net4@gmail.com,net5@gmail.com,net6@gmail.com,used@gmail.com,busy1@gmail.com,busy2@gmail.com,attempts@gmail.com,f61@gmail.com',
   DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.004', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' })
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
 
