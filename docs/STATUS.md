@@ -41,6 +41,10 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
+  (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
+  Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.
+
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
   fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,

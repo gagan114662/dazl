@@ -67,3 +67,10 @@ test('a held reply stays in needs-a-read after a later auto-reply, and on a thre
   const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2'), lead('3')], messages: [], replies: page([held, laterAuto, reopened, settled]) })
   assert.deepEqual(o.conversations?.rows.map(r => r.lead_id).sort(), ['1', '2'])
 })
+
+test('a correlated delivery notice held for review (bounce_review) needs the owner, as on the server (#369 totals reconcile)', () => {
+  const notice = reply('1', 'bounce_review'), settled = { ...reply('2', 'bounce_review'), stopped: 'bounce' }
+  const o = outcomes({ jobId: J, scanFailed: null, leads: [lead('1'), lead('2')], messages: [], replies: page([notice, settled], true, 1) })
+  assert.deepEqual(o.conversations?.rows.map(r => [r.lead_id, r.classification]), [['1', 'bounce_review']])
+  assert.equal(o.conversations?.total, 1)
+})
