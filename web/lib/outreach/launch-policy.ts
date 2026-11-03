@@ -12,6 +12,8 @@ import { MAX_DAILY } from './autopilot.ts'
 import type { Provider } from '../llm/provider.ts'
 import { callCostUsd, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
 import type { DetailedCompletion } from '../llm/provider.ts'
+import { productTruth, PRODUCT_TRUTH_VERSION_RE } from '../product-truth.ts'
+import { qualifyProspect, truthClaimIssues } from './capability-claims.ts'
 
 export const LAUNCH_POLICY_VERSION = '2026-10-30'
 export const ROLLOUT_DAYS = 7           // strict caps for the first week of a calibrated launch
@@ -25,7 +27,12 @@ export interface LaunchPolicy {
   exclusions: { domains: string[]; emails: string[] }
   dailyCap: number
   spendCapUsd: number                   // model and enrichment spend ceiling for the launch
-  claims: { mayStatePrice: boolean; benchmarkUrls: string[] }
+  // productTruthVersion (#402): the product truth record (lib/product-truth.ts) the owner accepted. When set, every
+  // draft is also checked against the CURRENT record (claimIssuesFor): no promise of an unshipped capability, prices
+  // only as published with the own-key/provider-cost disclosure, comparisons only with a published benchmark, and a
+  // prospect who needs something unshipped is held as no-fit/waitlist. Unset: the record is not applied (a tenant
+  // selling another product has no record here).
+  claims: { mayStatePrice: boolean; benchmarkUrls: string[]; productTruthVersion?: string }
   stops: { pauseOnAnyReply: boolean; maxBounceRate: number }
   testInbox: string                     // inbox for the integration check: exactly the authenticated sender (a shared domain proves nothing)
 }
@@ -33,7 +40,7 @@ export interface LaunchPolicy {
 export type PolicyProblem =
   | 'version_not_current' | 'sender_missing' | 'audience_empty' | 'daily_cap_invalid' | 'spend_cap_invalid'
   | 'bounce_stop_invalid' | 'test_inbox_not_owned' | 'benchmark_not_https' | 'policy_too_large'
-  | 'audience_too_many' | 'exclusions_too_many' | 'benchmarks_too_many'
+  | 'audience_too_many' | 'exclusions_too_many' | 'benchmarks_too_many' | 'product_truth_invalid' | 'product_truth_not_current'
 // List limits: refused by name, never truncated. The store's size cap (MAX_POLICY_JSON, 8000 chars) binds first for long
 // entries: about 350 short domains, fewer emails; both problems are reported when both apply. The count limits are the
 // ceiling for the shortest entries, so a tenant is never told "too many" for a list the store would have held.
@@ -64,6 +71,7 @@ export function policyProblems(p: LaunchPolicy): PolicyProblem[] {
   if (p.audience.playIds.length > MAX_AUDIENCE_PLAYS) out.push('audience_too_many')
   if (p.exclusions.domains.length > MAX_EXCLUSIONS || p.exclusions.emails.length > MAX_EXCLUSIONS) out.push('exclusions_too_many')
   if (p.claims.benchmarkUrls.length > MAX_BENCHMARKS) out.push('benchmarks_too_many')
+  if (p.claims.productTruthVersion !== undefined && !PRODUCT_TRUTH_VERSION_RE.test(p.claims.productTruthVersion)) out.push('product_truth_invalid')
   if (JSON.stringify(p).length > MAX_POLICY_JSON) out.push('policy_too_large')
   return out
 }
@@ -161,7 +169,7 @@ export function parsePolicy(v: unknown): LaunchPolicy {
     audience: { playIds: strs(audience.playIds, MAX_AUDIENCE_PLAYS) },
     exclusions: { domains: strs(exclusions.domains, MAX_EXCLUSIONS).map(d => d.toLowerCase()), emails: strs(exclusions.emails, MAX_EXCLUSIONS).map(e => e.toLowerCase()) },
     dailyCap: num(o.dailyCap), spendCapUsd: num(o.spendCapUsd),
-    claims: { mayStatePrice: claims.mayStatePrice === true, benchmarkUrls: strs(claims.benchmarkUrls, MAX_BENCHMARKS) },
+    claims: { mayStatePrice: claims.mayStatePrice === true, benchmarkUrls: strs(claims.benchmarkUrls, MAX_BENCHMARKS), ...(typeof claims.productTruthVersion === 'string' ? { productTruthVersion: claims.productTruthVersion.trim().slice(0, 40) } : {}) },
     stops: { pauseOnAnyReply: stops.pauseOnAnyReply !== false, maxBounceRate: num(stops.maxBounceRate) },
     testInbox: typeof o.testInbox === 'string' ? o.testInbox.trim().toLowerCase() : '',
   }
@@ -170,6 +178,8 @@ export function parsePolicy(v: unknown): LaunchPolicy {
 export function acceptLaunchPolicy(db: Database.Database, tenantId: string, input: unknown, nowS: number): { ok: true } | { ok: false; problems: PolicyProblem[] } {
   const policy = parsePolicy(input)
   const problems = policyProblems(policy)
+  // Only the record as it is now can be accepted: an owner accepts what dazl ships today, never an older record.
+  if (policy.claims.productTruthVersion !== undefined && !problems.includes('product_truth_invalid') && policy.claims.productTruthVersion !== productTruth().version) problems.push('product_truth_not_current')
   if (problems.length) return { ok: false, problems }
   db.prepare(`INSERT INTO autopilot_launch_policy (tenant_id, acceptance_id, version, policy, accepted_at, launched_at, preflight) VALUES (?, ?, ?, ?, ?, NULL, NULL)
     ON CONFLICT (tenant_id) DO UPDATE SET acceptance_id = excluded.acceptance_id, version = excluded.version, policy = excluded.policy, accepted_at = excluded.accepted_at, launched_at = NULL, preflight = NULL`)
@@ -194,8 +204,10 @@ export function launchPolicyView(db: Database.Database, tenantId: string): { acc
 }
 
 // What the copy may claim under the policy: no price unless allowed; links only to https benchmarks it lists, the
-// sender's own domain, or the lead's own evidence source (the page the email cites as why it is writing).
-export function claimIssuesFor(policy: LaunchPolicy, body: string, evidenceUrls: string[] = []): string[] {
+// sender's own domain, or the lead's own evidence source (the page the email cites as why it is writing). With a bound
+// product truth record (#402), also what the product actually ships, and whether this prospect (prospectText: the
+// lead's signal and evidence) needs something it does not.
+export function claimIssuesFor(policy: LaunchPolicy, body: string, evidenceUrls: string[] = [], prospectText = ''): string[] {
   const out: string[] = []
   if (!policy.claims.mayStatePrice && /(?:[$€£]\s?\d|\d\s?(?:usd|eur|gbp)\b|per month|\/mo\b)/i.test(body)) out.push('price_not_allowed')
   const own = domainOf(policy.sender)
@@ -204,6 +216,12 @@ export function claimIssuesFor(policy: LaunchPolicy, body: string, evidenceUrls:
     try { host = new URL(u).hostname.toLowerCase() } catch { /* not a URL */ }
     const allowed = policy.claims.benchmarkUrls.includes(u) || evidenceUrls.includes(u) || (u.startsWith('https://') && !!own && (host === own || host.endsWith(`.${own}`)))
     if (!allowed) out.push('link_not_allowed')
+  }
+  if (policy.claims.productTruthVersion !== undefined) {
+    const truth = productTruth()
+    out.push(...truthClaimIssues(body, truth, { benchmarkUrls: policy.claims.benchmarkUrls, acceptedVersion: policy.claims.productTruthVersion }))
+    const q = qualifyProspect(prospectText, truth)
+    if (q.verdict !== 'fit') out.push(...q.unmet.map(id => `prospect_${q.verdict}:${id}`))
   }
   return out
 }

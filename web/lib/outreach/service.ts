@@ -207,15 +207,17 @@ function readDeliverabilityRows(db: Database.Database, tenantId: string, leadId:
 function readCrawledRows(db: Database.Database, tenantId: string, leadId: string): CrawledRows {
   return db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(leadId, tenantId) as CrawledRows
 }
-// The pages a draft for this lead may cite, for the launch claim check (claimIssuesFor): read from the store so a
-// send gate can check a made draft without re-deriving the address. The crawl rows unreadable is not fatal here:
-// the draft itself was made under the same read, so a missing table shrinks the allowlist to the cited pages.
-export function draftEvidenceUrlsFor(db: Database.Database, tenantId: string, leadId: string): string[] {
-  const row = db.prepare('SELECT contact, source_url FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null } | undefined
-  if (!row) return []
+// The launch claim check's context for this lead (claimIssuesFor's evidenceUrls and prospectText): the pages a draft may
+// cite, read from the store so a send gate can check a made draft without re-deriving the address, and what the lead's
+// source says about them (signal and saved excerpt), which the product truth qualification reads (#402). The crawl rows
+// unreadable is not fatal here: the draft itself was made under the same read, so a missing table shrinks the allowlist
+// to the cited pages.
+export function draftClaimContextFor(db: Database.Database, tenantId: string, leadId: string): [string[], string] {
+  const row = db.prepare('SELECT contact, source_url, signal, evidence_excerpt FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null; signal: string | null; evidence_excerpt: string | null } | undefined
+  if (!row) return [[], '']
   let crawled: CrawledRows = []
   try { crawled = readCrawledRows(db, tenantId, leadId) } catch { /* enrichment table not present */ }
-  return draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled })
+  return [draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled }), [row.signal, row.evidence_excerpt].filter(Boolean).join('\n')]
 }
 
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
