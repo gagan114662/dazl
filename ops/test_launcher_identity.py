@@ -28,6 +28,7 @@ class TargetIdentityTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('identity_fixture', self.root / 'ops/checked_launch.py')
         self.m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.m)
+        self.m.LAUNCH_LOG = str(Path(self.temp.name) / 'launch-log.jsonl')
         self.launch = [sys.executable, str(self.root / 'ops/safe_launch.py'), '--stage', str(self.root / 'web'), '--commit', self.sha, '--execute']
 
     def tearDown(self):
