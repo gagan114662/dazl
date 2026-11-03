@@ -44,6 +44,15 @@ const LEADS = [
   lead('4'.repeat(24), 'Undated Juicebox', { review_reason: 'outside_window_undated', window_held: true, event_date: null, source_url: 'https://news.example/undated' }),
   lead('5'.repeat(24), 'Future Dental', { review_reason: 'event_date_future_date', window_held: true, event_date: '2027-03-01', source_url: 'https://news.example/future' }),
 ]
+// #352, NYC-shaped (synthetic): every held lead is research only (a customer mention and an undated lead), each with the scan's recovery record.
+const rec = (reason, what) => [{ connector: 'scan:recovery', kind: 'recovery', value: `Recovery pass ran before this was held (${reason}): searched other press for ${what} for the same company; none verified.`, label: `recovery:${reason}`, confidence: null, source_url: 'https://news.example/r', source_date: '2026-10-29' }]
+const RESEARCH_ONLY = [
+  lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, source_url: 'https://vendor.example/customers/harbor', enrichments: rec('counterparty_signal', 'a source about the company itself') }),
+  lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, source_url: 'https://news.example/elm', enrichments: rec('undated', 'a dated source') }),
+  // #352 post-deploy (Querio-shaped, synthetic): a DATED lead whose evidence names a different place - research on Home, so never an offer to draft here.
+  lead('8'.repeat(24), 'Querio', { review_reason: 'location_mismatch', event_date: '2026-10-01', date_status: 'verified', source_url: 'https://news.example/querio' }),
+]
+let current = LEADS
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1200 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -54,7 +63,7 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${u.pathname}`)
   if (u.pathname === '/api/scan/status') return json({ status: 'done', lead_count: 0, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio' })
-  if (u.pathname === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
+  if (u.pathname === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: current })
   if (u.pathname === '/api/scan/jobs') return json({ jobs: [] })
   if (/^\/api\/leads\/[a-f0-9]{24}\/confirm$/.test(u.pathname)) return json({ confirmed: true })
   return json({}, 404)
@@ -82,7 +91,20 @@ try {
   await actions.nth(1).getByRole('button', { name: 'I checked the date - use it' }).click()
   await page.waitForTimeout(500)
   assert.deepEqual(writes, [`POST /api/leads/${'2'.repeat(24)}/confirm`], 'only the existing confirm request')
-  console.log('review actions UI check passed: labelled Open source + confirm per reason, exact unlock hints, only the confirm write')
+  // #352: with nothing a source check can settle, the section is research, not a review task: it never asks the user to check sources or confirm, and each row says what dazl already tried.
+  current = RESEARCH_ONLY
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('research-heading').waitFor({ timeout: 15000 })
+  assert.equal(await page.getByText('Needs your review', { exact: true }).count(), 0, 'no review heading when nothing is reviewable')
+  const intro = await page.getByTestId('research-intro').textContent()
+  assert.doesNotMatch(intro, /check them yourself|confirm it/i); assert.match(intro, /checking their sources does not make them ready/)
+  const research = await page.getByTestId('review-actions').evaluateAll(els => els.map(e => [e.querySelector('button').textContent, e.querySelector('[data-testid=review-hint]').textContent]))
+  assert.deepEqual(research.map(r => r[0]), ['Keep as research', 'Keep as research', 'Keep as research'])
+  assert.match(research[2][1], /evidence names a different place, which checking the source cannot change, so it stays out of drafting\./); assert.doesNotMatch(research[2][1], /can be drafted/)
+  assert.deepEqual(await page.getByTestId('review-recovery').allTextContents(), ['dazl already searched other press for a source about the company itself; none verified.', 'dazl already searched other press for a dated source; none verified.'])
+  await page.getByTestId('research-heading').scrollIntoViewIfNeeded()
+  await shot('research-only')
+  console.log('review actions UI check passed: labelled Open source + confirm per reason, exact unlock hints, only the confirm write; research-only section with recovery records')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

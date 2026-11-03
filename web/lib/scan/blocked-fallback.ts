@@ -6,9 +6,12 @@ import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
 import { companyKey, dedupKey } from './evidence.ts'
 
-// Held for a reason ANOTHER SOURCE can fix: the cited page cannot be read (blocked / JavaScript-only) or does not contain the quote. A stale date, a place conflict, a closed job or a counterparty
-// signal are verdicts about the evidence itself, not about reaching it: another page does not change them, so they get no recovery pass.
+// Held for a reason ANOTHER SOURCE can fix: the cited page cannot be read (blocked / JavaScript-only) or does not contain the quote. A stale date, a place conflict or a closed job are verdicts
+// about the event itself: another page does not change them, so they get no recovery pass.
 export const BLOCKED_REASONS = new Set(['blocked_by_site', 'needs_javascript', 'quote_unconfirmed'])
+// A customer mention (counterparty_signal, #352) is a verdict about the cited PAGE's subject: it is another company's page celebrating this one as its customer, which says nothing either way about
+// this company's own event. A page where the company itself is the subject can settle it, so it gets the same bounded pass; that page meets the SAME verifier, counterparty check included.
+export const COUNTERPARTY = 'counterparty_signal'
 export const UNDATED = 'undated'   // a verified lead with no event date when the request has a window: held later as outside_window_undated unless a dated source for the same company turns up
 export const MAX_FALLBACK = 3
 export const FALLBACK_CONNECTOR = 'scan:fallback'
@@ -34,7 +37,7 @@ export function rescuedNotes(candidates: { company: string; source_url: string }
 export function fallbackTargets(review: Held[], where: string[], undated: Held[] = []): FallbackTarget[] {
   const out: FallbackTarget[] = [], seen = new Set<string>()
   for (const r of [...review, ...undated.map(u => ({ ...u, review_reason: UNDATED }))]) {
-    if (!r.review_reason || !(BLOCKED_REASONS.has(r.review_reason) || r.review_reason === UNDATED)) continue
+    if (!r.review_reason || !(BLOCKED_REASONS.has(r.review_reason) || r.review_reason === COUNTERPARTY || r.review_reason === UNDATED)) continue
     const k = companyKey(r.company); if (!k || seen.has(k)) continue
     seen.add(k)
     out.push({ company: r.company, reason: r.review_reason, url: r.source_url, query: `"${r.company.replace(/["\n]/g, ' ').trim()}" ${r.signal.slice(0, 60)} ${(where[0] ?? '').split(',')[0]}`.replace(/\s+/g, ' ').trim().slice(0, 150) })
@@ -95,7 +98,7 @@ export function recordRecovery(db: Database.Database, job: { id: string; user_id
     const key = companyKey(t.company); if (done.has(key)) continue
     try {
       const row = find.get(job.id, key, `review:${key}`) as { id: string } | undefined; if (!row) continue
-      const what = t.reason === UNDATED ? 'a dated source' : t.reason === 'quote_unconfirmed' ? 'a page that carries the quote' : 'a readable source'
+      const what = t.reason === UNDATED ? 'a dated source' : t.reason === 'quote_unconfirmed' ? 'a page that carries the quote' : t.reason === COUNTERPARTY ? 'a source about the company itself' : 'a readable source'
       db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ?').run(row.id, job.user_id, 'scan:recovery')
       addEnrichment(db, job.user_id, row.id, { connector: 'scan:recovery', kind: 'recovery', value: (ran.searched ? `Recovery pass ran before this was held (${t.reason}): searched other press for ${what} for the same company; none verified.` : `Recovery pass did not run (${ran.why ?? 'not available'}).`).slice(0, 254), label: `recovery:${t.reason}`, confidence: null, source_url: t.url, source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
     } catch { /* an old schema never blocks the scan */ }
