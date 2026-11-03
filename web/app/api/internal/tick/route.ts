@@ -19,6 +19,7 @@ import { DRAIN_HOLD_REASONS, classifySync, classifyWork, finishRun, migrateSched
 import { purgeExpiredTraces } from '@/lib/evals/capture'
 import { auditRetention, purgeAudit } from '@/lib/audit'
 import { purgeOnboardingAudit, redactOnboardingAuditDetails } from '@/lib/outreach/onboarding-policy'
+import { routeQualifiedConversations, routingTenants } from '@/lib/pipeline/deals'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
@@ -140,6 +141,14 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
     await lease.keep()
     try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
+  // Revenue pipeline (#366, lib/pipeline/deals.ts): new qualified conversations become deals, only for workspaces whose
+  // admin added a routing rule. No mail and no provider call; idempotent per conversation (one deal per thread); fenced
+  // like the writes above. Best-effort per tenant: a failure never stops the tick.
+  let dealsRouted = 0
+  for (const t of await routingTenants(shared)) {
+    await lease.keep()
+    try { dealsRouted += (await routeQualifiedConversations(shared, t, { fence, correlationId: requestId ?? null })).created } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:pipeline-routing', tenantId: t, requestId }) }
+  }
   // Expired and long-revoked sessions, at most 500 per tick (lib/sessions.ts); working sessions never match.
   await lease.keep()
   let sessionsReaped = 0
@@ -170,5 +179,5 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let onboardingAuditPurged = 0
   try { onboardingAuditPurged = await purgeOnboardingAudit(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:onboarding-audit-retention', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_redacted: onboardingAuditRedacted, onboarding_audit_purged: onboardingAuditPurged })
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_redacted: onboardingAuditRedacted, onboarding_audit_purged: onboardingAuditPurged, deals_routed: dealsRouted })
 }

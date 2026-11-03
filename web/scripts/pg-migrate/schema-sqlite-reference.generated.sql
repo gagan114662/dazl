@@ -201,6 +201,59 @@ CREATE TABLE csv_rows (
       job_id   TEXT REFERENCES scan_jobs(id) ON DELETE SET NULL
     );
 
+CREATE TABLE deal_routing_rules (
+      id          TEXT PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      position    INTEGER NOT NULL CHECK (position >= 1),
+      match_kind  TEXT NOT NULL CHECK (match_kind IN ('any', 'play', 'domain')),
+      match_value TEXT NOT NULL CHECK (length(match_value) <= 200),
+      owner_id    TEXT NOT NULL,
+      sla_hours   INTEGER CHECK (sla_hours IS NULL OR (sla_hours >= 1 AND sla_hours <= 720)),
+      active      INTEGER NOT NULL CHECK (active IN (1, 0)),
+      created_by  TEXT NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+
+CREATE TABLE deal_stage_events (
+      id           TEXT PRIMARY KEY,
+      tenant_id    TEXT NOT NULL,
+      deal_id      TEXT NOT NULL,
+      seq          INTEGER NOT NULL CHECK (seq >= 1),
+      kind         TEXT NOT NULL CHECK (kind IN ('created', 'changed', 'closed', 'reopened')),
+      from_stage   TEXT CHECK (from_stage IS NULL OR length(from_stage) <= 20),
+      stage        TEXT NOT NULL CHECK (stage IN ('new', 'qualified', 'meeting', 'proposal', 'negotiation', 'won', 'lost')),
+      owner_id     TEXT,
+      amount_minor INTEGER CHECK (amount_minor IS NULL OR amount_minor >= 0),
+      currency     TEXT CHECK (currency IS NULL OR length(currency) = 3),
+      close_reason TEXT CHECK (close_reason IS NULL OR length(close_reason) <= 40),
+      actor_id     TEXT NOT NULL CHECK (length(actor_id) <= 80),
+      at           INTEGER NOT NULL,
+      UNIQUE (tenant_id, deal_id, seq)
+    );
+
+CREATE TABLE deals (
+      id           TEXT PRIMARY KEY,
+      tenant_id    TEXT NOT NULL,
+      thread_id    TEXT NOT NULL CHECK (length(thread_id) <= 200),
+      lead_id      TEXT NOT NULL,
+      title        TEXT NOT NULL CHECK (length(title) <= 200),
+      owner_id     TEXT,
+      stage        TEXT NOT NULL CHECK (stage IN ('new', 'qualified', 'meeting', 'proposal', 'negotiation', 'won', 'lost')),
+      amount_minor INTEGER CHECK (amount_minor IS NULL OR amount_minor >= 0),
+      currency     TEXT CHECK (currency IS NULL OR length(currency) = 3),
+      close_date   TEXT CHECK (close_date IS NULL OR length(close_date) = 10),
+      close_reason TEXT CHECK (close_reason IS NULL OR length(close_reason) <= 40),
+      close_note   TEXT CHECK (close_note IS NULL OR length(close_note) <= 200),
+      rule_id      TEXT,
+      route_reason TEXT NOT NULL CHECK (length(route_reason) <= 40),
+      sla_due_at   INTEGER,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      closed_at    INTEGER,
+      version      INTEGER NOT NULL CHECK (version >= 1),
+      UNIQUE (tenant_id, thread_id)
+    );
+
 CREATE TABLE email_candidates (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (length(person) <= 120),
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
@@ -1023,6 +1076,12 @@ CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
+CREATE INDEX deal_routing_rules_tenant ON deal_routing_rules (tenant_id, active, position);
+
+CREATE INDEX deal_stage_events_tenant_at ON deal_stage_events (tenant_id, at);
+
+CREATE INDEX deals_tenant_stage ON deals (tenant_id, stage);
+
 CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
 
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
@@ -1136,6 +1195,8 @@ CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events BEGIN SELECT
 
 CREATE TRIGGER connector_audit_insert_seq AFTER INSERT ON connector_audit WHEN NEW.insert_seq IS NULL BEGIN UPDATE connector_audit SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM connector_audit) WHERE rowid = NEW.rowid; END;
 
+CREATE TRIGGER deal_stage_events_no_update BEFORE UPDATE ON deal_stage_events BEGIN SELECT RAISE(ABORT, 'deal history is append-only'); END;
+
 CREATE TRIGGER evidence_purge_audit_no_delete BEFORE DELETE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
 
 CREATE TRIGGER evidence_purge_audit_no_update BEFORE UPDATE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
@@ -1223,6 +1284,12 @@ CREATE TRIGGER tomb_crm_push_claims BEFORE INSERT ON crm_push_claims BEGIN SELEC
 CREATE TRIGGER tomb_csv_batches BEFORE INSERT ON csv_batches BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
 
 CREATE TRIGGER tomb_csv_rows BEFORE INSERT ON csv_rows BEGIN SELECT (SELECT user_id FROM csv_batches WHERE id = NEW.batch_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR EXISTS (SELECT 1 FROM csv_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.batch_id); END;
+
+CREATE TRIGGER tomb_deal_routing_rules BEFORE INSERT ON deal_routing_rules BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_deal_stage_events BEFORE INSERT ON deal_stage_events BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_deals BEFORE INSERT ON deals BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_email_candidates BEFORE INSERT ON email_candidates BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
@@ -1401,6 +1468,12 @@ CREATE TRIGGER tomb_upd_crm_push_claims BEFORE UPDATE OF tenant_id ON crm_push_c
 CREATE TRIGGER tomb_upd_csv_batches BEFORE UPDATE OF user_id ON csv_batches BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_csv_rows BEFORE UPDATE OF batch_id ON csv_rows BEGIN SELECT (SELECT user_id FROM csv_batches WHERE id = NEW.batch_id); SELECT (SELECT user_id FROM csv_batches WHERE id = OLD.batch_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.batch_id IS NOT OLD.batch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = NEW.batch_id) OR EXISTS (SELECT 1 FROM csv_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.batch_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'csv_batches' AND key = OLD.batch_id) OR EXISTS (SELECT 1 FROM csv_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.batch_id))); END;
+
+CREATE TRIGGER tomb_upd_deal_routing_rules BEFORE UPDATE OF tenant_id ON deal_routing_rules BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_deal_stage_events BEFORE UPDATE OF tenant_id ON deal_stage_events BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_deals BEFORE UPDATE OF tenant_id ON deals BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_email_candidates BEFORE UPDATE OF tenant_id ON email_candidates BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

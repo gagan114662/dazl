@@ -41,6 +41,9 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/366-revenue-pipeline (#366): deals with an owner member, routing rules for new qualified conversations, audited
+  stage history, won/lost reasons and a history-rebuilt report (`lib/pipeline/`, `/api/pipeline/*`, `/app/pipeline`).
+  Migration 0049 waits for 0044-0048 to land. Refs #366 (accounts/contacts, tasks, CRM reconciliation not built).
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
   Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.
