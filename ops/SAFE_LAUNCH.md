@@ -195,8 +195,15 @@ survive every run, and neither weakens a gate or relaxes the /dev/null rule for 
   one of safe_launch's fixed `STATUS_CODES` and `phase` one of `PHASES` (`preflight` = no signal was sent;
   `old_signalled`, `new_start`, `rollback_start` = the old listener was signalled). checked_launch re-checks
   ownership/mode, reads at most 4 KiB and keeps only `status`/`phase` words from that vocabulary,
-  `service_changed` and a 40-hex `commit`; other words are logged as `unrecognised`, other fields are dropped,
-  and a missing, refused or unparsable file is logged as `missing`/`refused`/`invalid`.
+  `service_changed`, a 40-hex `commit` and a valid `cause`; other words are logged as `unrecognised`, other
+  fields are dropped, and a missing, refused or unparsable file is logged as `missing`/`refused`/`invalid`.
+- **Listener identity cause (#621).** `listener_identity_unverifiable` stays the status code, and the status
+  file adds `cause`: `{"step": "fd_enumeration" | "tcp_table", "exception": <built-in class name>, "errno":
+  <int or null>}`. No exception message or path is recorded. An fd that vanishes between the `/proc/<pid>/fd`
+  listing and its readlink (`FileNotFoundError`, normal connection churn) is skipped, since it cannot be the
+  persisting listener; if any fd vanished, the fd directory is listed again and must still be readable. A
+  listing failure, any other readlink error (process gone, permission denied) or an unreadable tcp table still
+  refuses before any signal.
 - **Log custody.** The log and status file are owned by the uid running checked_launch (root when it is run as
   root), mode 0600, never symlinks; their directory must be owned by that uid or root and not group/world
   writable. If the log cannot be opened that way, checked_launch refuses with `launch_log_unavailable`
@@ -208,6 +215,11 @@ launch timeouts; secret-printing children and a forged status file never reach t
 launches exactly once; 200-line bound; unusable log refuses before anything runs) and `ops/test_safe_launch.py`
 StatusFileTest (every pre-SIGTERM error path writes its status file and delivers no signal to a live stub pid;
 exclusive status-file creation; post-signal phases; vocabulary covers every code the helper can report).
+`ops/test_owns_listener_launch.py` (#621): vanished fds are skipped while permission, process-gone and tcp-table
+failures still refuse with their `cause`; the cause reaches the status file and the launch log, forged causes are
+dropped (wrong types, unhashable arrays/objects, null, huge or non-UTF-8 files, missing or extra keys,
+nesting) while the fixed status/phase/service_changed and the launch result are still logged through the real
+wrapper path; on Linux, a real fd-churning child and a quiet child never raise and a reaped pid refuses.
 
 ### Fail-stop rule
 
