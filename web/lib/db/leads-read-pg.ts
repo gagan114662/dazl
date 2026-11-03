@@ -200,7 +200,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
       // Same cohort as lib/scan/lookalike.ts referenceCohort: explicit accepts in (#385), every rejected lead or account out.
       // A store without the table (a schema before 0044) has no feedback; any other read failure throws (no cohort is guessed).
       let rejected: Pick<FeedbackRow, 'verdict' | 'level' | 'company_key' | 'domain' | 'lead_id'>[] = [], table = true
-      try { rejected = (await pg.query("SELECT verdict, level, company_key, domain, lead_id FROM lead_feedback WHERE tenant_id = $1 AND reset_at IS NULL AND verdict = 'reject'", [tenantId])).rows }
+      try { rejected = (await pg.query("SELECT verdict, level, company_key, domain, lead_id FROM lead_feedback WHERE tenant_id = $1 AND reset_at IS NULL AND verdict = 'reject'", [tenantId])).rows as typeof rejected }
       catch (e) { if (!/relation "lead_feedback" does not exist/.test(e instanceof Error ? e.message : '')) throw e; table = false }
       const rejectedLeads = new Set(rejected.map(v => v.lead_id).filter(Boolean))
       const { rows } = await pg.query(
