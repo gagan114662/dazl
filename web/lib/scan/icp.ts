@@ -1,5 +1,6 @@
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-discovery.ts'
+import { quoteSupports } from './claim-quote.ts'
 
 // An ideal customer profile (ICP) inferred from a free-text "what are you looking for".
 // Everything is plain strings with hard caps, so it is safe to store, show, edit and
@@ -61,6 +62,13 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
     const u = typeof h.u === 'string' && /^https:\/\//.test(h.u) ? h.u.slice(0, RCAPS.url) : null
     const q = typeof h.q === 'string' ? clean(h.q, RCAPS.quote) : null
     const at = typeof h.at === 'number' && Number.isInteger(h.at) && h.at > 0 ? h.at : null
+    // A block arriving from a client or the store is re-checked: 'sourced' needs its URL, fetch time and a quote that
+    // carries the claim (claim-quote.ts). Otherwise a persona/industry/pain falls back to an unreviewed hypothesis with
+    // no evidence, and a headcount or place is dropped (unknown is never persisted as a statement).
+    if (st === 'sourced' && !(u && at && q && quoteSupports(k, t, q))) {
+      if (k === 'size' || k === 'location') continue
+      hyps.push({ i, o, k: k as ResearchedHyp['k'], t, s: 'hypothesis', u: null, q: null, at: null }); continue
+    }
     hyps.push({ i, o, k: k as ResearchedHyp['k'], t, s: st as ResearchedHyp['s'], u, q: q || null, at })
   }
   const question = typeof r.q === 'string' && r.q.trim() ? clean(r.q, RCAPS.question) : null
