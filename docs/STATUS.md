@@ -41,6 +41,10 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/535-legal-policies (#535): Terms and Privacy pages render one checked text (`web/lib/legal/policy.ts`), still
+  DRAFT; `test/legal-policy.test.ts` fails if a stated retention, provider, API host or opt-out behaviour drifts from
+  the code. Owner/counsel items stay bracketed on the pages (NEEDS GAGAN list in the PR). Sign-up links both pages.
+
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
   Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.

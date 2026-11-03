@@ -1,0 +1,227 @@
+// #535: the public Terms and Privacy pages state facts about the software. Each test below holds one of those facts
+// (lib/legal/policy.ts) to the code that implements it, so a change in behaviour fails here until the policy text is
+// changed too. These tests prove the text matches the code; they are not a legal-compliance claim.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import Database from 'better-sqlite3'
+import { API_HOSTS, DRAFT_NOTICE, FACTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, TERMS } from '../lib/legal/policy.ts'
+import { PLAN_LIMITS } from '../lib/plans.ts'
+import { SESSION_RETAIN_S } from '../lib/sessions.ts'
+import { OUTBOX_RETAIN_S } from '../lib/system-mail.ts'
+import { reapAccountHistory } from '../lib/account-retention.ts'
+import { RETENTION_DAYS as EVIDENCE_COPY_DAYS } from '../lib/scan/evidence-copies.ts'
+import { ONBOARDING_AUDIT_RETAIN_YEARS, onboardingAuditCutoff } from '../lib/outreach/onboarding-policy.ts'
+import { AUDIT_RETENTION_MIN_DAYS, auditRetention } from '../lib/audit.ts'
+import { traceCaptureConfig } from '../lib/evals/capture.ts'
+import { ALWAYS_RETAINED, CREDENTIAL_TABLES, EXPORT_EXCLUDED, REDACTED_COLUMN } from '../lib/tenant/lifecycle.ts'
+import { VENDORS } from '../lib/llm/vendors.ts'
+import { ENRICH_APOLLO, ENRICH_PDL } from '../lib/enrich/index.ts'
+import { GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE } from '../lib/gmail/oauth.ts'
+import { emailGuessEnabled } from '../lib/people/email-pattern.ts'
+import { CONSENT_TEXT } from '../lib/outreach/autopilot.ts'
+import { composeBody, isSuppressed, OutreachError, saveSettings, suppress } from '../lib/outreach/service.ts'
+import { migrateOutreach } from '../lib/outreach/store.ts'
+import { buildMime } from '../lib/gmail/mime.ts'
+import { outboundRecord, toRecord } from '../lib/ops/errors.ts'
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
+const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8')
+const all = (secs: { paragraphs: string[] }[]) => secs.flatMap(s => s.paragraphs).join('\n')
+const privacy = all(PRIVACY), terms = all(TERMS)
+const DAY = 24 * 60 * 60
+
+test('the policies stay labelled DRAFT and keep their open decisions visible until the owner and counsel approve them', () => {
+  assert.equal(POLICY_STATUS, 'draft')
+  assert.match(DRAFT_NOTICE, /^DRAFT\b/)
+  assert.match(DRAFT_NOTICE, /not yet approved by the site owner or reviewed by a lawyer/)
+  // every owner fact not in the code is still a placeholder somewhere in the text
+  for (const v of Object.values(OWNER_PLACEHOLDERS)) assert.ok(privacy.includes(v) || terms.includes(v), `${v} is not shown`)
+  assert.match(terms, /\[NEEDS COUNSEL: warranty disclaimer, limitation of liability/)
+  for (const page of ['app/privacy/page.tsx', 'app/terms/page.tsx']) {
+    const src = read(page)
+    assert.ok(src.includes('{DRAFT_NOTICE}'), `${page} must render the draft notice`)
+    assert.ok(src.includes("from '@/lib/legal/policy'"), `${page} must render the checked policy text, not its own copy`)
+  }
+  assert.ok(read('app/privacy/page.tsx').includes('PRIVACY.map'))
+  assert.ok(read('app/terms/page.tsx').includes('TERMS.map'))
+})
+
+test('the policies are public and linked from the home footer and sign-up', () => {
+  const home = read('app/page.tsx'), signup = read('app/sign-up/page.tsx')
+  for (const src of [home, signup]) {
+    assert.match(src, /href="\/terms"/)
+    assert.match(src, /href="\/privacy"/)
+  }
+  // the auth proxy only guards /app and /api; robots and the sitemap list both pages
+  assert.match(read('proxy.ts'), /matcher: \['\/app\/:path\*', '\/api\/:path\*'\]/)
+  assert.match(read('app/robots.ts'), /allow: \['\/', '\/privacy', '\/terms'\]/)
+  assert.match(read('app/sitemap.ts'), /'\/privacy', '\/terms'/)
+})
+
+test('retention periods match the code constants', () => {
+  assert.equal(FACTS.revokedSessionRetainDays * DAY, SESSION_RETAIN_S)
+  assert.equal(FACTS.systemMailOutboxRetainHours * 60 * 60, OUTBOX_RETAIN_S)
+  assert.equal(FACTS.evidenceCopyRetainDays, EVIDENCE_COPY_DAYS)
+  assert.equal(FACTS.consentProofRetainYears, ONBOARDING_AUDIT_RETAIN_YEARS)
+  assert.equal(FACTS.auditRetentionMinDays, AUDIT_RETENTION_MIN_DAYS)
+  assert.ok(privacy.includes(`kept for ${FACTS.revokedSessionRetainDays} days`))
+  assert.ok(privacy.includes(`deleted after ${FACTS.systemMailOutboxRetainHours} hours`))
+  assert.ok(privacy.includes(`expires after ${FACTS.evidenceCopyRetainDays} days`))
+  assert.ok(privacy.includes(`deleted ${FACTS.consentProofRetainYears} years after the deletion completed`))
+  // the consent period is calendar years from the completed deletion (Feb 29 rolls forward, never early)
+  const now = Date.UTC(2030, 5, 15) / 1000
+  assert.equal(onboardingAuditCutoff(now), Date.UTC(2030 - FACTS.consentProofRetainYears, 5, 15) / 1000)
+})
+
+test('session and outbox deletion only run under the flag the policy names, and are off by default', async () => {
+  const untouchable = new Proxy({}, { get() { throw new Error('reaper touched the store while off') } }) as never
+  assert.deepEqual(await reapAccountHistory(untouchable, {}, {}), { sessions: 0, outbox: 0 })
+  assert.ok(read('lib/account-retention.ts').includes(`env.${FACTS.accountHistoryFlag}!=='1'`))
+  assert.ok(privacy.includes(`${FACTS.accountHistoryFlag}=1`), 'the policy must keep the flag caveat while the reaper is gated')
+})
+
+test('no audit record is purged until a period is chosen, as the policy says', () => {
+  assert.deepEqual(auditRetention({}), { state: 'off' })
+  assert.equal(auditRetention({ [FACTS.auditRetentionFlag]: String(FACTS.auditRetentionMinDays) }).state, 'on')
+  assert.equal(auditRetention({ [FACTS.auditRetentionFlag]: String(FACTS.auditRetentionMinDays - 1) }).state, 'invalid')
+  assert.match(privacy, /no audit record is deleted automatically today/)
+})
+
+test('trace capture is off unless its flag is set', () => {
+  assert.equal(traceCaptureConfig({}).enabled, false)
+  assert.equal(traceCaptureConfig({ [FACTS.traceCaptureFlag]: '1' }).enabled, true)
+})
+
+test('what survives account deletion is exactly the always-retained set', () => {
+  assert.deepEqual([...FACTS.retainedAfterDeletion].sort(), Object.keys(ALWAYS_RETAINED).sort())
+  assert.match(privacy, /the audit trail, the record of evidence purges, and content-free consent records/)
+  // "removes credentials and sign-in state first" and "never included in a data export"
+  for (const t of ['sessions', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']) assert.ok(CREDENTIAL_TABLES.includes(t), t)
+  for (const c of ['password_hash', 'salt', 'ciphertext', 'refresh_ct']) assert.ok(REDACTED_COLUMN.test(c), c)
+  assert.ok('sessions' in EXPORT_EXCLUDED)
+  assert.match(privacy, /There is no self-service deletion button yet/)
+})
+
+test('AI, enrichment and CRM providers named in the policy are the ones the code supports', () => {
+  assert.deepEqual(Object.keys(FACTS.aiVendors).sort(), [...VENDORS].sort())
+  assert.deepEqual(Object.keys(FACTS.enrichmentProviders).sort(), [ENRICH_APOLLO, ENRICH_PDL].sort())
+  const crm = /if \(!\[([^\]]+)\]\.includes\(c\.provider\)\)/.exec(read('lib/crm/index.ts'))
+  assert.ok(crm, 'CRM provider allowlist not found in lib/crm/index.ts')
+  assert.deepEqual(crm[1].split(',').map(s => s.trim().replace(/'/g, '')).sort(), Object.keys(FACTS.crmProviders).sort())
+  for (const name of [...Object.values(FACTS.aiVendors), ...Object.values(FACTS.enrichmentProviders), 'HubSpot', 'Pipedrive']) {
+    assert.ok(privacy.includes(name), `privacy policy does not name ${name}`)
+  }
+  // the free trial runs on dazl's own Anthropic key
+  assert.match(read('lib/scan/trial.ts'), /DAZL_TRIAL_ANTHROPIC_KEY/)
+})
+
+test('every third-party API host the code calls is disclosed, and no disclosed host is stale', () => {
+  const files: string[] = []
+  const walk = (dir: string) => {
+    for (const f of readdirSync(join(ROOT, dir))) {
+      const rel = `${dir}/${f}`
+      if (statSync(join(ROOT, rel)).isDirectory()) walk(rel)
+      else if (/\.(ts|tsx|mts)$/.test(f) && rel !== 'lib/legal/policy.ts') files.push(rel)
+    }
+  }
+  walk('lib'); walk('app')
+  const found = new Map<string, string>()
+  for (const f of files) {
+    for (const m of read(f).matchAll(/https:\/\/([a-z0-9.-]+\.[a-z]{2,})/g)) {
+      const host = m[1]
+      // api-style hosts (data is sent, not just linked); docs/console links and example hosts are not calls
+      if (!/(^|[.-])api([.-])|googleapis\.com$|^accounts\.google\.com$|^r\.jina\.ai$|^hn\.algolia\.com$|^efts\.sec\.gov$/.test(host)) continue
+      if (/^(docs|console|platform)\./.test(host) || /\.(example|invalid|test)$/.test(host)) continue
+      if (!found.has(host)) found.set(host, relative(ROOT, join(ROOT, f)))
+    }
+  }
+  const missing = [...found].filter(([h]) => !(h in API_HOSTS)).map(([h, f]) => `${h} (${f})`)
+  assert.deepEqual(missing, [], 'new third-party host: classify it in lib/legal/policy.ts API_HOSTS and the Privacy text')
+  assert.deepEqual(Object.keys(API_HOSTS).filter(h => !found.has(h)), [], 'API_HOSTS lists a host the code no longer calls')
+  for (const { name } of Object.values(API_HOSTS)) assert.ok(privacy.includes(name.split(' ')[0]), `privacy policy does not name ${name}`)
+})
+
+test('Gmail: send is the required grant and reading is separate and optional', () => {
+  assert.equal(FACTS.gmailSendScope, GMAIL_SEND_SCOPE)
+  assert.equal(FACTS.gmailReadScope, GMAIL_READ_SCOPE)
+  const scopes = /const SCOPES = \[([^\]]+)\]/.exec(read('lib/gmail/oauth.ts'))
+  assert.ok(scopes)
+  assert.ok(scopes[1].includes('GMAIL_SEND_SCOPE') && !scopes[1].includes('GMAIL_READ_SCOPE'))
+  assert.match(privacy, /send access only \(gmail\.send\)/)
+  assert.match(privacy, /optional grant \(gmail\.readonly\)/)
+})
+
+test('guessed addresses are off by default, never leave the unverified state and are not read by outreach', () => {
+  assert.equal(emailGuessEnabled({}), false)
+  assert.equal(emailGuessEnabled({ [FACTS.emailGuessFlag]: '1' }), true)
+  assert.match(read('lib/people/email-pattern.ts'), /CHECK \(status IN \('unverified'\)\)/)
+  const readers: string[] = []
+  const walk = (dir: string) => {
+    for (const f of readdirSync(join(ROOT, dir))) {
+      const rel = `${dir}/${f}`
+      if (statSync(join(ROOT, rel)).isDirectory()) walk(rel)
+      else if (/\.tsx?$/.test(f) && read(rel).includes('email_candidates')) readers.push(rel)
+    }
+  }
+  walk('lib/outreach'); walk('app')
+  assert.deepEqual(readers, [])
+  assert.match(privacy, /never shown to you or emailed/)
+})
+
+test('outbound mail carries the sender name, mailing address and an unsubscribe link and header', () => {
+  const s = { sender_name: 'Ana Lopez', postal_address: '100 King St W, Toronto ON M5X 1A9' }
+  const body = composeBody('Hello there, a short note about your hiring.', s, 'https://dazl.test/api/unsubscribe?t=abc')
+  assert.ok(body.includes(s.sender_name) && body.includes(s.postal_address) && body.includes('unsubscribe here: https://dazl.test/api/unsubscribe?t=abc'))
+  const mime = buildMime({ fromName: s.sender_name, fromEmail: 'ana@acme.test', to: 'bo@north.test', subject: 'Hi', body, messageId: 'dazl.x@acme.test', unsubscribeUrl: 'https://dazl.test/api/unsubscribe?t=abc', date: new Date(0) })
+  assert.match(mime, /^List-Unsubscribe: <https:\/\/dazl\.test\/api\/unsubscribe\?t=abc>$/m)
+  assert.match(mime, /^List-Unsubscribe-Post: List-Unsubscribe=One-Click$/m)
+  // no sender identity, no send; a mailing address is required to save one
+  assert.match(read('lib/outreach/service.ts'), /if \(!settings\) release\('sender_identity_missing'\)/)
+  assert.throws(() => saveSettings(new Database(':memory:'), 't1', { sender_name: 'Ana', postal_address: '' }), (e: unknown) => e instanceof OutreachError && e.message.includes('bad_postal_address'))
+  assert.match(privacy, /ends with the sender's name, a mailing address and an unsubscribe link/)
+  // the Terms say messages carry no AI label: the send path adds only the footer above
+  assert.equal(body.slice('Hello there, a short note about your hiring.'.length).match(/\bAI\b|artificial intelligence/i), null)
+  assert.match(terms, /Messages do not carry a label saying they were written with AI/)
+})
+
+test('an unsubscribe stops that sender at once: opt-out list, pending messages and sequences, scoped to the sender', () => {
+  const db = new Database(':memory:')
+  migrateOutreach(db)
+  const ins = db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, ?, ?, ?, 'Hi', 'A note long enough to pass the check.', ?)")
+  ins.run('m1', 'tA', 'l1', 'bo@north.test', 'draft'); ins.run('m2', 'tA', 'l2', 'bo@north.test', 'approved'); ins.run('m3', 'tB', 'l3', 'bo@north.test', 'draft')
+  suppress(db, 'tA', 'Bo@North.test', 'unsubscribe')
+  assert.equal(isSuppressed(db, 'tA', 'bo@north.test'), true)
+  assert.equal(isSuppressed(db, 'tB', 'bo@north.test'), false, 'the opt-out list is per sender, as the policy says')
+  const st = (id: string) => (db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get(id) as { status: string }).status
+  assert.deepEqual([st('m1'), st('m2'), st('m3')], ['skipped', 'skipped', 'draft'])
+  assert.match(read('lib/outreach/service.ts'), /UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed'/)
+  assert.match(read('lib/outreach/autopilot.ts'), /suppress\(db, tenantId, email, 'bounce'\)/)
+  // the public link works with no login, for clicks (GET) and one-click clients (POST)
+  const route = read('app/api/unsubscribe/route.ts')
+  assert.match(route, /export const GET/); assert.match(route, /export const POST/)
+  assert.doesNotMatch(route, /getSessionUser|requireUser|auth\(/)
+  assert.match(privacy, /An unsubscribe works at once, with no login/)
+})
+
+test('autopilot terms match the consent text the user accepts', () => {
+  const consent = CONSENT_TEXT.join(' ')
+  assert.match(consent, /without asking you first, within the daily limits you set, after the first sends have been approved by you/)
+  assert.match(consent, /Pausing stops sends immediately/)
+  assert.match(terms, /without asking you each time, within the daily limits you set and only after your first sends were approved by you/)
+  assert.match(terms, /pausing stops sends immediately/)
+})
+
+test('error reports leaving the server carry no message, account id or personal data', () => {
+  const r = toRecord(new Error('failed for jane@north.test'), { source: 'route', where: 'x', tenantId: 'a'.repeat(32) })
+  const out = JSON.stringify(outboundRecord(r, { environment: 'test' }))
+  assert.doesNotMatch(out, /jane|north\.test|a{32}|failed for/)
+  assert.match(privacy, /never messages, account identifiers, request bodies or personal data/)
+})
+
+test('the free plan allowance matches the plan limits', () => {
+  assert.equal(FACTS.freeScansPerMonth, PLAN_LIMITS.free.scansPerMonth)
+  assert.ok(terms.includes(`${FACTS.freeScansPerMonth} scans a month`))
+})
