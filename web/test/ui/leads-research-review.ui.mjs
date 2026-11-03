@@ -58,7 +58,7 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (p === '/api/usage') return json({ plan: 'pro', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
   if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
-  if (p === '/api/settings/profile') return json({ business_name: 'Acme', sells: null, website: 'acme.example', buyer: null }) // no profile offer: only the read's sells line can fill the play offer
+  if (p === '/api/settings/profile') return json({ business_name: 'Acme', sells: null, website: 'acme.example', buyer: null, new_play_offer: null }) // no profile offer: only the read's sells line can fill the play offer
   if (p === '/api/scan/jobs') return json({ jobs: [] })
   if (p === '/api/scan/icp-from-url') return json(READ)
   if (p === '/api/scan/estimate' && m === 'POST') return json(EST)
