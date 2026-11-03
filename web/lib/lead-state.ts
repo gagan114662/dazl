@@ -17,6 +17,13 @@ const CAUSE: Record<string, ResearchCause> = {
   counterparty_signal: 'customer', location_mismatch: 'place', job_closed: 'closed',
 }
 
+// Held for a fact about the evidence itself - someone else's customer, a different place, a closed opening. A person's check of the source cannot change it, so a lead
+// confirmed out of one of these stays research: never offered as draftable (lib/scan/review-action.ts) and never draftable (currentnessHeld, lib/outreach/currentness.ts).
+const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed'])
+export function uncheckableCause(reason: string | null | undefined): ResearchCause | null {
+  return reason && UNCHECKABLE.has(reason) ? CAUSE[reason] : null
+}
+
 export function researchCause(l: PreviewLead & { review_reason?: string | null }): ResearchCause {
   const r = l.review_reason ?? ''
   const date = l.event_date ?? ''
