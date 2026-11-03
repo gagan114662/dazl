@@ -44,7 +44,7 @@ import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
-import { effectiveOffer, sameOffer, statedOffer } from '@/lib/scan/play-offer-text'
+import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -351,8 +351,8 @@ export default function LeadsClient() {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error || 'Could not build the profile')); return }
+      await startOffer(query)
       setDraft(j.icp)
-      startOffer(query)
       setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
@@ -378,7 +378,7 @@ export default function LeadsClient() {
       // only while still empty - the one-line sells this read generated, which the form shows for review. The field
       // stays the person's input: editable, nothing saved until they run with it (#379).
       const genSells = typeof j.sells === 'string' ? j.sells.trim() : ''
-      startOffer(query)
+      await startOffer(query)
       if (genSells) setOfferText(prev => (prev.trim().length >= 3 ? prev : genSells))
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
@@ -404,22 +404,28 @@ export default function LeadsClient() {
   useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j && Array.isArray(j.platforms)) setAdvanced(j); if (j?.available) setAdvReady(j.platforms.filter((p: { allowed?: boolean; consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.allowed !== false && p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
 
   // What THIS play sells (#349; lib/scan/play-offer.ts). It starts from the request when the request names an offer, else
-  // from the business profile; when the two differ the user chooses before the scan runs. Stored with the play only:
-  // the business profile and earlier plays keep theirs.
-  const [savedOffer, setSavedOffer] = useState<string | null>(null)
-  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(p => setSavedOffer(typeof p?.sells === 'string' && p.sells.trim() ? p.sells.trim() : null)).catch(() => {}) }, [])
+  // from what a new play starts from (the business profile's offer, else the Memory positioning: the same base POST
+  // /api/scan checks a direct run against); when the two differ the user chooses before the scan runs. Stored with the
+  // play only: the business profile and earlier plays keep theirs.
   const [offerText, setOfferText] = useState('')
   // A choice still to make: from the review step, or from the server refusing a direct run (409 offer_conflict).
   const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; direct: boolean } | null>(null)
-  function startOffer(q: string) {
-    const stated = statedOffer(q)
-    // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
-    const w = savedOffer ? effectiveOffer({ seller: null, query: q }, savedOffer).conflict : null
-    if (w?.withdrawn && savedOffer) {
-      setOfferText(w.stated ?? ''); setOfferConflict({ stated: w.stated, saved: savedOffer, withdrawn: w.withdrawn, direct: false }); return
+  // The saved offer could not be read at review time: a reviewed run states its offer, so the server does not compare it
+  // again. Run stays disabled until the check succeeds (fail closed), never treated as "nothing saved".
+  const [offerUnread, setOfferUnread] = useState(false)
+  async function startOffer(q: string) {
+    // read at review time, not once per page: the profile or Memory may have changed in another tab since
+    const base = await fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(p => p && (p.new_play_offer === null || typeof p.new_play_offer === 'string') ? { offer: p.new_play_offer as string | null } : null).catch(() => null)
+    setOfferUnread(!base)
+    if (!base) { setOfferText(statedOffer(q) ?? ''); setOfferConflict(null); return }
+    // the server's own resolution (effectiveOffer), with the base as the play's starting offer
+    const c = base.offer ? effectiveOffer({ seller: null, query: q }, base.offer).conflict : null
+    if (c) {
+      // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
+      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
     }
-    setOfferText(stated ?? savedOffer ?? '')
-    setOfferConflict(stated && savedOffer && !sameOffer(q, savedOffer) ? { stated, saved: savedOffer, direct: false } : null)
+    setOfferText(statedOffer(q) ?? base.offer ?? '')
+    setOfferConflict(null)
   }
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
@@ -774,10 +780,14 @@ export default function LeadsClient() {
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} />
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400">{draftNote}</p>
-            <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
+            {offerUnread && <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm mb-2" role="alert" data-testid="offer-unread">
+              <p>dazl could not read your saved offer, so it cannot check this request against it. Nothing runs until it can.</p>
+              <button type="button" className="btn-ghost btn-sm mt-2" onClick={() => void startOffer(query)} data-testid="offer-recheck">Check again</button>
+            </div>}
             {offerConflict ? <OfferChooser c={offerConflict} onChoose={o => { setOfferText(o); setOfferConflict(null) }} onWrite={() => { setOfferText(''); setOfferConflict(null) }} />
               : <>
                 <label className="block text-xs text-gray-500 mb-1" htmlFor="play-offer">What you sell for this play</label>
@@ -795,7 +805,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={n => setOfferText(n)} />}
-          <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
