@@ -258,7 +258,23 @@ export function checkedCoverageRow(c: CheckedListing, windowDays: number, retrie
 // Without a stable employer posting ID or board-provided repost history, a changed posting date can NEVER prove a
 // repost or renewed demand, and the same title on two boards can NEVER be proven the same posting. So history is
 // attached as honest labels on the NEW rows; existing rows are never rewritten (the trail stays as recorded).
-export interface ExistingEvidenceRow { kind: string; connector: string; value: string; source_date: string; retrieved_at: number }
+export interface ExistingEvidenceRow { kind: string; connector: string; value: string; source_date: string; retrieved_at: number; source_url?: string | null }
+// Posting identity (#533 AC4 dedupe "where the evidence supports it"): only the posting's OWN id or URL proves two stored rows are one posting.
+// Greenhouse job ids (boards.greenhouse.io/<token>/jobs/<id>, or an employer-hosted page carrying ?gh_jid=<id>), Lever and Ashby posting UUIDs
+// (jobs.lever.co/<token>/<uuid>, jobs.ashbyhq.com/<token>/<uuid>) are board-wide ids; any other https URL is identified only by itself
+// (host without www + path + query, utm_* dropped). A board listing page (no posting id) has no posting identity: null, never a match.
+export function postingIdentity(url: string | null | undefined): string | null {
+  if (!url) return null
+  let u: URL; try { u = new URL(url) } catch { return null }
+  if (u.protocol !== 'https:') return null
+  const host = u.hostname.toLowerCase().replace(/^www\./, ''), segs = u.pathname.split('/').filter(Boolean)
+  const jid = u.searchParams.get('gh_jid'); if (jid && /^\d{3,}$/.test(jid)) return `greenhouse:${jid}`
+  if (host.endsWith('greenhouse.io')) return segs[1] === 'jobs' && /^\d{3,}$/.test(segs[2] ?? '') ? `greenhouse:${segs[2]}` : null
+  if (host === 'jobs.lever.co' || host === 'jobs.ashbyhq.com') { const id = (segs[1] ?? '').toLowerCase(); return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ? `${host === 'jobs.lever.co' ? 'lever' : 'ashby'}:${id}` : null }
+  if (segs.length === 0) return null
+  const q = [...u.searchParams.entries()].filter(([k]) => !/^utm_/i.test(k)).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join('&')
+  return `url:${host}/${segs.join('/')}${q ? `?${q}` : ''}`
+}
 // A job TITLE can itself contain ' - posted '; only a trailing, date-shaped suffix is the posting date (last occurrence).
 const splitPosted = (value: string): [string, string | null] => {
   const i = value.lastIndexOf(' - posted ')
@@ -266,15 +282,20 @@ const splitPosted = (value: string): [string, string | null] => {
   const d = value.slice(i + ' - posted '.length)
   return /^\d{4}-\d{2}-\d{2}$/.test(d) ? [value.slice(0, i), d] : [value, null]
 }
-const evidenceTitle = (value: string): string => splitPosted(value.replace(/^Unconfirmed: /, ''))[0].trim().toLowerCase()
+const evidenceTitle = (value: string): string => splitPosted(value.replace(/^Unconfirmed: /, '').replace(/^Open (?:sales )?role on its careers page: /, ''))[0].trim().toLowerCase()
 const boardOf = (connector: string): string => connector.replace(/^signals:/, '').replace(/-gtm$/, '')
-export function withRepostHistory<T extends { connector: string; kind: string; value: string; label: string }>(rows: T[], board: GtmHiring['board'], existing: ExistingEvidenceRow[]): T[] {
-  const mine = `signals:${board}-gtm`
+export function withRepostHistory<T extends { connector: string; kind: string; value: string; label: string; source_url?: string }>(rows: T[], board: GtmHiring['board'] | 'careers', existing: ExistingEvidenceRow[]): T[] {
+  const mine = board === 'careers' ? 'signals:careers-gtm' : `signals:${board}-gtm`
   return rows.map(r => {
     if (r.kind !== 'hiring' && r.kind !== 'hiring-role') return r
     const t = evidenceTitle(r.value)
     if (!t) return r
     const notes: string[] = []
+    // Same posting proven by its own id / URL on ANOTHER store (another board, or the careers page linking the ATS posting): one opening, counted
+    // once - the new row says which stored row it duplicates. Rows are never rewritten or deleted; only a proven identity dedupes.
+    const id = postingIdentity(r.source_url)
+    const sameAs = id ? [...new Set(existing.filter(e => (e.kind === 'hiring' || e.kind === 'hiring-role') && e.connector !== r.connector && postingIdentity(e.source_url) === id).map(e => boardOf(e.connector)))].sort() : []
+    if (sameAs.length) notes.push(`same posting as the ${sameAs.join(', ')} row (${id!.startsWith('url:') ? 'same posting URL' : `posting id ${id}`}); one opening, counted once`)
     const thisDate = r.kind === 'hiring' ? splitPosted(r.value)[1] : null
     const priors = existing.filter(e => e.connector === mine && e.kind === 'hiring' && evidenceTitle(e.value) === t && splitPosted(e.value)[1] !== null && splitPosted(e.value)[1] !== thisDate)
     if (priors.length) {
@@ -283,7 +304,7 @@ export function withRepostHistory<T extends { connector: string; kind: string; v
       // The qualifier leads: label truncation (200) can only drop the parenthetical detail, never the honest qualifier itself.
       notes.push(`repost vs continued listing unknown, not renewed demand (board previously dated ${dates.join(', ')}, first seen ${firstSeen})`)
     }
-    const otherBoards = [...new Set(existing.filter(e => (e.kind === 'hiring' || e.kind === 'hiring-role') && boardOf(e.connector) !== board && evidenceTitle(e.value) === t).map(e => boardOf(e.connector)))].sort()
+    const otherBoards = [...new Set(existing.filter(e => (e.kind === 'hiring' || e.kind === 'hiring-role') && boardOf(e.connector) !== board && !sameAs.includes(boardOf(e.connector)) && evidenceTitle(e.value) === t).map(e => boardOf(e.connector)))].sort()
     if (otherBoards.length) notes.push(`same posting unknown (also listed on ${otherBoards.join(', ')})`)
     if (!notes.length) return r
     // The qualifier notes are the load-bearing part: when the combined label exceeds the 200-char cap, shorten the

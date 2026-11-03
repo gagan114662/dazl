@@ -104,3 +104,20 @@ test('autopilot never picks up a human-confirmed lead (it requires a machine con
   const n = db.prepare('SELECT count(*) AS n FROM leads WHERE id = ? AND evidence_excerpt IS NOT NULL AND confidence >= 55 AND contact IS NOT NULL').get(id) as { n: number }
   assert.equal(n.n, 0)
 })
+
+// #352: confirming a lead held for a fact about its evidence (someone else's customer, a different place, a closed opening) keeps it as research:
+// the confirmation is recorded and reversible, but drafting stays refused - what its "Keep as research" card says.
+test('#352: a lead confirmed out of counterparty_signal / location_mismatch / job_closed stays out of drafting; a checkable reason still drafts', async () => {
+  for (const reason of ['counterparty_signal', 'location_mismatch', 'job_closed']) {
+    const db = setup()
+    const { id } = addReviewLead(db, 'A', { reason })
+    assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true, reason)
+    assert.equal(row(db, id).human_confirmed_from, reason)
+    assert.throws(() => createDraft(db, 'A', id, 'Acme'), /lead_currentness_unconfirmed/, reason)
+    assert.equal((db.prepare('SELECT count(*) AS n FROM outreach_messages').get() as { n: number }).n, 0, reason)
+  }
+  const db = setup()
+  const { id } = addReviewLead(db, 'A', { reason: 'location_unconfirmed' })
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)
+  assert.ok(createDraft(db, 'A', id, 'Acme'))
+})

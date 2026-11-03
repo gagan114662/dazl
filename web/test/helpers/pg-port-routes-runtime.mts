@@ -90,6 +90,8 @@ async function seed(db: Db, { J, L, E, M }: Ids): Promise<void> {
     await run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, created_at) VALUES (?, ?, ?, 'pat@dental.example', 'Hello', 'A body that is long enough to pass.', ?)", [id, A, lead, at])
   }
   await run("INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, 'h')", [B, J.bDone])
+  // #349: B saved no profile offer, only a Memory positioning: a new play of B starts from that (profile GET new_play_offer)
+  await run("INSERT INTO tenant_memory (tenant_id, positioning) VALUES (?, 'Payroll software for restaurants')", [B])
 }
 
 type Out = { name: string; status: number; body: unknown }
@@ -193,6 +195,9 @@ test('batch 1 routes on SQLite answer exactly as the raw store did, including sa
   // 2 of 3 trial scans left; no trial budget configured here (lib/billing/trial-budget.ts), so none would run now
   assert.deepEqual((by('B usage').body as { trial: unknown }).trial, { funded: false, remaining: 2, cap: 3, blocked: 'not_configured' })
   assert.deepEqual(by('profile save').body, { ok: true, sells: 'dental scheduling', website: 'https://acme.example', business_name: 'Acme Dental Co', buyer: null })
+  // what a new play starts from (#349): the profile offer without its website, else the Memory positioning; per tenant
+  assert.equal((by('profile').body as { new_play_offer: unknown }).new_play_offer, 'dental software')
+  assert.equal((by('B profile').body as { new_play_offer: unknown }).new_play_offer, 'Payroll software for restaurants')
   assert.deepEqual([by('unconfirm').status, by('release').status], [200, 200])
 })
 
