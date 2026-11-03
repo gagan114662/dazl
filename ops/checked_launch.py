@@ -17,8 +17,17 @@ independent track's failure refuses the launch no matter how green another
 track is, while a rerun success supersedes only the failed attempt inside
 its own suite. Runs without an intact check_suite identity are refused
 rather than grouped.
+
+Every run appends one sanitized JSON line to a bounded private launch log
+(--launch-log, default LAUNCH_LOG): timestamp, commit, each gate and preflight
+result, launch_reached, the child's return code and safe_launch's own status
+file (fixed status/phase vocabulary only). No env content, no argv values and
+no child output are ever logged. An unusable log refuses before any gate.
 """
 import argparse
+import datetime
+import fcntl
+import importlib.util
 import json
 import subprocess
 import re
@@ -26,6 +35,7 @@ import os
 import stat
 import sys
 import math
+import time
 import urllib.request
 from pathlib import Path
 
@@ -43,6 +53,112 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 REQUIRED_CI = frozenset({'browser', 'migrations', 'test-sqlite', 'test-postgres', 'fail-closed', 'static-quality'})
+
+LAUNCH_LOG = '/home/ubuntu/backups/launch-log.jsonl'
+LOG_LINES = 200
+STATUS_NAME = 'launch-status.json'
+CODE = re.compile(r'[a-z][a-z0-9_]{0,63}')
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
+
+
+def private_file(path, flags):
+    # Owned by the executing uid, mode 0600 or tighter, regular, never a symlink.
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    meta = os.fstat(fd)
+    if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.geteuid() or meta.st_mode & 0o077:
+        os.close(fd)
+        raise ValueError('launch_log_refused')
+    return fd
+
+
+class LaunchLog:
+    """Bounded private JSONL log; sanitized fields only."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        meta = os.lstat(self.path.parent)
+        if not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in (0, os.geteuid()) or meta.st_mode & 0o022:
+            raise ValueError('launch_log_refused')
+        os.close(private_file(self.path, os.O_RDONLY | os.O_CREAT))
+        self.status_file = self.path.with_name(STATUS_NAME)
+
+    def append(self, entry):
+        fd = private_file(self.path, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            with os.fdopen(os.dup(fd), 'rb') as source:
+                lines = [x for x in source.read().decode(errors='replace').splitlines() if x.strip()]
+            lines = lines[-(LOG_LINES - 1):] + [json.dumps(entry, sort_keys=True)]
+            temp = self.path.with_name(self.path.name + '.tmp')
+            try:
+                os.unlink(temp)
+            except FileNotFoundError:
+                pass
+            out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            try:
+                os.write(out, ('\n'.join(lines) + '\n').encode())
+                os.fsync(out)
+            finally:
+                os.close(out)
+            os.replace(temp, self.path)
+        finally:
+            os.close(fd)
+
+
+def error_code(error):
+    # Our own gates raise fixed codes; anything else is recorded by class name only.
+    text = str(error) if isinstance(error, ValueError) else ''
+    return text if CODE.fullmatch(text) else type(error).__name__
+
+
+def preflight_name(argv):
+    # Program identity only: executable basename, plus a script basename when the
+    # second token is a script path. Never option values, inline code or arguments.
+    parts = [Path(argv[0]).name]
+    if len(argv) > 1 and re.search(r'\.(py|mjs|js|sh)$', argv[1]) and not argv[1].startswith('-'):
+        parts.append(Path(argv[1]).name)
+    return ' '.join(p if NAME.fullmatch(p) else 'unnamed' for p in parts)
+
+
+def safe_launch_vocabulary():
+    # The sibling safe_launch defines the only status/phase words a log may carry.
+    spec = importlib.util.spec_from_file_location('safe_launch_vocabulary', Path(__file__).with_name('safe_launch.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return frozenset(module.STATUS_CODES), frozenset(module.PHASES)
+
+
+def read_status(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return {'state': 'missing'}
+    except OSError:
+        return {'state': 'refused'}
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.geteuid() or meta.st_mode & 0o077:
+            return {'state': 'refused'}
+        with os.fdopen(os.dup(fd), 'rb') as source:
+            raw = source.read(4097)
+    finally:
+        os.close(fd)
+    try:
+        data = json.loads(raw.decode()) if len(raw) <= 4096 else None
+        codes, phases = safe_launch_vocabulary()
+    except Exception:
+        return {'state': 'invalid'}
+    if not isinstance(data, dict):
+        return {'state': 'invalid'}
+    status, phase = data.get('status'), data.get('phase')
+    result = {'state': 'read',
+              'status': status if isinstance(status, str) and status in codes else 'unrecognised',
+              'phase': phase if isinstance(phase, str) and phase in phases else 'unrecognised'}
+    if data.get('service_changed') in (True, False, 'unknown'):
+        result['service_changed'] = data['service_changed']
+    if isinstance(data.get('commit'), str) and re.fullmatch(r'[a-f0-9]{40}', data['commit']):
+        result['commit'] = data['commit']
+    return result
 
 
 def read_token(token_file):
@@ -184,36 +300,84 @@ def bind_target(launch, commit):
             raise ValueError('target_helper_bytes')
 
 
-def run(preflights, launch, timeout=120, *, repository=None, commit=None, token_file=None):
-    if not math.isfinite(timeout) or timeout <= 0:
-        return {'status': 'timeout_invalid', 'launch_reached': False}, 2
+def run(preflights, launch, timeout=120, *, repository=None, commit=None, token_file=None, log_path=None):
+    started = time.monotonic()
     try:
-        bind_launch(launch, commit)
-        bind_target(launch, commit)
-        require_ci(repository, commit, token_file)
+        log = LaunchLog(log_path or LAUNCH_LOG)
     except Exception:
-        return {'status': 'ci_refused', 'launch_reached': False}, 1
+        # Without a diagnosable record nothing runs: refuse before any gate.
+        return {'status': 'launch_log_unavailable', 'launch_reached': False}, 2
+    entry = {'ts': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+             'commit': commit if isinstance(commit, str) and re.fullmatch(r'[a-f0-9]{40}', commit) else 'invalid',
+             'gates': [], 'preflights': [], 'launch_reached': False}
+
+    def finish(report, code):
+        entry.update(status=report['status'], wrapper_returncode=code, wall_s=round(time.monotonic() - started, 3))
+        try:
+            log.append(entry)
+        except Exception:
+            report = dict(report, log='append_failed')
+        return report, code
+
+    def gates(round_name):
+        for name, gate in [('bind_launch', lambda: bind_launch(launch, commit)),
+                           ('bind_target', lambda: bind_target(launch, commit)),
+                           ('require_ci', lambda: require_ci(repository, commit, token_file))]:
+            try:
+                gate()
+            except Exception as error:
+                entry['gates'].append({'round': round_name, 'gate': name, 'result': 'fail', 'code': error_code(error)})
+                return False
+            entry['gates'].append({'round': round_name, 'gate': name, 'result': 'pass'})
+        return True
+
+    if not math.isfinite(timeout) or timeout <= 0:
+        return finish({'status': 'timeout_invalid', 'launch_reached': False}, 2)
+    if not gates('initial'):
+        return finish({'status': 'ci_refused', 'launch_reached': False}, 1)
     if not preflights:
-        return {'status': 'preflight_missing', 'launch_reached': False}, 2
+        return finish({'status': 'preflight_missing', 'launch_reached': False}, 2)
     for i, argv in enumerate(preflights):
+        record = {'index': i, 'name': preflight_name(argv)}
+        entry['preflights'].append(record)
+        began = time.monotonic()
         try:
             result = subprocess.run(argv, check=False, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             code = result.returncode
-        except (OSError, subprocess.TimeoutExpired):
-            return {'status': 'preflight_error', 'index': i, 'launch_reached': False}, 1
+        except subprocess.TimeoutExpired:
+            record.update(result='timeout', wall_s=round(time.monotonic() - began, 3))
+            return finish({'status': 'preflight_error', 'index': i, 'launch_reached': False}, 1)
+        except OSError:
+            record.update(result='os_error', wall_s=round(time.monotonic() - began, 3))
+            return finish({'status': 'preflight_error', 'index': i, 'launch_reached': False}, 1)
+        record.update(result='exit', returncode=code, wall_s=round(time.monotonic() - began, 3))
         if code != 0:
-            return {'status': 'preflight_failed', 'index': i, 'returncode': code, 'launch_reached': False}, 1
+            return finish({'status': 'preflight_failed', 'index': i, 'returncode': code, 'launch_reached': False}, 1)
+    if not gates('final'):
+        return finish({'status': 'ci_refused', 'launch_reached': False}, 1)
+    # safe_launch reports its own fixed-vocabulary status through a fresh private
+    # file; application output stays on /dev/null. The operator argv is unchanged
+    # and still may not carry --status-file itself (bind_launch refuses it).
     try:
-        bind_launch(launch, commit)
-        bind_target(launch, commit)
-        require_ci(repository, commit, token_file)
-    except Exception:
-        return {'status': 'ci_refused', 'launch_reached': False}, 1
+        os.unlink(log.status_file)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return finish({'status': 'launch_log_unavailable', 'launch_reached': False}, 2)
+    child = {'status_file': str(log.status_file)}
+    entry['launch'] = child
+    entry['launch_reached'] = True
+    began = time.monotonic()
     try:
-        result = subprocess.run(launch, check=False, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        return {'status': 'launch_error', 'launch_reached': True}, 1
-    return {'status': 'launched' if result.returncode == 0 else 'launch_failed', 'returncode': result.returncode, 'launch_reached': True}, 0 if result.returncode == 0 else 1
+        result = subprocess.run([*launch, '--status-file', str(log.status_file)], check=False, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        child.update(result='timeout', wall_s=round(time.monotonic() - began, 3), status=read_status(log.status_file))
+        return finish({'status': 'launch_error', 'launch_reached': True}, 1)
+    except OSError:
+        child.update(result='os_error', wall_s=round(time.monotonic() - began, 3), status=read_status(log.status_file))
+        return finish({'status': 'launch_error', 'launch_reached': True}, 1)
+    child.update(result='exit', returncode=result.returncode, wall_s=round(time.monotonic() - began, 3), status=read_status(log.status_file))
+    return finish({'status': 'launched' if result.returncode == 0 else 'launch_failed', 'returncode': result.returncode, 'launch_reached': True}, 0 if result.returncode == 0 else 1)
 
 
 if __name__ == '__main__':
@@ -226,6 +390,7 @@ if __name__ == '__main__':
     parser.add_argument('--preflight', type=command, action='append', required=True)
     parser.add_argument('--launch', type=command, required=True)
     parser.add_argument('--timeout', type=float, default=120)
+    parser.add_argument('--launch-log', default=LAUNCH_LOG)
     args = parser.parse_args()
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error('timeout must be finite and positive')
@@ -240,7 +405,7 @@ if __name__ == '__main__':
             os.write(credential_fd, token)
             del token
             args.ci_token_file = '/proc/self/fd/' + str(credential_fd)
-        report, code = run(args.preflight, args.launch, args.timeout, repository=args.repository, commit=args.commit, token_file=args.ci_token_file)
+        report, code = run(args.preflight, args.launch, args.timeout, repository=args.repository, commit=args.commit, token_file=args.ci_token_file, log_path=args.launch_log)
     except Exception:
         report, code = {'status': 'ci_refused', 'launch_reached': False}, 1
     finally:

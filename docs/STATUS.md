@@ -176,7 +176,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 6. #384 separate published provenance from deliverability/person-route status.
 7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
    currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
-8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+8. #385 rejection/outcome feedback improves future selection (in review: b/385-rejection-outcomes, docs/design/lead-feedback.md); #387 continuous event detection — compounding
    advantages, start once 1-7 ship.
    #387 in review: b/387-event-detection (monitor runs alert only on novel, dated, in-window, verified events: new company /
    new signal / now reachable, deduped across plays, per-monitor alert policy, latency and missed-run report).

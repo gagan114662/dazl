@@ -246,14 +246,14 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
   const want = guardTriggers(scope).map(g => g.name).sort()
   const accountCols = Object.entries(ACCOUNT_COLUMNS).filter(([t]) => scope.some(s => s.table === t)).reduce((n, [, cs]) => n + cs.length, 0)
   assert.equal(want.length, 2 * (scope.length + 2 + accountCols), `${scope.length} guarded tables, users and organizations, ${accountCols} account column(s): two guards each`)
-  assert.equal(want.length, 194) // 455's 166 + two guards each for main's post-fork tenant tables: autopilot_work (0032), seller_decisions (0034), connector_claims (0035), autopilot_launch_policy (#553's 0038), scan_traces (#463's 0040), audit_events (#464's 0041; its INSERT guard carries the bounded audit_closing_gate exception), bounce_records and mail_bounce_scan_consent (#513's 0042), onboarding_policies + onboarding_enrollments + onboarding_audit (#417's 0043), monitor_events + monitor_alerts + monitor_cursors (#387's 0044)
+  assert.equal(want.length, 196) // 455's 166 + two guards each for main's post-fork tenant tables: autopilot_work (0032), seller_decisions (0034), connector_claims (0035), autopilot_launch_policy (#553's 0038), scan_traces (#463's 0040), audit_events (#464's 0041; its INSERT guard carries the bounded audit_closing_gate exception), bounce_records and mail_bounce_scan_consent (#513's 0042), onboarding_policies + onboarding_enrollments + onboarding_audit (#417's 0043), lead_feedback (#385's 0044), monitor_events + monitor_alerts + monitor_cursors (#387's 0045)
   // The static Postgres migrations must carry exactly this generated set, not the fork's: only the sqlite path derives
   // its guards from the live schema, so a stale migration leaves post-fork tables unguarded on pg (#554 review). Tables
   // added after 0039 carry their own guards in their own migration (migrations are immutable once applied): 0040 guards
   // scan_traces (#463), 0041 guards audit_events (#464), 0042 guards bounce_records and mail_bounce_scan_consent (#513),
-  // 0043 guards the three onboarding tables (#417; renumbered from 0042 after #513 landed first), 0044 guards the three
-  // monitor event-detection tables (#387).
-  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0044_monitor_events.sql']
+  // 0043 guards the three onboarding tables (#417; renumbered from 0042 after #513 landed first), 0044 guards lead_feedback (#385),
+  // 0045 guards the three monitor event-detection tables (#387).
+  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0044_lead_feedback.sql', '0045_monitor_events.sql']
     .flatMap(f => [...readFileSync(new URL(`../lib/db/migrations/pg/${f}`, import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1])).sort()
   assert.deepEqual(pgNames, want, 'the static PG migrations drifted from the generated guard set')
   const live = c.kind === 'sqlite'

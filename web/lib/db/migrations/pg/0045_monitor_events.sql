@@ -1,7 +1,6 @@
 -- Continuous event detection for monitors (#387, lib/monitor-events.ts): the per-monitor alert policy, how many
 -- scheduled runs a late run stood in for, the tenant's event state (first seen / occurred / last checked / actionable /
--- reachable), the alert log with detection latency, and per-source cursors. Claimed as 0045 in the lane claim file; this
--- branch keeps the next number on main (0044) so the 1..n check passes. Renumber at merge if another 0044 lands first.
+-- reachable), the alert log with detection latency, and per-source cursors. Numbered 0045: #385's 0044_lead_feedback landed first.
 ALTER TABLE monitors ADD COLUMN alert_policy TEXT NOT NULL DEFAULT 'all' CHECK (alert_policy IN ('all','reachable','new_companies'));
 
 ALTER TABLE monitor_runs ADD COLUMN missed_runs BIGINT NOT NULL DEFAULT 0;
