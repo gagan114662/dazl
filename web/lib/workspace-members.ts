@@ -75,6 +75,19 @@ function* owners(t: Tx, tenantId: string): TxBody<number> {
   return Number((yield* t.get<{ n: number }>("SELECT count(*) AS n FROM memberships WHERE tenant_id = ? AND role = 'owner'", [tenantId]))?.n ?? 0)
 }
 
+// Offboarding (#358), inside removeMember before the membership row goes: the member's sessions acting in this
+// workspace are revoked (reason 'offboarded', by the remover, now; their sessions acting in their other workspaces
+// stay), and so are the invitations they sent that are still pending.
+function* offboardTx(t: Tx, tenantId: string, memberId: string, by: string): TxBody<void> {
+  yield* revokeWorkspaceSessionsTx(t, memberId, tenantId, { by })
+  yield* revokeSentInvitesTx(t, tenantId, memberId)
+}
+// A pending invitation already adds nothing once its inviter is gone (acceptInvitation re-reads the inviter); revoking
+// it on removal or leaving keeps the Team list honest and frees its place under MAX_PENDING_INVITES.
+function* revokeSentInvitesTx(t: Tx, tenantId: string, memberId: string): TxBody<void> {
+  yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND invited_by = ? AND accepted_at IS NULL AND revoked_at IS NULL', [nowS(), tenantId, memberId])
+}
+
 // Granting or touching the owner role takes 'owners'; everything else 'members'.
 const mayManage = (who: Role, target: Role | null, next: Role | null) =>
   can(who, 'members') && (target !== 'owner' && next !== 'owner' || can(who, 'owners'))
@@ -117,19 +130,6 @@ export async function removeMember(db: Db, by: Acting, memberId: string): Promis
     yield* offboardTx(t, by.tenantId, memberId, by.actorId)
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, memberId])
   })
-}
-
-// Offboarding (#358), inside removeMember before the membership row goes: the member's sessions acting in this
-// workspace are revoked (reason 'offboarded', by the remover, now; their sessions acting in their other workspaces
-// stay), and so are the invitations they sent that are still pending.
-function* offboardTx(t: Tx, tenantId: string, memberId: string, by: string): TxBody<void> {
-  yield* revokeWorkspaceSessionsTx(t, memberId, tenantId, { by })
-  yield* revokeSentInvitesTx(t, tenantId, memberId)
-}
-// A pending invitation already adds nothing once its inviter is gone (acceptInvitation re-reads the inviter); revoking
-// it on removal or leaving keeps the Team list honest and frees its place under MAX_PENDING_INVITES.
-function* revokeSentInvitesTx(t: Tx, tenantId: string, memberId: string): TxBody<void> {
-  yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND invited_by = ? AND accepted_at IS NULL AND revoked_at IS NULL', [nowS(), tenantId, memberId])
 }
 
 export async function leave(db: Db, by: Acting): Promise<void> {
