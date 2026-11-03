@@ -12,7 +12,7 @@ import { migrateSourceReview } from '../../lib/scan/source-review.ts'
 import { migrateWatch } from '../../lib/watch.ts'
 import { migrateKeys } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
-import { migrateConnectors } from '../../lib/connectors/store.ts'
+import { migrateConnectors, addEnrichment } from '../../lib/connectors/store.ts'
 import { migrateAdvanced } from '../../lib/advanced/index.ts'
 import { migrateBilling } from '../../lib/billing/stripe.ts'
 import { migrateOutreach } from '../../lib/outreach/store.ts'
@@ -31,6 +31,7 @@ import { migrateCsv } from '../../lib/scan/csv-import.ts'
 import { migrateCommenterImport } from '../../lib/scan/commenter-import.ts'
 import { migrateMemory } from '../../lib/memory.ts'
 import { migrateReopen } from '../../lib/outreach/reopen.ts'
+import { recordTimingProof } from '../../lib/scan/timing-proof.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
@@ -85,4 +86,18 @@ test('without proof, a model or publication date changes nothing: equal-fit twin
   const rows = await get(j)
   assert.deepEqual(rows.map(r => r.id), [undated, modelDated], 'an unproven date does not move the ranking')
   for (const r of rows) { assert.equal(r.intent, 0); assert.equal(r.timing, 'unconfirmed'); assert.ok(r.fit_rationale, 'fit rationale kept') }
+})
+
+test('the durable timing-proof record never reaches the Leads payload: only the human timing state does', async () => {
+  const db = seed(); const j = job(db)
+  const id = ins(db, j, 'Proven Dental', 70, 'Fits: multi-location dental group.', daysAgoISO(5), 'page_bound', null)
+  addEnrichment(db, 'A', id, { connector: 'scan:actionable', kind: 'actionability', value: 'Actionable: domain, person and published contact confirmed', label: 'Pat, Owner - email: pat@x.test', confidence: null, source_url: 'https://invalid.example/', source_date: daysAgoISO(0), retrieved_at: Math.floor(Date.now() / 1000) })
+  assert.deepEqual(recordTimingProof(db, { id: j, user_id: 'A' }), { proven: 1, held: 0 })
+  const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${j}`))
+  const body = await res.text()
+  const [row] = (JSON.parse(body) as { leads: (Row & { enrichments: { connector: string; kind: string; value: string }[] })[] }).leads
+  assert.equal(row.timing_proof_gap, null, 'the proof stands'); assert.equal(row.currentness_held, false)
+  assert.ok(row.enrichments.some(e => e.connector === 'scan:actionable'), 'user-facing enrichments are still listed')
+  assert.ok(!row.enrichments.some(e => e.kind === 'timing_proof' || e.connector === 'scan:timing-proof'), 'no proof record in the enrichment list')
+  assert.doesNotMatch(body, /timing-proof:v|\\"state\\":\\"proven\\"|scan:timing-proof/, 'no raw proof JSON anywhere in the payload')
 })

@@ -14,13 +14,13 @@
 // (identity review, recipient purpose, suppression, launch authority, caps) still applies on top.
 import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { addEnrichment } from '../connectors/store.ts'
+import { addEnrichment, INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { proofBackedTiming, TIMING_REQUESTED } from './scoreboard.ts'
 import { jobWindowDays } from './window.ts'
 
 export const TIMING_PROOF_VERSION = 1
 export const TIMING_PROOF_CONNECTOR = 'scan:timing-proof'
-export const TIMING_PROOF_KIND = 'timing_proof'
+export const TIMING_PROOF_KIND = INTERNAL_ENRICHMENT_KIND // never listed for display (enrichmentsForLeads filters it)
 export const TIMING_PROOF_LABEL = `timing-proof:v${TIMING_PROOF_VERSION}`
 const ACTIONABLE_CONNECTOR = 'scan:actionable' // lib/scan/actionable.ts ACTIONABLE_CONNECTOR (not imported: avoids its memory/people deps)
 

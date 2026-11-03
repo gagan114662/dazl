@@ -139,5 +139,5 @@ test('route seam: two equal-fit companies rank apart only when proof supports it
   ], { cwd: path.resolve(fileURLToPath(new URL('../', import.meta.url))), env, encoding: 'utf8', timeout: 90000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 2/); assert.match(result.stdout, /# fail 0/)
+  assert.match(result.stdout, /# pass 3/); assert.match(result.stdout, /# fail 0/)
 })
