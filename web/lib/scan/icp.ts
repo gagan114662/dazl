@@ -1,5 +1,5 @@
 import type { Provider } from '../llm/provider.ts'
-import { normalizeLookalike, type LookalikeBlock } from './lookalike-discovery.ts'
+import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
 import { quoteSupports } from './claim-quote.ts'
 
 // An ideal customer profile (ICP) inferred from a free-text "what are you looking for".

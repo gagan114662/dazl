@@ -12,21 +12,18 @@
 //   current event is labelled "no verified current intent", never ready-to-buy.
 // - Pure: no model call, no search, no network, no database.
 import { companyKey, companyOwnsDomain, hasPhrase } from './evidence.ts'
+import { lookalikeOf, normalizeLookalike, slug, MAX_EXAMPLES, MAX_FEATURES, MIN_LIFT, MIN_NEGATIVES, MIN_POSITIVES, MIN_SUPPORT, type LookalikeBlock } from './lookalike-block.ts'
+export { lookalikeOf, normalizeLookalike, slug, MAX_EXAMPLES, MAX_FEATURES, MIN_LIFT, MIN_NEGATIVES, MIN_POSITIVES, MIN_SUPPORT, type LookalikeBlock }
 
 export type ExampleKind = 'customer' | 'won' | 'negative' | 'competitor'
 export interface Example { name: string; domain?: string | null; industry?: string | null; size?: string | null; location?: string | null; description?: string | null; kind: ExampleKind }
 const KINDS = new Set<ExampleKind>(['customer', 'won', 'negative', 'competitor'])
 const isPositive = (e: Example) => e.kind === 'customer' || e.kind === 'won'
 
-// Supplied accounts all travel with the scan profile (as short hashed keys) so the run can exclude them; the profile has
-// a hard size budget (icp.ts ICP_JSON_BUDGET), so the import is capped and an oversized one is refused whole.
-export const MAX_EXAMPLES = 100
-export const MIN_POSITIVES = 5, MIN_NEGATIVES = 5, MIN_SUPPORT = 2, MIN_LIFT = 2, MAX_FEATURES = 12
 export const MIN_FIT = 0.35
 const CAP = { name: 150, domain: 253, field: 100, description: 400 }
 
 const STOP = new Set('this that with from have been were they their will would could should about into over after before more most other these those when where which while company companies inc llc ltd group services service solutions business businesses based provider providers offering offers customers clients'.split(' '))
-export const slug = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
 const host = (d?: string | null) => (d ?? '').toLowerCase().trim().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0].replace(/\.$/, '')
 const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
 const text = (v: unknown, max: number) => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : ''
@@ -127,10 +124,6 @@ export function validate(all: Example[], minFit = MIN_FIT): Discovery {
 }
 
 // ---- the profile block that travels with the scan ----------------------------------------------------------------
-// Compact persisted shape inside scan_jobs.icp (no schema change; same pattern as the #379 research block):
-//   f: discriminators {d: i|s|l|k, t: value, n: support, x: lift}, p/q: positives/negatives, h: held-out numbers,
-//   k: supplied-account keys by kind (c customer/won, x competitor, n negative), each a run of 5-char hashes.
-export interface LookalikeBlock { v: 1; f: { d: 'i' | 's' | 'l' | 'k'; t: string; n: number; x: number }[]; p: number; q: number; h: { p: number; b: number; n: number }; k: { c: string; x: string; n: string } }
 const DIM: Record<Dimension, LookalikeBlock['f'][number]['d']> = { industry: 'i', size: 's', location: 'l', keyword: 'k' }
 const MID: Record<string, Dimension> = { i: 'industry', s: 'size', l: 'location', k: 'keyword' }
 // 25-bit FNV-1a in base36, 5 chars. A collision can only exclude a candidate (fail closed), never admit a supplied account.
@@ -153,42 +146,6 @@ export function toBlock(d: Discovery, all: Example[]): LookalikeBlock | null {
     h: { p: round(d.heldOut.precision), b: round(d.heldOut.baseRate), n: d.heldOut.n },
     k: { c: keys(isPositive), x: keys(e => e.kind === 'competitor'), n: keys(e => e.kind === 'negative') },
   }
-}
-
-const KEYRUN = /^(?:[0-9a-z]{5})*$/
-// Validates anything that claims to be a persisted lookalike block. Returns undefined for an absent block and null for
-// a present but malformed one: the caller refuses the whole profile then (a scan must never run without the exclusions
-// its profile claims). A block whose held-out check does not beat chance is malformed by definition.
-export function normalizeLookalike(raw: unknown): LookalikeBlock | null | undefined {
-  if (raw === undefined) return undefined
-  if (!raw || typeof raw !== 'object') return null
-  const r = raw as Record<string, unknown>
-  const int = (v: unknown, min: number, max: number) => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max
-  const num = (v: unknown, min: number, max: number) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
-  if (r.v !== 1 || !int(r.p, MIN_POSITIVES, MAX_EXAMPLES) || !int(r.q, MIN_NEGATIVES, MAX_EXAMPLES)) return null
-  if (!Array.isArray(r.f) || r.f.length === 0 || r.f.length > MAX_FEATURES) return null
-  const f: LookalikeBlock['f'] = []
-  for (const x of r.f as Record<string, unknown>[]) {
-    const t = typeof x?.t === 'string' ? x.t : ''
-    if (!x || !MID[String(x.d)] || !t || t.length > 60 || slug(t) !== t || !int(x.n, MIN_SUPPORT, MAX_EXAMPLES) || !num(x.x, MIN_LIFT, 1e6)) return null
-    f.push({ d: x.d as LookalikeBlock['f'][number]['d'], t, n: x.n as number, x: x.x as number })
-  }
-  const h = r.h as Record<string, unknown> | null
-  if (!h || !num(h.p, 0, 1) || !num(h.b, 0, 1) || !int(h.n, 4, MAX_EXAMPLES) || !((h.p as number) > (h.b as number))) return null
-  const k = r.k as Record<string, unknown> | null
-  const run = (v: unknown) => typeof v === 'string' && KEYRUN.test(v) && v.length <= MAX_EXAMPLES * 2 * 5
-  if (!k || !run(k.c) || !run(k.x) || !run(k.n) || (k.c as string).length === 0) return null
-  return { v: 1, f, p: r.p as number, q: r.q as number, h: { p: h.p as number, b: h.b as number, n: h.n as number }, k: { c: k.c as string, x: k.x as string, n: k.n as string } }
-}
-
-// The block a scan job's stored profile carries: null when it has none (or the profile is not JSON - the runner re-infers
-// such a profile, which then carries no block), 'unreadable' when one is present but malformed.
-export function lookalikeOf(job: { icp?: string | null }): LookalikeBlock | 'unreadable' | null {
-  let raw: unknown
-  try { raw = job.icp ? JSON.parse(job.icp) : null } catch { return null }
-  const la = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).lookalike : undefined
-  if (la === undefined || la === null) return null
-  return normalizeLookalike(la) ?? 'unreadable'
 }
 
 const blockModel = (b: LookalikeBlock) => ({ discriminators: b.f.map(x => ({ feature: { dimension: MID[x.d], value: x.t }, support: x.n, lift: x.x, posRate: 0, negRate: 0 })) })

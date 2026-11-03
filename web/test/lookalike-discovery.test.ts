@@ -1,6 +1,7 @@
 // #386: lookalike discovery from supplied customer outcomes. Fully synthetic cohort and candidates (invented businesses on
 // .example hosts); the runner test goes through the real runJob with every provider, search and page fetch stubbed.
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { budgetedIcp, flatProfile, normalizeIcp } from '../lib/scan/icp.ts'
 import { compareToBaseline, deriveModel, discover, dropKnown, leadLookalikeFit, lookalikeOf, MAX_EXAMPLES, normalizeLookalike, orderByIcp, orderByLookalike, parseCohort, split, validate, type Example, type LookalikeBlock } from '../lib/scan/lookalike-discovery.ts'
@@ -140,4 +141,9 @@ test('the real runner on a lookalike scan: supplied accounts are dropped before 
   const fates = Object.fromEntries((r.report?.candidates ?? []).map((a: { company: string; fate: string }) => [a.company, a.fate]))
   assert.deepEqual(fates, { 'Bright Smile 3 Dental': 'dropped:lookalike_supplied_customer', 'Other 5 Works': 'dropped:lookalike_supplied_competitor', 'Maple Row Dental': 'verified' }, 'the run report explains each absent account')
   assert.ok(!r.extractionPrompt.includes(p.icp.lookalike.k.c), 'the hashed keys never reach a model prompt')
+})
+
+test('the block module icp.ts imports stays import-free (client bundles reach icp.ts; evidence.ts reads process.env)', () => {
+  assert.doesNotMatch(readFileSync(new URL('../lib/scan/lookalike-block.ts', import.meta.url), 'utf8'), /^\s*import\s/m)
+  assert.match(readFileSync(new URL('../lib/scan/icp.ts', import.meta.url), 'utf8'), /from '\.\/lookalike-block\.ts'/)
 })
