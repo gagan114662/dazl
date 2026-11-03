@@ -62,6 +62,7 @@ import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts
 import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
+import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
@@ -1336,6 +1337,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     // The same facts go beside each lead and into the run report, so the card and the report agree.
     try {
       const y = recordActionability(db, job, heldByGate)
+      // #377: the durable timing proof is written from the actionability verdict just recorded; a failed write leaves no record, which holds.
+      try { recordTimingProof(db, job) } catch (e) { console.error('timing proof record failed', e instanceof Error ? e.message : 'error') }
       // A lead the gate passed whose durable pass record could not be saved is held by the draft guard (default-deny); the report says so too, with the same reason.
       const extra = (y.held_leads ?? []).filter(h => !heldByGate.has(h.id))
       if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }

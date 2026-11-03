@@ -158,6 +158,19 @@ export const TIMING_UNCONFIRMED_NOTE = 'Event timing is unconfirmed. Review the 
 export const URGENCY_PHRASE = /\burgent(?:ly)?\b|\bright now\b|\bimmediately\b|\basap\b|\bact now\b|\bneeds? this now\b/i
 export const NOW_SHOUT = /\bNOW\b/
 export const isUrgencyClaim = (text: string): boolean => URGENCY_PHRASE.test(text) || NOW_SHOUT.test(text)
+// The seller-specific fit / use-case rationale, read apart from timing status (#377). scoreLeads appends the timing note
+// to a neutral rationale; this returns the rationale without it, so the Leads card can say why the company fits while the
+// timing badge and holds say whether NOW is proven. Prose demoted as an unverified urgency claim, a legacy row whose why
+// was replaced by the timing warning, and urgency wording on a lead without proof-backed timing give null: an
+// unsupported NOW never comes back as a fit reason.
+export function fitRationale(storedWhy: string | null | undefined, timing: 'proof_backed' | 'unconfirmed'): string | null {
+  let t = (storedWhy ?? '').trim()
+  if (!t || t.startsWith(`${TIMING_UNCONFIRMED_NOTE} Model rationale, unverified:`)) return null
+  t = t.split(TIMING_UNCONFIRMED_NOTE).join(' ').replace(/\s+/g, ' ').trim()
+  if (!t || /^event timing (?:is|and)\b/i.test(t)) return null
+  if (timing !== 'proof_backed' && isUrgencyClaim(t)) return null
+  return t
+}
 export interface ScoreTimingOpts { windowDays?: number | null; now?: Date }
 export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], fetchImpl?: typeof fetch, opts: ScoreTimingOpts = {}): Promise<LeadScore[] | null> {
   if (!provider.complete || leads.length === 0) return null
