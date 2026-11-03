@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { enqueueRun, getRun, type RunUser } from '../lib/workers/runtime.ts'
+import { enqueueRun, getRun, WorkerHost, type RunUser } from '../lib/workers/runtime.ts'
 import { activate, deployment, events, grant, register, restart, setLimits, settle, start, stop } from '../lib/workers/store.ts'
 import { pin, TEST_REGISTRY } from './helpers/worker-registry.ts'
 
@@ -80,6 +80,16 @@ async function waitMark(db: Db, what: string): Promise<string> {
   }
   throw new Error(`no ${what} mark`)
 }
+// Like waitMark, but blocks until at least n distinct marks exist (used to prove both hold-mode hosts actually
+// claimed, deterministically -- not by timing or by racing a drain loop).
+async function waitCount(db: Db, what: string, n: number): Promise<{ host: string; item: string }[]> {
+  for (let i = 0; i < 1000; i++) {
+    const rows = await db.all<{ host: string; item: string }>('SELECT host, item FROM wt_marks WHERE what = ?', [what])
+    if (rows.length >= n) return rows
+    await sleep(10)
+  }
+  throw new Error(`fewer than ${n} '${what}' marks after waiting`)
+}
 async function enqueue(db: Db, n: number, input: (i: number) => Record<string, number>) {
   const ids: string[] = []
   for (let i = 0; i < n; i++) {
@@ -110,6 +120,51 @@ test('add a worker at runtime; two processes run every item exactly once; global
     const o = overlap(spans)
     assert.equal(o.global, 2, `global in-flight peak ${o.global}: the cap is 2 across both processes, and it was reached`)
     assert.equal(o.perTenant, 1, `per-tenant peak ${o.perTenant}`)
+  } finally { await done() }
+})
+
+// The test above proves the cap holds under real concurrency, but which process wins each race is scheduler luck:
+// on a loaded box one host can claim every item and the 'both processes worked' assertion flakes (seen 3/3 failing
+// locally at head 113a4d64). This test forces the overlap deterministically instead of hoping for it: each host
+// claims exactly one item and then blocks (WH_MODE=hold), so both holding a claim at once is guaranteed, not timed;
+// a third claim is proven refused while the cap's two slots are both held; then both release and fence.
+test('two-host deterministic cap: both processes hold a claim at once; a third claim is refused while both are held; release and fence', async () => {
+  const { db, file, done } = await fixture()
+  try {
+    await deployEcho(db)
+    await setLimits(db, OP, 'echo', { maxInFlight: 2, perTenantInFlight: 2 })
+    const ids = await enqueue(db, 3, i => ({ n: i, sleepMs: 30 }))
+    const p1 = host(file, 'h1', { WH_MODE: 'hold' })
+    const p2 = host(file, 'h2', { WH_MODE: 'hold' })
+    // Deterministic: wait until BOTH processes have actually claimed and are holding, not until some time has passed.
+    const claims = await waitCount(db, 'claimed', 2)
+    assert.equal(new Set(claims.map(c => c.host)).size, 2, 'both hosts hold a claim, not one host twice')
+    assert.equal(new Set(claims.map(c => c.item)).size, 2, 'the two held claims are for different items')
+    // Both cap slots (maxInFlight 2) are now held by other processes. A third claim from this process must be refused.
+    const probe = new WorkerHost(db, { registry: TEST_REGISTRY, instance: 'probe', backoff: { baseSeconds: 0, jitter: 0 } })
+    assert.equal(await probe.claimNext(), null, 'a third claim must be refused while both cap slots are held')
+    // Release both holds; each finishes the single item it claimed (fence: exactly once, no double-finish).
+    // WH_MODE=hold reports its own result on stdout as {item, outcome} (it does not write wt_spans -- only
+    // WH_MODE=drain does), so check that plus worker_runs, keyed per-process to prove each finished its own claim.
+    await db.run("INSERT INTO wt_marks (host, what, item, at) VALUES ('test', 'go', '', ?)", [Date.now()])
+    const [r1, r2] = await Promise.all([p1, p2])
+    assert.equal(r1.code, 0, r1.err); assert.equal(r2.code, 0, r2.err)
+    const resultFor = (h: string) => (h === 'h1' ? r1 : r2).out as { item: string; outcome: string }
+    for (const c of claims) {
+      const res = resultFor(c.host)
+      assert.equal(res.item, c.item, `${c.host} finished the item it held, not a different one`)
+      assert.equal(res.outcome, 'done', `${c.host}'s held item finished done`)
+    }
+    const finished = await runs(db)
+    for (const c of claims) {
+      const r = finished.find(x => x.id === c.item)
+      assert.equal(r?.status, 'done', `${c.item} recorded done exactly once in worker_runs`)
+    }
+    // The cap's refusal was real, not permanent: the un-claimed third item is still available once the holds release.
+    const remaining = ids.filter(id => !claims.some(c => c.item === id))
+    assert.equal(remaining.length, 1)
+    const freed = await probe.claimNext()
+    assert.equal(freed?.claim.item.id, remaining[0], 'the slot freed by release is claimable again')
   } finally { await done() }
 })
 

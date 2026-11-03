@@ -18,7 +18,7 @@ import { recordTx } from '../audit.ts'
 import { fenceKindIn } from '../queue/db.ts'
 import { checkDefinition, fileHash, HASH_RE, key, LIMIT_BOUNDS, NAME_RE, unrunnable, VERSION_RE, type Limits, type Registry, type WorkerDefinition } from './definition.ts'
 
-// SQLite DDL; PG: 0051_runtime_workers.sql (the generated translation).
+// SQLite DDL; PG: 0045_runtime_workers.sql (the generated translation).
 export const WORKERS_DDL = `
   CREATE TABLE IF NOT EXISTS worker_catalog (
     name TEXT NOT NULL,
