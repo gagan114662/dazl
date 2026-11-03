@@ -43,6 +43,7 @@ import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billi
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
+import { applyRejections, readRejections, stripRejectedPeople, type Rejections } from './feedback.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
@@ -285,6 +286,28 @@ const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
 // ats_structured is a HIRING-ONLY proof label: the write guard is the canonical strict trigger test (signal kind
 // when the grader has assigned one, strict hiring wording otherwise). The old broad text regex matched 'opening ...'
 // expansions and could persist a false hiring-proof label; consumer fail-closed is no excuse for a false persisted label.
+
+// #385 (lib/scan/feedback.ts): what the tenant explicitly rejected is not brought back by a later run. Read once per run,
+// from the scan's own store, at the first use (no new checkpoint ahead of the provider calls). A store that exists but
+// cannot be read is UNKNOWN, never "nothing rejected": every candidate is dropped as feedback_unreadable. Each drop is in
+// the run report's candidate audit with the feedback id and reason, so an absent company is explained.
+export function feedbackGate(db: Database.Database, tenantId: string) {
+  let read: Promise<Rejections | null> | null = null
+  const rejections = () => (read ??= readRejections(sqliteDb(db), tenantId).catch(() => null))
+  return {
+    rejections,
+    // Candidates (or verified rows) -> what stays; drops are counted by reason. `audit` gets an entry per drop.
+    async apply<T extends LeadDraft>(list: T[], counts: Record<string, number>, onDrop: (rows: T[], reason: string) => void, knownDomain: string | null = null): Promise<T[]> {
+      if (list.length === 0) return list
+      const rj = await rejections()
+      if (!rj) { counts['feedback_unreadable'] = (counts['feedback_unreadable'] ?? 0) + list.length; onDrop(list, 'feedback_unreadable'); return [] }
+      const r = applyRejections(list, rj, knownDomain)
+      for (const d of r.dropped) { counts['previously_rejected'] = (counts['previously_rejected'] ?? 0) + 1; onDrop([d.cand], `previously_rejected:${d.reason}:${d.feedback_id}`) }
+      return r.kept
+    },
+  }
+}
+const auditDrop = (audit: CandidateAudit[]) => (rows: LeadDraft[], reason: string) => { for (const l of rows) audit.push({ key: `${dedupKey(l)}|${l.source_url}`, company: l.company, url: l.source_url, outcome: 'dropped', reason }) }
 
 export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
@@ -649,7 +672,9 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     if (leads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(provider, key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
-    const outcome = await verifyLeads(leads, fetchP, deps.now, judge, job.csv_domain ?? null)
+    const fbCounts: Record<string, number> = {}
+    const outcome = await verifyLeads(await feedbackGate(db, job.user_id).apply(leads, fbCounts, () => {}, job.csv_domain ?? null), fetchP, deps.now, judge, job.csv_domain ?? null)
+    for (const [r, n] of Object.entries(fbCounts)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the job */ }
     const owned = finish(db, job, 'done', null, outcome, leads.length, ledger)
     // Same stale-attempt gate as the main path: no side effects for a job
@@ -1007,6 +1032,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
     const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
     const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
+    const fb = feedbackGate(db, job.user_id), fbCounts: Record<string, number> = {}
+    const forget = <T extends LeadDraft>(list: T[]) => fb.apply(list, fbCounts, auditDrop(audit))   // before the verifier: a rejected company costs no fetch
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
     const fetchP = cachedFetcher(recordingFetcher(deps.trace ? deps.trace.pageFetcher(deps.fetchPage ?? fetchPageDetailed) : deps.fetchPage ?? fetchPageDetailed, verifierFetch))
@@ -1143,7 +1170,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
+    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -1164,7 +1191,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
-          const o2 = await verifyLeads(found, fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
+          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
@@ -1199,7 +1226,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
+          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))
@@ -1227,6 +1254,12 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
       markDropped(outcome.review.filter(l => !keptReview.includes(l)), 'excluded')
       outcome.review = keptReview
     }
+    // #385, after the verifier: the authoritative pass on what it kept (a contact the verifier read off the page can be a
+    // rejected person; a run that could not read the store holds everything), and the rows added outside the verifier.
+    outcome.leads = await fb.apply(outcome.leads, fbCounts, markDropped)
+    outcome.review = await fb.apply(outcome.review, fbCounts, markDropped)
+    for (const list of [walledLeads, selfDescribedLeads]) { const kept = await fb.apply(list, fbCounts, auditDrop(audit)); list.length = 0; list.push(...kept) }
+    for (const [r, n] of Object.entries(fbCounts)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
     // The user's recency window (#198): with an explicit window only a valid, in-window event date is a scored lead.
     // Stale, undated, invalid and future dates go to the review lane with their own reason (same rule as the outreach
     // gate), so verified / qualified counts never include a lead the gate would hold. Stored, not dropped.
@@ -1301,6 +1334,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
     else if (trial) trace.note('people_search', 'skipped', 'a free trial scan makes no search outside its budget')
     else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
+    // #385: a person the tenant rejected is not re-added by the crawl or the people search.
+    try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
