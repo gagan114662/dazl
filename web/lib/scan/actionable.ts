@@ -47,9 +47,9 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
   const planGated = plan.explicit && plan.root !== null
   let competitors: string[] | null = null
   if (planGated) { try { competitors = listCompetitors(db, job.user_id) } catch { competitors = null } } // no table: no list, so a competitor exclusion stays unknown
-  const enr = db.prepare("SELECT connector, kind, value, source_url, source_date FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ?")
+  const enr = db.prepare("SELECT connector, kind, value, label, source_url, source_date FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ?")
   return leads.map(l => {
-    const rows = enr.all(l.id, job.user_id) as { connector: string; kind: string; value: string; source_url: string; source_date: string }[]
+    const rows = enr.all(l.id, job.user_id) as { connector: string; kind: string; value: string; label: string | null; source_url: string; source_date: string }[]
     const missing: Missing[] = []
     let targeting: ClauseProof[] | undefined
     // Buyer gates first: a quarantined, excluded or low-fit lead is not actionable whatever domain or contact fields it has.

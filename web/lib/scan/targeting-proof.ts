@@ -9,9 +9,10 @@ import { salesHiringRequired } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
 import { parseWindowDays } from './window.ts'
+import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
 
 export interface ProofLead { company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string | null; source_url: string; event_date: string | null }
-export interface ProofRow { connector: string; kind: string; value: string; source_url: string; source_date: string }
+export interface ProofRow { connector: string; kind: string; value: string; source_url: string; source_date: string; label?: string | null }
 // `graded`: the lead already passed the ICP grade, which judges the profile's `exclude` list (classifyLeads evaluates the plan only after the fit gate).
 export interface ProofContext { query: string | null | undefined; icp: string | null | undefined; salesGatePassed: boolean; competitors: string[] | null; graded?: boolean; now?: number }
 export type Proof = Omit<ClauseProof, 'id' | 'text' | 'negated'>
@@ -68,10 +69,47 @@ function gateCovers(c: Condition, ctx: ProofContext): boolean {
   return false
 }
 
+// #389: a technology condition, proven only on this lead's own dated website observations (sitecrawl tech_scan / tech_change rows, written
+// after the homepage named the company). Presence passes; a removal confirmed on comparable pages rules current use out; a signature that
+// was simply not seen is NEVER 'fail' (unknown: a missing script is not proof of non-use). Technology fit is not a buying reason: the lead's
+// separately verified source signal stays the reason, and every other gate still applies.
+function techProof(c: Condition, rows: ProofRow[], now: number): Proof {
+  const tech = c.tech ?? ''
+  const scans = rows.filter(r => r.connector === 'sitecrawl' && r.kind === TECH_SCAN_KIND).map(r => decodeScan(r.value, r.label, r.source_url)).filter((s): s is TechScan => !!s).sort((a, b) => b.at - a.at)
+  const changes = rows.filter(r => r.connector === 'sitecrawl' && r.kind === TECH_CHANGE_KIND).map(r => ({ r, p: parseChangeRow(r.value) })).filter(x => x.p?.tech === tech).sort((a, b) => b.r.source_date.localeCompare(a.r.source_date))
+  const latest = scans[0]
+  const seen = (s: TechScan | undefined) => !!s && s.present.includes(tech)
+  // A change row stands unless a LATER check on this lead contradicts it: an adoption by a later readable page without the signature, a
+  // removal by any later page with it. An unreadable later page contradicts nothing.
+  const change = (kind: 'adopted' | 'removed') => changes.find(x => x.p?.kind === kind && !scans.some(s => day(s.at) > x.r.source_date && (kind === 'adopted' ? s.obs === 'ok' && !seen(s) : seen(s))))?.r
+  const clock = (date: string, url: string, reason: string): Proof => {
+    const k = onClock(date, c.within_days, now)
+    if (k === 'in') return { truth: 'pass', reason, source_url: url, date }
+    return { truth: 'unknown', reason: `${reason}, but ${date} is outside this condition's ${c.within_days}-day window`, source_url: url, date }
+  }
+  if (!latest) return { truth: 'unknown', reason: `no website check for this lead (the crawl did not confirm the company's homepage), so ${tech} is unknown` }
+  const removed = change('removed'), adopted = change('adopted')
+  if (c.change === 'uses') {
+    if (seen(latest)) return clock(day(latest.at), latest.url, `${tech} signature seen on ${latest.url} on ${day(latest.at)} (${TECH_SCOPE}, detector v${latest.version})`)
+    if (removed) return { truth: 'fail', reason: `${tech} removal confirmed on comparable checks: ${removed.label ?? ''}`.slice(0, 300), source_url: removed.source_url, date: removed.source_date }
+    if (latest.obs !== 'ok') return { truth: 'unknown', reason: `the homepage could not be read in full on ${day(latest.at)} (${latest.obs.replace('_', ' ')}), so a missing ${tech} signature says nothing`, source_url: latest.url }
+    return { truth: 'unknown', reason: `${tech} not seen on ${latest.url} on ${day(latest.at)}; a missing signature is not proof the company does not use it (${TECH_SCOPE})`, source_url: latest.url }
+  }
+  if (c.change === 'adopted') {
+    if (adopted) return clock(adopted.source_date, adopted.source_url, `${tech} added: ${adopted.label ?? ''}`.slice(0, 300))
+    if (seen(latest)) return { truth: 'unknown', reason: `${tech} is seen now (${day(latest.at)}) but no earlier comparable check shows it absent, so an adoption is not dated`, source_url: latest.url }
+    return { truth: 'unknown', reason: `no comparable dated checks show ${tech} being added` }
+  }
+  if (removed) return clock(removed.source_date, removed.source_url, `${tech} removed: ${removed.label ?? ''}`.slice(0, 300))
+  if (seen(latest)) return { truth: 'fail', reason: `${tech} is still seen on ${latest.url} on ${day(latest.at)}`, source_url: latest.url, date: day(latest.at) }
+  return { truth: 'unknown', reason: `a removal needs a check showing ${tech}, then two later comparable full-page checks without it; these checks do not show that` }
+}
+
 export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext, dates: Record<string, string | undefined> = {}): Proof {
   const now = ctx.now ?? Date.now()
   const quote = lead.evidence_excerpt ?? ''
   switch (c.kind) {
+    case 'tech': return techProof(c, rows, now)
     case 'company_named': {
       const hit = (c.names ?? []).find(n => sameCompany(lead.company, n, lead.company_domain))
       return hit ? { truth: 'pass', reason: `this lead is ${hit}, the company the request names` } : { truth: 'fail', reason: `this lead (${lead.company}) is not ${(c.names ?? []).join(', ')}` }
