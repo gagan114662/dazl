@@ -26,6 +26,43 @@ const SIGS: { name: string; test: RegExp }[] = [
   { name: 'Cloudflare Turnstile', test: /challenges\.cloudflare\.com\/turnstile/i },
 ]
 
+// #389: technographics as a dated, scoped observation (lib/signals/tech-observations.ts). Bump the version whenever a signature changes,
+// so observations made with different signature sets are never compared (a new signature is not an adoption).
+export const TECH_DETECTOR_VERSION = 1
+export const TECH_NAMES: readonly string[] = SIGS.map(s => s.name)
+// Short stable keys for the compact per-crawl observation row (label <= 200 chars must hold every name at once).
+const KEY: Record<string, string> = { 'Shopify': 'shopify', 'WordPress': 'wordpress', 'Webflow': 'webflow', 'Wix': 'wix', 'Squarespace': 'squarespace', 'Framer': 'framer', 'Next.js': 'nextjs', 'Ghost': 'ghost', 'Drupal': 'drupal', 'HubSpot': 'hubspot', 'Intercom': 'intercom', 'Stripe': 'stripe', 'Google Analytics': 'ga', 'Segment': 'segment', 'Mailchimp': 'mailchimp', 'Calendly': 'calendly', 'Zendesk': 'zendesk', 'jQuery': 'jquery', 'Bootstrap': 'bootstrap', 'Cloudflare Turnstile': 'turnstile' }
+export const techKey = (name: string): string | null => KEY[name] ?? null
+export const techFromKey = (key: string): string | null => Object.keys(KEY).find(n => KEY[n] === key) ?? null
+// Words a request may use for a detectable technology -> its canonical name. Only names this detector can see: a technology it cannot detect
+// never becomes a filter (it could only ever be 'unknown'). Ambiguous English words (Ghost, Segment, Bootstrap, Stripe, Framer) are matched
+// only after a technology cue by the targeting compiler, never as bare words.
+export const TECH_WORDS: { re: string; name: string }[] = [
+  { re: 'shopify', name: 'Shopify' }, { re: 'word\\s?press', name: 'WordPress' }, { re: 'webflow', name: 'Webflow' }, { re: 'wix', name: 'Wix' },
+  { re: 'squarespace', name: 'Squarespace' }, { re: 'framer', name: 'Framer' }, { re: 'next\\.?js|next\\s+js', name: 'Next.js' }, { re: 'ghost', name: 'Ghost' },
+  { re: 'drupal', name: 'Drupal' }, { re: 'hub\\s?spot', name: 'HubSpot' }, { re: 'intercom', name: 'Intercom' }, { re: 'stripe', name: 'Stripe' },
+  { re: 'google\\s+analytics|ga4', name: 'Google Analytics' }, { re: 'segment', name: 'Segment' }, { re: 'mail\\s?chimp', name: 'Mailchimp' },
+  { re: 'calendly', name: 'Calendly' }, { re: 'zendesk', name: 'Zendesk' }, { re: 'jquery', name: 'jQuery' }, { re: 'bootstrap', name: 'Bootstrap' },
+  { re: '(?:cloudflare\\s+)?turnstile', name: 'Cloudflare Turnstile' },
+]
+export function techNameOf(word: string): string | null {
+  for (const w of TECH_WORDS) if (new RegExp(`^(?:${w.re})$`, 'i').test(word.trim())) return w.name
+  return null
+}
+
+// Can a fetched page say anything about ABSENCE? A signature found is evidence of presence on any page that loaded. A signature NOT found
+// means nothing unless the page is a full, readable page: a block / challenge page, a JavaScript shell, a consent wall or a near-empty
+// maintenance page carries none of the site's scripts, so reading it as "removed" would turn an outage into a migration.
+export type Observability = 'ok' | 'http_error' | 'not_html' | 'blocked' | 'thin_page'
+export function observability(status: number, html: string): Observability {
+  if (!(status >= 200 && status < 300)) return 'http_error'
+  if (!/<html|<body|<head/i.test(html)) return 'not_html'
+  if (/cf-chl-|challenge-platform|<title>\s*(?:just a moment|attention required|access denied)|captcha-delivery|px-captcha/i.test(html)) return 'blocked'
+  const text = html.replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  if (text.length < 200) return 'thin_page'
+  return 'ok'
+}
+
 // Detect from one HTML page. `where` records what gave it away, so the claim stays auditable.
 export function detectTech(html: string): TechHit[] {
   const out: TechHit[] = []
