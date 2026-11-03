@@ -17,6 +17,9 @@ export interface LeadCardSummary {
   // page, the company's own page, or the user's own website check, with no restricted inbox or quarantine.
   contactStatus: { confirmed: boolean; text: string } | null
   why: string
+  // The timing status shown under a fit rationale (#377): the rationale says why the company fits, this says whether
+  // NOW is proven. null when the card has no separate fit rationale (why is then the stored line itself).
+  timing: string | null
   sourceUrl: string
   sourceHost: string
   date: string
@@ -67,7 +70,7 @@ export function cardCounts(leads: { id: string; quarantined_at?: number | null }
   return { approved, rejected, toReview: leads.length - rejected - approved }
 }
 
-export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null }, buyerRoles = ''): LeadCardSummary {
+export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null; fit_rationale?: string | null }, buyerRoles = ''): LeadCardSummary {
   const card = opportunityCard(l, buyerRoles)
   const email = publishedEmail(l)
   const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
@@ -79,7 +82,9 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
     contact,
     contactStatus,
     // The research rationale when there is one, else the saved signal claim itself. One line, never invented.
-    why: firstSentence(l.why?.trim() || l.signal),
+    // #377: the fit rationale (timing kept apart) when the leads API separated one, else as before.
+    why: firstSentence(l.fit_rationale?.trim() || l.why?.trim() || l.signal),
+    timing: l.fit_rationale?.trim() && l.why?.trim() ? firstSentence(l.why) : null,
     sourceUrl: l.source_url,
     sourceHost,
     date: cardDate(l.event_date, l.published_at, { dayVerified: l.day_verified === true, windowMissed: l.window_missed === true }),
