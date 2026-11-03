@@ -51,11 +51,12 @@ export function migrateMonitors(db: Database.Database): void {
       PRIMARY KEY (monitor_id, dedup_key)
     );
   `)
-  const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some(r => r.name === c)
+  // static admin statements only (lib/db/sql-audit.ts keeps a module off the raw-SQLite list only when they are)
+  const has = (rows: unknown[], c: string) => (rows as { name: string }[]).some(r => r.name === c)
   // the selected alert policy (lib/monitor-events.ts ALERT_POLICIES); every existing monitor alerts on all three kinds
-  if (!has('monitors', 'alert_policy')) db.exec("ALTER TABLE monitors ADD COLUMN alert_policy TEXT NOT NULL DEFAULT 'all' CHECK (alert_policy IN ('all','reachable','new_companies'))")
+  if (!has(db.prepare('PRAGMA table_info(monitors)').all(), 'alert_policy')) db.exec("ALTER TABLE monitors ADD COLUMN alert_policy TEXT NOT NULL DEFAULT 'all' CHECK (alert_policy IN ('all','reachable','new_companies'))")
   // how many scheduled runs this (late) run stands in for: missed-run recovery is reported, never replayed as extra scans
-  if (!has('monitor_runs', 'missed_runs')) db.exec('ALTER TABLE monitor_runs ADD COLUMN missed_runs INTEGER NOT NULL DEFAULT 0')
+  if (!has(db.prepare('PRAGMA table_info(monitor_runs)').all(), 'missed_runs')) db.exec('ALTER TABLE monitor_runs ADD COLUMN missed_runs INTEGER NOT NULL DEFAULT 0')
   migrateMonitorEvents(db)
 }
 
