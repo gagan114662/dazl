@@ -52,3 +52,10 @@ test('unknown platform, bad auth and bad json are still rejected', async () => {
   const bad = await fetch(`${base}/fetch`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: 'not json' })
   assert.equal(bad.status, 400)
 })
+
+test('a supported fetch that fails is a 502 with its reason, never an empty 200', async () => {
+  // x without auth_token/ct0 cookies fails before any platform request.
+  const r = await post({ platform: 'x', query: 'hiring sales', session: 'no-auth-cookies-here' })
+  assert.equal(r.status, 502)
+  assert.deepEqual(await r.json(), { error: 'fetch_failed', outcome: 'auth_failed' })
+})

@@ -15,7 +15,7 @@ import { recordProgress, startRun } from '../lib/ops/scheduler-runs.ts'
 const A = 'probe-tenant-aaaa', B = 'probe-tenant-bbbb', C = 'probe-tenant-cccc', NOW = 1_900_000_000
 const BY = 'operator (attack probe)'
 // leads: the scan store's own trigger (leads only under a running job) may fire before the guard when the parent is gone
-const IMMUTABLE: Record<string, RegExp> = { evidence_purge_audit: /tenant deleted|append-only/, audit_events: /tenant deleted|append-only/, lead_evidence_copies: /tenant deleted|immutable/, leads: /tenant deleted|running job/ } // audit_events: append-only like evidence_purge_audit; on pg its no-update trigger fires before tomb_upd (alphabetical), so a move refusal can carry either message
+const IMMUTABLE: Record<string, RegExp> = { evidence_purge_audit: /tenant deleted|append-only/, audit_events: /tenant deleted|append-only/, lead_evidence_copies: /tenant deleted|immutable/, onboarding_audit: /tenant deleted|append-only/, leads: /tenant deleted|running job/ } // audit_events: append-only like evidence_purge_audit; on pg its no-update trigger fires before tomb_upd (alphabetical), so a move refusal can carry either message
 const PARENT_KEYS: Record<string, string> = { scan_job_id: 'scan_jobs', job_id: 'scan_jobs', lead_id: 'leads', batch_id: 'commenter_batches', monitor_id: 'monitors', watch_id: 'watches' }
 
 type Fixture = { ids: Record<string, Record<string, string>>; snap: (tenant: string) => Promise<Record<string, string>> }
@@ -214,7 +214,7 @@ bothEngines('probe: state machine: request twice with a different policy, until 
   // resume without any policy
   const t3 = await deleteTenant(c.db, A)
   assert.equal(t3.state, 'completed')
-  assert.deepEqual(JSON.parse(t3.retained!), { audit_events: 4, evidence_purge_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events
+  assert.deepEqual(JSON.parse(t3.retained!), { audit_events: 4, evidence_purge_audit: 1, onboarding_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events
   assert.equal(await n(c, 'SELECT count(*) AS n FROM suppressions WHERE tenant_id = ?', [A]), 1, 'retained')
   // re-request with erase after completion: refused, nothing changes (no silent widening)
   await assert.rejects(deleteTenant(c.db, A, { policy: { suppressions: 'erase' }, requestedBy: 'later', now: NOW + 9 }), /different policy/)

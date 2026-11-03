@@ -3,6 +3,7 @@
 // The request carries one tenant's own session cookie and nothing else. Nothing is stored.
 import http from 'node:http'
 import { CAPABILITY, FETCHERS, isPlatform } from './fetchers.ts'
+import { FetchFailure } from './util.ts'
 
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
@@ -38,10 +39,12 @@ const server = http.createServer((req, res) => {
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 40_000)),
       ])
       return reply(200, { items: items.slice(0, 20) })
-    } catch {
-      // A crash or timeout is a worker error, not an empty result: the app records worker_error
-      // for a non-200, so a failed fetch is never reported as a successful zero-result search.
-      return reply(502, { error: 'fetch_failed' })
+    } catch (e) {
+      // A failed fetch is never an empty result. The outcome says why (auth_failed, throttled,
+      // schema_error, upstream_error) so the app audits it distinctly; a crash or timeout is
+      // upstream_error. The app treats any non-200 as a failure, never as zero results.
+      const outcome = e instanceof FetchFailure ? e.kind : 'upstream_error'
+      return reply(502, { error: 'fetch_failed', outcome })
     }
   })
 })

@@ -15,6 +15,7 @@ import type { Lookup } from '../lib/net/public-fetch.ts'
 
 const OP = 'sk-ant-api03-OPERATOROPERATOROPERATOROPERATOR'
 const ENV = { DAZL_TRIAL_ANTHROPIC_KEY: OP, DAZL_TRIAL_SITE_READS_PER_DAY: '50', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
+  DAZL_TRIAL_SITE_READ_ALLOWLIST: 'a@gmail.com,b@gmail.com,c@gmail.com,d@gmail.com,e@gmail.com,f@gmail.com,g@gmail.com,h@gmail.com',
   DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.004', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' }
 const pubLookup: Lookup = async () => [{ address: '93.184.216.34', family: 4 }]
 const page = (body: string) => (async () => new Response(`<html><head><title>T</title></head><body>${body}</body></html>`, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })) as unknown as typeof fetch

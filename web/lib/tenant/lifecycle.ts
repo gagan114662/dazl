@@ -47,6 +47,7 @@ export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token
 export const ALWAYS_RETAINED: Record<string, string> = {
   evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content',
   audit_events: 'append-only audit trail (lib/audit.ts); redacted at the source, and its delete trigger would refuse the erase anyway',
+  onboarding_audit: 'append-only opt-in/withdrawal/enrollment evidence (lib/outreach/onboarding-policy.ts); content-free at the source (no emails), and its delete trigger would refuse the erase anyway',
 }
 
 export interface DeletionPolicy {
@@ -280,6 +281,17 @@ export async function deleteTenant(d: DbLike, tenant: string, o: { policy?: Dele
   await advance('erased', 'completed', function* (tx) {
     const kept: Record<string, number> = {}
     for (const x of [...retain].sort()) if (has(x)) { const w = owned(scope, x, tenant); kept[x] = Number((yield* tx.get<{ n: number }>(`SELECT count(*) AS n FROM "${x}" WHERE ${w.sql}`, w.params))?.n ?? 0) }
+    // Retained consent proof is exactly tenant id + event type + timestamp (owner scope 2026-11-02, #564):
+    // null the live operational detail on this tenant's onboarding_audit rows in THIS transaction. Completion
+    // is never acknowledged while retained rows still carry detail - a redaction failure rolls the whole step
+    // back (state stays 'erased', resumable), so no background tick's health is part of the guarantee. Same
+    // gate the purge uses (lib/outreach/onboarding-policy.ts); the tick redaction is only a backstop for
+    // tenants completed before this hook. Skipped where the schema predates the onboarding tables.
+    if (cols.has('onboarding_audit') && cols.has('onboarding_audit_purge_gate')) {
+      yield* tx.run('INSERT INTO onboarding_audit_purge_gate (id) VALUES (1)')
+      yield* tx.run('UPDATE onboarding_audit SET detail = NULL WHERE tenant_id = ? AND detail IS NOT NULL', [tenant])
+      yield* tx.run('DELETE FROM onboarding_audit_purge_gate WHERE id = 1')
+    }
     // the completed marker is part of the retained trail it reports: write it, then count it in
     yield* closingEventTx(tx, tenant, t!.requested_by, 'tenant.deletion_completed', now, { retained_tables: Object.keys(kept).length })
     if (kept.audit_events !== undefined) kept.audit_events += 1

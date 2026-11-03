@@ -39,10 +39,13 @@ const WRONG_CO = lead('3'.repeat(24), 'Gramercy Dental Practice', { review_reaso
 const UNDATED = lead('4'.repeat(24), 'Lakeside Smiles', { event_date: null, date_status: 'undated' })
 const OUT_OF_WINDOW = lead('5'.repeat(24), 'Old Town Dental', { window_held: true })
 // Synthetic shapes of the two reported failures (no real company, run or URL): customer-mention + undated; blocked + undated.
-const R_CUSTOMER = lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, date_status: 'undated' })
-const R_UNDATED = lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated' })
-const L_CUSTOMER = lead('8'.repeat(24), 'Canal Dental Group', { review_reason: 'counterparty_signal', event_date: null, date_status: 'undated' })
-const L_BLOCKED = lead('9'.repeat(24), 'Mews Smile Clinic', { review_reason: 'blocked_by_site', window_held: true, event_date: null, date_status: 'undated' })
+// The scan's own recovery record (lib/scan/blocked-fallback.ts recordRecovery writes exactly these strings): what the bounded automatic pass already tried (#352).
+const rec = (reason, value) => ({ connector: 'scan:recovery', kind: 'recovery', value, label: `recovery:${reason}`, confidence: null, source_url: 'https://news.example/r', source_date: '2026-10-29' })
+const ran = (reason, what) => [rec(reason, `Recovery pass ran before this was held (${reason}): searched other press for ${what} for the same company; none verified.`)]
+const R_CUSTOMER = lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('counterparty_signal', 'a source about the company itself') })
+const R_UNDATED = lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('undated', 'a dated source') })
+const L_CUSTOMER = lead('8'.repeat(24), 'Canal Dental Group', { review_reason: 'counterparty_signal', event_date: null, date_status: 'undated', enrichments: [rec('counterparty_signal', 'Recovery pass did not run (the run disabled the paid fallback).')] })
+const L_BLOCKED = lead('9'.repeat(24), 'Mews Smile Clinic', { review_reason: 'blocked_by_site', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('blocked_by_site', 'a readable source') })
 const QUOTE = lead('a'.repeat(24), 'Pine Dental', { review_reason: 'quote_unconfirmed' })
 const PROFILE = { business_name: 'Brightsmile', sells: 'Appointment booking software', website: 'https://brightsmile.example', buyer: BUYER }
 
@@ -140,6 +143,16 @@ try {
           assert.equal(await page.getByTestId('widen-window').count(), 0, 'no date widening for a missing date')
           for (const t of ['recover-dated', 'widen-signal']) assert.equal(await page.getByTestId(t).count(), 1, t)
           assert.equal(await page.getByTestId('recover-source').count(), name.endsWith('london') ? 1 : 0, 'another source is offered for a customer mention')
+          // #352: each research lead says why it is research and what dazl's automatic recovery already tried (or why it did not run); nothing asks the user to check or confirm.
+          const rows = (await page.getByTestId('research-row').allTextContents()).map(t => t.trim())
+          assert.deepEqual(rows, name.endsWith('nyc') ? [
+            "Harbor Dental Studio: no usable event date.dazl already searched other press for a source about the company itself; none verified.",
+            'Elm Street Orthodontics: no usable event date.dazl already searched other press for a dated source; none verified.',
+          ] : [
+            "Canal Dental Group: only another company's page names it, as their customer.dazl did not search other sources for it: this run allowed no extra search.",
+            'Mews Smile Clinic: no usable event date.dazl already searched other press for a readable source; none verified.',
+          ])
+          assert.doesNotMatch(text, /check (?:the|their|its) sources? yourself|confirm (?:it|them|the lead)/i)
           assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${name} ${tag}: no horizontal overflow`)
         }
         if (name === 'useful') {

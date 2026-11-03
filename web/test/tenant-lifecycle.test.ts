@@ -37,13 +37,13 @@ const POLICY = { suppressions: 'retain' as const }
 function leftovers(db: Database.Database, tag: string, keep: string[]): string[] {
   const out: string[] = []
   for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]) {
-    if ([...keep, 'evidence_purge_audit', 'audit_events'].includes(name)) continue // audit_events: ALWAYS_RETAINED too (port note)
+    if ([...keep, 'evidence_purge_audit', 'audit_events', 'onboarding_audit'].includes(name)) continue // audit_events/onboarding_audit: ALWAYS_RETAINED too (port note)
     for (const r of db.prepare(`SELECT * FROM "${name}"`).all() as Record<string, unknown>[]) if (Object.values(r).some(v => typeof v === 'string' && v.startsWith(`${tag}~`))) { out.push(name); break }
   }
   return out
 }
-// evidence_purge_audit and audit_events are always kept (append-only audits, ALWAYS_RETAINED)
-const emptyExcept = (snap: Record<string, string>, keep: string[]) => Object.entries(snap).filter(([t, rows]) => ![...keep, 'evidence_purge_audit', 'audit_events'].includes(t) && rows !== '[]').map(([t]) => t)
+// evidence_purge_audit, audit_events and onboarding_audit are always kept (append-only audits, ALWAYS_RETAINED)
+const emptyExcept = (snap: Record<string, string>, keep: string[]) => Object.entries(snap).filter(([t, rows]) => ![...keep, 'evidence_purge_audit', 'audit_events', 'onboarding_audit'].includes(t) && rows !== '[]').map(([t]) => t)
 
 test('the registry covers the live schema: every tenant-scoped table is in scope (every one seeded for each tenant)', async () => {
   const db = fixture()
@@ -73,7 +73,7 @@ test('deletion: refuses without a decision on opt-outs; erases only the target; 
   await assert.rejects(deleteTenant(d, A, { requestedBy: 'test', policy: { suppressions: 'retain', retainTables: ['app_leases'] } }), /not a tenant-scoped table/)
   const bBefore = snapshotSqlite(db, B)
   const t = await deleteTenant(d, A, { policy: POLICY, requestedBy: 'operator (synthetic test)', now: NOW })
-  assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { audit_events: 4, evidence_purge_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events (requested, erased, completed), retained by ALWAYS_RETAINED
+  assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { audit_events: 4, evidence_purge_audit: 1, onboarding_audit: 1, suppressions: 1 }) // audit_events: the seeded fixture row + the deletion's own three closing events (requested, erased, completed), retained by ALWAYS_RETAINED
   const after = snapshotSqlite(db, A)
   assert.deepEqual(emptyExcept(after, ['suppressions']), [], 'every other table is empty for the deleted tenant')
   assert.notEqual(after.suppressions, '[]', 'opt-outs retained by policy')
@@ -131,6 +131,22 @@ test('retryable: staged steps, a failed step rolls back and resumes from the las
   db.exec('DROP TRIGGER fail_erase')
   assert.equal((await deleteTenant(d, A)).state, 'completed', 'resumed without the policy being given again')
   assert.deepEqual(emptyExcept(snapshotSqlite(db, A), ['suppressions']), [])
+})
+
+test('retained consent proof: completion commits the 3-field redaction atomically, or not at all', async () => {
+  const db = fixture(), d = sqliteDb(db)
+  db.prepare("INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES ('oa-scope-1', ?, 'opted_in', 'policy 2026-11-02', ?)").run(A, NOW - 10)
+  db.exec("CREATE TRIGGER fail_redact BEFORE UPDATE ON onboarding_audit BEGIN SELECT RAISE(ABORT, 'simulated redaction failure'); END;")
+  await assert.rejects(deleteTenant(d, A, { policy: POLICY, requestedBy: 'test', now: NOW }), /simulated redaction failure/)
+  let t = (await tombstone(d, A))!
+  assert.notEqual(t.state, 'completed', 'completion is not acknowledged before the redaction commits')
+  assert.equal(t.completed_at, null)
+  assert.equal((db.prepare("SELECT detail FROM onboarding_audit WHERE id = 'oa-scope-1'").get() as { detail: string }).detail, 'policy 2026-11-02', 'the failed completion rolled back as a whole')
+  db.exec('DROP TRIGGER fail_redact')
+  t = await deleteTenant(d, A)
+  assert.equal(t.state, 'completed', 'resumes to completion once the store stops failing')
+  assert.deepEqual(db.prepare("SELECT tenant_id, action, detail, created_at FROM onboarding_audit WHERE id = 'oa-scope-1'").get() as Record<string, unknown>,
+    { tenant_id: A, action: 'opted_in', detail: null, created_at: NOW - 10 }, 'retained record is exactly tenant id + event type + timestamp')
 })
 
 test('restored backup: the deletion is re-applied from the off-database ledger before the store serves', async () => {
