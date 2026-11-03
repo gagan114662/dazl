@@ -1,0 +1,600 @@
+{
+  "_note": "SYNTHETIC posts for #401. Every person, company, URL and competitor name is invented; nothing was fetched or scraped. label = the class a human reviewer assigns; high_intent = whether the post should reach the high-intent tier for that offer.",
+  "as_of": "2026-11-03T12:00:00Z",
+  "offers": {
+    "leadgen": {
+      "offer": "Dazl finds B2B sales leads and builds verified prospect lists for outbound teams",
+      "own_names": [
+        "Dazl"
+      ],
+      "competitors": [
+        "LeadForge",
+        "ProspectPilot"
+      ]
+    },
+    "bookkeeping": {
+      "offer": "Bookkeeping and payroll for independent restaurants",
+      "own_names": [
+        "Ledgerly"
+      ],
+      "competitors": [
+        "TillBooks"
+      ]
+    }
+  },
+  "posts": [
+    {
+      "id": "buyer-founder-b2b-leads",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": true,
+      "post": {
+        "source_url": "https://forum.example.test/t/101",
+        "published_at": "2026-10-28T09:00:00Z",
+        "author": {
+          "name": "Maya Chen",
+          "headline": "Co-founder, Tallyline",
+          "company": "Tallyline"
+        },
+        "text": "I'm the co-founder of a B2B invoicing startup. We need a reliable source of sales leads for mid-size accounting firms. Any recommendations for a lead list provider?"
+      }
+    },
+    {
+      "id": "buyer-list-quality",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": true,
+      "post": {
+        "source_url": "https://forum.example.test/t/102",
+        "published_at": "2026-10-20T15:30:00Z",
+        "author": {
+          "name": "Daniel Osei",
+          "headline": "Head of Sales, Corvana",
+          "company": "Corvana"
+        },
+        "text": "Our prospect lists from our current provider bounce at 30%. I'm head of sales at a 40-person SaaS company and we need verified contacts that actually work."
+      }
+    },
+    {
+      "id": "buyer-workflow-bottleneck",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": true,
+      "post": {
+        "source_url": "https://forum.example.test/t/103",
+        "published_at": "2026-10-30T11:00:00Z",
+        "author": {
+          "name": "Priya Raman",
+          "headline": "Founder, Brightdesk",
+          "company": "Brightdesk"
+        },
+        "text": "As founder of Brightdesk, I spend hours every week building prospect lists by hand in spreadsheets. There has to be a better way."
+      }
+    },
+    {
+      "id": "buyer-evaluation-switching",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": true,
+      "comparison": true,
+      "post": {
+        "source_url": "https://forum.example.test/t/104",
+        "published_at": "2026-10-25T08:00:00Z",
+        "author": {
+          "name": "Tom Becker",
+          "headline": "Owner, Becker Growth Partners",
+          "company": "Becker Growth Partners"
+        },
+        "text": "I run a 12-person agency. We're evaluating alternatives to LeadForge for our outbound prospecting, mostly on contact accuracy."
+      }
+    },
+    {
+      "id": "buyer-agency-for-own-campaigns",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": true,
+      "post": {
+        "source_url": "https://forum.example.test/t/105",
+        "published_at": "2026-10-31T17:00:00Z",
+        "author": {
+          "name": "Lena Varga",
+          "headline": "Managing Partner, Northbeam Outbound",
+          "company": "Northbeam Outbound"
+        },
+        "text": "We help SaaS companies run outbound campaigns. I'm looking for a better lead source for our clients' campaigns, our current prospect lists are stale."
+      }
+    },
+    {
+      "id": "buyer-funded-and-asking",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": true,
+      "post": {
+        "source_url": "https://forum.example.test/t/106",
+        "published_at": "2026-11-01T10:00:00Z",
+        "author": {
+          "name": "Ravi Kapoor",
+          "headline": "CEO, Quillstack",
+          "company": "Quillstack"
+        },
+        "text": "We just closed our seed round. As CEO of Quillstack, I need a lead list provider who can deliver verified contacts at fintech companies."
+      }
+    },
+    {
+      "id": "buyer-no-date",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/107",
+        "published_at": null,
+        "author": {
+          "name": "Maya Chen",
+          "headline": "Co-founder, Tallyline",
+          "company": "Tallyline"
+        },
+        "text": "I'm the co-founder of a B2B invoicing startup. We need a reliable source of sales leads. Any recommendations for a lead list provider?"
+      }
+    },
+    {
+      "id": "buyer-anonymous",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/108",
+        "published_at": "2026-10-29T10:00:00Z",
+        "author": null,
+        "text": "I'm the founder of a small B2B agency and we need a lead list provider for logistics companies."
+      }
+    },
+    {
+      "id": "buyer-stale-post",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/109",
+        "published_at": "2026-03-01T10:00:00Z",
+        "author": {
+          "name": "Owen Park",
+          "headline": "Founder, Parkline",
+          "company": "Parkline"
+        },
+        "text": "I'm the founder of Parkline, a B2B SaaS company, and we're looking for a lead list vendor."
+      }
+    },
+    {
+      "id": "buyer-sdr-no-authority",
+      "offer": "leadgen",
+      "label": "buyer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/110",
+        "published_at": "2026-10-27T10:00:00Z",
+        "author": {
+          "name": "Jess Moreno",
+          "headline": "SDR, Coldbase",
+          "company": "Coldbase"
+        },
+        "text": "Anyone have recommendations for a prospect list tool? Our lists are garbage and half of them bounce."
+      }
+    },
+    {
+      "id": "jobseeker-student-internship",
+      "offer": "leadgen",
+      "label": "job_seeker",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/201",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Alex Kim",
+          "headline": "Business student",
+          "company": null
+        },
+        "text": "I'm a student looking for internships in sales. Which companies should I cold email? Does anyone have lead lists of startups that take interns?"
+      }
+    },
+    {
+      "id": "jobseeker-sdr-open-to-work",
+      "offer": "leadgen",
+      "label": "job_seeker",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/202",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Chris Doyle",
+          "headline": "SDR | Open to work",
+          "company": null
+        },
+        "text": "Open to work: experienced SDR, I built prospect lists of 5k+ leads at my last job. DM me if you're hiring."
+      }
+    },
+    {
+      "id": "recruiter-hiring-sdr",
+      "offer": "leadgen",
+      "label": "recruiter",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://jobs.example.test/rivetly/sdr",
+        "published_at": "2026-10-29T10:00:00Z",
+        "author": {
+          "name": "Nora Hale",
+          "headline": "Talent Partner, Rivetly",
+          "company": "Rivetly"
+        },
+        "text": "We're hiring our first SDR to build prospect lists and book meetings. Apply via the link below."
+      }
+    },
+    {
+      "id": "recruiter-founder-needs-sdr",
+      "offer": "leadgen",
+      "label": "recruiter",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/204",
+        "published_at": "2026-10-29T10:00:00Z",
+        "author": {
+          "name": "Ben Ortiz",
+          "headline": "Founder, Nimbly",
+          "company": "Nimbly"
+        },
+        "text": "I'm the founder of Nimbly and we need an experienced SDR who can generate leads from scratch."
+      }
+    },
+    {
+      "id": "vendor-saas-free-trial",
+      "offer": "leadgen",
+      "label": "vendor_promotion",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/301",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Kai Lund",
+          "headline": "Founder, LeadHarbor",
+          "company": "LeadHarbor"
+        },
+        "text": "We built LeadHarbor to find verified B2B leads in seconds. Start your free trial, link in comments."
+      }
+    },
+    {
+      "id": "vendor-agency-book-a-call",
+      "offer": "leadgen",
+      "label": "vendor_promotion",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/302",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Ivy Shaw",
+          "headline": "CEO, Pipeline Peak Agency",
+          "company": "Pipeline Peak Agency"
+        },
+        "text": "We generate 50+ qualified leads a month for B2B SaaS companies. Book a call with us to see how."
+      }
+    },
+    {
+      "id": "vendor-agency-self-description",
+      "offer": "leadgen",
+      "label": "vendor_promotion",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/303",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Marco Bell",
+          "headline": "Founder, Outreachly",
+          "company": "Outreachly"
+        },
+        "text": "We help SaaS founders fill their pipeline with outbound leads that convert."
+      }
+    },
+    {
+      "id": "vendor-disguised-question",
+      "offer": "leadgen",
+      "label": "vendor_promotion",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/304",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Ana Silva",
+          "headline": "Growth, ListNinja",
+          "company": "ListNinja"
+        },
+        "text": "Struggling to find leads? Our platform finds verified prospect lists automatically."
+      }
+    },
+    {
+      "id": "competitor-saved-asks-for-lists",
+      "offer": "leadgen",
+      "label": "competitor",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/401",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Greg Tan",
+          "headline": "VP Sales, ProspectPilot",
+          "company": "ProspectPilot"
+        },
+        "text": "I'm VP of sales here and we're looking for lead lists to benchmark our own data against."
+      }
+    },
+    {
+      "id": "competitor-own-seller",
+      "offer": "leadgen",
+      "label": "competitor",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/402",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Sana Iqbal",
+          "headline": "Founder, Dazl",
+          "company": "Dazl"
+        },
+        "text": "As founder I need better prospect lists for our outbound tests."
+      }
+    },
+    {
+      "id": "consumer-plumber-lead",
+      "offer": "leadgen",
+      "label": "consumer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/501",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Sam R.",
+          "headline": null,
+          "company": null
+        },
+        "text": "Anyone have a lead on a reliable plumber near me? My kitchen sink is leaking and I need someone this week."
+      }
+    },
+    {
+      "id": "consumer-wedding-leads",
+      "offer": "leadgen",
+      "label": "consumer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/502",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Jo Patel",
+          "headline": null,
+          "company": null
+        },
+        "text": "Can anyone recommend a good wedding photographer in my area? I need leads asap."
+      }
+    },
+    {
+      "id": "event-series-a",
+      "offer": "leadgen",
+      "label": "unrelated_event",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://news.example.test/orbitly-series-a",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Orbitly Newsroom",
+          "headline": null,
+          "company": "Orbitly"
+        },
+        "text": "Thrilled to announce Orbitly raised a $12M Series A led by Northwind Ventures to scale our go-to-market."
+      }
+    },
+    {
+      "id": "event-office-launch",
+      "offer": "leadgen",
+      "label": "unrelated_event",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://news.example.test/fernway-toronto",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Fernway",
+          "headline": null,
+          "company": "Fernway"
+        },
+        "text": "Excited to announce our new office in Toronto!"
+      }
+    },
+    {
+      "id": "growth-hack-thread",
+      "offer": "leadgen",
+      "label": "generic_growth",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/701",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Lee Wong",
+          "headline": "Founder, Petalbox",
+          "company": "Petalbox"
+        },
+        "text": "What's the single best growth hack you used to get to $1M ARR? Founders, share your playbook."
+      }
+    },
+    {
+      "id": "growth-sales-tip",
+      "offer": "leadgen",
+      "label": "generic_growth",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/702",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Rita Gomez",
+          "headline": "Sales coach",
+          "company": null
+        },
+        "text": "Sales tip: always follow up five times. Consistency is what grows revenue."
+      }
+    },
+    {
+      "id": "growth-leadership-wordplay",
+      "offer": "leadgen",
+      "label": "generic_growth",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/703",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Mo Diaz",
+          "headline": "CEO, Kestrel",
+          "company": "Kestrel"
+        },
+        "text": "Leadership lesson: great founders lead from the front."
+      }
+    },
+    {
+      "id": "third-party-client-needs-leads",
+      "offer": "leadgen",
+      "label": "third_party_demand",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/801",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Hana Sato",
+          "headline": "Account Manager, Brightwave PR",
+          "company": "Brightwave PR"
+        },
+        "text": "Our client Vantage Freight is looking for a lead list provider for their sales team. Who would you recommend?"
+      }
+    },
+    {
+      "id": "third-party-friend-startup",
+      "offer": "leadgen",
+      "label": "third_party_demand",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/802",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Ed Fox",
+          "headline": null,
+          "company": null
+        },
+        "text": "My friend's startup needs B2B leads, anyone know a good provider?"
+      }
+    },
+    {
+      "id": "bk-buyer-restaurant-owner",
+      "offer": "bookkeeping",
+      "label": "buyer",
+      "high_intent": true,
+      "post": {
+        "source_url": "https://forum.example.test/r/11",
+        "published_at": "2026-10-26T10:00:00Z",
+        "author": {
+          "name": "Carla Ruiz",
+          "headline": "Owner, Casa Verde",
+          "company": "Casa Verde"
+        },
+        "text": "I own two restaurants in Austin and our bookkeeper just quit. Looking for a bookkeeping service that also handles payroll."
+      }
+    },
+    {
+      "id": "bk-leadgen-founder-is-not-a-buyer-here",
+      "offer": "bookkeeping",
+      "label": "unclear",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/101",
+        "published_at": "2026-10-28T09:00:00Z",
+        "author": {
+          "name": "Maya Chen",
+          "headline": "Co-founder, Tallyline",
+          "company": "Tallyline"
+        },
+        "text": "I'm the co-founder of a B2B invoicing startup. We need a reliable source of sales leads for mid-size accounting firms. Any recommendations for a lead list provider?"
+      }
+    },
+    {
+      "id": "bk-consumer-restaurant-birthday",
+      "offer": "bookkeeping",
+      "label": "consumer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/r/13",
+        "published_at": "2026-10-26T10:00:00Z",
+        "author": {
+          "name": "Tim Ng",
+          "headline": null,
+          "company": null
+        },
+        "text": "Looking for a good restaurant near me for my birthday dinner, any suggestions?"
+      }
+    },
+    {
+      "id": "bk-vendor-competitor-plug",
+      "offer": "bookkeeping",
+      "label": "vendor_promotion",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/r/14",
+        "published_at": "2026-10-26T10:00:00Z",
+        "author": {
+          "name": "Uma Roy",
+          "headline": "Founder, Platebooks",
+          "company": "Platebooks"
+        },
+        "text": "Shameless plug: our software automates bookkeeping and payroll for restaurants. DM me for a demo."
+      }
+    },
+    {
+      "id": "vendor-hook-question",
+      "offer": "leadgen",
+      "label": "vendor_promotion",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/305",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Rob Hale",
+          "headline": "Founder, LeadLoop",
+          "company": "LeadLoop"
+        },
+        "text": "Need more leads? We deliver 100 verified B2B leads every week."
+      }
+    },
+    {
+      "id": "jobseeker-next-role",
+      "offer": "leadgen",
+      "label": "job_seeker",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/203",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Dee Park",
+          "headline": "Sales development",
+          "company": null
+        },
+        "text": "Looking for my next role in sales development. I love building prospect lists and I am happy to relocate."
+      }
+    },
+    {
+      "id": "consumer-tax-lead",
+      "offer": "leadgen",
+      "label": "consumer",
+      "high_intent": false,
+      "post": {
+        "source_url": "https://forum.example.test/t/503",
+        "published_at": "2026-10-30T10:00:00Z",
+        "author": {
+          "name": "Ken Lo",
+          "headline": null,
+          "company": null
+        },
+        "text": "Need a lead on a good accountant for my taxes this year, anyone?"
+      }
+    }
+  ]
+}
