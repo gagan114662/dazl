@@ -1,15 +1,28 @@
 import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
+import { recordTx } from '../audit.ts'
 
-// Cal.com booking webhooks -> pipeline stage. A booking is matched to a lead by the attendee's
-// normalized email against the addresses that plausibly own it: leads we actually MAILED at that
-// address (outreach recipients with a sent/sending/uncertain row - an unsent draft or skipped row
-// proves no contact ever happened and must not associate a booking) plus leads storing it as their
-// contact. Exactly one candidate lead across both -> booked; zero or several stay "unmatched" - a
-// booking is never guessed onto a lead. Idempotent on (tenant, booking uid): Cal.com retries are
-// safe. Reads and writes run on the Db layer (SQLite or Postgres); migrateCalcom is the SQLite
-// schema.
+// Cal.com booking webhooks -> booking outcomes and the pipeline stage. A booking is matched to a lead by the attendee's
+// normalized email against the addresses that plausibly own it: leads we actually MAILED at that address (outreach
+// recipients with a sent/sending/uncertain row - an unsent draft or skipped row proves no contact ever happened and must
+// not associate a booking) plus leads storing it as their contact. Exactly one candidate lead across both -> linked;
+// zero or several stay "unmatched" - a booking is never guessed onto a lead. Reads and writes run on the Db layer
+// (SQLite or Postgres); migrateCalcom is the SQLite schema (PG: 0001 baseline + 0047_booking_outcomes.sql).
+//
+// Outcomes (#367). One row per Cal.com booking uid keeps the booking's history: no event deletes it. Each webhook is
+// merged into the row field by field with order-independent rules, so any delivery order, retry or replay of the same
+// events converges to the same row:
+//   - meeting time and attendees: the version with the highest (iCalSequence, event createdAt) wins
+//   - cancelled: set by any BOOKING_CANCELLED, never unset by a webhook (earliest cancel time kept)
+//   - rescheduled: BOOKING_RESCHEDULED supersedes the old uid (rescheduled_to) and creates/updates the new uid
+//     (rescheduled_from); Cal.com makes a reschedule a new booking, so the new uid carries the meeting from then on
+//   - ended: MEETING_ENDED, which Cal.com fires at the scheduled end time whether or not anyone joined - it proves the
+//     slot passed, NOT that the meeting was held
+//   - no-show: BOOKING_NO_SHOW_UPDATED marks per attendee, the latest event per attendee wins
+// The status is a pure function of those fields (bookingStatus). A meeting counts as `held` only on an actual
+// completion signal: no Cal.com webhook proves one, so `held` comes only from an audited manual reconciliation
+// (setManualOutcome), which also overrides the webhook-derived status when a person knows better.
 
 export function migrateCalcom(db: Database.Database): void {
   db.exec(`
@@ -28,6 +41,27 @@ export function migrateCalcom(db: Database.Database): void {
       PRIMARY KEY (tenant_id, booking_uid)
     );
   `)
+  const has = (c: string) => (db.prepare('PRAGMA table_info(calcom_bookings)').all() as { name: string }[]).some(r => r.name === c)
+  const add = (c: string, def: string) => { if (!has(c)) db.exec(`ALTER TABLE calcom_bookings ADD COLUMN ${c} ${def}`) }
+  // #367 outcome fields. created_at stays dazl's receipt time of the first event for this uid; *_ms are Cal.com event
+  // times (ms); start_at, end_at, ended_at and manual_at are seconds.
+  add('status', "TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ended', 'held', 'no_show', 'cancelled', 'rescheduled'))")
+  add('start_at', 'INTEGER')
+  add('end_at', 'INTEGER')
+  add('ical_uid', 'TEXT')
+  add('ical_seq', 'INTEGER')
+  add('detail_ms', 'INTEGER')
+  add('attendees', 'TEXT')
+  add('cancelled_ms', 'INTEGER')
+  add('rescheduled_to', 'TEXT')
+  add('rescheduled_from', 'TEXT')
+  add('ended_at', 'INTEGER')
+  add('no_show_marks', 'TEXT')
+  add('manual_outcome', "TEXT CHECK (manual_outcome IS NULL OR manual_outcome IN ('held', 'no_show', 'cancelled'))")
+  add('manual_at', 'INTEGER')
+  add('manual_by', 'TEXT')
+  add('last_event_ms', 'INTEGER')
+  add('lead_prev_stage', 'TEXT')
 }
 
 export async function getSecret(db: Db, tenantId: string): Promise<string | null> {
@@ -48,51 +82,249 @@ export function verifySignature(secret: string, rawBody: string, header: string 
   return want.length === got.length && crypto.timingSafeEqual(want, got)
 }
 
-export function parseBooking(rawBody: string): { uid: string; email: string; name: string | null } | null {
-  let body: { triggerEvent?: unknown; payload?: { uid?: unknown; attendees?: unknown } }
-  try { body = JSON.parse(rawBody) } catch { return null }
-  if (body?.triggerEvent !== 'BOOKING_CREATED' || !body.payload) return null
-  const uid = typeof body.payload.uid === 'string' ? body.payload.uid.slice(0, 120) : ''
-  const attendees = Array.isArray(body.payload.attendees) ? body.payload.attendees : []
-  const first = attendees[0] as { email?: unknown; name?: unknown } | undefined
-  const email = normalizeEmail(typeof first?.email === 'string' ? first.email : '')
-  if (!uid || !email) return null
-  return { uid, email, name: typeof first?.name === 'string' ? first.name.slice(0, 150) : null }
-}
-
 export const normalizeEmail = (s: string) => s.trim().toLowerCase()
 
-// Returns 'duplicate' when this booking was already recorded, otherwise the match outcome. One transaction: the
-// booking, the lead's stage and the booking's lead link land together. A duplicate is skipped by the primary key
-// (ON CONFLICT DO NOTHING): the table has no CHECK, and parseBooking always gives a uid and an email, so this skips
-// exactly what INSERT OR IGNORE skipped.
-export function recordBooking(db: Db, tenantId: string, b: { uid: string; email: string; name: string | null }): Promise<'duplicate' | 'matched' | 'unmatched'> {
-  const email = normalizeEmail(b.email)
-  return db.tx(function* (t: Tx): TxBody<'duplicate' | 'matched' | 'unmatched'> {
-    const ins = yield* t.run('INSERT INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, booking_uid) DO NOTHING', [tenantId, b.uid, email, b.name])
-    if (ins.changes === 0) return 'duplicate'
-    // Candidate leads for this address: ones we actually mailed at it (a sent/sending/uncertain outreach row -
-    // a contact-page crawled address counts as much as a stored one, #364; 'uncertain' may have gone out, so it
-    // counts, while draft/approved/skipped prove no contact and are excluded) plus ones storing it as their
-    // contact. Exactly one candidate -> book it; anything else (zero, or conflicting candidates from either
-    // source) stays unmatched - never guessed.
-    const emailed = yield* t.all<{ lead_id: string }>("SELECT DISTINCT lead_id FROM outreach_messages WHERE tenant_id = ? AND lower(to_email) = ? AND status IN ('sent','sending','uncertain') AND lead_id IS NOT NULL", [tenantId, email])
-    const stored = yield* t.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?', [tenantId, email])
-    const candidates = new Set([...emailed.map((r) => r.lead_id), ...stored.map((r) => r.id)])
-    if (candidates.size === 1) {
-      const rows = [{ id: [...candidates][0] }]
-      yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [rows[0].id])
-      yield* t.run('UPDATE calcom_bookings SET lead_id = ? WHERE tenant_id = ? AND booking_uid = ?', [rows[0].id, tenantId, b.uid])
-      return 'matched'
+export type BookingStatus = 'scheduled' | 'ended' | 'held' | 'no_show' | 'cancelled' | 'rescheduled'
+// A booking that still stands (counts as booked): not cancelled and not superseded by a reschedule.
+export const STANDING: readonly BookingStatus[] = ['scheduled', 'ended', 'held', 'no_show']
+export const STANDING_SQL = "('scheduled', 'ended', 'held', 'no_show')"
+export type ManualOutcome = 'held' | 'no_show' | 'cancelled'
+export type Attendee = { email: string; name: string | null }
+type BookingTrigger = 'BOOKING_CREATED' | 'BOOKING_RESCHEDULED' | 'BOOKING_CANCELLED'
+export type CalEvent =
+  | { kind: 'booking'; trigger: BookingTrigger; uid: string; at: number | null; attendees: Attendee[]; startAt: number | null; endAt: number | null; icalUid: string | null; icalSeq: number | null; fromUid: string | null }
+  | { kind: 'ended'; uid: string; attendees: Attendee[]; endAt: number | null }
+  | { kind: 'no_show'; uid: string; at: number | null; marks: { email: string; noShow: boolean }[] }
+
+type Obj = Record<string, unknown>
+const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : null)
+const str = (v: unknown, max = 120): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null)
+const ms = (v: unknown): number | null => { const n = typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(n) ? n : null }
+const secs = (v: unknown): number | null => { const n = ms(v); return n === null ? null : Math.floor(n / 1000) }
+const emailOf = (a: unknown): string => { const e = obj(a)?.email; return typeof e === 'string' ? normalizeEmail(e).slice(0, 254) : '' }
+function attendeesOf(v: unknown): Attendee[] {
+  const out: Attendee[] = []
+  for (const a of Array.isArray(v) ? v.slice(0, 20) : []) {
+    const email = emailOf(a)
+    if (email && !out.some(o => o.email === email)) out.push({ email, name: str(obj(a)?.name, 150) })
+  }
+  return out
+}
+
+// The events dazl records. Anything else (other triggers, a payload without a uid or an attendee email, a reschedule
+// that does not name the booking it replaces) is null and ignored - never half-applied.
+export function parseEvent(rawBody: string): CalEvent | null {
+  let body: Obj | null
+  try { body = obj(JSON.parse(rawBody)) } catch { return null }
+  if (!body) return null
+  const trigger = body.triggerEvent
+  const at = ms(body.createdAt)
+  if (trigger === 'BOOKING_CREATED' || trigger === 'BOOKING_RESCHEDULED' || trigger === 'BOOKING_CANCELLED') {
+    const p = obj(body.payload)
+    const uid = str(p?.uid)
+    const attendees = attendeesOf(p?.attendees)
+    if (!p || !uid || !attendees.length) return null
+    const fromUid = trigger === 'BOOKING_RESCHEDULED' ? str(p.rescheduleUid) : null
+    if (trigger === 'BOOKING_RESCHEDULED' && (!fromUid || fromUid === uid)) return null
+    const seq = typeof p.iCalSequence === 'number' && Number.isInteger(p.iCalSequence) && p.iCalSequence >= 0 ? p.iCalSequence : null
+    return { kind: 'booking', trigger, uid, at, attendees, startAt: secs(p.startTime), endAt: secs(p.endTime), icalUid: str(p.iCalUID, 200), icalSeq: seq, fromUid }
+  }
+  if (trigger === 'MEETING_ENDED') { // flat payload: the booking's fields sit at the top level
+    const uid = str(body.uid)
+    const attendees = attendeesOf(body.attendees)
+    return uid && attendees.length ? { kind: 'ended', uid, attendees, endAt: secs(body.endTime) } : null
+  }
+  if (trigger === 'BOOKING_NO_SHOW_UPDATED') {
+    const p = obj(body.payload)
+    const uid = str(p?.bookingUid)
+    const marks: { email: string; noShow: boolean }[] = []
+    for (const a of Array.isArray(p?.attendees) ? (p.attendees as unknown[]).slice(0, 20) : []) {
+      const email = emailOf(a), noShow = obj(a)?.noShow
+      if (email && typeof noShow === 'boolean' && !marks.some(m => m.email === email)) marks.push({ email, noShow })
     }
-    return 'unmatched'
+    return uid && marks.length ? { kind: 'no_show', uid, at, marks } : null
+  }
+  return null
+}
+
+// BOOKING_CREATED only, first attendee: the shape callers had before #367.
+export function parseBooking(rawBody: string): { uid: string; email: string; name: string | null } | null {
+  const e = parseEvent(rawBody)
+  return e?.kind === 'booking' && e.trigger === 'BOOKING_CREATED' ? { uid: e.uid, email: e.attendees[0].email, name: e.attendees[0].name } : null
+}
+
+type NoShowMarks = Record<string, { noShow: boolean; ms: number }>
+export interface BookingRow {
+  booking_uid: string; attendee_email: string; attendee_name: string | null; lead_id: string | null; status: BookingStatus
+  start_at: number | null; end_at: number | null; ical_uid: string | null; ical_seq: number | null; detail_ms: number | null; attendees: string | null
+  cancelled_ms: number | null; rescheduled_to: string | null; rescheduled_from: string | null; ended_at: number | null; no_show_marks: string | null
+  manual_outcome: ManualOutcome | null; manual_at: number | null; manual_by: string | null; last_event_ms: number | null; lead_prev_stage: string | null
+}
+// Every column an event or a reconciliation may change (the UPDATE writes exactly these).
+const FIELDS = ['attendee_email', 'attendee_name', 'lead_id', 'status', 'start_at', 'end_at', 'ical_uid', 'ical_seq', 'detail_ms', 'attendees', 'cancelled_ms',
+  'rescheduled_to', 'rescheduled_from', 'ended_at', 'no_show_marks', 'manual_outcome', 'manual_at', 'manual_by', 'last_event_ms', 'lead_prev_stage'] as const
+const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v))
+const normRow = (r: Record<string, unknown>): BookingRow => {
+  const out = {} as Record<string, unknown>
+  out.booking_uid = r.booking_uid
+  for (const f of FIELDS) out[f] = r[f] ?? null
+  for (const f of ['start_at', 'end_at', 'ical_seq', 'detail_ms', 'cancelled_ms', 'ended_at', 'manual_at', 'last_event_ms']) out[f] = num(r[f])
+  return out as unknown as BookingRow
+}
+const marksOf = (s: string | null): NoShowMarks => { try { return s ? JSON.parse(s) as NoShowMarks : {} } catch { return {} } }
+const maxStr = (a: string | null, b: string | null) => (a === null ? b : b === null ? a : a > b ? a : b)
+const maxNum = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b))
+const minNum = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.min(a, b))
+
+// The status a row's fields imply. A manual reconciliation wins; otherwise superseded > cancelled > the primary
+// attendee marked no-show > the slot ended (outcome unconfirmed) > scheduled.
+export function bookingStatus(r: Pick<BookingRow, 'manual_outcome' | 'rescheduled_to' | 'cancelled_ms' | 'ended_at' | 'no_show_marks' | 'attendee_email'>): BookingStatus {
+  if (r.manual_outcome) return r.manual_outcome
+  if (r.rescheduled_to) return 'rescheduled'
+  if (r.cancelled_ms !== null) return 'cancelled'
+  if (marksOf(r.no_show_marks)[r.attendee_email]?.noShow) return 'no_show'
+  if (r.ended_at !== null) return 'ended'
+  return 'scheduled'
+}
+
+// Merge one event into one row (pure). `superseded`: this row is the old uid a BOOKING_RESCHEDULED names.
+export function mergeEvent(row: BookingRow, ev: CalEvent, superseded = false): BookingRow {
+  const r: BookingRow = { ...row }
+  if (ev.kind === 'booking' && superseded) {
+    r.rescheduled_to = maxStr(r.rescheduled_to, ev.uid)
+  } else if (ev.kind === 'booking') {
+    const json = JSON.stringify(ev.attendees)
+    const next = [ev.icalSeq ?? -1, ev.at ?? -1, `${ev.startAt}|${ev.endAt}|${ev.icalUid}|${json}`] as const
+    const cur = r.detail_ms === null ? null : [r.ical_seq ?? -1, r.detail_ms, `${r.start_at}|${r.end_at}|${r.ical_uid}|${r.attendees}`] as const
+    if (!cur || next[0] > cur[0] || (next[0] === cur[0] && (next[1] > cur[1] || (next[1] === cur[1] && next[2] > cur[2])))) {
+      Object.assign(r, { start_at: ev.startAt, end_at: ev.endAt, ical_uid: ev.icalUid, ical_seq: ev.icalSeq, detail_ms: ev.at ?? -1, attendees: json, attendee_email: ev.attendees[0].email, attendee_name: ev.attendees[0].name })
+    }
+    if (ev.trigger === 'BOOKING_CANCELLED') r.cancelled_ms = minNum(r.cancelled_ms, ev.at ?? 0)
+    if (ev.trigger === 'BOOKING_RESCHEDULED') r.rescheduled_from = maxStr(r.rescheduled_from, ev.fromUid)
+  } else if (ev.kind === 'ended') {
+    r.ended_at = maxNum(r.ended_at, ev.endAt ?? 0)
+  } else {
+    const marks = marksOf(r.no_show_marks)
+    const t = ev.at ?? -1
+    for (const m of ev.marks) {
+      const cur = marks[m.email]
+      if (!cur && Object.keys(marks).length >= 20) continue
+      if (!cur || t > cur.ms || (t === cur.ms && m.noShow && !cur.noShow)) marks[m.email] = { noShow: m.noShow, ms: t }
+    }
+    r.no_show_marks = JSON.stringify(Object.fromEntries(Object.entries(marks).sort(([a], [b]) => (a < b ? -1 : 1))))
+  }
+  if (ev.kind !== 'ended') r.last_event_ms = maxNum(r.last_event_ms, ev.at)
+  r.status = bookingStatus(r)
+  return r
+}
+
+function* lockRow(t: Tx, tenantId: string, uid: string): TxBody<BookingRow | null> {
+  const r = yield* t.get<Record<string, unknown>>(`SELECT * FROM calcom_bookings WHERE tenant_id = ? AND booking_uid = ?${t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [tenantId, uid])
+  return r ? normRow(r) : null
+}
+function* writeRow(t: Tx, tenantId: string, r: BookingRow): TxBody<void> {
+  yield* t.run(`UPDATE calcom_bookings SET ${FIELDS.map(f => `${f} = ?`).join(', ')} WHERE tenant_id = ? AND booking_uid = ?`, [...FIELDS.map(f => r[f]), tenantId, r.booking_uid])
+}
+const changed = (a: BookingRow, b: BookingRow) => FIELDS.some(f => a[f] !== b[f])
+
+function* standing(t: Tx, tenantId: string, leadId: string): TxBody<boolean> {
+  return !!(yield* t.get(`SELECT 1 AS x FROM calcom_bookings WHERE tenant_id = ? AND lead_id = ? AND status IN ${STANDING_SQL} LIMIT 1`, [tenantId, leadId]))
+}
+
+// Candidate leads for this address: ones we actually mailed at it (a sent/sending/uncertain outreach row - a
+// contact-page crawled address counts as much as a stored one, #364; 'uncertain' may have gone out, so it counts, while
+// draft/approved/skipped prove no contact and are excluded) plus ones storing it as their contact. Exactly one
+// candidate -> that lead; anything else (zero, or conflicting candidates from either source) -> null, never guessed.
+function* matchLead(t: Tx, tenantId: string, email: string): TxBody<string | null> {
+  const emailed = yield* t.all<{ lead_id: string }>("SELECT DISTINCT lead_id FROM outreach_messages WHERE tenant_id = ? AND lower(to_email) = ? AND status IN ('sent','sending','uncertain') AND lead_id IS NOT NULL", [tenantId, email])
+  const stored = yield* t.all<{ id: string }>('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.contact IS NOT NULL AND lower(l.contact) = ?', [tenantId, email])
+  const candidates = new Set([...emailed.map((r) => r.lead_id), ...stored.map((r) => r.id)])
+  return candidates.size === 1 ? [...candidates][0] : null
+}
+
+// The lead's stage follows whether it has a standing booking. Gaining one sets 'booked_call' and remembers the stage it
+// replaced on that booking row ('' = no stage); losing the last one (cancelled, rescheduled away) restores it, but only
+// while the stage is still 'booked_call' - a stage someone changed by hand since is left alone. Driven by the standing
+// state before and after, not by which event arrived, so the stage converges like the rows do.
+function* syncStage(t: Tx, tenantId: string, leadId: string, before: boolean, rows: BookingRow[]): TxBody<void> {
+  const after = yield* standing(t, tenantId, leadId)
+  if (before === after) return
+  const lead = yield* t.get<{ stage: string | null }>('SELECT l.stage FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, tenantId])
+  if (!lead) return
+  if (after) {
+    const holder = rows.find(r => r.lead_id === leadId && STANDING.includes(r.status))
+    if (lead.stage === 'booked_call' || !holder) return
+    yield* t.run('UPDATE calcom_bookings SET lead_prev_stage = ? WHERE tenant_id = ? AND booking_uid = ?', [lead.stage ?? '', tenantId, holder.booking_uid])
+    yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [leadId])
+    return
+  }
+  const prev = yield* t.get<{ lead_prev_stage: string }>('SELECT lead_prev_stage FROM calcom_bookings WHERE tenant_id = ? AND lead_id = ? AND lead_prev_stage IS NOT NULL ORDER BY booking_uid LIMIT 1', [tenantId, leadId])
+  if (prev && lead.stage === 'booked_call') yield* t.run('UPDATE leads SET stage = ? WHERE id = ?', [prev.lead_prev_stage === '' ? null : prev.lead_prev_stage, leadId])
+  yield* t.run('UPDATE calcom_bookings SET lead_prev_stage = NULL WHERE tenant_id = ? AND lead_id = ? AND lead_prev_stage IS NOT NULL', [tenantId, leadId])
+}
+
+export type EventOutcome = { outcome: 'duplicate' | 'matched' | 'unmatched'; status: BookingStatus }
+
+// One transaction per event: the touched booking rows (locked FOR UPDATE on Postgres, in uid order so two concurrent
+// events over the same pair cannot deadlock), the lead link and the lead's stage land together. 'duplicate' = the event
+// changed nothing (a Cal.com retry or a replay); otherwise matched/unmatched says whether the event's booking has a lead.
+export function recordEvent(db: Db, tenantId: string, ev: CalEvent, nowS = Math.floor(Date.now() / 1000)): Promise<EventOutcome> {
+  const first = ev.kind === 'no_show' ? { email: ev.marks[0].email, name: null } : ev.attendees[0]
+  const uids = [...new Set([ev.uid, ...(ev.kind === 'booking' && ev.fromUid ? [ev.fromUid] : [])])].sort()
+  return db.tx(function* (t: Tx): TxBody<EventOutcome> {
+    let dirty = false
+    for (const uid of uids) {
+      const ins = yield* t.run('INSERT INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, booking_uid) DO NOTHING', [tenantId, uid, first.email, first.name, nowS])
+      if (ins.changes > 0) dirty = true
+    }
+    const old: BookingRow[] = []
+    for (const uid of uids) old.push((yield* lockRow(t, tenantId, uid))!)
+    const next = old.map(r => mergeEvent(r, ev, r.booking_uid !== ev.uid))
+    for (const r of next) if (r.lead_id === null) r.lead_id = yield* matchLead(t, tenantId, r.attendee_email)
+    const leads = [...new Set(next.map(r => r.lead_id).filter((l): l is string => l !== null))]
+    const before = new Map<string, boolean>()
+    for (const l of leads) before.set(l, yield* standing(t, tenantId, l))
+    for (let i = 0; i < next.length; i++) if (changed(old[i], next[i])) { dirty = true; yield* writeRow(t, tenantId, next[i]) }
+    for (const l of leads) yield* syncStage(t, tenantId, l, before.get(l)!, next)
+    const own = next.find(r => r.booking_uid === ev.uid)!
+    return { outcome: dirty ? (own.lead_id ? 'matched' : 'unmatched') : 'duplicate', status: own.status }
+  })
+}
+
+// The pre-#367 entry point (a BOOKING_CREATED for one attendee); returns only the match outcome.
+export async function recordBooking(db: Db, tenantId: string, b: { uid: string; email: string; name: string | null }): Promise<'duplicate' | 'matched' | 'unmatched'> {
+  const ev: CalEvent = { kind: 'booking', trigger: 'BOOKING_CREATED', uid: b.uid, at: null, attendees: [{ email: normalizeEmail(b.email), name: b.name }], startAt: null, endAt: null, icalUid: null, icalSeq: null, fromUid: null }
+  return (await recordEvent(db, tenantId, ev)).outcome
+}
+
+export type ManualResult = { ok: true; status: BookingStatus } | { ok: false; error: 'not_found' | 'superseded' | 'not_yet' }
+
+// Audited manual reconciliation, the only source of `held`. held / no_show need the meeting to be over: its start has
+// passed or Cal.com reported MEETING_ENDED; with neither known the claim is refused (fail closed). A booking that was
+// rescheduled away is not the meeting any more: reconcile the uid it moved to. outcome null clears the override and the
+// webhook-derived status applies again. The audit event commits in the same transaction as the change.
+export function setManualOutcome(db: Db, tenantId: string, actorId: string, uid: string, outcome: ManualOutcome | null, ctx: { correlationId?: string | null } = {}, nowS = Math.floor(Date.now() / 1000)): Promise<ManualResult> {
+  return db.tx(function* (t: Tx): TxBody<ManualResult> {
+    const row = yield* lockRow(t, tenantId, uid)
+    if (!row) return { ok: false, error: 'not_found' }
+    if (row.rescheduled_to) return { ok: false, error: 'superseded' }
+    const over = (row.start_at !== null && row.start_at <= nowS) || row.ended_at !== null
+    if ((outcome === 'held' || outcome === 'no_show') && !over) return { ok: false, error: 'not_yet' }
+    const next: BookingRow = { ...row, manual_outcome: outcome, manual_at: outcome ? nowS : null, manual_by: outcome ? actorId.slice(0, 80) : null }
+    next.status = bookingStatus(next)
+    const before = row.lead_id ? yield* standing(t, tenantId, row.lead_id) : false
+    if (changed(row, next)) yield* writeRow(t, tenantId, next)
+    if (row.lead_id) yield* syncStage(t, tenantId, row.lead_id, before, [next])
+    yield* recordTx(t, { tenantId, actorId, action: 'booking.outcome_set', resourceType: 'calcom_booking', resourceId: uid.slice(0, 80), summary: { from: row.status, to: next.status, manual: outcome ?? 'cleared' }, correlationId: ctx.correlationId ?? null }, nowS)
+    return { ok: true, status: next.status }
   })
 }
 
 // Newest first; same-second bookings by booking uid, the order SQLite's primary-key index gave.
 export function listBookings(db: Db, tenantId: string, limit = 50) {
   return db.all(`
-    SELECT b.booking_uid, b.attendee_email, b.attendee_name, b.created_at, b.lead_id, l.company, l.name AS lead_name
+    SELECT b.booking_uid, b.attendee_email, b.attendee_name, b.created_at, b.lead_id, l.company, l.name AS lead_name,
+           b.status, b.start_at, b.end_at, b.rescheduled_to, b.rescheduled_from, b.manual_outcome, b.manual_at
     FROM calcom_bookings b LEFT JOIN leads l ON l.id = b.lead_id
     WHERE b.tenant_id = ? ORDER BY b.created_at DESC, b.booking_uid LIMIT ?`, [tenantId, limit])
 }
