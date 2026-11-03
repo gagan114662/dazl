@@ -41,27 +41,27 @@ export function migrateCalcom(db: Database.Database): void {
       PRIMARY KEY (tenant_id, booking_uid)
     );
   `)
-  const has = (c: string) => (db.prepare('PRAGMA table_info(calcom_bookings)').all() as { name: string }[]).some(r => r.name === c)
-  const add = (c: string, def: string) => { if (!has(c)) db.exec(`ALTER TABLE calcom_bookings ADD COLUMN ${c} ${def}`) }
   // #367 outcome fields. created_at stays dazl's receipt time of the first event for this uid; *_ms are Cal.com event
   // times (ms); start_at, end_at, ended_at and manual_at are seconds.
-  add('status', "TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ended', 'held', 'no_show', 'cancelled', 'rescheduled'))")
-  add('start_at', 'INTEGER')
-  add('end_at', 'INTEGER')
-  add('ical_uid', 'TEXT')
-  add('ical_seq', 'INTEGER')
-  add('detail_ms', 'INTEGER')
-  add('attendees', 'TEXT')
-  add('cancelled_ms', 'INTEGER')
-  add('rescheduled_to', 'TEXT')
-  add('rescheduled_from', 'TEXT')
-  add('ended_at', 'INTEGER')
-  add('no_show_marks', 'TEXT')
-  add('manual_outcome', "TEXT CHECK (manual_outcome IS NULL OR manual_outcome IN ('held', 'no_show', 'cancelled'))")
-  add('manual_at', 'INTEGER')
-  add('manual_by', 'TEXT')
-  add('last_event_ms', 'INTEGER')
-  add('lead_prev_stage', 'TEXT')
+  // Static statements (one per column), so the SQL audit sees schema DDL only (lib/db/sql-audit.ts).
+  const cols = new Set((db.prepare('PRAGMA table_info(calcom_bookings)').all() as { name: string }[]).map(r => r.name))
+  if (!cols.has('status')) db.exec("ALTER TABLE calcom_bookings ADD COLUMN status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ended', 'held', 'no_show', 'cancelled', 'rescheduled'))")
+  if (!cols.has('start_at')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN start_at INTEGER')
+  if (!cols.has('end_at')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN end_at INTEGER')
+  if (!cols.has('ical_uid')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN ical_uid TEXT')
+  if (!cols.has('ical_seq')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN ical_seq INTEGER')
+  if (!cols.has('detail_ms')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN detail_ms INTEGER')
+  if (!cols.has('attendees')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN attendees TEXT')
+  if (!cols.has('cancelled_ms')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN cancelled_ms INTEGER')
+  if (!cols.has('rescheduled_to')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN rescheduled_to TEXT')
+  if (!cols.has('rescheduled_from')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN rescheduled_from TEXT')
+  if (!cols.has('ended_at')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN ended_at INTEGER')
+  if (!cols.has('no_show_marks')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN no_show_marks TEXT')
+  if (!cols.has('manual_outcome')) db.exec("ALTER TABLE calcom_bookings ADD COLUMN manual_outcome TEXT CHECK (manual_outcome IS NULL OR manual_outcome IN ('held', 'no_show', 'cancelled'))")
+  if (!cols.has('manual_at')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN manual_at INTEGER')
+  if (!cols.has('manual_by')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN manual_by TEXT')
+  if (!cols.has('last_event_ms')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN last_event_ms INTEGER')
+  if (!cols.has('lead_prev_stage')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN lead_prev_stage TEXT')
 }
 
 export async function getSecret(db: Db, tenantId: string): Promise<string | null> {
