@@ -1,0 +1,891 @@
+{
+ "_embedded": {
+  "underenheter": [
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938794618"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838756042"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Guttorms gate 1"
+     ],
+     "kommune": "TRONDHEIM",
+     "kommunenummer": "5001",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7030",
+     "poststed": "TRONDHEIM"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TRONDHEIM TANNREGULERING KLINIKK AS",
+    "oppstartsdato": "2026-10-13",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938794618",
+    "overordnetEnhet": "838756042",
+    "registreringsdatoEnhetsregisteret": "2026-11-02",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938787786"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938578737"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Dampskipsbrygga 10"
+     ],
+     "kommune": "FREDRIKSTAD",
+     "kommunenummer": "3107",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1607",
+     "poststed": "FREDRIKSTAD"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "RASHDAN",
+    "oppstartsdato": "2026-11-02",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938787786",
+    "overordnetEnhet": "938578737",
+    "registreringsdatoEnhetsregisteret": "2026-10-30",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938756805"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938739544"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Issa Hansens vei 12"
+     ],
+     "kommune": "BALSFJORD",
+     "kommunenummer": "5532",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "9050",
+     "poststed": "STORSTEINNES"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "BALSFJORD TANNKLINIKK AS",
+    "oppstartsdato": "2026-09-17",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938756805",
+    "overordnetEnhet": "938739544",
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938756597"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938738734"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Sandakerveien 105"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0483",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE LEHNER AS",
+    "oppstartsdato": "2026-10-23",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938756597",
+    "overordnetEnhet": "938738734",
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938740224"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938700400"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Spireaveien 16B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0580",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "GSK TANN AS",
+    "oppstartsdato": "2026-10-19",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938740224",
+    "overordnetEnhet": "938700400",
+    "registreringsdatoEnhetsregisteret": "2026-10-23",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938743037"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838543162"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "c/o Caroline O. D. Pederssen",
+      "Nilsemarka 7"
+     ],
+     "kommune": "ASKER",
+     "kommunenummer": "3203",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3470",
+     "poststed": "SLEMMESTAD"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE CAROLINE O. D. PEDERSSEN",
+    "oppstartsdato": "2026-10-05",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938743037",
+    "overordnetEnhet": "838543162",
+    "registreringsdatoEnhetsregisteret": "2026-10-23",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938733686"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938530831"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Stokmovegen 2"
+     ],
+     "kommune": "STJØRDAL",
+     "kommunenummer": "5035",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7500",
+     "poststed": "STJØRDAL"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "MALMELÖV",
+    "oppstartsdato": "2027-02-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938733686",
+    "overordnetEnhet": "938530831",
+    "registreringsdatoEnhetsregisteret": "2026-10-22",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938734224"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938533350"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Haakon VIIs gate 6"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0161",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "NESSRIN ISMAIL DENTAL",
+    "oppstartsdato": "2026-10-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938734224",
+    "overordnetEnhet": "938533350",
+    "registreringsdatoEnhetsregisteret": "2026-10-22",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938708770"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938690227"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "C/O Silje Thorvaldsen",
+      "Strindvegen 47A"
+     ],
+     "kommune": "TRONDHEIM",
+     "kommunenummer": "5001",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7052",
+     "poststed": "TRONDHEIM"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE THORVALDSEN AS",
+    "oppstartsdato": "2026-12-07",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938708770",
+    "overordnetEnhet": "938690227",
+    "registreringsdatoEnhetsregisteret": "2026-10-20",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938704279"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938681279"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Torget 3"
+     ],
+     "kommune": "LARVIK",
+     "kommunenummer": "3909",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3256",
+     "poststed": "LARVIK"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "LTK AS",
+    "oppstartsdato": "2026-09-18",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938704279",
+    "overordnetEnhet": "938681279",
+    "registreringsdatoEnhetsregisteret": "2026-10-19",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938704090"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938678979"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Gildevangen 10A"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0585",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE KANO AS",
+    "oppstartsdato": "2026-09-13",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938704090",
+    "overordnetEnhet": "938678979",
+    "registreringsdatoEnhetsregisteret": "2026-10-19",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938694966"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938513023"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Capellaveien 9A"
+     ],
+     "kommune": "SANDEFJORD",
+     "kommunenummer": "3907",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3234",
+     "poststed": "SANDEFJORD"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE CHRISTIAN RØSJORDE",
+    "oppstartsdato": "2026-07-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938694966",
+    "overordnetEnhet": "938513023",
+    "registreringsdatoEnhetsregisteret": "2026-10-17",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/838691692"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938370621"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Frudalen 56"
+     ],
+     "kommune": "ASKØY",
+     "kommunenummer": "4627",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "5306",
+     "poststed": "ERDAL"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "MARIHØNE PROTETIKK AS",
+    "oppstartsdato": "2026-09-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "838691692",
+    "overordnetEnhet": "938370621",
+    "registreringsdatoEnhetsregisteret": "2026-10-16",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938677662"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938463077"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Nansens vei 28"
+     ],
+     "kommune": "BERGEN",
+     "kommunenummer": "4601",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "5063",
+     "poststed": "BERGEN"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "BERGMANN HOLDING AS",
+    "oppstartsdato": "2026-09-15",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938677662",
+    "overordnetEnhet": "938463077",
+    "registreringsdatoEnhetsregisteret": "2026-10-14",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938672210"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938415803"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Klæbuveien 155A"
+     ],
+     "kommune": "TRONDHEIM",
+     "kommunenummer": "5001",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7031",
+     "poststed": "TRONDHEIM"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "NORDLY TJENESTER",
+    "oppstartsdato": "2026-01-02",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938672210",
+    "overordnetEnhet": "938415803",
+    "registreringsdatoEnhetsregisteret": "2026-10-13",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/838671772"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938425728"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "c/o Elisabet Skrede",
+      "Storeåkeren 17"
+     ],
+     "kommune": "SOGNDAL",
+     "kommunenummer": "4640",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "6856",
+     "poststed": "SOGNDAL"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE ELISABET SKREDE",
+    "oppstartsdato": "2026-09-05",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "838671772",
+    "overordnetEnhet": "938425728",
+    "registreringsdatoEnhetsregisteret": "2026-10-13",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938649766"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938533857"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Stjerneveien øvre 3A"
+     ],
+     "kommune": "DRAMMEN",
+     "kommunenummer": "3301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3023",
+     "poststed": "DRAMMEN"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE SELLIAH AS",
+    "oppstartsdato": "2026-10-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938649766",
+    "overordnetEnhet": "938533857",
+    "registreringsdatoEnhetsregisteret": "2026-10-09",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938628947"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938429200"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Åsvegen 332"
+     ],
+     "kommune": "NANNESTAD",
+     "kommunenummer": "3238",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "2033",
+     "poststed": "ÅSGREINA"
+    },
+    "harRegistrertAntallAnsatte": true,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "GENDERKA AS",
+    "oppstartsdato": "2026-08-31",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938628947",
+    "overordnetEnhet": "938429200",
+    "registreringsdatoAntallAnsatteEnhetsregisteret": "2026-10-12",
+    "registreringsdatoAntallAnsatteNAVAaregisteret": "2026-10-10",
+    "registreringsdatoEnhetsregisteret": "2026-10-06",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938612161"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938563128"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Sorenskriverveien 11"
+     ],
+     "kommune": "ALTA",
+     "kommunenummer": "5601",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "9513",
+     "poststed": "ALTA"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "ALTA SMIL TANNKLINIKK AS",
+    "oppstartsdato": "2026-10-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938612161",
+    "overordnetEnhet": "938563128",
+    "registreringsdatoEnhetsregisteret": "2026-10-03",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938578605"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938464936"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Storgata 86"
+     ],
+     "kommune": "LILLEHAMMER",
+     "kommunenummer": "3405",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "2615",
+     "poststed": "LILLEHAMMER"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "FANG TANNHELSE AS",
+    "oppstartsdato": "2026-09-24",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938578605",
+    "overordnetEnhet": "938464936",
+    "registreringsdatoEnhetsregisteret": "2026-09-28",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   }
+  ]
+ },
+ "_links": {
+  "first": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=0&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "self": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "next": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=1&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "last": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=2&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  }
+ },
+ "page": {
+  "number": 0,
+  "size": 20,
+  "totalElements": 49,
+  "totalPages": 3
+ }
+}

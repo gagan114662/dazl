@@ -90,7 +90,7 @@ function dedupeLabel(label: string): string {
 }
 
 // Names of the extra sources a run request carried (the body buildSources made), in the words More sources uses.
-const EXTRA_LABEL: Record<string, string> = { github: 'GitHub', youtube: 'YouTube', v2ex: 'V2EX', jobboards: 'Job postings', rss: 'Your feeds', web: 'Your web pages' }
+const EXTRA_LABEL: Record<string, string> = { github: 'GitHub', youtube: 'YouTube', v2ex: 'V2EX', jobboards: 'Job postings', brreg: 'Norway business register', rss: 'Your feeds', web: 'Your web pages' }
 function extraLabels(body: Record<string, unknown> | null): string[] {
   if (!body) return []
   const adapters = Array.isArray(body.adapters) ? body.adapters as string[] : []
@@ -163,6 +163,7 @@ export default function LeadsClient() {
   const [useYoutube, setUseYoutube] = useState(false)
   const [useV2ex, setUseV2ex] = useState(false)
   const [useJobboards, setUseJobboards] = useState(false)
+  const [useBrreg, setUseBrreg] = useState(false)
   const [feedText, setFeedText] = useState('')
   const [pageText, setPageText] = useState('')
 
@@ -425,7 +426,7 @@ export default function LeadsClient() {
   async function run(withIcp: Icp | null, offer?: string) {
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
     setError(''); setStarting(true)
-    const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, feedText, pageText, advPick })
+    const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
       const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
@@ -441,7 +442,7 @@ export default function LeadsClient() {
   }
   async function confirmRun(ack: string, withIcp: Icp | null, offer?: string) {
     setError(''); setStarting(true)
-    const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, feedText, pageText, advPick })
+    const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
@@ -664,6 +665,7 @@ export default function LeadsClient() {
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useYoutube} onChange={e => setUseYoutube(e.target.checked)} /> Also search public YouTube videos</label>
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
+                  <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useBrreg} onChange={e => setUseBrreg(e.target.checked)} /> Also check Norway&apos;s business register for new businesses and new locations (requests that name a Norwegian place and an industry)</label>
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useJobboards} onChange={e => setUseJobboards(e.target.checked)} /> Also read public job postings (Greenhouse, Ashby, Lever) for a US state in your request</label>
                   <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
                   <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
