@@ -252,7 +252,7 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
   // added after 0039 carry their own guards in their own migration (migrations are immutable once applied): 0040 guards
   // scan_traces (#463), 0041 guards audit_events (#464), 0042 guards bounce_records and mail_bounce_scan_consent (#513),
   // 0043 guards the three onboarding tables (#417; renumbered from 0042 after #513 landed first).
-  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0044_sender_identities.sql']
+  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0048_sender_identities.sql']
     .flatMap(f => [...readFileSync(new URL(`../lib/db/migrations/pg/${f}`, import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1])).sort()
   assert.deepEqual(pgNames, want, 'the static PG migrations drifted from the generated guard set')
   const live = c.kind === 'sqlite'
