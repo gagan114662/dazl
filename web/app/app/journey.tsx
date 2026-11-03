@@ -8,6 +8,7 @@ import { scanCounts } from '@/lib/outreach/scan-drafts'
 import { constraintPills, PILLS_SHOWN, playName, playPace, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
 import { leadCardSummary } from '@/lib/scan/lead-card'
+import { CAUSE_TEXT, recoveryNote } from '@/lib/lead-state'
 import { Avatar, Pill, Stepper } from './ui/bits'
 import { Icon } from './ui/icons'
 import InfoTip from './ui/info-tip'
@@ -172,7 +173,15 @@ export default function Journey() {
         </ul>
         : (j.stage === 'zero' || j.stage === 'all_held' || j.stage === 'research_only') && <div className="mt-4 rounded-2xl bg-[#f6f0ea] p-5 sm:p-6 text-center" data-testid="journey-empty">
           <p className="text-lg font-bold tracking-tight">{j.stage === 'all_held' ? 'Nothing ready yet - a few leads need your eyes' : j.stage === 'research_only' ? 'Nothing ready - the leads found are research only' : 'No leads ready from this play yet'}</p>
-          <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="empty-hint">{j.stage === 'research_only' ? 'None has a verified, dated event, so reviewing them cannot make them ready. To change the result, search again with a different source or signal:' : 'Try a wider version of it:'}</p>
+          <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="empty-hint">{j.stage === 'research_only' ? 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.' : 'Try a wider version of it:'}</p>
+          {j.stage === 'research_only' && j.split && <>
+            {/* Why each lead is research, and what dazl's automatic recovery already tried for it (the scan's own record); nothing here is a task for the user. */}
+            <ul className="mt-3 mx-auto max-w-xl text-left text-sm space-y-2" data-testid="research-tried">
+              {j.split.research.slice(0, PREVIEW).map(({ lead: l, cause }) => { const r = recoveryNote(l)
+                return <li key={l.id} className="rounded-xl bg-white/60 px-3 py-2" data-testid="research-row"><span className="font-semibold">{l.company}</span>: {CAUSE_TEXT[cause]}.{r && <span className="block text-xs text-[var(--ink-2)] mt-0.5" data-testid={r.ran ? 'recovery-ran' : 'recovery-not-run'}>{r.text}</span>}</li> })}
+            </ul>
+            <p className="text-sm text-[var(--ink-2)] mt-3" data-testid="recovery-next">To change the result, search again with a different signal or source:</p>
+          </>}
           <div className="flex flex-wrap justify-center gap-2 mt-4">
             {widenActions(j.play.query, icp, j.split && j.split.research.length ? [...new Set(j.split.research.map(r => r.cause))] : undefined).map(a => <Link key={a.testid} className="btn-ghost btn-sm" href={a.href} data-testid={a.testid}>{a.label}</Link>)}
           </div>
