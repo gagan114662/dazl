@@ -57,3 +57,24 @@ test('recovery never offers date widening for a missing date, and always offers 
   assert.ok(widenActions(job.query, icp, ['older']).map(a => a.testid).includes('widen-window'), 'a dated lead that was only too old can widen')
   assert.ok(widenActions(job.query, icp).map(a => a.testid).includes('widen-window'), 'no causes: the generic list is unchanged')
 })
+
+test('#352 recovery record: research leads say what the automatic recovery pass already tried, or why it did not run; no record says nothing and nothing becomes ready', async () => {
+  const { recoveryNote, CAUSE_TEXT } = await import('../lib/lead-state.ts')
+  const rec = (label: string, value: string) => ({ connector: 'scan:recovery', kind: 'recovery', value, label, source_url: 'https://news.example/a' })
+  // The exact strings recordRecovery (lib/scan/blocked-fallback.ts) writes.
+  const customer = lead({ id: 'r1', review_reason: 'counterparty_signal', enrichments: [rec('recovery:counterparty_signal', 'Recovery pass ran before this was held (counterparty_signal): searched other press for a source about the company itself for the same company; none verified.')] })
+  const undated = lead({ id: 'r2', review_reason: 'outside_window_undated', window_held: true, enrichments: [rec('recovery:undated', 'Recovery pass ran before this was held (undated): searched other press for a dated source for the same company; none verified.')] })
+  const notRun = lead({ id: 'r3', review_reason: 'blocked_by_site', window_held: true, enrichments: [rec('recovery:blocked_by_site', 'Recovery pass did not run (the run disabled the paid fallback).')] })
+  assert.deepEqual(recoveryNote(customer), { ran: true, text: 'dazl already searched other press for a source about the company itself; none verified.' })
+  assert.deepEqual(recoveryNote(undated), { ran: true, text: 'dazl already searched other press for a dated source; none verified.' })
+  assert.deepEqual(recoveryNote(notRun), { ran: false, text: 'dazl did not search other sources for it: this run allowed no extra search.' })
+  assert.equal(recoveryNote(lead({ enrichments: [rec('recovery:undated', 'Recovery pass did not run (something new).')] }))?.text, 'dazl did not search other sources for it: the search was not available for this run.')
+  assert.equal(recoveryNote(lead({ enrichments: [{ connector: 'scan:fallback', kind: 'fallback', value: 'x', label: 'other_sources', source_url: 'https://n.example' }] })), null)
+  assert.equal(recoveryNote(lead()), null)
+  // The record is display only: the NYC/London-shaped runs with it stay research_only, with zero actionable review.
+  for (const leads of [[customer, undated], [customer, notRun]]) {
+    const j = journey({ profile, jobs: [job], leads, drafts: null })
+    assert.equal(j.stage, 'research_only'); assert.equal(j.split?.review.length, 0); assert.equal(j.split?.opportunities.length, 0)
+  }
+  for (const c of ['undated', 'older', 'customer', 'place', 'closed', 'unsupported'] as const) assert.ok(CAUSE_TEXT[c] && !/ready|review/i.test(CAUSE_TEXT[c]), c)
+})

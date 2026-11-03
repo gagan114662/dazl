@@ -17,6 +17,13 @@ const CAUSE: Record<string, ResearchCause> = {
   counterparty_signal: 'customer', location_mismatch: 'place', job_closed: 'closed',
 }
 
+// Held for a fact about the evidence itself - someone else's customer, a different place, a closed opening. A person's check of the source cannot change it, so a lead
+// confirmed out of one of these stays research: never offered as draftable (lib/scan/review-action.ts) and never draftable (currentnessHeld, lib/outreach/currentness.ts).
+const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed'])
+export function uncheckableCause(reason: string | null | undefined): ResearchCause | null {
+  return reason && UNCHECKABLE.has(reason) ? CAUSE[reason] : null
+}
+
 export function researchCause(l: PreviewLead & { review_reason?: string | null }): ResearchCause {
   const r = l.review_reason ?? ''
   const date = l.event_date ?? ''
@@ -38,4 +45,23 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
   if (REVIEWABLE.has(r) && cause === 'unsupported') return { state: 'review', cause: null }
   if (!r && why === 'company website not confirmed') return { state: 'review', cause: null }
   return { state: 'research', cause }
+}
+
+// What the scan's bounded automatic recovery pass (lib/scan/blocked-fallback.ts) already did for a held lead, read from the `scan:recovery` record it writes on every
+// target it could not rescue. `ran`: other press was searched for the same company and nothing verified; otherwise the pass did not run, and why. No record: the lead was
+// not a recovery target (or predates the pass). Display only: it changes no state and never makes a lead ready.
+export const CAUSE_TEXT: Record<ResearchCause, string> = {
+  undated: 'no usable event date', older: 'event older than your time window', customer: "only another company's page names it, as their customer",
+  place: 'evidence names a different place', closed: 'the opening is closed', unsupported: 'evidence not verified',
+}
+const LOOKED_FOR: Record<string, string> = { undated: 'a dated source', quote_unconfirmed: 'a page that carries the quote', counterparty_signal: 'a source about the company itself', blocked_by_site: 'a readable source', needs_javascript: 'a readable source' }
+const NOT_RUN: Record<string, string> = { 'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run' }
+export interface RecoveryNote { ran: boolean; text: string }
+export function recoveryNote(l: { enrichments?: { connector: string; label: string | null; value: string }[] | null }): RecoveryNote | null {
+  const r = (l.enrichments ?? []).find(e => e.connector === 'scan:recovery')
+  if (!r) return null
+  const reason = (r.label ?? '').replace(/^recovery:/, '')
+  if (/^Recovery pass ran\b/.test(r.value)) return { ran: true, text: `dazl already searched other press for ${LOOKED_FOR[reason] ?? 'another source'}; none verified.` }
+  const why = /^Recovery pass did not run \((.*)\)/.exec(r.value)?.[1] ?? ''
+  return { ran: false, text: `dazl did not search other sources for it: ${NOT_RUN[why] ?? 'the search was not available for this run'}.` }
 }

@@ -146,7 +146,7 @@ export async function enrichJobSignals(db: Database.Database, tenantId: string, 
     // Company event write-through: the same fact, stored once per company for account-level
     // history. Skipped when no reliable company key exists - never guessed.
     const ck = companyKey(lead.company_domain, lead.id)
-    const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(lead.id) as import('./ats-gtm.ts').ExistingEvidenceRow[]
+    const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(lead.id) as import('./ats-gtm.ts').ExistingEvidenceRow[]
     const [f0, hb] = await Promise.all([
       edgarFunding(lead.company, fetchImpl).catch(() => null),
       atsHiringBoard(lead.company, lead.company_domain, fetchImpl).catch(() => null),
