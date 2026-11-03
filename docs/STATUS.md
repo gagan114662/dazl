@@ -133,7 +133,8 @@ Updated by the builder on every branch. Newest first.
   membership tables, backfill, server-side resolution, role table) increment 2 (routes use tenantId, role check
   on every non-read handler) and increment 3 (invitations, members, switching, Settings > Team) in review; then
   #358 increment 1 (session inventory, revoke one/all, bounded reaper; docs/design/sessions.md) and
-  increment 2 (fresh authentication for secrets, billing and member changes) in review;
+  increment 2 (fresh authentication for secrets, billing and member changes) in review; increment 3 (offboarding:
+  removal revokes the member's sessions acting in that workspace and their pending invitations) in review (b/358-offboarding);
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review; next: #371.

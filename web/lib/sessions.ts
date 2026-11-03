@@ -69,6 +69,23 @@ export function revokeAllSessions(db: Db, userId: string, o: { by: string; reaso
   return db.tx(t => revokeAllSessionsTx(t, userId, o))
 }
 
+// Offboarding (#358): the member's working sessions that act in `tenantId` end, reason 'offboarded', with who removed
+// them and when. A session acts there when it chose that workspace, or chose none and that workspace is its default
+// (the same default resolveMembership in lib/workspaces.ts picks: the personal workspace, else the oldest membership).
+// Sessions acting in the member's other workspaces stay. Run inside the removal's transaction, before the membership
+// row is deleted, so the default is read as it was. Returns how many were revoked.
+export function* revokeWorkspaceSessionsTx(t: Tx, userId: string, tenantId: string, o: { by: string; now?: number }): TxBody<number> {
+  const now = o.now ?? nowS()
+  const own = yield* t.get<{ tenant_id: string }>('SELECT tenant_id FROM memberships WHERE tenant_id = ? AND member_id = ?', [userId, userId])
+  const first = own ?? (yield* t.get<{ tenant_id: string }>('SELECT tenant_id FROM memberships WHERE member_id = ? ORDER BY created_at, tenant_id LIMIT 1', [userId]))
+  const r = first?.tenant_id === tenantId
+    ? yield* t.run(`UPDATE sessions SET revoked_at = ?, revoked_by = ?, revoke_reason = 'offboarded'
+        WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ? AND (active_tenant_id = ? OR active_tenant_id IS NULL)`, [now, o.by, userId, now, tenantId])
+    : yield* t.run(`UPDATE sessions SET revoked_at = ?, revoked_by = ?, revoke_reason = 'offboarded'
+        WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ? AND active_tenant_id = ?`, [now, o.by, userId, now, tenantId])
+  return r.changes
+}
+
 type Fence = (t: Tx) => TxBody<void>
 const noFence: Fence = function* () { /* not fenced */ }
 
