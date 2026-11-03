@@ -5,6 +5,7 @@
 // leak into another's targeting. Pure core: the fetcher and the model call are injected (tests stub both); no database, no network of its own.
 import { extractSiteText } from './icp-from-site.ts'
 import { norm } from './evidence.ts'
+import { quoteSupports } from './claim-quote.ts'
 
 export type HypKind = 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'
 export type HypStatus = 'sourced' | 'hypothesis' | 'unknown' | 'reviewed' | 'rejected'
@@ -87,8 +88,10 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
     if (!offer || !kind || !text) continue
     const pg = typeof it.url === 'string' ? byUrl.get(it.url) : undefined
     const quote = typeof it.quote === 'string' ? it.quote.replace(/\s+/g, ' ').trim().slice(0, 300) : ''
-    const quoted = !!pg && quote.length >= 12 && norm(pg.text).includes(norm(quote))
-    // A statement is sourced only when its quote is verbatim on the cited page. A size or place without that is unknown, never carried as fact; a persona without it is a hypothesis.
+    // Sourced = the quote is verbatim on the cited page AND carries the claim itself (claim-quote.ts: a real quote next
+    // to an invented headcount proves nothing), and the model did not itself mark the item as inferred.
+    const quoted = !!pg && it.inferred !== true && quote.length >= 12 && norm(pg.text).includes(norm(quote)) && quoteSupports(kind, text, quote)
+    // A size or place without that is unknown, never carried as fact; a persona without it is a hypothesis.
     const status: HypStatus = quoted ? 'sourced' : kind === 'size' || kind === 'location' ? 'unknown' : 'hypothesis'
     hyps.push({ id: hypId(offer, kind, text), offer, kind, text: status === 'unknown' ? 'unknown' : text, status, url: quoted ? pg!.url : null, quote: quoted ? quote : null, fetched_at: quoted ? pg!.fetched_at : null })
   }

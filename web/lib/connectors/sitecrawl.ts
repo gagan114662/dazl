@@ -7,7 +7,8 @@ import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, type Enrichment } from './store.ts'
-import { detectTech, type TechHit } from './techstack.ts'
+import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
+import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
 import { roleContradicted, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
@@ -378,7 +379,7 @@ const lastHit = new Map<string, number>()
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
 // buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
 // payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeNorm?: string; homeText?: string }> {
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
@@ -427,7 +428,25 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeNorm, homeText }
+  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText }
+}
+
+// #389: one dated tech_scan row per crawl of a confirmed company homepage, and a tech_change row on this lead for every adoption / removal
+// that this tenant's comparable observations of the same domain confirm (rules: lib/signals/tech-observations.ts). Reads only rows this
+// crawler wrote; a crawl without an observability verdict records nothing.
+export function recordTechObservation(db: Database.Database, tenantId: string, leadId: string, site: string, r: { tech?: TechHit[]; homeObs?: Observability }, at: number): void {
+  if (!r.homeObs || !isScanDomain(site)) return
+  const scan = scanOf(site, at, r.homeObs, (r.tech ?? []).map(t => t.name))
+  const enc = encodeScan(scan)
+  if (!enc) return
+  const date = new Date(at * 1000).toISOString().slice(0, 10)
+  addEnrichment(db, tenantId, leadId, { connector: 'sitecrawl', kind: TECH_SCAN_KIND, value: enc.value, label: enc.label, confidence: null, source_url: scan.url, source_date: date, retrieved_at: at })
+  const rows = db.prepare("SELECT value, label, source_url FROM lead_enrichments WHERE tenant_id = ? AND connector = 'sitecrawl' AND kind = ? AND value LIKE ?").all(tenantId, TECH_SCAN_KIND, `${site}|%`) as { value: string; label: string | null; source_url: string }[]
+  const history = rows.map(x => decodeScan(x.value, x.label, x.source_url)).filter((s): s is TechScan => !!s)
+  for (const c of techChanges(history, site)) {
+    const row = changeRow(c)
+    addEnrichment(db, tenantId, leadId, { connector: 'sitecrawl', kind: TECH_CHANGE_KIND, value: row.value, label: row.label, confidence: null, source_url: row.source_url, source_date: row.source_date, retrieved_at: at })
+  }
 }
 
 // Runs for one finished scan. Never throws, never touches the lead row, one audit row per site.
@@ -627,6 +646,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
       }
+      // #389: this crawl's dated technology observation (what the homepage showed, and whether it could show absence at all), then any
+      // change against this tenant's earlier comparable observations of the same domain. Not counted in n; never affects the crawl.
+      try { recordTechObservation(db, tenantId, l.id, site, r, Math.floor((deps.now ?? Date.now()) / 1000)) } catch { /* an old schema never blocks the crawl */ }
       // A guessed site passed the name AND location checks, but the evidence never linked it: say so on every contact.
       const guessed = (basisOf.get(site) ?? 'name_probe') === 'name_probe'
       for (const f of r.found) {
