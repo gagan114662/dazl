@@ -252,8 +252,11 @@ bothEngines('evaluator budget: daily caps are per tenant, durable and separate f
   assert.match(refused.record.budget.refused ?? '', /daily run cap/)
   assert.equal((await verifyClaim(claim(), { ...o, tenantId: B })).persisted, true, 'tenant B has its own budget')
   assert.equal((await verifyClaim(claim(), { ...o, tenantId: A, now: () => NOW + 86_400_000 })).persisted, true, 'a new day has a new budget')
-  // Concurrent runs reserve their whole cap first: with room for one reservation, only one of two parallel runs starts.
-  const usd = { asOf: AS_OF, now: () => NOW, db: c.db, fetchSource: stub({ [OWN]: GENUINE }), budget: { maxRunUsd: 0.05, dailyUsd: 0.08 } }
+  // Concurrent runs reserve their whole cap first: with room for one reservation, only one of two overlapping runs starts.
+  // The fetch is slow, so each run still holds its reservation (not its actual $0) while the other one reserves.
+  const slow = stub({ [OWN]: GENUINE })
+  const slowFetch: SourceFetcher = async (u, s) => { await new Promise(r => setTimeout(r, 400)); return slow(u, s) }
+  const usd = { asOf: AS_OF, now: () => NOW, db: c.db, fetchSource: slowFetch, fetchTimeoutMs: 5_000, budget: { maxRunUsd: 0.05, dailyUsd: 0.08 } }
   const both = await Promise.all([verifyClaim(claim(), { ...usd, tenantId: 'tenant-verifier-cccc' }), verifyClaim(claim(), { ...usd, tenantId: 'tenant-verifier-cccc' })])
   assert.deepEqual(both.map(r => r.persisted).sort(), [false, true])
   for (const t of ['trial_reservations', 'tenant_spend_pools', 'scan_model_calls']) {
