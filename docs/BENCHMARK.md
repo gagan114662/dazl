@@ -105,7 +105,35 @@ preset finite budget, or it does not run.
 
 **Blind scoring:** outputs are canonicalised (one row per company, by domain, else by normalised name; the raw output is
 kept beside it). They are then pooled per task across systems, given opaque ids, shuffled, and judged without the system,
-product, model or configuration. An evaluator failure, or an item it leaves out, is `unknown`.
+product, model or configuration. Any system id, product or model name in an item's text or contact is replaced with
+`[system]`, and an evidence URL that names one is withheld, so an output cannot sign itself (the count is in the
+manifest's `blinding`). An evaluator failure, or an item it leaves out, is `unknown`. Every judgement is recorded in the
+batch's `evaluations` (blind id, system after unblinding, task, entity, verdicts and the evaluator's own record).
+
+**Equal limits are enforced:** a run over the task's time limit (by the clock, or by its own report) or its cost limit is
+`incomplete`, not complete.
+
+**Frozen task set:** a recorded or live batch must run the committed task set for its version
+(`scoreboard/benchmark/v<version>/tasks.json`) unchanged, or it does not run; the CLI looks it up by version and exits 2
+(`invalid_input`) on any difference. A synthetic batch with no committed set for its version may run, labelled synthetic.
+
+**Scoring hook to the #394 contract:** `contractEvaluator()` wraps a per-lead contract scorer (`evaluateLead` from
+`lib/evals/contract.ts`, PR #571) as the blind evaluator. Per task it takes the frozen contract (none: every item is
+`unknown`, never inferred) and maps each blind item to lead evidence. The contract's field verdicts map onto the
+scorecard fields, worst first (contradicted, fail, unknown, pass):
+
+| scorecard field | contract fields |
+| --- | --- |
+| identity | `identity.entity`, `source.on_page` |
+| constraints | `place.matches`, `industry.matches`, `event.predicate`, `consent.status` |
+| event_date | `event.date_real`, `event.date_in_window` |
+| contact | `contact.usable` |
+
+A field the contract did not score is `unknown`. The tier, status, scorer and field rationales go into the judgement
+record. The hook is typed by shape; it is exercised with a stub scorer until #571 lands.
+
+With `--store`, each run is written to the store as soon as it is recorded, so an interrupted batch resumes where it
+stopped.
 
 **Origin is never upgraded:** a batch is all synthetic, all recorded or all live, and mixing is refused, so a synthetic
 fixture can never sit beside, or be presented as, a product's live result. The scorecard refuses to evaluate thresholds on
@@ -115,8 +143,8 @@ synthetic data.
 baseline as hand-written outputs, and Pancake and Gojiberry unavailable. It exercises the runner and is no result of any
 product.
 
-**Not built:** live adapters (a dazl adapter over `runJob`, and the competitor ones). Each needs owner-authorized accounts,
-keys and a budget. Repeated runs with uncertainty are #398.
+**Not built:** live adapters (a dazl adapter over `runJob`, and the competitor ones), and no live or paid batch has run.
+Each needs owner-authorized accounts, keys and a budget. Repeated runs with uncertainty are #398.
 
 ## Recorded evidence so far (`scoreboard/benchmark/history.json`)
 

@@ -2,12 +2,12 @@
 // model, no account. Every adapter here is a local stub or a fixture replay.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import {
-  batchFromFile, canonicalize, fixtureAdapter, freezeBriefs, memoryStore, runBatch, unavailableAdapter,
+  batchFromFile, canonicalize, contractEvaluator, contractVerdicts, CONTRACT_FIELDS, fixtureAdapter, freezeBriefs, memoryStore, runBatch, unavailableAdapter,
   BenchmarkRunError, type Adapter, type AdapterResult, type BatchFile, type BlindEvaluator, type BlindItem, type Brief, type Limits,
 } from '../lib/benchmark/runner.ts'
 
@@ -41,7 +41,7 @@ test('equal budget and the same frozen brief for every system; the briefs are ha
   assert.equal(x.calls.length, 4); assert.equal(y.calls.length, 4)
   for (let i = 0; i < 4; i++) {
     assert.equal(x.calls[i].brief, y.calls.find(c => c.brief.task_id === x.calls[i].brief.task_id)!.brief) // the identical object
-    assert.deepEqual(x.calls[i].limits, { usd: 2, seconds: 30 }); assert.deepEqual(y.calls[i].limits, { usd: 2, seconds: 30 })
+    assert.deepEqual(x.calls[i].limits, { usd: 2, seconds: 45 }); assert.deepEqual(y.calls[i].limits, { usd: 2, seconds: 45 })
   }
   assert.ok(Object.isFrozen(x.calls[0].brief) && Object.isFrozen(x.calls[0].brief.constraints))
   assert.throws(() => { (x.calls[0].brief as { query: string }).query = 'changed' })
@@ -120,7 +120,7 @@ test('durable budget: the batch total is reserved before each task; a paid live 
   assert.match(r.scorecards[0].tasks[2].reason!, /batch budget reached/)
   assert.equal(r.spent_usd, 4)
   const paid: Adapter = { ...spy('live-paid').a, origin: 'live', config: { product: 'p', product_version: null, model: null, sources: [], paid: true } }
-  const off = await runBatch({ ...base(), adapters: [paid], evaluator: allPass })
+  const off = await runBatch({ ...base(), adapters: [paid], evaluator: allPass, committedSet: base().set })
   assert.match(off.report[0].reason!, /paid run needs explicit authorization/)
   await assert.rejects(runBatch({ ...base(), budget: { usd_per_task: 0, seconds_per_task: 30, batch_usd: 5 } }), (e: unknown) => e instanceof BenchmarkRunError)
   await assert.rejects(runBatch({ ...base(), budget: { usd_per_task: 2, seconds_per_task: 30, batch_usd: Infinity } }), /preset/)
@@ -147,4 +147,102 @@ test('one command reproduces the scored batch; --store resumes without calling a
     assert.equal(first.split('\n\nruns:')[0], second.split('\n\nruns:')[0])
     assert.match(first, /\| pancake \| unavailable: no authorized Pancake account/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('blinding: system, product and model names are scrubbed from what the evaluator reads; an evidence URL naming one is withheld', async () => {
+  const seen: BlindItem[] = []
+  const x = spy('alpha', async b => ok(b.task_id === 'toronto-agency-office' ? [{ company: 'Querix', domain: 'querix.example', contact: 'leads via Alpha', text: 'Found by Alpha Prospector (GPT-4o-mini): Querix opened a Toronto office', evidence_urls: ['https://news.example/querix', 'https://alpha.example/lead/1'] }] : []))
+  x.a.config = { ...x.a.config, product: 'Alpha Prospector', model: 'gpt-4o-mini' }
+  const r = await runBatch({ ...base(), adapters: [x.a], evaluator: { ...allPass, judge: async (items, b) => { seen.push(...items); return allPass.judge(items, b) } } })
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].text, 'Found by [system] ([system]): Querix opened a Toronto office')
+  assert.equal(seen[0].contact, 'leads via [system]')
+  assert.deepEqual(seen[0].evidence_urls, ['https://news.example/querix', '[evidence url withheld: names a system]'])
+  assert.deepEqual([seen[0].company, seen[0].domain], ['Querix', 'querix.example']) // the lead itself is not altered
+  assert.deepEqual(r.manifest.blinding, { identity_tokens: 3, redactions: 4 })
+  // blinding changes only what the evaluator is shown: the run records the lead, and the judgement maps back to its system
+  assert.match(JSON.stringify(r.runs[0].tasks), /querix/); assert.equal(r.evaluations[0].system, 'alpha')
+})
+
+test('frozen task set: a recorded or live batch must run the committed set unchanged; a synthetic batch given one must match it', async () => {
+  const rec = fixtureAdapter({ ...structuredClone(BATCH.systems[0]), origin: 'recorded' })
+  const committed = structuredClone(BATCH.task_set)
+  await assert.rejects(runBatch({ ...base(), adapters: [rec], evaluator: allPass }), /must run a committed frozen task set/)
+  const edited = structuredClone(committed); edited.tasks[1].query += ' (edited)'
+  await assert.rejects(runBatch({ ...base(), adapters: [rec], evaluator: allPass, committedSet: edited }), /differs from the committed frozen one/)
+  const reordered = { ...structuredClone(committed), tasks: committed.tasks.map(t => Object.fromEntries(Object.entries(t).reverse())) as typeof committed.tasks }
+  assert.equal((await runBatch({ ...base(), adapters: [rec], evaluator: allPass, committedSet: reordered })).manifest.origin, 'recorded') // key order is not a change
+  await assert.rejects(runBatch({ ...base(), committedSet: edited }), /differs/)
+  await assert.rejects(runBatch({ ...base(), set: { ...committed, tasks: [committed.tasks[0], committed.tasks[0]] } }), /repeats a task id/)
+  // the CLI looks the committed set up by version: a batch that claims v1 but edits it is invalid_input, nothing run
+  const dir = mkdtempSync(path.join(tmpdir(), 'bench-frozen-'))
+  try {
+    const v1 = JSON.parse(readFileSync(new URL('../../scoreboard/benchmark/v1/tasks.json', import.meta.url), 'utf8'))
+    v1.tasks[0].query += ' (edited)'
+    const f = path.join(dir, 'b.json'); writeFileSync(f, JSON.stringify({ ...structuredClone(BATCH), task_set: { version: v1.version, frozen_at: v1.frozen_at, tasks: v1.tasks } }))
+    const res = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/benchmark.mts', 'run', '--batch', f], { cwd: path.resolve(import.meta.dirname, '..'), encoding: 'utf8' })
+    assert.equal(res.status, 2); assert.match(res.stderr, /invalid_input: the batch's task set v1 differs from the committed frozen one/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('equal time limit: a self-reported time over the task limit is incomplete, like a cost over it', async () => {
+  const x = spy('alpha', async () => ok([{ company: 'Querix', domain: 'querix.example' }], { seconds: 46 }))
+  const r = await runBatch({ ...base(), adapters: [x.a], evaluator: allPass })
+  assert.ok(r.scorecards[0].tasks.every(t => t.status === 'incomplete' && /over the task time limit \(46s > 45s\)/.test(t.reason!)))
+  assert.equal(r.report[0].validated, 0)
+})
+
+test('scoring hook: a #394 contract scorer judges blind items; the worst contract field decides, unscored is unknown, every record is kept', async () => {
+  // A stub with the shape of lib/evals/contract.ts evaluateLead (#394): per-field verdicts, a tier, the scorer.
+  const statuses: Record<string, Record<string, string>> = {
+    'mapleleaf.example': { 'identity.entity': 'pass', 'source.on_page': 'pass', 'event.date_real': 'pass', 'place.matches': 'pass', 'event.predicate': 'pass', 'event.date_in_window': 'pass', 'contact.usable': 'pass', 'consent.status': 'pass' },
+    'lakeshore.example': { 'identity.entity': 'pass', 'source.on_page': 'contradicted', 'event.date_real': 'pass', 'place.matches': 'pass', 'event.predicate': 'pass', 'event.date_in_window': 'fail', 'contact.usable': 'garbled' },
+  }
+  const evaluated: string[] = []
+  const hook = contractEvaluator<{ id: string }, { company: string; domain: string | null }>({
+    name: 'eval-contract', version: '1',
+    contractFor: b => b.task_id === 'london-seed-saas' ? null : { id: `contract-${b.task_id}` },
+    evidenceFor: it => ({ company: it.company, domain: it.domain }),
+    evaluate: (c, e) => {
+      evaluated.push(c.id)
+      const s = statuses[e.domain ?? ''] ?? {}
+      return { contract: c.id, tier: e.domain === 'mapleleaf.example' ? 'actionable_opportunity' : null, status: 'unknown', scorer: { id: 'contract-scorer', version: 1 }, verdicts: Object.entries(s).map(([field, status]) => ({ field, status, rationale: 'stub' })) }
+    },
+  })
+  const r = await runBatch({ ...base(), evaluator: hook })
+  const ev = (sys: string, key: string) => r.evaluations.find(e => e.system === sys && e.entity_key === key)!
+  assert.deepEqual(ev('dazl', 'domain:mapleleaf.example').verdicts, { identity: 'pass', constraints: 'pass', event_date: 'pass', contact: 'pass' })
+  assert.equal((ev('dazl', 'domain:mapleleaf.example').record as { tier: string }).tier, 'actionable_opportunity')
+  // contradicted beats pass, fail beats pass, an unknown status string is unknown
+  assert.deepEqual(ev('dazl', 'domain:lakeshore.example').verdicts, { identity: 'contradicted', constraints: 'pass', event_date: 'fail', contact: 'unknown' })
+  // a lead the contract scored nothing for is unknown on every field, never pass
+  assert.deepEqual(ev('chatgpt-web-baseline', 'domain:northernlights.example').verdicts, { identity: 'unknown', constraints: 'unknown', event_date: 'unknown', contact: 'unknown' })
+  // no contract for the task: unknown, the reason recorded, and the scorer was never called with an inferred contract
+  const london = r.evaluations.filter(e => e.task_id === 'london-seed-saas')
+  assert.ok(london.length > 0 && london.every(e => Object.values(e.verdicts).every(v => v === 'unknown') && /no evaluation contract/.test((e.record as { error: string }).error)))
+  assert.ok(evaluated.length > 0 && !evaluated.includes('contract-london-seed-saas'))
+  // only mapleleaf validates, once for each system that returned it
+  assert.deepEqual(r.report.filter(s => s.status === 'ran').map(s => [s.system, s.validated]), [['chatgpt-web-baseline', 1], ['dazl', 1]])
+  // the recorded evaluations cover every item of every complete task
+  assert.equal(r.evaluations.length, r.runs.flatMap(x => x.tasks.filter(t => t.status === 'complete').flatMap(t => t.results)).length)
+  const thrower = contractEvaluator({ name: 'c', version: '1', contractFor: () => ({}), evidenceFor: it => it, evaluate: () => { throw new Error('bad evidence') } })
+  const t = await runBatch({ ...base(), evaluator: thrower })
+  assert.ok(t.evaluations.every(e => /contract scorer failed: bad evidence/.test((e.record as { error: string }).error) && e.verdicts.identity === 'unknown'))
+  assert.ok(t.report.every(s => s.validated === 0))
+})
+
+test('contractVerdicts maps the #394 field names onto the scorecard fields', () => {
+  const e = (vs: [string, string][]) => ({ contract: 'c', tier: null, status: 'unknown' as const, scorer: { id: 's', version: 1 }, verdicts: vs.map(([field, status]) => ({ field, status })) })
+  assert.deepEqual(contractVerdicts(e([])), { identity: 'unknown', constraints: 'unknown', event_date: 'unknown', contact: 'unknown' })
+  assert.deepEqual(contractVerdicts(e([['identity.entity', 'pass'], ['industry.matches', 'fail'], ['consent.status', 'pass'], ['event.date_real', 'unknown'], ['event.date_in_window', 'pass'], ['contact.usable', 'pass'], ['outcome.evidence', 'fail']])),
+    { identity: 'pass', constraints: 'fail', event_date: 'unknown', contact: 'pass' })
+  assert.deepEqual(Object.keys(CONTRACT_FIELDS).sort(), ['constraints', 'contact', 'event_date', 'identity'])
+})
+
+test('an evaluator that omits an item records why; the blind ids map back to the right system after judging', async () => {
+  const half: BlindEvaluator = { ...allPass, judge: async (items, b) => { const all = await allPass.judge(items, b); return Object.fromEntries(Object.entries(all).slice(0, 1)) } }
+  const r = await runBatch({ ...base(), evaluator: half })
+  const missing = r.evaluations.filter(e => (e.record as { error?: string } | null)?.error === 'evaluator returned no judgement for this item')
+  assert.ok(missing.length > 0 && missing.every(e => Object.values(e.verdicts).every(v => v === 'unknown')))
+  for (const e of r.evaluations) assert.ok(r.runs.find(x => x.system === e.system)!.tasks.find(t => t.task_id === e.task_id)!.results.some(x => x.entity_key === e.entity_key))
 })

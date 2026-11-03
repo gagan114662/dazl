@@ -14,12 +14,18 @@
 //    would be exceeded the remaining tasks are `not_run`. A paid live adapter needs explicit authorization and a preset
 //    finite budget, or it does not run.
 //  - Blind scoring. Outputs are canonicalised (raw kept), pooled per task across systems, given opaque ids and shuffled,
-//    then judged by the evaluator without the system, product, model or config. Verdicts are mapped back after.
+//    then judged by the evaluator without the system, product, model or config. Verdicts are mapped back after. Any
+//    system, product or model name inside an item's text or contact is replaced with [system], and an evidence URL that
+//    names one is withheld, so an output cannot sign itself.
+//  - Frozen task set. A recorded or live batch must run the committed task set for its version, unchanged; a synthetic
+//    batch given a committed set must match it too.
+//  - Scoring hook. contractEvaluator() puts any per-lead contract scorer (the #394 evaluation contract,
+//    lib/evals/contract.ts evaluateLead) behind the same blind interface; each judgement's record is kept in the result.
 //  - Origin is carried, never upgraded. A batch is all synthetic, all recorded or all live: mixing is refused, so a
 //    synthetic fixture can never sit beside, or be presented as, a competitor's live result. scorecard() then refuses
 //    to evaluate thresholds for synthetic data.
 import { createHash } from 'node:crypto'
-import { FIELDS, scorecard, validated, type BenchmarkRun, type Field, type Scorecard, type Task, type TaskRun, type TaskSet, type Verdict } from './scorecard.ts'
+import { FIELDS, problemSummary, scorecard, validated, type BenchmarkRun, type Field, type Scorecard, type Task, type TaskRun, type TaskSet, type Verdict } from './scorecard.ts'
 
 export type AdapterOrigin = 'live' | 'recorded' | 'synthetic'
 export interface Brief {
@@ -40,7 +46,10 @@ export interface Adapter {
 }
 // What the evaluator sees: no system, product, model or config.
 export interface BlindItem { blind_id: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; text: string | null }
-export interface BlindEvaluator { name: string; version: string; independent: boolean; judge(items: BlindItem[], brief: Brief): Promise<Record<string, Partial<Record<Field, Verdict>>>> }
+// One judgement per blind id: the four scorecard fields, plus an optional record (rationale, tier, evidence) kept for audit.
+export type Judgement = Partial<Record<Field, Verdict>> & { record?: unknown }
+export interface BlindEvaluator { name: string; version: string; independent: boolean; judge(items: BlindItem[], brief: Brief): Promise<Record<string, Judgement>> }
+export interface Evaluation { blind_id: string; system: string; task_id: string; entity_key: string; verdicts: Record<Field, Verdict>; record: unknown }
 
 export interface CanonicalItem { rank: number; entity_key: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; raw: RawItem }
 export interface StoredRun { run_id: string; system: string; task_id: string; task: Omit<TaskRun, 'results'>; items: CanonicalItem[]; interventions: number }
@@ -65,6 +74,37 @@ export function freezeBriefs(set: TaskSet, asOf: string): { briefs: readonly Bri
     return { task_id: t.id, query: t.query, seller: x.brief?.seller ?? null, language: t.language, constraints: structuredClone(x.constraints ?? null), as_of: asOf, window_days: windowOf(x.constraints) }
   })
   return { briefs: deepFreeze(briefs), hash: sha(JSON.stringify(briefs)) }
+}
+
+// Key-order-independent JSON, so a committed task set and a batch's copy compare by content.
+const stable = (v: unknown): string => Array.isArray(v) ? `[${v.map(stable).join(',')}]` : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(',')}}` : JSON.stringify(v) ?? 'null'
+// Null when the batch may run this task set; otherwise why not. `committed` is the task set committed for set.version
+// (scoreboard/benchmark/v<version>/tasks.json), or null when none is.
+export function frozenSetProblem(set: TaskSet, committed: TaskSet | null, origin: AdapterOrigin): string | null {
+  if (!set || !Array.isArray(set.tasks) || !set.tasks.length) return 'the task set has no tasks'
+  if (new Set(set.tasks.map(t => t.id)).size !== set.tasks.length) return 'the task set repeats a task id'
+  if (!committed) return origin === 'synthetic' ? null : `a ${origin} batch must run a committed frozen task set; none is committed for v${set.version}`
+  if (committed.version !== set.version) return `the committed task set is v${committed.version}, the batch names v${set.version}`
+  if (stable(committed.tasks) !== stable(set.tasks) || committed.frozen_at !== set.frozen_at) return `the batch's task set v${set.version} differs from the committed frozen one (a change is a new version)`
+  return null
+}
+
+// --- blinding -----------------------------------------------------------------------------------------------------
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// The names that would reveal a system: its system id, product and model (three characters or more).
+export function identityTokens(adapters: Pick<Adapter, 'system' | 'config'>[]): string[] {
+  const t = new Set<string>()
+  for (const a of adapters) for (const s of [a.system, a.config.product, a.config.model]) if (s && s.trim().length >= 3) t.add(s.trim().toLowerCase())
+  return [...t].sort((a, b) => b.length - a.length)
+}
+// Strip identity tokens from what the evaluator reads. Company and domain are the lead itself and stay as they are.
+export function blindItem(it: Omit<BlindItem, 'blind_id'>, blind_id: string, tokens: string[]): { item: BlindItem; redactions: number } {
+  let redactions = 0
+  const re = tokens.length ? new RegExp(tokens.map(escapeRe).join('|'), 'gi') : null
+  const scrub = (s: string | null) => { if (s === null || !re) return s; return s.replace(re, () => { redactions++; return '[system]' }) }
+  const evidence_urls = it.evidence_urls.map(u => { if (re && new RegExp(re.source, 'i').test(u)) { redactions++; return '[evidence url withheld: names a system]' } return u })
+  return { item: { blind_id, company: it.company, domain: it.domain, contact: scrub(it.contact), event_date: it.event_date, evidence_urls, text: scrub(it.text) }, redactions }
 }
 
 // --- canonicalisation ---------------------------------------------------------------------------------------------
@@ -95,6 +135,7 @@ export interface BatchOptions {
   set: TaskSet; adapters: Adapter[]; asOf: string; budget: Budget; seed: number; evaluator: BlindEvaluator
   store?: RunStore; commit?: string | null; startedAt?: string
   allowPaid?: boolean           // a paid live adapter runs only with this AND a finite batch budget
+  committedSet?: TaskSet | null // the committed frozen task set for set.version; required unless the batch is synthetic
 }
 export interface SystemReport {
   system: string; origin: AdapterOrigin; status: 'ran' | 'unavailable'; reason: string | null
@@ -104,8 +145,9 @@ export interface SystemReport {
   seconds: number | null; spend_usd: number | null; interventions: number
 }
 export interface BatchResult {
-  manifest: { batch_id: string; task_set_version: string; as_of: string; briefs_hash: string; seed: number; budget: Budget; origin: AdapterOrigin; label: string; order: Record<string, string[]>; systems: { system: string; origin: AdapterOrigin; config: AdapterConfig; available: Adapter['available'] }[]; evaluator: { name: string; version: string; independent: boolean } }
+  manifest: { batch_id: string; task_set_version: string; as_of: string; briefs_hash: string; seed: number; budget: Budget; origin: AdapterOrigin; label: string; order: Record<string, string[]>; systems: { system: string; origin: AdapterOrigin; config: AdapterConfig; available: Adapter['available'] }[]; evaluator: { name: string; version: string; independent: boolean }; blinding: { identity_tokens: number; redactions: number } }
   runs: BenchmarkRun[]; scorecards: Scorecard[]; report: SystemReport[]; spent_usd: number
+  evaluations: Evaluation[]     // every blind judgement mapped back to its system after judging, with its record
 }
 
 const rng = (seed: number) => { let s = (seed >>> 0) || 1; return () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return ((s >>> 0) % 1_000_000) / 1_000_000 } }
@@ -113,6 +155,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> => {
   let t: ReturnType<typeof setTimeout> | undefined
   return Promise.race([p, new Promise<'timeout'>(r => { t = setTimeout(() => r('timeout'), ms) })]).finally(() => clearTimeout(t))
 }
+const VERDICTS: Verdict[] = ['pass', 'fail', 'unknown', 'contradicted']
 const STOP_STATUS: Record<Stop, TaskRun['status']> = { budget: 'incomplete', timeout: 'incomplete', rate_limited: 'incomplete', login_required: 'unsupported', paywall: 'unsupported', feature_unavailable: 'unsupported' }
 
 export async function runBatch(o: BatchOptions): Promise<BatchResult> {
@@ -123,6 +166,8 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
   const origins = new Set(systems.map(a => a.origin))
   if (origins.size !== 1) throw new BenchmarkRunError(`one batch, one origin: got ${[...origins].join(' + ')} (a synthetic fixture never sits beside a live result)`)
   const origin = systems[0].origin
+  const frozen = frozenSetProblem(set, o.committedSet ?? null, origin)
+  if (frozen) throw new BenchmarkRunError(frozen)
   const { briefs, hash } = freezeBriefs(set, o.asOf)
   const batch_id = sha(JSON.stringify({ v: set.version, as_of: o.asOf, hash, systems: systems.map(a => [a.system, a.origin, a.config]), budget, seed: o.seed })).slice(0, 24)
   const store = o.store ?? memoryStore()
@@ -164,6 +209,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       spent += res.cost_usd ?? budget.usd_per_task
       const items = canonicalize(res.items)
       if (res.stopped) { put({ task_id: brief.task_id, status: STOP_STATUS[res.stopped], reason: `${res.stopped}${STOP_STATUS[res.stopped] === 'unsupported' ? ' (never bypassed)' : ''}${res.detail ? `: ${res.detail}` : ''}`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions); continue }
+      if (res.seconds !== null && res.seconds > budget.seconds_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task time limit (${res.seconds}s > ${budget.seconds_per_task}s)`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions); continue }
       if (res.cost_usd !== null && res.cost_usd > budget.usd_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task budget ($${res.cost_usd} > $${budget.usd_per_task})`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions); continue }
       put({ task_id: brief.task_id, status: 'complete', reason: null, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions)
     }
@@ -171,21 +217,30 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
 
   // Blind scoring: per task, every complete system's items pooled, opaque ids, shuffled, judged without the system.
   const verdicts = new Map<string, Record<Field, Verdict>>() // `${system}|${task}|${entity}`
+  const evaluations: Evaluation[] = []
+  const tokens = identityTokens(systems)
+  let redactions = 0
   const rand = rng(o.seed ^ 0x9e3779b9)
   for (const brief of briefs) {
-    const pool: { blind: BlindItem; ref: string }[] = []
+    const pool: { blind: BlindItem; ref: string; system: string; entity_key: string }[] = []
     for (const a of systems) {
       const r = stored.get(`${a.system}|${brief.task_id}`)
       if (!r || r.task.status !== 'complete') continue
-      for (const it of r.items) pool.push({ ref: `${a.system}|${brief.task_id}|${it.entity_key}`, blind: { blind_id: sha(`${batch_id}|${a.system}|${brief.task_id}|${it.entity_key}`).slice(0, 16), company: it.company, domain: it.domain, contact: it.contact, event_date: it.event_date, evidence_urls: it.evidence_urls, text: it.raw.text ?? null } })
+      for (const it of r.items) {
+        const b = blindItem({ company: it.company, domain: it.domain, contact: it.contact, event_date: it.event_date, evidence_urls: it.evidence_urls, text: it.raw.text ?? null }, sha(`${batch_id}|${a.system}|${brief.task_id}|${it.entity_key}`).slice(0, 16), tokens)
+        redactions += b.redactions
+        pool.push({ ref: `${a.system}|${brief.task_id}|${it.entity_key}`, blind: b.item, system: a.system, entity_key: it.entity_key })
+      }
     }
     if (!pool.length) continue
     for (let k = pool.length - 1; k > 0; k--) { const j = Math.floor(rand() * (k + 1)); [pool[k], pool[j]] = [pool[j], pool[k]] }
-    let judged: Record<string, Partial<Record<Field, Verdict>>> = {}
-    try { judged = await o.evaluator.judge(pool.map(p => structuredClone(p.blind)), brief) } catch { judged = {} } // an evaluator failure is unknown, never pass
+    let judged: Record<string, Judgement> = {}, failure: string | null = null
+    try { judged = await o.evaluator.judge(pool.map(p => structuredClone(p.blind)), brief) ?? {} } catch (e) { judged = {}; failure = (e instanceof Error ? e.message : String(e)).slice(0, 200) } // an evaluator failure is unknown, never pass
     for (const p of pool) {
-      const v = judged[p.blind.blind_id] ?? {}
-      verdicts.set(p.ref, Object.fromEntries(FIELDS.map(f => [f, (['pass', 'fail', 'unknown', 'contradicted'] as Verdict[]).includes(v[f] as Verdict) ? v[f] : 'unknown'])) as Record<Field, Verdict>)
+      const v = Object.hasOwn(judged, p.blind.blind_id) ? judged[p.blind.blind_id] ?? {} : {}
+      const fields = Object.fromEntries(FIELDS.map(f => [f, VERDICTS.includes(v[f] as Verdict) ? v[f] : 'unknown'])) as Record<Field, Verdict>
+      verdicts.set(p.ref, fields)
+      evaluations.push({ blind_id: p.blind.blind_id, system: p.system, task_id: brief.task_id, entity_key: p.entity_key, verdicts: fields, record: failure ? { error: `evaluator failed: ${failure}` } : Object.hasOwn(judged, p.blind.blind_id) ? structuredClone(v.record ?? null) : { error: 'evaluator returned no judgement for this item' } })
     }
   }
 
@@ -196,7 +251,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     started_at: startedAt, source: `benchmark batch ${batch_id}`,
     tasks: briefs.map(b => { const r = stored.get(`${a.system}|${b.task_id}`)!; return { ...r.task, results: r.items.map(it => ({ rank: it.rank, entity_key: it.entity_key, verdicts: verdicts.get(`${a.system}|${b.task_id}|${it.entity_key}`) ?? Object.fromEntries(FIELDS.map(f => [f, 'unknown'])) as Record<Field, Verdict>, evidence: it.evidence_urls })) } }),
   }))
-  const cards = runs.map(r => scorecard(set, r))
+  const cards = runs.map(r => { const c = scorecard(set, r); if (c.status === 'invalid_input') throw new BenchmarkRunError(`the runner built an invalid run for ${r.system}: ${problemSummary(c.problems)}`); return c })
   const validatedBy = new Map<string, Set<string>>() // entity -> systems that validated it
   for (const r of runs) for (const t of r.tasks) for (const x of t.results) if (validated(x)) { const s = validatedBy.get(x.entity_key) ?? new Set(); s.add(r.system); validatedBy.set(x.entity_key, s) }
   const report: SystemReport[] = systems.map((a, i) => {
@@ -215,8 +270,8 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     }
   })
   return {
-    manifest: { batch_id, task_set_version: set.version, as_of: o.asOf, briefs_hash: hash, seed: o.seed, budget, origin, label: origin === 'synthetic' ? 'SYNTHETIC fixtures: not live results of any product' : origin === 'recorded' ? 'recorded outputs' : 'live runs', order, systems: systems.map(a => ({ system: a.system, origin: a.origin, config: a.config, available: avail.get(a.system)! })), evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent } },
-    runs, scorecards: cards, report, spent_usd: Math.round(spent * 1e6) / 1e6,
+    manifest: { batch_id, task_set_version: set.version, as_of: o.asOf, briefs_hash: hash, seed: o.seed, budget, origin, label: origin === 'synthetic' ? 'SYNTHETIC fixtures: not live results of any product' : origin === 'recorded' ? 'recorded outputs' : 'live runs', order, systems: systems.map(a => ({ system: a.system, origin: a.origin, config: a.config, available: avail.get(a.system)! })), evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent }, blinding: { identity_tokens: tokens.length, redactions } },
+    runs, scorecards: cards, report, spent_usd: Math.round(spent * 1e6) / 1e6, evaluations: evaluations.sort((a, b) => a.task_id.localeCompare(b.task_id) || a.system.localeCompare(b.system) || a.entity_key.localeCompare(b.entity_key)),
   }
 }
 
@@ -250,6 +305,52 @@ export function labelEvaluator(labels: Record<string, Record<string, Partial<Rec
       const v = (it.domain && t[`domain:${it.domain}`]) || t[`name:${nameKey(it.company)}`] || {}
       return [it.blind_id, v]
     })),
+  }
+}
+
+// --- scoring hook: the #394 evaluation contract -------------------------------------------------------------------
+// The shape of lib/evals/contract.ts evaluateLead()'s LeadEvaluation (#394, PR #571) that the runner reads. It is
+// structural so the hook takes that function as it is once it lands, without this file depending on an unmerged module.
+export interface ContractLeadEvaluation {
+  contract: string; tier: string | null; status: 'pass' | 'fail' | 'unknown'; scorer: { id: string; version: number }
+  verdicts: { field: string; status: string; rationale?: string; evidence?: string[] }[]
+}
+// Which contract fields decide each scorecard field. The scorecard field takes the worst of them
+// (contradicted, then fail, then unknown); a field the contract did not score, or a status it does not know, is unknown.
+export const CONTRACT_FIELDS: Record<Field, string[]> = {
+  identity: ['identity.entity', 'source.on_page'],
+  constraints: ['place.matches', 'industry.matches', 'event.predicate', 'consent.status'],
+  event_date: ['event.date_real', 'event.date_in_window'],
+  contact: ['contact.usable'],
+}
+export function contractVerdicts(e: ContractLeadEvaluation): Record<Field, Verdict> {
+  const by = new Map(e.verdicts.map(v => [v.field, VERDICTS.includes(v.status as Verdict) ? v.status as Verdict : 'unknown' as Verdict]))
+  return Object.fromEntries(FIELDS.map(f => {
+    const got = CONTRACT_FIELDS[f].filter(k => by.has(k)).map(k => by.get(k)!)
+    return [f, got.length ? (['contradicted', 'fail', 'unknown', 'pass'] as Verdict[]).find(w => got.includes(w))! : 'unknown']
+  })) as Record<Field, Verdict>
+}
+export interface ContractHook<C, E> {
+  name: string; version: string
+  contractFor(brief: Brief): C | null                       // the frozen contract for this task; null -> every item unknown (never inferred)
+  evidenceFor(item: BlindItem, brief: Brief): E              // the blind item as the contract's lead evidence
+  evaluate(contract: C, evidence: E): ContractLeadEvaluation // e.g. evaluateLead from lib/evals/contract.ts
+}
+// A BlindEvaluator over a contract scorer. It reads only the blind items and the frozen brief, so it cannot see a system
+// or change the targeting; an item it cannot score is unknown with the error recorded.
+export function contractEvaluator<C, E>(h: ContractHook<C, E>): BlindEvaluator {
+  return {
+    name: h.name, version: h.version, independent: true,
+    judge: async (items, brief) => {
+      const contract = h.contractFor(brief)
+      return Object.fromEntries(items.map((it): [string, Judgement] => {
+        if (contract === null) return [it.blind_id, { record: { error: `no evaluation contract for task ${brief.task_id}` } }]
+        try {
+          const e = h.evaluate(contract, h.evidenceFor(it, brief))
+          return [it.blind_id, { ...contractVerdicts(e), record: { contract: e.contract, tier: e.tier, status: e.status, scorer: e.scorer, verdicts: e.verdicts } }]
+        } catch (err) { return [it.blind_id, { record: { error: `contract scorer failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}` } }] }
+      }))
+    },
   }
 }
 

@@ -18,7 +18,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { evaluateThresholds, fromScoreboardResult, inputProblems, problemSummary, regressions, scorecard, scorecardMarkdown, type BenchmarkRun, type InvalidScorecard, type Scorecard, type TaskSet, type ThresholdSet } from '../lib/benchmark/scorecard.ts'
-import { batchFromFile, batchMarkdown, memoryStore, runBatch, type BatchFile, type StoredRun } from '../lib/benchmark/runner.ts'
+import { batchFromFile, batchMarkdown, BenchmarkRunError, memoryStore, runBatch, type BatchFile, type StoredRun } from '../lib/benchmark/runner.ts'
 
 const dir = path.resolve(import.meta.dirname, '..', '..', 'scoreboard', 'benchmark')
 const arg = (f: string) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : undefined }
@@ -75,13 +75,21 @@ if (cmd === 'scorecard') {
   console.log(h.note + '\n')
   for (const o of h.observations) console.log(`${o.date}  ${o.request}  [${o.source}${o.commit ? `, ${o.commit}` : ''}]  ${Object.entries(o.counts).map(([k, v]) => `${k}=${v}`).join(' ') || '(no counts)'}${o.note ? `  - ${o.note}` : ''}`)
 } else if (cmd === 'run') {
-  const opts = batchFromFile(json<BatchFile>(arg('--batch') ?? die('--batch BATCH.json is required')))
+  const batch = json<BatchFile>(arg('--batch') ?? die('--batch BATCH.json is required'))
+  if (!isObj(batch) || !isObj(batch.task_set)) die('invalid_input: the batch file has no task_set')
+  let opts: ReturnType<typeof batchFromFile>
+  try { opts = batchFromFile(batch) } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}`); throw e }
+  // the committed frozen task set for this version, if there is one: the batch must run it unchanged
+  const v = String(batch.task_set.version), committedFile = path.join(dir, `v${v}`, 'tasks.json')
+  const committedSet = /^[\w.-]+$/.test(v) && existsSync(committedFile) ? json<TaskSet>(committedFile) : null
   const storeFile = arg('--store')
   const store = memoryStore()
   if (storeFile && existsSync(storeFile)) for (const r of json<StoredRun[]>(storeFile)) store.put(r)
   const before = store.runs.size
-  const r = await runBatch({ ...opts, store, commit: process.env.GITHUB_SHA ?? null })
-  if (storeFile) writeFileSync(storeFile, JSON.stringify([...store.runs.values()], null, 2) + '\n')
+  // durable: every recorded run is written at once, so an interrupted batch resumes where it stopped
+  const durable = { get: store.get, put: (x: StoredRun) => { store.put(x); if (storeFile) writeFileSync(storeFile, JSON.stringify([...store.runs.values()], null, 2) + '\n') } }
+  let r: Awaited<ReturnType<typeof runBatch>>
+  try { r = await runBatch({ ...opts, store: durable, committedSet, commit: process.env.GITHUB_SHA ?? null }) } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}; nothing run`); throw e }
   const out = arg('--out')
   if (out) {
     mkdirSync(out, { recursive: true })
