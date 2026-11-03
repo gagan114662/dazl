@@ -217,7 +217,9 @@ StatusFileTest (every pre-SIGTERM error path writes its status file and delivers
 exclusive status-file creation; post-signal phases; vocabulary covers every code the helper can report).
 `ops/test_owns_listener_launch.py` (#621): vanished fds are skipped while permission, process-gone and tcp-table
 failures still refuse with their `cause`; the cause reaches the status file and the launch log, forged causes are
-dropped; on Linux, a real fd-churning child and a quiet child never raise and a reaped pid refuses.
+dropped (wrong types, unhashable arrays/objects, null, huge or non-UTF-8 files, missing or extra keys,
+nesting) while the fixed status/phase/service_changed and the launch result are still logged through the real
+wrapper path; on Linux, a real fd-churning child and a quiet child never raise and a reaped pid refuses.
 
 ### Fail-stop rule
 

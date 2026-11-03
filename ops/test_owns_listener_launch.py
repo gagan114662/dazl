@@ -182,6 +182,156 @@ class CauseRecordTests(unittest.TestCase):
                     self.assertNotIn('SYNTHETIC_SECRET_621', json.dumps(result))
 
 
+MALFORMED_WORDS = [[], ['fd_enumeration'], {}, {'step': 'tcp_table'}, None, 0, 1, True, 1.5, '', 'x' * 300,
+                   'FD_ENUMERATION', 'fd_enumeration\u0000', '\udcff', 'SYNTHETIC_SECRET_621']
+MALFORMED_ERRNOS = [[], {}, '2', 'SYNTHETIC_SECRET_621', True, False, -1, 4096, 2 ** 70, 1.5, float('nan')]
+VALID_CAUSE = {'step': 'tcp_table', 'exception': 'IndexError', 'errno': None}
+FIXED = {'status': 'listener_identity_unverifiable', 'phase': 'preflight', 'service_changed': False}
+
+
+def malformed_causes():
+    """Every cause field fed wrong types, bad words, missing and extra keys, nesting."""
+    for field in ['step', 'exception']:
+        for value in MALFORMED_WORDS:
+            yield '%s=%r' % (field, value), {**VALID_CAUSE, field: value}
+    for value in MALFORMED_ERRNOS:
+        yield 'errno=%r' % (value,), {**VALID_CAUSE, 'errno': value}
+    for key in VALID_CAUSE:
+        yield 'missing %s' % key, {k: v for k, v in VALID_CAUSE.items() if k != key}
+    yield 'extra key', {**VALID_CAUSE, 'detail': 'SYNTHETIC_SECRET_621'}
+    yield 'nested cause', {**VALID_CAUSE, 'step': {'step': 'tcp_table', 'exception': [], 'errno': {}}}
+    for value in [[], [VALID_CAUSE], 'SYNTHETIC_SECRET_621', 7, None, True, {}]:
+        yield 'cause=%r' % (value,), value
+
+
+def status_bytes(document):
+    # allow_nan: NaN/Infinity are valid input to json.loads, so a forger can send them.
+    return json.dumps(document).encode()
+
+
+class MalformedCauseTests(unittest.TestCase):
+    """#622 review: malformed causes are dropped; the fixed fields and the launch result are still recorded."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.count = 0
+
+    def status_file(self, raw):
+        self.count += 1
+        path = self.root / ('status-%d.json' % self.count)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, raw); os.close(fd)
+        return path
+
+    def assert_sanitized(self, result):
+        # Only fixed-vocabulary words, booleans/'unknown', 40-hex, or a fully valid cause survive.
+        codes, phases, steps, names = checked.safe_launch_vocabulary()
+        self.assertIn(result['state'], {'read', 'invalid', 'missing', 'refused'})
+        self.assertLessEqual(set(result), {'state', 'status', 'phase', 'service_changed', 'commit', 'cause'})
+        if 'status' in result: self.assertIn(result['status'], codes | {'unrecognised'})
+        if 'phase' in result: self.assertIn(result['phase'], phases | {'unrecognised'})
+        if 'service_changed' in result: self.assertTrue(result['service_changed'] in (True, False) and type(result['service_changed']) is bool or result['service_changed'] == 'unknown')
+        if 'cause' in result: self.assertEqual(checked.read_cause(result['cause'], steps, names), result['cause'])
+        self.assertNotIn('SYNTHETIC_SECRET_621', json.dumps(result))
+
+    def test_read_status_drops_every_malformed_cause_and_keeps_fixed_fields(self):
+        for name, cause in malformed_causes():
+            with self.subTest(case=name):
+                result = checked.read_status(self.status_file(status_bytes({**FIXED, 'cause': cause})))
+                self.assertEqual(result, {'state': 'read', **FIXED})
+                self.assert_sanitized(result)
+
+    def test_instinct_cases_array_object_null_for_step_and_exception(self):
+        _, _, steps, names = checked.safe_launch_vocabulary()
+        for field in ['step', 'exception']:
+            for value in [[], {}, None]:
+                with self.subTest(field=field, value=value):
+                    self.assertIsNone(checked.read_cause({**VALID_CAUSE, field: value}, steps, names))
+
+    def test_malformed_status_fields_and_files_never_raise(self):
+        documents = [
+            {**FIXED, 'status': [], 'phase': {}, 'service_changed': 1},
+            {**FIXED, 'status': {'a': 1}, 'phase': ['preflight'], 'service_changed': 1.0},
+            {**FIXED, 'status': None, 'phase': None, 'service_changed': [], 'commit': ['a' * 40]},
+            {**FIXED, 'service_changed': 0, 'commit': 'A' * 40},
+            {**FIXED, 'service_changed': 'yes', 'commit': {'commit': 'a' * 40}},
+            {}, [], [FIXED], 'listener_identity_unverifiable', 3, None,
+        ]
+        raws = [status_bytes(doc) for doc in documents] + [
+            b'\xff\xfe\x00 not utf-8', b'{"status": "\xff"}', b'', b'{', b'x' * 5000,
+            json.dumps({**FIXED, 'cause': {**VALID_CAUSE, 'step': 'x' * 5000}}).encode(),
+            b'[' * 2000 + b']' * 2000, b'{"a":' * 800 + b'1' + b'}' * 800,
+            b'{"status": "listener_identity_unverifiable", "errno": NaN, "cause": {"step": "tcp_table", "exception": "IndexError", "errno": Infinity}}',
+            b'{"status": "deployed", "status": "listener_identity_unverifiable", "cause": {"step": "tcp_table", "step": [], "exception": "IndexError", "errno": null}}',
+            ('{"commit": 1%s}' % ('0' * 4000)).encode(),
+        ]
+        for index, raw in enumerate(raws):
+            with self.subTest(index=index):
+                result = checked.read_status(self.status_file(raw))
+                self.assert_sanitized(result)
+                self.assertNotIn('cause', result)
+
+    def test_safe_launch_cause_for_exceptions_without_or_with_bad_errno(self):
+        class NoErrno(Exception): pass
+        class BadErrno(OSError):
+            @property
+            def errno(self): return 'SYNTHETIC_SECRET_621'
+        cases = [(OSError(), 'OSError', None), (Exception('x'), 'Exception', None), (NoErrno(), 'unrecognised', None),
+                 (BadErrno(), 'unrecognised', None), (OSError(99999, 'big'), 'OSError', None), (OSError(-1, 'neg'), 'OSError', None),
+                 (IndexError('SYNTHETIC_SECRET_621'), 'IndexError', None), (PermissionError(13, 'x'), 'PermissionError', 13)]
+        _, _, steps, names = checked.safe_launch_vocabulary()
+        for error, exception, number in cases:
+            with self.subTest(error=type(error).__name__):
+                cause = m.failure_cause('fd_enumeration', error)
+                self.assertEqual(cause, {'step': 'fd_enumeration', 'exception': exception, 'errno': number})
+                self.assertEqual(checked.read_cause(json.loads(json.dumps(cause)), steps, names), cause)
+
+
+class MalformedCauseWrapperTests(unittest.TestCase):
+    """The actual checked_launch.run path: a forged status file never stops the launch result being logged."""
+
+    WRITER = ('import os,sys\n'
+              'fd=os.open(sys.argv[-1], os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)\n'
+              'os.write(fd, bytes.fromhex(sys.argv[1])); os.close(fd)\n'
+              'raise SystemExit(int(sys.argv[2]))')
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name).resolve()
+        (root / 'logs').mkdir(mode=0o700)
+        self.log = root / 'logs' / 'launch-log.jsonl'
+
+    def run_wrapper(self, raw, returncode=1):
+        launch = [sys.executable, '-c', self.WRITER, raw.hex(), str(returncode)]
+        with patch.object(checked, 'bind_launch'), patch.object(checked, 'bind_target'), patch.object(checked, 'require_ci'):
+            return checked.run([[sys.executable, '-c', 'pass']], launch, repository='gagan114662/dazl', commit='a' * 40, log_path=str(self.log))
+
+    def test_malformed_causes_through_the_wrapper_still_record_the_launch_result(self):
+        cases = [(name, status_bytes({**FIXED, 'cause': cause})) for name, cause in malformed_causes()]
+        cases += [('non-utf8', b'\xff\xfe junk'), ('huge', b'{' + b' ' * 6000 + b'}'), ('deep', b'[' * 2000 + b']' * 2000),
+                  ('wrong field types', status_bytes({'status': [], 'phase': {}, 'service_changed': 1, 'commit': 7, 'cause': {'step': [], 'exception': {}, 'errno': []}}))]
+        for index, (name, raw) in enumerate(cases):
+            with self.subTest(case=name):
+                report, code = self.run_wrapper(raw)
+                self.assertEqual((code, report), (1, {'status': 'launch_failed', 'returncode': 1, 'launch_reached': True}))
+                line = json.loads(self.log.read_text().splitlines()[-1])
+                self.assertEqual((line['status'], line['wrapper_returncode'], line['launch_reached']), ('launch_failed', 1, True))
+                self.assertEqual((line['launch']['result'], line['launch']['returncode']), ('exit', 1))
+                status = line['launch']['status']
+                self.assertNotIn('cause', status)
+                if status['state'] == 'read' and name not in ('wrong field types',):
+                    self.assertEqual(status, {'state': 'read', **FIXED})
+                self.assertNotIn('SYNTHETIC_SECRET_621', self.log.read_text())
+        self.assertEqual(len(self.log.read_text().splitlines()), len(cases))
+
+    def test_valid_cause_reaches_the_log_through_the_wrapper(self):
+        report, code = self.run_wrapper(status_bytes({**FIXED, 'cause': {'step': 'fd_enumeration', 'exception': 'FileNotFoundError', 'errno': 2}}))
+        self.assertEqual((code, report['status']), (1, 'launch_failed'))
+        line = json.loads(self.log.read_text().splitlines()[-1])
+        self.assertEqual(line['launch']['status'], {'state': 'read', **FIXED, 'cause': {'step': 'fd_enumeration', 'exception': 'FileNotFoundError', 'errno': 2}})
+
+
 @unittest.skipUnless(LINUX_PROC, 'needs Linux /proc; runs in CI fail-closed (ubuntu-latest)')
 class RealProcessTests(unittest.TestCase):
     """Real children: fd-churning vs quiet. Offline, loopback only, no signals to anything but the test's own child."""
