@@ -41,6 +41,11 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
+  same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
+  fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
+  and never ask the user to check or confirm. Stubbed fixtures only; not verified live.
+
 - PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
   `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
   and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the recovery-runbook
