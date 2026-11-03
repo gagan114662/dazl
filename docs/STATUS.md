@@ -44,6 +44,10 @@ Updated by the builder on every branch. Newest first.
   policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
   comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
   from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
+- b/406-buyer-answers (#406, stacked on b/402): conversation layer for routine buyer answers (lib/replies/buyer-conversation.ts):
+  thread state from the thread itself (DMARC-authenticated prospect only, takeover, duplicate ids, open exceptions, reply
+  limit), answers only from the accepted product truth version, owner settings in the launch policy (`answers`: off/approve/
+  auto, signup or meeting per play). Pure; not yet wired into reply sync or a send path (needs a ledger table).
 
 - b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
   (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:

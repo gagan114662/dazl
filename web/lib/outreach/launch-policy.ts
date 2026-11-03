@@ -14,6 +14,7 @@ import { callCostUsd, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.
 import type { DetailedCompletion } from '../llm/provider.ts'
 import { productTruth, PRODUCT_TRUTH_VERSION_RE } from '../product-truth.ts'
 import { qualifyProspect, truthClaimIssues } from './capability-claims.ts'
+import { ANSWER_MODES, MAX_AUTO_REPLIES, type AnswerCta, type AnswerMode, type AnswerSettings } from '../replies/buyer-conversation.ts'
 
 export const LAUNCH_POLICY_VERSION = '2026-10-30'
 export const ROLLOUT_DAYS = 7           // strict caps for the first week of a calibrated launch
@@ -35,12 +36,18 @@ export interface LaunchPolicy {
   claims: { mayStatePrice: boolean; benchmarkUrls: string[]; productTruthVersion?: string }
   stops: { pauseOnAnyReply: boolean; maxBounceRate: number }
   testInbox: string                     // inbox for the integration check: exactly the authenticated sender (a shared domain proves nothing)
+  // answers (#406): routine buyer questions in this launch's threads (lib/replies/buyer-conversation.ts). Unset or mode
+  // 'off': the inbox stays the owner's. 'approve': answers are written from the accepted product truth record and wait
+  // for the owner to release them. 'auto': they go out on their own within maxAutoReplies per thread. Either needs
+  // claims.productTruthVersion: no answer is written from anything but the record the owner accepted.
+  answers?: AnswerSettings
 }
 
 export type PolicyProblem =
   | 'version_not_current' | 'sender_missing' | 'audience_empty' | 'daily_cap_invalid' | 'spend_cap_invalid'
   | 'bounce_stop_invalid' | 'test_inbox_not_owned' | 'benchmark_not_https' | 'policy_too_large'
   | 'audience_too_many' | 'exclusions_too_many' | 'benchmarks_too_many' | 'product_truth_invalid' | 'product_truth_not_current'
+  | 'answers_invalid' | 'answers_need_product_truth'
 // List limits: refused by name, never truncated. The store's size cap (MAX_POLICY_JSON, 8000 chars) binds first for long
 // entries: about 350 short domains, fewer emails; both problems are reported when both apply. The count limits are the
 // ceiling for the shortest entries, so a tenant is never told "too many" for a list the store would have held.
@@ -72,6 +79,13 @@ export function policyProblems(p: LaunchPolicy): PolicyProblem[] {
   if (p.exclusions.domains.length > MAX_EXCLUSIONS || p.exclusions.emails.length > MAX_EXCLUSIONS) out.push('exclusions_too_many')
   if (p.claims.benchmarkUrls.length > MAX_BENCHMARKS) out.push('benchmarks_too_many')
   if (p.claims.productTruthVersion !== undefined && !PRODUCT_TRUTH_VERSION_RE.test(p.claims.productTruthVersion)) out.push('product_truth_invalid')
+  if (p.answers !== undefined) {
+    const a = p.answers
+    const cta = (v: unknown) => v === 'signup' || v === 'meeting'
+    if (!ANSWER_MODES.includes(a.mode) || !cta(a.cta) || !Object.values(a.ctaByPlay).every(cta) || Object.keys(a.ctaByPlay).length > MAX_AUDIENCE_PLAYS
+      || !Number.isInteger(a.maxAutoReplies) || a.maxAutoReplies < 1 || a.maxAutoReplies > MAX_AUTO_REPLIES) out.push('answers_invalid')
+    if (a.mode !== 'off' && p.claims.productTruthVersion === undefined) out.push('answers_need_product_truth')
+  }
   if (JSON.stringify(p).length > MAX_POLICY_JSON) out.push('policy_too_large')
   return out
 }
@@ -163,6 +177,15 @@ const num = (v: unknown) => typeof v === 'number' ? v : NaN // a number is a num
 export function parsePolicy(v: unknown): LaunchPolicy {
   const rec = (x: unknown): Record<string, unknown> => (x && typeof x === 'object' ? x : {}) as Record<string, unknown>
   const o = rec(v), audience = rec(o.audience), exclusions = rec(o.exclusions), claims = rec(o.claims), stops = rec(o.stops)
+  // answers: kept as given (typed, not coerced) so policyProblems names what is wrong; absent stays absent
+  const ans = o.answers === undefined ? undefined : rec(o.answers)
+  const byPlay = ans ? rec(ans.ctaByPlay) : {}
+  const answers: AnswerSettings | undefined = ans && {
+    mode: (typeof ans.mode === 'string' ? ans.mode : '') as AnswerMode,
+    cta: (typeof ans.cta === 'string' ? ans.cta : '') as AnswerCta,
+    ctaByPlay: Object.fromEntries(Object.entries(byPlay).slice(0, MAX_AUDIENCE_PLAYS + 1).map(([k, c]) => [k.trim(), (typeof c === 'string' ? c : '') as AnswerCta])),
+    maxAutoReplies: num(ans.maxAutoReplies),
+  }
   return {
     version: typeof o.version === 'string' ? o.version : '',
     sender: typeof o.sender === 'string' ? o.sender.trim().toLowerCase() : '',
@@ -172,6 +195,7 @@ export function parsePolicy(v: unknown): LaunchPolicy {
     claims: { mayStatePrice: claims.mayStatePrice === true, benchmarkUrls: strs(claims.benchmarkUrls, MAX_BENCHMARKS), ...(typeof claims.productTruthVersion === 'string' ? { productTruthVersion: claims.productTruthVersion.trim().slice(0, 40) } : {}) },
     stops: { pauseOnAnyReply: stops.pauseOnAnyReply !== false, maxBounceRate: num(stops.maxBounceRate) },
     testInbox: typeof o.testInbox === 'string' ? o.testInbox.trim().toLowerCase() : '',
+    ...(answers ? { answers } : {}),
   }
 }
 
