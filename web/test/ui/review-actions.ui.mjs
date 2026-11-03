@@ -49,6 +49,8 @@ const rec = (reason, what) => [{ connector: 'scan:recovery', kind: 'recovery', v
 const RESEARCH_ONLY = [
   lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, source_url: 'https://vendor.example/customers/harbor', enrichments: rec('counterparty_signal', 'a source about the company itself') }),
   lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, source_url: 'https://news.example/elm', enrichments: rec('undated', 'a dated source') }),
+  // #352 post-deploy (Querio-shaped, synthetic): a DATED lead whose evidence names a different place - research on Home, so never an offer to draft here.
+  lead('8'.repeat(24), 'Querio', { review_reason: 'location_mismatch', event_date: '2026-10-01', date_status: 'verified', source_url: 'https://news.example/querio' }),
 ]
 let current = LEADS
 const writes = []
@@ -96,6 +98,9 @@ try {
   assert.equal(await page.getByText('Needs your review', { exact: true }).count(), 0, 'no review heading when nothing is reviewable')
   const intro = await page.getByTestId('research-intro').textContent()
   assert.doesNotMatch(intro, /check them yourself|confirm it/i); assert.match(intro, /checking their sources does not make them ready/)
+  const research = await page.getByTestId('review-actions').evaluateAll(els => els.map(e => [e.querySelector('button').textContent, e.querySelector('[data-testid=review-hint]').textContent]))
+  assert.deepEqual(research.map(r => r[0]), ['Keep as research', 'Keep as research', 'Keep as research'])
+  assert.match(research[2][1], /evidence names a different place, which checking the source cannot change, so it stays out of drafting\./); assert.doesNotMatch(research[2][1], /can be drafted/)
   assert.deepEqual(await page.getByTestId('review-recovery').allTextContents(), ['dazl already searched other press for a source about the company itself; none verified.', 'dazl already searched other press for a dated source; none verified.'])
   await page.getByTestId('research-heading').scrollIntoViewIfNeeded()
   await shot('research-only')
