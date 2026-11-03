@@ -50,7 +50,7 @@ async function open(profile) {
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (m !== 'GET') writes.push(`${m} ${p}`)
-    if (p === '/api/settings/profile' && m === 'GET') return json(profile)
+    if (p === '/api/settings/profile' && m === 'GET') return json({ ...profile, new_play_offer: profile.sells || null }) // as the route: the profile offer (no Memory here)
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
     if (p === '/api/settings/advanced') return json({ available: false, platforms: [] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
