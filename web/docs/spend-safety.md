@@ -20,7 +20,8 @@ says what that code does. It is not a pricing page and makes no billing claim.
 | Trial scan reserve | `DAZL_TRIAL_SCAN_RESERVE_USD` | a trial scan's LLM and TinyFish steps | hard dollars (lib/billing/trial-budget.ts) |
 | Trial account total, global daily | `DAZL_TRIAL_ACCOUNT_TOTAL_USD`, `DAZL_TRIAL_GLOBAL_DAILY_USD` | trial admission | hard dollars, checked at admission |
 | TinyFish counts | `searchesPerScan`, per tenant per day, global per day, per minute (lib/search/tinyfish.ts) | every TinyFish search/fetch | **count caps, not dollars** (priced only for trial scans) |
-| Apollo / PDL counts | `MAX_LEADS = 5`, `MAX_CONTACTS = 5` per scan (lib/enrich/index.ts) | BYOK enrichment | **count caps, not dollars** |
+| Apollo / PDL counts | `MAX_LEADS = 5`, `MAX_CONTACTS = 5` per scan (lib/enrich/index.ts); 50 companies per commenter batch | BYOK enrichment, one pass | **count caps, not dollars** |
+| Workspace enrichment credits | `DAZL_APOLLO_CREDITS_DAY` / `_MONTH` (default 100 / 1000), `DAZL_PDL_CREDITS_DAY` / `_MONTH` (default 25 / 100), every tenant | every Apollo org lookup and PDL person search, any pass, job, retry, restart or instance | **credits (counts), not dollars**, shared store (`tenant_spend_pools`, periods `cad:`/`cam:`/`cpd:`/`cpm:`; lib/enrich/credit-pool.ts) |
 
 With no owner limit set, `ownerGuarded` returns the provider unchanged: the owner paths are then bounded only by
 the vendor and the tenant's own key.
@@ -38,12 +39,18 @@ the vendor and the tenant's own key.
 | ICP from the seller's website (lib/scan/icp-from-site.ts) | BYOK | owner pool | worst case | settled |
 | Lead qualification (lib/scan/qualify-run.ts, lead-qualify.ts) | BYOK | per-call approval (exact prompt hash and estimate) + owner pool | worst case | settled; claim kept on any post-call failure |
 | TinyFish search / fetch (lib/search/tinyfish.ts) | platform | count caps (all scans); trial reserve at a listed per-call price (trial only) | counted before the call, in one transaction with the cap check | n/a (counts) |
-| Apollo org enrich, PDL person search (lib/enrich) | BYOK | per-scan count caps | n/a | n/a (counts; credits audit-rowed) |
+| Apollo org enrich, PDL person search (lib/enrich/index.ts) | BYOK | per-scan count caps + workspace credit pool | Apollo org: 1 credit; PDL: the search size (up to 5), before the per-job claim and the call | Apollo: a returned organization settles to 1 charged; no match or an error keeps the reservation. PDL: settles to the profiles returned; an error keeps all of it. A replayed claim (no call) is refunded |
+| Commenter import org and PDL lookups (lib/scan/commenter-import.ts) | BYOK | per-batch cap (50 companies) + workspace credit pool | same as above (PDL: 5) | same as above; a refusal is one audit row (`credit_cap` / `credit_unsaved`) and stops that provider's paid lookups for the batch |
+| Apollo people search (`mixed_people/api_search`) | BYOK | per-scan call cap | not reserved: documented as 0 credits | n/a |
 
-`test/paid-paths-guarded.test.ts` fails when a new module makes a paid model call without being listed above.
+`test/paid-paths-guarded.test.ts` fails when a new module makes a paid model call, or a credit-charging Apollo/PDL call
+without reserving on the workspace credit pool, without being listed above. `test/enrich-credit-pool.test.ts` covers the
+credit pool on both engines and through both callers with stubbed providers.
 
 Exclusions:
-- **Free sources, not paid:** Greenhouse, Ashby, GDELT, HN Algolia and GitHub (public APIs, no key).
+- **Free sources, not paid:** Greenhouse, Ashby, Lever, GDELT, HN Algolia and GitHub (public APIs, no key); Jina Reader
+  (lib/scrape/jina.ts, lib/sources/jina.ts) is called without a key (its free, rate-limited tier) and capped per scan /
+  per hour; YouTube Data API uses the operator's free quota.
 - **Not dazl's spend:** Gmail and Google OAuth (the tenant's mailbox), HubSpot and Pipedrive (CRM push with the
   tenant's own token), and Stripe (billing itself).
 - **Offline eval tooling:** `lib/evals/trace.ts` is never in the app.
@@ -90,7 +97,9 @@ claim), on both engines, including two SQLite connections to one file as two ins
 - **Scan runner completions** keep their worst-case reservation instead of settling to reported usage.
 - **Per-play limits** exist only for scans (`run_budget.max_usd`). Polish, follow-ups and qualification for a play
   count against the owner pool, not a per-play limit.
-- **TinyFish and Apollo/PDL** are bounded by counts, not dollars. For BYOK enrichment that is the disclosed limit.
+- **TinyFish and Apollo/PDL** are bounded by counts, not dollars. For BYOK enrichment that is the disclosed limit: the
+  workspace credit pool (day/month credits per tenant) is persistent and atomic, but its limits are operator-wide
+  settings, not per-tenant choices, and no UI shows them yet.
 - **Disclosure:** the prelaunch estimate (lib/scan/estimate-request.ts) reads the owner pool rows.
   - Proved: a stale or failed pending marker blocks the estimate with the reason (`accounting_unsettled`), and
     `POST /api/scan` refuses with 409 and creates no job, the same rule the pool enforces. A fresh marker does not block.

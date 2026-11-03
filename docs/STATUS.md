@@ -41,6 +41,9 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
+  (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:
+  scan-runner settle, per-play caps outside scans, cost disclosure UI and threshold/stop events (web/docs/spend-safety.md).
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
   fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,

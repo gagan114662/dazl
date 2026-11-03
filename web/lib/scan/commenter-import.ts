@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
+import { CreditRefused, refundCredits, reserveCredits, settleCredits, type CreditHold } from '../enrich/credit-pool.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection, regradeFromKeptContacts } from './contact-agreement.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -187,13 +188,25 @@ export function importCommenters(db: Database.Database, userId: string, rows: Im
 // people lookup on the tenant's own BYOK key, PDL people as the alternative. No emails are
 // stored - people results are name/title strings, same as the scan waterfall. Silent on
 // failure: a bonus, never the bar.
-export async function enrichCommenters(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<void> {
+export async function enrichCommenters(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined> } = {}): Promise<void> {
   try { await enrichCommentersInner(db, tenantId, batchId, deps) } finally {
     // The score follows the evidence kept: a contact refused by the agreement checks must not keep contributing to the lead's reachability grade.
     try { const j = (db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, tenantId) as { job_id: string | null } | undefined)?.job_id; if (j) regradeFromKeptContacts(db, tenantId, j) } catch { /* the regrade never blocks the import */ }
   }
 }
-async function enrichCommentersInner(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<void> {
+// The workspace credit pool (lib/enrich/credit-pool.ts, #363) is reserved before every credit-charging call here, as in
+// the scan waterfall: a refusal (the tenant's day/month cap, or a reservation the store could not save) makes no call
+// and is audited once; a refund or settle that cannot be saved keeps the full reservation (an over-count, never under).
+async function holdCredits(db: Database.Database, tenantId: string, provider: 'apollo' | 'pdl', units: number, jobId: string, env?: Record<string, string | undefined>): Promise<CreditHold | null> {
+  try { return await reserveCredits(db, tenantId, provider, units, { env }) } catch (e) {
+    const why = e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap: workspace credit limit reached' : 'credit_unsaved: credit reservation could not be saved'
+    audit(db, { tenantId, connector: `enrich:${provider}`, jobId, lookup: 'workspace credits', status: why, results: 0 })
+    return null
+  }
+}
+const quietly = async (f: () => Promise<void>) => { try { await f() } catch (e) { console.error('[commenters] credit accounting not saved (reservation kept):', e instanceof Error ? e.message.slice(0, 120) : 'error') } }
+
+async function enrichCommentersInner(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined> } = {}): Promise<void> {
   const batch = db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, tenantId) as { job_id: string | null } | undefined
   if (!batch?.job_id) return
   const leads = db.prepare("SELECT id, company, company_domain FROM leads WHERE scan_job_id = ? AND company <> ''").all(batch.job_id) as { id: string; company: string; company_domain: string | null }[]
@@ -213,16 +226,24 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
     g.leadIds.push(l.id)
     byCompany.set(k, g)
   }
+  let orgCreditsRefused = false
   for (const g of [...byCompany.values()].slice(0, MAX_COMPANY_LOOKUPS)) {
     if (apolloKey) {
       let org: Awaited<ReturnType<typeof apolloOrgEnrich>> = null
+      // The org lookup's 1 credit, reserved before the claim; refused once = no more org lookups this batch (the
+      // 0-credit people search below still runs on the lead's own domain).
+      const hold = orgCreditsRefused ? null : await holdCredits(db, tenantId, 'apollo', 1, batch.job_id, deps.env)
+      if (!hold) orgCreditsRefused = true
       // Same paid-replay class as the scan waterfall (#382): claim the org lookup ATOMICALLY before the call -
       // this route holds no job lease, so a double-run (or a crash between call and write) must never pay twice.
       // A lost race replays the winner's outcome: the org call is skipped and the people search below still runs
       // under its own gate (it is 0-credit and keyed on the lead's own domain, not the org record).
-      const orgGate = auditTryReserve(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: 'reserved', results: 0 })
-      if (!('prior' in orgGate)) try {
+      const orgGate = hold ? auditTryReserve(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: 'reserved', results: 0 }) : null
+      if (hold && orgGate && 'prior' in orgGate) await quietly(() => refundCredits(db, hold)) // replayed: no call, the credit goes back
+      if (hold && orgGate && !('prior' in orgGate)) try {
         org = await apolloOrgEnrich(apolloKey, { domain: g.domain, name: g.company }, fetchImpl)
+        // A returned organization is the charged credit; no match or an error keeps the reservation (charge unknown).
+        if (org) await quietly(() => settleCredits(db, hold, 1))
         // Company-level facts attach only when the organisation record is on the lead's own domain: a name-only match may be a same-name company elsewhere.
         const sameSite = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '').toLowerCase() === b.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '').toLowerCase()
         if (org && !sameSite(g.domain, org.website)) {
@@ -265,9 +286,14 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
       }
     } else if (pdlKey) {
       // PDL charges 1 credit per profile RETURNED: the same atomic gate makes a replay or double-run cost nothing.
+      // Up to 5 profiles = up to 5 credits, reserved before the claim; refused = no more PDL searches this batch.
+      const hold = await holdCredits(db, tenantId, 'pdl', 5, batch.job_id, deps.env)
+      if (!hold) return
       const pdlGate = auditTryReserve(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'reserved', results: 0 })
+      if ('prior' in pdlGate) await quietly(() => refundCredits(db, hold)) // replayed: no call, the credits go back
       if (!('prior' in pdlGate)) try {
         const found = await pdlPeopleSearch(pdlKey, g.company, fetchImpl, 5)
+        await quietly(() => settleCredits(db, hold, found.length)) // charged per profile returned
         // PDL matches on the company NAME only. With no scan geography, only the company's DOMAIN can confirm it: the person's employer domain must equal the lead's.
         const people: typeof found = []
         for (const p of found) {
