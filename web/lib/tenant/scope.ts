@@ -15,6 +15,7 @@ export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: st
   csv_rows: { via: ['batch_id', 'csv_batches'] },
   monitor_runs: { via: ['monitor_id', 'monitors'] },
   monitor_seen: { via: ['monitor_id', 'monitors'] },
+  monitor_cursors: { via: ['monitor_id', 'monitors'] },
   watch_seen: { via: ['watch_id', 'watches'] },
   stripe_events: { global: 'Stripe event ids for dedupe; the tenant comes from the event payload' },
   lifecycle_events: { global: "conversion events keyed by verified account email (kind|email, #417): conversion is account-level and deliberately stops that address's queued acquisition work across tenants; account_tenant is attribution only" },
