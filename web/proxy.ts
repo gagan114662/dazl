@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { logRequest, newRequestId, requestLogLine } from '@/lib/ops/request-log'
-import { getSessionUser } from '@/lib/auth-db'
+import { hasLiveSession } from '@/lib/auth-db'
 
 // Runs before /app pages and /api routes (Node runtime). Gives each request an id (lib/ops/request-log.ts), logs it
 // as one JSON line, and keeps /app behind a signed-in session. The session is looked up here, before any HTML is sent:
@@ -27,7 +27,7 @@ export async function proxy(req: NextRequest) {
 
 async function signedIn(token: string | undefined): Promise<boolean> {
   if (!token) return false
-  try { return (await getSessionUser(token)) !== null } catch { return true }
+  try { return await hasLiveSession(token) } catch { return true }
 }
 
 export const config = { matcher: ['/app/:path*', '/api/:path*'] }

@@ -3,6 +3,7 @@
 // user's time, and why now". Every grade must cite the lead's already-verified evidence.
 import type { Provider } from '../llm/provider.ts'
 import type { Icp } from './icp.ts'
+import { proofBackedTiming } from './scoreboard.ts'
 
 // Key-free signal taxonomy. Each signal is observable on public pages (news, jobs boards,
 // company sites, changelogs, community posts) and must be backed by the lead's cited evidence.
@@ -80,6 +81,7 @@ export const isHidden = (s: LeadScore | null): boolean => !!s && s.fit <= HIDE_F
 // verified grade. Fit is held at 0 (hidden lane) with the reason in why; intent/action stay
 // unset so the UI can tell "held, ungraded" apart from a real grade of 0.
 export const GRADING_FAILED_WHY = 'ICP grading failed (model error). Held at fit 0: the raw candidate score is not a verified fit. Re-run the scan to grade this lead.'
+export const OFFER_UNRESOLVED_WHY = "Not graded: this play's offer is unresolved (its request conflicts with the saved offer). Held at fit 0 until you choose what this play sells; re-run the scan to grade it."
 export const NOT_GRADED_WHY = 'Not ICP-graded (beyond the scored batch). Held at fit 0: the raw candidate score is not a verified fit.'
 export function holdUngraded(leads: { fit?: number; why?: string }[], reason: string): void {
   for (const l of leads) { l.fit = 0; l.why = reason.slice(0, WHY_MAX) }
@@ -147,16 +149,50 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
 
 // One model call per scan (not per lead). Returns null when the model cannot score - the scan
 // then completes unscored rather than failing.
-export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null }[], fetchImpl?: typeof fetch): Promise<LeadScore[] | null> {
+// Timing status appended (never replacing the fit rationale) when no recognized proof supports the
+// claimed trigger (#377). The exact wording is pinned by tests.
+export const TIMING_UNCONFIRMED_NOTE = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
+// Urgency wording that asserts a current buying need: explicit urgency markers in ANY case, or an emphatic
+// uppercase NOW (a lowercase 'now' alone is common in neutral text and does not count). The phrases are
+// case-insensitive ('Act Now' and 'ACT NOW' assert the same urgency); NOW stays case-sensitive.
+export const URGENCY_PHRASE = /\burgent(?:ly)?\b|\bright now\b|\bimmediately\b|\basap\b|\bact now\b|\bneeds? this now\b/i
+export const NOW_SHOUT = /\bNOW\b/
+export const isUrgencyClaim = (text: string): boolean => URGENCY_PHRASE.test(text) || NOW_SHOUT.test(text)
+// The seller-specific fit / use-case rationale, read apart from timing status (#377). scoreLeads appends the timing note
+// to a neutral rationale; this returns the rationale without it, so the Leads card can say why the company fits while the
+// timing badge and holds say whether NOW is proven. Prose demoted as an unverified urgency claim, a legacy row whose why
+// was replaced by the timing warning, and urgency wording on a lead without proof-backed timing give null: an
+// unsupported NOW never comes back as a fit reason.
+export function fitRationale(storedWhy: string | null | undefined, timing: 'proof_backed' | 'unconfirmed'): string | null {
+  let t = (storedWhy ?? '').trim()
+  if (!t || t.startsWith(`${TIMING_UNCONFIRMED_NOTE} Model rationale, unverified:`)) return null
+  t = t.split(TIMING_UNCONFIRMED_NOTE).join(' ').replace(/\s+/g, ' ').trim()
+  if (!t || /^event timing (?:is|and)\b/i.test(t)) return null
+  if (timing !== 'proof_backed' && isUrgencyClaim(t)) return null
+  return t
+}
+export interface ScoreTimingOpts { windowDays?: number | null; now?: Date }
+export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], fetchImpl?: typeof fetch, opts: ScoreTimingOpts = {}): Promise<LeadScore[] | null> {
   if (!provider.complete || leads.length === 0) return null
   try {
     const text = await provider.complete(apiKey, scorePrompt(icpText, leads.slice(0, 40)), fetchImpl, 2500)
     const parsed = parseScores(text, Math.min(leads.length, 40))
     if (!parsed) console.error('lead scoring: could not parse model output', text.slice(0, 300))
-    if (parsed) parsed.forEach(g => {
-      // No generic candidate carries structured event-association proof.
+    if (parsed) parsed.forEach((g, i) => {
+      if (!g) return
+      // The model's fit/use-case rationale is always kept. Its intent grade stands only when the
+      // lead carries a recognized event-date proof, compatible with the claimed trigger, inside the
+      // request's window (#377); anything else is held at 0 with the timing status appended.
+      const src = leads[i]
+      if (proofBackedTiming({ event_date: src?.event_date ?? null, event_date_proof: src?.event_date_proof ?? null, signal: src?.signal, signal_kind: src?.signal_kind }, opts.windowDays ?? null, opts.now ?? new Date())) return
       g.intent = 0
-      g.why = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
+      // Neutral fit rationale is preserved with the timing status appended. Prose asserting an unsupported
+      // NOW is demoted to a labelled unverified claim: the deterministic zero alone cannot keep urgency
+      // wording from standing as a recommendation (#377 ruling).
+      if (!g.why.includes(TIMING_UNCONFIRMED_NOTE))
+        g.why = (isUrgencyClaim(g.why)
+          ? `${TIMING_UNCONFIRMED_NOTE} Model rationale, unverified: ${g.why}`
+          : `${g.why} ${TIMING_UNCONFIRMED_NOTE}`).slice(0, WHY_MAX)
     })
     return parsed
   } catch (e) {

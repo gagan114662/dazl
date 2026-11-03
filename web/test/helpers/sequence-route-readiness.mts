@@ -8,6 +8,7 @@ import { migrateAutopilot } from '../../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../../lib/outreach/ledger.ts'
 import { migrateReplies } from '../../lib/outreach/replies.ts'
 import { migrateSequences } from '../../lib/outreach/sequences.ts'
+import { migrateSchedulerRuns } from '../../lib/ops/scheduler-runs.ts'
 import { NextRequest } from 'next/server'
 import { GET } from '../../app/api/outreach/sequences/route.ts'
 
@@ -20,7 +21,7 @@ const row = (db: Database.Database, tenant: string, id: string) =>
 
 test('GET returns scheduler and account-scoped gates; another tenant uncertain send does not leak, own does', async () => {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
+  migrateScan(db); migrateOutreach(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db); migrateSchedulerRuns(db)
   setScanDb(db)
   delete process.env.SEQUENCES_ENABLED; delete process.env.AUTOPILOT_KILL
   assert.equal((await get()).scheduler, 'operator_off')

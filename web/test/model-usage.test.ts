@@ -125,7 +125,7 @@ test('successful scan: buyer-fit (after finish) is recorded with tenant and atte
   const providers = { anthropic: { research: async () => ({ text: JSON.stringify([lead]), citedUrls: ['https://jobs.example/a'] }), complete: async (k: string, p: string) => (await completeDetailed(k, p)).text, completeDetailed, configuredModel: () => 'requested-model-x' }, openai: stub() } as Record<'anthropic' | 'openai', Provider>
   const pages: Record<string, string> = { '/a': '<a href="https://acmedental.com/">Acme Dental</a>', '/robots.txt': 'User-agent: *\nAllow: /', '/': `<html><body>${HOME}</body></html>` }
   const crawlGet = async (url: string) => { const u = new URL(url); const body = u.hostname === 'jobs.example' ? pages['/a'] : pages[u.pathname]; return body !== undefined ? { status: 200, body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
-  const page = async (u: string) => (u.includes('acmedental.com') ? { text: HOME, title: 'Acme Dental', retrievedAt: 1 } : { text: `Posted ${recent}. ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 })
+  const page = async (u: string) => (u.includes('acmedental.com') ? { text: HOME, title: 'Acme Dental', retrievedAt: 1 } : { text: `On ${recent}, ${QUOTE}. Apply now.`, title: 'Jobs', retrievedAt: 1 })
   const saved = process.env.SITECRAWL_ENABLED; process.env.SITECRAWL_ENABLED = '1'
   try { assert.equal(await runJob(db, claimKeyedJob(db, id)!, { providers, master, fetchPage: page, crawlGet: crawlGet as never, judge: null, ground: false }), 'done') } finally { if (saved === undefined) delete process.env.SITECRAWL_ENABLED; else process.env.SITECRAWL_ENABLED = saved }
   assert.equal(buyerFitCalls, 1, 'fixture precondition: the buyer-fit gate really made its model call')

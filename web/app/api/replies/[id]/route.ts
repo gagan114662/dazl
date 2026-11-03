@@ -5,12 +5,14 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { draftReply, markDraft, migrateThreadReplies, saveDraft } from '@/lib/replies/threads'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
+import { denied } from '@/lib/workspace-access'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  if (!(await rateLimit(`replies:${user.id}`, 30, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!(await rateLimit(`replies:${user.tenantId}`, 30, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const { id } = await params
   if (!/^[a-f0-9]{24}$/.test(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const body = await req.json().catch(() => null)
@@ -18,8 +20,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   migrateThreadReplies(db)
 
   if (body?.action === 'draft') {
-    const r = await draftReply(db, user.id, id, getSellerProfile(getAuthDb(), user.id))
+    const r = await draftReply(db, user.tenantId, id, getSellerProfile(getAuthDb(), user.tenantId))
     if ('error' in r) {
+      if (r.error === 'spend_limit') return NextResponse.json({ error: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.', code: 'spend_limit' }, { status: 429 })
       const msg = r.error === 'key_unreadable' ? KEY_UNREADABLE_COPY : r.error === 'key_rejected' ? knownErrorCopy('key_rejected')! : r.error === 'no_key' ? 'Add your own AI key in Settings first' : r.error === 'not_found' ? 'Not found' : 'The AI provider failed - try again'
       return NextResponse.json({ error: msg }, { status: r.error === 'not_found' ? 404 : r.error === 'no_key' || r.error === 'key_unreadable' || r.error === 'key_rejected' ? 400 : 502 })
     }
@@ -27,13 +30,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   if (body?.action === 'save') {
-    const r = saveDraft(db, user.id, id, String(body.draft ?? ''))
+    const r = saveDraft(db, user.tenantId, id, String(body.draft ?? ''))
     if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 })
     return NextResponse.json({ ok: true })
   }
 
   if (body?.action === 'mark' && (body.status === 'copied' || body.status === 'posted')) {
-    if (!markDraft(db, user.id, id, body.status)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!markDraft(db, user.tenantId, id, body.status)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     return NextResponse.json({ ok: true })
   }
 

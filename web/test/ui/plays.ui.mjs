@@ -2,13 +2,16 @@
 // NOT part of `npm test`. Run:  cd web && npm run build && node test/ui/plays.ui.mjs   (SHOTS=<dir> saves desktop and
 // 390px screenshots). Production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call
 // stubbed in the browser with synthetic rows: no scan, no send. It proves:
-//   1. the sidebar's Plays opens /app/plays (not the latest results) and is the current page there; Leads opens results;
+//   1. from a held lead run, clicking the sidebar's Plays (phone: inside Menu) lands on /app/plays with the saved-play
+//      list (not the latest results) and is the current page there; Leads opens results;
 //   2. each saved play (weekly watch or scheduled monitor) shows its audience, signal, schedule, last and next run,
 //      status, and links to its last run's leads in Leads;
 //   3. Pause / Resume / Delete send only the existing route actions, and Delete asks first (cancel sends nothing);
 //   4. no saved plays: an empty state that says how to make one; a list that did not load is never shown as "none";
 //   5. the bare Leads page is headed "Find leads" (not "Plays") and links back to Plays from its weekly watches;
-//   6. no horizontal scroll at 390px.
+//   6. no horizontal scroll at 390px;
+//   7. "Show runs" lists a play's latest runs, newest first, each opening that run's own leads, and says when older
+//      runs exist; a read that fails says so; one hidden before it answers stays hidden; a paused play with none says so.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -17,6 +20,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -28,7 +32,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-plays-')); const DB = path.joi
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -38,6 +42,9 @@ const WATCHES = [
   { id: W, query: 'Dental practices in Leeds opening a second location', icp: { summary: 'Independent dental practices', who: ['Practice owner'], where: ['Leeds, UK'], signals: ['opening a second location'] }, active: true, next_run_at: T + 7 * 86400, last_run_at: T, paused_reason: null, last_job_id: RUN, last_status: 'done', new_leads: 3 },
   { id: W2, query: 'Physio clinics in Manchester hiring', icp: { summary: 'Physiotherapy clinics', where: ['Manchester, UK'], signals: ['hiring'] }, active: false, next_run_at: T, last_run_at: T - 7 * 86400, paused_reason: 'quota', last_job_id: null, last_status: null, new_leads: 0 },
 ]
+// Three runs of the first watch, newest first (#351).
+const RUNS = [{ job_id: RUN, at: T, status: 'done', leads: 5, new_leads: 3 }, { job_id: 'd'.repeat(24), at: T - 7 * 86400, status: 'done', leads: 4, new_leads: 4 }, { job_id: 'f'.repeat(24), at: T - 14 * 86400, status: 'failed', leads: 0, new_leads: null }]
+const HELD = { id: '9'.repeat(24), name: '', company: 'Synthetic Dental Leeds', contact: null, signal: 'Synthetic Dental Leeds opening a second location', source_url: 'https://news.example/synthetic', score: 70, evidence_excerpt: 'Synthetic Dental Leeds is opening a second location', event_date: '2026-10-20', date_status: 'unverified', confidence: 60, review_reason: 'currentness_review', currentness_held: true, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 3, action: 3, why: 'A Leeds practice opening a second site.', signals: null, icp_match: null, enrichments: [], events: [] }
 const MONITORS = [{ id: M, query: 'Accounting firms in Bristol hiring payroll staff', icp: JSON.stringify({ summary: 'Accounting firms', where: ['Bristol, UK'], signals: ['hiring payroll staff'] }), interval_hours: 24, enabled: 1, paused_reason: null, last_run_at: null, next_run_at: T + 86400, last_new_count: null, run_count: 0, last_job_id: null }]
 
 const b = await chromium.launch()
@@ -54,6 +61,13 @@ async function open({ width, height, watches = WATCHES, monitors = MONITORS, fai
     if (p === '/api/watch') return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches })
     if (p === '/api/monitors') return fail === 'monitors' ? json({ error: 'x' }, 500) : json({ monitors })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
+    // The held lead run the audit started from (#351): a finished run whose one lead is held for source review.
+    if (p === '/api/scan/status' && u.searchParams.get('job_id') === RUN) return json({ status: 'done', lead_count: 1, icp: { industries: [], sizes: [], exclude: [], ...WATCHES[0].icp }, icp_source: 'user', attempts: 1, max_attempts: 3, query: WATCHES[0].query })
+    if (p === '/api/leads' && u.searchParams.get('job_id') === RUN) return json({ job_id: RUN, status: 'done', hidden_count: 0, leads: [HELD] })
+    if (p === `/api/plays/watch/${W}/runs`) return json({ runs: RUNS, more: true })
+    // the paused play's runs answer late, so hiding them first can be checked; then it has none
+    if (p === `/api/plays/watch/${W2}/runs`) { await new Promise(r => setTimeout(r, 600)); return json({ runs: [], more: false }) }
+    if (p === `/api/plays/monitor/${M}/runs`) return json({ error: 'x' }, 500)
     return json({}, 404)
   })
   const page = await ctx.newPage()
@@ -71,8 +85,18 @@ try {
     await nav.waitFor({ state: 'attached', timeout: 15000 })
     assert.equal(await nav.getAttribute('href'), '/app/plays')
     assert.equal(await page.locator('nav[aria-label=Main]').getByRole('link', { name: 'Leads', includeHidden: true }).getAttribute('href'), '/app/leads?latest=1', 'Leads opens results')
-    await page.goto(`${base}/app/plays`, { waitUntil: 'networkidle' })
-    assert.equal(await page.locator('h1').last().textContent(), 'Plays')
+    // The audit's exact steps: the held run is on screen (heading "Leads", its held lead), then a real click on Plays.
+    await page.getByText('Synthetic Dental Leeds', { exact: true }).first().waitFor({ timeout: 15000 })
+    assert.equal(await page.locator('h1').last().textContent(), 'Leads')
+    await shot(page, `held-run-${tag}`)
+    if (width <= 800) await page.locator('label[for=navtoggle]').click() // phone: the same link, inside Menu
+    await page.locator('nav[aria-label=Main]').getByRole('link', { name: 'Plays' }).click()
+    await page.waitForURL(u => u.pathname === '/app/plays', { timeout: 15000 })
+    await page.getByTestId('saved-play').first().waitFor({ timeout: 10000 })
+    assert.equal(new URL(page.url()).search, '', 'Plays is the play list itself, not a results deep link')
+    // Next keeps the page just left mounted but hidden, so only what is visible counts.
+    assert.deepEqual(await page.locator('h1:visible').allTextContents(), ['Plays'])
+    assert.equal(await page.getByText('Synthetic Dental Leeds').filter({ visible: true }).count(), 0, "the run's leads are not shown as Plays")
     if (width > 800) assert.equal(await page.locator('aside').getByRole('link', { name: 'Plays' }).getAttribute('aria-current'), 'page')
     const cards = page.getByTestId('saved-play')
     await cards.first().waitFor({ timeout: 10000 })
@@ -89,6 +113,26 @@ try {
     await noScroll(page, width)
     for (const c of await cards.all()) assert.ok((await c.getByTestId('play-name').boundingBox()).width >= Math.min(240, width - 100), `the play name keeps its width at ${width}px (a long status wraps below)`)
     await shot(page, `plays-${tag}`)
+    // 7. A play's latest runs, each opening its own leads (#351).
+    await cards.nth(0).getByTestId('play-runs-toggle').click()
+    const runs = cards.nth(0).getByTestId('play-run'); await runs.first().waitFor()
+    assert.deepEqual(await runs.allInnerTexts().then(t => t.map(x => x.replace(/\s+/g, ' ').trim())), ['26 Oct 2026 · Finished · 5 leads, 3 new Open these leads', '19 Oct 2026 · Finished · 4 leads, 4 new Open these leads', '12 Oct 2026 · Failed · 0 leads Open these leads'])
+    assert.equal(await cards.nth(0).getByTestId('play-runs-more').innerText(), 'Showing the latest 3 runs.', 'says older runs exist')
+    assert.deepEqual(await cards.nth(0).getByTestId('play-run-link').evaluateAll(as => as.map(a => a.getAttribute('href'))), RUNS.map(r => `/app/leads?job_id=${r.job_id}`))
+    await cards.nth(2).getByTestId('play-runs-toggle').click()
+    await cards.nth(2).getByTestId('play-runs-failed').waitFor()
+    await noScroll(page, width)
+    if (process.env.SHOTS) await cards.nth(0).screenshot({ path: path.join(process.env.SHOTS, `351-play-runs-${tag}.png`) })
+    await cards.nth(0).getByTestId('play-runs-toggle').click(); await cards.nth(2).getByTestId('play-runs-toggle').click()
+    // Hidden before its runs arrive: the late answer does not open it again. Opened and answered: a paused play says so.
+    const paused = cards.nth(1)
+    await paused.getByTestId('play-runs-toggle').click(); await paused.getByTestId('play-runs-toggle').click()
+    await page.waitForTimeout(900)
+    assert.equal(await paused.getByTestId('play-runs-toggle').innerText(), 'Show runs', 'stays hidden after the late answer')
+    assert.equal(await paused.getByTestId('play-runs-empty').count(), 0)
+    await paused.getByTestId('play-runs-toggle').click()
+    assert.equal(await paused.getByTestId('play-runs-empty').innerText(), 'No runs yet. It is paused: resume it to run.')
+    await paused.getByTestId('play-runs-toggle').click()
     // 3. Only the existing actions; Delete asks first.
     if (tag === 'desktop') {
       await cards.nth(0).getByTestId('play-toggle').click()
@@ -126,7 +170,7 @@ try {
   assert.equal(await page.getByTestId('plays-empty').count(), 0, 'an unread list is never "no plays"')
   assert.equal(await page.getByTestId('saved-play').count(), 1, 'what did load is still shown')
   await ctx.close()
-  console.log('plays UI check passed: sidebar Plays -> saved plays (audience, signal, schedule, last/next run, status, results link), Leads -> results, pause/resume/delete via existing routes with a confirm, empty + unreadable states, no overflow at 390px')
+  console.log('plays UI check passed: sidebar Plays -> saved plays (audience, signal, schedule, last/next run, status, results link), Leads -> results, pause/resume/delete via existing routes with a confirm, empty + unreadable states, every run of a play opening its own leads (#351), no overflow at 390px')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

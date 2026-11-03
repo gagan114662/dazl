@@ -44,6 +44,7 @@ function mock(reply?: string, syncFail = false) {
     const url = String(u)
     if (url.includes('oauth2')) return json({ access_token: 'at' })
     if (url.includes('/threads/')) return syncFail ? json({},500) : json({messages: reply ? [{id:'reply-1',internalDate:String((NOW+1)*1000),payload:{mimeType:'text/plain',headers:[{name:'From',value:'lead@acme.example'}],body:{data:Buffer.from(reply).toString('base64url')}}}] : []})
+    if (url.includes('messages?q=')) return json({ messages: [] }) // no daemon notices in these fixtures
     return json({},404)
   }) as typeof fetch
   const sendFn = (async (_t: string,raw: string) => { calls.push(Buffer.from(raw,'base64url').toString('utf8')); return {id:`gm${calls.length}`,threadId:'thread-1'} })
@@ -235,4 +236,18 @@ test('sequence context restriction appearing during token await releases step wi
  const fetchImpl=(async(u:unknown)=>{if(String(u).includes('oauth2')){db.prepare("UPDATE leads SET evidence_excerpt='Send your CV to lead@acme.example' WHERE id=?").run(s.lead);return json({access_token:'at'})}return json({messages:[]})}) as typeof fetch
  assert.equal((await runSequences(db,'A','',{...m,fetchImpl,now:NOW+3*DAY})).sent,0)
  assert.equal(m.calls.length,1);assert.deepEqual(db.prepare('SELECT status,claimed_at FROM sequence_steps WHERE step=2').get(),{status:'approved',claimed_at:null})
+})
+
+test('sequence step: an unverifiable handoff is uncertain, pauses the account, is never marked sent and never retried',async()=>{
+  for(const bad of [undefined, null, {}, { id: '' }, { id: '   ' }, { id: 7 }, { id: ['x'] }, { threadId: 'th1' }]){
+    const db=await setup(),s=add(db),m=mock();await start(db,s,m)
+    let calls=0
+    const odd={...m,now:NOW+3*DAY,sendFn:(async()=>{calls++;return bad}) as never}
+    assert.equal((await runSequences(db,'A','',odd)).stopped,'uncertain_send',JSON.stringify(bad))
+    assert.equal(getState(db,'A').paused,true)
+    const st=db.prepare("SELECT status, gmail_id FROM sequence_steps WHERE step = 2").get() as {status:string;gmail_id:string|null}
+    assert.equal(st.status,'uncertain'); assert.ok(!st.gmail_id)
+    assert.equal((await runSequences(db,'A','',odd)).sent,0)
+    assert.equal(calls,1)
+  }
 })

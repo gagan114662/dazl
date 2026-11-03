@@ -20,7 +20,11 @@
     "test:smoke:staging": "node --experimental-strip-types --no-warnings test/smoke/staging.smoke.mjs",
     "test:smoke:tenants": "node --experimental-strip-types --no-warnings test/smoke/two-tenant.smoke.mjs",
     "test:smoke:release": "node test/smoke/release-identity.smoke.mjs",
-    "staging:scenarios": "node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/staging-send-scenarios.mts"
+    "staging:scenarios": "node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/staging-send-scenarios.mts",
+    "test:smoke:recovery": "node --experimental-strip-types --no-warnings test/smoke/recovery-drill.smoke.mjs",
+    "evals": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/evals.mts",
+    "test:smoke:authforms": "node test/smoke/auth-form-fallback.smoke.mjs",
+    "test:smoke:enrichment": "node --experimental-strip-types --no-warnings test/smoke/enrichment-fallback.smoke.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.84",
@@ -45,9 +49,11 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
+    "js-yaml": "4.3.2",
     "pg": "^8.23.1",
     "pg-mem": "^3.0.14",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "typescript-eslint": "8.72.0"
   }
 }

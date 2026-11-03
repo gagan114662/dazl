@@ -2,7 +2,7 @@
 // risk notice) and a query, and returns items for the app's evidence pipeline. Platforms that
 // disallow automated access (X, Instagram, Facebook, LinkedIn) can rate-limit or ban the account:
 // that risk is the tenant's acknowledged choice, and calls are rate-limited server-side.
-import { epochDay, getJson, item, latinRun, latinUsable, type WorkerItem } from './util.ts'
+import { epochDay, FetchFailure, getJson, item, latinRun, latinUsable, type WorkerItem } from './util.ts'
 
 export type Platform = 'x' | 'reddit' | 'instagram' | 'facebook' | 'bilibili' | 'xiaohongshu' | 'linkedin'
 export type Fetcher = (query: string, session: string, env: Record<string, string | undefined>) => Promise<WorkerItem[]>
@@ -22,7 +22,7 @@ export function parseReddit(raw: unknown): WorkerItem[] {
 }
 const reddit: Fetcher = async (query, session) => {
   const json = await getJson(`https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=15&raw_json=1`, { cookie: session, headers: { referer: 'https://www.reddit.com/search/' } })
-  return json ? parseReddit(json) : []
+  return parseReddit(json)
 }
 
 // --- X: the web app's GraphQL SearchTimeline with the tenant's auth_token/ct0 cookies.
@@ -54,12 +54,13 @@ const x: Fetcher = async (query, session, env) => {
   const authToken = session.match(/auth_token=([a-f0-9]{40})/)?.[1]
   const ct0 = session.match(/ct0=([a-f0-9]{32,})/)?.[1]
   const qid = env.X_SEARCH_QUERY_ID ?? 'nK1dw4tV3a2UD7G2b5E1AA' // SearchTimeline query id; rotates
-  if (!authToken || !ct0) return []
+  // No usable auth cookies: an auth failure, not a search that found nothing.
+  if (!authToken || !ct0) throw new FetchFailure('auth_failed')
   const variables = JSON.stringify({ rawQuery: query, count: 15, querySource: 'typed_query', product: 'Latest' })
   const features = JSON.stringify({ rweb_video_screen_enabled: false, payments_enabled: false, profile_label_improvements_pcf_label_in_post_enabled: true })
   const url = `https://x.com/i/api/graphql/${qid}/SearchTimeline?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(features)}`
   const json = await getJson(url, { cookie: `auth_token=${authToken}; ct0=${ct0}`, headers: { authorization: `Bearer ${decodeURIComponent(X_BEARER)}`, 'x-csrf-token': ct0, 'x-twitter-active-user': 'yes', 'x-twitter-auth-type': 'OAuth2Session', referer: 'https://x.com/search' } })
-  return json ? parseX(json) : []
+  return parseX(json)
 }
 
 // --- Bilibili: official web search API with the session cookie (SESSDATA). ---
@@ -77,7 +78,7 @@ export function parseBilibili(raw: unknown): WorkerItem[] {
 }
 const bilibili: Fetcher = async (query, session) => {
   const json = await getJson(`https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encodeURIComponent(query)}`, { cookie: session, headers: { referer: 'https://search.bilibili.com/' } })
-  return json ? parseBilibili(json) : []
+  return parseBilibili(json)
 }
 
 // --- Instagram: web topsearch with sessionid. Best effort; IG rotates its requirements often. ---
@@ -95,19 +96,18 @@ export function parseInstagram(raw: unknown): WorkerItem[] {
 }
 const instagram: Fetcher = async (query, session) => {
   const json = await getJson(`https://www.instagram.com/api/v1/web/search/topsearch/?query=${encodeURIComponent(query)}`, { cookie: session, headers: { 'x-ig-app-id': '936619743392459', referer: 'https://www.instagram.com/' } })
-  return json ? parseInstagram(json) : []
+  return parseInstagram(json)
 }
 
 // --- LinkedIn: voyager search with li_at + JSESSIONID. Highest ban risk; the app caps it at 3/hour. ---
 const linkedin: Fetcher = async (query, session) => {
   const liAt = session.match(/li_at=([^;]+)/)?.[1]
   const jsession = session.match(/JSESSIONID="?([^";]+)"?/)?.[1]
-  if (!liAt || !jsession) return []
+  if (!liAt || !jsession) throw new FetchFailure('auth_failed')
   const json = await getJson(`https://www.linkedin.com/voyager/api/search/blended?keywords=${encodeURIComponent(query)}&count=10`, {
     cookie: `li_at=${liAt}; JSESSIONID="${jsession}"`,
     headers: { 'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer: 'https://www.linkedin.com/search/results/all/' },
   })
-  if (!json) return []
   // Voyager payloads shift; walk for posts with commentary text.
   const out: WorkerItem[] = []
   const walk = (v: unknown) => {
@@ -127,10 +127,27 @@ const linkedin: Fetcher = async (query, session) => {
   return out
 }
 
-// --- Not fetchable without a real browser or request signing. Honest stubs: they return nothing,
-// so the app records worker_error and the platform stays "Needs worker" in the UI until done. ---
+// --- Not fetchable without a real browser or request signing. Declared unsupported in CAPABILITY:
+// the server refuses them before any fetch, so the app records 'unsupported' - never a fake
+// zero-result 'empty' search. The stubs stay so FETCHERS remains total; the gate makes them
+// unreachable, and they never make a network call. ---
 const facebook: Fetcher = async () => [] // FB has no cookie-only JSON search; needs a browser worker
 const xiaohongshu: Fetcher = async () => [] // XHS signs every web request (x-s/x-t); signing is not implemented
+
+// What this worker build can actually fetch. The app mirrors this declaration
+// (web/lib/advanced/config.ts PLATFORM_SUPPORT; pinned equal by test/advanced-capability-sync.test.ts):
+// 'unsupported' is its own outcome, distinct from a genuine successful empty result, an auth
+// failure, throttling, or a schema failure.
+export interface PlatformCapability { supported: boolean; reason: string | null }
+export const CAPABILITY: Record<Platform, PlatformCapability> = {
+  x: { supported: true, reason: null },
+  reddit: { supported: true, reason: null },
+  instagram: { supported: true, reason: null },
+  facebook: { supported: false, reason: 'Facebook has no cookie-only JSON search; it needs a browser worker that is not built' },
+  bilibili: { supported: true, reason: null },
+  xiaohongshu: { supported: false, reason: 'XiaoHongShu signs every web request (x-s/x-t); signing is not implemented' },
+  linkedin: { supported: true, reason: null },
+}
 
 export const FETCHERS: Record<Platform, Fetcher> = { x, reddit, instagram, facebook, bilibili, xiaohongshu, linkedin }
 export const isPlatform = (v: unknown): v is Platform => typeof v === 'string' && Object.hasOwn(FETCHERS, v)

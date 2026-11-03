@@ -61,6 +61,7 @@ export class InProcessQueue implements QueueAdapter {
   }
 
   enqueue(input: EnqueueInput): EnqueueResult {
+    if (input.maxBacklog !== undefined) throw new Error('maxBacklog admission is DbQueue only')
     const now = input.now ?? nowS()
     if (input.dedupeKey) {
       const existing = this.dedupe.get(this.ns(input.tenantId, input.kind, input.dedupeKey))
@@ -91,6 +92,8 @@ export class InProcessQueue implements QueueAdapter {
   }
 
   claim(opts: ClaimOptions = {}): Claim | null {
+    // Lanes and round-robin order are the shared adapter's (DbQueue); refuse rather than silently ignore them.
+    if (opts.lane || (opts.order && opts.order !== 'fifo')) throw new Error('lane / round_robin claims are DbQueue only')
     const now = opts.now ?? nowS()
     const lease = opts.leaseSeconds ?? DEFAULT_LEASE_S
     const maxInFlight = opts.maxInFlight ?? 3

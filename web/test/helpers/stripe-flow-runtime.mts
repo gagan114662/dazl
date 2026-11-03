@@ -20,7 +20,7 @@ import { PG_URL, freshSchema } from './pg-test.ts'
 Object.assign(process.env, { STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture_pro', PUBLIC_BASE_URL: 'https://staging.dazl.test',
   STRIPE_WEBHOOK_SECRET: 'whsec_fixture' + randomBytes(8).toString('hex'), DAZL_MASTER_KEY: randomBytes(32).toString('base64') })
 
-const { setDb, pgDb } = await import('../../lib/db/client.ts')
+const { setDb, pgDb, getDb } = await import('../../lib/db/client.ts')
 const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
 const { migrateAllSqlite } = await import('../../lib/db/sqlite-migrations.ts')
 const { saveKey } = await import('../../lib/llm/key-store.ts')
@@ -135,6 +135,7 @@ test('Stripe test mode end to end on Postgres', { skip: PG_URL ? false : 'DAZL_T
     await runPgMigrations(pg.pool)
     const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw) // POST /api/scan's own handle
     setDb(pg)                                                                     // the plan, Stripe events and the account
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await scenario('pg', raw)
     // the plan lives in Postgres, not in the SQLite handle
     assert.equal((raw.prepare('SELECT count(*) AS n FROM tenant_plans').get() as { n: number }).n, 0)

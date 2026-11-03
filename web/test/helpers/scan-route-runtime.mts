@@ -46,7 +46,7 @@ test('valid budget: persisted with the job in the same insert, and answered with
   assert.equal(j.budget.bounded, true); assert.equal(j.budget.max_usd, 0.5); assert.match(j.budget.ceiling, /PARTIAL budget, not a whole-scan dollar ceiling/); assert.match(j.budget.ceiling, /Not a bill and not a vendor-enforced ceiling/)
   const st = Object.fromEntries(j.budget.surfaces.map(s => [s.surface, s.status]))
   assert.deepEqual(st, { profile_generation: 'not_covered', search_query_writing: 'allowed', extraction: 'allowed', scoring: 'allowed', grounding: 'refused', buyer_fit: 'allowed', judge: 'off', fallback_research: 'refused', credit_enrichment: 'off', search_and_fetch: 'not_covered', autopilot: 'off' })
-  assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /resets when the process restarts/.test(l)))
+  assert.ok(j.budget.limits.some(l => /budget stop, not zero results/.test(l)) && j.budget.limits.some(l => /per-owner day and month pools are saved in the shared store and survive restarts/.test(l)))
 })
 
 test('invalid budgets are rejected BEFORE anything is queued: 400 invalid_budget, no job row', async () => {
@@ -121,4 +121,23 @@ test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) 
   assert.equal((await post({ query: Q })).status, 202)
   const none = db2.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string | null; icp_inferred: number | null }
   assert.deepEqual([none.icp, none.icp_inferred], [null, null])
+})
+
+
+test('explicit seller decision captured with real admission and rolled back on storage failure; no implicit profile learning',async()=>{
+ const p={summary:'Clinic buyers',who:['clinic managers'],industries:[],sizes:[],where:[],signals:[],exclude:[],research:{v:1,site:'seller.example',offers:[{i:'booking',n:'Booking'}],hyps:[{i:'booking:persona:1',o:'booking',k:'persona',t:'clinic managers',s:'reviewed',u:null,q:null,at:null}],q:null,ans:null}}
+ const decision={offer:'booking',hypothesis:'booking:persona:1',action:'confirm'}
+ const db=setup();as(db)
+ const r=await post({query:Q,offer:'Booking',icp:p,research_decisions:[decision]});assert.equal(r.status,202)
+ const j=await r.json();const row=db.prepare('SELECT tenant_id,actor_id,job_id,action,text FROM seller_decisions').get() as {tenant_id:string;actor_id:string;job_id:string;action:string;text:string}
+ assert.equal(row.job_id,j.job_id);assert.equal(row.actor_id,row.tenant_id);assert.equal(row.action,'confirm');assert.equal(row.text,'clinic managers')
+ const db2=setup();as(db2);assert.equal((await post({query:Q,offer:'Booking',icp:p})).status,202)
+ assert.equal((db2.prepare('SELECT count(*) n FROM seller_decisions').get() as {n:number}).n,0)
+ const db3=setup();as(db3)
+ db3.exec("CREATE TRIGGER fail_decision BEFORE INSERT ON seller_decisions BEGIN SELECT RAISE(ABORT, 'fixture disk failure'); END")
+ await assert.rejects(post({query:Q,offer:'Booking',icp:p,research_decisions:[decision]}),/fixture disk failure/)
+ assert.equal(rows(db3).length,0,'job rolled back with decision failure')
+ const db4=setup();as(db4)
+ assert.equal((await post({query:Q,offer:'Booking',icp:p,research_decisions:[{...decision,action:'reject'}]})).status,400)
+ assert.equal(rows(db4).length,0,'inconsistent action/visible fields rejected before admission')
 })

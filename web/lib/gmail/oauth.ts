@@ -8,12 +8,12 @@ import { isStaging, STUB_SENDER } from '../staging.ts'
 // Least privilege: send is the required grant. Reading replies is a separate, optional gmail.readonly grant (below).
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
 // Reading is a separate, optional grant. gmail.readonly is the narrowest scope that returns message bodies.
-// dazl only ever opens threads it started itself (by thread id) and never lists or searches the mailbox.
+// dazl opens its outreach threads and searches a bounded daemon-notice window for delivery failures correlated to its recorded sends.
 export const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const SCOPES = ['openid', 'email', GMAIL_SEND_SCOPE]
 const STATE_TTL_S = 600
 
-export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string }
+export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string; DAZL_ENV?: string }
 export interface OAuthDeps { withRead?: boolean; env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -189,8 +189,33 @@ export async function gmailSend(accessToken: string, raw: string, fetchImpl: typ
     signal: AbortSignal.timeout(20_000),
   })
   if (!res.ok) throw new GmailSendError(res.status)
-  const j = (await res.json().catch(() => ({}))) as { id?: string; threadId?: string }
-  return { id: j.id ?? '', threadId: j.threadId }
+  // A 2xx is not proof of handoff: the body must carry the provider's message id. Anything else is an UNKNOWN outcome
+  // (the mail may or may not have gone out), never "sent" and never safe to retry blindly.
+  let j: unknown
+  try { j = await res.json() } catch { throw new GmailUnconfirmedSend('invalid_json') }
+  return confirmedSendResult(j)
+}
+
+// The only shape that counts as a confirmed Gmail handoff: an object with a non-blank string message id (Gmail ids are short
+// hex strings; the pattern is deliberately loose about case and length but refuses whitespace, URLs and anything odd).
+// A threadId that is missing or not a usable string is dropped, never guessed. Used by gmailSend and by every caller that takes
+// an injectable send function, so a test double or a future transport cannot slip an unverified result into a 'sent' row.
+const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/
+export function confirmedSendResult(r: unknown): { id: string; threadId?: string } {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) throw new GmailUnconfirmedSend('not_an_object')
+  const o = r as { id?: unknown; threadId?: unknown }
+  if (typeof o.id !== 'string') throw new GmailUnconfirmedSend(o.id === undefined ? 'missing_id' : 'id_wrong_type')
+  const id = o.id.trim()
+  if (!MESSAGE_ID.test(id)) throw new GmailUnconfirmedSend(id === '' ? 'blank_id' : 'id_malformed')
+  const t = typeof o.threadId === 'string' ? o.threadId.trim() : ''
+  return MESSAGE_ID.test(t) ? { id, threadId: t } : { id }
+}
+
+// The HTTP call succeeded but the response did not confirm the handoff. Deliberately NOT a GmailSendError: callers treat any
+// non-GmailSendError as an uncertain outcome (claim kept, tenant sending paused for review, no automatic retry).
+export class GmailUnconfirmedSend extends Error {
+  reason: string
+  constructor(reason: string) { super(`gmail_unconfirmed:${reason}`); this.reason = reason }
 }
 
 export class GmailSendError extends Error {

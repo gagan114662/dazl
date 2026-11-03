@@ -16,7 +16,7 @@ const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding wi
 const ICP = { summary: 's', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['announced seed funding'], exclude: [], country: 'GB', language: 'en', window_days: 90 }
 const NEWS = 'https://sifted.example/brightloop-raises-seed'
 const QUOTE = 'Brightloop, a London B2B SaaS startup, raised a 3m GBP seed round this month'
-const page = { title: 'Brightloop raises seed round', text: `Published ${daysAgo(12)}. ${QUOTE}. ${'More about the company and its people. '.repeat(15)}` }
+const page = { title: 'Brightloop raises seed round', text: `On ${daysAgo(12)}, ${QUOTE}. ${'More about the company and its people. '.repeat(15)}` }
 const BUDGET = JSON.stringify({ first5: true, paid_fallback: false, credit_enrichment: false })
 const gdelt = JSON.stringify({ articles: [{ url: NEWS, title: page.title, seendate: '20261016T100000Z' }] })
 const fx = (over: Partial<Fixture> = {}): Fixture => ({ request: REQUEST, modelIcp: ICP, modelQueries: ['London SaaS startup seed round'], hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }], tfPages: { [NEWS]: page }, own: { [NEWS]: page },
@@ -67,7 +67,7 @@ test('every news request fails -> stopped_empty, reason failed, search:news name
   assert.deepEqual([v.state, v.reason, v.verified, v.can_continue], ['stopped_empty', 'failed', 0, true], JSON.stringify(v)); assert.deepEqual(v.failed_sources, ['search:news']); assert.match(v.message, /search:news/)
 })
 test('a candidate the verifier rejects (quote not on the page) -> stopped_empty with reason rejected + counts, not a failure and not a zero', async () => {
-  const { v } = await view(fx({ own: { [NEWS]: { title: 'x', text: `Published ${daysAgo(12)}. An unrelated article. ${'Filler text. '.repeat(40)}` } } }))
+  const { v } = await view(fx({ own: { [NEWS]: { title: 'x', text: `On ${daysAgo(12)}, An unrelated article. ${'Filler text. '.repeat(40)}` } } }))
   assert.equal(v.verified, 0); assert.equal(v.state, 'stopped_empty'); assert.ok(v.reason === 'rejected', JSON.stringify(v)); assert.match(v.message, /You can search wider/)
 })
 test('SCOPE: verifiedLeads is owner-scoped and drops held / quarantined leads; a non-first5 job is not a first5 job', async () => {

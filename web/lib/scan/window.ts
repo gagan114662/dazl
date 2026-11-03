@@ -41,6 +41,14 @@ const validDate = (d: string): boolean => {
 // Where one event date sits against the window. Only "inside" is actionable for outreach; every other state is
 // research only. No window: everything is "inside" (the default 12-month freshness has its own checks).
 export type WindowStatus = 'inside' | 'stale' | 'undated' | 'invalid' | 'future'
+// The scan's freshness window at read time: the request text wins, else the saved ICP window (#498: shared by the
+// leads route and the CSV export so both rule the SAME lead the same way).
+export function jobWindowDays(job: { query?: string | null; icp?: string | null }): number | null {
+  let icpWindow: number | null = null
+  try { const j = job.icp ? JSON.parse(job.icp) as { window_days?: unknown } : null; icpWindow = typeof j?.window_days === 'number' ? j.window_days : null } catch { icpWindow = null }
+  return parseWindowDays(job.query ?? '') ?? icpWindow
+}
+
 export function windowStatus(eventDate: string | null | undefined, windowDays: number | null | undefined, now: Date = new Date()): WindowStatus {
   if (!windowDays) return 'inside'
   if (!eventDate) return 'undated'

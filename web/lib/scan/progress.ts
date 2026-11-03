@@ -12,6 +12,7 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 
 export function sourceStatusOf(raw: string, jobRunning: boolean): SourceStatus {
   if (raw === 'started') return jobRunning ? 'running' : 'failed'   // a source that never reported by the end of the scan did not complete
+  if (/^limited/i.test(raw)) return 'failed'   // the provider answered "slow down" (rate-limited): this scan did not get the source's answer - a failure for this scan, never ok, never a clean empty result
   if (FAILED.test(raw)) return 'failed'
   if (/^skipped/i.test(raw)) return 'skipped'
   if (raw === 'unavailable') return 'unavailable'
@@ -25,7 +26,16 @@ export function sourceStatusOf(raw: string, jobRunning: boolean): SourceStatus {
 export const stateOf = (raw: string, status: SourceStatus): SourceState => (/^(?:queued|pending)$/i.test(raw) ? 'queued' : status === 'running' ? 'running' : status === 'failed' ? 'failed' : 'done')
 
 // "partial:1_of_3" -> "1 of 3 requests failed"; "partial:malformed" / a bare "partial" -> some of it could not be read.
+// Throttling is named as throttling, never as an unreadable answer: "partial:limited_1_of_3" -> "1 of 3 requests
+// rate-limited by the provider"; a bare "limited" / "limited_partial:2_of_3" row (failed overall) gets the same honesty.
 export function partialNote(raw: string): string | null {
+  const both = /^partial:(\d+)_of_(\d+)_plus_(\d+)_limited/i.exec(raw)
+  if (both) return `${both[1]} of ${both[2]} requests failed and ${both[3]} rate-limited by the provider`
+  const lim = /^partial:limited_(\d+)_of_(\d+)/i.exec(raw)
+  if (lim) return `${lim[1]} of ${lim[2]} requests rate-limited by the provider`
+  if (raw === 'limited') return 'rate-limited by the provider, asked to slow down'
+  const lmix = /^limited_partial:(\d+)_of_(\d+)/i.exec(raw)
+  if (lmix) return `rate-limited by the provider; ${lmix[1]} of ${lmix[2]} requests also failed`
   const m = /^partial:(\d+)_of_(\d+)/i.exec(raw)
   return m ? `${m[1]} of ${m[2]} requests failed` : /^partial/i.test(raw) ? 'some of its answer could not be read' : null
 }
@@ -67,7 +77,7 @@ export function sourceFindings(rows: SourceRunRow[], jobStatus: string, searchEm
 export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null; partial_sources: string[] } & SourceFindings {
   const rep = (report && typeof report === 'object' ? report : {}) as { funnel?: { review_reasons?: Record<string, number>; drop_reasons?: Record<string, number> }; search?: { hits_unique_urls?: number | null; hits_raw?: number | null; ok?: number | null; attempted?: number | null } | null }
   const partial = new Map(rows.map(r => [String(r.collector ?? ''), /^error_partial:(\d+)_of_(\d+)/.exec(String(r.status ?? ''))] as const))
-  const failed = progressOf(rows, jobStatus).filter(p => p.status === 'failed').map(p => { const m = partial.get(p.source); return m ? `${p.source} (${m[1]} of ${m[2]} requests failed)` : p.source })
+  const failed = progressOf(rows, jobStatus).filter(p => p.status === 'failed').map(p => { const m = partial.get(p.source); return m ? `${p.source} (${m[1]} of ${m[2]} requests failed)` : p.note ? `${p.source} (${p.note})` : p.source })
   const search = rep.search ?? null
   // The report's `search` block describes the TinyFish search ONLY (the news fallback has its own row), so it speaks for that source alone. ANY failed attempt (1 of 3 succeeded) is a
   // named failure of that source: the empty result is then not proof of anything.

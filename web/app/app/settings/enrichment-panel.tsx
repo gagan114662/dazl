@@ -5,12 +5,12 @@ interface Slot { connector: string; last4: string; enabled: boolean }
 interface AuditRow { connector: string; scan_job_id: string | null; lookup: string; status: string; results: number; created_at: number }
 
 const SLOTS = [
-  { id: 'enrich:apollo', name: 'Apollo.io', hint: 'api.apollo.io key. Organization lookups cost 1 credit each (capped at 5 companies per scan); people search is free and returns names and titles, not emails.' },
-  { id: 'enrich:pdl', name: 'People Data Labs', hint: 'api key. Used only when no Apollo key is saved. Person search costs 1 credit per profile returned (free tier: 100/month).' },
+  { id: 'enrich:apollo', name: 'Apollo.io', hint: 'api.apollo.io key. Organization lookups can charge Apollo credits (documented 1 credit each on current plans, capped at 5 companies per scan; older plans can differ - the cost on your account is not verified). Apollo documents people search as 0 credits on current plans (older plans can differ); it returns names and titles, not emails.' },
+  { id: 'enrich:pdl', name: 'People Data Labs', hint: 'api key. Used only when no Apollo key is saved - unless you turn on the fallback below. Person search can use your PDL credits per profile returned. Your plan determines available credits and billing, and the cost on your account is not verified.' },
 ]
 
 export default function EnrichmentPanel() {
-  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[] } | null>(null)
+  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean } | null>(null)
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState('')
   async function load() { const r = await fetch('/api/settings/enrichment'); if (r.ok) setData(await r.json()) }
@@ -53,6 +53,15 @@ export default function EnrichmentPanel() {
           )
         })}
       </div>
+      {byId['enrich:apollo']?.enabled && byId['enrich:pdl']?.enabled && (
+        <label className="flex items-start gap-2 text-sm mt-1">
+          <input type="checkbox" className="mt-0.5" checked={!!data.fallback} onChange={e => act({ fallback: e.target.checked })} />
+          <span>
+            Also use People Data Labs as a fallback when Apollo finds no contacts for a company.
+            <span className="text-[#777] text-xs block">Off by default. Each fallback profile returned can use 1 PDL credit (up to 5 per scan - documented terms; the cost on your account is not verified).</span>
+          </span>
+        </label>
+      )}
       {data.audit.length > 0 && (
         <div className="mt-4 text-xs text-[#555]">
           <div className="font-medium text-sm mb-1">Recent enrichment lookups</div>

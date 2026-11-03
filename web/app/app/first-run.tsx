@@ -10,7 +10,9 @@ import { Avatar, Pill, Stepper } from './ui/bits'
 import BrainGraph from './onboarding/brain-graph'
 import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
+import { siteKeyReason } from '@/lib/scan/site-read-copy'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
+import ResearchReview, { asResearchBlock, type ResearchBlock } from './research-review'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import { calendarDay } from '@/lib/day'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
@@ -58,8 +60,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // replaced when the profile changes, so the box never keeps a sentence built from an older profile.
   const [askIsSuggestion, setAskIsSuggestion] = useState(true)
   const [busy, setBusy] = useState(false)
+  // The source-backed research block from the website read (#379): carried untouched through the reviewed profile
+  // into the scan, so the play keeps its provenance and per-offer corrections.
+  const [research, setResearch] = useState<unknown>(null)
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
+  // The free website read (#409): only facts the page itself states, each with its source URL. Set when the account
+  // has no AI key; the profile form below stays the user's to fill - nothing here is inferred.
+  const [freeRead, setFreeRead] = useState<{ site: string; source: string; facts: { kind: string; text: string; source: string }[]; trial?: string } | null>(null)
   // The brain: facts from the website read, revealed one by one while it builds.
   const [facts, setFacts] = useState<BrainFact[]>([])
   const [shown, setShown] = useState(0)
@@ -100,7 +108,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const brain: Brain = { summary: summary || sells, who: list(who), industries: list(industries), where: list(where), signals: list(signals) }
   const plays = useMemo(() => suggestPlays(brain), [summary, sells, who, industries, where, signals]) // eslint-disable-line react-hooks/exhaustive-deps
   // The reviewed profile exactly as shown in step 2; it goes to the search with the sentence (no hidden fields).
-  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude) }
+  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude), ...(research ? { research } : {}) }
 
   // Watch the first play: its status every few seconds until it settles, then its ready leads (the same gates as Home).
   const firstId = first?.id ?? null, firstStatus = first?.status ?? null
@@ -123,6 +131,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   const hasKey = !!usage?.has_key
   const trialLeft = !hasKey && usage?.trial?.funded ? usage.trial.remaining : 0
+  // Keyless with no trial searches: no path on the ready step may promise or start a search this account cannot run.
+  const noPool = !hasKey && usage !== null && trialLeft === 0
+  // Until usage answers (loading) or if it failed, the pool is unknown: no start path may fire either.
+  const poolUnknown = usage === null
 
   // Website only: dazl reads it, shows each inferred fact landing on the brain, saves the profile it inferred (the user
   // can edit it any time; nothing is asked up front) and opens the ready screen.
@@ -131,6 +143,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const url = normalizeWebsite(website)
     if (!url) return setError('Enter your website, like acme.com.')
     setBusy(true); setFacts([]); setShown(0); setStep('building')
+    // Every new read drops the last read's AI hypotheses: they are transient (never part of the saved profile), and a
+    // free read, a failed read or a read of a DIFFERENT site must never show them beside its own result. Saved profile
+    // fields are untouched - they carry the person's own edits, and the keyed read saved them with that provenance.
+    setResearch(null)
     try {
       const r = await fetch('/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) })
       const j = await r.json().catch(() => ({}))
@@ -139,8 +155,25 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         if (j.error === 'no_api_key') { setNeedKey(true); return }
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
+      if (j.free === true) {
+        // Keyless free read: show the page's own facts, route to the reviewable manual profile. No brain facts, no
+        // inferred draft, no auto-save - and no promise of a free search (the ask step prices key/trial honestly).
+        setFreeRead({ site: String(j.site ?? ''), source: String(j.source ?? ''), facts: Array.isArray(j.facts) ? j.facts : [], ...(typeof j.trial === 'string' ? { trial: j.trial } : {}) })
+        // Research from any earlier keyed read was already cleared when this read began; the profile fields keep
+        // their values (keyed reads save them; the person's edits are their own), and nothing here re-infers them.
+        try { setReadFrom(new URL(String(j.source ?? '')).hostname) } catch { setReadFrom('your website') }
+        setWebsite(url)
+        setStep('brain')
+        return
+      }
+      setFreeRead(null)
       if (j.sells) setSells(String(j.sells))
       fillBuyer(j.icp ?? {})
+      const rb = asResearchBlock((j.icp as { research?: unknown })?.research)
+      setResearch(rb)
+      // A 'Who buys this?' answer carried across a recrawl is the person's own words: it belongs in the visible field.
+      const ansT = rb?.ans?.t?.trim()
+      if (ansT) setWho(prev => prev.split(';').map(x => x.trim().toLowerCase()).includes(ansT.toLowerCase()) ? prev : prev.trim() ? `${prev}; ${ansT}` : ansT)
       try { setReadFrom(new URL(j.source).hostname) } catch { setReadFrom('your website') }
       setWebsite(url)
       const f = brainFacts({ ...j, business_name: bizName })
@@ -180,7 +213,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // nothing here changes what a scan checks.
       // From the ready screen the first play is the fast first scan (mode first5: the free sources only, the same
       // extraction and checks as every scan), so the first leads come back quickly; a wider, full scan stays one click away.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, ...(stay ? { mode: 'first5' } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(stay ? { mode: 'first5' } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
@@ -212,6 +245,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const f5Live = !!f5 && f5.state === 'finding' && first?.status !== 'failed'
     const f5Ready = f5 && !f5Live && ready ? ready.length : 0
     const f5Found = f5?.leads.length ?? 0
+    // The cards shown that still need research. A ready lead can sit outside the five shown (the full rows hold every lead), so this is counted on the cards, not as found minus ready.
+    const f5NeedResearch = f5 && ready ? f5.leads.filter(l => !readyIds.has(l.id)).length : 0
     // The one sentence: what the user typed, else the top suggestion from the profile (so nothing has to be typed).
     const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
     const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null
@@ -270,10 +305,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   <ul className="mt-5 space-y-3 text-[15px]">
                     {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
                   </ul>
-                  {needKey && !hasKey && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
+                  {/* Keyless with no trial searches: the key form is up front, before any commitment - the CTA below
+                      does not promise a search this account cannot start (the server fails closed, but the button
+                      must not rely on that). A trial account (trialLeft > 0) keeps the plain CTA. */}
+                  {poolUnknown && !first && <p className="mt-5 text-sm text-[var(--ink-2)]">Could not check your search allowance. <button type="button" className="underline" data-testid="usage-retry" onClick={() => void loadUsage()}>Try again</button></p>}
+                  {!hasKey && (needKey || noPool) && !poolUnknown && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
-                    {!first ? <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>
+                    {!first ? (noPool || poolUnknown ? null
+                      : <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>)
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
                       // With leads on the ready bar, reaching out starts here: review them one by one (the review step).
                       : (f5 ? f5Ready > 0 : first.status === 'done' && (ready?.length ?? 0) > 0) ? <button type="button" className="btn-primary btn-lg w-full justify-center" onClick={() => setStep('review')} data-testid="ready-cta">Start reaching out</button>
@@ -293,7 +333,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   <h2 className="text-xl font-bold tracking-tight" data-testid="first-heading">{!first ? 'Who do you want to find?'
                     : f5 ? (f5Live ? (f5.leads.length ? `${f5.leads.length} found - checking each one` : 'Finding your first leads')
                       : first.status === 'done' && !first.leads ? 'Checking which are ready to contact'
-                      : f5Ready ? `${f5Ready} ready to contact${f5Found > f5Ready ? `, ${f5Found - f5Ready} need research` : ''}`
+                      : f5Ready ? `${f5Ready} ready to contact${f5NeedResearch > 0 ? `, ${f5NeedResearch} need research` : ''}`
                       : f5Found ? `${f5Found} found - research needed before outreach`
                       : first.status === 'failed' || f5.reason === 'failed' ? 'This play could not finish' : 'No leads in this first play')
                     : active ? 'Finding your first leads'
@@ -311,14 +351,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     </dl>
                     {/* One sentence. It starts as the top suggestion, so the website stays the only thing typed; a click on a
                         suggestion starts that one at once. */}
-                    <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); void start(sentence, true) }}>
+                    <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); if (!noPool && !poolUnknown) void start(sentence, true) }}>
                       <label className="block text-sm font-semibold" htmlFor="first-ask-input">Describe who you want in one sentence</label>
                       <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} value={sentence} data-testid="first-ask"
                         onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
                     </form>
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
                     <div className="mt-2 flex flex-col gap-2">
-                      {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
+                      {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy || noPool || poolUnknown} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); if (!noPool && !poolUnknown) void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
                     </div>
                   </>}
                   {/* Live: which source is being read and how many candidates so far, from the scan's own progress record. */}
@@ -379,8 +419,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {error && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="alert">{error}</p>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
-        <h2 className="text-xl font-semibold">Here&apos;s what we think you sell and who buys it</h2>
-        <p className="text-[#555]">{readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.</p>
+        <h2 className="text-xl font-semibold">{freeRead ? `We read ${freeRead.site} - here is what the page itself says` : 'Here\'s what we think you sell and who buys it'}</h2>
+        <p className="text-[#555]">{freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself, or add your AI key for the full automatic read.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.`}</p>
+        {freeRead && <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-3" data-testid="free-site-read">
+          {freeRead.facts.length === 0
+            ? <p className="text-[#555]">The page did not state a title or description in readable HTML.</p>
+            : <ul className="flex flex-col gap-2">{freeRead.facts.map((fact, i) => <li key={i}><span className="text-xs uppercase tracking-wide text-[#777]">{fact.kind === 'title' ? 'Page title' : 'Page description'}</span><br />{fact.text} <a className="underline text-xs" href={fact.source} target="_blank" rel="noreferrer">source</a></li>)}</ul>}
+        </div>}
+        {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on your own Anthropic or OpenAI key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
+        {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#777]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
         <label className="flex flex-col gap-1">Who buys it<textarea className="field" rows={2} maxLength={400} value={summary} onChange={e => setSummary(e.target.value)} placeholder="e.g. Independent dental practices with 2-10 chairs" /></label>

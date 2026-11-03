@@ -8,5 +8,5 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = await getDb()
-  return NextResponse.json({ connectors: await connectorStatus(db, user.id), audit: await readRecentAudit(db, user.id) })
+  return NextResponse.json({ connectors: await connectorStatus(db, user.tenantId), audit: await readRecentAudit(db, user.tenantId) })
 }

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import type { Db } from '../db/client.ts'
 import { fetchKey, readKeyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
@@ -60,7 +61,7 @@ Rules: no hype words, no invented statistics, state only what the excerpt suppor
 
 export type Newsjack = { id: string; url: string; title: string | null; draft: string; status: string; created_at: number }
 
-export async function createNewsjack(db: Db, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' }> {
+export async function createNewsjack(db: Db, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' | 'spend_limit' }> {
   const url = rawUrl.trim()
   if (!/^https:\/\/[^\s]{4,480}$/.test(url)) return { error: 'invalid' }
   const vendor = ((await readKeyStatus(db, tenantId))[0]?.vendor ?? null) as Vendor | null
@@ -72,8 +73,9 @@ export async function createNewsjack(db: Db, tenantId: string, rawUrl: string, d
   if (!article) return { error: 'fetch' }
   let draft: string
   try {
-    draft = (await providers[vendor].complete!(key, PROMPT(article.title, article.excerpt), f, 900)).trim()
+    draft = (await ownerGuarded(db, tenantId, providers[vendor]).complete!(key, PROMPT(article.title, article.excerpt), f, 900)).trim()
   } catch (e) {
+    if (spendRefused(e)) return { error: 'spend_limit' }
     if (e instanceof ProviderError && e.kind === 'auth') throw e
     return { error: 'upstream' }
   }

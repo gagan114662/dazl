@@ -1,4 +1,7 @@
+import {migratePlayResearch} from '../db/play-research-schema.ts'
 import { migrateSourceReview } from './source-review.ts'
+import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateTenantLifecycle } from '../db/tenant-guard.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { cookies } from 'next/headers'
@@ -19,8 +22,11 @@ import { migrateCommenterImport } from './commenter-import.ts'
 import { migrateMemory } from '../memory.ts'
 import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateReplies } from '../outreach/replies.ts'
+import { migrateBounceLedger } from '../outreach/bounce-ledger.ts'
+import { migrateBounceScan } from '../outreach/bounce-scan.ts'
 import { migrateThreadReplies } from '../replies/threads.ts'
 import { migrateTrial } from './trial.ts'
+import { migratePreviewClaim } from './preview-claim.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
 import { migrateEvents } from '../events/store.ts'
 import { migrateSeo } from '../seo/audit.ts'
@@ -30,8 +36,11 @@ let ready = false
 export function getScanDb() {
   const db = getAuthDb()
   if (!ready) {
+    migrateSchedulerRuns(db)
     migrateScan(db)
+    migratePreviewClaim(db)
     migrateSourceReview(db)
+    migratePlayResearch(db)
     migrateWatch(db)
     migrateKeys(db)
     migratePlans(db)
@@ -42,6 +51,8 @@ export function getScanDb() {
     migrateAutopilot(db)
     migrateLedger(db)
     migrateReplies(db)
+    migrateBounceLedger(db)
+    migrateBounceScan(db)
     migrateThreadReplies(db)
     migrateSequences(db)
     migrateTrial(db)
@@ -55,6 +66,7 @@ export function getScanDb() {
     migrateMemory(db)
     migrateReopen(db)
     migrateInsertionOrder(db) // last: adds insert_seq to tables created above
+    migrateTenantLifecycle(db) // after it: a deleted-tenant guard trigger on every tenant-scoped table that now exists
     ready = true
   }
   return db

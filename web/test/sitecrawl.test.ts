@@ -64,9 +64,11 @@ test('crawlJob stores each contact with its source page and date; the site is re
   const reads: string[] = []
   const get: Get = async url => { const u = new URL(url); reads.push(u.hostname + u.pathname); const p = pages[u.pathname]; return p ? { status: 200, body: p.body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
-  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind <> 'domain' ORDER BY lead_id").all()
+  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check', 'tech_scan') ORDER BY lead_id").all()   // tech_scan: the #389 per-crawl observation, tested in tech-observations.test.ts
   const em = (id: string) => ({ lead_id: id, kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', source_date: '2026-10-20', connector: 'sitecrawl' })
   assert.deepEqual(rows, [em('l1'), em('l2')], 'a second lead naming the same company on the same domain gets its own rows')
+  // Each accepted domain also records that its identity check passed (what the contact sweep and the score read), once per lead.
+  assert.deepEqual(db.prepare("SELECT lead_id, value FROM lead_enrichments WHERE kind = 'domain_check' ORDER BY lead_id").all(), [{ lead_id: 'l1', value: 'stabyl.com|identity_checked' }, { lead_id: 'l2', value: 'stabyl.com|identity_checked' }])
   assert.equal(reads.filter(r => r === 'stabyl.com/contact-us').length, 1, 'but the contact page is read once')
   const a = db.prepare("SELECT lookup, status, results FROM connector_audit ORDER BY rowid").all()
   // l3's evidence links nothing, so its name-derived probes were tried; the mock's shared home page
@@ -74,6 +76,36 @@ test('crawlJob stores each contact with its source page and date; the site is re
   assert.ok(a.some(x => (x as { status: string }).status === 'name_mismatch') && a.some(x => (x as { status: string; results: number }).status === 'ok'))
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l1'").get() as { company_domain: string }).company_domain, 'stabyl.com')
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: { SITECRAWL_ENABLED: '0' } }) // switch off does nothing
+})
+
+test('a lead held because its evidence page blocked us gets an identity attempt WITHOUT re-fetching the blocked page; event-hold classes are not selected', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)")
+  db.prepare(`INSERT INTO leads VALUES
+    ('lb','j1','Clera','https://blocked.example/article','blocked_by_site',NULL,80,NULL,NULL,NULL),
+    ('lj','j1','JsCo','https://js.example/article','needs_javascript',NULL,75,NULL,NULL,NULL),
+    ('lc','j1','CounterCo','https://news.example/x','counterparty_signal',NULL,70,NULL,NULL,NULL),
+    ('ld','j1','ClosedCo','https://news.example/y','job_closed',NULL,60,NULL,NULL,NULL)`).run()
+  const reads: string[] = []
+  const get: Get = async url => { const u = new URL(url); reads.push(u.hostname + u.pathname); return { status: 404, body: '', finalUrl: url } }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-31T12:00:00Z') })
+  assert.ok(!reads.some(r => r.includes('blocked.example') || r.includes('js.example')), 'a known-blocked / JS-only evidence page is never re-fetched')
+  assert.ok(reads.some(r => r.includes('clera')) && reads.some(r => r.includes('jsco')), 'identity is probed from the company name instead')
+  assert.ok(!reads.some(r => r.includes('counterco')) && !reads.some(r => r.includes('closedco')) && !reads.some(r => r.includes('news.example')), 'counterparty / job-closed holds are not selected - identity cannot change them')
+  assert.equal((db.prepare("SELECT review_reason FROM leads WHERE id='lb'").get() as { review_reason: string }).review_reason, 'blocked_by_site', 'the hold is untouched: discovery never clears it')
+})
+
+test('the blocked-host guard covers candidate domains: a company whose own site refused us is NOT probed by another path', async () => {
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)")
+  db.prepare("INSERT INTO leads VALUES ('lb','j1','Clera','https://clera.com/blog/news','blocked_by_site',NULL,80,NULL,NULL,NULL)").run()
+  const reads: string[] = []
+  const get: Get = async url => { const u = new URL(url); reads.push(u.hostname); return { status: 404, body: '', finalUrl: url } }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-31T12:00:00Z') })
+  assert.ok(!reads.includes('clera.com') && !reads.some(h => h.endsWith('.clera.com')), `the refusing host is never probed by any path, got ${reads}`)
+  assert.ok(reads.includes('clera.ai') || reads.includes('clera.io'), 'other name-derived candidates are still tried')
+  const a = db.prepare("SELECT status FROM connector_audit WHERE lookup = 'clera.com'").all() as { status: string }[]
+  assert.ok(a.some(x => x.status === 'skipped_site_refused_us'), 'the skip is audited, not silent')
 })
 
 test('crawl4ai sidecar: POST /crawl shape, robots check on, public hosts only, same-site only', async () => {

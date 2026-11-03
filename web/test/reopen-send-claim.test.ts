@@ -99,3 +99,16 @@ test('skip that read a draft but lost the claim race does not overwrite the clai
   assert.throws(() => skipReopen(claimAfterRead(db, tid), 'A', tid), /send_uncertain/)
   assert.equal((db.prepare('SELECT status FROM reopen_messages WHERE thread_id=?').get(tid) as { status: string }).status, 'approved')
 })
+
+test('reopen: an unverifiable handoff is reported uncertain, the claim stays, nothing is marked sent and a second press never resends', async () => {
+  for (const bad of [undefined, null, {}, { id: '' }, { id: '   ' }, { id: 7 }, { id: ['x'] }, { threadId: 'th1' }]) {
+    const db = mk(); const tid = await seed(db)
+    let sends = 0
+    const d = { env, now: NOW, master, sendFn: (async () => { sends++; return bad }) as never, fetchImpl: tokenFetch }
+    await assert.rejects(sendReopen(db, 'A', tid, d), /send_uncertain/, JSON.stringify(bad))
+    assert.equal(listReopens(db, 'A')[0].reopen!.status, 'approved')
+    assert.equal((db.prepare("SELECT count(*) AS n FROM reopen_messages WHERE status = 'sent'").get() as { n: number }).n, 0)
+    await assert.rejects(sendReopen(db, 'A', tid, d), /send_uncertain/)
+    assert.equal(sends, 1)
+  }
+})

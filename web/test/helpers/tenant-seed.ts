@@ -13,7 +13,7 @@ type Col = { table: string; column: string; type: string; nullable: boolean; has
 export const marker = (tag: string, table: string) => `${tag}~${table}`
 
 // Values the schema's triggers need while seeding (a lead is written only to a running scan).
-const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' } }
+const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' }, onboarding_audit: { event: 'conversion:seeded' } } // onboarding_audit: its CHECK wants a conversion:<kind> event
 
 // A value for `col` that satisfies the CHECK constraint `def`, or undefined when the definition is not one of the
 // shapes the schema uses.
@@ -133,5 +133,8 @@ export async function snapshot(db: Db, tenant: string): Promise<Record<string, s
     const rows = await db.all(`SELECT * FROM ${t} WHERE ${where(t)}`)
     out[t] = JSON.stringify(rows.map(r => JSON.stringify(r)).sort())
   }
+  // the tenant's identity rows (global by classification: the id is the tenant), so a snapshot covers them too
+  out.users = JSON.stringify(await db.all('SELECT * FROM users WHERE id = ?', [tenant]))
+  out.organizations = JSON.stringify(await db.all('SELECT * FROM organizations WHERE id = ?', [tenant]))
   return out
 }

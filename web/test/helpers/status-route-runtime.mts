@@ -11,9 +11,11 @@ import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { GET } from '../../app/api/scan/status/route.ts'
 
 // Route-behavior harness for the status-poll runner kick. Synthetic key, no network:
-// global fetch throws, so a kicked runner claims the job (attempts bump) and its
-// provider attempt immediately fails back to a retry-pending state. The OBSERVABLE
-// of the kick is the attempts bump + error, not any provider success.
+// global fetch throws. The kicked runner claims the job (attempts bump) and its scan
+// attempt ends. Since #379 retired unpriced model research at the real provider
+// boundary, the unguarded plain-job scan never reaches a fetch at all: the attempt
+// records the honest terminal failure 'budget_stopped'. The OBSERVABLE of the kick
+// is the attempts bump + error + released claim, not any provider success.
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 globalThis.fetch = (async (u: unknown) => { throw new Error(`network fenced in status-kick harness: ${String(u)}`) }) as typeof fetch
 
@@ -28,16 +30,16 @@ const get = (id: string, passive: boolean) =>
   GET(new NextRequest(`http://localhost/api/scan/status?job_id=${id}${passive ? '&passive=1' : ''}`))
 const row = (db: Database.Database, id: string) =>
   db.prepare('SELECT status, error, attempts, claimed_at FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null; attempts: number; claimed_at: number | null }
-// Wait until the kicked runner's claim is visible. One kick = one claim: the fenced
-// provider call fails the attempt, the job re-pends, and RETRIES are driven by later
-// kicks (that is the pre-existing poll-driven retry model this harness documents).
+// Wait until the kicked runner's claim is visible. One kick = one claim: with research
+// retired (#379) the attempt ends budget_stopped - terminal, no re-pend, no silent
+// spend. The kick observable (attempts bump, honest error, released claim) is unchanged.
 async function settle(db: Database.Database, id: string, wantAttempts: number, timeoutMs = 8000) {
   const t0 = Date.now()
   for (;;) {
     const r = row(db, id)
     if (r.attempts >= wantAttempts && r.claimed_at === null && r.error !== null) {
-      assert.equal(r.status, 'pending', 'fenced attempt re-pends for a later kick')
-      assert.ok(r.error, 'the fenced provider failure is recorded honestly')
+      assert.equal(r.status, 'failed', 'research is retired: the attempt fails honestly instead of re-pending into unpriced spend (#379)')
+      assert.equal(r.error, 'budget_stopped')
       assert.equal(r.claimed_at, null, 'runner released the job after the failed attempt')
       return r
     }

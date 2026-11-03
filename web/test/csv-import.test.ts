@@ -108,34 +108,56 @@ const lead = { name: 'Pat', company: 'Acme', contact: null, signal: 'Hiring AEs'
 const page = async () => ({ text: `News ${recent.slice(0, 4)}. ${QUOTE}. More text.`, title: 'Acme news', retrievedAt: 1_700_000_000 })
 
 test('a csv_domain job researches the company and finishes done with the lead written', async () => {
+  // Leads through the TinyFish-primary path: the unpriceable web-search research fallback is refused (#379)
+  process.env.TINYFISH_API_KEY = 'tf-test'
+  try {
   const db = setup()
   const b = createBatch(db, 'A', ['acme.com'])
   queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   assert.equal(job.csv_domain, 'acme.com')
+  let researchCalls = 0
   const providers: Record<'anthropic' | 'openai', Provider> = {
-    anthropic: { research: async () => ({ text: 'Here: ' + JSON.stringify([lead]), citedUrls: ['https://news.com/acme'] }) },
+    anthropic: { research: async () => { researchCalls++; return { text: '', citedUrls: [] } }, complete: async (_k, _p, _f, max) => max === 3000 ? 'Here: ' + JSON.stringify([lead]) : 'supports' },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
-  assert.equal(await runJob(db, job, { providers, master, fetchPage: page }), 'done')
+  const fetchImpl = (async (u: string | URL | Request) => {
+    const s = String(u)
+    if (s.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://news.com/acme', title: 'Acme news', snippet: QUOTE, date: recent }] }), { status: 200 })
+    if (s.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://news.com/acme', title: 'Acme news', text: `News ${recent.slice(0, 4)}. ${QUOTE}. More text.` }] }), { status: 200 })
+    return new Response('{}', { status: 404 })
+  }) as typeof fetch
+  assert.equal(await runJob(db, job, { providers, master, fetchPage: page, fetchImpl }), 'done')
+  assert.equal(researchCalls, 0, 'the unpriceable fallback was never invoked')
   const st = batchStatus(db, 'A', b)!
   assert.equal(st.counts.done, 1)
   assert.equal(st.rows[0].leads, 1)
   const leads = listLeads(db, 'A', job.id) as { company: string }[]
   assert.equal(leads.length, 1)
   assert.equal(leads[0].company, 'Acme')
+  } finally { delete process.env.TINYFISH_API_KEY }
 })
 
-test('a csv job with no candidates fails honestly and does not burn quota semantics', async () => {
+test('a csv job whose searches find nothing stops honestly (research refused, #379) and does not burn quota semantics', async () => {
+  process.env.TINYFISH_API_KEY = 'tf-test'
+  try {
   const db = setup()
   const b = createBatch(db, 'A', ['ghost.example.co'])
   queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
-  const providers: Record<'anthropic' | 'openai', Provider> = {
-    anthropic: { research: async () => ({ text: '[]', citedUrls: [] }) },
-    openai: { research: async () => ({ text: '', citedUrls: [] }) },
-  }
-  assert.equal(await runJob(db, job, { providers, master, fetchPage: page }), 'failed')
-  assert.equal(getJob(db, 'A', job.id)?.error, 'no_candidates')
+  // The production wiring: no injected provider, so the run uses the real vendor registry. Any model web-search
+  // request would show up in webSearchCalls - the retired method must refuse before any network call (#379).
+  let webSearchCalls = 0
+  const fetchImpl = (async (u: string | URL | Request, init?: RequestInit) => {
+    const s = String(u)
+    if ((s.includes('api.anthropic.com') || s.includes('api.openai.com')) && String(init?.body ?? '').includes('web_search')) webSearchCalls++
+    if (s.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
+    if (s.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
+    return new Response('{}', { status: 404 })
+  }) as typeof fetch
+  assert.equal(await runJob(db, job, { master, fetchPage: page, fetchImpl }), 'failed')
+  assert.equal(webSearchCalls, 0, 'the unpriceable fallback was refused before any network call')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped', 'an honest stop, not "nothing found" and never an unpriced call')
   assert.equal(batchStatus(db, 'A', b)!.counts.failed, 1)
+  } finally { delete process.env.TINYFISH_API_KEY }
 })

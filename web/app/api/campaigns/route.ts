@@ -11,6 +11,6 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   // Each row's run status is the same recorded outcome the Leads history and the campaign page show (one record per
   // scan from historyJobs, which carries the extraction diagnostic); a row not in that read keeps its own next action.
-  const jobs = new Map((await historyJobs(await getDb(), user.id)).map(j => [j.id, j]))
-  return NextResponse.json({ campaigns: listCampaigns(getScanDb(), user.id).map(c => campaignStatus(c, (jobs.get(c.id) as never) ?? null)) })
+  const jobs = new Map((await historyJobs(await getDb(), user.tenantId)).map(j => [j.id, j]))
+  return NextResponse.json({ campaigns: listCampaigns(getScanDb(), user.tenantId).map(c => campaignStatus(c, (jobs.get(c.id) as never) ?? null)) })
 }

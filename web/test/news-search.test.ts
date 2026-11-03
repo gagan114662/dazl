@@ -128,3 +128,25 @@ test('supplement path: the GDELT-surfaced lead carries the attribution, the Tiny
   const via = gdeltAttribution(db, 'A', leads.map(l => l.id))
   assert.deepEqual(leads.map(l => [l.company, via.has(l.id)]).sort(), [['Alpha Dental', false], ['Beta Dental', true]])
 })
+
+test('a GDELT rate-limit answer is counted apart from failures, stops this scan\'s queries, and widens later spacing', async () => {
+  resetNewsQueue()
+  const waits: number[] = []
+  let calls = 0
+  const http: SafeGet = async () => { calls++; return { status: 200, body: 'Please limit requests to one every 5 seconds' } }
+  const r = await newsSearch(http, ['a', 'b', 'c'], 'en', { gapMs: 5100, sleep: async ms => { waits.push(ms) } })
+  assert.deepEqual([r.attempted, r.failed, r.limited, calls], [1, 0, 1, 1], 'first answer is a limit: stop asking rather than hammering a throttling provider')
+  const r2 = await newsSearch(http, ['d'], 'en', { gapMs: 5100, sleep: async ms => { waits.push(ms) } })
+  assert.equal(r2.limited, 1)
+  assert.ok(waits.some(w => w > 30000), `after a limit the shared spacing widens beyond the 5 s floor, got waits ${waits}`)
+  resetNewsQueue()
+})
+
+test('newsStatus names a rate-limited source honestly: limited, never error or empty', async () => {
+  const { newsStatus } = await import('../lib/scan/runner.ts')
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 0, limited: 1 }), 'limited')
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 2, limited: 1 }), 'limited_partial:2_of_3')
+  assert.equal(newsStatus(null, { searched: true, hits: 2, attempted: 3, failed: 0, limited: 1 }), 'partial:limited_1_of_3')
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 3 }), 'error', 'a plain outage still says error')
+  assert.equal(newsStatus(null, { searched: true, hits: 0, attempted: 3, failed: 0 }), 'empty', 'a real zero-result search still says empty')
+})

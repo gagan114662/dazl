@@ -116,3 +116,30 @@ test('Instinct #341: a test-only send never completes a real-work step', () => {
   // Test sends are left out after the cap is judged: 200 rows of which only test ones are drafts is still a capped read.
   assert.equal(readyItems({ ...all, campaigns: [camp({ sc: 1 })], messages: Array.from({ length: 200 }, () => t) })[5].state, 'unknown')
 })
+
+test('a complete manual profile (sells + buyer, no website) completes the business-profile step', () => {
+  const manual = { sells: 'Online booking for dental practices', business_name: 'Brightsmile', buyer: { summary: 'Independent dental practices with 2-10 chairs', who: ['Practice owner'] } }
+  const i: ReadinessInput = { ...all, profile: manual }
+  const items = readyItems(i)
+  assert.equal(st(i)[0], 'profile:done')
+  assert.equal(items[0].detail, 'saved by hand - Independent dental practices with 2-10 chairs')
+  assert.equal(readyComplete(items), true)
+})
+
+test('manual profile: search-can-run stays a separate step when no key/trial is available', () => {
+  const i: ReadinessInput = { ...all, profile: { sells: 'x', buyer: { summary: 'dental practices', who: [] } }, usage: { has_key: false }, keys: [], jobs: [], totals: { searches: 0, finished: 0 }, campaigns: [], messages: [] }
+  assert.deepEqual(st(i).slice(0, 3), ['profile:done', 'search:todo*>Add key@/app/settings#model-key', 'play:todo>Run a search@/app/leads'])
+  assert.equal(readyComplete(readyItems(i)), false)
+})
+
+test('partial manual profiles stay todo: buyer without sells, sells without buyer, empty sells', () => {
+  assert.equal(st({ ...all, profile: { buyer: { summary: 'dental practices', who: ['Owner'] } } })[0], 'profile:todo*>Add website@/app?setup=site')
+  assert.equal(st({ ...all, profile: { sells: 'x', buyer: null } })[0], 'profile:todo*>Add website@/app?setup=site')
+  assert.equal(st({ ...all, profile: { sells: '  ', buyer: { summary: 'dental practices', who: [] } } })[0], 'profile:todo*>Add website@/app?setup=site')
+})
+
+test('a later edit that clears the buyer profile takes the manual step back to todo (reload reads stored state)', () => {
+  const i: ReadinessInput = { ...all, profile: { sells: 'x', business_name: 'B', buyer: { summary: 'dental practices', who: [] } } }
+  assert.equal(st(i)[0], 'profile:done')
+  assert.equal(st({ ...i, profile: { ...i.profile!, buyer: null } })[0], 'profile:todo*>Add website@/app?setup=site')
+})

@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -29,7 +30,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-readycard-')); const DB = path
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -41,6 +42,7 @@ const JOBS = [job('a', 1, 'London B2B SaaS startups hiring sales'), job('b', 2, 
 const camp = (id, o = {}) => ({ id, status: 'done', qualification: { sourceChecked: o.sc ?? 0, confirmedByYou: 0, needsReview: 0, unverified: 2, held: o.held ?? 0, rejected: 0 }, contact: { withContact: o.contacts ?? 0, readyWithContact: o.ready ?? 0, draftable: o.draftable ?? 0 }, outreach: { drafts: o.drafts ?? 0, approved: 0, sent: 0 } })
 const SCENES = {
   fresh: { profile: { ...PROFILE, buyer: null }, key: false, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
+  manual: { profile: { ...PROFILE, website: undefined }, key: true, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   reviewed: { profile: PROFILE, key: true, gmail: GMAIL, sender: { sender_name: '', postal_address: '' }, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [] },
   midway: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: [camp(JOBS[0].id), camp(JOBS[1].id, { sc: 2, contacts: 1, ready: 1, draftable: 1 })], msgs: [] },
   quota: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [], used: 50 },
@@ -95,6 +97,20 @@ try {
     assert.ok((await card(page).boundingBox()).y < (await page.getByTestId('journey').boundingBox()).y, 'the card sits above the journey')
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll (${tag})`)
     await shot(page, `new-${tag}`)
+    assert.deepEqual(writes, []); await ctx.close()
+    // 1b. A complete profile saved by hand (sells + buyer, no website): the profile step is done, the search
+    // step is next - the card never asks for a website (#420).
+    ;({ ctx, page, writes } = await open(SCENES.manual, w, h))
+    await card(page).waitFor()
+    assert.deepEqual(await states(page), ['profile:done', 'search:done', 'play:todo*', 'qualified:todo', 'contact:todo', 'draft:todo', 'sender:todo'], 'manual profile done, search can run, first search is the actual next prerequisite')
+    assert.deepEqual(await fixes(page), ['', '', 'Run a search>/app/leads', '', '', '', 'Connect>/app/settings#gmail'], 'no Add website fix anywhere on the manual path')
+    assert.ok((await card(page).textContent()).includes('saved by hand'), 'the done detail names the manual profile')
+    // The full checklist on the same page must agree (#420 whole contract): the business-details row completes
+    // from the manual profile and never asks for a website.
+    const siteRow = await page.getByTestId('ready-site').textContent()
+    assert.match(siteRow ?? '', /Brightsmile - Online booking and reminders for dental practices/, 'readiness panel completes from the manual profile')
+    assert.ok(!/missing website/.test(siteRow ?? ''), 'readiness panel: no website ask on the manual path')
+    await shot(page, `manual-${tag}`)
     assert.deepEqual(writes, []); await ctx.close()
     // 2. The reviewed account.
     ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))

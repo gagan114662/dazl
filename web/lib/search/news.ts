@@ -38,6 +38,12 @@ export function newsUrl(query: string, lang: string | null, timespan = '1month')
 export function parseGdelt(body: string, max = 15): SearchHit[] { return parseGdeltStrict(body, max) ?? [] }
 // A 200 whose body is not the documented shape (invalid HTML / text, an empty object, a missing `articles` array) is a PARSE FAILURE (null), never a search that found nothing.
 // Only a JSON object carrying an `articles` array (possibly empty) is a real answer.
+// GDELT answers an over-rate caller with a 200 whose body is plain text starting "Please limit requests". It is not
+// JSON and not an outage: count it apart from failed requests, stop this scan's remaining queries (more will be
+// limited too), and widen the shared spacing so later scans do not keep the provider throttling this server.
+export const isGdeltLimit = (body: string): boolean => /^\s*please limit requests/i.test(body)
+const LIMITED_GAP_MS = 60_000
+let learnedGapMs = 0
 export function parseGdeltStrict(body: string, max = 15): SearchHit[] | null {
   const d = parseGdeltDetail(body, max)
   return d ? d.hits : null
@@ -67,10 +73,10 @@ export function parseGdeltDetail(body: string, max = 15): { hits: SearchHit[]; m
 // One request at a time for the whole process, at least GAP_MS apart (conservative spacing, not a published limit).
 let last = 0
 let chain: Promise<unknown> = Promise.resolve()
-export const resetNewsQueue = () => { last = 0; chain = Promise.resolve() }
+export const resetNewsQueue = () => { last = 0; chain = Promise.resolve(); learnedGapMs = 0 }
 function queued<T>(f: () => Promise<T>, gapMs: number, sleep: (ms: number) => Promise<void>): Promise<T> {
   const run = chain.then(async () => {
-    const wait = last + gapMs - Date.now()
+    const wait = last + Math.max(gapMs, learnedGapMs) - Date.now()
     if (wait > 0) await sleep(wait)
     try { return await f() } finally { last = Date.now() }
   })
@@ -80,21 +86,22 @@ function queued<T>(f: () => Promise<T>, gapMs: number, sleep: (ms: number) => Pr
 
 // At most NEWS_PER_SCAN queries. A failed, limited or empty query only means fewer hits.
 // Request outcomes are kept apart from the hits: an empty `hits` with failed === attempted is an outage, never a search that found nothing.
-export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number; malformed: number }   // malformed: invalid entries inside otherwise-valid answers (valid ones are kept; the result is partial)
+export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number; limited: number; malformed: number }   // limited: provider said over-rate (stopped early); never an outage   // malformed: invalid entries inside otherwise-valid answers (valid ones are kept; the result is partial)
 export async function newsSearch(http: SafeGet, queries: string[], language?: string, opts: { gapMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<NewsSearchResult> {
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const lang = gdeltLang(language)
   const hits: SearchHit[] = []
   const seen = new Set<string>()
-  let attempted = 0, failed = 0, malformed = 0
+  let attempted = 0, failed = 0, malformed = 0, limited = 0
   for (const q of queries.slice(0, NEWS_PER_SCAN)) {
     attempted++
     const r = await queued(() => http(newsUrl(q, lang), { accept: 'application/json' }).catch(() => null), opts.gapMs ?? GAP_MS, sleep)
     if (!r || r.status !== 200 || !r.body) { failed++; continue }
+    if (isGdeltLimit(r.body)) { limited++; learnedGapMs = LIMITED_GAP_MS; break }
     const parsed = parseGdeltDetail(r.body)
     if (!parsed) { failed++; continue }   // 200 but malformed (not the documented shape, or every entry invalid): a parse failure, counted with the failed requests
     malformed += parsed.malformed
     for (const h of parsed.hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) }
   }
-  return { hits, attempted, failed, malformed }
+  return { hits, attempted, failed, limited, malformed }
 }

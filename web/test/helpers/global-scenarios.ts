@@ -19,7 +19,7 @@ export const SCENARIOS: Scenario[] = [
 
 export function fixtureFor(s: Scenario, over: { pageLocation?: string } = {}): Fixture {
   const published = daysAgo(10)
-  const body = `${published}. ${s.quote}. ${s.filler.repeat(20)}`
+  const body = `${published}: ${s.quote}. ${s.filler.repeat(20)}`
   const page = { title: s.title, text: body }
   const url = `https://news-${s.id}.example/article`
   const icp = { summary: s.request.slice(0, 100), who: ['Owner'], industries: [s.category], sizes: [], where: s.where, signals: [s.signal], exclude: [], country: s.country, language: s.language, window_days: 90 }

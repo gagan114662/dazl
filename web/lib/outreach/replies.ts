@@ -5,21 +5,16 @@ import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
 import { isStaging } from '../staging.ts'
 import { auditAt, recordBounce } from './autopilot.ts'
 import { grantConsent, revokeAll } from './ledger.ts'
-import { norm } from './store.ts'
+import { norm, READ_CONSENT_VERSION } from './store.ts'
 import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
-// Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens only threads it started,
-// by thread id. It never lists or searches the mailbox, stores only a 200-character excerpt of a reply, and
+// Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens its outreach threads and bounded candidate delivery notices,
+// by thread id. It searches only the consent-disclosed bounded daemon-notice window beyond its own threads, stores only a 200-character excerpt of a reply, and
 // reads nothing when the user has not consented or has turned it off.
-export const READ_CONSENT_VERSION = '2026-10-21'
-export const READ_CONSENT_TEXT = [
-  'dazl will read replies in the email threads it started for you, and delivery-failure notices for them. It will not read any other email.',
-  'It uses this to stop emailing people who unsubscribe or bounce, to stop cold sequences on any human reply, and to start separately approved warm follow-ups for interested replies.',
-  'dazl keeps the sender, the time, a short excerpt and the result. It does not keep full reply bodies.',
-  'You can turn this off any time. Turning it off stops reading and follow-ups.',
-]
+export { READ_CONSENT_VERSION }
+export { READ_CONSENT_TEXT } from './read-consent.ts'
 
 export function migrateReplies(db: Database.Database): void {
   db.exec(`
@@ -40,6 +35,10 @@ export function migrateReplies(db: Database.Database): void {
       tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, step INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('sending','sent','uncertain')),
       gmail_id TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id, step)
     );
+    -- Inbox read state (lib/outreach/inbox.ts): the newest reply time the owner has seen in a thread; a thread is unread
+    -- while a reply is newer than this.
+    CREATE TABLE IF NOT EXISTS inbox_thread_reads (tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, read_upto INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id));
+    CREATE INDEX IF NOT EXISTS inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
   `)
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
@@ -47,9 +46,11 @@ export function migrateReplies(db: Database.Database): void {
 
 export const acceptReadConsent = (db: Database.Database, tenantId: string) =>
   db.prepare("INSERT INTO mail_read_consent (tenant_id, version) VALUES (?, ?) ON CONFLICT(tenant_id) DO UPDATE SET version = excluded.version, accepted_at = CAST(strftime('%s','now') AS INTEGER)").run(tenantId, READ_CONSENT_VERSION)
-export const revokeReadConsent = (db: Database.Database, tenantId: string) => {
-  db.prepare('DELETE FROM mail_read_consent WHERE tenant_id = ?').run(tenantId)
+// Whether a consent row (any version) was removed, so the caller can tell a revoke from a no-op.
+export const revokeReadConsent = (db: Database.Database, tenantId: string): boolean => {
+  const removed = db.prepare('DELETE FROM mail_read_consent WHERE tenant_id = ?').run(tenantId).changes > 0
   db.prepare('UPDATE autopilot_settings SET followups_enabled = 0 WHERE tenant_id = ?').run(tenantId)
+  return removed
 }
 export const hasReadConsent = (db: Database.Database, tenantId: string) =>
   (db.prepare('SELECT version FROM mail_read_consent WHERE tenant_id = ?').get(tenantId) as { version: string } | undefined)?.version === READ_CONSENT_VERSION
@@ -148,6 +149,45 @@ interface GMsg { id: string; threadId: string; internalDate?: string; payload?: 
 const header = (m: GMsg, n: string) => m.payload?.headers?.find(h => h.name.toLowerCase() === n)?.value
 const addr = (v?: string) => norm((v?.match(/<([^>]+)>/)?.[1] ?? v ?? '').trim())
 
+// ---- Separate-thread delivery-failure notices (#415) ----
+// A delivery-status notice (RFC 3464 DSN) can arrive on its OWN thread, outside the outreach thread. The read
+// consent text already names "delivery-failure notices for them" (the threads dazl started), so the only mailbox
+// listing below is daemon notices inside the sync window: no other mail is listed, read or processed.
+interface DsnReport { recipient: string | null; status: string | null; failed: boolean; messageRef: string | null }
+
+const dsnFields = (text: string): Record<string, string> => {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const m = /^([A-Za-z-]+):\s*(.+)$/.exec(line.trim())
+    if (m) out[m[1].toLowerCase()] = m[2].trim()
+  }
+  return out
+}
+
+// Structured evidence only: the delivery-status part (or the daemon's own X-Failed-Recipients), never a code or an
+// address quoted in the human-readable text. A notice that carries none of this structure reports nothing.
+function dsnFromNotice(g: GMsg): DsnReport {
+  const heads = g.payload?.headers ?? []
+  const hval = (n: string) => heads.find(h => h.name.toLowerCase() === n)?.value
+  const ref = hval('original-message-id') ?? hval('references') ?? hval('in-reply-to') ?? null
+  let recipient: string | null = addr(hval('x-failed-recipients')) || null
+  let status: string | null = null
+  let action: string | null = null
+  const walk = (p?: GPart) => {
+    if (!p) return
+    if (p.mimeType === 'message/delivery-status' && p.body?.data) {
+      const f = dsnFields(Buffer.from(p.body.data, 'base64url').toString('utf8'))
+      if (f['final-recipient']) recipient = addr(f['final-recipient'].split(';').pop() ?? '')
+      if (f['action']) action = f['action'].toLowerCase()
+      if (f['status']) status = f['status']
+    }
+    for (const q of p.parts ?? []) walk(q)
+  }
+  walk(g.payload)
+  const messageRef = ref && /dazl\.[a-z0-9]+@/i.test(ref) ? ref : null
+  return { recipient, status, failed: action === 'failed', messageRef }
+}
+
 export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch }
 export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; error?: string }
 
@@ -215,19 +255,62 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
   }
+  // Phase 2 (#415): daemon notices on their own threads, correlated to the exact recorded send before anything is
+  // suppressed. Window: since the last successful sync, never wider than 7 days (first sync: 2 days).
+  try {
+    const prev = tableExists(db, 'scheduler_progress') ? (db.prepare("SELECT last_success_at FROM scheduler_progress WHERE tenant_id = ? AND kind = 'reply_sync'").get(tenantId) as { last_success_at: number | null } | undefined)?.last_success_at : null
+    const since = prev ? Math.max(prev, now - 7 * 86400) : now - 2 * 86400
+    const q = encodeURIComponent(`from:mailer-daemon OR from:postmaster after:${since}`)
+    const list = (await get(`messages?q=${q}&maxResults=50`)) as { messages?: { id: string }[] }
+    for (const hit of list.messages ?? []) {
+      if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, hit.id)) continue // increments once: seen notices are never reprocessed
+      const g = (await get(`messages/${hit.id}?format=full`)) as GMsg
+      const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
+      const from = addr(header(g, 'from'))
+      // Retention minimum for anything that does not correlate to an exact recorded send: the opaque id (for
+      // one-time accounting), the time and the classification. No sender, recipient or content of mail that may
+      // not be ours - the read consent covers replies and delivery notices FOR OUR THREADS only.
+      const logUnmatched = () => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL)').run(hit.id, tenantId, g.threadId ?? '', '', '', 'bounce_unmatched', at)
+      if (!/^(mailer-daemon|postmaster)@/.test(from)) { logUnmatched(); continue }
+      const dsn = dsnFromNotice(g)
+      // Correlate to the exact recorded send: the notice must reference our Message-ID AND name the recipient we
+      // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
+      // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
+      // stop a thread or end a sequence. They are counted unmatched and left for review.
+      // An exact Message-ID ref is CORRELATION, never authentication: a party who saw the send's headers could
+      // quote it. Correlation alone therefore never suppresses and never stops anything: a 5.x.x that correlates
+      // but cannot be PROVEN to come from the recipient's own mail infrastructure is classified bounce_review and
+      // left for a human. Automatic suppression exists only behind authenticated DSN provenance.
+      const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
+      let m: { id: string; lead_id: string; to_email: string } | undefined
+      if (refId && dsn.recipient) m = (db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')").get(tenantId, refId) as typeof m) ?? undefined
+      if (m && norm(m.to_email) !== dsn.recipient) m = undefined // the notice must name who we actually wrote to
+      const log = (cls: string, mid: string | null, leadId: string | null) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(hit.id, tenantId, g.threadId ?? '', leadId, from, `dsn status ${dsn.status ?? 'none'}`, cls, at, mid)
+      if (!m || !dsn.failed || !dsn.status) {
+        logUnmatched()
+        auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
+        continue
+      }
+      if (/^5\.\d{1,3}\.\d{1,3}$/.test(dsn.status)) {
+        // A permanent failure WITHOUT authenticated provenance: review, never an automatic action. The notice
+        // correlates to our send (exact ref + recipient), so it is not noise - but nothing about it proves the
+        // recipient's mail infrastructure issued it, and unauthenticated mail must never suppress a contact or
+        // stop a thread. Counted once per send; the classification carries the correlation.
+        if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, m.id)) {
+          auditAt(db, tenantId, 'bounce_review', `dsn ${dsn.status} correlated, provenance unverified`, m.lead_id, m.id, now)
+          out.reviews++
+        }
+        log('bounce_review', m.id, m.lead_id)
+      } else log('soft_bounce', m.id, m.lead_id) // 4.x.x and anything non-permanent: never a suppression
+    }
+  } catch (e) {
+    out.error = 'reply_sync_failed' // fail closed, same contract as the thread loop
+    auditAt(db, tenantId, 'sync_error', `delivery notices: ${e instanceof Error ? e.message : 'error'}`, undefined, undefined, now)
+  }
   return out
 }
 
-// Inbox surface: one row per captured reply with lead and follow-up state joined in.
-export interface InboxRow { gmail_id: string; thread_id: string; lead_id: string | null; from_email: string; excerpt: string; classification: ReplyClass; received_at: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null }
-export const inboxRows = (db: Database.Database, tenantId: string, limit = 100): InboxRow[] =>
-  db.prepare(`SELECT m.gmail_id, m.thread_id, m.lead_id, m.from_email, m.excerpt, m.classification, m.received_at,
-                     l.company, l.name AS lead_name, t.followups_sent, t.stopped
-              FROM inbound_messages m
-              LEFT JOIN leads l ON l.id = m.lead_id
-              LEFT JOIN followup_threads t ON t.tenant_id = m.tenant_id AND t.thread_id = m.thread_id
-              WHERE m.tenant_id = ? ORDER BY m.received_at DESC LIMIT ?`).all(tenantId, limit) as InboxRow[]
-
+// The Inbox list itself (one row per thread, paginated and filtered on the server) is lib/outreach/inbox.ts.
 export const recentInbound = (db: Database.Database, tenantId: string, limit = 30) =>
   db.prepare('SELECT from_email, excerpt, classification, received_at FROM inbound_messages WHERE tenant_id = ? ORDER BY received_at DESC LIMIT ?').all(tenantId, limit) as { from_email: string; excerpt: string; classification: string; received_at: number }[]
 

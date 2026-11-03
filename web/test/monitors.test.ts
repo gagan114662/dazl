@@ -69,6 +69,10 @@ test('enable/disable and delete are owner-scoped', async () => {
   const db = setup()
   const id = ((await createMonitor(D(db), 'u1', { query: 'robotics companies hiring sales' })) as { id: string }).id
   assert.equal((await setMonitorEnabled(D(db), 'u1', id, false)), true)
+  // the same state again is not a change (decided in the statement; the audit trail records only flips)
+  assert.equal((await setMonitorEnabled(D(db), 'u1', id, false)), false)
+  assert.equal((await setMonitorEnabled(D(db), 'u1', id, true)), true)
+  assert.equal((await setMonitorEnabled(D(db), 'u1', id, false)), true)
   assert.equal((await setMonitorEnabled(D(db), 'u2', id, true)), false)
   assert.equal((await deleteMonitor(D(db), 'u2', id)), false)
   assert.equal((await deleteMonitor(D(db), 'u1', id)), true)

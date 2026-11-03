@@ -2,9 +2,9 @@
 // of `npm test`.  Run:  cd web && npm run build && node test/ui/lead-flow.ui.mjs   (SHOTS=<dir> saves screenshots)
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call answered from a
 // stub in the browser: no scan, no draft is really created, nothing is sent. It proves:
-//   1. the cards open on "To review" with counts on the tabs; each card shows company, contact name + role, one line of
+//   1. the cards open on "To decide" with counts on the tabs; each card shows company, contact name + role, one line of
 //      why, source + date, and Approve / Reject; no caveat paragraph is on screen (the limits sit behind (i));
-//   2. Approve sends exactly one POST /api/outreach { lead_id }; the card leaves To review for Approved, and a one-line
+//   2. Approve sends exactly one POST /api/outreach { lead_id }; the card leaves To decide for Approved, and a one-line
 //      result says the draft was created with a link to review it (this play's Outreach);
 //   3. Reject with a reason sends the existing quarantine POST ("Rejected: <reason>"); the card leaves the list, the result
 //      line says so, and Undo (its DELETE) brings it back; nothing else is written.
@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -27,7 +28,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-leadflow-')); const DB = path.
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -68,8 +69,8 @@ try {
   await cards().first().waitFor({ timeout: 15000 })
   if (process.env.BEFORE_ONLY) { await cards().first().scrollIntoViewIfNeeded(); await page.locator('main').evaluate(m => m.scrollBy(0, -140)); await shot('before'); console.log('before shot'); process.exit(0) }
   // 1. What a card shows, and no caveat paragraphs.
-  assert.equal(await tab('review').getAttribute('aria-selected'), 'true', 'opens on To review')
-  assert.deepEqual(await Promise.all(['review', 'approved', 'rejected'].map(t => tab(t).textContent())), ['To review 3', 'Approved 0', 'Rejected 0'])
+  assert.equal(await tab('review').getAttribute('aria-selected'), 'true', 'opens on To decide')
+  assert.deepEqual(await Promise.all(['review', 'approved', 'rejected'].map(t => tab(t).textContent())), ['To decide 3', 'Approved 0', 'Rejected 0'])
   assert.equal(await cards().count(), 3)
   const bright = card('Bright Dental')
   const t = await bright.textContent()
@@ -91,7 +92,7 @@ try {
   assert.match(await result.innerText(), /Bright Dental: draft created\./)
   assert.equal(await result.getByRole('link', { name: 'Review draft' }).getAttribute('href'), `/app/outreach?job_id=${JOB}`)
   await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid=lead-card]')].some(c => c.textContent.includes('Bright Dental')))
-  assert.deepEqual(await Promise.all(['review', 'approved'].map(t => tab(t).textContent())), ['To review 2', 'Approved 1'])
+  assert.deepEqual(await Promise.all(['review', 'approved'].map(t => tab(t).textContent())), ['To decide 2', 'Approved 1'])
   await shot('after-approve')
   await tab('approved').click()
   const approvedCards = await cards().allTextContents()
@@ -105,7 +106,7 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid=card-result]')?.getAttribute('data-kind') === 'rejected')
   assert.match(await result.innerText(), /Maple Family Dentistry \(Not a fit\) left the list\./)
   assert.equal(await card('Maple Family Dentistry').count(), 0, 'the rejected card leaves the list')
-  assert.deepEqual(await Promise.all(['review', 'rejected'].map(t => tab(t).textContent())), ['To review 1', 'Rejected 1'])
+  assert.deepEqual(await Promise.all(['review', 'rejected'].map(t => tab(t).textContent())), ['To decide 1', 'Rejected 1'])
   await shot('after-reject')
   await result.getByRole('button', { name: 'Undo' }).click()
   await card('Maple Family Dentistry').waitFor()

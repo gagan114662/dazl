@@ -1,8 +1,41 @@
 import type Database from 'better-sqlite3'
+import { migrateLifecycle } from './lifecycle.ts'
+import { migrateOnboardingPolicy } from './onboarding-policy.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateAttribution } from './attribution.ts'
 
 export const norm = (email: string) => email.trim().toLowerCase()
+
+// Current read-consent text version (defined here so the send-side freshness gate can check read authority without
+// importing replies.ts - replies.ts -> autopilot.ts -> service.ts would cycle). Re-exported from replies.ts.
+import { READ_CONSENT_VERSION } from './read-consent.ts'
+export { READ_CONSENT_VERSION }
+
+// #413: a send must never rely on stale safety state, scoped per recipient: safety state about a recipient exists
+// only once this tenant has SENT to them (a reply or opt-out presupposes a thread). A first contact to a
+// never-contacted address is exempt from reply freshness - but never from suppression: global, tenant and imported
+// opt-outs are checked separately at every send boundary and bind regardless of history.
+// With read authority (current consent + an active read-granted mailbox), opt-outs and replies arrive only through
+// reply_sync: no success inside the window leaves an unseen opt-out possible - hold until sync recovers. WITHOUT
+// read authority (revoked or never granted) freshness can never recover for a recipient already contacted: their
+// thread-bound sends hold until consent is restored, because an opt-out after the last sync stays invisible forever.
+// Stores without scheduler_progress (pre-freshness-tracking) have nothing to consult.
+// The window is the single source for REPLY_SYNC_STALE_S in lib/ops/scheduler-runs.ts (ops re-exports this value;
+// importing ops back from here would cycle).
+export const REPLY_SAFETY_STALE_S = 2 * 60 * 60
+export function replySafetyStale(db: Database.Database, tenantId: string, toEmail: string, now = Math.floor(Date.now() / 1000), excludeId?: string): boolean {
+  const has = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
+  if (!has('scheduler_progress') || !has('mail_read_consent') || !has('gmail_accounts') || !has('outreach_messages')) return false
+  // History with the recipient is what makes safety state exist at all; the caller's OWN in-flight claim
+  // (status 'sending' mid-send) is not history - without the exclusion every first contact would refuse itself
+  // at the post-claim recheck whenever ingest is behind (the staging restart scenario caught exactly this).
+  const prior = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND status IN ('sent','sending','uncertain') AND id <> COALESCE(?, '') LIMIT 1").get(tenantId, norm(toEmail), excludeId ?? null)
+  if (!prior) return false // no history with this recipient: no reply-derived safety state to be stale
+  const reads = db.prepare("SELECT 1 FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.tenant_id = ? AND c.version = ? AND g.read_granted = 1 AND g.status = 'active' LIMIT 1").get(tenantId, READ_CONSENT_VERSION)
+  if (!reads) return true // contacted before, and no reply ingest can ever recover freshness for them
+  const row = db.prepare("SELECT last_success_at FROM scheduler_progress WHERE tenant_id = ? AND kind = 'reply_sync'").get(tenantId) as { last_success_at: number | null } | undefined
+  return !row?.last_success_at || now - Number(row.last_success_at) > REPLY_SAFETY_STALE_S
+}
 
 export function migrateOutreach(db: Database.Database): void {
   db.exec(`
@@ -60,6 +93,10 @@ export function migrateOutreach(db: Database.Database): void {
       approved_hash  TEXT,
       attempts       INTEGER NOT NULL DEFAULT 0,
       claimed_at     INTEGER,
+      hold_reason    TEXT,
+      hold_until     INTEGER,
+      hold_policy    TEXT,
+      offer_hash     TEXT,
       sent_at        INTEGER,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR length(error) <= 200),
@@ -78,6 +115,12 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('gmail_accounts', 'read_granted', 'INTEGER NOT NULL DEFAULT 0')
   addCol('outreach_messages', 'thread_id', 'TEXT')
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
+  addCol('outreach_messages', 'hold_reason', 'TEXT') // why a first-touch draft is held; NULL = never held by the scheduler (legacy/manual)
+  addCol('outreach_messages', 'hold_until', 'INTEGER') // earliest retry time (unix seconds); NULL = no scheduler retry
+  addCol('outreach_messages', 'hold_policy', 'TEXT') // consent version the hold was recorded under; drain never acts on another version
+  migrateLifecycle(db) // #417: conversion events stop queued acquisition work
+  migrateOnboardingPolicy(db) // #417: the opted-in onboarding/customer-success policy gate for anything after conversion
+  addCol('outreach_messages', 'offer_hash', 'TEXT') // hash of the offer inputs the draft's words were created under
   addCol('outreach_settings', 'booking_url', 'TEXT')
   // Idempotent upgrades for usage tables created before these columns existed.
   // Column presence is checked against the live schema; a genuinely failing

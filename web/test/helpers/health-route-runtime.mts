@@ -1,13 +1,15 @@
 // Runs the real health route handlers (see test/health-routes.test.ts). HEALTH_MODE picks the store: 'sqlite' (a
 // migrated throwaway file), 'pg-down' (DATABASE_URL on a closed loopback port), or, with DAZL_TEST_PG_URL, 'pg' (a
 // fresh schema with every shipped migration) and 'pg-behind' (the same, with the newest migration's record removed).
+// 'stats-hang': the SQLite store, with the queue statistics read (DbQueue.stats, the one GROUP BY over work_queue)
+// never answering: the mandatory queue SELECT still answers, so the instance stays ready (#430 boundary).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { setScanDb } from './tenant-route-db.ts'
+import { setScanDb, getScanDb } from './tenant-route-db.ts'
 import { setErrorSinks } from '../../lib/ops/errors.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { pgDb } from '../../lib/db/client.ts'
+import { pgDb, setDb, sqliteDb } from '../../lib/db/client.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
@@ -17,7 +19,11 @@ Object.assign(process.env, { DAZL_MASTER_KEY: Buffer.alloc(32, 7).toString('base
   STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture', STRIPE_WEBHOOK_SECRET: 'whsec_fixture' })
 if (mode === 'env-missing') delete process.env.STRIPE_WEBHOOK_SECRET
 if (mode === 'pg-down') process.env.DATABASE_URL = process.env.HEALTH_DATABASE_URL
-if (mode === 'sqlite' || mode === 'env-missing') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
+if (mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
+if (mode === 'stats-hang') {
+  const base = sqliteDb(getScanDb())
+  setDb({ ...base, all: (sql, params) => /FROM work_queue GROUP BY kind/.test(sql) ? new Promise(() => {}) : base.all(sql, params) })
+}
 const livePg = mode === 'pg' || mode === 'pg-behind'
 const schema = livePg ? await freshSchema() : null
 if (schema) {
@@ -36,7 +42,7 @@ test(`health routes (${mode})`, async () => {
   const { GET: ready } = await import('../../app/api/health/ready/route.ts')
   const { GET: apiReady } = await import('../../app/api/ready/route.ts')
   // the store this instance is configured for: DATABASE_URL -> postgres (pg, pg-behind, pg-down), else sqlite
-  const backend = mode === 'sqlite' || mode === 'env-missing' ? 'sqlite' : 'postgres'
+  const backend = mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' ? 'sqlite' : 'postgres'
   const ids = new Set<string>()
   // liveness, /api/health/live: 200 in every mode, even with the store down; no check runs
   const l = await live()
@@ -84,6 +90,13 @@ test(`health routes (${mode})`, async () => {
       assert.equal(body.checks.store.engine, 'sqlite')
       assert.deepEqual(body.checks.schema, { ok: true, skipped: 'sqlite' })
       assert.equal(body.checks.queue.ok, true)
+      assert.deepEqual(body.queue, { alerts: [] }, 'an empty queue: no alerts')
+    } else if (mode === 'stats-hang') {
+      // the queue answers; its statistics never do: ready, with the body saying the alerts could not be read
+      assert.equal(res.status, 200, JSON.stringify(body))
+      assert.equal(body.ok, true)
+      assert.equal(body.checks.queue.ok, true, 'the mandatory queue check passed')
+      assert.deepEqual(body.queue, { alerts: null, reason: 'timeout' })
     } else if (mode === 'pg') {
       assert.equal(body.checks.store.engine, 'pg')
       assert.equal(body.checks.store.ok, true, JSON.stringify(body))

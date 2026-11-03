@@ -24,5 +24,8 @@ test('legacy verified label and present-tense quote cannot bypass deterministic 
  const provider={research:async()=>({text:'',citedUrls:[]}),complete:async()=> 'LEAD 1 | fit 5 | intent 5 | action 4 | signals expansion | why They need this NOW because they are expanding'}
  const grades=await scoreLeads(provider,'test','ICP',[{...lead,date_status:'verified',excerpt:'Acme is expanding now'}])
  assert.equal(grades?.[0].fit,5);assert.equal(grades?.[0].action,4);assert.equal(grades?.[0].intent,0)
- assert.doesNotMatch(grades?.[0].why??'',/need this NOW|are expanding/)
+ // #377: the deterministic NOW guard is intent held at 0 with the timing status appended; the
+ // model's fit rationale is preserved, never replaced, and a legacy 'verified' label is not proof.
+ assert.match(grades?.[0].why??'',/timing is unconfirmed/)
+ assert.match(grades?.[0].why??'',/Model rationale, unverified:/) // urgency prose survives only as a labelled unverified claim, never as a recommendation
 })

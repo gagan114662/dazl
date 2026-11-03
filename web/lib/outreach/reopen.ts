@@ -6,12 +6,13 @@
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
 import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
 import { accountSendCount, anyUncertainSend, tableExists } from './send-budget.ts'
-import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, testFixtureSend, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
+import { replySafetyStale } from './store.ts'
 
 export const WARM_MIN_DAYS = 30
 export const WARM_MAX_DAYS = 90
@@ -152,7 +153,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const acct = gmailStatus(db, tenantId)
   if (!settings || acct?.status !== 'active') throw new OutreachError('gmail_not_connected')
   const t = qualify(db, tenantId, threadId)
-  const orig = db.prepare('SELECT id, subject FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').get(tenantId, t.lead_id) as { id: string; subject: string } | undefined
+  const orig = db.prepare('SELECT id, subject, test FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').get(tenantId, t.lead_id) as { id: string; subject: string; test: number } | undefined
   if (!orig) throw new OutreachError('root_missing')
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(orig.id, master)}`
@@ -164,6 +165,8 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
   leadGates(db, tenantId, r)
   if (accountPaused(db, tenantId)) throw new OutreachError('paused') // a pause during the token await still holds this send
+  // #413: never send a thread-bound re-open on stale safety state; nothing is claimed, the user can retry once fresh.
+  if (orig && !testFixtureSend(db, tenantId, { to_email: r.to_email, test: orig.test }) && replySafetyStale(db, tenantId, r.to_email, now)) throw new OutreachError('reply_sync_stale')
   // At-most-once: claim the draft atomically right before the send. No await sits between the last check and
   // this claim, so a second click, tab or process cannot also pass it. The body is re-read after the claim so the
   // send uses exactly the row it claimed.
@@ -184,7 +187,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const opKey = `${tenantId}|${threadId}`
   inFlight.add(opKey)
   let res: { id: string }
-  try { res = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId) } catch { throw new OutreachError('send_uncertain') } finally { inFlight.delete(opKey) }
+  try { res = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, threadId)) } catch { throw new OutreachError('send_uncertain') } finally { inFlight.delete(opKey) }
   // Operation identity is the claim time: only the claim this call made may be completed by it. A newer claim, a
   // resolve or a skip is never overwritten. If the user reset the row to a draft meanwhile (no newer claim exists),
   // the mail did go out, so the draft is closed as sent rather than left to be sent again.

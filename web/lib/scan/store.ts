@@ -1,4 +1,7 @@
+import { SELLER_DECISION_INSERT, sellerDecisionArgs, type SellerDecision } from './intelligence.ts'
+import { migrateSellerDecisions } from './intelligence-schema.ts'
 import { randomBytes } from 'node:crypto'
+import { migrateSpendPools } from '../llm/spend-pool.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
 import { primarySignalKind } from './score.ts'
@@ -17,7 +20,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
+export interface QueryInput { id?: string; query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -25,6 +28,8 @@ export interface QueryInput { query: string; icp?: string | null; sources?: stri
 //  - lengths are capped by CHECK
 //  - a lead needs a signal (reason) and an http(s) source_url
 export function migrateScan(db: Database.Database): void {
+  migrateSellerDecisions(db)
+  migrateSpendPools(db) // the owner day/month spend pools the scan runner reserves against (lib/llm/spend-pool.ts)
   db.exec(`
     CREATE TABLE IF NOT EXISTS scan_jobs (
       id            TEXT PRIMARY KEY,
@@ -119,6 +124,7 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'needs_review', 'INTEGER')
   add('scan_jobs', 'dropped', 'INTEGER')
   add('scan_jobs', 'run_budget', 'TEXT') // per-run budget controls (CSV company imports and POST /api/scan); null = current behavior
+  add('scan_jobs', 'estimate', 'TEXT') // the price estimate shown at start (JSON: total range, rows, payer, cap); null for older jobs
   add('scan_jobs', 'spend_reserved_usd', 'REAL') // what this job has already RESERVED under max_usd, saved per call so a retry/restart continues from it
   add('scan_jobs', 'drop_reasons', 'TEXT')
   add('scan_jobs', 'verified', 'INTEGER')
@@ -144,6 +150,11 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'batch_id', 'TEXT')
   add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
   add('scan_jobs', 'enrich_finished_at', 'INTEGER')
+  // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
+  // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
+  // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
+  add('leads', 'event_date_proof', "TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured'))")
+  add('leads', 'event_date_proof_note', 'TEXT CHECK (event_date_proof_note IS NULL OR length(event_date_proof_note) <= 200)')
   widenWhyCap(db)
   backfillKindTags(db)
 }
@@ -206,17 +217,17 @@ function widenWhyCap(db: Database.Database): void {
   `)
 }
 
-export function createJob(db: Database.Database, userId: string, input: ScanInput, runBudget: string | null = null): string {
-  const id = randomBytes(12).toString('hex')
+export function createJob(db: Database.Database, userId: string, input: ScanInput & { id?: string }, runBudget: string | null = null): string {
+  const id = input.id ?? randomBytes(12).toString('hex')
   db.prepare('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, run_budget) VALUES (?, ?, ?, ?, ?, ?)').run(
     id, userId, input.business_name, input.industry, input.location, runBudget,
   )
   return id
 }
 
-// icp is a JSON string the user already saw and accepted/edited; null means "infer it when the job runs".
+// icp is submitted JSON; presence does not prove human review or approval. null means infer it when the job runs.
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
-  const id = randomBytes(12).toString('hex')
+  const id = input.id ?? randomBytes(12).toString('hex')   // a caller may fix the id first (a trial reservation is linked to it before the job exists)
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
@@ -243,6 +254,10 @@ export function reapStaleJobs(db: Database.Database): void {
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
 }
 
+// The price estimate saved when the scan was started, with the job's reservation; null estimate for a scan started before this existed.
+export function jobCost(db: Database.Database, userId: string, id: string): { estimate: string | null; reserved_usd: number | null } {
+  try { const r = db.prepare('SELECT estimate, spend_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?').get(id, userId) as { estimate: string | null; spend_reserved_usd: number | null } | undefined; return { estimate: r?.estimate ?? null, reserved_usd: r?.spend_reserved_usd ?? null } } catch { return { estimate: null, reserved_usd: null } }
+}
 export function getJob(db: Database.Database, userId: string, id: string) {
   reapStaleJobs(db)
   const job = db
@@ -279,7 +294,7 @@ function allWithHeldFallback(db: Database.Database, sql: { held: string; plain: 
 export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200, includeHidden = false) {
   const plain =
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
@@ -361,6 +376,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
   const plain =
       `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
               l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
+              l.event_date_proof, l.signal_kind, j.query AS job_query, j.icp AS job_icp,
               l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
@@ -389,4 +405,10 @@ export function cancelJob(db: Database.Database, userId: string, id: string): Ca
     const r = db.prepare("UPDATE scan_jobs SET status='failed', error='cancelled', claimed_at=NULL, finished_at=CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND user_id = ? AND status='running'").run(id, userId)
     return r.changes === 1 ? { ok: true, was_running: wasRunning } : { ok: false, reason: 'already_finished' }
   }).immediate()
+}
+
+// Called only in the existing atomic scan-admission transaction. This raw write stays at that legacy boundary;
+// intelligence retrieval and standalone persistence use Db and the same SQL on both engines.
+export function captureSellerDecisions(db: Database.Database, rows: SellerDecision[]): void {
+  for (const r of rows) db.prepare(SELLER_DECISION_INSERT).run(...sellerDecisionArgs(r))
 }

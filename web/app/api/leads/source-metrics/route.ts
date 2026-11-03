@@ -8,5 +8,5 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
   migrateScan(db)
-  return NextResponse.json(sourceMetrics(db, user.id))
+  return NextResponse.json(sourceMetrics(db, user.tenantId))
 }

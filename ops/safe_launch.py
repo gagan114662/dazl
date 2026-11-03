@@ -277,7 +277,7 @@ def run(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for flag in ['stage', 'commit', 'rollback-stage', 'rollback-commit', 'env-file']:
         p.add_argument('--' + flag, required=True)
     p.add_argument('--pid', required=True, type=int)

@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import GmailGate from '../gmail-gate'
-import { followupAsk } from '@/lib/outreach/followups'
+import { followupAsk } from '@/lib/outreach/followup-ask'
 
 interface Thread { thread_id: string; company: string; name: string; to_email: string; last_lead_reply_at: number | null; followups_sent: number; scheduled_at: number | null; next_due_at: number | null; hold: string | null; stopped: string | null }
 interface Sent { thread_id: string; company: string; to_email: string; step: number; status: string; created_at: number }

@@ -17,6 +17,14 @@ Updated by the builder on every branch. Newest first.
   tenant daily 200 (Instinct reviewed and merged 2026-10-26). Not yet deployed.
 - #184 process docs + scoreboard (Instinct reviewed and merged 2026-10-26).
 
+## In review (SEC officers)
+
+- b/sec-officers: executive officers/directors named in the SEC Form D filing already matched to a lead are stored as `person`
+  enrichments (connector `signals:sec-form-d`, source = the filing, labelled "as of filing, not verified as current") and flow into
+  the existing right-people ranking / Best Person CSV column. Free, US-only by nature of Form D, no email derived, no address kept.
+  Competitive: founder/CEO names for funded companies whose site lists nobody (Gojiberry-style founder contact, no paid API).
+  Left for follow-up: GitHub org members (Next #1b). Fixtures only; no live EDGAR call.
+
 ## In review (owner goal: better than Gojiberry/Pancake at finding leads for any business, any geography)
 
 - #186 b/buyer-fit-gate: a job posting alone is not a qualified lead (home-page fit evidence, multilingual hiring).
@@ -32,6 +40,32 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+
+- b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
+  (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
+  Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.
+
+- b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
+  same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
+  fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
+  and never ask the user to check or confirm. Stubbed fixtures only; not verified live.
+
+- PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
+  `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
+  and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the recovery-runbook
+  step are part 2. Council rounds 1-3 and probe fixes are in the ported head 277a5ec7. Guard table list is derived
+  from the live schema, so tables main added since the fork are guarded automatically; the scope registry carries
+  main's lifecycle_events / preview_claims / preview_claim_events entries.
+
+- dazl-takeover/b/444-trial-site-read (#552, for #409): "read my website" on the free trial for a keyless account, one
+  bounded read at a time on dazl's key (explicit operator ceiling, per-read $0.05 wallet reservation settled to the
+  provider-reported cost in full, three reads per account per 30 days, priced-model-only spend guard; the worst priced
+  call is $0.0486 with the guard's 1,000-token input margin, under the reserve), with the honest reason and the manual
+  profile when it cannot run. Own-key reads stay on the owner's spend pool (#363). A failed or unreported read settles
+  at its full reserve and ends; a never-settled read counts in full against its admission day's ceiling and stays on
+  the account (the 1h grace bounds only the cross-day day ceiling). The served model and usage are provider-reported:
+  a trust residual, not a proven cap. The funded path stays OFF until DAZL_TRIAL_SITE_READS_PER_DAY is set; enabling it
+  is a new paid step that needs the owner's explicit approval (the trial pool names scans only). Migration 0037.
 
 - b/first5 (#324) review fix (Instinct 2026-10-28 23:08): first5 no longer runs the post-finish TinyFish people search (runner gate, trace note `skipped`); the first5 budget disclosure reports search_and_fetch as `off` (and says model calls are not free). Pinned by a real-runner test with tinyfish tables initialised plus a non-first5 control that does search.
 
@@ -95,11 +129,63 @@ Updated by the builder on every branch. Newest first.
 ## In progress (interactive Claude session, do not duplicate)
 
 - Blocked-source verification: the narrow copy path is in review (#222); wider use waits for #188 data from a live run.
+- Teams & access (#353, then #358, #357, #371): design in docs/design/workspaces.md. Increment 1 (workspace and
+  membership tables, backfill, server-side resolution, role table) increment 2 (routes use tenantId, role check
+  on every non-read handler) and increment 3 (invitations, members, switching, Settings > Team) in review; then
+  #358 increment 1 (session inventory, revoke one/all, bounded reaper; docs/design/sessions.md) and
+  increment 2 (fresh authentication for secrets, billing and member changes) in review;
+  #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
+  workspace; docs/design/email-ownership.md) and increment 2
+  (change email, explicit Google linking) in review; next: #371.
+- Audit trail (#371, part): design in docs/design/audit.md. Append-only `audit_events` (PG 0041), events for
+  credential, billing, Stripe plan, sending, CRM, pipeline, consent, export and deletion actions, Settings > Audit
+  trail and `GET /api/workspace/audit` (owners and admins; CSV). Automatic deletion is off: the tick purges nothing
+  until the owner chooses a retention period (`AUDIT_RETENTION_DAYS`). Support access needs an owner decision.
+
+
+## Finish before new work (Instinct's 2026-11-02 verification after the zombie-PR cleanup: #455/#444/#467/#463/#464
+closed, their code shipped via #554/#552/#553/#556/#557, but none of the five issues below is fully verified
+complete — do not start new issues until each is closed or explicitly re-queued with what's still missing)
+
+1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Missing: the
+   customer-facing request flow, the completion UI, and operator controls.
+2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
+   default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
+   holds.
+3. #405 (calibrated launch / preflight): code shipped (ex-#467/#553) but inactive. Missing: activation, and proof
+   the "no routine hand-approvals" journey actually works end to end.
+4. #394 (agent evals / autonomous evaluation): the evaluation tooling shipped (ex-#463/#556). Missing: the complete
+   evaluation contract and at least one executed autonomous evaluation proving it.
+5. #371 (audit trail): most audit-event logging shipped (ex-#464/#557). Missing: remaining action coverage, and a
+   live check that a readable audit record actually comes out the other end.
+
+## Beat Gojiberry/Pancake (#393) — after the list above, in #393's own priority order
+
+2026-11-02 audit: of the 16 issues #393 scoped as required to actually beat Gojiberry/Pancake, only #378
+(scoreboard counts leads correctly) is closed — it fixes measurement, not the product. The other 15 are open
+and nothing in targeting, retrieval, contacts or ranking has shipped. The benchmark itself (#372) has never
+been run: `docs/STATUS.md` Score section above is last updated 2026-10-26, shows 0 verified qualified leads in
+every recorded run, and `scripts/scoreboard.mts` has never run with a real key. There is currently no evidence,
+formal or informal, that dazl beats either competitor. Work in this order (#393's own sequencing):
+
+1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
+2. #380 explicit AND/OR/NOT targeting with per-condition proof.
+3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
+4. #382 real Apollo-to-PDL enrichment fallback waterfall (per-lead per-provider outcomes, timeout/skip notices in the scan view: PR on `b/382-enrich-waterfall`, in review; stubbed providers only, not run live).
+5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
+6. #384 separate published provenance from deliverability/person-route status.
+7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
+   currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
+8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+   advantages, start once 1-7 ship.
+9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
+    as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
 
 ## Next (in order, for the scheduled builder; nothing business- or place-specific)
 
-1. Decision-maker sources beyond the company site: officers named in SEC Form D filings (US), GitHub org members for
-   software companies. Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
+1. Decision-maker sources beyond the company site: GitHub org members for software companies (SEC Form D officers: in review, b/sec-officers). Stored as person enrichments with the source URL; ranked by the scan ICP roles (rank.ts).
 2. New intent signal: people opening issues on or starring competitor GitHub repos when the tenant lists
    competitors; public GitHub API only.
 3. Self-hosted SearXNG as a third free search backend (env flag, off by default), same shape as lib/search/news.ts.

@@ -5,6 +5,7 @@
 // Works against any PgQueryable (pg.Pool, pg.Client, or pg-mem's adapter).
 import type { LeadsReadDb } from './leads-read.ts'
 import { STALE_RUNNING_S, MAX_ATTEMPTS } from '../scan/store.ts'
+import { INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { GAPS_S, TEST_GAPS_S, MAX_STEPS } from '../outreach/sequences.ts'
 import { eventTimingFresh } from '../events/store.ts'
 import type { CompanyEventRow, EventScope, EventType } from '../events/store.ts'
@@ -68,7 +69,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
     async listLeads(userId, jobId, limit = 200, includeHidden = false) {
       const { rows } = await pg.query(
         `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
            l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
          FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
@@ -124,7 +125,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
       if (leadIds.length === 0) return out as never
       const ph = leadIds.map((_, i) => `$${i + 2}`).join(',')
       const { rows } = await pg.query(
-        `SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = $1 AND lead_id IN (${ph})`,
+        `SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = $1 AND lead_id IN (${ph}) AND kind <> '${INTERNAL_ENRICHMENT_KIND}'`,
         [tenantId, ...leadIds],
       )
       for (const row of rows as ({ lead_id: string } & Record<string, unknown>)[]) {

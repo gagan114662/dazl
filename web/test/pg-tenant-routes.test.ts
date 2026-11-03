@@ -44,9 +44,11 @@ test('[pg] two instances, two tenants, real sessions: no route reads, lists, exp
 
     for (const [me, other] of [[a, b], [b, a]] as const) {
       const t = me.tenant
-      // accounts and sessions: one user each; after sign-out exactly one live session each, its own
+      // accounts and sessions: one user each; after sign-out exactly one live session each, its own (the signed-out one
+      // is kept, revoked, as the record of who ended it and when: lib/sessions.ts)
       assert.deepEqual((await db.all<{ email: string }>('SELECT email FROM users WHERE id = ?', [t])).map(r => r.email), [`${me.tag}@example.test`])
-      assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM sessions WHERE user_id = ?', [t]))!.n), 1)
+      assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM sessions WHERE user_id = ? AND revoked_at IS NULL', [t]))!.n), 1)
+      assert.deepEqual(await db.all('SELECT revoke_reason, revoked_by FROM sessions WHERE user_id = ? AND revoked_at IS NOT NULL', [t]), [{ revoke_reason: 'signed_out', revoked_by: t }])
       // scans and the play: the tenant's own two, the play still pending (the other's cancel changed nothing)
       const jobs = await db.all<{ id: string; status: string; query: string | null }>('SELECT id, status, query FROM scan_jobs WHERE user_id = ? ORDER BY id', [t])
       assert.deepEqual(jobs.map(j => j.id), [me.job, me.query].sort())

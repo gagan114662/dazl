@@ -8,7 +8,8 @@
 //    model's listed price), NOT a bill and not a vendor-enforced ceiling. Web-search research cannot be bounded, so a run with
 //    max_usd REFUSES it. A refused call ends the run as `budget_stopped`, which is not the same as "nothing found".
 //  - the job's own reservation is saved after every reserved call, so a retry or a restart of THAT job continues from what it
-//    already reserved; the per-owner pool (DAZL_RUN_MAX_USD_USERS) lives in process memory and resets on a restart.
+//    already reserved; the per-owner day/month pools (DAZL_RUN_MAX_USD_USERS, DAZL_OWNER_MONTH_MAX_USD_USERS) are rows in the
+//    shared store (lib/llm/spend-pool.ts), so no restart, retry or second instance resets them.
 // Absent budget = today's behaviour, unbounded. A supplied budget is validated strictly: a caller expecting a restricted
 // run is never silently widened into a full one.
 import type { RunBudget } from './runner.ts'
@@ -66,7 +67,7 @@ export const BUDGET_EXCLUDED_PATHS = [
   'Weekly watches take their own budget (each weekly run is bounded separately, not the watch in total); CSV imports take the narrowing flags only, no max_usd',
   'Bring-your-own-key Apollo / People Data Labs enrichment is switched OFF only when the budget has max_usd or credit_enrichment=false; under judge=false or paid_fallback=false alone it still runs, on your own credits, unbounded',
   'NOT BOUNDED AT ALL: retries below dazl (provider or platform), the provider\'s real billing and cache-token charges - requests are counted where dazl sends them and reservations are estimates',
-  'NOT BOUNDED ACROSS RESTARTS: the per-owner pool (DAZL_RUN_MAX_USD_USERS) is in memory and resets on a restart',
+  'Per-owner pools (operator setting, per UTC day and month) are kept in the shared store: a restart, retry or second instance does not reset them. They cover the same model and trial calls as max_usd, not the paths listed above',
 ]
 export interface BudgetDisclosure {
   scope: 'partial'
@@ -95,17 +96,17 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
       row('search_query_writing', llm('One model call')),
       row('extraction', llm('One model call per attempt')),
       row('scoring', llm('Grades the verified leads')),
-      row('grounding', fallbackOff ? { status: 'refused', note: 'Only runs after fallback research, which paid_fallback=false refuses' } : capped ? { status: 'refused', note: 'Only runs after fallback research, which max_usd refuses' } : llm('Runs only after fallback research')),
+      row('grounding', { status: 'refused', note: 'Only runs after fallback research, which every run refuses' }),
       row('buyer_fit', llm('Checks hiring leads against the company home page')),
       row('judge', b?.judge === false ? { status: 'off', note: 'judge=false' } : llm('Verification judge')),
-      row('fallback_research', fallbackOff ? { status: 'refused', note: 'paid_fallback=false: the run stops as budget_stopped instead of using web-search research' } : capped ? { status: 'refused', note: 'Web-search research cannot be bounded, so a run with max_usd refuses it. This is NOT the same search behaviour as an ordinary scan: when search finds nothing the run ends as budget_stopped' } : { status: 'allowed', note: 'Web-search research when search finds nothing; cost is not bounded by anything dazl sends' }),
+      row('fallback_research', { status: 'refused', note: 'Web-search research is never run: its search-result tokens are bounded by nothing dazl sends, so no run - capped or not - spends on it. When search finds nothing the run ends as budget_stopped' }),
       row('credit_enrichment', b?.credit_enrichment === false || capped ? { status: 'off', note: capped ? 'Off for any run with max_usd' : 'credit_enrichment=false' } : { status: 'allowed', note: 'Bring-your-own-key Apollo/People Data Labs, on your own credits' }),
       row('search_and_fetch', b?.first5 ? { status: 'off', note: 'first5: no TinyFish search, fetch or post-scan people search; free sources only. Model calls (extraction, scoring) still run and are not free' } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
       row('autopilot', { status: 'off', note: 'A job with a budget does not start autopilot after the scan' }),
     ],
     limits: [
       'A refused call ends the run as budget_stopped. That is a budget stop, not zero results.',
-      'The job reservation is saved after every reserved call and survives a retry or restart of that job; the per-owner pool (DAZL_RUN_MAX_USD_USERS) is in memory and resets when the process restarts.',
+      'The job reservation is saved after every reserved call and survives a retry or restart of that job; the per-owner day and month pools are saved in the shared store and survive restarts too.',
       'Token counts come from the provider count endpoint x 1.2 (a chosen margin, not a documented maximum), or prompt bytes when no counter is available.',
       'Only models with a listed price are allowed under max_usd; an unpriced model refuses every call.',
     ],

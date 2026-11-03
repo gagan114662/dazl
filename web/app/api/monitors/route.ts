@@ -6,16 +6,19 @@ import { cleanText } from '@/lib/validate'
 import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { normalizeSources } from '@/lib/sources'
 import { createMonitor, listMonitors } from '@/lib/monitors'
+import { denied } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  return NextResponse.json({ monitors: await listMonitors(await getDb(), user.id) })
+  return NextResponse.json({ monitors: await listMonitors(await getDb(), user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const no = denied(user, 'operate'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const query = cleanText(body?.query, MAX_QUERY)
@@ -24,10 +27,12 @@ export async function POST(req: NextRequest) {
   if (body?.icp !== undefined && body?.icp !== null && !icp) return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
   const sel = body?.sources ? normalizeSources(body.sources) : null
   const intervalHours = typeof body?.interval_hours === 'number' ? body.interval_hours : undefined
-  const r = await createMonitor(await getDb(), user.id, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, intervalHours })
+  const r = await createMonitor(await getDb(), user.tenantId, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, intervalHours })
   if ('error' in r) return NextResponse.json(
     r.error === 'limit' ? { error: 'monitor_limit', limit: r.limit } : { error: 'interval_too_short', min: r.min },
     { status: 400 },
   )
+  // a monitor runs scans on a schedule, so it is recorded like any other standing spend; the query is the user's text
+  await audit(user, req, { action: 'monitor.created', resource: 'monitor', id: r.id, summary: { interval_hours: intervalHours } })
   return NextResponse.json({ id: r.id }, { status: 201 })
 }

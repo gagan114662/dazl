@@ -5,14 +5,17 @@ import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
+import { conversionBlockedNow } from './lifecycle.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
+import { captureError } from '../ops/errors.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
-import { GmailError, GmailSendError, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
-import { norm } from './store.ts'
+import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
-import { pickCrawledEmail } from './published-email.ts'
+import { deliverabilityBlocked } from './contact-route.ts'
+import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -74,7 +77,12 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
 
-export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend }
+// expectSender: the Gmail address the caller authorized this send from (autopilot's held drafts); the send is refused
+// (sender_changed) unless the connected account is that address at the moment the message is handed to Gmail.
+// authorize: the caller's own authority, re-read synchronously as the last check before the message is handed to Gmail
+// (after every await of the send path); a returned code refuses the send, known not sent. Autopilot passes one (on,
+// not paused, current consent, operator flag, its reserved slot); a manual send passes none and is unchanged.
+export interface Deps extends OAuthDeps { baseUrl?: string; sendFn?: typeof gmailSend; expectSender?: string; authorize?: () => string | null }
 const nowS = (d: Deps) => d.now ?? Math.floor(Date.now() / 1000)
 const baseUrl = (d: Deps) => (d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')
 
@@ -172,11 +180,26 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
 // taken before the lead, enrichment and identity-review rows are read, so a concurrent confirm, withdraw or crawl write on the same
 // SQLite file cannot land between the identity gate and the draft insert. A thrown OutreachError rolls back nothing, since nothing was written yet.
 type CrawledRows = NonNullable<Parameters<typeof domainReviewFor>[1]>
+// Recorded deliverability checks for a lead (contact-route.ts format). A missing table reads as no checks.
+function readDeliverabilityRows(db: Database.Database, tenantId: string, leadId: string): { connector: string; kind: string; value: string; retrieved_at: number | null }[] {
+  try { return db.prepare("SELECT connector, kind, value, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind = 'deliverability'").all(leadId, tenantId) as { connector: string; kind: string; value: string; retrieved_at: number | null }[] } catch (e) { if (isMissingSchema(e)) return []; throw e }
+}
 // The crawled address and domain evidence plus the user's domain review for one lead. Shared by the draft entry and the
 // approve and send checks so all three read the same rows.
 function readCrawledRows(db: Database.Database, tenantId: string, leadId: string): CrawledRows {
   return db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(leadId, tenantId) as CrawledRows
 }
+// The pages a draft for this lead may cite, for the launch claim check (claimIssuesFor): read from the store so a
+// send gate can check a made draft without re-deriving the address. The crawl rows unreadable is not fatal here:
+// the draft itself was made under the same read, so a missing table shrinks the allowlist to the cited pages.
+export function draftEvidenceUrlsFor(db: Database.Database, tenantId: string, leadId: string): string[] {
+  const row = db.prepare('SELECT contact, source_url FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null } | undefined
+  if (!row) return []
+  let crawled: CrawledRows = []
+  try { crawled = readCrawledRows(db, tenantId, leadId) } catch { /* enrichment table not present */ }
+  return draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled })
+}
+
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
 // after the draft was made). A draft made before this check existed, or whose confirmation was later withdrawn, cannot be approved or sent.
 export type DomainReviewStatus = 'ok' | 'required' | 'unreadable' | 'quarantined'
@@ -225,7 +248,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   // themselves from the needs-review list. A human confirmation is the user's own
   // checked decision, labelled as such in the UI; it never rewrites the machine verdict.
   if (evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  // Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
+// Held lead: ICP grading failed, so it sits at fit 0 with intent unset. That hold is not a
   // grade, and the lead must not be emailed until a rescan grades it successfully. A real
   // grade of 0 (intent set) and never-scored leads (fit unset) are not affected.
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
@@ -242,14 +265,10 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   try {
     crawled = readCrawledRows(db, tenantId, lead.id)
     const r = pickCrawledEmail(crawled)
-    if (r && !contactIsEmail) { published = r.value; addressUrl = r.source_url ?? lead.source_url }
-    // A contact that equals a crawled address is not proof the cited page printed it: cite the page the crawler actually
-    // saved for that address (the table keeps one record per address), never the signal/news URL. The recipient and the
-    // identity rules are unchanged. A contact the crawl never recorded keeps the cited page.
-    if (contactIsEmail) {
-      const same = crawled.find(x => x.connector === 'sitecrawl' && x.kind === 'email' && norm(x.value) === norm(published) && x.source_url)
-      if (same?.source_url) addressUrl = same.source_url
-    }
+    if (r && !contactIsEmail) published = r.value
+    // The cited page: the one rule in published-email.ts (the crawl's own record of the address where it exists,
+    // never the signal/news URL). The recipient and the identity rules are unchanged.
+    addressUrl = addressCitationUrl({ contact: lead.contact, source_url: lead.source_url, enrichments: crawled }) ?? lead.source_url
   } catch { /* enrichment table not present */ }
   const to = norm(published)
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
@@ -260,6 +279,9 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   // A crawled address whose website rests only on a name match or a link needs the user's identity review first (see domain-review.ts).
   // This is the single draft entry for the API and for autopilot, so neither can skip it. An address printed on the cited page is unaffected.
   if (domainReviewFor({ id: lead.id, contact: lead.contact }, crawled).state === 'required') throw new OutreachError('domain_unconfirmed')
+  // #384: an address on a domain that cannot receive mail, or with a recorded failed mailbox check, is never drafted to.
+  // Same rule as the lead card's Approve (contact-route.ts deliverabilityBlocked). Not checked / catch-all do not block.
+  if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
@@ -435,6 +457,8 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
   if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
   if (anyUncertainSend(db, tenantId)) throw new OutreachError('already_uncertain')
   if (tableExists(db, 'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as { paused: number } | undefined)?.paused) throw new OutreachError('paused')
+  // #413: never send on stale safety state - an opt-out that reply_sync has not ingested yet is invisible here.
+  if (!testFixtureSend(db, tenantId, pre) && replySafetyStale(db, tenantId, pre.to_email)) throw new OutreachError('reply_sync_stale')
   if (pre.status !== 'approved') throw new OutreachError(pre.status === 'sending' || pre.status === 'uncertain' ? `already_${pre.status}` : 'not_approved')
 }
 
@@ -459,9 +483,16 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   // The identity check and the claim are one write transaction (the same lock the review action takes), so a withdraw cannot land between them.
   const claim = db.transaction(() => {
     if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
+    // #417: a converted recipient fails closed AT THE CLAIM, atomically with it: an activated conversion, or a
+    // pending one whose address is already verified (a lost activation drain must never allow a send).
+    if (!testFixtureSend(db, tenantId, pre) && conversionBlockedNow(db, pre.to_email)) throw new OutreachError('converted')
     return db.prepare("UPDATE outreach_messages SET status = 'sending', attempts = attempts + 1, claimed_at = ?, error = NULL WHERE id = ? AND tenant_id = ? AND status = 'approved'").run(nowS(d), id, tenantId)
   }).immediate()
   if (claim.changes !== 1) throw new OutreachError('already_sending')
+  // #405: an accepted launch policy and the tenant switches must still be readable at the handoff: a store that
+  // vanishes during the token refresh fails the check there, it is never silently skipped.
+  const hadLaunch = tableExists(db, 'autopilot_launch_policy') && !!db.prepare('SELECT 1 FROM autopilot_launch_policy WHERE tenant_id = ?').get(tenantId)
+  const hadSettings = tableExists(db, 'autopilot_settings') && !!db.prepare('SELECT 1 FROM autopilot_settings WHERE tenant_id = ?').get(tenantId)
   const release = (code: string): never => {
     db.prepare("UPDATE outreach_messages SET status = 'approved', claimed_at = NULL, error = ? WHERE id = ? AND status = 'sending'").run(code, id)
     throw new OutreachError(code)
@@ -499,6 +530,21 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
   // immediately before handing the immutable MIME bytes to Gmail.
+  // A recheck that cannot run (a read fails) is a refusal, not an unknown outcome: nothing has left yet, the message goes
+  // back to approved with that reason and the caller decides (fail closed).
+  try {
+  // The sending identity first: the account may have been disconnected or reconnected to another address meanwhile. The
+  // message goes out only from the address read before the refresh (and, when given, the one the caller authorized).
+  const sender = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
+  if (!sender || sender.email.toLowerCase() !== acct!.email.toLowerCase() || (d.expectSender !== undefined && d.expectSender.toLowerCase() !== sender.email.toLowerCase())) release('sender_changed')
+  // #413: safety ingest can also fall behind during the await - release and hold, never send.
+  if (!testFixtureSend(db, tenantId, m) && replySafetyStale(db, tenantId, m.to_email, nowS(d), m.id)) release('reply_sync_stale')
+  // #417: a conversion proven during the refresh stops the send terminally - never released back to approved,
+  // where it could linger past an activation that skips only draft/approved rows.
+  if (!testFixtureSend(db,tenantId,m) && conversionBlockedNow(db, m.to_email)) {
+    db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'converted', claimed_at = NULL WHERE id = ? AND status = 'sending'").run(id)
+    throw new OutreachError('converted')
+  }
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
@@ -512,7 +558,20 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
     if (set && set.status !== 'approved') release('approve_sequence_set')
   }
+  if (hadSettings && !tableExists(db,'autopilot_settings')) release('stop_check_unavailable')
   if (tableExists(db,'autopilot_settings') && (db.prepare('SELECT paused FROM autopilot_settings WHERE tenant_id = ?').get(tenantId) as {paused:number}|undefined)?.paused) release('paused')
+  if (d.authorize) {
+    // The caller's own final check is separate from the service's reads above: when it cannot answer the refusal
+    // keeps the service's name for an unreadable caller authority.
+    let why: string | null
+    try { why = d.authorize() } catch (e) { captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId }); release('authority_unreadable') }
+    if (why!) release(why!)
+  }
+  } catch (e) {
+    if (e instanceof OutreachError) throw e
+    captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId })
+    release(hadLaunch ? 'stop_check_unavailable' : 'authority_unreadable')
+  }
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
@@ -520,7 +579,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     body: composeBody(m.body, settings!, unsubUrl), messageId: `dazl.${id}@${acct!.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(nowS(d) * 1000),
   }))
   try {
-    const out = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl)
+    const out = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl))
     if (m.test) console.log('outreach TEST MODE send', id, m.to_email)
     db.prepare("UPDATE outreach_messages SET status = 'sent', sent_at = ?, gmail_id = ?, thread_id = ?, error = NULL WHERE id = ? AND status = 'sending'").run(nowS(d), out.id, (out as { threadId?: string }).threadId ?? null, id)
     return 'sent'

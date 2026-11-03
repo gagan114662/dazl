@@ -9,7 +9,7 @@ import crypto from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
+import { getDb, setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
@@ -140,7 +140,13 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: unknown }> {
   out.push(await call('warm report', warmPath.POST(req(`/api/leads/${L.a}/warm-path`, 'POST', { contact_url: 'https://www.linkedin.com/in/alanturing', mutual_name: 'Margaret Hamilton' }), ctx({ lead: L.a }))))
   out.push(await call('warm report dup', warmPath.POST(req(`/api/leads/${L.a}/warm-path`, 'POST', { contact_url: 'https://linkedin.com/in/alanturing/', mutual_name: 'Margaret Hamilton' }), ctx({ lead: L.a }))))
   out.push(await call('warm report 2', warmPath.POST(req(`/api/leads/${L.a}/warm-path`, 'POST', { contact_url: 'https://www.linkedin.com/in/alanturing', mutual_name: 'Katherine Johnson' }), ctx({ lead: L.a }))))
+  // created_at is the database clock in whole seconds, so on a slow engine the two reports above can straddle a
+  // second. Pin them to one second (the order then comes from insertion), read, then make the second report one
+  // second newer (the order then comes from created_at, newest first) and read again, on both engines.
+  await db.run('UPDATE warm_user_paths SET created_at = (SELECT MIN(created_at) FROM warm_user_paths WHERE tenant_id = ?) WHERE tenant_id = ?', [A, A])
   out.push(await call('warm path after', warmPath.GET(req(`/api/leads/${L.a}/warm-path`), ctx({ lead: L.a }))))
+  await db.run("UPDATE warm_user_paths SET created_at = created_at + 1 WHERE tenant_id = ? AND mutual_name = 'Katherine Johnson'", [A])
+  out.push(await call('warm path newer first', warmPath.GET(req(`/api/leads/${L.a}/warm-path`), ctx({ lead: L.a }))))
   // Tenant B: none of A's settings, connections, bookings or paths, and A's lead and path ids get nothing.
   setUser({ id: B, business_name: 'Co' })
   const reported = (out.find(o => o.name === 'warm report')!.body as { path: { id: string } }).path.id
@@ -190,6 +196,7 @@ async function onPg() {
     await runPgMigrations(pg.pool)
     setScanDb(null as unknown as Database.Database) // getScanDb() now throws 'test database unset'
     setDb(pg)
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await seed(pg)
     return await scenario(pg)
   } finally { await pg.close(); await s.drop() }
@@ -214,11 +221,12 @@ test('batch 2 routes on SQLite: settings, Cal.com and warm paths behave, and ten
   assert.equal(wp.manual_check.length, 1)
   assert.equal((o('warm report dup').body as { path: { id: string } }).path.id, (o('warm report').body as { path: { id: string } }).path.id)
   assert.deepEqual((o('warm path after').body as { user_reported: { mutual_name: string }[] }).user_reported.map(p => p.mutual_name), ['Margaret Hamilton', 'Katherine Johnson'], 'same second: insertion order')
+  assert.deepEqual((o('warm path newer first').body as { user_reported: { mutual_name: string }[] }).user_reported.map(p => p.mutual_name), ['Katherine Johnson', 'Margaret Hamilton'], 'a newer second comes first')
   for (const n of ['B memory', 'B competitors', 'B calcom', 'B enrichment', 'B connectors', 'B llm key', 'B warm status']) assert.equal(o(n).status, 200, n)
   assert.equal((o('B memory').body as { memory: unknown }).memory, null)
   assert.deepEqual((o('B competitors').body as { competitors: unknown[] }).competitors, [])
   assert.deepEqual((o('B calcom').body as { bookings: unknown[] }).bookings, [])
-  assert.deepEqual((o('B enrichment').body as { connectors: unknown[]; audit: unknown[] }), { connectors: [], audit: [] })
+  assert.deepEqual((o('B enrichment').body as { connectors: unknown[]; audit: unknown[]; fallback: boolean }), { connectors: [], audit: [], fallback: false })
   assert.equal((o('B warm status').body as { count: number }).count, 0)
   assert.deepEqual((o('B warm path of A').body as { first_degree: unknown[]; user_reported: unknown[] }).first_degree, [])
   assert.deepEqual((o('B warm path of A').body as { user_reported: unknown[] }).user_reported, [])

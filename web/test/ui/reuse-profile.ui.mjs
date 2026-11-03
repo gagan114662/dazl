@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -27,7 +28,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-reuse-')); const DB = path.joi
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -51,6 +52,7 @@ async function open({ latest, viewJob }) {
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/scan/latest') return json(latest)
     if (p === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: [] })
+    if (p === '/api/scan/estimate' && m === 'POST') return json({ estimate: { rows: [], total: { min: 0, max: 0 }, unpriced: [], assumptions: ['Synthetic fenced estimate'], payer: 'you', cap: { max_usd: null, reserved_usd: 0, remaining_usd: null, binding: null, capped_total: { min: 0, max: 0 }, month_cap_usd: null, month_reserved_usd: 0, unknown: false }, verdict: { ok: true, reason: null, message: 'Synthetic estimate only', change: [], warning: null }, ack: 'synthetic-fenced-ack' } })
     if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'e'.repeat(24) }, 202) }
     if (p === '/api/scan/status') return u.searchParams.get('job_id') === JOB
       ? json({ job_id: JOB, status: 'done', lead_count: 0, attempts: 1, max_attempts: 3, query: Q, icp: REVIEWED, icp_source: 'user' })
@@ -68,9 +70,10 @@ try {
   const box = a.page.getByLabel('Who do you want to reach?')
   await a.page.getByTestId('reuse-profile').waitFor({ timeout: 15000 })
   assert.equal(await box.inputValue(), Q)
-  assert.match(await a.page.getByTestId('reuse-profile').textContent(), /^Find leads runs with your reviewed profile: Owner-run dental practices with 2-10 chairs\./)
+  assert.match(await a.page.getByTestId('reuse-profile').textContent(), /^Find leads reuses this stored profile \(approval is not recorded here\): Owner-run dental practices with 2-10 chairs\./)
   await shot(a.page, 'reuse')
   await a.page.getByRole('button', { name: 'Find leads' }).click()
+  assert.equal(a.scanBodies.length, 0, 'no scan before estimate confirmation'); await a.page.getByTestId('estimate-confirm-run').click()
   await a.page.getByText('Queued - waiting to start.').waitFor()
   assert.equal(a.scanBodies.length, 1)
   assert.deepEqual(a.scanBodies[0].icp, REVIEWED, 'the reviewed profile is sent unchanged')
@@ -82,6 +85,7 @@ try {
   await c.page.getByLabel('Who do you want to reach?').fill('Restaurant owners in Austin - started taking online orders')
   assert.equal(await c.page.getByTestId('reuse-profile').count(), 0)
   await c.page.getByRole('button', { name: 'Find leads' }).click()
+  assert.equal(c.scanBodies.length, 0); await c.page.getByTestId('estimate-confirm-run').click()
   await c.page.getByText('Queued - waiting to start.').waitFor()
   assert.equal(c.scanBodies[0].icp, undefined, 'changed sentence: no stale profile sent')
   await c.ctx.close()
@@ -90,6 +94,7 @@ try {
   await d.page.getByText('Profile used:').waitFor({ timeout: 15000 })
   assert.equal(await d.page.getByTestId('reuse-profile').count(), 0)
   await d.page.getByRole('button', { name: 'Find leads' }).click()
+  assert.equal(d.scanBodies.length, 0); await d.page.getByTestId('estimate-confirm-run').click()
   await d.page.getByText('Queued - waiting to start.').waitFor()
   assert.equal(d.scanBodies[0].icp, undefined)
   await d.ctx.close()
@@ -97,6 +102,7 @@ try {
   const v = await open({ latest: {}, viewJob: true })
   await v.page.getByTestId('reuse-profile').waitFor({ timeout: 15000 })
   await v.page.getByRole('button', { name: 'Find leads' }).click()
+  assert.equal(v.scanBodies.length, 0); await v.page.getByTestId('estimate-confirm-run').click()
   await v.page.getByText('Queued - waiting to start.').waitFor()
   assert.deepEqual(v.scanBodies[0].icp, REVIEWED)
   assert.equal(v.scanBodies[0].query, Q)

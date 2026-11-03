@@ -41,6 +41,19 @@ function fakeExecutor(outcome: 'done' | 'failed' | 'retry') {
 
 const flush = () => new Promise((r) => setTimeout(r, 25))
 
+// Runs fn with the wall clock (Date.now) just before a second boundary until the first SqliteQueue claim returns, and
+// just after it from then on. That is the timing that made 'restart mid-claim' fail in CI (#446 release hold): the
+// bridge claims in a synchronous loop, each claim without an explicit `now` reads the wall clock, so a boundary between
+// the first claim (1s lease) and the loop's next claim reaped the brand-new claim inside the same kick.
+async function acrossSecondBoundary<T>(fn: () => Promise<T>): Promise<T> {
+  const realNow = Date.now, realClaim = SqliteQueue.prototype.claim
+  const s = Math.floor(realNow() / 1000)
+  let crossed = false
+  Date.now = () => crossed ? (s + 1) * 1000 : s * 1000 + 999
+  SqliteQueue.prototype.claim = function (this: SqliteQueue, ...a: Parameters<SqliteQueue['claim']>) { const r = realClaim.apply(this, a); crossed = true; return r }
+  try { return await fn() } finally { Date.now = realNow; SqliteQueue.prototype.claim = realClaim }
+}
+
 test('sync mirrors pending funded jobs once; keyless non-trial untouched', async () => {
   const { db, dir } = fixture()
   seedJob(db, 'j1', 'alice')           // trial-funded
@@ -92,10 +105,16 @@ test('failed: queue item fails with the domain row', async () => {
 test('restart mid-claim, full bridge: dead attempt fenced, new attempt recovers the row', async () => {
   const { db, dir } = fixture()
   seedJob(db, 'j1', 'alice')
-  // Attempt 1 claims with a 1s lease and its executor hangs (the "crash").
+  // Attempt 1 claims with a 1s lease and its executor hangs (the "crash"). Its kick runs on an explicit queue clock (t0,
+  // a little ahead of the wall clock so the just-mirrored item is due), so every claim in that kick sees the same time:
+  // the loop's next claim can never reap this 1s lease, even when the wall clock crosses a second boundary in between,
+  // which acrossSecondBoundary forces here on every run.
   let releaseHang!: (v: 'retry') => void
   const hang = new Promise<'retry'>((r) => { releaseHang = r })
-  await kickQueueRunner(db, {}, () => hang, { leaseSeconds: 1 })
+  const t0 = Math.floor(Date.now() / 1000) + 5
+  await acrossSecondBoundary(() => kickQueueRunner(db, {}, () => hang, { leaseSeconds: 1, now: t0 }))
+  const claimed = new SqliteQueue(db).get('j1')!
+  assert.deepEqual([claimed.status, claimed.attempts, claimed.leaseExpiresAt], ['claimed', 1, t0 + 1], 'attempt 1 still holds its claim after its own kick')
   assert.equal((db.prepare(`SELECT status, attempts FROM scan_jobs WHERE id='j1'`).get() as { status: string }).status, 'running')
   // Attempt 1 dies. 1.1s later its lease is expired; a new kick reaps it
   // (backoff skipped via a clock 40s ahead) and binds the stale domain row.
@@ -104,6 +123,9 @@ test('restart mid-claim, full bridge: dead attempt fenced, new attempt recovers 
   // Kick 1 reaps the expired claim; the re-pend carries a 30s backoff from
   // that clock, so the same kick cannot re-claim (crash-loop protection).
   await kickQueueRunner(db, {}, fakeExecutor('done'), { leaseSeconds: 1, now: future })
+  const reaped = new SqliteQueue(db).get('j1')!
+  assert.equal(reaped.status, 'pending', 'reaped, not re-claimed by the reaping kick')
+  assert.ok(reaped.notBefore > future, 'with backoff')
   // Kick 2, past the backoff, re-claims and binds the stale domain row.
   // Margin 45s > 30s base + 20% jitter (36s max) since the bridge uses the
   // default rng - this must not be timing-flaky.
@@ -116,6 +138,32 @@ test('restart mid-claim, full bridge: dead attempt fenced, new attempt recovers 
   releaseHang('retry')
   await flush()
   assert.equal(new SqliteQueue(db).get('j1')!.status, 'done')
+  db.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+// Negative control for the CI failure: the same flow with attempt 1's kick on the wall clock (no explicit now) and a
+// second boundary inside it. The kick reaps its own fresh 1s claim, so the second kick claims early and the third reaps
+// that claim before its completion is recorded: the queue ends 'pending' with the domain row 'done' - exactly the
+// failing assertion. Every late write is still fenced (the stale completions change nothing); the cause is the test's
+// 1s lease read twice on a moving clock within one kick, not the late completion.
+test('control: a 1s wall-clock lease within one kick, across a second boundary, reproduces the CI failure', async () => {
+  const { db, dir } = fixture()
+  seedJob(db, 'j1', 'alice')
+  let releaseHang!: (v: 'retry') => void
+  const hang = new Promise<'retry'>((r) => { releaseHang = r })
+  await acrossSecondBoundary(() => kickQueueRunner(db, {}, () => hang, { leaseSeconds: 1 }))
+  const self = new SqliteQueue(db).get('j1')!
+  assert.deepEqual([self.status, self.attempts, self.claimToken], ['pending', 1, null], 'the kick reaped its own claim')
+  assert.equal((db.prepare(`SELECT status FROM scan_jobs WHERE id='j1'`).get() as { status: string }).status, 'running', 'while attempt 1 still runs')
+  await new Promise((r) => setTimeout(r, 2100))
+  const future = Math.floor(Date.now() / 1000) + 40
+  await kickQueueRunner(db, {}, fakeExecutor('done'), { leaseSeconds: 1, now: future })
+  await kickQueueRunner(db, {}, fakeExecutor('done'), { leaseSeconds: 1, now: future + 45 })
+  await flush()
+  assert.deepEqual(db.prepare(`SELECT status, attempts FROM scan_jobs WHERE id='j1'`).get(), { status: 'done', attempts: 2 })
+  releaseHang('retry')
+  await flush()
+  assert.equal(new SqliteQueue(db).get('j1')!.status, 'pending', 'the CI symptom')
   db.close(); rmSync(dir, { recursive: true, force: true })
 })
 

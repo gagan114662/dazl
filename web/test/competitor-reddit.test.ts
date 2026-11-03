@@ -32,7 +32,7 @@ test('collect: no consent skips with audit, no worker call', async () => {
   const d = db()
   await setCompetitors(sqliteDb(d), 't1', ['Acme'])
   let calls = 0
-  const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker: async () => { calls++; return [] }, env: ENV_ON })
+  const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker: async () => { calls++; return { items: [], unsupported: null } }, env: ENV_ON })
   assert.equal(out.length, 0)
   assert.equal(calls, 0)
   const row = d.prepare("SELECT status FROM connector_audit WHERE connector = ?").get(COMPLAINT_CONNECTOR) as { status: string }
@@ -45,10 +45,10 @@ test('collect: fresh posts only, tagged with the competitor, per-competitor audi
   acceptConsent(d, 't1', 'advanced')
   const recent = new Date(Date.now() - 5 * 86400_000).toISOString().slice(0, 10)
   const old = new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 10)
-  const worker = async () => [
+  const worker = async () => ({ unsupported: null, items: [
     { url: 'https://www.reddit.com/r/saas/a', title: 'Acme is terrible, alternatives?', quote: 'Acme keeps raising prices and support never answers.', date: recent, login_walled: false },
     { url: 'https://www.reddit.com/r/saas/b', title: 'old post', quote: 'an old complaint nobody should see now', date: old, login_walled: false },
-  ]
+  ] })
   const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker, env: ENV_ON })
   assert.equal(out.length, 1)
   assert.equal(out[0].complaint_of, 'Acme')

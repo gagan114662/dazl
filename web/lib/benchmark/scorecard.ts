@@ -14,11 +14,18 @@
 // toward cost per validated company; one attempted task with an unknown cost makes the total unknown. The
 // complete-task-only figure is reported separately and labelled as such.
 //
+// Input integrity: the scorecard trusts nothing about its input. Every recorded attempt is accounted for exactly once
+// (one record per task: its cost and its failure state), and the frozen task set, the recorded attempts and their
+// results must agree. Any inconsistency (a duplicate or unknown task id, a cost or results recorded without an
+// outcome, results on a task that did not run, a bad cost, a verdict outside the contract, a set/run version
+// mismatch, ...) makes the WHOLE report invalid_input: nothing is scored, no cost is summed, no threshold is
+// evaluated. inputProblems() lists every problem with its code, task id and reason.
+//
 // Who judged matters: a run records its evaluator. Verdicts derived from the pipeline's own fields
 // (fromScoreboardResult) are a self-report; no release threshold can be met by a self-report, by synthetic data, or by
 // a historical aggregate (counts with no per-result verdicts). Thresholds are proposals for the owner: this module
 // reports whether a run meets them, it never accepts anything.
-import { isReachable, RECENT_DAYS, FIT_MIN } from '../scan/scoreboard.ts'
+import { isReachable, RECENT_DAYS, FIT_MIN, isEventDateProof, isHiringTrigger, isCalendarDay, type RouteInput } from '../scan/scoreboard.ts'
 
 export type Verdict = 'pass' | 'fail' | 'unknown' | 'contradicted'
 export const FIELDS = ['identity', 'constraints', 'event_date', 'contact'] as const
@@ -77,7 +84,7 @@ export function scoreTask(task: Task, run: TaskRun | undefined): TaskScore {
 }
 
 export interface Scorecard {
-  format: 'dazl-benchmark-scorecard'; version: 1
+  format: 'dazl-benchmark-scorecard'; version: 1; status: 'scored'
   system: string; system_version: string | null; origin: Origin; task_set_version: string; commit: string | null; config: Record<string, unknown>
   evaluator: BenchmarkRun['evaluator']; started_at: string; source: string | null
   evaluable: boolean; not_evaluable_reason: string | null
@@ -99,10 +106,83 @@ export interface Scorecard {
   aggregates: { task_id: string; status: TaskStatus; aggregate: Record<string, number> }[]
 }
 
-export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
-  if (run.task_set_version !== set.version) throw new Error(`run is for task set v${run.task_set_version}, not v${set.version}`)
-  const byId = new Map(run.tasks.map(t => [t.task_id, t]))
-  for (const t of run.tasks) if (!set.tasks.some(s => s.id === t.task_id)) throw new Error(`run has a task not in the set: ${t.task_id}`)
+// ---------- input integrity ----------
+export interface InputProblem { code: string; task_id: string | null; detail: string }
+export interface InvalidScorecard { format: 'dazl-benchmark-scorecard'; version: 1; status: 'invalid_input'; system: string | null; task_set_version: string | null; problems: InputProblem[] }
+const STATUSES: TaskStatus[] = ['complete', 'incomplete', 'failed', 'unsupported', 'not_run']
+const VERDICTS: Verdict[] = ['pass', 'fail', 'unknown', 'contradicted']
+const KINDS: Task['kind'][] = ['standard', 'negative', 'ambiguous', 'cold_start']
+const ORIGINS: Origin[] = ['live', 'recorded', 'synthetic', 'historical-aggregate']
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
+const isId = (x: unknown): x is string => typeof x === 'string' && x.trim().length > 0
+const isName = (x: unknown): x is string => typeof x === 'string' && /^[A-Za-z0-9][\w.-]*$/.test(x)   // becomes part of a file name
+const nonNeg = (x: unknown) => x === null || x === undefined || (typeof x === 'number' && Number.isFinite(x) && x >= 0)
+const show = (x: unknown) => x === undefined ? 'missing' : JSON.stringify(x)
+// Every problem with the frozen set and the run, as plain parsed JSON (the declared types are not trusted). Empty = scorable.
+export function inputProblems(set: TaskSet, run: BenchmarkRun): InputProblem[] {
+  const out: InputProblem[] = []
+  const bad = (code: string, task_id: string | null, detail: string) => { out.push({ code, task_id, detail }) }
+  const s = set as unknown, r = run as unknown
+  if (!isObj(s) || !isId(s.version)) { bad('set_invalid', null, 'the frozen task set has no version'); return out }
+  if (!Array.isArray(s.tasks) || s.tasks.length === 0) { bad('set_invalid', null, `frozen task set v${s.version} has no tasks`); return out }
+  const setIds = new Map<string, number>()
+  s.tasks.forEach((t: unknown, i: number) => {
+    if (!isObj(t) || !isId(t.id)) return bad('set_task_invalid', null, `frozen task set entry ${i} has no id`)
+    setIds.set(t.id, (setIds.get(t.id) ?? 0) + 1)
+    if (!KINDS.includes(t.kind as Task['kind'])) bad('set_task_invalid', t.id, `kind ${show(t.kind)} is not one of ${KINDS.join(', ')}`)
+  })
+  for (const [id, n] of setIds) if (n > 1) bad('set_duplicate_task', id, `frozen task set v${s.version} lists task ${id} ${n} times`)
+  if (!isObj(r)) { bad('run_invalid', null, 'the run is not an object'); return out }
+  if (r.format !== 'dazl-benchmark-run' || r.version !== 1) bad('run_format_invalid', null, `format ${show(r.format)} version ${show(r.version)}: expected dazl-benchmark-run version 1`)
+  if (r.task_set_version !== s.version) bad('task_set_version_mismatch', null, `the run is for task set v${String(r.task_set_version)}, the frozen set is v${s.version}`)
+  if (!ORIGINS.includes(r.origin as Origin)) bad('run_origin_invalid', null, `origin ${show(r.origin)} is not one of ${ORIGINS.join(', ')}`)
+  if (!isName(r.system)) bad('run_system_invalid', null, `system ${show(r.system)} must be a plain name (letters, digits, . _ -): it names the card file`)
+  if (r.commit !== null && r.commit !== undefined && !isName(r.commit)) bad('run_commit_invalid', null, `commit ${show(r.commit)} must be a plain name or null: it names the card file`)
+  if (!isObj(r.evaluator) || !isId(r.evaluator.name) || typeof r.evaluator.independent !== 'boolean') bad('run_evaluator_invalid', null, 'the run has no evaluator with a name and independent: true | false')
+  if (!Array.isArray(r.tasks)) { bad('run_tasks_invalid', null, 'run.tasks is not a list'); return out }
+  const seen = new Map<string, Record<string, unknown>[]>()
+  r.tasks.forEach((t: unknown, i: number) => {
+    if (!isObj(t) || !isId(t.task_id)) return bad('task_id_invalid', null, `run.tasks[${i}] has no task_id`)
+    const id = t.task_id
+    seen.set(id, [...(seen.get(id) ?? []), t])
+    if (!setIds.has(id)) bad('unknown_task', id, `run.tasks[${i}] records task ${id}, which is not in frozen task set v${s.version}`)
+    const n = Array.isArray(t.results) ? t.results.length : 0
+    if (!STATUSES.includes(t.status as TaskStatus)) {
+      const has = [typeof t.cost_usd === 'number' ? `cost_usd ${t.cost_usd}` : null, n ? `${n} result(s)` : null].filter(Boolean)
+      bad('status_invalid', id, `status ${show(t.status)} is not one of ${STATUSES.join(', ')}${has.length ? `; ${has.join(' and ')} recorded without an outcome` : ''}`)
+    }
+    if (!nonNeg(t.cost_usd)) bad('cost_invalid', id, `cost_usd ${show(t.cost_usd)} is not a non-negative number or null (unknown)`)
+    if (!nonNeg(t.seconds)) bad('seconds_invalid', id, `seconds ${show(t.seconds)} is not a non-negative number or null`)
+    if (t.aggregate !== undefined && (!isObj(t.aggregate) || Object.values(t.aggregate).some(v => typeof v !== 'number' || !Number.isFinite(v)))) bad('aggregate_invalid', id, 'aggregate must map names to finite numbers')
+    if (!Array.isArray(t.results)) return bad('results_invalid', id, `results ${show(t.results)} is not a list`)
+    if (n && (t.status === 'not_run' || t.status === 'unsupported')) bad('results_without_attempt', id, `${n} result(s) recorded for a task with status ${t.status}: a task that did not run has no results`)
+    const ranks = new Map<number, number>()
+    t.results.forEach((x: unknown, j: number) => {
+      if (!isObj(x)) return bad('result_invalid', id, `results[${j}] is not an object`)
+      if (typeof x.rank === 'number' && Number.isSafeInteger(x.rank) && x.rank >= 1) ranks.set(x.rank, (ranks.get(x.rank) ?? 0) + 1)
+      else bad('rank_invalid', id, `results[${j}] rank ${show(x.rank)} is not a positive safe integer`)
+      if (!isId(x.entity_key)) bad('entity_invalid', id, `results[${j}] has no entity_key`)
+      if (!isObj(x.verdicts)) bad('verdict_invalid', id, `results[${j}] has no verdicts`)
+      else for (const f of FIELDS) if (!VERDICTS.includes(x.verdicts[f] as Verdict)) bad('verdict_invalid', id, `results[${j}] ${f} verdict ${show(x.verdicts[f])} is not one of ${VERDICTS.join(', ')}`)
+    })
+    for (const [rank, k] of ranks) if (k > 1) bad('rank_duplicate', id, `rank ${rank} appears ${k} times`)
+    // Bound validation by the evidence actually supplied, never by an untrusted rank.
+    // Iteration also avoids the argument limit of Math.max(...ranks.keys()) on large runs.
+    let highest = 0
+    for (const rank of ranks.keys()) if (rank > highest) highest = rank
+    const missing: number[] = []
+    for (let k = 1; k <= Math.min(n, highest); k++) if (!ranks.has(k)) missing.push(k)
+    if (missing.length) bad('rank_gap', id, `ranks must be 1..${n}: rank(s) ${missing.join(', ')} missing, highest ${highest} (a result dropped from the recorded evidence)`)
+  })
+  for (const [id, ts] of seen) if (ts.length > 1) bad('duplicate_task', id, `${ts.length} attempts recorded for task ${id} (${ts.map(t => `${String(t.status)} cost_usd ${t.cost_usd ?? 'unknown'}, ${Array.isArray(t.results) ? t.results.length : 0} result(s)`).join('; ')}): one record per task; a repeated attempt is never selected, merged or dropped`)
+  return out
+}
+export const problemSummary = (ps: InputProblem[]) => ps.map(p => `${p.code}${p.task_id ? ` ${p.task_id}` : ''}`).join(', ')
+
+export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard | InvalidScorecard {
+  const problems = inputProblems(set, run)
+  if (problems.length) return { format: 'dazl-benchmark-scorecard', version: 1, status: 'invalid_input', system: isObj(run) && isName(run.system) ? run.system : null, task_set_version: isObj(set) && isId(set.version) ? set.version : null, problems }
+  const byId = new Map(run.tasks.map(t => [t.task_id, t]))   // one record per task: inputProblems rejected duplicates
   const tasks = set.tasks.map(t => scoreTask(t, byId.get(t.id)))
   const done = tasks.filter(t => t.status === 'complete')
   const top10 = set.tasks.flatMap(t => (byId.get(t.id)?.status === 'complete' ? [...byId.get(t.id)!.results].sort((a, b) => a.rank - b.rank).slice(0, 10) : []))
@@ -125,7 +205,7 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
   if (run.origin === 'historical-aggregate') reasons.push('historical aggregate: counts only, no per-result verdicts')
   if (!run.evaluator.independent) reasons.push(`evaluator "${run.evaluator.name}" is not independent of the system that produced the results`)
   return {
-    format: 'dazl-benchmark-scorecard', version: 1,
+    format: 'dazl-benchmark-scorecard', version: 1, status: 'scored',
     system: run.system, system_version: run.system_version, origin: run.origin, task_set_version: set.version, commit: run.commit, config: run.config,
     evaluator: run.evaluator, started_at: run.started_at, source: run.source ?? null,
     evaluable: reasons.length === 0, not_evaluable_reason: reasons.length ? reasons.join('; ') : null,
@@ -153,9 +233,21 @@ export function scorecard(set: TaskSet, run: BenchmarkRun): Scorecard {
 export const NEGATIVE_METRICS: (keyof Scorecard['totals'])[] = ['false_alerts']
 export interface Threshold { id: string; metric: keyof Scorecard['totals']; op: '>=' | '<=' | '=='; value: number; min_complete_tasks: number; sample?: 'negative'; why: string }
 export interface ThresholdSet { status: 'proposed'; version: string; thresholds: Threshold[] }
-export type ThresholdResult = { id: string; result: 'meets' | 'misses' | 'insufficient_sample' | 'not_evaluable'; observed: number | null; detail: string }
-export function evaluateThresholds(card: Scorecard, set: ThresholdSet): { status: string; results: ThresholdResult[] } {
-  const results = set.thresholds.map((t): ThresholdResult => {
+const OPS: Threshold['op'][] = ['>=', '<=', '==']
+export type ThresholdResult = { id: string; result: 'meets' | 'misses' | 'insufficient_sample' | 'not_evaluable' | 'invalid_input'; observed: number | null; detail: string }
+export function evaluateThresholds(card: Scorecard | InvalidScorecard, set: ThresholdSet): { status: string; results: ThresholdResult[] } {
+  if (card.status === 'invalid_input') {
+    const detail = `invalid_input: ${problemSummary(card.problems)}`
+    return { status: `invalid_input: nothing was evaluated (${card.problems.length} input problem(s): ${problemSummary(card.problems)})`, results: set.thresholds.map(t => ({ id: t.id, result: 'invalid_input', observed: null, detail })) }
+  }
+  if (!isObj(set) || !Array.isArray(set.thresholds)) return { status: 'invalid_input: the threshold set has no thresholds list; nothing was evaluated', results: [] }
+  const results = set.thresholds.map((t, i): ThresholdResult => {
+    const id = isObj(t) && isId(t.id) ? t.id : `thresholds[${i}]`
+    const fault = !isObj(t) ? 'not an object' : !isId(t.id) ? 'no id' : !(typeof t.metric === 'string' && t.metric in card.totals) ? `metric ${show(t.metric)} is not on the scorecard`
+      : !OPS.includes(t.op as Threshold['op']) ? `op ${show(t.op)} is not one of ${OPS.join(' ')}` : !(typeof t.value === 'number' && Number.isFinite(t.value)) ? `value ${show(t.value)} is not a number`
+      : !(typeof t.min_complete_tasks === 'number' && Number.isFinite(t.min_complete_tasks) && t.min_complete_tasks >= 0) ? `min_complete_tasks ${show(t.min_complete_tasks)} is not a non-negative number`
+      : t.sample !== undefined && t.sample !== 'negative' ? `sample ${show(t.sample)} is not "negative"` : null
+    if (fault) return { id, result: 'invalid_input', observed: null, detail: `threshold ${id}: ${fault}` }
     const observed = card.totals[t.metric] as number | null
     if (!card.evaluable) return { id: t.id, result: 'not_evaluable', observed, detail: card.not_evaluable_reason! }
     if (card.totals.complete < t.min_complete_tasks) return { id: t.id, result: 'insufficient_sample', observed, detail: `${card.totals.complete} complete task(s), at least ${t.min_complete_tasks} needed` }
@@ -184,32 +276,63 @@ export function regressions(before: Scorecard, after: Scorecard, tolerance = 0):
 
 // ---------- recorded scoreboard runs (web/scripts/scoreboard.mts output) as benchmark runs ----------
 // Verdicts from the pipeline's own fields: a SELF-REPORT (evaluator.independent = false), never release evidence.
-type SbLead = { name: string; company: string; contact: string | null; review_reason: string | null; event_date: string | null; fit: number | null; contacts: string[]; source_url?: string }
-type SbResult = { commit: string; date: string; model?: string; rubric?: string; budgetUsdTotal?: number; rows: { id: string; status: string; error: string | null; complete: boolean; seconds: number; leads: SbLead[] }[] }
-export function selfReportVerdicts(l: SbLead, asOf: Date): Record<Field, Verdict> {
+// v2 recordings add the proof and route fields the stricter verdicts need. A recording that predates
+// them keeps the v1 verdicts below (it is a self-report either way, never release evidence).
+type SbLead = { name: string; company: string; contact: string | null; review_reason: string | null; event_date: string | null; fit: number | null; contacts: string[]; source_url?: string; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null; routes?: RouteInput[] }
+type SbResult = { commit: string; date: string; model?: string; rubric?: string; budgetUsdTotal?: number; rows: { id: string; status: string; error: string | null; complete: boolean; seconds: number; window_days?: number | null; timing_required?: boolean; leads: SbLead[] }[] }
+export function selfReportVerdicts(l: SbLead, asOf: Date, windowDays?: number | null, timingRequired = false): Record<Field, Verdict> {
   const r = l.review_reason ?? ''
   const identity: Verdict = !r ? 'pass' : /mismatch|wrong (company|entity)|someone else|other company/i.test(r) ? 'contradicted' : 'unknown'
-  const age = l.event_date && /^\d{4}-\d{2}-\d{2}$/.test(l.event_date) ? (asOf.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000 : null
-  const event_date: Verdict = age === null ? 'unknown' : age >= -1 && age <= RECENT_DAYS ? 'pass' : 'fail'
+  const age = l.event_date && isCalendarDay(l.event_date) ? (asOf.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000 : null
+  // v2: a recorded proof field (even null) means the run is judged by proof: a date 'pass'es only
+  // when a recognized proof, compatible with the claimed trigger, puts it inside the task window.
+  // Publication and model dates alone are never a pass. v1 recordings (no proof field) keep the
+  // legacy date-window verdict so historical self-reports stay comparable.
+  const hasV2Timing = 'event_date_proof' in l
+  const proofOk = isEventDateProof(l.event_date_proof) && (l.event_date_proof !== 'ats_structured' || isHiringTrigger(l.signal, l.signal_kind))
+  // v2 timing is strictly not-future (age >= 0, UTC day contract); the v1 legacy branch keeps the
+  // historical recording's original -1 day slack so old self-reports stay as recorded.
+  // Window: a recorded per-request window is used as recorded. windowDays undefined means an old
+  // recording with no window field - the legacy 90-day default stays so historical self-reports stay
+  // comparable. An explicitly recorded null window with a recency requirement is an UNRESOLVED bound:
+  // the date verdict is unknown, never a pass on an invented default. A recorded null window with no
+  // recency requirement invents no gate: recognized non-future proof passes.
+  const w = windowDays === undefined ? RECENT_DAYS : windowDays
+  const event_date: Verdict = hasV2Timing
+    ? (!proofOk || age === null ? 'unknown' : w === null ? (timingRequired ? 'unknown' : age >= 0 ? 'pass' : 'fail') : age >= 0 && age <= w ? 'pass' : 'fail')
+    : (age === null ? 'unknown' : age >= -1 && age <= (w ?? RECENT_DAYS) ? 'pass' : 'fail')
   const constraints: Verdict = typeof l.fit !== 'number' ? 'unknown' : l.fit >= FIT_MIN ? 'pass' : l.fit <= 2 ? 'fail' : 'unknown'
-  const contact: Verdict = /contact unconfirmed/i.test(r) ? 'unknown' : isReachable(l.contact) || (l.contacts ?? []).some(isReachable) ? 'pass' : 'fail'
+  // v2: when routes are recorded, a contact 'pass'es only on a role-appropriate company-published
+  // route (recruiting inboxes excluded). v1 recordings keep the any-email/phone verdict.
+  const contact: Verdict = /contact unconfirmed/i.test(r) ? 'unknown'
+    : l.routes !== undefined
+      ? (l.routes.some(rt => rt.role_ok && (rt.kind === 'phone' || !/^(?:careers?|jobs?|recruit\w*|hiring|talent|hr|people)$/i.test(rt.value.split('@')[0] ?? ''))) ? 'pass' : 'fail')
+      : (isReachable(l.contact) || (l.contacts ?? []).some(isReachable) ? 'pass' : 'fail')
   return { identity, constraints, event_date, contact }
 }
 export function fromScoreboardResult(sb: SbResult, set: TaskSet, source: string): BenchmarkRun {
   const asOf = new Date(`${sb.date}T23:59:59Z`)
-  const ids = new Set(set.tasks.map(t => t.id))
+  // every row is kept, including one not in the set or a duplicate: the scorecard reports those as invalid_input
   return {
     format: 'dazl-benchmark-run', version: 1, system: 'dazl', system_version: sb.commit, origin: 'recorded', task_set_version: set.version, commit: sb.commit,
     config: { model: sb.model ?? null, rubric: sb.rubric ?? null, budget_usd_total: sb.budgetUsdTotal ?? null, harness: 'web/scripts/scoreboard.mts' },
-    evaluator: { name: 'pipeline-self-report', version: '1', independent: false }, started_at: asOf.toISOString(), source,
-    tasks: sb.rows.filter(r => ids.has(r.id)).map(r => ({
+    evaluator: { name: 'pipeline-self-report', version: '2', independent: false }, started_at: asOf.toISOString(), source,
+    tasks: sb.rows.map(r => ({
       task_id: r.id, status: r.complete ? 'complete' : 'incomplete', reason: r.error, seconds: r.seconds, cost_usd: null,
-      results: r.leads.map((l, i) => ({ rank: i + 1, entity_key: l.company, verdicts: selfReportVerdicts(l, asOf), evidence: l.source_url ? [l.source_url] : [] })),
+      results: r.leads.map((l, i) => ({ rank: i + 1, entity_key: l.company, verdicts: selfReportVerdicts(l, asOf, 'window_days' in r ? r.window_days : undefined, r.timing_required ?? false), evidence: l.source_url ? [l.source_url] : [] })),
     })),
   }
 }
 
-export function scorecardMarkdown(card: Scorecard, thresholds?: ReturnType<typeof evaluateThresholds>): string {
+export function scorecardMarkdown(card: Scorecard | InvalidScorecard, thresholds?: ReturnType<typeof evaluateThresholds>): string {
+  if (card.status === 'invalid_input') return [
+    `# Benchmark scorecard: ${card.system ?? 'unknown system'}, task set v${card.task_set_version ?? '?'}`,
+    '',
+    `**invalid_input**: nothing was scored. Every recorded attempt must be accounted for exactly once, and the frozen task set, the recorded attempts and their results must agree. ${card.problems.length} problem(s):`,
+    '',
+    ...card.problems.map(p => `- ${p.code}${p.task_id ? ` (task ${p.task_id})` : ''}: ${p.detail}`),
+    ...(thresholds ? ['', `**${thresholds.status}**`] : []),
+  ].join('\n') + '\n'
   const t = card.totals, pct = (x: number | null) => x === null ? 'n/a' : `${Math.round(x * 100)}%`
   const lines = [
     `# Benchmark scorecard: ${card.system}${card.system_version ? ` ${card.system_version}` : ''}, task set v${card.task_set_version}`,

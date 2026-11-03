@@ -11,16 +11,20 @@
 //      even on a double click against a slow server; after a failure it can be retried; nothing else is written;
 //   3. Approve is disabled with the reason on leads the existing gates hold (no email, window, timing);
 //   4. Reject opens an optional-reason step (presets, free text, Cancel/Escape writes nothing); Confirm reject sends the
-//      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none); the card leaves To review, the
-//      result line says so and the card shows its reason under Rejected; Undo (on the card or the result) sends its DELETE.
+//      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none); the card leaves To decide, the
+//      result line says so and the card shows its reason under Rejected; Undo (on the card or the result) sends its DELETE;
+//   5. an interrupted (HELD) enrichment lookup surfaces with its exact cost wording; the owner's Retry posts
+//      /api/leads/<id>/enrich-retry once, and the notice clears when nothing is held.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
+const UNVERIFIED_COST = 'Retry unavailable: what this lookup costs on your Apollo account has not been verified, so it stays held and no new lookup is made. Whether the earlier interrupted attempt was already billed is not known. Apollo documents contact search as 0 credits on current plans, but older plans can differ. It can be retried once the cost on your account is confirmed.'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -32,7 +36,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-leadcards-')); const DB = path
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -42,7 +46,7 @@ const lead = (id, company, over = {}) => ({ id, name: '', company, contact: null
 const dom = (site, token, url = 'https://www.news.example/x') => ({ connector: 'sitecrawl', kind: 'domain', value: `${site}|${token}`, label: `domain-basis-v1:${token}`, source_url: url, source_date: '2026-10-20', confidence: null })
 const row = (kind, value) => ({ connector: 'sitecrawl', kind, value, label: null, source_url: 'https://name-guessed.example/team', source_date: '2026-10-20', confidence: null })
 const LEADS = [
-  lead('a'.repeat(24), 'Bright Dental', { contact: 'hello@brightdental.example' }),
+  lead('a'.repeat(24), 'Bright Dental', { contact: 'hello@brightdental.example', enrichments: [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Senior Sales Ops Manager - posted 2026-10-01', label: 'Requested role: sales operations manager; London', confidence: 70, source_url: 'https://boards.greenhouse.io/bright/jobs/1', source_date: '2026-10-01' }, { connector: 'signals:greenhouse', kind: 'hiring', value: '6 open roles', label: 'Account Executive', confidence: 70, source_url: 'https://boards.greenhouse.io/bright', source_date: '2026-10-20' }, { connector: 'signals:careers-gtm', kind: 'hiring', value: 'Open role on its careers page: CRM Administrator', label: 'Requested role: CRM administrator; CRM Administrator listed on the Bright Dental careers page', confidence: 60, source_url: 'https://brightdental.example/careers/crm', source_date: '2026-10-28' }, { connector: 'signals:careers-gtm', kind: 'hiring', value: 'Open role on its careers page: RevOps Lead - posted 2026-10-15', label: 'Requested role: revops lead; Greenhouse first-published date read from the linked posting; RevOps Lead at Bright Dental', confidence: 60, source_url: 'https://boards.greenhouse.io/bright/jobs/77', source_date: '2026-10-15' }, { connector: 'signals:careers-gtm', kind: 'hiring-role', value: 'Open role on its careers page: Sales Ops Lead - posted 2026-03-01', label: 'Long-open: first published 2026-03-01, older than the last 90 days (repost history unknown, not renewed demand); requested role: sales ops lead; Sales Ops Lead', confidence: null, source_url: 'https://boards.greenhouse.io/bright/jobs/78', source_date: '2026-03-01' }, { connector: 'signals:greenhouse-gtm', kind: 'hiring-role', value: 'Office Manager', label: 'Board listing audit (all listed titles): title listed on the board; its posting date was not read', confidence: null, source_url: 'https://boards.greenhouse.io/bright', source_date: '2026-10-21' }] }),
   lead('c'.repeat(24), 'Lakeside Smiles'),
   lead('d'.repeat(24), 'Old Town Dental', { contact: 'info@oldtown.example', window_held: true }),
   // Instinct's repro: website guessed from the name, crawled address on it, a listed person.
@@ -52,6 +56,7 @@ const LEADS = [
   lead('2'.repeat(24), 'Former Dental', { contact: 'hello@formerdental.example', enrichments: [row('person', 'Pat Lee, Former practice owner')] }),
 ]
 let outreachMode = 'ok'
+let heldMode = false; const retryCalls = []
 const writes = []; const outreachBodies = []; const quarantineCalls = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -72,6 +77,9 @@ await ctx.route('**/*', async route => {
   }
   const q = /^\/api\/leads\/([a-f0-9]{24})\/quarantine$/.exec(u.pathname)
   if (q) { quarantineCalls.push({ method: m, lead: q[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ quarantined: m === 'POST' }) }
+  if (u.pathname === '/api/enrich/held') return json(heldMode ? { held: [{ leadId: 'a'.repeat(24), company: 'Bright Dental', provider: 'apollo', step: 'people', since: 1762000000, costText: UNVERIFIED_COST, retryable: false }] } : { held: [] })
+  const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
+  if (er && m === 'POST') { retryCalls.push({ lead: er[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
   return json({}, 404)
 })
 const page = await ctx.newPage()
@@ -102,6 +110,31 @@ try {
   assert.match(await bright.textContent(), /Bright Dental is a two-location practice that matches your dental owner profile\./)
   assert.doesNotMatch(await bright.textContent(), /More detail follows/, 'one line of why, not the whole rationale')
   assert.match(await bright.textContent(), /news\.example · claimed event date 1 Oct 2026/)
+  // The card's Details disclosure is its following sibling (the card div closes at the hold/approve line).
+  const brightDetails = bright.locator('xpath=following-sibling::details[1]')
+  await brightDetails.getByText('Details', { exact: true }).click()
+  await brightDetails.getByText("Hiring for Senior Sales Ops Manager. This may relate to your offer; buying need isn't verified.", { exact: true }).waitFor()
+  // AC5: the matched posting's title and its own board date sit beside the qualified line
+  await brightDetails.getByText(/posting date 2026-10-01/).waitFor()
+  // AC3: generic GTM hiring that never matched the requested role is labeled generic, never role-qualified
+  await brightDetails.getByText('Hiring activity only. A requested-role match and buying need are not verified.', { exact: true }).waitFor()
+  await brightDetails.getByText(/checked 2026-10-20; original posting date unknown/).waitFor()
+  // AC5: a hiring signal alone never produces a high-intent-style claim
+  assert.equal(await page.getByText(/high.intent/i).count(), 0, 'no high-intent-style claim anywhere on the page')
+  // direct-career render arm: the careers-page role match renders the same qualified line with the clean posting title,
+  // and its date arm is unambiguous - the check day is labeled checked, the original posting date is honestly unknown
+  await brightDetails.getByText("Hiring for CRM Administrator. This may relate to your offer; buying need isn't verified.", { exact: true }).waitFor()
+  await brightDetails.getByText(/checked 2026-10-28; original posting date unknown/).waitFor()
+  // #533 AC4 careers->ATS: a careers link to a public ATS posting renders the clean title and the posting's own first-published date
+  await brightDetails.getByText("Hiring for RevOps Lead. This may relate to your offer; buying need isn't verified.", { exact: true }).waitFor()
+  await brightDetails.getByText(/posting date 2026-10-15/).waitFor()
+  // long-open: shown with its own old date and the long-open label, never as a qualified hiring line
+  await brightDetails.getByText(/Long-open: first published 2026-03-01/).waitFor()
+  assert.equal(await brightDetails.getByText(/Hiring for Sales Ops Lead/).count(), 0, 'a long-open posting is never rendered as current hiring')
+  // an audit title whose posting date was never read renders as date unknown, never as a dated sighting
+  await brightDetails.getByText(/checked 2026-10-21; posting date unknown/).waitFor()
+  await shot('hiring-provenance')
+  await brightDetails.getByText('Details', { exact: true }).click()
   assert.equal(await bright.getByRole('link', { name: 'news.example' }).getAttribute('href'), 'https://www.news.example/aaaa')
   assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), false, 'Details are closed by default')
 
@@ -121,7 +154,7 @@ try {
   assert.equal(outreachBodies.length, 1, 'a double click while the request is in flight sends one request')
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isEnabled(), true, 'retry is possible after a failure')
   await bright.getByRole('button', { name: 'Approve' }).dblclick()
-  // Success: a one-line result, and the card moves from To review to Approved (it is a draft now).
+  // Success: a one-line result, and the card moves from To decide to Approved (it is a draft now).
   await page.getByTestId('card-result').getByText(/Bright Dental: draft created/).waitFor()
   assert.deepEqual(outreachBodies, [{ lead_id: 'a'.repeat(24) }, { lead_id: 'a'.repeat(24) }], 'one request per attempt: the failed one and the retry')
   await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid=lead-card]')].some(c => c.textContent.includes('Bright Dental')))
@@ -170,6 +203,22 @@ try {
   await page.getByTestId('tab-approved').click() // Bright Dental is under Approved now
   await page.locator('summary:not([data-testid=caveat] summary)', { hasText: 'Details' }).first().click() // a lead's Details, not a page caveat's
   assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), true, 'everything else is still there under Details')
+
+  // 5. A HELD (interrupted) enrichment lookup surfaces with its exact cost wording; the owner's Retry posts once and the notice clears.
+  heldMode = true
+  await page.reload({ waitUntil: 'networkidle' })
+  const heldSection = page.getByTestId('enrich-held')
+  await heldSection.waitFor()
+  assert.match(await heldSection.textContent(), /Contact enrichment needs attention/)
+  assert.match(await heldSection.textContent(), /Bright Dental/)
+  assert.equal(await heldSection.getByTestId('enrich-held-cost').textContent(), UNVERIFIED_COST)
+  await heldSection.scrollIntoViewIfNeeded(); await shot('enrich-held')
+  const retryBtn = heldSection.getByTestId(`enrich-retry-${'a'.repeat(24)}-apollo-people`)
+  assert.equal(await retryBtn.isDisabled(), true, 'with the account cost unverified the retry action is disabled')
+  assert.deepEqual(retryCalls, [], 'nothing was posted')
+  heldMode = false // the retry cleared it
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal(await page.getByTestId('enrich-held').count(), 0, 'the notice clears once nothing is held')
   console.log('lead cards UI check passed:', writes.join(', '))
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

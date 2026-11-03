@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
+import { getDb, setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
@@ -56,6 +56,8 @@ async function seed(db: Db, { J, L, E, M }: Ids): Promise<void> {
   const run = (sql: string, p: (string | number | null)[] = []) => db.run(sql, p)
   await run("INSERT INTO users (id, email, password_hash, salt, business_name, sells, website, created_at) VALUES (?, 'a@example.test', 'h', 's', 'Acme Co', 'dental software', 'https://acme.example', ?)", [A, T])
   await run("INSERT INTO users (id, email, password_hash, salt, business_name, created_at) VALUES (?, 'b@example.test', 'h', 's', 'Beta', ?)", [B, T])
+  // each account's personal workspace, as sign-in creates it (the trial's principal is its founder: lib/billing/trial-budget.ts)
+  for (const id of [A, B]) await run("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'w', 'personal', ?, ?)", [id, id, T])
   await run("INSERT INTO tenant_plans (tenant_id, plan, subscription_status) VALUES (?, 'pro', 'past_due')", [A])
   await run("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at, created_at) VALUES (?, 'anthropic', 'x', '1234', ?, ?)", [A, T, T])
   const job = async (id: string, user: string, query: string, at: number, icp: string | null = null) => {
@@ -88,6 +90,8 @@ async function seed(db: Db, { J, L, E, M }: Ids): Promise<void> {
     await run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, created_at) VALUES (?, ?, ?, 'pat@dental.example', 'Hello', 'A body that is long enough to pass.', ?)", [id, A, lead, at])
   }
   await run("INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, 'h')", [B, J.bDone])
+  // #349: B saved no profile offer, only a Memory positioning: a new play of B starts from that (profile GET new_play_offer)
+  await run("INSERT INTO tenant_memory (tenant_id, positioning) VALUES (?, 'Payroll software for restaurants')", [B])
 }
 
 type Out = { name: string; status: number; body: unknown }
@@ -156,6 +160,7 @@ async function onPg(ids: Ids) {
     await runPgMigrations(pg.pool)
     setScanDb(null as unknown as Database.Database) // getScanDb() now throws 'test database unset'
     setDb(pg)
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres, not a fixture SQLite repointed by setScanDb')
     await seed(pg, ids)
     return await scenario(pg, ids)
   } finally { await pg.close(); await s.drop() }
@@ -190,6 +195,9 @@ test('batch 1 routes on SQLite answer exactly as the raw store did, including sa
   // 2 of 3 trial scans left; no trial budget configured here (lib/billing/trial-budget.ts), so none would run now
   assert.deepEqual((by('B usage').body as { trial: unknown }).trial, { funded: false, remaining: 2, cap: 3, blocked: 'not_configured' })
   assert.deepEqual(by('profile save').body, { ok: true, sells: 'dental scheduling', website: 'https://acme.example', business_name: 'Acme Dental Co', buyer: null })
+  // what a new play starts from (#349): the profile offer without its website, else the Memory positioning; per tenant
+  assert.equal((by('profile').body as { new_play_offer: unknown }).new_play_offer, 'dental software')
+  assert.equal((by('B profile').body as { new_play_offer: unknown }).new_play_offer, 'Payroll software for restaurants')
   assert.deepEqual([by('unconfirm').status, by('release').status], [200, 200])
 })
 

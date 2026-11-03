@@ -1,5 +1,7 @@
 # Backup and restore runbook (Next.js app SQLite)
 
+Full-service recovery (decrypting every stored secret under the recovered key, unresolved-send inventory, the app started on the restored copy with sending disabled, measured times), targets and the host inventory: `docs/RECOVERY.md` and `scripts/backup/recovery-drill.mts`.
+
 Scope: the web app's single SQLite database (`DB_PATH`, default `../../dazl-data/app.db`
 relative to `web/`; `/var/lib/dazl-next/app.db` in DEPLOY.md's example). WAL mode, one
 Node process, one writer. This is recovery-domain tooling - it is not the Postgres

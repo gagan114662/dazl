@@ -33,7 +33,7 @@ const scoringProviders = (fit: number, extraction: unknown[]) => {
 }
 function fixture(opts: { fit?: number; extraction?: unknown[]; quote?: string; company?: string; articleLinks?: string | null; site?: Site | null }): Fixture {
   const company = opts.company ?? 'Brightloop', quote = opts.quote ?? QUOTE, fit = opts.fit ?? 5
-  const page = { title: `${company} raises seed round`, text: pad(`Published ${daysAgo(12)}. ${quote}.`) }
+  const page = { title: `${company} raises seed round`, text: pad(`On ${daysAgo(12)}, ${quote}.`) }
   const crawl = async (url: string) => {
     const u = new URL(url)
     if (u.hostname === 'sifted.example') return resp(`<html><body>${opts.articleLinks === null ? '' : opts.articleLinks ?? '<a href="https://brightloop.io/">Brightloop</a> '}${page.text}</body></html>`, url)

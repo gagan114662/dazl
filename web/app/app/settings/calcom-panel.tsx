@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 type Booking = { booking_uid: string; attendee_email: string; attendee_name: string | null; created_at: number; lead_id: string | null; company: string | null; lead_name: string | null }
 
 export default function CalcomPanel() {
-  const [st, setSt] = useState<{ configured: boolean; secret: string | null; webhook_url: string; bookings: Booking[] } | null>(null)
+  const [st, setSt] = useState<{ configured: boolean; secret: string | null; secret_hidden?: boolean; webhook_url: string; bookings: Booking[] } | null>(null)
   const [msg, setMsg] = useState('')
   async function load() { const r = await fetch('/api/settings/calcom'); if (r.ok) setSt(await r.json()) }
   useEffect(() => { void load() }, [])
@@ -21,8 +21,10 @@ export default function CalcomPanel() {
       {st.configured ? (
         <div className="text-sm space-y-2">
           <div>Webhook URL: <code className="text-xs break-all">{st.webhook_url}</code></div>
-          <div>Secret: <code className="text-xs break-all">{st.secret}</code></div>
-          <button className="underline underline-offset-2" onClick={rotate}>Rotate secret</button>
+          {st.secret_hidden
+            ? <div className="text-[#555]">Only admins and owners of this workspace see the signing secret.</div>
+            : <div>Secret: <code className="text-xs break-all">{st.secret}</code></div>}
+          {!st.secret_hidden && <button className="underline underline-offset-2" onClick={rotate}>Rotate secret</button>}
         </div>
       ) : (
         <button className="btn-primary" onClick={rotate}>Set up the webhook</button>

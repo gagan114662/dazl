@@ -8,6 +8,7 @@ import { scanCounts } from '@/lib/outreach/scan-drafts'
 import { constraintPills, PILLS_SHOWN, playName, playPace, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
 import { leadCardSummary } from '@/lib/scan/lead-card'
+import { CAUSE_TEXT, recoveryNote } from '@/lib/lead-state'
 import { Avatar, Pill, Stepper } from './ui/bits'
 import { Icon } from './ui/icons'
 import InfoTip from './ui/info-tip'
@@ -102,8 +103,8 @@ export default function Journey() {
   const icp = playIcp?.icp && j.play && playIcp.query === j.play.query ? playIcp.icp : null
   const pace = j.play && watches !== 'loading' ? playPace(j.play, watches) : null
   const pills = icp ? constraintPills(icp) : []
-  const opp = j.split?.opportunities.length ?? null, held = j.split?.held.length ?? null
-  const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' ? '?' : '0') : String(v)
+  const opp = j.split?.opportunities.length ?? null, held = j.split?.review.length ?? null, researchN = j.split?.research.length ?? 0
+  const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' ? '?' : '0') : String(v)
   const missing = p ? [!p.sells && 'what you sell', !buyer?.summary && 'who buys', !buyer?.who.length && 'buyer roles', !buyer?.where.length && 'where they are', !buyer?.sizes.length && 'company size', !buyer?.exclude.length && 'who to skip'].filter((x): x is string => !!x) : []
 
   return (
@@ -151,8 +152,8 @@ export default function Journey() {
       {j.play && j.stage !== 'running' && <section className="card p-5 sm:p-6" aria-label="Results" data-testid="journey-results">
         <div className="grid grid-cols-3 gap-3">
           <Stat label="Leads ready" value={stat(opp)} testid="stat-ready" strong />
-          <Stat label="Held for review" value={stat(held)} testid="stat-held" />
-          <Stat label="Contacted" value={sent === null ? (j.stage === 'useful' || j.stage === 'all_held' ? '?' : '0') : String(sent)} testid="stat-contacted" />
+          <Stat label="Needs your review" value={stat(held)} testid="stat-held" />
+          <Stat label="Contacted" value={sent === null ? (j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' ? '?' : '0') : String(sent)} testid="stat-contacted" />
         </div>
         {j.split && j.split.opportunities.length > 0 ? <ul className="mt-4 divide-y divide-[var(--line)] border-t border-[var(--line)]" aria-label="Opportunities" data-testid="journey-preview">
           {j.split.opportunities.slice(0, PREVIEW).map(l => {
@@ -170,15 +171,24 @@ export default function Journey() {
             </li>
           })}
         </ul>
-        : (j.stage === 'zero' || j.stage === 'all_held') && <div className="mt-4 rounded-2xl bg-[#f6f0ea] p-5 sm:p-6 text-center" data-testid="journey-empty">
-          <p className="text-lg font-bold tracking-tight">{j.stage === 'all_held' ? 'Nothing ready yet - a few leads need your eyes' : 'No leads ready from this play yet'}</p>
-          <p className="text-sm text-[var(--ink-2)] mt-1">Try a wider version of it:</p>
+        : (j.stage === 'zero' || j.stage === 'all_held' || j.stage === 'research_only') && <div className="mt-4 rounded-2xl bg-[#f6f0ea] p-5 sm:p-6 text-center" data-testid="journey-empty">
+          <p className="text-lg font-bold tracking-tight">{j.stage === 'all_held' ? 'Nothing ready yet - a few leads need your eyes' : j.stage === 'research_only' ? 'Nothing ready - the leads found are research only' : 'No leads ready from this play yet'}</p>
+          <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="empty-hint">{j.stage === 'research_only' ? 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.' : 'Try a wider version of it:'}</p>
+          {j.stage === 'research_only' && j.split && <>
+            {/* Why each lead is research, and what dazl's automatic recovery already tried for it (the scan's own record); nothing here is a task for the user. */}
+            <ul className="mt-3 mx-auto max-w-xl text-left text-sm space-y-2" data-testid="research-tried">
+              {j.split.research.slice(0, PREVIEW).map(({ lead: l, cause }) => { const r = recoveryNote(l)
+                return <li key={l.id} className="rounded-xl bg-white/60 px-3 py-2" data-testid="research-row"><span className="font-semibold">{l.company}</span>: {CAUSE_TEXT[cause]}.{r && <span className="block text-xs text-[var(--ink-2)] mt-0.5" data-testid={r.ran ? 'recovery-ran' : 'recovery-not-run'}>{r.text}</span>}</li> })}
+            </ul>
+            <p className="text-sm text-[var(--ink-2)] mt-3" data-testid="recovery-next">To change the result, search again with a different signal or source:</p>
+          </>}
           <div className="flex flex-wrap justify-center gap-2 mt-4">
-            {widenActions(j.play.query, icp).map(a => <Link key={a.testid} className="btn-ghost btn-sm" href={a.href} data-testid={a.testid}>{a.label}</Link>)}
+            {widenActions(j.play.query, icp, j.split && j.split.research.length ? [...new Set(j.split.research.map(r => r.cause))] : undefined).map(a => <Link key={a.testid} className="btn-ghost btn-sm" href={a.href} data-testid={a.testid}>{a.label}</Link>)}
           </div>
         </div>}
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-          {j.split && j.split.held.length > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-held">{j.split.held.length} held for review<InfoTip>Leads that need your review, are rejected, undated, outside your time window, or whose company or source is not confirmed. They are never counted as opportunities.</InfoTip></Link>}
+          {j.split && j.split.review.length > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-held">{j.split.review.length} need{j.split.review.length === 1 ? 's' : ''} your review<InfoTip>Leads where checking the source yourself can settle it. They are never counted as opportunities.</InfoTip></Link>}
+          {researchN > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-research">{researchN} research only<InfoTip>No verified, dated event, outside your time window, or someone else's customer. Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.</InfoTip></Link>}
           {j.split && j.split.opportunities.length > PREVIEW && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`}>All {j.split.opportunities.length} leads</Link>}
           <Link className="btn-ghost btn-sm" href={`/app/outcomes?job_id=${j.play.id}`} data-testid="journey-campaign"><Icon name="check" className="w-3.5 h-3.5" />Drafts and outcomes</Link>
           {drafts && drafts.approved > 0 && <span className="text-xs text-[var(--ink-2)]" data-testid="journey-approved">{drafts.approved} approved, not sent yet</span>}
@@ -209,7 +219,7 @@ export default function Journey() {
           </>}
         {j.play && playOffer !== undefined && <div className="mt-4 pt-4 border-t border-[var(--line)]" data-testid="journey-play-offer"><PlayOfferCard jobId={j.play.id} offer={playOffer} onChange={o => setPlayOfferOf({ id: j.play!.id, offer: o })} /></div>}
         {icp && <div className="mt-4 pt-4 border-t border-[var(--line)] text-sm" data-testid="journey-constraints">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)] mb-2">This play searched with<InfoTip>The reviewed profile this play ran with, exactly as saved. It is not changed when you edit the business profile above.</InfoTip></p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)] mb-2">This play searched with<InfoTip>The stored profile this play ran with. Stored metadata does not prove who reviewed or approved it. It is not changed when you edit the business profile above.</InfoTip></p>
           <div className="flex flex-wrap gap-2">
             {pills.map((t, i) => <span key={t.text + i} className={`pill ${t.kind === 'window' ? 'pill-mint' : t.kind === 'skip' ? 'pill-pink' : 'pill-plain'}`} style={i >= PILLS_SHOWN && !morePills ? { display: 'none' } : undefined} data-testid={t.kind === 'window' ? 'journey-window' : undefined}>{t.text}</span>)}
             {pills.length > PILLS_SHOWN && <button type="button" className="pill pill-plain hover:border-[var(--ink-3)]" aria-expanded={morePills} onClick={() => setMorePills(m => !m)} data-testid="pills-more">{morePills ? 'Show less' : `+${pills.length - PILLS_SHOWN} more`}</button>}

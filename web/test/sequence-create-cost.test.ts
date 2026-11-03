@@ -9,7 +9,7 @@ test('sequence create route is template-only, with no AI draft call or import', 
   const route = read('app/api/outreach/sequences/route.ts')
   assert.doesNotMatch(route, /draftSequenceSteps|llmStepText|providers|provider\.complete/)
   const create = route.slice(route.indexOf("if (b?.action === 'create'"), route.indexOf("if (b?.action === 'create_test_fixture'"))
-  assert.match(create, /createSequence\(db,user.id,b.message_id/)
+  assert.match(create, /createSequence\(db,user.tenantId,b.message_id/)
   assert.match(create, /return NextResponse.json\(\{ id \}\)/)
   assert.doesNotMatch(create, /await /)
 })

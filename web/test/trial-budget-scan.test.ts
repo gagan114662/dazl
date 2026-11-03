@@ -155,9 +155,11 @@ test('owner-funded calls outside a scan are off for a trial account: the profile
     const out = await previewIcp(db, 'keyless', 'dental practices in Toronto hiring a receptionist', { providers: { anthropic: p, openai: p } }, '1.2.3.4')
     assert.ok('icp' in out && out.inferred === false, JSON.stringify(out))
     let fetched = 0
-    const site = await icpFromWebsite(db, 'keyless', 'https://acme.example', { providers: { anthropic: p, openai: p }, fetchImpl: (async () => { fetched++; return new Response('') }) as typeof fetch } as never)
-    assert.deepEqual(site, { error: 'no_api_key' })
-    assert.deepEqual([calls, fetched], [0, 0])
+    const site = await icpFromWebsite(db, 'keyless', 'https://acme.example', { providers: { anthropic: p, openai: p }, lookup: (async () => [{ address: '93.184.216.34', family: 4 }]) as never, fetchImpl: (async () => { fetched++; return new Response('') }) as typeof fetch } as never)
+    // The free website read may fetch the public page (it costs nothing) but never calls a model; an unreadable
+    // page ends as a typed fetch error (empty/non-HTML body here), not as a key demand.
+    assert.ok('error' in site && site.error === 'not_html', JSON.stringify(site))
+    assert.deepEqual([calls, fetched], [0, 1])
   })
 })
 
@@ -167,7 +169,7 @@ test('TinyFish: the trial charge runs before each paid search and fetch; a refus
   let requests = 0
   const fetchImpl = (async () => { requests++; return new Response(JSON.stringify({ results: [] }), { status: 200 }) }) as typeof fetch
   const guard = new SpendGuard(0.025); guard.label = 'trial_budget'
-  const charge = (kind: 'search' | 'fetch', units: number) => reserveAllUsd([guard], units * (kind === 'search' ? 0.01 : 0.002))
+  const charge = async (kind: 'search' | 'fetch', units: number) => { await reserveAllUsd([guard], units * (kind === 'search' ? 0.01 : 0.002)) }
   const spent = { searches: 0 }
   assert.equal((await tfSearch(db, 't', 'q1', {}, spent, { env, fetchImpl, charge })).ok, true)
   assert.equal((await tfSearch(db, 't', 'q2', {}, spent, { env, fetchImpl, charge })).ok, true)

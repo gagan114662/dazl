@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -22,11 +23,12 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-replyreview-')); const DB = pa
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
-const row = (id, cls, excerpt, stopped, company) => ({ gmail_id: id, thread_id: `t-${id}`, from_email: `sam@${company.toLowerCase()}.example`, excerpt, classification: cls, received_at: 1761600000, company, lead_name: 'Sam Example', followups_sent: 0, stopped })
+// One row per thread, as GET /api/outreach/inbox returns them (lib/outreach/inbox.ts).
+const row = (id, cls, excerpt, stopped, company) => ({ gmail_id: id, thread_id: `t-${id}`, from_email: `sam@${company.toLowerCase()}.example`, excerpt, classification: cls, received_at: 1761600000, replies: 1, company, lead_name: 'Sam Example', followups_sent: 0, stopped, unread: true, needs_owner: cls === 'uncertain' || (cls === 'positive' && !stopped) })
 const ROWS = [
   row('r1', 'uncertain', '', 'review', 'Northwind'),
   row('r2', 'opt_out', 'Bitte abmelden, danke.', 'opt_out', 'Brightline'),
@@ -42,7 +44,7 @@ const run = async (width, label) => {
     if (u.origin !== base) return route.abort()
     if (!u.pathname.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-    if (u.pathname === '/api/outreach/inbox') return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@acme.example', rows: ROWS, booking_url: null })
+    if (u.pathname === '/api/outreach/inbox') return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@acme.example', threads: ROWS, next_cursor: null, counts: { threads: 3, needs_owner: 2, unread: 3, unread_needs_owner: 2 }, booking_url: null })
     return json({}, 404)
   })
   const page = await ctx.newPage()

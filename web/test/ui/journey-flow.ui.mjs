@@ -17,6 +17,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -28,7 +29,7 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-journey-flow-')); const DB = p
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
-const port = 3300 + Math.floor(Math.random() * 500); const base = `http://127.0.0.1:${port}`
+const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
@@ -71,7 +72,12 @@ async function open(s, url = '/app', width = 1400, height = 1000) {
     if (p === '/api/scan/latest') return json({ query: s.job.query, icp: { ...BUYER, window_days: 90 }, icp_source: 'user' })
     if (p === '/api/leads') return u.searchParams.get('job_id') === P ? json({ leads: LEADS, hidden_count: 0 }) : json({ error: 'nope' }, 500)
     if (p === `/api/campaigns/${P}`) return s.campaignFails ? json({ error: 'boom' }, 500) : json({ job: s.job, leads: LEADS, messages: [...(s.msgs ?? MSGS), { id: 'x', lead_id: '8'.repeat(24), to_email: 'z@other.example', subject: 'Other play', status: 'draft', created_at: now, sent_at: null }] })
-    if (p === '/api/outreach/inbox') return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', rows: s.replies ?? REPLIES, booking_url: null })
+    // Outcomes asks the server for this play's conversations that need the owner (lib/outreach/inbox.ts); anything else is a bug.
+    if (p === '/api/outreach/inbox') {
+      if (u.searchParams.get('job_id') !== P || u.searchParams.get('status') !== 'needs_owner') return json({ error: 'unfiltered inbox read' }, 500)
+      const threads = s.replies ?? REPLIES
+      return json({ available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', threads, next_cursor: null, counts: { threads: threads.length, needs_owner: threads.length, unread: 0, unread_needs_owner: 0 }, booking_url: null })
+    }
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 1, scan_limit: 10, has_key: true, trial: null })
     if (p === '/api/settings/llm-key') return json({ keys: [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [] })
@@ -106,7 +112,7 @@ try {
     await page.reload({ waitUntil: 'networkidle' })
     await page.getByTestId('journey-understanding').waitFor()
     const t = await page.getByTestId('journey-understanding').textContent()
-    assert.match(t, /WhereLondon, UK/); assert.match(t, /SkipAgencies, recruiters/); assert.match(t, /You sellSales hiring software for seed-stage startups/)
+    assert.match(t, /WhereLondon, UK/); assert.match(t, /SkipAgencies, recruiters/); assert.match(t, /Your business profile sells \(new plays start from this\)Sales hiring software for seed-stage startups/)
     assert.deepEqual(s.profile.buyer, BUYER)
     await ctx.close()
   }

@@ -17,7 +17,7 @@ const FOUNDER = '<div class="card"><h3>Jane Doe</h3><p>Chief Executive Officer</
 
 interface Opts { company: string; quote: string; articleBody?: string; siteHost: string; homeText: string; teamHtml?: string; contactHtml?: string; fit?: number; twinHome?: string }
 function fx(o: Opts): Fixture {
-  const page = { title: `${o.company} funding`, text: pad(`Published ${daysAgo(12)}. ${o.articleBody ?? o.quote}.`) }
+  const page = { title: `${o.company} funding`, text: pad(`On ${daysAgo(12)}, ${o.articleBody ?? o.quote}.`) }
   const cand = { company: o.company, signal: 'raised a seed round', source_url: ART, excerpt: o.quote, event_date: daysAgo(12) }
   const reply = (p: string, mt?: number) => p.includes('LEAD <n> | fit') ? `LEAD 1 | fit ${o.fit ?? 5} | intent 4 | action 4 | match yyyy | signals seed_round | why London seed-funded SaaS.` : mt === 300 ? JSON.stringify(['London SaaS startup seed round']) : JSON.stringify([cand])
   const prov = { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, mt?: number) => reply(p, mt), completeDetailed: async (_k: string, p: string, _f?: typeof fetch, mt?: number) => ({ text: reply(p, mt), model: 'stub', usage: { input_tokens: 1, output_tokens: 1 } }), configuredModel: () => 'stub' }

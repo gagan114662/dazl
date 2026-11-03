@@ -1,0 +1,22 @@
+# Alerts when backups are stale, missing, modified, or the last recovery drill failed (scripts/backup/backup-check.mts).
+# The off-host copy is checked at the SAME destination dazl-backup.service copies to: backup-check reads OFFHOST_DEST
+# (and OFFHOST_REQUIRED) from the shared env file below, so there is one setting and the monitor cannot drift from it.
+# For rclone:REMOTE:PATH it uses the app user's rclone config, like offhost-copy.sh.
+# A TEMPLATE, installed with dazl-backup.service. OPS_ALERT_WEBHOOK_URL (https, e.g. a Slack incoming webhook) is the
+# alert destination; without it problems go to the journal only.
+# The drill report it watches is written by every dazl-backup.service run (restore-drill --report) to
+# $BACKUP_DIR/drill-report.json - the default the check derives from --dir, so producer and monitor cannot drift.
+# DRILL_REPORT in the env file overrides BOTH sides; never edit the path into only one of them.
+[Unit]
+Description=dazl backup freshness check
+
+[Service]
+Type=oneshot
+# the check itself bounds every command, webhook and rclone call and reads only the newest few manifests; this is the
+# backstop for the whole job. A run killed here has sent no alert: it shows as a failed unit in the journal and in
+# `systemctl status dazl-backup-check`; wire OnFailure=<your-notifier>.service if you run one.
+TimeoutStartSec=5min
+User=CHANGE-ME-app-user
+EnvironmentFile=/etc/dazl-backup/env
+WorkingDirectory=CHANGE-ME-release/web
+ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/backup-check.mts --dir ${BACKUP_DIR} --max-age-s 7200 --drill-max-age-s 7200

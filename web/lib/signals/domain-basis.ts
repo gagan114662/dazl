@@ -15,3 +15,18 @@ export function domainRelationship(db: Database.Database, tenantId: string, lead
   return own || reviewed ? 'established' : 'heuristic'
 }
 export const HEURISTIC_NOTE = 'board found under a domain matched by company name; the company-to-board relationship is not established'
+
+// "Confirmed" for CONTACT and SCORE purposes (wider than established, narrower than "a domain string is populated"): the domain is established,
+// OR the crawl recorded that this domain's homepage named the company AND agreed with the scan's place or the lead's street address
+// (a `domain_check` row written only after those checks passed). A populated company_domain with neither - a legacy name guess, a row
+// from before the check existed - is a guess whose own contacts agree with it, which is self-consistency, not identity.
+export const DOMAIN_CHECK_KIND = 'domain_check'
+export function domainConfirmed(db: Database.Database, tenantId: string, leadId: string, domain: string | null | undefined): boolean {
+  const d = (domain ?? '').trim().toLowerCase().replace(/^www\./, '')
+  if (!d) return false
+  if (domainRelationship(db, tenantId, leadId, d) === 'established') return true
+  try {
+    return (db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind = ?").all(leadId, tenantId, DOMAIN_CHECK_KIND) as { value: string }[])
+      .some(r => r.value.toLowerCase().split('|')[0].replace(/^www\./, '') === d)
+  } catch { return false }
+}

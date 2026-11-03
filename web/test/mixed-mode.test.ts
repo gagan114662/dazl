@@ -40,13 +40,13 @@ test('mixed mode: concurrent ported transactions and raw requests on one SQLite 
     const u = await getSessionUser(token[t], db)
     if (!u) throw new Error('not signed in')
     return {
-      id: u.id,
-      profile: sellerProfile(raw, u.id),
-      prepared: profileStmt.get(u.id) as { sells: string },
-      plan: getPlan(raw, u.id),
-      quota: scanQuota(raw, u.id),
-      leads: listLeads(raw, u.id, job[t]).map(l => (l as { id: string }).id),
-      other: listLeads(raw, u.id, job[t === 'A' ? 'B' : 'A']).length,
+      id: u.tenantId,
+      profile: sellerProfile(raw, u.tenantId),
+      prepared: profileStmt.get(u.tenantId) as { sells: string },
+      plan: getPlan(raw, u.tenantId),
+      quota: scanQuota(raw, u.tenantId),
+      leads: listLeads(raw, u.tenantId, job[t]).map(l => (l as { id: string }).id),
+      other: listLeads(raw, u.tenantId, job[t === 'A' ? 'B' : 'A']).length,
     }
   }
   const checkout = (id: string) => applyStripeEvent(db, { id, type: 'checkout.session.completed', data: { object: { mode: 'subscription', client_reference_id: 'A', customer: 'cus_A', subscription: 'sub_A' } } })

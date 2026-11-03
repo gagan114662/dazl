@@ -12,8 +12,8 @@ export async function GET() {
   let attempts: unknown[] = []
   let total = 0
   try {
-    attempts = await db.all('SELECT vendor, model, outcome, input_tokens, output_tokens, created_at FROM outreach_llm_usage WHERE tenant_id = ? ORDER BY id DESC LIMIT 50', [user.id])
-    total = Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM outreach_llm_usage WHERE tenant_id = ?', [user.id]))!.n)
+    attempts = await db.all('SELECT vendor, model, outcome, input_tokens, output_tokens, created_at FROM outreach_llm_usage WHERE tenant_id = ? ORDER BY id DESC LIMIT 50', [user.tenantId])
+    total = Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM outreach_llm_usage WHERE tenant_id = ?', [user.tenantId]))!.n)
   } catch { /* usage table may predate this deploy */ }
   return NextResponse.json({ attempts, total })
 }

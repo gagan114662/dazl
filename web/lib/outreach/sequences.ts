@@ -1,11 +1,13 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
+import { ownerGuarded } from '../llm/owner-guard.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
+import { conversionBlockedNow, drainVerifiedPendingLifecycle } from './lifecycle.ts'
 import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
@@ -15,7 +17,7 @@ import { providers } from '../llm/provider.ts'
 import { pickVendor } from '../scan/runner.ts'
 import { getMemory, memoryPromptBlock } from '../memory.ts'
 import { memoryForLead } from './play-memory.ts'
-import { norm } from './store.ts'
+import { norm, replySafetyStale } from './store.ts'
 
 // Multi-step sequences: step 1 is the normal approved outreach email; steps 2 and 3 are
 // follow-ups at +3 days and +7 days measured from the step-1 send, for leads who never
@@ -63,7 +65,9 @@ export function migrateSequences(db: Database.Database): void {
     );
     CREATE TABLE IF NOT EXISTS sequence_settings (
       tenant_id      TEXT PRIMARY KEY,
-      test_addresses TEXT NOT NULL DEFAULT '[]'
+      test_addresses TEXT NOT NULL DEFAULT '[]',
+      auto_policy    TEXT,
+      auto_policy_at INTEGER
     );
     CREATE TRIGGER IF NOT EXISTS sequence_sent_final
     BEFORE UPDATE ON sequence_steps
@@ -71,6 +75,41 @@ export function migrateSequences(db: Database.Database): void {
     BEGIN SELECT RAISE(ABORT, 'sent sequence step is final'); END;
     CREATE INDEX IF NOT EXISTS sequences_tenant ON sequences (tenant_id, status);
   `)
+  // #414: auto-enrolled cold sequences carry the policy version and a hash of the claims their words rely on;
+  // NULL policy = manually created/approved sequence (the pre-#414 kind), never touched by the auto guard.
+  const addCol = (t: string, c: string, def: string) => { try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) } catch { /* exists */ } }
+  addCol('sequences', 'policy', 'TEXT')
+  addCol('sequences', 'claims_hash', 'TEXT')
+  addCol('sequence_settings', 'auto_policy', 'TEXT')
+  addCol('sequence_settings', 'auto_policy_at', 'INTEGER')
+}
+
+// The separately versioned one-time cold-sequence policy (#414). A tenant accepts exactly this version; the
+// acceptance is what turns successful autopilot first touches into bounded day-3/day-7 no-reply follow-ups.
+// Manual sequence creation/approval is unchanged and does not depend on this policy.
+export const AUTO_SEQUENCE_POLICY = '2026-11-01-cold-sequence-1'
+// Shown verbatim where the tenant accepts the policy. Accepting is a one-time, exact-version decision: a
+// version change stops auto-enrolled sets until the new text is read and accepted again.
+export const AUTO_SEQUENCE_POLICY_TEXT = [
+  'After dazl sends a first email for you and it is confirmed sent, it can create a 3-step follow-up sequence for that prospect automatically: the email already sent becomes step 1, and follow-ups go out 3 and 7 days later if there is no reply.',
+  'The follow-up words come only from the same confirmed details as the first email (company, signal and source). If those details or this policy change, the sequence stops instead of sending stale words.',
+  'Any reply, opt-out or bounce stops the sequence. You can stop any sequence at any time on this page.',
+  'Sequences you create and approve yourself are unchanged and do not depend on this policy.',
+]
+export function acceptAutoSequencePolicy(db: Database.Database, tenantId: string, version: string, now = Math.floor(Date.now() / 1000)): void {
+  if (version !== AUTO_SEQUENCE_POLICY) throw new SequenceError('policy_unknown')
+  db.prepare('INSERT INTO sequence_settings (tenant_id, auto_policy, auto_policy_at) VALUES (?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET auto_policy = excluded.auto_policy, auto_policy_at = excluded.auto_policy_at').run(tenantId, version, now)
+  auditAt(db, tenantId, 'sequence_policy_accepted', version, undefined, undefined, now)
+}
+export function autoSequencePolicyAccepted(db: Database.Database, tenantId: string): boolean {
+  return (db.prepare('SELECT auto_policy FROM sequence_settings WHERE tenant_id = ?').get(tenantId) as { auto_policy: string | null } | undefined)?.auto_policy === AUTO_SEQUENCE_POLICY
+}
+// Revocation is the tenant's own off switch: no new auto enrollments, and every in-flight auto-enrolled set stops
+// at the next tick (the active loop re-proves the acceptance, below). Manual sets are untouched, and consent
+// already granted to a contact is not rewritten - it simply can never be used again while the policy is off.
+export function revokeAutoSequencePolicy(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): void {
+  db.prepare('UPDATE sequence_settings SET auto_policy = NULL, auto_policy_at = NULL WHERE tenant_id = ?').run(tenantId)
+  auditAt(db, tenantId, 'sequence_policy_revoked', AUTO_SEQUENCE_POLICY, undefined, undefined, now)
 }
 
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
@@ -117,7 +156,8 @@ async function llmStepText(db: Database.Database, tenantId: string, step: 2 | 3,
   if (!vendor) return null
   const read = readKey(db, tenantId, vendor, d.master)
   if (read.unreadable || !read.key) return null
-  const provider = providers[vendor]
+  // The owner's spend pool (lib/llm/owner-guard.ts): a refused reservation makes no call and the template is used.
+  const provider = providers[vendor] && ownerGuarded(db, tenantId, providers[vendor])
   if (!provider?.complete) return null
   try {
     const text = (await provider.complete(read.key, seqPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), d.fetchImpl, 400)).trim().slice(0, 3000)
@@ -161,6 +201,56 @@ export function createSequence(db: Database.Database, tenantId: string, messageI
   for (const step of [2, 3] as const) ins.run(tenantId, id, step, re(m.subject), sequenceStepText(step,lead,businessName,settings?.booking_url))
   })()
   return id
+}
+
+// ---------- auto-enrollment under the cold-sequence policy (#414) ----------
+
+// The claims the step-2/3 words rely on. Recomputed at send time; a change stops the sequence
+// instead of sending words whose basis moved (new authority or changed claims never inherit approval).
+const claimsHash = (lead: { company: string; name: string; signal: string; source_url: string }, businessName: string, bookingUrl: string | null | undefined): string =>
+  createHash('sha256').update(JSON.stringify([lead.company, lead.name, lead.signal, lead.source_url, businessName, bookingUrl ?? null])).digest('hex')
+
+// Enrolls a JUST-SENT autopilot first touch into a bounded cold no-reply sequence (steps 2/3 at +3d/+7d).
+// Only when the tenant accepted the current AUTO_SEQUENCE_POLICY; returns null otherwise and for every
+// ineligible case - enrollment is best-effort and must never affect the send that already happened.
+// Step 1 is the sent email itself (snapshot), so the sequence starts 'active' with the real send time.
+export function enrollColdSequence(db: Database.Database, tenantId: string, messageId: string, d: { businessName?: string; now?: number } = {}): string | null {
+  if (!autoSequencePolicyAccepted(db, tenantId)) return null
+  const now = d.now ?? Math.floor(Date.now() / 1000)
+  const m = db.prepare("SELECT id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id, test FROM outreach_messages WHERE id = ? AND tenant_id = ?").get(messageId, tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; sent_at: number | null; gmail_id: string | null; thread_id: string | null; test: number } | undefined
+  if (!m || m.status !== 'sent' || !m.sent_at) return null // only a proven send enrolls; never a draft/uncertain
+  const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(m.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
+  if (!lead) return null
+  const test = testFixtureSend(db, tenantId, { to_email: m.to_email, test: m.test })
+  if (isSuppressed(db, tenantId, m.to_email)) return null
+  if (contactPurposeRestricted(db, tenantId, m.lead_id, m.to_email)) return null
+  if (leadHeld(db, tenantId, m.lead_id) || !recipientAllowed(db, tenantId, m.to_email)) return null
+  if (!test && currentnessHeld(db, tenantId, m.lead_id)) return null
+  if (!test && !leadEvidenceEligible(db, tenantId, m.lead_id)) return null
+  if (!test && domainReviewStatus(db, tenantId, m.lead_id, m.to_email) !== 'ok') return null
+  const settings = getSettings(db, tenantId)
+  const businessName = d.businessName ?? ''
+  const re = (sub: string) => sub.startsWith('Re:') ? sub : `Re: ${sub}`
+  const id = randomBytes(12).toString('hex')
+  const ch = claimsHash(lead, businessName, settings?.booking_url)
+  try {
+    db.transaction(() => {
+      db.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status, policy, claims_hash) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)").run(id, tenantId, m.lead_id, m.id, m.to_email, AUTO_SEQUENCE_POLICY, ch)
+      const ins = db.prepare('INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body, approved_hash, status, gmail_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      ins.run(tenantId, id, 1, m.subject, m.body, hash(m.to_email, m.subject, m.body), 'sent', m.gmail_id, m.sent_at)
+      for (const step of [2, 3] as const) {
+        const body = sequenceStepText(step, lead, businessName, settings?.booking_url)
+        const subject = re(m.subject)
+        ins.run(tenantId, id, step, subject, body, hash(m.to_email, subject, body), 'approved', null, null)
+      }
+      grantConsent(db, tenantId, m.to_email, { channel: 'email', scope: 'sequence', basis: 'auto_policy', evidenceRef: `sequence:${id}`, now })
+      auditAt(db, tenantId, 'sequence_enrolled_auto', AUTO_SEQUENCE_POLICY, m.lead_id, m.id, now)
+    })()
+    return id
+  } catch (e) {
+    if ((e as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') return null // one sequence per lead, already exists
+    throw e
+  }
 }
 
 // Fills step 2/3 bodies (LLM once per step, template fallback). Separate from createSequence
@@ -276,6 +366,7 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
 export interface SequenceResult { started: number; sent: number; skipped: number; stopped?: string }
 
 export async function runSequences(db: Database.Database, tenantId: string, businessName: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<SequenceResult> {
+  drainVerifiedPendingLifecycle(db) // #417: complete verified conversions before this pass's sends
   const out: SequenceResult = { started: 0, sent: 0, skipped: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const stop = (w: string): SequenceResult => { out.stopped = w; return out }
@@ -320,10 +411,23 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
   const dailyCap = Math.min(ACCOUNT_SEND_CAP, st.daily_cap)
   const sentShared24h = () => accountSendCount(db,tenantId,now)
 
-  const active = db.prepare(`SELECT s.id, s.lead_id, s.message_id, s.to_email, m.subject AS msg_subject, m.sent_at AS step1_sent, m.thread_id, m.test AS msg_test
+  const active = db.prepare(`SELECT s.id, s.lead_id, s.message_id, s.to_email, s.policy, s.claims_hash, m.subject AS msg_subject, m.sent_at AS step1_sent, m.thread_id, m.test AS msg_test
                              FROM sequences s JOIN outreach_messages m ON m.id = s.message_id
-                             WHERE s.tenant_id = ? AND s.status = 'active'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; msg_subject: string; step1_sent: number | null; thread_id: string | null; msg_test: number }[]
+                             WHERE s.tenant_id = ? AND s.status = 'active'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; policy: string | null; claims_hash: string | null; msg_subject: string; step1_sent: number | null; thread_id: string | null; msg_test: number }[]
   for (const s of active) {
+    // #414 auto-enrolled sets only: re-prove the basis before ANY step sends. A policy version change or a
+    // change in the claims the words rely on (signal, source, business name, booking link) stops the set;
+    // manual sequences (policy NULL) are untouched.
+    if (s.policy !== null) {
+      // Revocation is proven per tick, not only at enrollment: once the tenant turns the policy off, no
+      // auto-enrolled step sends again (a re-acceptance does not revive a stopped set; a new send enrolls anew).
+      if (!autoSequencePolicyAccepted(db, tenantId)) { stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', 'policy_revoked', now); out.skipped++; continue }
+      const basis = db.prepare('SELECT company, name, signal, source_url FROM leads WHERE id = ?').get(s.lead_id) as { company: string; name: string; signal: string; source_url: string } | undefined
+      if (s.policy !== AUTO_SEQUENCE_POLICY || !basis || claimsHash(basis, businessName, settings?.booking_url) !== s.claims_hash) {
+        stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', s.policy !== AUTO_SEQUENCE_POLICY ? 'policy_changed' : 'claims_changed', now)
+        out.skipped++; continue
+      }
+    }
     if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue }
     // Evidence re-checked at execution: a withdrawn confirmation stops the sequence
     // honestly before any unsent step goes out. Already-sent mail is never recalled.
@@ -342,6 +446,8 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (now - s.step1_sent < gaps[stepRow.step - 1]) continue
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'sequence_skipped', why, s.lead_id, s.message_id, now) }
     if (isSuppressed(db, tenantId, s.to_email)) { db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); skip('suppressed'); continue }
+    // #413: stale safety ingest holds the step (still approved) until reply_sync recovers - never send on it.
+    if (!testFixtureSend(db, tenantId, { to_email: s.to_email, test: s.msg_test }) && replySafetyStale(db, tenantId, s.to_email, now)) { skip('reply_sync_stale'); continue }
     if (!db.prepare("SELECT 1 FROM consent_ledger WHERE tenant_id = ? AND contact = ? AND scope = 'sequence' AND evidence_ref = ? AND revoked_at IS NULL AND expires_at > ?").get(tenantId,norm(s.to_email),`sequence:${s.id}`,now)) { skip('no valid consent'); continue }
     if (sentShared24h() >= dailyCap) return stop('daily_cap')
     if (stepRow.approved_hash !== hash(s.to_email, stepRow.subject, stepRow.body)) {
@@ -351,7 +457,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       skip('changed_since_approval')
       continue
     }
-    const claim = db.prepare("UPDATE sequence_steps SET status = 'sending', claimed_at = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'approved'").run(now, tenantId, s.id, stepRow.step)
+    // #417: the conversion guard is atomic with the claim (one immediate transaction), so a verification that
+    // landed before this transaction blocks the send; one landing after it is stopped by the next boundary.
+    const claim = db.transaction(() => {
+      if (!testFixtureSend(db, tenantId, { to_email: s.to_email, test: s.msg_test }) && conversionBlockedNow(db, s.to_email)) return null
+      return db.prepare("UPDATE sequence_steps SET status = 'sending', claimed_at = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'approved'").run(now, tenantId, s.id, stepRow.step)
+    }).immediate()
+    if (claim === null) { stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', 'converted', now); skip('converted'); continue }
     if (claim.changes !== 1) { skip('already claimed'); continue }
     if (sentShared24h() > dailyCap) { db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); return stop('daily_cap') }
     const master = d.master ?? getMasterKey()
@@ -363,7 +475,19 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       return stop('gmail_unavailable')
     }
     try {
-      // Recheck after token refresh: suppression/reply/pause can change during await.
+      // Recheck after token refresh: suppression/reply/pause/conversion can change during await.
+      // #417: a conversion proven during the refresh stops the sequence terminally.
+      if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && conversionBlockedNow(db, s.to_email)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId, s.id, stepRow.step) // inert: the sequence row is stopped below
+        stopSequenceForThread(db, tenantId, s.lead_id, 'stopped', 'converted', now)
+        skip('converted')
+        continue
+      }
+      if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test }) && replySafetyStale(db, tenantId, s.to_email, now)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId, s.id, stepRow.step)
+        skip('reply_sync_stale')
+        continue
+      }
       if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue
@@ -397,6 +521,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1' || current?.status !== 'active' || getState(db,tenantId).paused || isSuppressed(db,tenantId,s.to_email) || !hasReadConsent(db,tenantId) || !gmailStatus(db,tenantId)?.read_granted) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step); continue
       }
+      // Revocation can land during the token await: re-prove acceptance at the send boundary, after the
+      // last await, so a policy turned off mid-tick stops this step before Gmail. The only exception is a
+      // send Gmail has already accepted; that residual is stated in the settings UI.
+      if (s.policy !== null && !autoSequencePolicyAccepted(db, tenantId)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped','policy_revoked',now); out.skipped++; continue
+      }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name, fromEmail: acct.email, to: s.to_email, subject: stepRow.subject,
         body: composeBody(stepRow.body, settings, unsubUrl),
@@ -404,7 +535,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         unsubscribeUrl: unsubUrl, date: new Date(now * 1000),
         inReplyTo: `dazl.${s.message_id}@${acct.email.split('@')[1]}`,
       }))
-      const r = await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, s.thread_id ?? undefined)
+      const r = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, s.thread_id ?? undefined))
       db.prepare("UPDATE sequence_steps SET status = 'sent', sent_at = ?, gmail_id = ? WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(now, r.id, tenantId, s.id, stepRow.step)
       if (testRecipientApproved(db,tenantId,s.to_email)) auditAt(db,tenantId,'test_mode','sequence test inbox',s.lead_id,s.message_id,now)
       auditAt(db, tenantId, 'sequence_sent', `step ${stepRow.step}`, s.lead_id, s.message_id, now)

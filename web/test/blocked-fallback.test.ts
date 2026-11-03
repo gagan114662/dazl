@@ -32,7 +32,7 @@ function scenario(o: Opt) {
   const fundDays = o.fundDays ?? 10
   const pressText = o.otherCompany ? 'Orbitly, a London B2B SaaS startup, raised a 2m GBP seed round this month' : o.place ? FUND.replace('London', o.place) : FUND
   const f: Fixture = { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: BLOG, title: 'Clera raises seed', snippet: FUND, date: daysAgo(10) }], tfPages: {},
-    own: { [BLOG]: 'blocked', [PRESS]: { title: 'Clera raises seed round', text: `Published ${daysAgo(fundDays)}. ${pressText}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Clera', text: `Posted ${daysAgo(9)}. ${HIRE}.${filler}` } },
+    own: { [BLOG]: 'blocked', [PRESS]: { title: 'Clera raises seed round', text: `On ${daysAgo(fundDays)}, ${pressText}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Clera', text: `On ${daysAgo(9)}, ${HIRE}.${filler}` } },
     extraction: [seedCand, o.otherCompany ? { ...pressCand, company: 'Orbitly', excerpt: pressText } : { ...pressCand, excerpt: pressText, event_date: daysAgo(fundDays) }, jobCand], deps: { sourceHttp, newsHttp, ...(o.paid === false ? { paidFallback: false } : {}) } }
   return { f, newsCalls }
 }

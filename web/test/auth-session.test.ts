@@ -7,7 +7,7 @@ const user = { id: 'u1', email: 'a@x.com', name: 'A', business_name: 'Biz', pass
 bothEngines('password user: created once, the same email again reports exists, lookup by email', async ({ db }) => {
   assert.equal(await createPasswordUser(user, db), 'created')
   assert.equal(await createPasswordUser({ ...user, id: 'u2' }, db), 'exists')
-  assert.deepEqual(await findPasswordUser('a@x.com', db), { id: 'u1', password_hash: user.password_hash, salt: user.salt })
+  assert.deepEqual(await findPasswordUser('a@x.com', db), { id: 'u1', password_hash: user.password_hash, salt: user.salt, email_verified_at: null })
   assert.equal(await findPasswordUser('nobody@x.com', db), undefined)
 })
 
@@ -15,7 +15,10 @@ bothEngines('sessions: a new token signs in, a deleted or expired one does not, 
   await createPasswordUser(user, db)
   const token = await createSession('u1', db)
   assert.match(token, /^[a-f0-9]{64}$/)
-  assert.deepEqual(await getSessionUser(token, db), { id: 'u1', email: 'a@x.com', business_name: 'Biz' })
+  const u = await getSessionUser(token, db)
+  assert.ok(u && Math.abs(u.authedAt - Math.floor(Date.now() / 1000)) <= 5, 'a new session counts as freshly signed in')
+  assert.deepEqual({ ...u, authedAt: 0 }, { email: 'a@x.com', business_name: 'Biz', actorId: 'u1', tenantId: 'u1', role: 'owner', authedAt: 0 })
+
   assert.ok(await db.get('SELECT 1 AS x FROM sessions WHERE id = ?', [hashToken(token)]))
   assert.equal(await db.get('SELECT 1 AS x FROM sessions WHERE id = ?', [token]), undefined)
   assert.equal(await getSessionUser(undefined, db), null)

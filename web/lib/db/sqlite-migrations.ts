@@ -1,3 +1,4 @@
+import {migratePlayResearch} from './play-research-schema.ts'
 // Every sqlite migrate*() the app runs, in one place: the schema extractor (scripts/pg-migrate/extract-schema.ts) and the
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'
@@ -12,6 +13,8 @@ import { migrateTrial } from '../scan/trial.ts'
 import { migrateOutreach } from '../outreach/store.ts'
 import { migrateSequences } from '../outreach/sequences.ts'
 import { migrateReplies } from '../outreach/replies.ts'
+import { migrateBounceLedger } from '../outreach/bounce-ledger.ts'
+import { migrateBounceScan } from '../outreach/bounce-scan.ts'
 import { migrateLedger } from '../outreach/ledger.ts'
 import { migrateReopen } from '../outreach/reopen.ts'
 import { migrateAutopilot } from '../outreach/autopilot.ts'
@@ -42,23 +45,29 @@ import { migrateHiringFeed } from '../scan/job-feed.ts'
 import { migrateEmailGuess } from '../people/email-pattern.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { migrateTrialBudget } from '../billing/trial-budget.ts'
+import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateTenantLifecycle } from './tenant-guard.ts'
+import { migratePreviewClaim } from '../scan/preview-claim.ts'
+import { migrateTraceStore } from '../evals/trace-tables.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
   migratePlatform(db)
   const migrates = [
     migrateScan, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
-    migrateOutreach, migrateSequences, migrateReplies, migrateLedger, migrateReopen,
+    migrateOutreach, migrateSequences, migrateReplies, migrateBounceLedger, migrateBounceScan, migrateLedger, migrateReopen,
     migrateAutopilot, migrateCalcom, migrateIndexing, migrateBriefs, migrateSeo,
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
-    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migrateHiringFeed, migrateEmailGuess,
-    migrateTrialBudget,
+    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
+    migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore,
   ]
   for (const m of migrates) m(db)
   // The queue adapter owns its tables and creates them in its constructor.
   new SqliteQueue(db)
   // Last: it adds a column to tables the migrations above create.
   migrateInsertionOrder(db)
+  // After every table exists: the deleted-tenant guard is a trigger on each tenant-scoped table.
+  migrateTenantLifecycle(db)
 }

@@ -1,7 +1,7 @@
 // Location agreement before a company gets evidence or contacts. Pure functions and stubbed verifier runs; pages are INVENTED.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { geoTerms, namesPlace, otherState as otherUsState, placeAgreement } from '../lib/scan/place-agreement.ts'
+import { eventPlaceOk, geoTerms, namesPlace, otherState as otherUsState, placeAgreement } from '../lib/scan/place-agreement.ts'
 import { verifyLeads } from '../lib/scan/runner.ts'
 
 test('terms: NYC expands to its boroughs, London to the UK names; no geography means no demand', () => {
@@ -128,4 +128,118 @@ test('through the real verifier: another party’s address on the page (supplier
   assert.equal(sup.leads.length, 0); assert.equal(sup.review[0].review_reason, 'location_mismatch')
   const own = await verifyLeads([q2], pg2('Dent Blanche is in London, Ontario. Our UK office: 1 Old Street, London EC1V 9HX.'), new Date(), undefined, null, undefined, undefined, LON)
   assert.equal(own.leads.length, 1)
+})
+
+// Any other city, any country (#440: a Paris startup verified for a London request). A page that names only a different place is a
+// mismatch; "unconfirmed" is kept for a page that names no place at all; a page naming the requested city is unchanged.
+test('another city in any country is a mismatch, not unconfirmed', () => {
+  assert.equal(placeAgreement('Lumen Ledger, a Paris B2B SaaS startup, raised a seed round. The team works from its office in Paris, France.', LON, 'Lumen Ledger'), 'mismatch')
+  assert.equal(placeAgreement('Acme, a Berlin startup, raised a seed round.', LON, 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme opened its office in Toronto, ON this month.', LON, 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme opened in Austin, Texas.', LON, 'Acme'), 'mismatch', 'a bare first-name city is not listed, but "City, State" is still a place')
+  assert.equal(placeAgreement('Acme, a startup in Lyon, raised a seed round.', ['Paris, France'], 'Acme'), 'mismatch', 'another city of the same country, for a city request')
+  assert.equal(placeAgreement('Acme opened its first office in Manchester this month.', LON, 'Acme'), 'mismatch', 'a bare UK city with no London at all')
+})
+test('control: the requested city named in another country (or state) is a mismatch', () => {
+  assert.equal(placeAgreement('Acme, a startup in Paris, Texas, raised a seed round.', ['Paris, France'], 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme moved to Springfield, Illinois.', ['Springfield, Missouri'], 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Acme opened in London, Ontario.', LON, 'Acme'), 'mismatch')
+  // ...but not when the page also places it in the requested country
+  assert.equal(placeAgreement('Acme, a Paris, France startup, is not to be confused with Paris, Texas.', ['Paris, France'], 'Acme'), 'agrees')
+})
+test('control: a page that names no place stays unconfirmed', () => {
+  for (const t of ['Acme raised a seed round this month.', 'Acme is a United Kingdom company', 'Nice work from the Acme team: reading the room, they hired three people.', 'Acme is a modern dental practice'])
+    assert.equal(placeAgreement(t, LON, 'Acme'), 'unconfirmed', t)
+  assert.equal(placeAgreement('Acme raised a seed round this month.', ['Paris, France'], 'Acme'), 'unconfirmed')
+})
+test('control: a page naming the requested city still agrees, even beside another city', () => {
+  assert.equal(placeAgreement('Acme, a London startup, raised a seed round.', LON, 'Acme'), 'agrees')
+  assert.equal(placeAgreement('Acme, a London startup, plans to open in Paris, France next year.', LON, 'Acme'), 'agrees', 'an incidental foreign city does not override the named London')
+  assert.equal(placeAgreement('Acme, a Paris startup, raised a seed round.', ['Paris, France'], 'Acme'), 'agrees')
+  assert.equal(placeAgreement('Acme opened at 100 King Street West, Toronto, ON this month', ['Toronto, Canada'], 'Acme'), 'agrees')
+})
+test('a country or state request only rejects places outside it; US namesakes keep bare foreign names ambiguous', () => {
+  assert.notEqual(placeAgreement('Acme, a Berlin startup, raised a seed round.', ['Germany'], 'Acme'), 'mismatch', 'Berlin is in Germany')
+  assert.equal(placeAgreement('Acme, a Paris startup, raised a seed round.', ['Germany'], 'Acme'), 'mismatch')
+  assert.equal(placeAgreement('Dent Blanche, Rome, NY 13440', ['New York']), 'unconfirmed', 'a town in the requested state')
+  assert.equal(placeAgreement('Acme opened in Rome this spring.', ['New York'], 'Acme'), 'unconfirmed', 'Rome, NY exists: a bare foreign name is not clearly elsewhere for a US request')
+  assert.equal(placeAgreement('Acme opened in Rome, Italy this spring.', ['New York'], 'Acme'), 'mismatch')
+})
+test('verifier: a Paris page for a London request is held as location_mismatch, a London page still verifies', async () => {
+  const ago = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
+  const page = (text: string) => async () => ({ text: `${ago(5)}. ${text} ${'More about the company and its customers. '.repeat(15)}`, title: 'Seed round', retrievedAt: Math.floor(Date.now() / 1000) })
+  const cand = (company: string, excerpt: string) => ({ name: '', company, contact: null, signal: 'raised a seed round', source_url: 'https://news.example/a', score: 70, excerpt, event_date: ago(5) })
+  const paris = await verifyLeads([cand('Lumen Ledger', 'Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month')], page('Lumen Ledger, a Paris B2B SaaS startup, raised a seed round this month.'), new Date(), undefined, null, undefined, undefined, LON)
+  assert.equal(paris.leads.length, 0); assert.equal(paris.review[0].review_reason, 'location_mismatch')
+  const london = await verifyLeads([cand('Querix', 'Querix, a London B2B SaaS startup, raised a seed round this month')], page('Querix, a London B2B SaaS startup, raised a seed round this month.'), new Date(), undefined, null, undefined, undefined, LON)
+  assert.equal(london.leads.length, 1)
+})
+
+// Review of #446: explicit location binding must survive capitalisation, and a company bound to another place outranks an
+// incidental mention of the requested city. Company and pages are invented.
+const SC = 'Synthetic Co'
+test('control: the original Paris case in lower, upper and mixed case is a mismatch, and eventPlaceOk refuses it', () => {
+  for (const t of ['Synthetic Co is based in Paris, France and raised seed funding.', 'synthetic co is based in paris, france and raised seed funding.',
+    'SYNTHETIC CO IS BASED IN PARIS, FRANCE AND RAISED SEED FUNDING.', 'Synthetic Co is based in PARIS, FRANCE and raised seed funding.', 'Synthetic Co is based in paris, France and raised seed funding.']) {
+    assert.equal(placeAgreement(t, ['London, UK'], SC), 'mismatch', t)
+    assert.equal(eventPlaceOk(t, ['London, UK'], SC), false, t)
+  }
+})
+test('control: a company bound to another place is a mismatch even when the page mentions the requested city incidentally', () => {
+  for (const t of ['Synthetic Co is based in Paris, France. Market news: London startups raised more this year.',
+    'Synthetic Co is headquartered in Berlin, Germany. We also serve clients in London.',
+    'Our office is in Toronto, ON. Footer: events in London, Paris and New York.',
+    'synthetic co is based in paris, france. market news: london startups raised more this year.'])
+    assert.equal(placeAgreement(t, ['London, UK'], SC), 'mismatch', t)
+})
+test('control: a genuine company address in the requested city still agrees, whatever the case and other mentions', () => {
+  for (const t of ['Synthetic Co is based in London, UK and raised seed funding.', 'synthetic co is based in london and raised seed funding.',
+    'Synthetic Co is based in London, with a sales office in Paris, France.', 'Synthetic Co is based in London. Synthetic Co is also based in Paris, France.',
+    'Synthetic Co is in London, Ontario too. Our UK office: 1 Old Street, London EC1V 9HX.'])
+    assert.equal(placeAgreement(t, ['London, UK'], SC), 'agrees', t)
+})
+test('control: ambiguous lower-case words and abbreviations are not places', () => {
+  for (const t of ['Reach out to us, in confidence, and we reply the same day.', 'We sell to nice people, or at least we try.', 'Thanks, me and the team look forward to it.',
+    'synthetic co is reading the room and growing on, in and around its niche.', 'The cologne line, eau de cologne, sold out.'])
+    assert.equal(placeAgreement(t, ['London, UK'], SC), 'unconfirmed', t)
+})
+test('control: same-name city in a different region, any case', () => {
+  assert.equal(placeAgreement('synthetic co is based in paris, texas and raised seed funding.', ['Paris, France'], SC), 'mismatch')
+  assert.equal(placeAgreement('SYNTHETIC CO OPENED IN LONDON, ONTARIO.', ['London, UK'], SC), 'mismatch')
+  assert.equal(placeAgreement('Synthetic Co moved to springfield, illinois.', ['Springfield, Missouri'], SC), 'mismatch')
+  assert.equal(placeAgreement('Synthetic Co moved to Springfield, Missouri.', ['Springfield, Missouri'], SC), 'agrees')
+})
+test('verifier (runner path): lower-case, upper-case and incidental-London Paris pages are held as location_mismatch; a London page verifies', async () => {
+  const ago = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
+  const run = async (company: string, quote: string, rest = '') => {
+    const page = async () => ({ text: `${ago(5)}. ${quote}. ${rest} ${'More about the company and its customers. '.repeat(15)}`, title: 'Seed round', retrievedAt: Math.floor(Date.now() / 1000) })
+    return verifyLeads([{ name: '', company, contact: null, signal: 'raised a seed round', source_url: 'https://news.example/a', score: 70, excerpt: quote, event_date: ago(5) }], page, new Date(), undefined, null, undefined, undefined, ['London, UK'])
+  }
+  for (const [quote, rest] of [['synthetic co is based in paris, france and raised a seed round this month', ''], ['SYNTHETIC CO IS BASED IN PARIS, FRANCE AND RAISED A SEED ROUND THIS MONTH', ''],
+    ['Synthetic Co is based in Paris, France and raised a seed round this month', 'Market news: London startups raised more this year.']]) {
+    const o = await run(SC, quote, rest)
+    assert.equal(o.leads.length, 0, quote); assert.equal(o.review[0]?.review_reason, 'location_mismatch', quote)
+  }
+  const ok = await run(SC, 'Synthetic Co is based in London and raised a seed round this month', 'It also has a sales office in Paris, France.')
+  assert.equal(ok.leads.length, 1)
+})
+
+// Review of #446 (950352bf): a mention of the requested region elsewhere on the page must not cancel the company's own address
+// in a same-name city in another region; only the requested-region mention bound to the company does.
+test('control: a company bound to a same-name city elsewhere stays a mismatch despite an unrelated requested-region mention', () => {
+  const P = ['Paris, France']
+  assert.equal(placeAgreement('Synthetic Co is based in Paris, Texas. Market news: Paris, France startups raised funds.', P, SC), 'mismatch')
+  assert.equal(placeAgreement('synthetic co is based in paris, texas. market news: paris, france startups raised funds.', P, SC), 'mismatch')
+  assert.equal(placeAgreement('Synthetic Co is based in Paris, Texas. Our office is in Paris, France.', P, SC), 'agrees')   // requested region bound to the company too
+  assert.equal(placeAgreement('Synthetic Co is based in Paris, France. Unrelated: Paris, Texas hosts a rodeo.', P, SC), 'agrees')
+  assert.equal(placeAgreement('Synthetic Co is based in London, Ontario. Market news: London, UK startups raised funds.', ['London, UK'], SC), 'mismatch')
+})
+test('verifier (runner path): Paris, Texas company with Paris, France market news is held; with a bound Paris, France office it verifies', async () => {
+  const ago = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
+  const run = (quote: string, rest: string) => verifyLeads([{ name: '', company: SC, contact: null, signal: 'raised a seed round', source_url: 'https://news.example/p', score: 70, excerpt: quote, event_date: ago(5) }],
+    async () => ({ text: `${ago(5)}. ${quote}. ${rest} ${'More about the company and its customers. '.repeat(15)}`, title: 'Seed round', retrievedAt: Math.floor(Date.now() / 1000) }), new Date(), undefined, null, undefined, undefined, ['Paris, France'])
+  const held = await run('Synthetic Co is based in Paris, Texas and raised a seed round this month', 'Market news: Paris, France startups raised funds.')
+  assert.equal(held.leads.length, 0); assert.equal(held.review[0]?.review_reason, 'location_mismatch')
+  const ok = await run('Synthetic Co is based in Paris, Texas and raised a seed round this month', 'Our office is in Paris, France.')
+  assert.equal(ok.leads.length, 1)
 })

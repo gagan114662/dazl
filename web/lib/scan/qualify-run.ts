@@ -2,6 +2,7 @@
 // it needs an approval bound to the exact prompt hash, vendor, model, estimate and limits. One claim row per
 // (tenant, lead, prompt hash) means a repeat click, a retry or a race can never make a second paid request.
 import type Database from 'better-sqlite3'
+import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import type { Provider } from '@/lib/llm/provider'
 import { qualifyLead, DEFAULT_LIMITS, type PaidApproval, type Qualification } from './lead-qualify.ts'
 import { qualifyPreview, type PageFetcher } from './qualify-preview.ts'
@@ -46,6 +47,7 @@ export async function runQualification(db: Database.Database, userId: string, le
   const prev = await qualifyPreview(db, userId, leadId, d.sellerText, d.fetchPage ?? fetchPageDetailed, d.vendor, model)
   if (!prev || !prev.input) return { status: 'blocked', reason: prev ? 'no_evidence' : 'not_found' }
   if (!prev.ready) return { status: 'blocked', reason: 'not_ready' }
+  if (!approval.request_context_sha256 || approval.request_context_sha256 !== prev.packing?.context_sha256) return { status: 'blocked', reason: 'request_context_mismatch' }
   // Any earlier claim for this lead (running, done or failed, whatever page content it was made on) blocks a new paid
   // request: changed page text produces a new hash, and that must not quietly buy a second call.
   const existing = storedQualifications(db, userId, leadId)[0]
@@ -54,11 +56,14 @@ export async function runQualification(db: Database.Database, userId: string, le
   const claim = db.prepare("INSERT OR IGNORE INTO lead_qualifications (tenant_id, lead_id, prompt_sha256, status, vendor, model, evidence) VALUES (?, ?, ?, 'running', ?, ?, ?)").run(userId, leadId, prev.prompt_sha256 ?? '', d.vendor, model, JSON.stringify({ scope: prev.scope, pages: prev.pages, cost: prev.cost, limits: DEFAULT_LIMITS, approval: { max_usd_estimate: approval.max_usd_estimate } }))
   if (claim.changes === 0) { const s = storedQualifications(db, userId, leadId)[0]; return s ? { status: 'exists', stored: s } : { status: 'blocked', reason: 'claim_lost' } }
   try {
-    const r = await qualifyLead(d.provider, d.apiKey, prev.input, { vendor: d.vendor, approval, limits: DEFAULT_LIMITS, fetchImpl: d.fetchImpl })
+    // The owner's spend pool (lib/llm/owner-guard.ts) on top of the per-call approval: reserved before the paid request.
+    const r = await qualifyLead(ownerGuarded(db, userId, d.provider), d.apiKey, prev.input, { vendor: d.vendor, approval, limits: DEFAULT_LIMITS, fetchImpl: d.fetchImpl })
     if (r.status !== 'done') { db.prepare("DELETE FROM lead_qualifications WHERE tenant_id=? AND lead_id=? AND prompt_sha256=? AND status='running'").run(userId, leadId, prev.prompt_sha256 ?? ''); return { status: 'blocked', reason: r.status === 'blocked' ? r.reason : r.status } }
     db.prepare("UPDATE lead_qualifications SET status='done', result=?, usage=?, served_model=? WHERE tenant_id=? AND lead_id=? AND prompt_sha256=?").run(JSON.stringify(r.qualification), JSON.stringify(r.usage ?? null), r.served_model, userId, leadId, prev.prompt_sha256 ?? '')
     return { status: 'done', stored: storedQualifications(db, userId, leadId).find(x => x.prompt_sha256 === prev.prompt_sha256)! }
   } catch (e) {
+    // Refused by the owner's spend limit before any request: nothing was billed, so the claim is released.
+    if (spendRefused(e)) { db.prepare("DELETE FROM lead_qualifications WHERE tenant_id=? AND lead_id=? AND prompt_sha256=? AND status='running'").run(userId, leadId, prev.prompt_sha256 ?? ''); return { status: 'blocked', reason: 'spend_limit' } }
     // The request may have been billed. Keep the row as failed so nothing repeats it automatically.
     const msg = e instanceof Error ? e.message.slice(0, 200) : 'error'
     db.prepare("UPDATE lead_qualifications SET status='failed', error=? WHERE tenant_id=? AND lead_id=? AND prompt_sha256=?").run(msg, userId, leadId, prev.prompt_sha256 ?? '')

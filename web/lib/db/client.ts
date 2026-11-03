@@ -25,7 +25,7 @@ export interface Db {
   // PG drives it on one pooled client between BEGIN and COMMIT.
   // Commit when body returns; roll back when body throws or any statement fails (a failed statement always fails the
   // transaction on both engines, as PG has already aborted it).
-  tx<T>(body: (t: Tx) => TxBody<T>): Promise<T>
+  tx<T>(body: (t: Tx) => TxBody<T>, isolation?: 'serializable'): Promise<T>
   close(): Promise<void>
 }
 
@@ -231,10 +231,10 @@ export function pgDb(opts: PgOptions): Db & { pool: pg.Pool } {
     kind: 'pg',
     pool,
     all: ops.all, get: ops.get, run: ops.run,
-    async tx(body) {
+    async tx(body, isolation) {
       const client = await pool.connect()
       try {
-        await client.query('BEGIN')
+        await client.query(isolation === 'serializable' ? 'BEGIN ISOLATION LEVEL SERIALIZABLE' : 'BEGIN')
         const run = pgOps(client)
         const g = body(txBuilder('pg'))
         let step = g.next()

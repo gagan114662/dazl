@@ -5,10 +5,11 @@ import crypto from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateCalcom, getSecret, rotateSecret, verifySignature, parseBooking, recordBooking, listBookings } from '../lib/calcom/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
+import { migrateOutreach } from '../lib/outreach/store.ts'
 
 function setup() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateCalcom(db)
+  migrateScan(db); migrateCalcom(db); migrateOutreach(db)
   return db
 }
 function seedLead(db: Database.Database, contact: string | null, company = 'Acme') {
@@ -56,6 +57,47 @@ test('recordBooking: exact single match stages the lead booked_call', async () =
   const rows = await listBookings(sqliteDb(db), 'u1') as { lead_id: string; company: string }[]
   assert.equal(rows[0].lead_id, 'lead-Acme')
   assert.equal(rows[0].company, 'Acme')
+})
+
+const seedOutreach = (db: Database.Database, leadId: string, toEmail: string) =>
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES (?, 'u1', ?, ?, 'Quick question', 'Saw your site and had one idea for it.', 'sent')").run(`om-${leadId}-${toEmail.replace(/[^a-z0-9]/gi, '')}`, leadId, toEmail)
+
+test('recordBooking: crawled recipient matches - the address we emailed books its lead (#364)', async () => {
+  const db = setup()
+  seedLead(db, null) // contact-page crawled address, never stored as lead.contact
+  seedOutreach(db, 'lead-Acme', 'sales@acme.com')
+  assert.equal(await recordBooking(sqliteDb(db), 'u1', { uid: 'b1', email: 'Sales@Acme.com', name: null }), 'matched')
+  const stage = db.prepare("SELECT stage FROM leads WHERE id = 'lead-Acme'").get() as { stage: string }
+  assert.equal(stage.stage, 'booked_call')
+  const rows = await listBookings(sqliteDb(db), 'u1') as { lead_id: string | null }[]
+  assert.equal(rows[0].lead_id, 'lead-Acme')
+})
+
+test('recordBooking: one address emailed for two leads stays unmatched (#364)', async () => {
+  const db = setup()
+  seedLead(db, null, 'Acme2')
+  seedLead(db, null, 'Acme3')
+  seedOutreach(db, 'lead-Acme2', 'shared@acme.com')
+  seedOutreach(db, 'lead-Acme3', 'shared@acme.com')
+  assert.equal(await recordBooking(sqliteDb(db), 'u1', { uid: 'b1', email: 'shared@acme.com', name: null }), 'unmatched')
+  assert.ok((db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get() as { n: number }).n === 0)
+})
+
+test('recordBooking: an unsent draft row does not associate a booking - only actual mail counts (#364)', async () => {
+  const db = setup()
+  seedLead(db, null)
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('om-draft', 'u1', 'lead-Acme', 'draftonly@acme.com', 'Quick question', 'Saw your site and had one idea for it.', 'draft')").run()
+  assert.equal(await recordBooking(sqliteDb(db), 'u1', { uid: 'b1', email: 'draftonly@acme.com', name: null }), 'unmatched')
+  assert.ok((db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get() as { n: number }).n === 0)
+})
+
+test('recordBooking: conflicting sources stay unmatched - emailed for one lead, contact of another (#364)', async () => {
+  const db = setup()
+  seedLead(db, 'jane@acme.com', 'Acme2') // stored contact
+  seedLead(db, null, 'Acme3')
+  seedOutreach(db, 'lead-Acme3', 'jane@acme.com') // but emailed for the other lead
+  assert.equal(await recordBooking(sqliteDb(db), 'u1', { uid: 'b1', email: 'jane@acme.com', name: null }), 'unmatched')
+  assert.ok((db.prepare("SELECT count(*) AS n FROM leads WHERE stage = 'booked_call'").get() as { n: number }).n === 0)
 })
 
 test('recordBooking: no match and ambiguous match stay unmatched, never guessed', async () => {

@@ -33,6 +33,7 @@ import { PATCH as outreachPATCH, POST as outreachPOST } from '../../app/api/outr
 import { POST as reopenPOST } from '../../app/api/outreach/reopen/route.ts'
 import { POST as confirmPOST, DELETE as confirmDELETE } from '../../app/api/leads/[lead]/confirm/route.ts'
 import { PATCH as monitorPATCH, DELETE as monitorDELETE } from '../../app/api/monitors/[id]/route.ts'
+import { GET as playRunsGET } from '../../app/api/plays/[kind]/[id]/runs/route.ts'
 import { POST as cancelPOST } from '../../app/api/scan/cancel/route.ts'
 
 // Local synthetic fixture: two tenants, the real route handlers, session identity switched per call.
@@ -87,12 +88,16 @@ async function build() {
   db.prepare("INSERT INTO inbound_messages(gmail_id,tenant_id,thread_id,lead_id,from_email,excerpt,classification,received_at) VALUES ('g4','A','tA4',?,'info@a4.invalid','sounds interesting','positive',?)").run(lead4, now - 86400 * 45)
   createReopenDraft(db, 'A', 'tA4', 'Acme')
   const mon = (created as { id: string }).id
+  // #351: one recorded run of A's monitor (A's job), and A's weekly play, so the runs route has A's rows to protect
+  db.prepare('INSERT INTO monitor_runs (id, monitor_id, job_id, ran_at, new_count) VALUES (?, ?, ?, ?, 1)').run(hex(), mon, job, now)
+  const { createWatch } = await import('../../lib/watch.ts')
+  const watch = (await createWatch(sqliteDb(db), 'A', 'synthetic weekly play', '{"summary":"s"}')).watch!.id
   const pending = createJob(db, 'A', { business_name: 'Synthetic pending', industry: 'test', location: 'test' })
-  return { db, job, lead, draft, draft3, mon, pending }
+  return { db, job, lead, draft, draft3, mon, watch, pending }
 }
 
 test('tenant B cannot read or change tenant A rows through the real route handlers; A controls succeed', async () => {
-  const { db, lead, draft, draft3, mon, pending } = await build()
+  const { db, job, lead, draft, draft3, mon, watch, pending } = await build()
   const reopenStatus = () => (db.prepare("SELECT status FROM reopen_messages WHERE tenant_id='A' AND thread_id='tA'").get() as { status: string }).status
   assert.equal(reopenStatus(), 'draft', 'fixture: A has a reopen draft')
   const before = snapshot(db)
@@ -107,6 +112,8 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   await hit('DELETE /api/leads/[lead]/confirm', () => confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead })), 404, undefined)
   await hit('PATCH /api/monitors/[id]', () => monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon })), 404, undefined)
   await hit('DELETE /api/monitors/[id]', () => monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon })), 404, undefined)
+  await hit('GET /api/plays/[kind]/[id]/runs', () => playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #351
+  await hit('GET /api/plays/[kind]/[id]/runs (watch)', () => playRunsGET(req(`/api/plays/watch/${watch}/runs`, 'GET'), ctx({ kind: 'watch', id: watch })), 404, undefined) // #351
   await hit('POST /api/scan/cancel', () => cancelPOST(req('/api/scan/cancel', 'POST', { job_id: pending })), 404, undefined)
   assert.equal(snapshot(db), before)
   // Positive controls for the two negative-only actions run on their own valid fixtures before the final checks below.
@@ -130,6 +137,15 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   assert.equal((await reopenPOST(req('/api/outreach/reopen', 'POST', { action: 'skip', thread_id: 'tA' }))).status, 200)
   assert.equal(reopenStatus(), 'skipped')
   assert.equal((await confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead }))).status, 200)
+  const runsA = await playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon }))
+  assert.equal(runsA.status, 200) // #351: A reads its own play's runs, its recorded run included
+  const bodyA = await runsA.json() as { runs: { job_id: string }[]; more: boolean }
+  assert.deepEqual([bodyA.runs.map(r => r.job_id), bodyA.more], [[job], false])
+  // #351: a viewer member of workspace A (a different person from the owner) reads the workspace's play runs too
+  setUser({ ...A, actorId: 'M', role: 'viewer' })
+  const runsM = await playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon }))
+  assert.equal(runsM.status, 200); assert.deepEqual((await runsM.json() as { runs: { job_id: string }[] }).runs.map(r => r.job_id), [job])
+  setUser(A)
   assert.equal((await monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon }))).status, 200)
   assert.equal((db.prepare('SELECT enabled FROM monitors WHERE id=?').get(mon) as { enabled: number }).enabled, 0)
   assert.equal((await monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon }))).status, 200)

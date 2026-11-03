@@ -20,10 +20,15 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const site = row('site'), brainRow = row('brain'), key = row('key'), gmail = row('gmail'), sender = row('sender'), src = row('sources')
   const unknown = (id: ReadyId, label: string, detail: string): ReadyItem => ({ id, label, state: 'unknown', detail, fix: null })
 
-  // 1. Business profile: the website, and the buyer profile drafted from it.
+  // 1. Business profile: the website, and the buyer profile drafted from it - or a complete profile saved by hand
+  // (sells + a validated buyer profile), which never involves a website. A saved buyer passed normalizeIcp on write,
+  // so it always carries who buys.
   const p = i.profile
+  const manual = !p?.website && !!p?.sells?.trim() && !!p?.buyer
   const profile: ReadyItem = site.state === 'unknown' || brainRow.state === 'unknown' ? unknown('profile', 'Business profile', site.detail)
-    : !p?.website ? { id: 'profile', label: 'Business profile', state: 'todo', detail: 'add your website so dazl can read who buys from you', fix: { href: '/app?setup=site', label: 'Add website' } }
+    : !p?.website
+      ? manual ? { id: 'profile', label: 'Business profile', state: 'done', detail: `saved by hand - ${p!.buyer!.summary?.trim() || (p!.buyer!.who ?? []).join(', ')}`, fix: null }
+      : { id: 'profile', label: 'Business profile', state: 'todo', detail: 'add your website so dazl can read who buys from you', fix: { href: '/app?setup=site', label: 'Add website' } }
     : brainRow.state === 'todo' ? { id: 'profile', label: 'Business profile', state: 'todo', detail: `${host(p.website)} saved; who buys from you is not built yet`, fix: { href: '/app?setup=brain', label: 'Build profile' } }
     : { id: 'profile', label: 'Business profile', state: 'done', detail: `${host(p.website)} - ${brainRow.detail}`, fix: null }
 

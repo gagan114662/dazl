@@ -62,8 +62,8 @@ export function trialStatus(db: Database.Database, tenantId: string, ip: string,
 }
 
 // trialStatus on the Db layer (SQLite or Postgres): the same counts and the same decision.
-export async function readTrialStatus(db: Db, tenantId: string, ip: string, now = new Date()): Promise<TrialState> {
-  if (!operatorKey()) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
+export async function readTrialStatus(db: Db, tenantId: string, ip: string, now = new Date(), env: NodeJS.ProcessEnv = process.env): Promise<TrialState> {
+  if (!operatorKey(env)) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
   const used = Number((await db.get<{ n: number }>(TRIAL_USED_SQL, [tenantId]))!.n)
   const ipUsed = used >= TRIAL_SCANS_PER_ACCOUNT ? 0 : Number((await db.get<{ n: number }>(TRIAL_IP_SQL, [ipHash(ip || 'unknown'), dayStartS(now)]))!.n)
   return trialDecision(used, () => ipUsed)

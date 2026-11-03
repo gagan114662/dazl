@@ -79,6 +79,8 @@ function gmailStub(threads: Record<string, unknown[]> = {}) {
     if (u.startsWith('https://oauth2.googleapis.com/')) return json({ access_token: 'scenario-access-token', expires_in: 3600 })
     const m = /gmail\.googleapis\.com\/gmail\/v1\/users\/me\/threads\/([^?]+)/.exec(u)
     if (m) return json({ messages: threads[decodeURIComponent(m[1])] ?? [] })
+    // #415: no synthetic delivery notices here; only the narrowly scoped listing is allowed.
+    if (/gmail\.googleapis\.com\/gmail\/v1\/users\/me\/messages\?q=/.test(u) && decodeURIComponent(u).includes('from:mailer-daemon OR from:postmaster after:')) return json({ messages: [] })
     throw new Error(`scenario gmail stub: refused ${u}`)
   }) as unknown as typeof fetch
 }
@@ -165,6 +167,9 @@ async function scenarios(out: string, master: Buffer): Promise<Scenario[]> {
     await sendMessage(db, T, replied.mid, deps(T)); await sendMessage(db, T, control.mid, deps(T))
     const thread = (db.prepare('SELECT thread_id FROM outreach_messages WHERE id = ?').get(replied.mid) as { thread_id: string }).thread_id
     const later = NOW + 4 * DAY
+    // #413: by `later` the scheduler's reply_sync would have run in production; this scenario drives runSequences
+    // directly, so it records the sync success the scheduler would have written (per-tenant freshness row).
+    db.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_outcome, consecutive_failures) VALUES (?, 'reply_sync', ?, ?, 'success', 0) ON CONFLICT(tenant_id, kind) DO UPDATE SET last_attempt_at = excluded.last_attempt_at, last_success_at = excluded.last_success_at").run(T, later, later)
     const threads = { [thread]: [inbound('in-1', 'reply-lead@staging.dazl.test', 'Thanks, we are interested - can you call me next week? (synthetic)', NOW + DAY)] }
     await runSequences(db, T, 'Scenario Co', deps(T, { now: later, fetchImpl: gmailStub(threads), flags }))
     await runSequences(db, T, 'Scenario Co', deps(T, { now: later + 60, fetchImpl: gmailStub(threads), flags })) // a second tick

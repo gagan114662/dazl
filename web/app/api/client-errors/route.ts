@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
   let body: unknown
   try { body = JSON.parse(text) } catch { return new NextResponse(null, { status: 400 }) }
   let tenantId: string | null = null
-  try { tenantId = (await getSessionUser(req.cookies.get('dazl_session')?.value))?.id ?? null } catch { /* recorded without a tenant */ }
+  try { tenantId = (await getSessionUser(req.cookies.get('dazl_session')?.value))?.tenantId ?? null } catch { /* recorded without a tenant */ }
   const r = recordClientError(body, { tenantId, requestId: req.headers.get('x-request-id') })
   return new NextResponse(null, { status: r === 'invalid' ? 400 : 204 })
 }

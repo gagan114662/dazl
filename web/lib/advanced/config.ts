@@ -24,3 +24,17 @@ export const connectorId = (p: AdvPlatform) => `adv:${p}`
 
 // Calls per user per hour, across a platform. LinkedIn is much lower.
 export const maxCallsPerHour = (p: AdvPlatform, env: Record<string, string | undefined> = process.env) => (p === 'linkedin' ? 3 : Math.max(1, Number(env.ADVANCED_MAX_PER_HOUR) || 10))
+
+// What this app build may offer per platform. Mirrors the session worker's CAPABILITY
+// (session-worker/src/fetchers.ts; pinned equal by test/advanced-capability-sync.test.ts): an
+// unsupported adapter is never offered consent or session collection, and its scans audit
+// 'unsupported' instead of recording a fake successful empty search.
+export const PLATFORM_SUPPORT: Record<AdvPlatform, { supported: boolean; reason: string | null }> = {
+  x: { supported: true, reason: null },
+  reddit: { supported: true, reason: null },
+  instagram: { supported: true, reason: null },
+  facebook: { supported: false, reason: 'Facebook has no cookie-only JSON search; it needs a browser worker that is not built' },
+  xiaohongshu: { supported: false, reason: 'XiaoHongShu signs every web request (x-s/x-t); signing is not implemented' },
+  bilibili: { supported: true, reason: null },
+  linkedin: { supported: true, reason: null },
+}

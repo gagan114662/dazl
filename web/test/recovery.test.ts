@@ -20,7 +20,7 @@ async function run(o: Opt) {
   const blogCand: Cand = { company: 'Orbitly', signal: 'raised a seed round', source_url: BLOG, excerpt: FUND, event_date: o.blogDate ?? null as never }
   const pressCand: Cand = o.otherCompany ? { company: 'Zenix', signal: 'raised a seed round', source_url: PRESS, excerpt: pressText, event_date: daysAgo(o.pressDays ?? 10) } : { company: 'Orbitly', signal: 'raised a seed round', source_url: PRESS, excerpt: FUND, event_date: daysAgo(o.pressDays ?? 10) }
   const f: Fixture = { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: BLOG, title: 'Orbitly raises seed', snippet: FUND, date: null }], tfPages: {},
-    own: { [BLOG]: { title: 'Orbitly seed', text: o.blogText ?? `${FUND}.${filler}` }, [PRESS]: { title: 'Orbitly raises seed round', text: `Published ${daysAgo(o.pressDays ?? 10)}. ${pressText}.${filler}` } },
+    own: { [BLOG]: { title: 'Orbitly seed', text: o.blogText ?? `${FUND}.${filler}` }, [PRESS]: { title: 'Orbitly raises seed round', text: `On ${daysAgo(o.pressDays ?? 10)}, ${pressText}.${filler}` } },
     extraction: [blogCand, pressCand], deps: { newsHttp, ...(o.paid === false ? { paidFallback: false } : {}) } }
   const x = await runFixture(f)
   const lead = x.db.prepare("SELECT id, company, review_reason, event_date, source_url FROM leads WHERE company = 'Orbitly'").get() as { id: string; company: string; review_reason: string | null; event_date: string | null; source_url: string } | undefined
@@ -50,10 +50,10 @@ test('a run that disabled the paid fallback makes no recovery search (no fallbac
   const r = await run({ paid: false })
   assert.equal(state(r.lead), 'held:outside_window_undated'); assert.equal((r.x.db.prepare("SELECT count(*) AS n FROM scan_source_runs WHERE collector = 'fallback:news'").get() as { n: number }).n, 0, 'no recovery search recorded'); assert.match(r.rec!.value, /^Recovery pass did not run \(the run disabled the paid fallback\)\./)
 })
-test('targets: only undated verified leads and reasons another source can fix (blocked / JavaScript / quote not on the page); stale, place, closed-job and counterparty verdicts get none; at most 3', () => {
+test('targets: only undated verified leads and reasons another source can fix (blocked / JavaScript / quote not on the page / a customer mention on another company page, #352); stale, place and closed-job verdicts get none; at most 3', () => {
   const held = (company: string, reason: string) => ({ company, signal: 'raised a seed round', source_url: `https://${company.toLowerCase()}.example/x`, review_reason: reason })
   const t = fallbackTargets([held('A1', 'quote_unconfirmed'), held('B2', 'blocked_by_site'), held('C3', 'outside_window'), held('D4', 'location_mismatch'), held('E5', 'job_closed'), held('F6', 'counterparty_signal'), held('G7', 'needs_javascript')], ['London, UK'], [{ company: 'U1', signal: 's', source_url: 'https://u1.example/x' }])
-  assert.deepEqual(t.map(x => x.company), ['A1', 'B2', 'G7']); assert.equal(fallbackTargets([], ['London'], [{ company: 'U1', signal: 's', source_url: 'https://u1.example/x' }])[0].reason, 'undated')
+  assert.deepEqual(t.map(x => x.company), ['A1', 'B2', 'F6']); assert.equal(fallbackTargets([], ['London'], [{ company: 'U1', signal: 's', source_url: 'https://u1.example/x' }])[0].reason, 'undated')
   const outcome = { leads: [{ company: 'U1', source_url: 'https://u1.example/x', event_date: null as string | null }], review: [], dropped: {} as Record<string, number> }
   const n1 = mergeFallback(outcome as never, { leads: [{ company: 'U1', source_url: 'https://press.example/u1', event_date: null }], dropped: {} } as never, fallbackTargets([], ['London'], [{ company: 'U1', signal: 's', source_url: 'https://u1.example/x' }])); assert.equal(n1.length, 0, 'an undated replacement changes nothing')
   void recordRecovery
