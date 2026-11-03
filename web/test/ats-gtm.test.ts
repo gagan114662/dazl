@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, postingEvidence, withRepostHistory } from '../lib/signals/ats-gtm.ts'
+import { atsGtmHiring, atsGtmBoard, isGtmRole, domainInText, domainsInText, dedupeTitles, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, postingEvidence, withRepostHistory, postingIdentity } from '../lib/signals/ats-gtm.ts'
 import { enrichJobSignals } from '../lib/signals/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
@@ -603,4 +603,32 @@ test('#533 ownership: a reclaim DURING the role-match fetch refuses role-match r
     assert.equal(calls, 3, 'the guard ran immediately after the role-match await')
   } finally { Date.now = realNow }
   db.close()
+})
+
+test('#533 AC4 posting identity: only a posting\'s own id / URL identifies it; a board listing page or a title never does', () => {
+  assert.equal(postingIdentity('https://boards.greenhouse.io/brightloop/jobs/4567'), 'greenhouse:4567')
+  assert.equal(postingIdentity('https://job-boards.greenhouse.io/brightloop/jobs/4567?utm_source=x'), 'greenhouse:4567')
+  assert.equal(postingIdentity('https://www.brightloop.io/careers/job?gh_jid=4567'), 'greenhouse:4567', 'an employer-hosted Greenhouse embed is the same posting')
+  const U = '6f1e0c2a-1111-2222-3333-444455556666'
+  assert.equal(postingIdentity(`https://jobs.lever.co/brightloop/${U}/apply`), `lever:${U}`)
+  assert.equal(postingIdentity(`https://jobs.ashbyhq.com/brightloop/${U}`), `ashby:${U}`)
+  assert.equal(postingIdentity('https://boards.greenhouse.io/brightloop'), null, 'a board listing is not a posting')
+  assert.equal(postingIdentity('https://jobs.lever.co/brightloop'), null)
+  assert.equal(postingIdentity('https://brightloop.io/'), null)
+  assert.equal(postingIdentity('http://brightloop.io/careers/ae'), null)
+  assert.equal(postingIdentity('https://www.brightloop.io/careers/ae/?utm_campaign=x'), 'url:brightloop.io/careers/ae')
+})
+
+test('#533 AC4 dedupe: same posting id across stores is one opening; same title with a different posting id stays "same posting unknown"', () => {
+  const row = (url: string) => [{ connector: 'signals:lever-gtm', kind: 'hiring', value: 'Sales Operations Manager - posted 2026-10-10', label: 'London; Lever', source_url: url }]
+  const U = '6f1e0c2a-1111-2222-3333-444455556666', V = '6f1e0c2a-1111-2222-3333-999999999999'
+  const existing = [{ kind: 'hiring', connector: 'signals:careers-gtm', value: 'Open role on its careers page: Sales Operations Manager', source_date: '2026-10-20', retrieved_at: 1, source_url: `https://jobs.lever.co/brightloop/${U}` }]
+  const same = withRepostHistory(row(`https://jobs.lever.co/brightloop/${U}`), 'lever', existing)[0]
+  assert.match(same.label, new RegExp(`same posting as the careers row \\(posting id lever:${U}\\); one opening, counted once`))
+  assert.doesNotMatch(same.label, /same posting unknown/)
+  const other = withRepostHistory(row(`https://jobs.lever.co/brightloop/${V}`), 'lever', existing)[0]
+  assert.doesNotMatch(other.label, /same posting as/)
+  assert.match(other.label, /same posting unknown \(also listed on careers\)/, 'a matching title alone never proves identity')
+  // a row without a URL (board-listing audit) is never deduped by identity
+  assert.doesNotMatch(withRepostHistory([{ ...row('')[0], source_url: 'https://jobs.lever.co/brightloop' }], 'lever', existing)[0].label, /same posting as/)
 })
