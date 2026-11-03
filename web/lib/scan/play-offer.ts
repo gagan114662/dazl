@@ -36,6 +36,14 @@ export async function profileOffer(db: Db, tenantId: string): Promise<string> {
   return tenantOffer('', sells) ?? ''
 }
 
+// The offer a NEW play of this tenant starts from, before its request is read (#349): the business profile's offer, else
+// the tenant's Memory positioning - the base POST /api/scan checks a direct run against (effectiveOffer: the seller line
+// snapshot, else readTenantOffer). The review step on Find leads compares a request with this, so a reviewed run warns
+// about the same conflicts a direct run is refused for. A website alone states no offer. null: nothing is saved.
+export async function newPlayOffer(db: Db, tenantId: string, profileSells: string): Promise<string | null> {
+  return cleanOffer(profileSells) || cleanOffer(await profileOffer(db, tenantId)) || null
+}
+
 // Sets the offer of one play of this tenant, and nothing else: the profile and every other play keep theirs.
 export async function setPlayOffer(db: Db, tenantId: string, jobId: string, offer: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
   const o = cleanOffer(offer)

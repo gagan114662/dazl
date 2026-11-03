@@ -4,6 +4,7 @@ import { readBusinessName, readBuyerProfile, readSellerProfile, writeBusinessNam
 import { getDb } from '@/lib/db/client'
 import type { Db } from '@/lib/db/client'
 import { normalizeIcp } from '@/lib/scan/icp'
+import { newPlayOffer } from '@/lib/scan/play-offer'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
@@ -19,7 +20,9 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = await getDb()
-  return NextResponse.json({ ...await readSellerProfile(db, user.tenantId), business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId) })
+  // new_play_offer: what a new play starts from (lib/scan/play-offer.ts newPlayOffer), for the review step's conflict check
+  const seller = await readSellerProfile(db, user.tenantId)
+  return NextResponse.json({ ...seller, business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId), new_play_offer: await newPlayOffer(db, user.tenantId, seller.sells) })
 }
 
 export async function POST(req: NextRequest) {
