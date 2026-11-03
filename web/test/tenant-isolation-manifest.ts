@@ -71,6 +71,9 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/[lead]/find-contact', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/quarantine', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/quarantine', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
+  { path: 'leads/[lead]/feedback', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
+  { path: 'leads/[lead]/feedback', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
+  { path: 'leads/[lead]/feedback', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/warm-path', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
   { path: 'leads/[lead]/warm-path', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/warm-path', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
@@ -170,6 +173,8 @@ export const ROUTES: RouteEntry[] = [
 
   { path: 'settings/memory', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'settings/memory', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'settings/feedback', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'settings/feedback', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'settings/profile', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/profile', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'unsubscribe', method: 'GET', auth: 'public', note: "HMAC token; acts only on the token's own message" },

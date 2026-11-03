@@ -5,6 +5,8 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sourceCheckForLead } from '@/lib/scan/source-review'
 import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
+import { getDb } from '@/lib/db/client'
+import { learnedPreference, listFeedback, sourceYield, type Learned, type SourceYield } from '@/lib/scan/feedback'
 import { gdeltAttribution } from '@/lib/search/news-attribution'
 import { savedGradeWhy } from '@/lib/scan/leads-view'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
@@ -19,7 +21,7 @@ export async function GET(req: NextRequest) {
   const job = /^[a-f0-9]{24}$/.test(jobId) ? await db.getJob(user.tenantId, jobId) : undefined
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const includeHidden = req.nextUrl.searchParams.get('all') === '1'
-  const leads = await db.listLeads(user.tenantId, job.id, 200, includeHidden) as { id: string; company: string; company_domain: string | null; event_date: string | null; event_date_proof?: string | null; signal_kind?: string | null; score: number; fit: number | null; intent: number | null; action: number | null; signal: string }[]
+  const leads = await db.listLeads(user.tenantId, job.id, 200, includeHidden) as { id: string; source_url: string; company: string; company_domain: string | null; event_date: string | null; event_date_proof?: string | null; signal_kind?: string | null; score: number; fit: number | null; intent: number | null; action: number | null; signal: string }[]
   const sequences = await db.sequenceStatusByLead(user.tenantId)
   const enr = await db.enrichmentsForLeads(user.tenantId, leads.map(l => l.id))
   const evts = await db.eventsForLeads(user.tenantId, leads)
@@ -37,7 +39,12 @@ export async function GET(req: NextRequest) {
     currentness_held:currentnessHeld(getScanDb(),user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id)} })
   const intentByLead = new Map(safeLeads.map(l => [l.id, l.intent]))
   for (const [id, p] of Object.entries(pri)) if (p) p.intent = intentByLead.get(id) ?? 0
-  const ranked = rankLeads(safeLeads, pri)
+  // #385: the tenant's own explicit verdicts on the same source and signal kind order leads inside a fit lane (shown as
+  // `learned`, with why). Ordering only: a store that cannot be read gives no preference, never a drop or a gate.
+  let yields: SourceYield[] = []
+  try { yields = sourceYield(await listFeedback(await getDb(), user.tenantId, { activeOnly: true })) } catch { /* no preference */ }
+  const learned = new Map<string, Learned>(leads.map(l => [l.id, learnedPreference(yields, l)]))
+  const ranked = rankLeads(safeLeads, pri, Object.fromEntries([...learned].map(([id, p]) => [id, p.delta])))
   const via = gdeltAttribution(getScanDb(), user.tenantId, ranked.map(l => l.id))
   return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.tenantId, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
@@ -47,5 +54,5 @@ export async function GET(req: NextRequest) {
           : e.connector === 'signals:funding-round'
             ? (() => { const m = /^(.*) \(reported \d{4}-\d{2}-\d{2}\)$/.exec(e.label ?? '')
                 return m ? classifyEntityMatch(l.company, m[1]) : 'unconfirmed' })()
-          : null })), events: (evts[l.id] ?? []).map(ev => ({ ...ev, entity_status: qualifyEvent(l.company, l.company_domain, ev, l.event_date ?? null) })), priority: pri[l.id] ?? null, lookalike: look.get(l.id) ?? null })) })
+          : null })), events: (evts[l.id] ?? []).map(ev => ({ ...ev, entity_status: qualifyEvent(l.company, l.company_domain, ev, l.event_date ?? null) })), priority: pri[l.id] ?? null, lookalike: look.get(l.id) ?? null, learned: learned.get(l.id) ?? null })) })
 }
