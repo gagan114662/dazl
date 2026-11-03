@@ -7,6 +7,8 @@ import { contactIdentity, opportunityCard, type CardLead } from './opportunity.t
 import { publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
 import { evidenceStateOf } from '../outreach/evidence-state.ts'
+import { contactRoute, deliverabilityBlocked, type ContactRoute } from '../outreach/contact-route.ts'
+import { titleMatches } from '../people/rank.ts'
 
 export type ApproveState = { ok: true } | { ok: false; reason: string }
 
@@ -16,7 +18,13 @@ export interface LeadCardSummary {
   // Shown beside the contact, never only in Details: how far it is established. `confirmed` is true only for the cited
   // page, the company's own page, or the user's own website check, with no restricted inbox or quarantine.
   contactStatus: { confirmed: boolean; text: string } | null
+  // #384: where the contact was published, whether mail would arrive, and whether it reaches the named person - three
+  // separate lines, never folded into contactStatus or one "verified" mark. Null when no contact route is stored.
+  route: ContactRoute | null
   why: string
+  // The timing status shown under a fit rationale (#377): the rationale says why the company fits, this says whether
+  // NOW is proven. null when the card has no separate fit rationale (why is then the stored line itself).
+  timing: string | null
   sourceUrl: string
   sourceHost: string
   date: string
@@ -35,8 +43,10 @@ export function approveState(l: CardLead): ApproveState {
   if (l.window_held) return { ok: false, reason: 'Outside the time window you asked for, or its date is unknown. Research only.' }
   if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return { ok: false, reason: 'Not verified. Check the source first.' }
   if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
-  if (!publishedEmail(l)) return { ok: false, reason: 'No published email address to draft to yet. See Details to look for one.' }
+  const email = publishedEmail(l)
+  if (!email) return { ok: false, reason: 'No published email address to draft to yet. See Details to look for one.' }
   if (domainReviewFor({ id: l.id ?? '', contact: l.contact }, l.enrichments ?? []).state === 'required') return { ok: false, reason: 'Confirm the company website in Details first.' }
+  if (deliverabilityBlocked(email, l.enrichments ?? [])) return { ok: false, reason: 'This address cannot receive mail (invalid domain or a failed mailbox check).' }
   if (l.currentness_held) return { ok: false, reason: 'Event timing is unknown. Review the source in Details first.' }
   return { ok: true }
 }
@@ -67,19 +77,25 @@ export function cardCounts(leads: { id: string; quarantined_at?: number | null }
   return { approved, rejected, toReview: leads.length - rejected - approved }
 }
 
-export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null }, buyerRoles = ''): LeadCardSummary {
+export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null; fit_rationale?: string | null }, buyerRoles = ''): LeadCardSummary {
   const card = opportunityCard(l, buyerRoles)
   const email = publishedEmail(l)
   const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
   const contactStatus = contact ? statusOf(l, !!card.who) : null
+  const person = card.who ? { name: card.who.name, title: card.who.title, roleRelevant: buyerRoles.trim() && card.who.title ? titleMatches(card.who.title, buyerRoles).length > 0 : null } : null
+  const r = contactRoute(l, person)
+  const route = r.channel === 'none' ? null : r
   let sourceHost = l.source_url
   try { sourceHost = new URL(l.source_url).hostname.replace(/^www\./, '') } catch { /* keep the raw value */ }
   return {
     company: l.company || l.name || 'Unnamed company',
     contact,
     contactStatus,
+    route,
     // The research rationale when there is one, else the saved signal claim itself. One line, never invented.
-    why: firstSentence(l.why?.trim() || l.signal),
+    // #377: the fit rationale (timing kept apart) when the leads API separated one, else as before.
+    why: firstSentence(l.fit_rationale?.trim() || l.why?.trim() || l.signal),
+    timing: l.fit_rationale?.trim() && l.why?.trim() ? firstSentence(l.why) : null,
     sourceUrl: l.source_url,
     sourceHost,
     date: cardDate(l.event_date, l.published_at, { dayVerified: l.day_verified === true, windowMissed: l.window_missed === true }),

@@ -60,7 +60,7 @@ export default function OutcomesClient() {
 
     <Section title="Conversations that need you" testid="outcomes-conversations" empty="No replies need you." state={o.conversations ? o.conversations.rows.length : null} loading={loading}
       tip={o.conversations && !o.conversations.complete ? `Showing the newest ${o.conversations.rows.length} of ${o.conversations.total}. Open Inbox to see them all.` : 'Interested replies, and replies a person wrote that dazl could not sort. A no, an opt-out or an auto-reply is not listed.'}>
-      {o.conversations?.rows.map(r => <Row key={r.gmail_id} name={r.company || r.from_email} sub={r.excerpt} right={<Pill tone={r.classification === 'positive' ? 'mint' : 'lav'}>{r.classification === 'positive' ? 'Interested' : 'Needs a read'}</Pill>} href={`/app/inbox?status=needs_owner&job_id=${play.id}`} />)}
+      {o.conversations?.rows.map(r => <Row key={r.gmail_id} name={r.company || r.from_email} sub={r.excerpt} right={<Pill tone={r.classification === 'positive' ? 'mint' : 'lav'}>{r.classification === 'positive' ? 'Interested' : r.classification === 'bounce_review' ? 'Possible bounce - unverified' : 'Needs a read'}</Pill>} href={`/app/inbox?status=needs_owner&job_id=${play.id}`} />)}
     </Section>
 
     {/* Approved-but-unsent emails are listed here too (with zero drafts as well): they wait only for their send. */}

@@ -44,6 +44,11 @@ Updated by the builder on every branch. Newest first.
 - b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
   (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:
   scan-runner settle, per-play caps outside scans, cost disclosure UI and threshold/stop events (web/docs/spend-safety.md).
+
+- b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
+  (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
+  Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.
+
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
   fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
@@ -170,13 +175,14 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
 2. #380 explicit AND/OR/NOT targeting with per-condition proof.
 3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
-4. #382 real Apollo-to-PDL enrichment fallback waterfall.
+4. #382 real Apollo-to-PDL enrichment fallback waterfall (per-lead per-provider outcomes, timeout/skip notices in the scan view: PR on `b/382-enrich-waterfall`, in review; stubbed providers only, not run live).
 5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
 6. #384 separate published provenance from deliverability/person-route status.
-7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop).
+7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
+   currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
 8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
    advantages, start once 1-7 ship.
-9. #386 real lookalikes, #388 tested source coverage, #389 technographics, #390 first-party signals, #391
+9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
    multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
     as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.

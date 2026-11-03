@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { parseWindowDays, windowStatus } from '../scan/window.ts'
 import { requiredGateHeld } from '../scan/held-state.ts'
 import { uncheckableCause } from '../lead-state.ts'
+import { timingProofGap } from '../scan/timing-proof.ts'
 // A legacy nearby-year verdict proves no event association. Human confirmation
 // remains a user's review choice, not a machine freshness or consent verdict.
 // The user's own recency window (#198) is a hard gate on top: a lead whose event date is not inside the window of the
@@ -14,7 +15,11 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
  // Someone else's customer, a different place, a closed opening: research only, and confirming it does not change that (#352).
  if (uncheckableCause(row.review_reason) || uncheckableCause(row.human_confirmed_from)) return true
  if (requiredGateHeld(db, tenant, lead)) return true   // a failed REQUIRED gate survives lead / domain confirmation
- return row.human_confirmed_at===null && row.confidence!==null
+ if (row.human_confirmed_at!==null || row.confidence===null) return false
+ // A machine-verified lead with no human review is held unless its durable, versioned timing proof stands right now
+ // (#377, lib/scan/timing-proof.ts): proven event day in the window, confirmed domain, named person and published route,
+ // all still bound to the recorded proof. Model confidence alone never lifts this hold.
+ try { return timingProofGap(db, tenant, lead, now)!==null } catch { return true }   // an unreadable proof store holds
 }
 
 // Read alone for the page: a window hold survives the user's own review, so the page must not clear it optimistically.
