@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { MULTI_STOP, foldText, meaningful, romanize, scriptOf, skeleton, words } from '../text/multilingual.ts'
 
 // Lookalike signals: does a lead resemble the tenant's OWN past leads that graded
 // fit 4+ or drew an 'interested' reply? The reference cohort is those past leads -
@@ -23,11 +24,32 @@ export interface LookalikeSignal {
 
 const STOP = new Set(('this,that,with,from,have,has,been,were,they,their,them,will,would,could,should,about,into,over,after,before,more,most,other,these,those,when,where,which,while,who,whom,why,how,what,all,any,each,few,than,too,very,just,also,not,but,and,for,are,was,its,our,out,can,now,new,use,used,using,hiring,hired,hire,role,roles,team,company,companies,job,jobs,post,posts,posting,postings,page,pages').split(','))
 
+// Signal words in any script (#391: an Arabic, Hindi or Japanese signal used to have no tokens at all, so it could never
+// resemble anything). Latin keeps the old 4+ letter rule.
 export function tokens(text: string): Set<string> {
   const out = new Set<string>()
-  for (const w of text.toLowerCase().split(/[^a-z0-9]+/)) if (w.length >= 4 && !STOP.has(w)) out.add(w)
+  for (const w of words(text)) if (meaningful(w) && !STOP.has(w) && !MULTI_STOP.has(w)) out.add(w)
   return out
 }
+// Shared signal words between a lead and a cohort member. A word counts once: in the same spelling, or (when the two are
+// written in different scripts: "Tata Motors" vs "टाटा मोटर्स", or code-mixed) by its consonant skeleton of 3+ letters.
+// Same-script words never match through the lossy skeleton, so two English signals score exactly as before.
+const aliasOf = (w: string): string | null => { const s = skeleton(romanize(w)); return s.length >= 3 ? s : null }
+export function sharedTokens(a: Set<string>, b: Set<string>): number {
+  let n = 0
+  const bAlias = new Map<string, string>()
+  for (const w of b) { const k = aliasOf(w); if (k) bAlias.set(`${scriptOf(w)}:${k}`, w) }
+  const used = new Set<string>()
+  for (const w of a) {
+    if (b.has(w)) { n++; used.add(w); continue }
+    const k = aliasOf(w); if (!k) continue
+    const ws = scriptOf(w)
+    for (const [key, other] of bAlias) if (!used.has(other) && key.endsWith(`:${k}`) && !key.startsWith(`${ws}:`)) { n++; used.add(other); break }
+  }
+  return n
+}
+// Location / industry labels compare folded (accents, Arabic letter variants, full-width forms), never by alias.
+export const sameLabel = (a: string | null | undefined, b: string | null | undefined): boolean => !!a && !!b && foldText(a).trim() === foldText(b).trim()
 
 interface CohortRow { id: string; signal: string; industry: string | null; location: string | null }
 
@@ -62,11 +84,9 @@ export function lookalikeSignals(db: Database.Database, tenantId: string, leads:
     const on = new Set<string>()
     for (const c of cohortTok) {
       let hit = false
-      let shared = 0
-      for (const t of lt) if (c.tok.has(t)) shared++
-      if (shared >= 2) { hit = true; on.add('signal keywords') }
-      if (l.industry && c.row.industry && l.industry === c.row.industry) { hit = true; on.add('industry') }
-      if (l.location && c.row.location && l.location === c.row.location) { hit = true; on.add('location') }
+      if (sharedTokens(lt, c.tok) >= 2) { hit = true; on.add('signal keywords') }
+      if (sameLabel(l.industry, c.row.industry)) { hit = true; on.add('industry') }
+      if (sameLabel(l.location, c.row.location)) { hit = true; on.add('location') }
       if (hit) matches++
     }
     out.set(l.id, { state: 'scored', cohort_size: cohort.length, matches, matched_on: [...on] })

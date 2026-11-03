@@ -14,6 +14,15 @@ const AFTER_FR = '(?:derniers|dernières)'
 const N_UNIT = new RegExp(`${BEFORE}\\s+(\\d{1,3})\\s+([\\p{L}]+)`, 'iu')
 const N_UNIT_FR = new RegExp(`(\\d{1,3})\\s+${AFTER_FR}\\s+([\\p{L}]+)`, 'iu')
 const THIS = /\b(?:this|the past|the last)\s+(week|month)\b/i
+// #391: the same windows in Hindi (पिछले 30 दिनों), Arabic (آخر 30 يوما / خلال 3 أشهر) and Japanese (過去30日, 直近3か月). Unit words
+// map to days like the European ones; digits may be Arabic-Indic or Devanagari.
+const ML_UNIT: [RegExp, number][] = [
+  [/^(?:(?:दिन|दिनों|दिनो|يوم|يوما|يومًا|ايام|أيام)$|日)/u, 1],
+  [/^(?:(?:सप्ताह|सप्ताहों|हफ्ते|हफ़्ते|हफ्तों|اسبوع|أسبوع|اسابيع|أسابيع)$|週)/u, 7],
+  [/^(?:(?:महीने|महीनों|महीना|माह|شهر|شهرا|أشهر|اشهر|شهور)$|か月|ヶ月|カ月|ヵ月|ケ月|ヶ月)/u, 30],
+]
+const ML_WINDOW = /(?:पिछले|गत|आखिरी|आख़िरी|(?:خلال\s+)?(?:آخر|الماضيه?|الأخيرة)|خلال|過去|直近|ここ)\s*(\d{1,3})\s*([\p{L}\p{M}]+)/u
+const mlDigits = (s: string) => s.replace(/[\u0660-\u0669\u06f0-\u06f9\u0966-\u096f]/g, c => { const n = c.charCodeAt(0); return String(n - (n >= 0x0966 ? 0x0966 : n >= 0x06f0 ? 0x06f0 : 0x0660)) })
 
 export const MAX_WINDOW_DAYS = 365
 export function parseWindowDays(text: string): number | null {
@@ -24,6 +33,9 @@ export function parseWindowDays(text: string): number | null {
   }
   const t = THIS.exec(text)
   if (t) return t[1].toLowerCase() === 'week' ? 7 : 30
+  const ml = ML_WINDOW.exec(mlDigits(text).normalize('NFKC'))
+  const mlUnit = ml ? ML_UNIT.find(([re]) => re.test(ml[2]))?.[1] : undefined
+  if (ml && mlUnit) return Math.max(1, Math.min(MAX_WINDOW_DAYS, Number(ml[1]) * mlUnit))
   return null
 }
 

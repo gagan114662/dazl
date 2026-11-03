@@ -6,11 +6,12 @@ import type Database from 'better-sqlite3'
 import type { Db } from '../db/client.ts'
 import { canonicalUrl } from './evidence-origin.ts'
 import { canonicalUrl as trackingFreeUrl } from '../search/tinyfish.ts'
+import { marketYield, type MarketPlan } from '../search/markets.ts'
 
 const ownFetchOf = (m: Map<string, string> | undefined, url: string): string | null => m?.get(trackingFreeUrl(url) ?? url) ?? m?.get(canonicalUrl(url) ?? url) ?? m?.get(url) ?? null
 
-export interface CandidateAudit { key: string; company: string; url: string; outcome: 'passed' | 'review' | 'dropped'; reason: string | null; evidence_origin?: string | null }
-export interface UrlRecord { url: string; hit_date: string | null; walled: boolean; selected: boolean; tinyfish_text_chars: number | null; own_fetch: string | null }
+export interface CandidateAudit { key: string; company: string; url: string; outcome: 'passed' | 'review' | 'dropped'; reason: string | null; evidence_origin?: string | null; excerpt?: string; excerpt_translation?: string } // excerpt/_translation: only when the model glossed a non-English quote (#391)
+export interface UrlRecord { url: string; hit_date: string | null; walled: boolean; selected: boolean; tinyfish_text_chars: number | null; own_fetch: string | null; market?: string | null } // market: multi-market scans only (#391)
 export interface ReportParts {
   queries?: string[]; query_source?: string | null
   search?: { attempted: number | null; ok: number | null; hits_raw: number | null; hits_unique_urls: number | null; hits_complete: boolean | null }
@@ -23,6 +24,7 @@ export interface ReportParts {
   dropCounts?: Record<string, number>
   model?: { requests_recorded: number; requests_with_reported_tokens: number; input_tokens: number | null; output_tokens: number | null; tokens_complete: boolean }
   observed?: { search: boolean; extraction: boolean; verification: boolean }
+  markets?: MarketPlan[] // multi-market scans only (#391): the per-market search plan, measured below as per-market usable yield
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
@@ -48,7 +50,9 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
   const fates = audit.map(a => {
     // A terminal 'dropped' decision recorded for THIS occurrence stands; only passed / review entries are matched against the final rows.
     const fate = a.outcome === 'dropped' ? `dropped:${a.reason ?? 'unknown'}` : vKeys.has(a.key) ? 'verified' : rMap.has(a.key) ? `review:${rMap.get(a.key)}` : verified === null ? `not_finished:${a.reason ?? a.outcome}` : `dropped:${a.reason ?? 'after_verification'}`
-    return { company: cut(a.company, 120), url: cut(a.url, 300), fate, own_fetch: ownFetchOf(p.ownFetch, a.url), evidence_origin: a.evidence_origin ?? null }
+    // A translated quote is stored WITH the original passage and the URL it was quoted from; the original is the evidence.
+    const quote = a.excerpt_translation && a.excerpt ? { quote: { original: cut(a.excerpt, 400), translation: cut(a.excerpt_translation, 400), source_url: cut(a.url, 300), translation_is_evidence: false } } : {}
+    return { company: cut(a.company, 120), url: cut(a.url, 300), fate, own_fetch: ownFetchOf(p.ownFetch, a.url), evidence_origin: a.evidence_origin ?? null, ...quote }
   })
   const count = (pre: string) => fates.filter(f => f.fate === pre || f.fate.startsWith(`${pre}:`)).length
   const reasons = (pre: string) => { const o: Record<string, number> = {}; for (const f of fates) if (f.fate.startsWith(`${pre}:`)) { const r = f.fate.slice(pre.length + 1); o[r] = (o[r] ?? 0) + 1 } return o }
@@ -71,6 +75,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     candidates: fates.slice(0, MAX_CANDIDATES),
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
+    ...(p.markets ? { markets: marketYield(p.markets, p.urls ?? [], fates) } : {}),
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
   }
 }

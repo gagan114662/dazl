@@ -1,6 +1,7 @@
 import { isRecruitingInbox } from '../recruiting-inbox.ts'
 import type { Page } from './fetch-page.ts'
 import { classifySource } from './source-quality.ts'
+import { LEGAL_WORDS, foldText } from '../text/multilingual.ts'
 
 export interface Candidate {
   name: string
@@ -29,8 +30,14 @@ export const MIN_CONFIDENCE = 55
 export const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{M}\p{N}@.+ ]+/gu, ' ').replace(/\s+/g, ' ').trim()
 
 const SUFFIXES = new Set(['inc', 'incorporated', 'ltd', 'limited', 'llc', 'corp', 'corporation', 'co', 'company', 'the', 'plc', 'llp', 'lp'])
+// Legal forms of the #391 languages are dropped like Inc/Ltd (株式会社サイボウズ and サイボウズ株式会社 are one company; شركة and
+// प्राइवेट लिमिटेड are not part of a name). The kept words are NOT otherwise folded: the verifier compares this key with norm()
+// of the page, so it must stay in norm()'s own form.
+const UNSPACED_LEGAL = ['株式会社', '有限会社', '合同会社', '合資会社', '合名会社']
 export function companyKey(company: string): string {
-  const words = norm(company).replace(/[.@+]/g, ' ').split(' ').filter(w => w && !SUFFIXES.has(w))
+  let n = norm(company)
+  for (const a of UNSPACED_LEGAL) n = n.split(a).join(' ')
+  const words = n.replace(/[.@+]/g, ' ').split(' ').filter(w => w && !SUFFIXES.has(w) && !LEGAL_WORDS.has(foldText(w)) && w !== '株' && w !== '有')
   return words.join(' ')
 }
 

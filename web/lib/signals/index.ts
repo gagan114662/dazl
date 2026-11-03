@@ -14,14 +14,17 @@ import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-mat
 import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
 import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
+import { companyNameTokens } from '../text/multilingual.ts'
 
 const TIMEOUT = 8000
 const MAX_LEADS = 10
 const EDGAR_UA = process.env.SEC_USER_AGENT || 'dazl/1.0 (contact: support@dazl.ai)'
 const SUFFIXES = new Set(['inc', 'llc', 'ltd', 'corp', 'corporation', 'company', 'co', 'gmbh', 'sarl', 'sas', 'plc', 'lp', 'llp', 'group', 'technologies', 'technology', 'labs', 'ai', 'io'])
 
+// Tokens of a company name in any script (#391): an Arabic, Hindi or Japanese name used to tokenize to nothing, so a funding
+// round could never be tied to it. Legal forms of those languages are removed too (株式会社, شركة, प्राइवेट लिमिटेड).
 export function nameTokens(name: string): string[] {
-  return name.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 1 && !SUFFIXES.has(t))
+  return companyNameTokens(name, SUFFIXES).filter(t => [...t].length > 1)
 }
 
 export interface FundingSignal { date: string; entity: string; url: string }

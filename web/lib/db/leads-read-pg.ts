@@ -11,7 +11,7 @@ import { eventTimingFresh } from '../events/store.ts'
 import type { CompanyEventRow, EventScope, EventType } from '../events/store.ts'
 import { groupUnderlyingEvents, scoreEvidence } from '../events/prioritize.ts'
 import type { LeadPriority } from '../events/prioritize.ts'
-import { tokens, MIN_COHORT } from '../scan/lookalike.ts'
+import { tokens, sharedTokens, sameLabel, MIN_COHORT } from '../scan/lookalike.ts'
 import type { LookalikeSignal } from '../scan/lookalike.ts'
 
 type CohortRow = { id: string; signal: string; industry: string | null; location: string | null }
@@ -218,11 +218,9 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
         const on = new Set<string>()
         for (const c of cohortTok) {
           let hit = false
-          let shared = 0
-          for (const t of lt) if (c.tok.has(t)) shared++
-          if (shared >= 2) { hit = true; on.add('signal keywords') }
-          if (l.industry && c.row.industry && l.industry === c.row.industry) { hit = true; on.add('industry') }
-          if (l.location && c.row.location && l.location === c.row.location) { hit = true; on.add('location') }
+          if (sharedTokens(lt, c.tok) >= 2) { hit = true; on.add('signal keywords') } // same rule as lib/scan/lookalike.ts (#391: any script)
+          if (sameLabel(l.industry, c.row.industry)) { hit = true; on.add('industry') }
+          if (sameLabel(l.location, c.row.location)) { hit = true; on.add('location') }
           if (hit) matches++
         }
         out.set(l.id, { state: 'scored', cohort_size: cohort.length, matches, matched_on: [...on] })

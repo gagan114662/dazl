@@ -9,6 +9,8 @@
 // confirmed, anything looser is unconfirmed. False negatives are acceptable; a wrong
 // corroboration is not.
 
+import { companyNameTokens, FUND_WORDS } from '../text/multilingual.ts'
+
 export type EntityStatus = 'heuristic' | 'unconfirmed'
 
 // Legal-form words that carry no identity. Stripped before comparison.
@@ -18,11 +20,14 @@ const CORP_SUFFIX = new Set(['inc', 'incorporated', 'corp', 'corporation', 'co',
 // lead must never corroborate against a same-named fund's filings or news.
 const FUND_MARKERS = new Set(['fund', 'funds', 'ventures', 'venture', 'capital', 'capitals', 'partners', 'partnership', 'gp', 'ii', 'iii', 'iv'])
 
+// Any script (#391): names are folded (accents, Arabic diacritics and letter variants) and legal forms of the covered
+// languages removed. A transliteration is NOT the same token: "Cybozu" and "サイボウズ" stay unconfirmed here (the lossy
+// cross-script alias in lib/text/multilingual.ts is for retrieval and similarity, never for corroboration).
 export function nameTokens(name: string): string[] {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(t => t && !CORP_SUFFIX.has(t))
+  return companyNameTokens(name, CORP_SUFFIX)
 }
 
-const hasFundMarker = (tokens: string[]): boolean => tokens.some(t => FUND_MARKERS.has(t))
+const hasFundMarker = (tokens: string[]): boolean => tokens.some(t => FUND_MARKERS.has(t) || FUND_WORDS.has(t))
 
 // 'heuristic' only when the two names are token-identical after suffix stripping - a
 // candidate match, NOT confirmed-entity proof. "Vesta" vs "Vesta Ventures Fund II, LP"
