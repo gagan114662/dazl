@@ -3,8 +3,8 @@
 // tenant's saved competitor list. Nothing here fetches, asks a model or guesses: a condition no verified fact shows stays 'unknown',
 // and 'fail' is returned only for a fact that rules the condition out (a named company that is not this lead, a competitor list it is not on).
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
-import { planConditions, eventMatches } from './targeting.ts'
-import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, type Stage } from './sales-hiring-gate.ts'
+import { planConditions, eventMatches, eventMatchIndex } from './targeting.ts'
+import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, type Stage } from './sales-hiring-gate.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
@@ -38,6 +38,13 @@ const stageOf = (s: string | undefined): Stage => !s ? null : s === 'pre-seed' |
 const HIRE_DONE = /\b(?:hired|appointed|named|joined|joins|welcomed|brought\s+on|onboarded)\b/i
 const NOT_DONE = /\b(?:not|no|never|yet\s+to|plans?\s+to|planning|will|would|could|may|might|seeking|looking\s+for|hiring|search(?:ing)?\s+for|reportedly|rumou?r\w*)\b/i
 const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
+// Event families the sales-hiring gate's event reader does not cover (it reads open / launch / expand). For these a CLAUSE of the lead's own
+// quote must state the event plainly: done, by this company (no other company in front of the verb), not denied, planned, conditional or hearsay.
+const GATE_EVENTS = new Set(['open', 'launch', 'expand'])
+const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|won'?t|without|failed\s+to|lost|losing|den(?:y|ies|ied)|reject\w*|revok\w+|withdr\w+|cancel\w*|denied|plans?\s+to|planning|intends?|aims?\s+to|hopes?\s+to|seeks?\s+to|seeking|bid(?:s|ding)?\s+for|in\s+talks|will|would|could|may|might|if|unless|once|pending|expected|reportedly|rumou?r\w*|allegedly)\b/i
+function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
+  return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
+}
 const roleWords = (r: string) => r.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w))
 
 function dated(ok: boolean, date: string | null, days: number | null, now: number, url: string, shown: string): Proof {
@@ -92,7 +99,7 @@ export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], 
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
-      const shows = quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote)
+      const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
       return dated(shows, lead.event_date, c.within_days, now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {

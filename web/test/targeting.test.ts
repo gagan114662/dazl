@@ -129,3 +129,23 @@ test('actionable yield: an explicit plan is a required gate - an unproven clause
   assert.equal(rows.length, 2)
   assert.match(rows[1].value, /^C2 hired their first VP of Sales within 30 days: unknown$/); assert.match(rows[1].label, /no verified source shows this company made its first VP of Sales hire/)
 })
+
+test('non-hiring events beyond open/launch/expand: contract, permit, partner and rebrand are proven only by a plain statement about this company', () => {
+  const ctx = { query: 'x', icp: null, salesGatePassed: false, competitors: null, now: NOW }
+  const lead = (quote: string, date: string | null = ago(12)): ProofLead => ({ company: 'Canal Diner', company_domain: null, evidence_excerpt: quote, signal: null, source_url: 'https://news.example/c', event_date: date })
+  const contract = compileTargeting('restaurants that won a catering contract and rebranded in the last 60 days')
+  assert.deepEqual(planConditions(contract.root).map(x => x.cond.event), ['contract', 'rebrand'])
+  const truth = (p: QueryPlan, quote: string, date?: string | null) => evaluatePlan(p, planProofs(p, lead(quote, date), [], ctx)).truth
+  assert.equal(truth(contract, 'Canal Diner won a catering contract with the city. Canal Diner rebranded as Canal Kitchen.'), 'pass')
+  assert.equal(truth(contract, 'Canal Diner won a catering contract with the city.'), 'unknown', 'the rebrand is not shown')
+  assert.equal(truth(contract, 'Othercorp won a catering contract. Canal Diner rebranded as Canal Kitchen.'), 'unknown', 'another company won it')
+  assert.equal(truth(contract, 'Canal Diner hopes to win a catering contract and will be rebranding next year.'), 'unknown', 'planned, not done')
+  assert.equal(truth(contract, 'Canal Diner did not win a catering contract. Canal Diner rebranded.'), 'unknown', 'denied')
+  assert.equal(truth(contract, 'Canal Diner won a catering contract. Canal Diner rebranded.', ago(90)), 'unknown', 'outside the 60-day clock')
+  assert.equal(truth(contract, 'Canal Diner won a catering contract. Canal Diner rebranded.', null), 'unknown', 'undated source')
+  const permit = compileTargeting('restaurants that received a liquor licence or partnered with a delivery app')
+  assert.equal(permit.root?.op, 'or')
+  assert.equal(truth(permit, 'Canal Diner received a liquor licence this spring.'), 'pass')
+  assert.equal(truth(permit, 'Canal Diner partnered with Quickbite for deliveries.'), 'pass')
+  assert.equal(truth(permit, 'Canal Diner may get a liquor licence; a partnership is rumoured.'), 'unknown')
+})

@@ -267,12 +267,14 @@ export function evaluatePlan(plan: QueryPlan, proofs: Readonly<Record<string, Om
 }
 
 // Whether a text shows the event family (and object, when the request names one) a condition asks for: the same patterns the compiler reads.
-export function eventMatches(event: string | undefined, object: string | undefined, text: string): boolean {
+export function eventMatches(event: string | undefined, object: string | undefined, text: string): boolean { return eventMatchIndex(event, object, text) >= 0 }
+// Where in the text the event (and object) first shows, or -1.
+export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number {
   const e = EVENTS.find(x => x.event === event)
-  if (!e) return false
+  if (!e) return -1
   for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
-    if (!object || !e.object) return true
-    if ((m[e.object] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return true
+    if (!object || !e.object) return m.index ?? 0
+    if ((m[e.object] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return m.index ?? 0
   }
-  return false
+  return -1
 }
