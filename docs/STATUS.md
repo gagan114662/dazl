@@ -41,6 +41,10 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/370-multi-sender (#370, part): added sender identities per workspace (`lib/outreach/senders.ts`, PG 0048): each
+  provider-verified, owned by the connecting member (removal/demotion revokes it), own encrypted credential, own warm-up
+  cap under the shared workspace cap; approval covers the sender. Gmail only; no Microsoft 365 adapter, no UI yet.
+
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
   Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.

@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import { norm } from '../outreach/store.ts'
 import { isStaging, STUB_SENDER } from '../staging.ts'
+import { saveSenderIdentity, senderCredentialContext, senderIdentity, markSenderNeedsReconnect, deleteSenderIdentity } from '../outreach/senders.ts'
 
 // Least privilege: send is the required grant. Reading replies is a separate, optional gmail.readonly grant (below).
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
@@ -14,7 +15,9 @@ const SCOPES = ['openid', 'email', GMAIL_SEND_SCOPE]
 const STATE_TTL_S = 600
 
 export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string; DAZL_ENV?: string }
-export interface OAuthDeps { withRead?: boolean; env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
+// senderOwner (#370): this connect adds a sender identity owned by that workspace member instead of (re)placing the
+// primary connection. actorId: the member completing the callback; an identity connect completes only for the member who started it.
+export interface OAuthDeps { withRead?: boolean; env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number; senderOwner?: string; actorId?: string }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const nowS = (d: OAuthDeps) => d.now ?? Math.floor(Date.now() / 1000)
@@ -40,13 +43,13 @@ function creds(env: OAuthEnv) {
 // Authorization code flow with PKCE and a one-time state bound to the signed-in user.
 export function startOAuth(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): string {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
-  if (isStaging(env as Record<string, string | undefined>)) return connectStub(db, tenantId, env, deps)
+  if (isStaging(env as Record<string, string | undefined>)) return deps.senderOwner ? connectSenderStub(db, tenantId, env, deps.senderOwner, deps) : connectStub(db, tenantId, env, deps)
   const c = creds(env)
   const state = randomBytes(24).toString('base64url')
   const verifier = randomBytes(32).toString('base64url')
   const t = nowS(deps)
   db.prepare('DELETE FROM oauth_states WHERE expires_at < ?').run(t)
-  db.prepare('INSERT INTO oauth_states (state_hash, tenant_id, verifier, expires_at, read_scope) VALUES (?, ?, ?, ?, ?)').run(sha(state), tenantId, verifier, t + STATE_TTL_S, deps.withRead ? 1 : 0)
+  db.prepare('INSERT INTO oauth_states (state_hash, tenant_id, verifier, expires_at, read_scope, sender_owner) VALUES (?, ?, ?, ?, ?, ?)').run(sha(state), tenantId, verifier, t + STATE_TTL_S, deps.withRead ? 1 : 0, deps.senderOwner ?? null)
   const q = new URLSearchParams({
     client_id: c.id,
     redirect_uri: redirectUri(env),
@@ -71,12 +74,13 @@ function idTokenEmail(idToken: string): { email: string; verified: boolean } | n
   }
 }
 
-export async function completeOAuth(db: Database.Database, tenantId: string, code: string, state: string, deps: OAuthDeps = {}): Promise<{ email: string }> {
+export async function completeOAuth(db: Database.Database, tenantId: string, code: string, state: string, deps: OAuthDeps = {}): Promise<{ email: string; senderId?: string }> {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
   const c = creds(env)
-  const row = db.prepare('SELECT tenant_id, verifier, expires_at, read_scope FROM oauth_states WHERE state_hash = ?').get(sha(state)) as { tenant_id: string; verifier: string; expires_at: number; read_scope: number } | undefined
+  const row = db.prepare('SELECT tenant_id, verifier, expires_at, read_scope, sender_owner FROM oauth_states WHERE state_hash = ?').get(sha(state)) as { tenant_id: string; verifier: string; expires_at: number; read_scope: number; sender_owner: string | null } | undefined
   db.prepare('DELETE FROM oauth_states WHERE state_hash = ?').run(sha(state)) // one use, even on failure
   if (!row || row.tenant_id !== tenantId || row.expires_at < nowS(deps)) throw new GmailError('state', 'bad_state')
+  if (row.sender_owner !== null && row.sender_owner !== deps.actorId) throw new GmailError('state', 'bad_state') // an identity connect is bound to the member who started it
 
   let res: Response
   try {
@@ -100,6 +104,11 @@ export async function completeOAuth(db: Database.Database, tenantId: string, cod
   const who = t.id_token ? idTokenEmail(t.id_token) : null
   if (!who || !who.verified) throw new GmailError('google', 'email_not_verified')
 
+  if (row.sender_owner !== null) {
+    const refresh = t.refresh_token
+    const id = saveSenderIdentity(db, tenantId, { provider: 'gmail', email: who.email, ownerMemberId: row.sender_owner, now: nowS(deps), encrypt: sid => encryptSecret(refresh, senderCredentialContext(tenantId, sid), deps.master) })
+    return { email: who.email, senderId: id }
+  }
   db.prepare(
     `INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES (?, ?, ?, 'active', ?)
      ON CONFLICT(tenant_id) DO UPDATE SET email = excluded.email, refresh_ct = excluded.refresh_ct, status = 'active', read_granted = excluded.read_granted, connected_at = CAST(strftime('%s','now') AS INTEGER)`,
@@ -114,6 +123,13 @@ function connectStub(db: Database.Database, tenantId: string, env: OAuthEnv, dep
     `INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES (?, ?, ?, 'active', 1)
      ON CONFLICT(tenant_id) DO UPDATE SET status = 'active', read_granted = 1`,
   ).run(tenantId, STUB_SENDER(tenantId), encryptSecret('staging-stub', ctx(tenantId), deps.master))
+  return `${(env.PUBLIC_BASE_URL || 'https://staging.dazl.ai').replace(/\/$/, '')}/app/settings?gmail=connected`
+}
+
+// Staging only: an added sender identity with a stub mailbox per owner, never sent anywhere (as connectStub).
+function connectSenderStub(db: Database.Database, tenantId: string, env: OAuthEnv, owner: string, deps: OAuthDeps): string {
+  const email = STUB_SENDER(tenantId).replace('sender-', `sender-${sha(owner).slice(0, 6)}-`)
+  saveSenderIdentity(db, tenantId, { provider: 'gmail', email, ownerMemberId: owner, now: nowS(deps), encrypt: sid => encryptSecret('staging-stub', senderCredentialContext(tenantId, sid), deps.master) })
   return `${(env.PUBLIC_BASE_URL || 'https://staging.dazl.ai').replace(/\/$/, '')}/app/settings?gmail=connected`
 }
 
@@ -138,6 +154,30 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
   if (!acc || acc.status !== 'active') throw new GmailError('reconnect', 'not_connected')
   if (staging || !c) return STAGING_TOKEN
   const refresh = decryptSecret(acc.refresh_ct, ctx(tenantId), deps.master)
+  const r = await refreshAccess(c, refresh, deps)
+  if (r === null) {
+    db.prepare("UPDATE gmail_accounts SET status = 'needs_reconnect' WHERE tenant_id = ?").run(tenantId)
+    throw new GmailError('reconnect', 'grant_revoked')
+  }
+  return r
+}
+
+// #370: the access token for an added sender identity, from its own credential (bound to tenant + identity). A revoked
+// grant flips only that identity to needs_reconnect; the primary connection and every other identity are untouched.
+export async function getSenderAccessToken(db: Database.Database, tenantId: string, senderId: string, deps: OAuthDeps = {}): Promise<string> {
+  const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
+  const staging = isStaging(env as Record<string, string | undefined>)
+  const c = staging ? null : creds(env)
+  const s = senderIdentity(db, tenantId, senderId)
+  if (!s || s.status !== 'active' || s.provider !== 'gmail') throw new GmailError('reconnect', 'not_connected')
+  if (staging || !c) return STAGING_TOKEN
+  const r = await refreshAccess(c, decryptSecret(s.refresh_ct, senderCredentialContext(tenantId, s.id), deps.master), deps)
+  if (r === null) { markSenderNeedsReconnect(db, tenantId, s.id); throw new GmailError('reconnect', 'grant_revoked') }
+  return r
+}
+
+// A fresh access token, or null when the provider says the grant is revoked or expired (the caller flips its own row).
+async function refreshAccess(c: { id: string; secret: string }, refresh: string, deps: OAuthDeps): Promise<string | null> {
   let res: Response
   try {
     res = await (deps.fetchImpl ?? fetch)('https://oauth2.googleapis.com/token', {
@@ -151,10 +191,7 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
   }
   if (res.status === 400 || res.status === 401) {
     const j = (await res.json().catch(() => ({}))) as { error?: string }
-    if (j.error === 'invalid_grant' || res.status === 401) {
-      db.prepare("UPDATE gmail_accounts SET status = 'needs_reconnect' WHERE tenant_id = ?").run(tenantId)
-      throw new GmailError('reconnect', 'grant_revoked')
-    }
+    if (j.error === 'invalid_grant' || res.status === 401) return null
   }
   if (!res.ok) throw new GmailError('retry', `token_${res.status}`)
   const j = (await res.json()) as { access_token?: string }
@@ -173,6 +210,22 @@ export async function disconnectGmail(db: Database.Database, tenantId: string, d
     // best effort: the local copy is deleted either way
   }
   db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId)
+}
+
+// #370: disconnect one added sender identity: best-effort revoke at the provider, then the row and its credential are
+// deleted. Its bound messages are refused at send until reassigned; the primary connection and other identities keep working.
+export async function disconnectSender(db: Database.Database, tenantId: string, senderId: string, deps: OAuthDeps = {}): Promise<boolean> {
+  const s = senderIdentity(db, tenantId, senderId)
+  if (!s) return false
+  if (!isStaging((deps.env ?? process.env) as Record<string, string | undefined>)) {
+    try {
+      const token = decryptSecret(s.refresh_ct, senderCredentialContext(tenantId, s.id), deps.master)
+      await (deps.fetchImpl ?? fetch)('https://oauth2.googleapis.com/revoke', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token }), signal: AbortSignal.timeout(10_000) })
+    } catch {
+      // best effort: the local copy is deleted either way
+    }
+  }
+  return deleteSenderIdentity(db, tenantId, s.id)
 }
 
 // In staging (or with the stub token) nothing is sent: the message gets a stub id and its thread, as Gmail would return.

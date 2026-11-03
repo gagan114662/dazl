@@ -3,6 +3,7 @@ import { migrateLifecycle } from './lifecycle.ts'
 import { migrateOnboardingPolicy } from './onboarding-policy.ts'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { migrateAttribution } from './attribution.ts'
+import { migrateSenders } from './senders.ts'
 
 export const norm = (email: string) => email.trim().toLowerCase()
 
@@ -31,6 +32,9 @@ export function replySafetyStale(db: Database.Database, tenantId: string, toEmai
   // at the post-claim recheck whenever ingest is behind (the staging restart scenario caught exactly this).
   const prior = db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND status IN ('sent','sending','uncertain') AND id <> COALESCE(?, '') LIMIT 1").get(tenantId, norm(toEmail), excludeId ?? null)
   if (!prior) return false // no history with this recipient: no reply-derived safety state to be stale
+  // #370: reply_sync reads only the primary mailbox. History sent from an added sender identity lives in that mailbox, where
+  // no ingest runs yet, so an opt-out there is invisible: anything further to that recipient holds (fail closed).
+  if (db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND to_email = ? AND status IN ('sent','sending','uncertain') AND sender_id IS NOT NULL AND id <> COALESCE(?, '') LIMIT 1").get(tenantId, norm(toEmail), excludeId ?? null)) return true
   const reads = db.prepare("SELECT 1 FROM mail_read_consent c JOIN gmail_accounts g ON g.tenant_id = c.tenant_id WHERE c.tenant_id = ? AND c.version = ? AND g.read_granted = 1 AND g.status = 'active' LIMIT 1").get(tenantId, READ_CONSENT_VERSION)
   if (!reads) return true // contacted before, and no reply ingest can ever recover freshness for them
   const row = db.prepare("SELECT last_success_at FROM scheduler_progress WHERE tenant_id = ? AND kind = 'reply_sync'").get(tenantId) as { last_success_at: number | null } | undefined
@@ -122,6 +126,11 @@ export function migrateOutreach(db: Database.Database): void {
   migrateOnboardingPolicy(db) // #417: the opted-in onboarding/customer-success policy gate for anything after conversion
   addCol('outreach_messages', 'offer_hash', 'TEXT') // hash of the offer inputs the draft's words were created under
   addCol('outreach_settings', 'booking_url', 'TEXT')
+  // #370: the sender identity a message is bound to (sender_identities.id); NULL = the primary connection (gmail_accounts).
+  // oauth_states.sender_owner: set when a connect adds an identity, to the member who started it.
+  migrateSenders(db)
+  addCol('outreach_messages', 'sender_id', 'TEXT')
+  addCol('oauth_states', 'sender_owner', 'TEXT')
   // Idempotent upgrades for usage tables created before these columns existed.
   // Column presence is checked against the live schema; a genuinely failing
   // ALTER throws here at startup instead of being hidden by a broad catch.

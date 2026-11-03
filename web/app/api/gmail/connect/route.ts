@@ -19,6 +19,9 @@ export async function GET(req: NextRequest) {
     // shown next to the Connect button; starting the connect records acceptance of it.
     // On Google's screen the user can still untick the read scope: they then get send-only.
     const db = getScanDb()
+    // #370 ?sender=add: connect an additional sender identity owned by this member, send scope only (no reply ingest
+    // runs on added identities yet, so no read grant is asked for). The primary connection is not touched.
+    if (req.nextUrl.searchParams.get('sender') === 'add') return NextResponse.redirect(startOAuth(db, user.tenantId, { senderOwner: user.actorId }))
     acceptReadConsent(db, user.tenantId)
     return NextResponse.redirect(startOAuth(db, user.tenantId, { withRead: true }))
   } catch (e) {

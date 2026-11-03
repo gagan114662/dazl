@@ -5,6 +5,7 @@ import { READ_CONSENT_TEXT } from '@/lib/outreach/replies'
 import { DAILY_CAP, getSettings, OutreachError, saveSettings, sentLast24h } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { accountSendCount } from '@/lib/outreach/send-budget'
+import { listSenders } from '@/lib/outreach/senders'
 import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 
@@ -14,7 +15,7 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  return NextResponse.json({ gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)), read_notice: READ_CONSENT_TEXT })
+  return NextResponse.json({ gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)), senders: listSenders(db, user.tenantId), read_notice: READ_CONSENT_TEXT })
 }
 
 export async function PUT(req: NextRequest) {

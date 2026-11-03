@@ -181,8 +181,9 @@ export class SequenceError extends Error {
 // together, and nothing sends until the set is approved. LLM on the tenant's key with a
 // template fallback; either way the exact words are what gets approved.
 export function createSequence(db: Database.Database, tenantId: string, messageId: string, d: Deps & { businessName?: string } = {}): string {
-  const m = db.prepare("SELECT id, lead_id, to_email, subject, body, status FROM outreach_messages WHERE id = ? AND tenant_id = ?").get(messageId, tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string } | undefined
+  const m = db.prepare("SELECT id, lead_id, to_email, subject, body, status, sender_id FROM outreach_messages WHERE id = ? AND tenant_id = ?").get(messageId, tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; sender_id: string | null } | undefined
   if (!m) throw new SequenceError('not_found')
+  if (m.sender_id) throw new SequenceError('sender_not_primary') // #370: steps 2/3 and reply ingest run on the primary mailbox only
   if (leadHeld(db,tenantId,m.lead_id)) throw new SequenceError('lead_ungraded')
   if (m.status !== 'draft') throw new SequenceError('not_a_draft')
   const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(m.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
@@ -217,8 +218,9 @@ const claimsHash = (lead: { company: string; name: string; signal: string; sourc
 export function enrollColdSequence(db: Database.Database, tenantId: string, messageId: string, d: { businessName?: string; now?: number } = {}): string | null {
   if (!autoSequencePolicyAccepted(db, tenantId)) return null
   const now = d.now ?? Math.floor(Date.now() / 1000)
-  const m = db.prepare("SELECT id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id, test FROM outreach_messages WHERE id = ? AND tenant_id = ?").get(messageId, tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; sent_at: number | null; gmail_id: string | null; thread_id: string | null; test: number } | undefined
+  const m = db.prepare("SELECT id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id, test, sender_id FROM outreach_messages WHERE id = ? AND tenant_id = ?").get(messageId, tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; sent_at: number | null; gmail_id: string | null; thread_id: string | null; test: number; sender_id: string | null } | undefined
   if (!m || m.status !== 'sent' || !m.sent_at) return null // only a proven send enrolls; never a draft/uncertain
+  if (m.sender_id) return null // #370: a send from an added sender identity never enrolls (its thread is not in the primary mailbox)
   const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(m.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
   if (!lead) return null
   const test = testFixtureSend(db, tenantId, { to_email: m.to_email, test: m.test })

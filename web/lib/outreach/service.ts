@@ -11,7 +11,8 @@ import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
 import { captureError } from '../ops/errors.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
-import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, getSenderAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { markSenderNeedsReconnect, senderBlock, senderDailyLimit, senderIdentity, senderSendCount } from './senders.ts'
 import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
@@ -145,6 +146,11 @@ export const getSettings = (db: Database.Database, tenantId: string) =>
 
 // ---------- drafts ----------
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
+// #370: what an approval covers. A message bound to an added sender identity hashes the identity with the words, so
+// assigning, changing or clearing the sender invalidates the approval. NULL sender (the primary connection) keeps the
+// pre-#370 hash, so approvals made before this change and sequence step hashes stay valid.
+const approvalHash = (m: { to_email: string; subject: string; body: string; sender_id?: string | null }) =>
+  m.sender_id ? createHash('sha256').update(JSON.stringify([m.to_email, m.subject, m.body, 'sender', m.sender_id])).digest('hex') : hash(m.to_email, m.subject, m.body)
 const id24 = () => randomBytes(12).toString('hex')
 
 interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null }
@@ -329,13 +335,13 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   return id
 }
 
-interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number; test: number }
+interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number; test: number; sender_id: string | null }
 const getMsg = (db: Database.Database, tenantId: string, id: string) =>
   db.prepare('SELECT * FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as Msg | undefined
 
 export function listMessages(db: Database.Database, tenantId: string, d: Deps = {}) {
   reapSending(db, d)
-  const rows = db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; error: string | null; created_at: number; sent_at: number | null; test: number }[]
+  const rows = db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test, sender_id FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; error: string | null; created_at: number; sent_at: number | null; test: number; sender_id: string | null }[]
   // The draft list carries the evidence basis so the approval UI can label a human
   // confirmation (never presented as dazl's verification) or a withdrawn one.
   const sender = getSettings(db, tenantId)
@@ -364,6 +370,22 @@ export function editDraft(db: Database.Database, tenantId: string, id: string, e
   }
 }
 
+// #370: bind a draft or approved message to an added sender identity (senderId) or back to the primary connection (null).
+// Any change drops the approval: what was approved is the words AND the sender. Refused for a message in a sequence
+// (follow-up steps and reply ingest run on the primary mailbox only, so the thread must stay there) and for an identity
+// that cannot send now. One IMMEDIATE transaction, so the checks and the write see the same rows.
+export function setMessageSender(db: Database.Database, tenantId: string, id: string, senderId: string | null): void {
+  db.transaction(() => {
+    const m = getMsg(db, tenantId, id)
+    if (!m) throw new OutreachError('not_found')
+    if (m.status !== 'draft' && m.status !== 'approved') throw new OutreachError('not_editable')
+    if (senderId !== null) { const why = senderBlock(db, tenantId, senderId); if (why) throw new OutreachError(why === 'sender_disconnected' ? 'sender_not_found' : why) }
+    if (tableExists(db, 'sequences') && db.prepare('SELECT 1 FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId, id)) throw new OutreachError('sender_sequence_bound')
+    if ((m.sender_id ?? null) === senderId) return
+    db.prepare("UPDATE outreach_messages SET sender_id = ?, status = 'draft', approved_hash = NULL, error = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(senderId, id, tenantId)
+  }).immediate()
+}
+
 export function skip(db: Database.Database, tenantId: string, id: string): void {
   const r = db.prepare("UPDATE outreach_messages SET status = 'skipped', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(id, tenantId)
   if (r.changes !== 1) throw new OutreachError(getMsg(db, tenantId, id) ? 'not_skippable' : 'not_found')
@@ -376,7 +398,11 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   if (!m) throw new OutreachError('not_found')
   if (m.status !== 'draft') throw new OutreachError('not_a_draft')
   if (!skipAccount && !getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
-  if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
+  if (!skipAccount) {
+    // #370: a message bound to an added identity needs that identity usable (connected, owner still a sending member); else the primary connection.
+    if (m.sender_id) { const why = senderBlock(db, tenantId, m.sender_id); if (why) throw new OutreachError(why) }
+    else if (gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
+  }
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) throw new OutreachError('not_sales_contact')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
@@ -401,7 +427,10 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
     // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
-    db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(hash(m.to_email, m.subject, m.body), id, tenantId)
+    // The sender is read again under the write lock: a concurrent setMessageSender cannot leave an approval for the old one.
+    const cur = getMsg(db, tenantId, id)
+    if (!cur || (cur.sender_id ?? null) !== (m.sender_id ?? null)) throw new OutreachError('changed_since_approval')
+    db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(approvalHash(m), id, tenantId)
   }).immediate()
 }
 
@@ -471,11 +500,16 @@ export function sendBlockReason(db: Database.Database, tenantId: string, id: str
   if (!m) return 'not_found'
   try { sendPreChecks(db, tenantId, m) } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
   if (isSuppressed(db, tenantId, m.to_email)) return 'suppressed'
-  if (m.approved_hash !== hash(m.to_email, m.subject, m.body)) return 'changed_since_approval'
+  if (m.approved_hash !== approvalHash(m)) return 'changed_since_approval'
   // skipAccount skips only the sender and Gmail checks; the shared daily cap is never skipped.
   if (!o.skipAccount && !getSettings(db, tenantId)) return 'sender_identity_missing'
-  if (!o.skipAccount && !db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
+  if (!o.skipAccount) {
+    if (m.sender_id) { const why = senderBlock(db, tenantId, m.sender_id); if (why) return why }
+    else if (!db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
+  }
   if (accountSendCount(db, tenantId, now) + 1 > DAILY_CAP) return 'daily_cap'
+  // #370: an added identity's own warm-up/cap is a limit on top of the shared one, never instead of it.
+  if (m.sender_id) { const s = senderIdentity(db, tenantId, m.sender_id); if (s && senderSendCount(db, tenantId, s.id, now) + 1 > senderDailyLimit(s, now)) return 'sender_daily_cap' }
   return null
 }
 
@@ -502,7 +536,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL, claimed_at = NULL WHERE id = ?").run(id)
     throw new OutreachError('suppressed')
   }
-  if (m.approved_hash !== hash(m.to_email, m.subject, m.body)) release('changed_since_approval')
+  if (m.approved_hash !== approvalHash(m)) release('changed_since_approval')
+  // #370: a message bound to an added identity never runs inside a sequence (its follow-ups would go from the primary mailbox).
+  if (m.sender_id && tableExists(db, 'sequences') && db.prepare('SELECT 1 FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId, id)) release('sender_sequence_bound')
   if (tableExists(db, 'sequences')) {
     const seq = db.prepare("SELECT id,status FROM sequences WHERE tenant_id = ? AND message_id = ?").get(tenantId,id) as { id: string; status: string } | undefined
     if (seq && (seq.status !== 'approved' || db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND (status <> 'approved' OR approved_hash IS NULL)").get(tenantId,seq.id))) release('approve_sequence_set')
@@ -517,15 +553,28 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   }
   const settings = getSettings(db, tenantId)
   if (!settings) release('sender_identity_missing')
-  const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
-  if (!acct) release('gmail_not_connected')
+  // #370: the mailbox this message goes out from: its bound identity (own credential, own cap) or the primary connection.
+  const senderId = m.sender_id
+  let fromEmail = ''
+  if (senderId) {
+    const why = senderBlock(db, tenantId, senderId)
+    if (why) release(why)
+    const s = senderIdentity(db, tenantId, senderId)!
+    fromEmail = s.email
+    if (senderSendCount(db, tenantId, s.id, nowS(d)) > senderDailyLimit(s, nowS(d))) release('sender_daily_cap') // this claim counts itself
+  } else {
+    const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
+    if (!acct) release('gmail_not_connected')
+    fromEmail = acct!.email
+  }
   if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
 
   let token: string
   try {
-    token = await getAccessToken(db, tenantId, d)
+    token = senderId ? await getSenderAccessToken(db, tenantId, senderId, d) : await getAccessToken(db, tenantId, d)
   } catch (e) {
-    return release(e instanceof GmailError && e.kind === 'reconnect' ? 'gmail_reconnect_needed' : 'gmail_unavailable')
+    const reconnect = e instanceof GmailError && e.kind === 'reconnect'
+    return release(senderId ? (reconnect ? 'sender_reconnect_needed' : 'sender_unavailable') : (reconnect ? 'gmail_reconnect_needed' : 'gmail_unavailable'))
   }
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
@@ -535,8 +584,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   try {
   // The sending identity first: the account may have been disconnected or reconnected to another address meanwhile. The
   // message goes out only from the address read before the refresh (and, when given, the one the caller authorized).
-  const sender = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
-  if (!sender || sender.email.toLowerCase() !== acct!.email.toLowerCase() || (d.expectSender !== undefined && d.expectSender.toLowerCase() !== sender.email.toLowerCase())) release('sender_changed')
+  if (senderId) { const why = senderBlock(db, tenantId, senderId); if (why) release(why) } // disconnected, revoked or owner removed meanwhile
+  const sender = senderId ? senderIdentity(db, tenantId, senderId) : db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
+  if (!sender || sender.email.toLowerCase() !== fromEmail.toLowerCase() || (d.expectSender !== undefined && d.expectSender.toLowerCase() !== sender.email.toLowerCase())) release('sender_changed')
   // #413: safety ingest can also fall behind during the await - release and hold, never send.
   if (!testFixtureSend(db, tenantId, m) && replySafetyStale(db, tenantId, m.to_email, nowS(d), m.id)) release('reply_sync_stale')
   // #417: a conversion proven during the refresh stops the send terminally - never released back to approved,
@@ -553,7 +603,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
   const final = getMsg(db,tenantId,id)!
-  if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
+  if (final.approved_hash !== approvalHash(final) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email || (final.sender_id ?? null) !== (senderId ?? null)) release('changed_since_approval')
   if (tableExists(db,'sequences')) {
     const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
     if (set && set.status !== 'approved') release('approve_sequence_set')
@@ -575,8 +625,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   const master = d.master ?? getMasterKey()
   const unsubUrl = `${baseUrl(d)}/api/unsubscribe?t=${unsubToken(id, master)}`
   const raw = toBase64Url(buildMime({
-    fromName: settings!.sender_name, fromEmail: acct!.email, to: m.to_email, subject: m.subject,
-    body: composeBody(m.body, settings!, unsubUrl), messageId: `dazl.${id}@${acct!.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(nowS(d) * 1000),
+    fromName: settings!.sender_name, fromEmail, to: m.to_email, subject: m.subject,
+    body: composeBody(m.body, settings!, unsubUrl), messageId: `dazl.${id}@${fromEmail.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(nowS(d) * 1000),
   }))
   try {
     const out = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl))
@@ -587,6 +637,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     if (e instanceof GmailSendError) {
       // Gmail refused before accepting the message: safe to put back.
       if (e.status === 401 || e.status === 403) {
+        // Only the mailbox that refused needs reconnecting: an added identity never flips the primary connection, nor the reverse.
+        if (senderId) { markSenderNeedsReconnect(db, tenantId, senderId); return release('sender_reconnect_needed') }
         db.prepare("UPDATE gmail_accounts SET status = 'needs_reconnect' WHERE tenant_id = ?").run(tenantId)
         return release('gmail_reconnect_needed')
       }

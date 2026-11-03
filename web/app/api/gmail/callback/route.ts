@@ -15,8 +15,9 @@ export async function GET(req: NextRequest) {
   const state = req.nextUrl.searchParams.get('state')
   if (req.nextUrl.searchParams.get('error') || !code || !state) return back('denied')
   try {
-    await completeOAuth(getScanDb(), user.tenantId, code, state)
-    await audit(user, req, { action: 'credential.saved', resource: 'gmail' })
+    // actorId: a connect that adds a sender identity (#370) completes only for the member who started it
+    const r = await completeOAuth(getScanDb(), user.tenantId, code, state, { actorId: user.actorId })
+    await audit(user, req, r.senderId ? { action: 'credential.saved', resource: 'sender_identity', id: r.senderId } : { action: 'credential.saved', resource: 'gmail' })
     return back('connected')
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/gmail/callback', method: 'GET', tenantId: user.tenantId, requestId: requestIdOf(req) })
