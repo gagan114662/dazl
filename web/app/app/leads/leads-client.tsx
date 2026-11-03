@@ -1029,8 +1029,14 @@ export default function LeadsClient() {
                     {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
                         doubt - unconfirmed, role not verified, no current buyer - stays on screen in full. */}
                     {c.contactStatus && (c.contactStatus.confirmed && /^Confirmed: [^.]+\.$/.test(c.contactStatus.text)
-                      ? <div className="text-xs mt-1"><Pill tone="mint">Contact confirmed</Pill><InfoTip label="How the contact was confirmed"><span data-testid="contact-status">{c.contactStatus.text}</span></InfoTip></div>
+                      ? <div className="text-xs mt-1"><Pill tone="mint">Source confirmed</Pill><InfoTip label="Where the contact was published"><span data-testid="contact-status">{c.contactStatus.text}</span></InfoTip></div>
                       : <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[var(--ink-2)] mt-0.5' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>)}
+                    {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
+                    {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
+                      <li data-testid="contact-provenance">{c.route.provenance.text}</li>
+                      <li data-testid="contact-deliverability" className={c.route.emailReadiness === 'blocked' ? 'text-[#111] font-medium' : undefined}>{c.route.deliverability.text}</li>
+                      <li data-testid="contact-person-route">{c.route.personRoute.text}</li>
+                    </ul>}
                   </div>
                   </div>
                   {!l.quarantined_at && <div className="flex gap-2 shrink-0 pl-[52px] sm:pl-0" data-testid="card-actions">
