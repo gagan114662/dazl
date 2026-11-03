@@ -96,7 +96,7 @@ test('first-touch jobs, two tenants: B drain and autopilot never draft, hold or 
   await onboard(db, 'A', 'me@a.example', false); await onboard(db, 'B', 'me@b.example', false)
   const warmed = (t: string) => { for (let i = 0; i < 2; i++) db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES (?, ?, ?, ?, 's', 'bodybodybodybodybodybody', 'sent', ?, ?)").run(hex(), t, 'x' + i, `o${i}@z.example`, NOW - 9e5, NOW - 9e5) }
   warmed('A'); warmed('B')
-  const leadA = addLead(db, 'A', 'sam@a.example')
+  addLead(db, 'A', 'sam@a.example')
   const leadHeld = addLead(db, 'A', 'd@four.example', 'Other Co')
   const heldId = hex()
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until, hold_policy, offer_hash) VALUES (?, 'A', ?, 'd@four.example', 's', 'bodybodybodybodybodybody', 'draft', 'daily_cap', ?, ?, ?)")
@@ -140,7 +140,7 @@ test('watch job, two tenants: a due run spends only the owner key and quota; one
   const giveKey = (t: string) => db.prepare("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, 'anthropic', 'x', '1234', 1)").run(t)
   giveKey('A'); giveKey('B')
   const wA = (await createWatch(D(db), 'A', 'funded startups hiring', ICP)).watch!
-  const wB = (await createWatch(D(db), 'B', 'payroll tools hiring', ICP)).watch!
+  await createWatch(D(db), 'B', 'payroll tools hiring', ICP)
   db.prepare('UPDATE watches SET next_run_at = 1 WHERE id = ?').run(wA.id) // only A's watch is due
   const r1 = await runDueWatches(D(db))
   assert.deepEqual(r1, { ran: 1, paused: 0 })
