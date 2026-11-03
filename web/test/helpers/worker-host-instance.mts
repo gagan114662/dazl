@@ -55,6 +55,9 @@ if (mode === 'drain') {
       const o = await host.finish(c, res)
       counts[o] = (counts[o] ?? 0) + 1
       await span(c, t0, t1, o)
+      // a short random pause before the next claim, so the other process gets a fair chance at the freed slot instead
+      // of this one winning every race on a busy machine
+      await sleep(5 + Math.floor(Math.random() * 25))
     }
   }
   await Promise.all(Array.from({ length: Number(env.WH_CONC ?? 3) }, loop))
