@@ -1,3 +1,4 @@
+import contextlib
 import json
 from pathlib import Path
 import subprocess
@@ -7,6 +8,9 @@ import unittest
 from unittest.mock import patch
 import importlib.util
 spec=importlib.util.spec_from_file_location("checked",Path(__file__).with_name("checked_launch.py")); checked=importlib.util.module_from_spec(spec);spec.loader.exec_module(checked)
+# The production default log path is not available to tests; every run() logs privately here.
+LOGS = tempfile.TemporaryDirectory()
+checked.LAUNCH_LOG = str(Path(LOGS.name) / 'launch-log.jsonl')
 
 SCRIPT = str(Path(__file__).with_name('checked_launch.py'))
 COMMIT = 'a' * 40
@@ -269,6 +273,177 @@ class CheckedLaunchTests(unittest.TestCase):
             p=subprocess.CompletedProcess([],code,json.dumps(report))
             self.assertEqual(p.returncode, 1)
             self.assertTrue(json.loads(p.stdout)['launch_reached'])
+
+
+SAFE = str(Path(__file__).with_name('safe_launch.py'))
+SECRET = 'sk_live_SYNTHETIC_DO_NOT_LOG_607'
+STUB = ('import pathlib,signal,sys,time\n'
+        'p=pathlib.Path(sys.argv[1])\n'
+        'signal.signal(signal.SIGTERM,lambda *a:(p.write_text("SIGTERM"),sys.exit(0)))\n'
+        'print("ready",flush=True)\n'
+        'time.sleep(120)\n')
+
+
+class LaunchLogTests(unittest.TestCase):
+    """#607: every run leaves one sanitized line; failures are diagnosable, nothing is weakened."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        # Resolved so safe_launch's no-symlink-parent env rule holds on any host.
+        self.root = Path(self.temp.name).resolve()
+        (self.root / 'logs').mkdir(mode=0o700)
+        self.log = self.root / 'logs' / 'launch-log.jsonl'
+        self.status = self.root / 'logs' / 'launch-status.json'
+        self.stub = subprocess.Popen([sys.executable, '-c', STUB, str(self.root / 'stub-signalled')], stdout=subprocess.PIPE, text=True)
+        self.assertEqual(self.stub.stdout.readline().strip(), 'ready')
+
+    def tearDown(self):
+        self.stub.kill(); self.stub.wait(); self.stub.stdout.close()
+        self.temp.cleanup()
+
+    def gated(self, ci=None):
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(checked, 'bind_launch'))
+        stack.enter_context(patch.object(checked, 'bind_target'))
+        return stack, stack.enter_context(patch.object(checked, 'require_ci', side_effect=ci))
+
+    def run_logged(self, preflights, launch, **kwargs):
+        stack, _ = self.gated(kwargs.pop('ci', None))
+        with stack:
+            return checked.run(preflights, launch, repository='gagan114662/dazl', commit=COMMIT, log_path=str(self.log), **kwargs)
+
+    def lines(self):
+        return [json.loads(x) for x in self.log.read_text().splitlines()]
+
+    def assert_stub_untouched(self):
+        self.assertIsNone(self.stub.poll())
+        self.assertFalse((self.root / 'stub-signalled').exists())
+
+    def test_failing_safe_launch_child_logs_sanitized_status_and_changes_nothing(self):
+        for folder, commit in [(self.root / 'new', COMMIT), (self.root / 'old', 'b' * 40)]:
+            (folder / '.next').mkdir(parents=True)
+            (folder / '.next/BUILD_ID').write_text('synthetic-build')
+            (folder / '.build-commit').write_text(commit)
+            (folder / 'package.json').write_text('{}')
+        db = self.root / 'live.db'; db.write_bytes(b'SENTINEL-DB')
+        before = (db.read_bytes(), db.stat().st_mtime_ns)
+        env = self.root / 'synthetic.env'
+        env.write_text('DB_PATH=' + str(db) + '\nDAZL_MASTER_KEY=' + SECRET + '\nPUBLIC_BASE_URL=https://example.invalid\n'); env.chmod(0o600)
+        missing_backup = self.root / 'missing-backup.db'
+        launch = [sys.executable, SAFE, '--stage', str(self.root / 'new'), '--commit', COMMIT,
+                  '--rollback-stage', str(self.root / 'old'), '--rollback-commit', 'b' * 40,
+                  '--env-file', str(env), '--pid', str(self.stub.pid), '--backup', str(missing_backup),
+                  '--backup-db', str(db), '--backup-verified', '--execute']
+        report, code = self.run_logged([[sys.executable, '-c', 'pass']], launch)
+        self.assertEqual(code, 1)
+        self.assertEqual(report, {'status': 'launch_failed', 'returncode': 1, 'launch_reached': True})
+        [line] = self.lines()
+        self.assertEqual(line['status'], 'launch_failed'); self.assertEqual(line['wrapper_returncode'], 1)
+        self.assertTrue(line['launch_reached']); self.assertEqual(line['commit'], COMMIT)
+        self.assertEqual(line['launch']['result'], 'exit'); self.assertEqual(line['launch']['returncode'], 1)
+        self.assertEqual(line['launch']['status_file'], str(self.status))
+        self.assertEqual(line['launch']['status'], {'state': 'read', 'status': 'verified_backup_required', 'phase': 'preflight', 'service_changed': False})
+        self.assertEqual([(g['round'], g['gate'], g['result']) for g in line['gates']],
+                         [(r, g, 'pass') for r in ['initial', 'final'] for g in ['bind_launch', 'bind_target', 'require_ci']])
+        self.assertEqual([(p['name'], p['result'], p['returncode']) for p in line['preflights']], [(Path(sys.executable).name, 'exit', 0)])
+        self.assertIsInstance(line['wall_s'], float)
+        # Sanitized: no secret, no env or backup argv values, no child output.
+        text = self.log.read_text() + self.status.read_text()
+        for value in [SECRET, str(env), str(missing_backup), str(db)]:
+            self.assertNotIn(value, text)
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.status.stat().st_mode & 0o777, 0o600)
+        # Zero state change: the listener pid was never signalled, the database is untouched.
+        self.assert_stub_untouched()
+        self.assertEqual((db.read_bytes(), db.stat().st_mtime_ns), before)
+
+    def test_preflight_and_launch_timeouts_are_logged_the_same_sanitized_way(self):
+        sentinel = self.root / 'launched'
+        touch = [sys.executable, '-c', 'import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', str(sentinel)]
+        slow = [sys.executable, '-c', 'import sys,time; print(sys.argv[1]); print(sys.argv[1], file=sys.stderr, flush=True); time.sleep(5)', SECRET]
+        report, code = self.run_logged([slow], touch, timeout=0.5)
+        self.assertEqual((code, report['status'], report['launch_reached']), (1, 'preflight_error', False))
+        self.assertFalse(sentinel.exists())
+        report, code = self.run_logged([[sys.executable, '-c', 'pass']], slow, timeout=0.5)
+        self.assertEqual((code, report['status'], report['launch_reached']), (1, 'launch_error', True))
+        first, second = self.lines()
+        self.assertEqual(first['preflights'][0]['result'], 'timeout'); self.assertFalse(first['launch_reached']); self.assertNotIn('launch', first)
+        self.assertEqual(first['status'], 'preflight_error'); self.assertEqual(first['wrapper_returncode'], 1)
+        self.assertEqual(second['launch']['result'], 'timeout'); self.assertTrue(second['launch_reached'])
+        self.assertEqual(second['launch']['status'], {'state': 'missing'}); self.assertEqual(second['status'], 'launch_error')
+        self.assertNotIn(SECRET, self.log.read_text())
+        self.assert_stub_untouched()
+
+    def test_child_secret_on_stderr_or_in_status_file_never_reaches_the_log(self):
+        noisy = [sys.executable, '-c', 'import sys; print(sys.argv[1]); print(sys.argv[1], file=sys.stderr)', SECRET]
+        forged = [sys.executable, '-c',
+                  'import json,os,sys\n'
+                  'print(sys.argv[1], file=sys.stderr); print(sys.argv[1])\n'
+                  'fd=os.open(sys.argv[-1], os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)\n'
+                  'os.write(fd, json.dumps({"status": sys.argv[1].lower(), "phase": sys.argv[1], "service_changed": sys.argv[1], "commit": sys.argv[1], "detail": sys.argv[1]}).encode())\n'
+                  'raise SystemExit(1)', SECRET]
+        report, code = self.run_logged([noisy], forged)
+        self.assertEqual((code, report['status']), (1, 'launch_failed'))
+        [line] = self.lines()
+        self.assertEqual(line['launch']['status'], {'state': 'read', 'status': 'unrecognised', 'phase': 'unrecognised'})
+        self.assertEqual(line['preflights'][0]['name'], Path(sys.executable).name)
+        self.assertNotIn(SECRET.lower(), self.log.read_text().lower())
+
+    def test_positive_control_successful_preflights_launch_exactly_once(self):
+        count = self.root / 'count'
+        launch = [sys.executable, '-c', 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text((p.read_text() if p.exists() else "") + sys.argv[-2] + "\\n")', str(count)]
+        good = [sys.executable, '-c', 'pass']
+        report, code = self.run_logged([good, good], launch)
+        self.assertEqual((code, report), (0, {'status': 'launched', 'returncode': 0, 'launch_reached': True}))
+        self.assertEqual(count.read_text(), '--status-file\n')
+        [line] = self.lines()
+        self.assertEqual(line['status'], 'launched'); self.assertEqual(len(line['preflights']), 2)
+        self.assertTrue(all(g['result'] == 'pass' for g in line['gates'])); self.assertEqual(len(line['gates']), 6)
+
+    def test_log_is_bounded_to_the_newest_lines(self):
+        self.log.write_text(''.join(json.dumps({'old': i}) + '\n' for i in range(250))); self.log.chmod(0o600)
+        self.run_logged([[sys.executable, '-c', 'raise SystemExit(4)']], [sys.executable, '-c', 'pass'])
+        lines = self.lines()
+        self.assertEqual(len(lines), checked.LOG_LINES)
+        self.assertEqual(lines[0], {'old': 51}); self.assertEqual(lines[-1]['status'], 'preflight_failed')
+        self.assertEqual(lines[-1]['preflights'][0]['returncode'], 4)
+
+    def test_unusable_log_refuses_before_any_gate_preflight_or_launch(self):
+        sentinel = self.root / 'touched'
+        touch = [sys.executable, '-c', 'import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', str(sentinel)]
+        other = self.root / 'elsewhere.jsonl'; other.write_text(''); other.chmod(0o600)
+        def loose(): self.log.write_text(''); self.log.chmod(0o644)
+        def link(): self.log.symlink_to(other)
+        def missing_dir(): self.log.parent.rmdir()
+        def shared_dir(): self.log.parent.chmod(0o777)
+        for setup in [loose, link, missing_dir, shared_dir]:
+            with self.subTest(setup=setup.__name__):
+                setup()
+                stack, ci = self.gated()
+                with stack:
+                    report, code = checked.run([touch], touch, repository='gagan114662/dazl', commit=COMMIT, log_path=str(self.log))
+                self.assertEqual((code, report), (2, {'status': 'launch_log_unavailable', 'launch_reached': False}))
+                ci.assert_not_called(); self.assertFalse(sentinel.exists())
+                self.assertEqual(other.read_text(), '')
+                if self.log.parent.exists():
+                    self.log.parent.chmod(0o700)
+                    if self.log.is_symlink() or self.log.exists(): self.log.unlink()
+                else:
+                    self.log.parent.mkdir(mode=0o700)
+
+    def test_gate_refusals_are_logged_by_fixed_code_only(self):
+        sentinel = self.root / 'touched'
+        touch = [sys.executable, '-c', 'import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', str(sentinel)]
+        for error, expected in [(ValueError('ci_pending'), 'ci_pending'), (OSError('https://' + SECRET + '@example.invalid'), 'OSError')]:
+            report, code = self.run_logged([touch], touch, ci=error)
+            self.assertEqual((code, report['status'], report['launch_reached']), (1, 'ci_refused', False))
+            self.assertEqual(self.lines()[-1]['gates'][-1], {'round': 'initial', 'gate': 'require_ci', 'result': 'fail', 'code': expected})
+        self.assertFalse(sentinel.exists()); self.assertNotIn(SECRET, self.log.read_text())
+
+    def test_operator_cannot_supply_status_file_launch_binding_unchanged(self):
+        with self.assertRaisesRegex(ValueError, 'launch_options'):
+            checked.bind_launch([sys.executable, SAFE, '--commit', COMMIT, '--execute', '--status-file', str(self.status)], COMMIT)
+        checked.bind_launch([sys.executable, SAFE, '--commit', COMMIT, '--execute'], COMMIT)
 
 
 if __name__ == '__main__':

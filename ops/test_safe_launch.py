@@ -1,7 +1,9 @@
 import argparse
 import contextlib
 import io
+import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -162,6 +164,124 @@ class SafeLaunchTest(unittest.TestCase):
         with patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]), patch.object(m,'read_env',return_value={'DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid'}), patch.object(m,'check_database_backup'), patch.object(m,'pin_executables'), patch.object(m,'check_process'), patch.object(m,'pid_cwd',return_value=Path('/old')), patch.object(m,'owns_listener',return_value=False), patch.object(m.os,'kill') as kill:
             with self.assertRaisesRegex(m.LaunchError,'pid_listener_mismatch'):m.run(self.args())
             kill.assert_not_called()
+
+
+STUB = ('import pathlib,signal,sys,time\n'
+        'p=pathlib.Path(sys.argv[1])\n'
+        'signal.signal(signal.SIGTERM,lambda *a:(p.write_text("SIGTERM"),sys.exit(0)))\n'
+        'print("ready",flush=True)\n'
+        'time.sleep(120)\n')
+ENV = {'DB_PATH':'/db','DAZL_MASTER_KEY':'dummy','PUBLIC_BASE_URL':'https://example.invalid'}
+
+
+class StatusFileTest(unittest.TestCase):
+    """#607: safe_launch reports its own fixed-vocabulary status to a private file."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
+        self.hit = self.root/'stub-signalled'
+        # A real stand-in listener: any delivered SIGTERM is recorded on disk.
+        self.stub = subprocess.Popen([sys.executable,'-c',STUB,str(self.hit)],stdout=subprocess.PIPE,text=True)
+        self.assertEqual(self.stub.stdout.readline().strip(),'ready')
+
+    def tearDown(self):
+        self.stub.kill(); self.stub.wait(); self.stub.stdout.close(); self.temp.cleanup()
+
+    def argv(self, status, port='3100'):
+        return ['safe_launch.py','--stage','/new','--commit','a'*40,'--rollback-stage','/old','--rollback-commit','b'*40,
+                '--env-file','/env','--pid',str(self.stub.pid),'--port',port,'--backup','/backup','--backup-db','/db',
+                '--backup-verified','--execute','--status-file',str(status)]
+
+    def main(self, argv, overrides=None, waits=None):
+        overrides = overrides or {}
+        defaults = {'stage_path':[Path('/new'),Path('/old')],'read_env':ENV,'check_database_backup':None,
+                    'pin_executables':['/usr/bin/node','/usr/lib/npm-cli.js'],'check_process':None,
+                    'pid_cwd':Path('/old'),'owns_listener':True,'health':'b'*40}
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for name, value in {**defaults, **overrides}.items():
+                if isinstance(value, BaseException) or isinstance(value, list) and name != 'pin_executables':
+                    stack.enter_context(patch.object(m,name,side_effect=value))
+                else:
+                    stack.enter_context(patch.object(m,name,return_value=value))
+            if waits is not None: stack.enter_context(patch.object(m,'await_state',side_effect=waits))
+            kill = stack.enter_context(patch.object(m.os,'kill',wraps=os.kill))
+            killpg = stack.enter_context(patch.object(m.os,'killpg',wraps=os.killpg))
+            launch = stack.enter_context(patch.object(m,'launch',side_effect=[Mock(pid=111),Mock(pid=222)]))
+            stack.enter_context(patch('sys.argv',argv))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            code = m.main()
+        return code, json.loads(out.getvalue()), kill, killpg, launch
+
+    def test_every_pre_sigterm_error_writes_status_file_and_signals_nothing(self):
+        cases = [
+            ('invalid_process_or_port', {}, '80'),
+            ('build_missing', {'stage_path': m.LaunchError('build_missing')}, '3100'),
+            ('same_stage_refused', {'stage_path': [Path('/new'), Path('/new')]}, '3100'),
+            ('env_permissions_refused', {'read_env': m.LaunchError('env_permissions_refused')}, '3100'),
+            ('required_env_missing_DB_PATH', {'read_env': {}}, '3100'),
+            ('runtime_env_override_refused', {'read_env': {**ENV, 'NODE_OPTIONS': '--require=/x'}}, '3100'),
+            ('verified_backup_required', {'check_database_backup': m.LaunchError('verified_backup_required')}, '3100'),
+            ('runtime_untrusted', {'pin_executables': m.LaunchError('runtime_untrusted')}, '3100'),
+            ('unexpected_process_ancestry', {'check_process': m.LaunchError('unexpected_process_ancestry')}, '3100'),
+            ('env_port_mismatch', {'read_env': {**ENV, 'PORT': '3999'}}, '3100'),
+            ('pid_stage_mismatch', {'pid_cwd': Path('/elsewhere')}, '3100'),
+            ('pid_listener_mismatch', {'owns_listener': [False]}, '3100'),
+            ('live_commit_mismatch', {'health': 'c'*40}, '3100'),
+            ('pid_changed', {'owns_listener': [True, False]}, '3100'),
+            ('supervised_process_refused', {'check_process': [None, m.LaunchError('supervised_process_refused')]}, '3100'),
+            ('operation_failed', {'pin_executables': RuntimeError('SYNTHETIC_SECRET_607 in an exception message')}, '3100'),
+        ]
+        for index, (expected, overrides, port) in enumerate(cases):
+            with self.subTest(expected=expected):
+                status = self.root/('status-%d.json' % index)
+                code, printed, kill, killpg, launch = self.main(self.argv(status, port), overrides)
+                self.assertEqual(code, 1)
+                self.assertEqual(status.stat().st_mode & 0o777, 0o600)
+                written = json.loads(status.read_text())
+                self.assertEqual(written, printed)
+                self.assertEqual(written['status'], expected); self.assertEqual(written['phase'], 'preflight')
+                self.assertEqual(written['service_changed'], 'unknown' if expected == 'operation_failed' else False)
+                self.assertEqual(set(written), {'status', 'service_changed', 'phase'})
+                self.assertNotIn('SYNTHETIC_SECRET_607', status.read_text())
+                kill.assert_not_called(); killpg.assert_not_called(); launch.assert_not_called()
+                self.assertIsNone(self.stub.poll()); self.assertFalse(self.hit.exists())
+
+    def test_status_file_is_exclusive_and_refused_before_any_gate(self):
+        existing = self.root/'existing.json'; existing.write_text('keep')
+        target = self.root/'target.json'; target.write_text('keep')
+        link = self.root/'link.json'; link.symlink_to(target)
+        for path in [existing, link, self.root/'missing-dir'/'status.json']:
+            with self.subTest(path=path.name), patch.object(m,'run') as gate:
+                code, printed, kill, _, _ = self.main(self.argv(path))
+                self.assertEqual((code, printed), (1, {'status': 'status_file_unavailable', 'service_changed': False, 'phase': 'preflight'}))
+                gate.assert_not_called(); kill.assert_not_called()
+        self.assertEqual(existing.read_text(), 'keep'); self.assertEqual(target.read_text(), 'keep')
+        self.assertIsNone(self.stub.poll()); self.assertFalse(self.hit.exists())
+
+    def test_post_signal_outcomes_record_their_phase(self):
+        for waits, expected, phase in [([True, True], 'deployed', 'new_start'), ([True, False, True, True], 'rolled_back', 'rollback_start'), ([False], 'old_listener_did_not_stop', 'old_signalled')]:
+            with self.subTest(expected=expected), patch.object(m.os, 'kill') as fake_kill:
+                status = self.root/(expected + '.json')
+                code, printed, _, _, _ = self.main(self.argv(status), waits=waits)
+                written = json.loads(status.read_text())
+                self.assertEqual(written, printed); self.assertEqual((written['status'], written['phase']), (expected, phase))
+                self.assertTrue(written['service_changed']); fake_kill.assert_called_once()
+
+    def test_status_vocabulary_covers_every_code_the_helper_can_report(self):
+        import ast
+        tree = ast.parse(Path(m.__file__).read_text())
+        found = {'required_env_missing_' + n for n in ['DB_PATH', 'DAZL_MASTER_KEY', 'PUBLIC_BASE_URL']}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'LaunchError' and node.args and isinstance(node.args[0], ast.Constant):
+                found.add(node.args[0].value)
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if isinstance(key, ast.Constant) and key.value == 'status' and isinstance(value, ast.Constant):
+                        found.add(value.value)
+        self.assertGreater(len(found), 35)
+        self.assertEqual(found - m.STATUS_CODES, set())
+        self.assertTrue(all(re.fullmatch(r'[A-Za-z0-9_]+', code) for code in m.STATUS_CODES | m.PHASES))
 
 
 if __name__=='__main__': unittest.main()
