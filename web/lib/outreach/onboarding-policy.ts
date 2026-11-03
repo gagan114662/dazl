@@ -32,6 +32,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { conversionEventFor } from './lifecycle.ts'
+import { tableExists } from './send-budget.ts'
 
 export const ONBOARDING_POLICY_VERSION = '2026-11-02'
 
@@ -177,10 +178,36 @@ export function enrollOnboarding(db: Database.Database, tenantId: string, rawEma
   if (!activeOnboardingPolicy(db, tenantId)) return 'no_policy'
   const conv = conversionEventFor(db, email)
   if (!conv) return 'not_customer'
+  return insertEnrollment(db, tenantId, email, conv.kind, now)
+}
+
+function insertEnrollment(db: Database.Database, tenantId: string, email: string, kind: string, now: number): 'enrolled' | 'already' {
   const ins = db.prepare('INSERT INTO onboarding_enrollments (tenant_id, email, source, enrolled_at) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, email) DO NOTHING')
-    .run(tenantId, email, `conversion:${conv.kind}`.slice(0, 60), now) as { changes: number }
-  if (ins.changes === 1) auditOnboarding(db, tenantId, 'enrolled', `conversion:${conv.kind}`, now) // never the email: audit is content-free consent evidence
+    .run(tenantId, email, `conversion:${kind}`.slice(0, 60), now) as { changes: number }
+  if (ins.changes === 1) auditOnboarding(db, tenantId, 'enrolled', `conversion:${kind}`, now) // never the email: audit is content-free consent evidence
   return ins.changes === 1 ? 'enrolled' : 'already'
+}
+
+const ACTIVE_POLICY_SQL = 'SELECT 1 AS x FROM onboarding_policies WHERE tenant_id = ? AND withdrawn_at IS NULL AND policy_version = ?'
+
+// The conversion transition (#417), called by lifecycle.ts INSIDE the transaction that activates a conversion
+// and stops the address's queued acquisition work, once per tenant whose work it stopped (`email` is already
+// normalized and the conversion is activated by then). Enrolls only under that tenant's active, current-version
+// policy; otherwise it is a no-op ('no_policy'). No migration/DDL: it runs inside the caller's (possibly
+// lease-fenced) transaction, and a store without the policy tables holds no policy, so it enrolls nothing.
+export function transitionToOnboarding(db: Database.Database, tenantId: string, email: string, kind: string, now: number): EnrollOutcome {
+  if (!tableExists(db, 'onboarding_policies')) return 'no_policy'
+  if (!db.prepare(ACTIVE_POLICY_SQL).get(tenantId, ONBOARDING_POLICY_VERSION)) return 'no_policy'
+  return insertEnrollment(db, tenantId, email, kind, now)
+}
+
+// The same transition on the Db layer (the billing webhook's payment conversion), statement for statement.
+export function* transitionToOnboardingTx(t: Tx, tenantId: string, email: string, kind: string, now: number): TxBody<EnrollOutcome> {
+  if (!(yield* t.get(ACTIVE_POLICY_SQL, [tenantId, ONBOARDING_POLICY_VERSION]))) return 'no_policy'
+  const ins = yield* t.run('INSERT INTO onboarding_enrollments (tenant_id, email, source, enrolled_at) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, email) DO NOTHING', [tenantId, email, `conversion:${kind}`.slice(0, 60), now])
+  if (ins.changes !== 1) return 'already'
+  yield* t.run('INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)', [randomBytes(12).toString('hex'), tenantId, 'enrolled', `conversion:${kind}`, now])
+  return 'enrolled'
 }
 
 // The gate every onboarding/customer-success sender must pass BEFORE building or sending anything:
