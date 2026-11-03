@@ -64,7 +64,7 @@ test('crawlJob stores each contact with its source page and date; the site is re
   const reads: string[] = []
   const get: Get = async url => { const u = new URL(url); reads.push(u.hostname + u.pathname); const p = pages[u.pathname]; return p ? { status: 200, body: p.body, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
-  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check') ORDER BY lead_id").all()
+  const rows = db.prepare("SELECT lead_id, kind, value, source_url, source_date, connector FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check', 'tech_scan') ORDER BY lead_id").all()   // tech_scan: the #389 per-crawl observation, tested in tech-observations.test.ts
   const em = (id: string) => ({ lead_id: id, kind: 'email', value: 'hello@stabyl.com', source_url: 'https://stabyl.com/contact-us', source_date: '2026-10-20', connector: 'sitecrawl' })
   assert.deepEqual(rows, [em('l1'), em('l2')], 'a second lead naming the same company on the same domain gets its own rows')
   // Each accepted domain also records that its identity check passed (what the contact sweep and the score read), once per lead.
