@@ -338,10 +338,15 @@ export function addEnrichment(db: Database.Database, tenantId: string, leadId: s
   ).run(randomBytes(12).toString('hex'), leadId, tenantId, e.connector, e.kind, e.value, e.label, e.confidence, e.source_url, e.source_date, e.retrieved_at)
 }
 
+// Internal records kept in lead_enrichments that are never shown to a user: the #377 timing-proof record (a JSON binding
+// read only by lib/scan/timing-proof.ts). The display projection below (Leads API -> Leads UI) leaves them out; the human
+// timing state reaches the UI as the leads route's timing_proof_gap instead.
+export const INTERNAL_ENRICHMENT_KIND = 'timing_proof'
+
 export function enrichmentsForLeads(db: Database.Database, tenantId: string, leadIds: string[]): Record<string, Enrichment[]> {
   const out: Record<string, Enrichment[]> = {}
   if (leadIds.length === 0) return out
-  const rows = db.prepare(`SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')})`).all(tenantId, ...leadIds) as (Enrichment & { lead_id: string })[]
+  const rows = db.prepare(`SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')}) AND kind <> '${INTERNAL_ENRICHMENT_KIND}'`).all(tenantId, ...leadIds) as (Enrichment & { lead_id: string })[]
   for (const { lead_id, ...e } of rows) (out[lead_id] ??= []).push(e)
   return out
 }

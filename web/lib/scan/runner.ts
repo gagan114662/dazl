@@ -45,6 +45,8 @@ import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngrade
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
 import { applyRejections, readRejections, stripRejectedPeople, type Rejections } from './feedback.ts'
 import { enrichJobSignals } from '../signals/index.ts'
+import { techQueries } from '../signals/tech-observations.ts'
+import { compileTargeting, planConditions } from './targeting.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
@@ -63,6 +65,7 @@ import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts
 import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
+import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
@@ -717,10 +720,14 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // tracking hosts (Greenhouse, Ashby, Lever), which small local businesses (dental practices, shops) rarely use, and with
   // three places they used to take 6 of the 8 searches and leave the open searches 2.
   const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(tfLimits().searchesPerScan / 2))
-  const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length)) // the rest of the search budget after the reserved direct queries
+  // #389: an explicit technology filter ("Shopify stores", "migrated from WordPress to Webflow") gets at most 2 announcement-style queries so
+  // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
+  // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
+  const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, tfLimits().searchesPerScan - direct.length - 2))
+  const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
   const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, modelQueries)
   if (diag) diag.info.query_source = plan.source
-  const q = withGeography([...direct, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
+  const q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
@@ -1371,6 +1378,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     // The same facts go beside each lead and into the run report, so the card and the report agree.
     try {
       const y = recordActionability(db, job, heldByGate)
+      // #377: the durable timing proof is written from the actionability verdict just recorded; a failed write leaves no record, which holds.
+      try { recordTimingProof(db, job) } catch (e) { console.error('timing proof record failed', e instanceof Error ? e.message : 'error') }
       // A lead the gate passed whose durable pass record could not be saved is held by the draft guard (default-deny); the report says so too, with the same reason.
       const extra = (y.held_leads ?? []).filter(h => !heldByGate.has(h.id))
       if (extra.length) { markHeldInProcess(job.user_id, extra.map(h => h.id)); reconcileRunReport(db, job.id, job.attempts, extra.map(h => ({ company: h.company, url: h.url, reason: 'sales_hiring_check_failed' }))) }

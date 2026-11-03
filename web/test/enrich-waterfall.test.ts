@@ -40,8 +40,35 @@ for (const [why, apollo] of [
     const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
     const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apollo, async () => ok(PDL_OK), calls), master })
     assert.deepEqual(attached(db), ['enrich:pdl:Pdl Person - Practice Manager']); assert.deepEqual(r.byProvider, { apollo: 0, pdl: 1 }); assert.equal(calls.pdl, 1)
+    // #382: each provider's outcome for the lead is recorded, in waterfall order, with Apollo's failure by its own code
+    const code = { empty: 'empty', '401': 'auth', '429': 'rate_limited', timeout: 'timeout', '5xx': 'upstream' }[why]
+    assert.deepEqual(r.outcomes, [{ leadId: 'lead1', provider: 'apollo', outcome: code, attached: 0 }, { leadId: 'lead1', provider: 'pdl', outcome: 'attached', attached: 1 }])
   })
 }
+
+test('#382 outcomes: a verified Apollo result stops the waterfall - one outcome, PDL neither called nor recorded', async () => {
+  const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), calls), master })
+  assert.deepEqual(r.outcomes, [{ leadId: 'lead1', provider: 'apollo', outcome: 'attached', attached: 1 }]); assert.equal(calls.pdl, 0)
+})
+
+test('#382 outcomes: wrong-company candidates record "rejected" for both providers, nothing attached', async () => {
+  const { db, jobId, leads } = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  const wrong = { data: [{ full_name: 'Wrong Person', job_title: 'Manager', job_company_website: 'harbordental.example', job_company_location_locality: 'pico rivera', job_company_location_region: 'california', job_company_location_country: 'united states' }] }
+  const other = { ...PERSON, organization: { name: 'Totally Different Co', primary_domain: 'different.example' } }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([other]), async () => ok(wrong), calls), master })
+  assert.deepEqual(r.outcomes.map(o => `${o.provider}:${o.outcome}`), ['apollo:rejected', 'pdl:rejected']); assert.deepEqual(attached(db), [])
+})
+
+test('#382 timeout: an aborted call is audited as "timeout" (not a generic error) and its claim stays held', async () => {
+  const { db, jobId, leads } = seed(1, false); const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async () => { throw new DOMException('aborted', 'AbortError') }, async () => ok(PDL_OK), calls), master })
+  assert.deepEqual(r.outcomes.map(o => o.outcome), ['timeout'])
+  const st = statuses(db); assert.ok(st.includes('apollo:timeout') && !st.includes('apollo:error'), JSON.stringify(st))
+  assert.equal(st.filter(s => s === 'apollo:timeout').length, 2, 'one row per timed-out call (org + people), no duplicate org failure row')
+  const held = db.prepare("SELECT count(*) AS n FROM connector_claims WHERE tenant_id = 'u1' AND status = 'reserved'").get() as { n: number }
+  assert.equal(held.n, 2, 'a timed-out (maybe billed) call is never treated as terminal')
+})
 
 // The pre-existing owner-retry tests exercise the mechanics for an operator-VERIFIED account; the default (unverified) is its own test below.
 process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = 'apollo,pdl'
@@ -132,6 +159,22 @@ test('default OFF: both keys saved without the opt-in never touch PDL (the old "
   const calls: Calls = { apollo: 0, pdl: 0 }
   await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async (u: string) => (u.includes('organizations') ? ok({ organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }) : ok({ people: [] })), async () => ok(PDL_OK), calls), master })
   assert.ok(calls.apollo > 0); assert.equal(calls.pdl, 0) // no opt-in -> no PDL call, no credit
+})
+
+test('#382 fallback off is visible: Apollo leaves a lead empty and a saved PDL key is outside the opt-in -> one audited notice, still no PDL call', async () => {
+  const { db, jobId, leads } = seed(2, false); saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
+  const calls: Calls = { apollo: 0, pdl: 0 }
+  const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(apolloWith([]), async () => ok(PDL_OK), calls), master })
+  assert.equal(calls.pdl, 0)
+  assert.deepEqual(r.outcomes.filter(o => o.provider === 'pdl').map(o => `${o.leadId}:${o.outcome}`), ['lead1:fallback_off', 'lead2:fallback_off'])
+  assert.equal(statuses(db).filter(s => s === 'pdl:fallback_off').length, 1, 'audited once per pass, not per lead')
+  // Apollo found someone: no notice (the fallback would not have run anyway); no PDL key at all: no notice
+  const a = seed(1, false); saveCredential(a.db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master)
+  const ra = await enrichLeadContacts(a.db, 'u1', a.jobId, a.leads, { fetchImpl: router(apolloWith([PERSON]), async () => ok(PDL_OK), { apollo: 0, pdl: 0 }), master })
+  assert.ok(!ra.outcomes.some(o => o.outcome === 'fallback_off'))
+  const b = seed(1, false)
+  const rb = await enrichLeadContacts(b.db, 'u1', b.jobId, b.leads, { fetchImpl: router(apolloWith([]), async () => ok(PDL_OK), { apollo: 0, pdl: 0 }), master })
+  assert.ok(!rb.outcomes.some(o => o.outcome === 'fallback_off'))
 })
 test('opt-in toggle: enabling then disabling the flag controls the fallback exactly', async () => {
   const { db } = seed(1, false)

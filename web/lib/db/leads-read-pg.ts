@@ -5,6 +5,7 @@
 // Works against any PgQueryable (pg.Pool, pg.Client, or pg-mem's adapter).
 import type { LeadsReadDb } from './leads-read.ts'
 import { STALE_RUNNING_S, MAX_ATTEMPTS } from '../scan/store.ts'
+import { INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { GAPS_S, TEST_GAPS_S, MAX_STEPS } from '../outreach/sequences.ts'
 import { eventTimingFresh } from '../events/store.ts'
 import type { CompanyEventRow, EventScope, EventType } from '../events/store.ts'
@@ -125,7 +126,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
       if (leadIds.length === 0) return out as never
       const ph = leadIds.map((_, i) => `$${i + 2}`).join(',')
       const { rows } = await pg.query(
-        `SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = $1 AND lead_id IN (${ph})`,
+        `SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = $1 AND lead_id IN (${ph}) AND kind <> '${INTERNAL_ENRICHMENT_KIND}'`,
         [tenantId, ...leadIds],
       )
       for (const row of rows as ({ lead_id: string } & Record<string, unknown>)[]) {

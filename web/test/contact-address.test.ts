@@ -91,7 +91,7 @@ test('CRAWLER: two same-name sites - the Pico Rivera, CA homepage (other street 
   }
   const get = async (url: string) => { const u = new URL(url); const b = pages[u.hostname + u.pathname]; return b !== undefined ? { status: 200, body: b, finalUrl: url } : u.pathname === '/robots.txt' ? { status: 200, body: '', finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, now: Date.parse('2026-10-20T12:00:00Z') })
-  const rows = (id: string) => db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE lead_id = ? AND kind <> 'domain'").all(id) as { kind: string; value: string; label: string }[]
+  const rows = (id: string) => db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE lead_id = ? AND kind NOT IN ('domain', 'tech_scan')").all(id) as { kind: string; value: string; label: string }[]
   assert.deepEqual(rows('wrong').map(r => [r.kind, r.label]), [['contact_rejected', 'contact_address_mismatch']], JSON.stringify(rows('wrong')))
   assert.match(rows('wrong')[0].value, /^contact rejected: address mismatch 8500 whittier blvd vs 57 w 57th st/)
   assert.deepEqual(rows('right').filter(r => r.kind !== 'domain_check').map(r => [r.kind, r.value]), [['email', 'hello@smileavenuedental.com']], 'the practice at the lead’s own address attaches')
