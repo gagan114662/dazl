@@ -67,6 +67,7 @@ import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
+import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -509,9 +510,39 @@ function assertOwned(db: Database.Database, job: Job): void {
   if (d && d.now() > d.at) throw new ScanTimedOut()
 }
 
+// #386 lookalike scans (lib/scan/lookalike-discovery.ts lookalikeOf): the run never brings back an account the tenant
+// supplied (customer, won opportunity, competitor, negative example). A block that is present but unreadable is UNKNOWN,
+// never "nothing supplied": every candidate is then dropped as lookalike_unreadable.
+// Per attempt: the run's candidate audit (so a row dropped at finish() is explained there too) and the count dropped
+// before the verifier, merged into the job's drop reasons at finish().
+const lookalikeRuns = new WeakMap<Job, { audit: CandidateAudit[]; dropped: Record<string, number> }>()
+export function dropSupplied<T extends LeadDraft>(job: Job, list: T[], audit?: CandidateAudit[]): T[] {
+  const la = lookalikeOf(job)
+  if (!la || list.length === 0) return list
+  const run = lookalikeRuns.get(job) ?? { audit: audit ?? [], dropped: {} }
+  if (audit) run.audit = audit
+  lookalikeRuns.set(job, run)
+  const r = la === 'unreadable' ? { kept: [] as T[], dropped: list.map(row => ({ row, reason: 'lookalike_unreadable' })) } : dropKnown(la, list)
+  for (const d of r.dropped) {
+    run.dropped[d.reason] = (run.dropped[d.reason] ?? 0) + 1
+    const key = `${dedupKey(d.row)}|${d.row.source_url}`, e = run.audit.find(a => a.key === key)
+    if (e) { e.outcome = 'dropped'; e.reason = d.reason } else run.audit.push({ key, company: d.row.company, url: d.row.source_url, outcome: 'dropped', reason: d.reason })
+  }
+  return r.kept
+}
+// finish(): the authoritative pass over every row about to be stored (verified, review, walled, fallback), so no path
+// around the pre-verifier drop can store a supplied account.
+function excludeSupplied(job: Job, out: VerifyOutcome): void {
+  if (!lookalikeOf(job)) return
+  out.leads = dropSupplied(job, out.leads); out.review = dropSupplied(job, out.review)
+  for (const [k, n] of Object.entries(lookalikeRuns.get(job)?.dropped ?? {})) out.dropped[k] = (out.dropped[k] ?? 0) + n
+  lookalikeRuns.delete(job)
+}
+
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
 // has a higher attempts number), so a slow old run cannot clobber a newer one.
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
+  if (out) excludeSupplied(job, out)
   const leads = out?.leads ?? []
   const review = out?.review ?? []
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
@@ -1135,6 +1166,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         // any other complaint-search failure only means no extra candidates
       }
     }
+    // #386: a lookalike scan drops the accounts the tenant supplied before any page is fetched for them.
+    for (const list of [leads, walledLeads, selfDescribedLeads]) { const kept = dropSupplied(job, list, audit); if (kept !== list) list.splice(0, list.length, ...kept) }
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,
     // so the user gets the slot back instead of a silent empty result.
     if (leads.length === 0 && walledLeads.length === 0 && selfDescribedLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }

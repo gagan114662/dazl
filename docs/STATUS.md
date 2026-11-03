@@ -179,7 +179,8 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
    advantages, start once 1-7 ship.
 9. #386 real lookalikes, #388 tested source coverage, #389 technographics, #390 first-party signals, #391
-   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority. #386 in review: b/386-outcome-lookalikes (supplied customers +
+   negatives -> held-out-checked features -> scan profile; supplied accounts never returned; docs/design/lookalike-discovery.md).
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
     as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
 

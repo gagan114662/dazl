@@ -137,6 +137,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'scan/csv', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/icp-from-url', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/icp', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'scan/lookalike', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/jobs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'scan/latest', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'scan/estimate', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },

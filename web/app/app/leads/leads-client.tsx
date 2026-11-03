@@ -1134,6 +1134,13 @@ export default function LeadsClient() {
                   : <>Not enough past fit-4+ or interested-reply leads for a lookalike signal yet ({l.lookalike.cohort_size} of 3 needed) - nothing is invented in the meantime.</>}
               </div>
             )}
+            {(() => { const lf = (l as Lead & { lookalike_fit?: { fit: number; reasons: string[]; readiness: 'lookalike_only' | 'lookalike_with_event'; label: string; basis: string } | null }).lookalike_fit; return lf ? (
+              <div className="text-xs mt-1 text-gray-400" data-testid="lookalike-fit">
+                <div className={lf.readiness === 'lookalike_with_event' ? 'text-[#111]' : ''}>{lf.label} - fit {Math.round(lf.fit * 100)}% to your supplied customers</div>
+                {lf.reasons.length > 0 ? lf.reasons.map((r, i) => <div key={`lf${i}`}>+ {r}</div>) : <div>No discriminating customer feature appears in this lead&apos;s own evidence.</div>}
+                <div className="text-gray-500">{lf.basis}. Fit to past customers is not buying intent.</div>
+              </div>
+            ) : null })()}
             {l.events && l.events.length > 0 && (
               <div className="text-xs mt-1 space-y-0.5">
                 <div className="text-gray-500 uppercase tracking-wide text-[10px]">Company history</div>
