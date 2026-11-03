@@ -179,7 +179,10 @@ test('world_closed: a page the World does not have is a recorded miss, answered 
   const { kase, world } = await base()
   delete world.pages['https://news.example/london/querix-seed']
   const r = await replayCase(kase, world)
-  assert.deepEqual(r.misses, [{ kind: 'page', key: 'https://news.example/london/querix-seed' }])
+  assert.deepEqual(r.misses.filter(m => m.kind === 'page'), [{ kind: 'page', key: 'https://news.example/london/querix-seed' }])
+  // #381: with nothing verified, the adaptive round asks one unused profile signal; the frozen World has no answer for
+  // that search either, so it is a recorded miss too (never sent live), not a page and not a model reply
+  assert.ok(r.misses.filter(m => m.kind !== 'page').every(m => m.kind === 'search'), JSON.stringify(r.misses))
   assert.equal(statuses(worldClosed, { kase, world, result: r }).run, 'fail')
   assert.equal(r.leads.find(l => l.company === 'Querix')?.review_reason ?? 'absent', 'absent') // the verifier saw an error page, so Querix is not verified
   // a model stage the World cannot answer is a miss too (and the scan fails rather than inventing a reply)
