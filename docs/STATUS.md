@@ -41,6 +41,11 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/395-evidence-verifier (#395, part): independent evidence verifier service (`web/lib/verifier/`, design in
+  docs/design/evidence-verifier.md, PG 0045 `evidence_verdicts`, after #385's 0044). Blinded claim, its own re-fetch of
+  every cited source, its own deterministic checks, a judge only for predicates (none configured: predicates hold),
+  versioned replayable records, its own tenant budget. Not called by any scan yet; stubbed fetchers only, nothing live.
+
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
   fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
