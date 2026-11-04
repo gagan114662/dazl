@@ -4,7 +4,7 @@
 // RCLONE_TIMEOUT_S (a positive integer, default 120; anything else is 120) and any rclone failure throws, naming the
 // subcommand and exit code only (never a path or a remote's credentials).
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { chmodSync, chownSync, copyFileSync, existsSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 
@@ -57,7 +57,13 @@ export function openDest(spec: string): OffhostDest {
     list: () => { if (!existsSync(d) || !statSync(d).isDirectory()) throw new Error('directory not found'); return readdirSync(d) },
     read: n => { guard(n); return readFileSync(path.join(d, n), 'utf8') },
     fetch: (n, to) => { guard(n); copyFileSync(path.join(d, n), to) },
-    put: (from, n) => { guard(n); const p = path.join(d, n); copyFileSync(from, p + '.partial'); chmodSync(p + '.partial', 0o600); renameSync(p + '.partial', p) },
+    // run as root (config-backup.mts), the file is handed to the directory's owner: the app user's backup-check and
+    // prune must be able to read and remove what root wrote there
+    put: (from, n) => {
+      guard(n); const p = path.join(d, n); copyFileSync(from, p + '.partial'); chmodSync(p + '.partial', 0o600)
+      if (process.getuid?.() === 0) { const o = statSync(d); chownSync(p + '.partial', o.uid, o.gid) }
+      renameSync(p + '.partial', p)
+    },
     remove: n => { guard(n); unlinkSync(path.join(d, n)) },
   }
 }

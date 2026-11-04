@@ -10,6 +10,9 @@ Description=dazl secrets/config bundle (encrypted, master key excluded)
 Type=oneshot
 User=root
 EnvironmentFile=/etc/dazl-backup/env
+# for OFFHOST_DEST=rclone:REMOTE:PATH: the SAME remote the app user's backups use (root has no rclone config of its own).
+# A directory destination: files are handed to the directory's owner, so the app user's monitor can read them.
+Environment=RCLONE_CONFIG=/home/CHANGE-ME-app-user/.config/rclone/rclone.conf
 WorkingDirectory=CHANGE-ME-release/web
 ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/config-backup.mts --state-dir /var/lib/dazl-backup
 TimeoutStartSec=10min

@@ -12,7 +12,7 @@
 //   - the off-host destination cannot be listed (when one is configured).
 // Never deleted: anything not named dazl-backup-<YYYYMMDDTHHMMSSZ>-..., a timestamp more than 300 s in the future
 // (counted as an anomaly), a local backup with an unreadable sidecar, and - when an off-host destination is configured -
-// a local backup that has no off-host copy yet. dazl-config-* bundles are tiny and change rarely: never pruned.
+// a local backup that has no complete off-host copy yet (its .age AND its .age.json). dazl-config-* bundles are tiny and change rarely: never pruned.
 // Each deletion is attempted independently; a failure is reported and makes the exit 1, the rest still run.
 //   node --experimental-strip-types scripts/backup/prune-backups.mts --dir BACKUP_DIR [--offhost DEST] [--drill-report F] [--dry-run]
 // Prints one JSON line: kept / deleted / failed counts and names (file names only). Exit 0 ok; 1 refused or a failed
@@ -99,7 +99,8 @@ const del = (label: string, f: () => void) => {
 const localKeep = new Set(locals.slice(0, retain.local).map(l => l.f))
 for (const l of locals) {
   if (localKeep.has(l.f)) continue
-  if (dest && !remoteSet.has(`${l.f}.age.json`)) { anomalies.push(`${l.f}: no off-host copy yet (kept)`); continue }
+  // both halves of the copy must be there: a manifest alone (an interrupted copy or prune) is not an off-host copy
+  if (dest && !(remoteSet.has(`${l.f}.age`) && remoteSet.has(`${l.f}.age.json`))) { anomalies.push(`${l.f}: no off-host copy yet (kept)`); continue }
   del(l.f, () => { unlinkSync(path.join(dir, l.f)); unlinkSync(path.join(dir, l.f + '.json')) })
 }
 out.local = { total: locals.length, kept: locals.length - deleted.length - failed.length }

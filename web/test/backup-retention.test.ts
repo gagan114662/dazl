@@ -92,11 +92,13 @@ test('never deleted: unreadable sidecars, future timestamps, and local backups w
   const fut = `dazl-backup-${stamp(Date.now() + 2 * DAY)}-ffffffff.db`
   writeFileSync(path.join(b.dir, fut), 'f'); writeFileSync(path.join(b.dir, fut + '.json'), JSON.stringify({ sha256: 'x', createdAt: new Date(Date.now() + 2 * DAY).toISOString() }))
   const dest = offhost([b.names[0], b.names[1], b.names[2]]) // names[3] was never copied off-host
+  rmSync(path.join(dest, b.names[2] + '.age')) // names[2]: only its manifest made it (an interrupted copy)
   const r = run('prune-backups.mts', ['--dir', b.dir, '--offhost', dest], { RETAIN_LOCAL: '1' })
   assert.equal(r.code, 0, r.out)
-  assert.deepEqual((r.json.deleted as string[]).sort(), [b.names[1], b.names[2]].sort())
+  assert.deepEqual(r.json.deleted as string[], [b.names[1]], 'a manifest without its ciphertext is not an off-host copy')
+  assert.ok(existsSync(path.join(b.dir, b.names[2])), 'the local backup whose copy is half there is kept')
   const an = (r.json.anomalies as string[]).join('\n')
-  assert.match(an, /unreadable sidecar \(kept\)/); assert.match(an, /future timestamp \(kept\)/); assert.match(an, new RegExp(`${b.names[3]}: no off-host copy yet`))
+  assert.match(an, /unreadable sidecar \(kept\)/); assert.match(an, /future timestamp \(kept\)/); assert.match(an, new RegExp(`${b.names[3]}: no off-host copy yet`)); assert.match(an, new RegExp(`${b.names[2]}: no off-host copy yet`))
   for (const f of [b.names[3], b.names[4], fut]) assert.ok(existsSync(path.join(b.dir, f)))
   assert.equal(r.json.newest, b.names[0], 'a future-dated backup is never taken as the newest')
 })
