@@ -235,6 +235,42 @@ CREATE TABLE evidence_purge_audit (
 
 CREATE TABLE evidence_purge_gate (tenant_id TEXT PRIMARY KEY);
 
+CREATE TABLE experiment_arm_claims (
+      tenant_id     TEXT NOT NULL,
+      experiment_id TEXT NOT NULL,
+      prospect_key  TEXT NOT NULL,
+      arm           TEXT NOT NULL,
+      claimed_at    INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, experiment_id, prospect_key)
+    );
+
+CREATE TABLE experiment_events (
+      id            TEXT PRIMARY KEY,
+      tenant_id     TEXT NOT NULL,
+      experiment_id TEXT NOT NULL,
+      action        TEXT NOT NULL CHECK (action IN ('create','start','pause','stop','claim')),
+      outcome       TEXT NOT NULL CHECK (outcome IN ('ok','noop','refused','already_claimed')),
+      reason        TEXT,
+      prospect_key  TEXT,
+      arm           TEXT,
+      created_at    INTEGER NOT NULL
+    );
+
+CREATE TABLE experiments (
+      tenant_id      TEXT NOT NULL,
+      id             TEXT NOT NULL,
+      config_json    TEXT NOT NULL,
+      status         TEXT NOT NULL CHECK (status IN ('draft','running','paused','stopped')),
+      volume_cap     INTEGER NOT NULL CHECK (volume_cap > 0),
+      claimed_count  INTEGER NOT NULL DEFAULT 0 CHECK (claimed_count >= 0 AND claimed_count <= volume_cap),
+      claim_attempts INTEGER NOT NULL DEFAULT 0,
+      created_at     INTEGER NOT NULL,
+      started_at     INTEGER,
+      paused_at      INTEGER,
+      stopped_at     INTEGER,
+      PRIMARY KEY (tenant_id, id)
+    );
+
 CREATE TABLE followup_messages (
       tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, step INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('sending','sent','uncertain')),
       gmail_id TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id, step)
@@ -1161,6 +1197,8 @@ CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
 CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
 
+CREATE INDEX experiment_events_exp ON experiment_events (tenant_id, experiment_id, created_at);
+
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
 
 CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
@@ -1382,6 +1420,12 @@ CREATE TRIGGER tomb_email_tokens BEFORE INSERT ON email_tokens BEGIN SELECT NEW.
 
 CREATE TRIGGER tomb_evidence_purge_audit BEFORE INSERT ON evidence_purge_audit BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_experiment_arm_claims BEFORE INSERT ON experiment_arm_claims BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_experiment_events BEFORE INSERT ON experiment_events BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_experiments BEFORE INSERT ON experiments BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_followup_messages BEFORE INSERT ON followup_messages BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_followup_threads BEFORE INSERT ON followup_threads BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1569,6 +1613,12 @@ CREATE TRIGGER tomb_upd_email_patterns BEFORE UPDATE OF tenant_id ON email_patte
 CREATE TRIGGER tomb_upd_email_tokens BEFORE UPDATE OF user_id ON email_tokens BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_evidence_purge_audit BEFORE UPDATE OF tenant_id ON evidence_purge_audit BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_experiment_arm_claims BEFORE UPDATE OF tenant_id ON experiment_arm_claims BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_experiment_events BEFORE UPDATE OF tenant_id ON experiment_events BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_experiments BEFORE UPDATE OF tenant_id ON experiments BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_followup_messages BEFORE UPDATE OF tenant_id ON followup_messages BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
