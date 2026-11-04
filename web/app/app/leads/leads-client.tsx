@@ -1246,7 +1246,7 @@ export default function LeadsClient() {
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
                 <QualifyPreview leadId={l.id} allowRun={l.source_kind === 'hiring_feed'} sourceBlocked={['blocked_by_site','login_required'].includes(l.review_reason ?? '')} />
                 {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
-                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}"{l.evidence_excerpt}"{l.evidence_translation && <span className="block" data-testid="evidence-translation" lang="en">Translation (not evidence): {l.evidence_translation}</span>}</div>
+                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}&quot;{l.evidence_excerpt}&quot;{l.evidence_translation && <span className="block" data-testid="evidence-translation" lang="en">Translation (not evidence): {l.evidence_translation}</span>}</div>
                 )}
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
                 {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">
