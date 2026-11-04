@@ -116,6 +116,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach/followups', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/inbox', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/inbox', method: 'POST', auth: 'session', crossTenant: { covered: 'inbox-route.test.ts' }, role: 'operate' },
+  { path: 'outreach/inbox/fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'owners' },
+  { path: 'outreach/inbox/fixture', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'owners' },
 
   { path: 'outreach/polish', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'outreach/reopen', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },

@@ -44,6 +44,7 @@ export const DEGRADED: Record<string, Degraded> = {
   'scan-estimate': 'local',   // read-only price estimate: no provider call, queues and counts nothing
   'audit-denied': 'local',    // only spaces out the audit trail's own refusal events; the refusal itself never waits on it
   send: 'local', draft: 'local', reopen: 'local', sequences: 'local', 'ranking-fixture': 'local', 'verification-fixture': 'local',
+  'inbox-fixture': 'local',   // test-only inbox fixture (#369): the designated test tenant's own rows; no provider or send
 }
 // The kind of a key is the longest listed prefix followed by ':' (keys may hold IPv6 addresses or emails after it).
 export function degradedPolicy(key: string): Degraded {
