@@ -1,4 +1,4 @@
-// SQLite DDL for the revenue pipeline (#366, lib/pipeline/deals.ts). PG: lib/db/migrations/pg/0049_revenue_pipeline.sql.
+// SQLite DDL for the revenue pipeline (#366, lib/pipeline/deals.ts). PG: lib/db/migrations/pg/0047_revenue_pipeline.sql.
 //   deals                - one canonical deal per qualified conversation (UNIQUE tenant, thread), its current state
 //   deal_stage_events    - append-only history: one full snapshot per change (UPDATE refused), so any past state of a
 //                          deal is the latest event at or before that time
