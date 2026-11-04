@@ -75,7 +75,7 @@ test('ownNamesFrom (#401 review): subdomains and short brands resolve to the reg
 bothEngines('a website-only seller on a subdomain still excludes its own CEO through the production rubric', async ({ db }) => {
   const A = 'd'.repeat(32)
   await tenant(db, A, 'Verified prospect lists for outbound teams')
-  await db.run('UPDATE users SET business_name = NULL, website = ? WHERE id = ?', ['https://app.acm.io', A])
+  await db.run('UPDATE users SET business_name = '', website = ? WHERE id = ?', ['https://app.acm.io', A])
   const play = await createQueryJob(db, A, { query: 'B2B SaaS founders asking for lead sources', icp: null, seller: 'Verified prospect lists for outbound teams - https://app.acm.io', offer: 'Verified B2B prospect lists and sales leads' })
   const { rubric } = await loadPlayDemandRubric(db, A, play)
   assert.ok(rubric)
