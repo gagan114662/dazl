@@ -321,7 +321,7 @@ export function latestAuditStatus(db: Database.Database, a: { tenantId: string; 
 
 // Newest first; same-second rows newest-inserted first (insert_seq: the order rowid gave). Sync for the pipeline's
 // tests and tools on the raw handle; readRecentAudit for the settings routes.
-const RECENT_AUDIT_SQL = "SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? AND connector NOT LIKE 'check:%' ORDER BY created_at DESC, insert_seq DESC LIMIT ?" // 'check:%' rows (per-lead board-check history, #533) would flood the settings status list and displace real connector audits; they stay DB/support-readable, never displayed here
+const RECENT_AUDIT_SQL = "SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? AND connector NOT LIKE 'check:%' AND connector <> 'sitecrawl:tech' ORDER BY created_at DESC, insert_seq DESC LIMIT ?" // 'check:%' rows (per-lead board-check history, #533) and 'sitecrawl:tech' rows (the #389 technology-branch ledger, one per crawled site, read by the run report's 'tech' stage) would flood the settings status list and displace real connector audits; they stay DB/support-readable, never displayed here
 export function recentAudit(db: Database.Database, tenantId: string, limit = 20) {
   return db.prepare(RECENT_AUDIT_SQL).all(tenantId, limit)
 }
@@ -338,10 +338,15 @@ export function addEnrichment(db: Database.Database, tenantId: string, leadId: s
   ).run(randomBytes(12).toString('hex'), leadId, tenantId, e.connector, e.kind, e.value, e.label, e.confidence, e.source_url, e.source_date, e.retrieved_at)
 }
 
+// Internal records kept in lead_enrichments that are never shown to a user: the #377 timing-proof record (a JSON binding
+// read only by lib/scan/timing-proof.ts). The display projection below (Leads API -> Leads UI) leaves them out; the human
+// timing state reaches the UI as the leads route's timing_proof_gap instead.
+export const INTERNAL_ENRICHMENT_KIND = 'timing_proof'
+
 export function enrichmentsForLeads(db: Database.Database, tenantId: string, leadIds: string[]): Record<string, Enrichment[]> {
   const out: Record<string, Enrichment[]> = {}
   if (leadIds.length === 0) return out
-  const rows = db.prepare(`SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')})`).all(tenantId, ...leadIds) as (Enrichment & { lead_id: string })[]
+  const rows = db.prepare(`SELECT lead_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')}) AND kind <> '${INTERNAL_ENRICHMENT_KIND}'`).all(tenantId, ...leadIds) as (Enrichment & { lead_id: string })[]
   for (const { lead_id, ...e } of rows) (out[lead_id] ??= []).push(e)
   return out
 }

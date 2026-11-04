@@ -4,6 +4,8 @@ import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import { inboxPage, markThreadRead, decodeCursor, encodeCursor, InboxQueryError, type InboxThread, type InboxQuery } from '../lib/outreach/inbox.ts'
 import type { Db } from '../lib/db/client.ts'
+import { outcomes } from '../lib/outcomes.ts'
+import type { PreviewLead } from '../lib/journey.ts'
 
 const NOW = 1_800_000_000
 const hex = (n: number, k = 24) => n.toString(16).padStart(k, '0')
@@ -168,4 +170,39 @@ bothEngines('#415 safe hold: a correlated bounce_review notice surfaces as needs
   assert.equal(row.company, 'Buyer Co', 'the correlated lead gives the owner the company to act on')
   assert.equal(row.needs_owner, true)
   assert.equal(p.threads.some(t => t.classification === 'bounce_unmatched' && t.needs_owner), false, 'unmatched mail never asks for the owner')
+})
+
+bothEngines('Outcomes and Inbox count the same conversations: the needs-you tile equals the server total for every class, tenant-scoped', async ({ db }) => {
+  const play = hex(10), other = hex(11)
+  await job(db, 'T', play); await job(db, 'U', other)
+  const cases: [string, string, string | null][] = [ // [class, thread stop, ...] one thread each
+    ['positive', 'none', null], ['other', 'none', null], ['uncertain', 'review', 'review'], ['uncertain', 'reopened', 'reopened'],
+    ['uncertain', 'opt_out', 'opt_out'], ['bounce_review', 'none', null], ['negative', 'none', null], ['auto', 'none', null],
+    ['positive', 'replied', 'replied'], ['bounce_review', 'bounce', 'bounce'],
+  ]
+  const ids: string[] = []
+  for (const [i, [cls, tag, stop]] of cases.entries()) {
+    const l = `rc${i}`, th = `rc-${cls}-${tag}`
+    ids.push(l)
+    await lead(db, play, l, `Co ${i}`)
+    await reply(db, 'T', th, l, cls, NOW - i)
+    if (stop) await db.run("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, stopped) VALUES ('T', ?, ?, 'pat@x.example', 'r', ?, ?)", [th, l, NOW, stop])
+  }
+  // Another tenant's needs-owner threads, including one that points at T's lead id: never counted or labelled for T.
+  await lead(db, other, 'ou', 'Other Co')
+  await reply(db, 'U', 'u-pos', 'ou', 'positive', NOW + 5)
+  await reply(db, 'U', 'u-dsn', 'rc0', 'bounce_review', NOW + 6)
+  const p = await inboxPage(db, 'T', { jobId: play, status: 'needs_owner', limit: 100 })
+  assert.deepEqual(p.threads.map(t => t.thread_id).sort(), ['rc-bounce_review-none', 'rc-other-none', 'rc-positive-none', 'rc-uncertain-reopened', 'rc-uncertain-review'])
+  assert.equal(p.counts.needs_owner, 5)
+  const leads = ids.map(id => ({ id }) as PreviewLead)
+  const o = outcomes({ jobId: play, scanFailed: null, leads, messages: [], replies: { threads: p.threads, complete: p.next_cursor === null, needsOwner: p.counts.needs_owner } })
+  assert.equal(o.conversations?.total, p.counts.needs_owner, 'Outcomes tile = Inbox Needs you total')
+  assert.deepEqual(o.conversations?.rows.map(r => r.thread_id).sort(), p.threads.map(t => t.thread_id).sort(), 'Outcomes lists exactly the server rows')
+  // Every server row the page marks needs_owner is one Outcomes keeps, across the whole unfiltered list too.
+  const everything = await all(db, 'T', { jobId: play, limit: 3 })
+  assert.equal(everything.length, cases.length)
+  assert.equal(everything.filter(t => t.needs_owner).length, p.counts.needs_owner)
+  const u = await inboxPage(db, 'U', { status: 'needs_owner', limit: 100 })
+  assert.deepEqual(u.threads.map(t => [t.thread_id, t.company]).sort(), [['u-dsn', null], ['u-pos', 'Other Co']], 'U never sees T\'s lead labels')
 })

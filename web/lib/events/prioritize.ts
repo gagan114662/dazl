@@ -206,14 +206,18 @@ export interface RankableLead {
   action: number | null
 }
 
-// Actual account ordering: graded ICP fit lane first (ungraded last), then event
-// evidence, then intent, action, and the raw candidate score as the final tiebreak.
-// Evidence never outranks fit. Hidden-lane filtering (fit <= 1) stays in listLeads;
-// this orders whatever a view already chose to show.
-export function rankLeads<T extends RankableLead>(leads: T[], pri: Record<string, LeadPriority>): T[] {
+// Actual account ordering: graded ICP fit lane first (ungraded last), then the tenant's
+// learned preference (#385, lib/scan/feedback.ts learnedPreference: -1/0/+1 from its own
+// explicit verdicts on the same source and signal kind; absent = 0), then event evidence,
+// intent, action, and the raw candidate score as the final tiebreak. Neither evidence nor
+// a learned preference ever outranks fit, and neither changes a grade or a gate.
+// Hidden-lane filtering (fit <= 1) stays in listLeads; this orders whatever a view already chose to show.
+export function rankLeads<T extends RankableLead>(leads: T[], pri: Record<string, LeadPriority>, learned: Record<string, number> = {}): T[] {
   return [...leads].sort((a, b) => {
     const fa = a.fit ?? -1, fb = b.fit ?? -1
     if (fa !== fb) return fb - fa
+    const la = learned[a.id] ?? 0, lb = learned[b.id] ?? 0
+    if (la !== lb) return lb - la
     const ea = pri[a.id]?.evidence_score ?? 0, eb = pri[b.id]?.evidence_score ?? 0
     if (ea !== eb) return eb - ea
     const ia = a.intent ?? -1, ib = b.intent ?? -1

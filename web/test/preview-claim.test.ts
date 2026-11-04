@@ -141,3 +141,93 @@ test('private route read: only the claiming workspace sees the claimed preview',
   assert.equal(await readClaimedPreview(db, 't-prospect', 'not-an-id', NOW), null)
   assert.deepEqual(await readClaimedPreview(db, 't-prospect', r.id, NOW + 91 * 86400_000), { expired: true }, 'private view expires with the evidence, like the public one')
 })
+
+// #403: the same proof issued again is the same claim (cached); a changed proof is a new version
+test('issue: repeating the same proof for the same recipient returns the open claim, never a second live link', async () => {
+  const { h, db, jobId, day } = setup()
+  lead(h, jobId, 'l1', day)
+  finish(h, jobId)
+  const a = await issuePreviewClaim(db, master, ISSUE(jobId), NOW)
+  const b = await issuePreviewClaim(db, master, ISSUE(jobId, 'PROSPECT@clinic.test'), NOW + 5000)
+  if (!a || a.status !== 'issued' || !b || b.status !== 'issued') throw new Error('setup')
+  assert.deepEqual([b.id, b.token, b.expiresAt], [a.id, a.token, a.expiresAt], 'replay: same claim, same link')
+  assert.equal((h.prepare('SELECT count(*) AS n FROM preview_claims').get() as { n: number }).n, 1)
+  const snap = JSON.parse((h.prepare('SELECT snapshot FROM preview_claims WHERE id = ?').get(a.id) as { snapshot: string }).snapshot)
+  assert.equal(snap.version, 1, 'the snapshot names the builder version it was made under')
+  // another business name, or another recipient, is its own claim
+  const c = await issuePreviewClaim(db, master, { ...ISSUE(jobId), business: 'Other Co' }, NOW)
+  const d = await issuePreviewClaim(db, master, ISSUE(jobId, 'second@clinic.test'), NOW)
+  assert.ok(c?.status === 'issued' && d?.status === 'issued' && new Set([a.id, c.id, d.id]).size === 3)
+  // a changed proof (the lead's event text was corrected after the run) is a new version with its own claim
+  h.prepare("UPDATE leads SET signal = 'Opened a third clinic' WHERE id = 'l1'").run()
+  const e = await issuePreviewClaim(db, master, ISSUE(jobId), NOW)
+  assert.ok(e?.status === 'issued' && e.id !== a.id)
+  // a claimed one is never handed out again
+  user(h, 'u1', 'prospect@clinic.test', true)
+  if (e?.status === 'issued') assert.equal((await claimPreview(db, master, e.token, { actorId: 'u1', tenantId: 't-p' }, NOW)).status, 'claimed')
+  const f = await issuePreviewClaim(db, master, ISSUE(jobId), NOW)
+  assert.ok(f?.status === 'issued' && f.id !== e?.id)
+})
+
+// #403: evidence withdrawn after issue is never served from the frozen snapshot
+test('withdrawn evidence: a quarantined, purged, re-reviewed or deleted lead withdraws the preview everywhere', async () => {
+  for (const withdraw of [
+    (h: Database.Database) => h.prepare('UPDATE leads SET quarantined_at = 1').run(),
+    (h: Database.Database) => h.prepare('UPDATE leads SET evidence_purged_at = 1').run(),
+    (h: Database.Database) => h.prepare("UPDATE leads SET review_reason = 'contradicted'").run(),
+    (h: Database.Database) => h.prepare('DELETE FROM leads').run(),
+    (h: Database.Database) => h.prepare("UPDATE leads SET source_url = 'https://news.test/moved'").run(),
+    (h: Database.Database) => h.prepare("UPDATE scan_jobs SET user_id = 'someone-else'").run(),
+    (h: Database.Database) => h.prepare("UPDATE preview_claims SET snapshot = 'not json'").run(),
+    (h: Database.Database) => h.prepare('UPDATE preview_claims SET snapshot = ?').run(JSON.stringify({ runId: 'x', companies: 'nope' })),
+    (h: Database.Database) => h.prepare('UPDATE preview_claims SET snapshot = ?').run(JSON.stringify({ runId: 'x', companies: [] })),
+    (h: Database.Database) => h.prepare('UPDATE preview_claims SET snapshot = ?').run(JSON.stringify({ runId: 'x', companies: [{ company: 'A', sourceUrl: 42 }] })),
+    (h: Database.Database) => h.prepare('UPDATE preview_claims SET snapshot = ?').run('null'),
+    (h: Database.Database) => h.prepare('UPDATE preview_claims SET snapshot = ?').run('[]'),
+    (h: Database.Database) => h.prepare('UPDATE preview_claims SET snapshot = ?').run('x'.repeat(200_000)),
+    (h: Database.Database) => { const r = h.prepare('SELECT snapshot FROM preview_claims').get() as { snapshot: string }; const v = JSON.parse(r.snapshot); delete v.offer; h.prepare('UPDATE preview_claims SET snapshot = ?').run(JSON.stringify(v)) },
+    (h: Database.Database) => { const r = h.prepare('SELECT snapshot FROM preview_claims').get() as { snapshot: string }; const v = JSON.parse(r.snapshot); v.companies[0].quote = null; h.prepare('UPDATE preview_claims SET snapshot = ?').run(JSON.stringify(v)) },
+    (h: Database.Database) => h.prepare('UPDATE preview_claims SET snapshot = ?').run(Buffer.from([0xff, 0xfe, 0x7b]).toString('latin1')),
+  ]) {
+    const { h, db, jobId, day } = setup()
+    lead(h, jobId, 'l1', day)
+    finish(h, jobId)
+    const r = await issuePreviewClaim(db, master, ISSUE(jobId), NOW)
+    if (!r || r.status !== 'issued') throw new Error('setup')
+    assert.equal((await readPublicClaim(db, master, r.token, NOW)).status, 'ok')
+    withdraw(h)
+    assert.equal((await readPublicClaim(db, master, r.token, NOW)).status, 'expired', String(withdraw))
+    user(h, 'u1', 'prospect@clinic.test', true)
+    assert.equal((await claimPreview(db, master, r.token, { actorId: 'u1', tenantId: 't-p' }, NOW)).status, 'expired', 'nothing withdrawn can be claimed')
+    const ev = h.prepare('SELECT outcome FROM preview_claim_events WHERE claim_id = ?').all(r.id) as { outcome: string }[]
+    assert.deepEqual(ev.map(e => e.outcome), ['expired'], 'the refused attempt is still recorded')
+  }
+})
+
+test('withdrawn evidence after claiming: the private route reads expired too', async () => {
+  const { h, db, jobId, day } = setup()
+  lead(h, jobId, 'l1', day)
+  finish(h, jobId)
+  const r = await issuePreviewClaim(db, master, ISSUE(jobId), NOW)
+  if (!r || r.status !== 'issued') throw new Error('setup')
+  user(h, 'u1', 'prospect@clinic.test', true)
+  assert.equal((await claimPreview(db, master, r.token, { actorId: 'u1', tenantId: 't-p' }, NOW)).status, 'claimed')
+  h.prepare('UPDATE leads SET quarantined_at = 1').run()
+  assert.deepEqual(await readClaimedPreview(db, 't-p', r.id, NOW), { expired: true })
+})
+
+test('issue: a Postgres serialization conflict retries a bounded number of times; other errors and endless conflicts throw', async () => {
+  const { h, db, jobId, day } = setup()
+  lead(h, jobId, 'l1', day)
+  finish(h, jobId)
+  const conflict = () => Object.assign(new Error('could not serialize access'), { code: '40001' })
+  const flaky = (fails: number, err: () => Error = conflict) => { let n = 0; return { ...db, tx: ((b: never, i: never) => n++ < fails ? Promise.reject(err()) : db.tx(b, i)) as typeof db.tx } }
+  const r = await issuePreviewClaim(flaky(2), master, ISSUE(jobId), NOW)
+  assert.ok(r?.status === 'issued' && !r.reused)
+  const nested = () => Object.assign(new Error('tx failed'), { cause: { code: '40P01' } })
+  const again = await issuePreviewClaim(flaky(1, nested), master, ISSUE(jobId), NOW)
+  assert.ok(again?.status === 'issued' && again.reused && again.id === r.id, 'after the conflict it finds the winner\u2019s claim')
+  await assert.rejects(issuePreviewClaim(flaky(99), master, ISSUE(jobId, 'x@clinic.test'), NOW), /serialize/)
+  await assert.rejects(issuePreviewClaim(flaky(1, () => new Error('disk full')), master, ISSUE(jobId, 'y@clinic.test'), NOW), /disk full/)
+  assert.equal((h.prepare('SELECT count(*) AS n FROM preview_claims').get() as { n: number }).n, 1, 'no failed attempt left a row')
+})
