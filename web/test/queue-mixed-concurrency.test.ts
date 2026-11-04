@@ -45,6 +45,8 @@ test('mixed mode: combined in-flight runs never exceed SCAN_MAX_CONCURRENT', asy
   // test itself must be egress-free either way.
   const fetchImpl = async () => new Response('{}', { status: 200 })
   const savedEnv = process.env.DAZL_QUEUE_TENANTS
+  // the DAZL_QUEUE_TENANTS canary lives on the rollback path only (the shared work queue is the default, #355)
+  process.env.DAZL_SCAN_SHARED_QUEUE = '0'
   const savedCrawl = process.env.SITECRAWL_ENABLED
   process.env.DAZL_QUEUE_TENANTS = 'alice'
   process.env.SITECRAWL_ENABLED = '0' // npm test sets this globally; keep the test self-contained
@@ -57,6 +59,7 @@ test('mixed mode: combined in-flight runs never exceed SCAN_MAX_CONCURRENT', asy
       if (remaining === 0) break
     }
   } finally {
+    delete process.env.DAZL_SCAN_SHARED_QUEUE
     if (savedEnv === undefined) delete process.env.DAZL_QUEUE_TENANTS
     else process.env.DAZL_QUEUE_TENANTS = savedEnv
     if (savedCrawl === undefined) delete process.env.SITECRAWL_ENABLED

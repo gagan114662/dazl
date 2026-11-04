@@ -1,5 +1,5 @@
-// Shared-queue scan claiming (lib/queue/scan-claimer.ts, DAZL_SCAN_SHARED_QUEUE): the claim rules on both engines, and
-// kickRunner with the flag on and off. The scan run itself is a stub here (or, through kickRunner, the real runner
+// Shared-queue scan claiming (lib/queue/scan-claimer.ts, the default scan path; DAZL_SCAN_SHARED_QUEUE=0 rolls back): the
+// claim rules on both engines, the per-tenant limit, and kickRunner with the queue on and rolled back. The scan run itself is a stub here (or, through kickRunner, the real runner
 // with stubbed providers that are never reached); nothing leaves the process. The two-process Postgres cases are in
 // two-instance-scan.test.ts.
 import test from 'node:test'
@@ -9,7 +9,7 @@ import Database from 'better-sqlite3'
 import { setDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { DbQueue } from '../lib/queue/db.ts'
-import { kickSharedScanQueue, sharedScanQueue, type ClaimedScan } from '../lib/queue/scan-claimer.ts'
+import { kickSharedScanQueue, scanPerTenantLimit, sharedScanQueue, type ClaimedScan } from '../lib/queue/scan-claimer.ts'
 import { createJob, finishJob } from '../lib/scan/store-db.ts'
 import { setErrorSinks } from '../lib/ops/errors.ts'
 import { bothEngines } from './helpers/engines.ts'
@@ -37,10 +37,17 @@ function harness(db: Db, slots = 10) {
 }
 const status = async (db: Db, id: string) => (await db.get<{ status: string; attempts: number; error: string | null }>('SELECT status, attempts, error FROM scan_jobs WHERE id = ?', [id]))!
 
-test('the flag is off unless DAZL_SCAN_SHARED_QUEUE is exactly 1', () => {
-  assert.equal(sharedScanQueue({}), false)
-  for (const v of ['0', 'true', 'yes', ' 1', '']) assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: v }), false, v)
-  assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: '1' }), true)
+test('the shared queue is on unless DAZL_SCAN_SHARED_QUEUE is 0; any other value keeps it (a typo never drops the per-tenant limit)', () => {
+  assert.equal(sharedScanQueue({}), true)
+  for (const v of ['1', '', ' ', ' 1', 'true', 'yes', 'off', 'false', 'no', '00', '0.0', '-0', '\u0000', 'é', 'x'.repeat(10_000)]) assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: v }), true, JSON.stringify(v.slice(0, 8)))
+  for (const v of ['0', ' 0', '0 ', '\t0\n']) assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: v }), false, JSON.stringify(v))
+})
+
+test('SCAN_PER_TENANT_MAX: an integer from 1 to 8; unset or blank is 1, and every malformed or out-of-range value is 1 (the stricter limit)', () => {
+  assert.equal(scanPerTenantLimit({}), 1)
+  for (const v of ['', ' ']) assert.equal(scanPerTenantLimit({ SCAN_PER_TENANT_MAX: v }), 1)
+  for (const [v, n] of [['1', 1], ['2', 2], [' 3 ', 3], ['8', 8]] as const) assert.equal(scanPerTenantLimit({ SCAN_PER_TENANT_MAX: v }), n, v)
+  for (const v of ['0', '9', '10', '-1', '1.5', '2.0', '1e0', '0x2', 'Infinity', 'NaN', 'abc', '٣', '2,3', '[2]', 'null', 'true', '9'.repeat(400)]) assert.equal(scanPerTenantLimit({ SCAN_PER_TENANT_MAX: v }), 1, v.slice(0, 12))
 })
 
 bothEngines('funded pending scans are mirrored, claimed, bound and run once; an unfunded one waits, as with the legacy claimer', async ({ db }) => {
@@ -62,7 +69,7 @@ bothEngines('run slots bound how many scans one instance takes per kick; the res
   for (let i = 0; i < 5; i++) await job(A)
   const h = harness(db, 2)
   const gate: (() => void)[] = []
-  await kickSharedScanQueue(h.deps(j => new Promise(res => gate.push(() => { h.ran.push(j.id); res('done') }))))
+  await kickSharedScanQueue({ ...h.deps(j => new Promise(res => gate.push(() => { h.ran.push(j.id); res('done') }))), perTenantInFlight: 8 })
   assert.equal(h.inFlight(), 2)
   assert.equal(await new DbQueue(db).depth({ status: 'claimed' }), 2)
   assert.equal(await new DbQueue(db).depth({ status: 'pending' }), 3)
@@ -151,16 +158,78 @@ bothEngines('a crash fails the item (not retried) and goes to onCrash; a retry o
   assert.deepEqual([(await q.get(again))!.status, (await q.get(again))!.lastError], ['pending', 'executor_retry'])
 })
 
-test('kickRunner with the flag on claims through the work queue (the real runner, its crash path); off, the queue is untouched', async () => {
+// #355: one tenant's backlog cannot hold every run slot. A has 6 scans queued first, B and C one each, 10 free slots, and
+// every scan hangs (a slow provider). Without the per-tenant limit A would take 6 slots in queue order before B and C.
+bothEngines('per-tenant limit: a backlogged tenant holds at most SCAN_PER_TENANT_MAX claims, every other tenant is served in the same kick, and a settled claim frees its tenant for the next', async ({ db }) => {
+  const { job } = await seed(db)
+  await db.run("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at, created_at) VALUES (?, 'anthropic', 'x', '1234', 1, 1)", [NOKEY])
+  const aJobs: string[] = []
+  for (let i = 0; i < 6; i++) aJobs.push(await job(A))
+  const b = await job(B), c = await job(NOKEY)
+  const h = harness(db, 10)
+  const gate = new Map<string, () => void>()
+  const hang = (j: ClaimedScan) => new Promise<'done'>(res => gate.set(j.id, () => { h.ran.push(j.id); void finishJob(db, j, { status: 'done', error: null }).then(() => res('done')) }))
+  const q = new DbQueue(db)
+  const claimedBy = async (t: string) => Number((await db.get<{ c: number }>("SELECT count(*) AS c FROM work_queue WHERE tenant_id = ? AND status = 'claimed'", [t]))!.c)
+  await kickSharedScanQueue(h.deps(hang))
+  assert.deepEqual([await claimedBy(A), await claimedBy(B), await claimedBy(NOKEY)], [1, 1, 1], 'A one claim; B and C served in the same kick')
+  assert.equal(h.inFlight(), 3)
+  assert.deepEqual([(await status(db, b)).status, (await status(db, c)).status], ['running', 'running'])
+  assert.equal(await q.depth({ tenantId: A, status: 'pending' }), 5, "A's backlog waits")
+  // a second kick (another instance, or the next tick) takes nothing more of A while its claim is live
+  await kickSharedScanQueue(h.deps(hang))
+  assert.equal(await claimedBy(A), 1, 'the limit counts committed claims, so a second kick cannot exceed it')
+  // A's scan settles: its next one is claimed by the next kick
+  const firstA = aJobs.find(id => gate.has(id))!
+  gate.get(firstA)!(); await until(() => h.inFlight() === 2)
+  await kickSharedScanQueue(h.deps(hang))
+  assert.equal(await claimedBy(A), 1)
+  assert.equal(await q.depth({ tenantId: A, status: 'done' }), 1)
+  // with the limit raised to 2, A takes a second slot: the limit, not the queue order, is what bounds it
+  await kickSharedScanQueue({ ...h.deps(hang), perTenantInFlight: 2 })
+  assert.equal(await claimedBy(A), 2)
+  for (const g of gate.values()) g()
+  await until(() => h.inFlight() === 0)
+})
+
+bothEngines("an item whose tenant is not the scan's owner binds nothing and completes; the scan is re-mirrored under its owner and run once as its owner's", async ({ db }) => {
+  const { job } = await seed(db)
+  const b = await job(B)
+  const q = new DbQueue(db)
+  await q.enqueue({ id: b, tenantId: A, kind: 'scan' }) // corrupted: B's scan id under A
+  const h = harness(db)
+  await kickSharedScanQueue(h.deps()); await until(() => h.inFlight() === 0)
+  assert.deepEqual(h.ran, [], 'not run under the wrong tenant')
+  assert.deepEqual([(await status(db, b)).status, (await status(db, b)).attempts], ['pending', 0], "B's row untouched")
+  assert.equal((await q.get(b))!.status, 'done', 'the wrong item completes')
+  await kickSharedScanQueue(h.deps()); await until(() => h.inFlight() === 0)
+  assert.deepEqual(h.ran, [`${b}@1`], 'next kick: re-mirrored under B, run once')
+  assert.deepEqual([(await q.get(b))!.tenantId, (await q.get(b))!.status], [B, 'done'])
+})
+
+bothEngines('the scan lane: runtime-worker claims of the same tenant never count against its scan limit', async ({ db }) => {
+  const { job } = await seed(db)
+  const a = await job(A)
+  const q = new DbQueue(db)
+  await q.enqueue({ id: 'w1', tenantId: A, kind: 'text-stats' })
+  assert.ok(await q.claim({ kinds: ['text-stats'], lane: true, perTenantInFlight: 1, maxInFlight: 2 }), 'a worker item of A is claimed')
+  const h = harness(db)
+  await kickSharedScanQueue(h.deps()); await until(() => h.inFlight() === 0)
+  assert.deepEqual(h.ran, [`${a}@1`], "A's scan still ran: the worker claim is in another lane")
+  assert.equal((await q.get('w1'))!.status, 'claimed', 'and the worker item is untouched')
+})
+
+test('kickRunner by default claims through the work queue on its own SQLite handle (the real runner, its crash path); rolled back (DAZL_SCAN_SHARED_QUEUE=0), the queue is untouched', async () => {
   const { kickRunner } = await import('../lib/scan/runner.ts')
   const { saveKey } = await import('../lib/llm/key-store.ts')
   const run = async (flag: boolean) => {
-    const raw = new Database(':memory:'); migrateAllSqlite(raw); setDb(sqliteDb(raw))
+    const raw = new Database(':memory:'); migrateAllSqlite(raw)
     const master = randomBytes(32); saveKey(raw, A, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
     const id = await createJob(sqliteDb(raw), A, { business_name: 'Co', industry: 'dental', location: 'Toronto' })
     const providers = { anthropic: { research: async () => { throw new Error('provider must not be reached') } } } as never
     const restore = setErrorSinks([])
-    if (flag) process.env.DAZL_SCAN_SHARED_QUEUE = '1'
+    if (!flag) process.env.DAZL_SCAN_SHARED_QUEUE = '0'
+    else setDb({ kind: 'sqlite' } as unknown as Db) // a trap: the queue must be this handle, not getDb()
     try {
       // the job's clock throws before runJob's own try: a crash, so no provider call and no network
       await kickRunner(raw, { providers, master, score: false, jobBudgetMs: 60_000, clock: () => { throw new Error('clock broke') } })
@@ -176,5 +245,5 @@ test('kickRunner with the flag on claims through the work queue (the real runner
   assert.deepEqual(on.items, [{ id: on.id, status: 'failed', last_error: 'executor_failed' }], 'claimed through the queue')
   const off = await run(false)
   assert.deepEqual(off.job, { status: 'failed', error: 'crashed', attempts: 1 }, 'the legacy claimer ran it the same way')
-  assert.deepEqual(off.items, [], 'flag off: the work queue is never touched')
+  assert.deepEqual(off.items, [], 'rolled back: the work queue is never touched')
 })

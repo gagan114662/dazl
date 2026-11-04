@@ -58,6 +58,14 @@ A run is `partial` when some work failed; holds alone leave it `ok`. The tick's 
 - **Freshness.** While some thread in scope has never been read, the outcome is a hold (`reply_sync_partial`). Otherwise it is a success **as of the oldest thread read** (`freshAsOf`), which `recordProgress` stores as `last_success_at`. So `replySafetyStale` (2 h) and `reply sync stale` keep their old meaning: every thread was read within the window. A partial read is never recorded as "now".
 - **Sizing.** With 5-minute ticks and a cap of 50, a tenant gets up to 600 background threads read per hour. Above about 1200 background threads, its sends to recipients it has already contacted hold, and the alerts say `reply sync stale`, until `REPLY_SYNC_MAX_THREADS` is raised. This is the honest state; such a tenant is not starved silently.
 
+## Scans on durable workers, fair across tenants (#355)
+
+Scans are claimed through the shared work queue (`work_queue`, `lib/queue/scan-claimer.ts`) by default; the details and the rollback (`DAZL_SCAN_SHARED_QUEUE=0`) are in `docs/PLATFORM.md`. What the tick relies on:
+
+- **The tick kicks the scan runner every time**, after its response, outside its lease. A scan whose worker died (lease expired) or whose retry backoff has passed is claimed again within one tick.
+- **Fair service.** Claims go round-robin across tenants, and one tenant has at most `SCAN_PER_TENANT_MAX` scans claimed at once (default 1). A tenant with a long backlog or a provider that never answers holds one run slot; every other tenant's scan takes the next free one. Reply checks do not wait for scans at all: they run in the tick's own loop, while scans run in the runner's slots.
+- **Proof.** `test/tenant-load-tick.test.ts` runs the real tick route and the real runner: tenant A with a 300-thread history on a slow Gmail and 40 queued scans on a provider that never answers, tenants B and C with one of each. One tick reads B's and C's threads (B's opt-out applied) and runs their scans to done while A holds one slot; the next tick does it again. Rolled back to the in-process claimer, the same load gives A every slot and B's and C's scans wait.
+
 ## States and thresholds
 
 The tick is expected every 15 minutes.
