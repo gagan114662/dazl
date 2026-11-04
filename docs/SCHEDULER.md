@@ -51,7 +51,8 @@ A run is `partial` when some work failed; holds alone leave it `ok`. The tick's 
 
 `syncReplies` no longer re-reads a tenant's whole 120-day sent history on every call, so one tenant with a long history cannot hold the serial tick before the next tenant's reply checks:
 
-- **Due threads** are read on every call, first, whatever their age: the step-1 message of an approved or active sequence, and every thread with a lead reply that follow-ups may answer (`followup_threads`, not stopped). If the time budget runs out before all of them are read, the call fails closed (`reply_sync_incomplete`): a failure, so the tick sends nothing for that tenant.
+- **Scope is unchanged.** The set of messages read is exactly the old one: sent in the last 120 days, or the step-1 message of an approved or active sequence (any age). Only the order and the cap are new.
+- **Due threads** are read on every call, first: the step-1 message of an approved or active sequence (whatever its age), and, inside the 120-day window, every thread with a lead reply that follow-ups may answer (`followup_threads`, not stopped). A warm thread sent more than 120 days ago is not read, as before. If the time budget runs out before all of them are read, the call fails closed (`reply_sync_incomplete`): a failure, so the tick sends nothing for that tenant.
 - **Background threads** are the other messages sent in the last 120 days. At most `REPLY_SYNC_MAX_THREADS` of them are read per call (default 50, from 1 to 1000), never-read ones first and then the oldest check, so each is read within `ceil(n / cap)` calls.
 - **Time budget.** A call stops after `REPLY_SYNC_BUDGET_MS` (default 120000, from 1000 to 600000). A malformed or out-of-range value means the default, never an unbounded or zero limit.
 - **Checkpoint.** `outreach_messages.reply_checked_at` is stamped only after a thread was read and processed without error. A failed read keeps its old stamp, so it is first in line next time.

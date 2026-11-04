@@ -108,26 +108,68 @@ test('checkpoints: every background thread is read once per pass (never-read fir
   assert.equal(replySafetyStale(db, 'A', 'p0@big.example', NOW), false)
 })
 
-test('due threads (an active sequence, a warm follow-up thread) are read on every call, before the cap and regardless of age', async () => {
+test('due threads (an active sequence of any age, a warm follow-up thread inside the window) are read on every call, before the cap', async () => {
   const db = await store(['A'])
   for (let i = 0; i < 30; i++) sent(db, 'A', `p${i}@big.example`, NOW - (i + 1) * DAY)
-  const seqMsg = sent(db, 'A', 'seq@lead.example', NOW - 200 * DAY) // older than the 120-day window
+  const seqMsg = sent(db, 'A', 'seq@lead.example', NOW - 200 * DAY) // older than the 120-day window: read, as before #355
   db.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES ('s1', 'A', ?, ?, 'seq@lead.example', 'active')").run(seqMsg.lead, seqMsg.mid)
-  const warm = sent(db, 'A', 'warm@lead.example', NOW - 150 * DAY)
+  const warm = sent(db, 'A', 'warm@lead.example', NOW - 30 * DAY) // inside the window: due
   db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at) VALUES ('A', ?, ?, 'warm@lead.example', 'r', ?, ?)").run(warm.thread, warm.lead, NOW - 10 * DAY, NOW - 10 * DAY)
+  const oldWarm = sent(db, 'A', 'oldwarm@lead.example', NOW - 150 * DAY) // outside the window, no sequence: never read (old scope)
+  db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at) VALUES ('A', ?, ?, 'oldwarm@lead.example', 'r', ?, ?)").run(oldWarm.thread, oldWarm.lead, NOW - 10 * DAY, NOW - 10 * DAY)
   const stopped = sent(db, 'A', 'stopped@lead.example', NOW - 150 * DAY)
   db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, stopped) VALUES ('A', ?, ?, 'stopped@lead.example', 'r', ?, ?, 'opt_out')").run(stopped.thread, stopped.lead, NOW - 10 * DAY, NOW - 10 * DAY)
-  // a reply arrives on the sequence thread: it must be seen on this very call even with a cap of 1
-  const g = gmail({ threads: { [seqMsg.thread]: [msg('r1', 'seq@lead.example', 'Sounds good, call me', NOW - 30)] } })
+  const g = gmail()
   for (let call = 0; call < 3; call++) {
     const before = g.reads.length
     const r = await sync(db, 'A', g, { REPLY_SYNC_MAX_THREADS: '1' })
     const these = g.reads.slice(before)
     assert.deepEqual(these.slice(0, 2).sort(), [seqMsg.thread, warm.thread].sort(), `call ${call}: both due threads first`)
-    assert.equal(these.length, 3, 'plus exactly one background thread'); assert.ok(!these.includes(stopped.thread), 'a stopped thread is not due and is outside the window')
+    assert.equal(these.length, 3, 'plus exactly one background thread: the in-window warm thread is not counted against the cap')
+    assert.ok(!these.includes(stopped.thread), 'a stopped thread is not due and is outside the window')
+    assert.ok(!these.includes(oldWarm.thread), 'a warm thread sent more than 120 days ago without a sequence is outside the old scope')
     assert.equal(r.remaining, 29); assert.equal(r.neverRead, 29 - call)
   }
+  // the cap is not what keeps the old warm thread out: with the largest cap the read set is still the old selection
+  const big = gmail()
+  await sync(db, 'A', big, { REPLY_SYNC_MAX_THREADS: '1000' })
+  assert.equal(big.reads.length, 32, '30 background + the sequence thread + the in-window warm thread')
+  assert.ok(!big.reads.includes(oldWarm.thread) && !big.reads.includes(stopped.thread))
+  assert.equal((db.prepare('SELECT reply_checked_at FROM outreach_messages WHERE id = ?').get(oldWarm.mid) as { reply_checked_at: number | null }).reply_checked_at, null, 'never stamped either')
+  // a reply arrives on the old sequence thread: it is seen on the very next call even with a cap of 1
+  const g2 = gmail({ threads: { [seqMsg.thread]: [msg('r1', 'seq@lead.example', 'Sounds good, call me', NOW - 30)] } })
+  await sync(db, 'A', g2, { REPLY_SYNC_MAX_THREADS: '1' })
+  assert.ok(g2.reads.slice(0, 2).includes(seqMsg.thread))
   assert.equal((db.prepare("SELECT status FROM sequences WHERE id = 's1'").get() as { status: string }).status, 'replied', 'the reply on the old sequence thread stopped the sequence')
+})
+
+test('scope regression (#633 review): the read set equals the pre-#355 selection for every age/sequence/warm combination', async () => {
+  const db = await store(['A', 'B'])
+  const cases: { age: number; seq?: string; warm?: boolean; stopped?: boolean; tenant?: string; want: boolean }[] = [
+    { age: 10, want: true }, { age: 119, want: true }, { age: 121, want: false }, { age: 400, want: false },
+    { age: 10, warm: true, want: true }, { age: 121, warm: true, want: false }, { age: 400, warm: true, want: false },
+    { age: 121, warm: true, stopped: true, want: false },
+    { age: 121, seq: 'active', want: true }, { age: 400, seq: 'approved', want: true }, { age: 400, seq: 'active', warm: true, want: true },
+    { age: 121, seq: 'replied', want: false }, { age: 121, seq: 'stopped', warm: true, want: false },
+    // another tenant's sequence or warm thread on the same thread id never widens tenant A's read
+    { age: 400, tenant: 'B', seq: 'active', want: false },
+  ]
+  const rows = cases.map((c, i) => {
+    const s = sent(db, 'A', `c${i}@lead.example`, NOW - c.age * DAY)
+    const owner = c.tenant ?? 'A'
+    if (c.seq) db.prepare('INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES (?, ?, ?, ?, ?, ?)').run(`q${i}`, owner, s.lead, s.mid, `c${i}@lead.example`, c.seq)
+    if (c.warm) db.prepare('INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, stopped) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(owner, s.thread, s.lead, `c${i}@lead.example`, 'r', NOW - DAY, NOW - DAY, c.stopped ? 'opt_out' : null)
+    return { ...c, thread: s.thread }
+  })
+  const g = gmail()
+  await sync(db, 'A', g, { REPLY_SYNC_MAX_THREADS: '1000' })
+  for (const r of rows) assert.equal(g.reads.includes(r.thread), r.want, JSON.stringify(r))
+  // and a warm thread of tenant B outside the window does not make A's old message due
+  const w = sent(db, 'A', 'cross@lead.example', NOW - 200 * DAY)
+  db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at) VALUES ('B', ?, ?, 'cross@lead.example', 'r', ?, ?)").run(w.thread, w.lead, NOW - DAY, NOW - DAY)
+  const g2 = gmail()
+  await sync(db, 'A', g2, { REPLY_SYNC_MAX_THREADS: '1000' })
+  assert.ok(!g2.reads.includes(w.thread))
 })
 
 test('slow provider: the budget ends the call; due threads unread make it fail closed (incomplete), background ones are only remaining', async () => {

@@ -199,10 +199,13 @@ export interface SyncResult { threads: number; replies: number; optOuts: number;
 
 // #355: bounded, checkpointed reply reading. A tenant with a long sent history must not consume the serial tick before
 // the next tenant gets its reply checks, and must not re-read its whole 120-day history every tick.
-//   - DUE threads are the ones an automated send can still reach: a step-1 message of an approved/active sequence, or a
-//     thread with a lead reply that follow-ups may answer (followup_threads not stopped). They are ALWAYS read on every
-//     call, before anything else, regardless of age; if the time budget runs out before every due thread is read, the
-//     call fails closed (error reply_sync_incomplete) and the caller sends nothing for this tenant.
+//   - SCOPE is the pre-#355 set, unchanged: sent in the last 120 days, or the step-1 message of an approved/active
+//     sequence (any age). Pacing only changes the order and the cap, never which mailbox threads may be read.
+//   - DUE threads are the ones an automated send can still reach: a step-1 message of an approved/active sequence (any
+//     age), or, inside the 120-day window, a thread with a lead reply that follow-ups may answer (followup_threads not
+//     stopped). They are ALWAYS read on every call, before anything else and outside the cap; if the time budget runs
+//     out before every due thread is read, the call fails closed (error reply_sync_incomplete) and the caller sends
+//     nothing for this tenant.
 //   - BACKGROUND threads (sent in the last 120 days, no automated send pending) are read at most REPLY_SYNC_MAX_THREADS
 //     per call (default 50, 1..1000), never-read first, then the oldest check first, so every one of them is read within
 //     ceil(n / cap) calls. The rest are reported as `remaining`; while any thread in scope has never been read the tick
@@ -234,11 +237,13 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
 
   const seq = tableExists(db, 'sequences') ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : '0'
   const warm = tableExists(db, 'followup_threads') ? '(thread_id IS NOT NULL AND thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND stopped IS NULL AND last_lead_reply_at IS NOT NULL))' : '0'
-  const dueArgs = [...(seq !== '0' ? [tenantId] : []), ...(warm !== '0' ? [tenantId] : [])]
-  const due = `(${seq} OR ${warm})`
-  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at, reply_checked_at, CASE WHEN ${due} THEN 1 ELSE 0 END AS due FROM outreach_messages
-    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? OR ${due})
-    ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`).all(...dueArgs, tenantId, now - 120 * 86400, ...dueArgs) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number; reply_checked_at: number | null; due: number }[]
+  const seqArgs = seq !== '0' ? [tenantId] : [], warmArgs = warm !== '0' ? [tenantId] : []
+  const windowStart = now - 120 * 86400
+  // The WHERE clause is the old selection (window OR approved/active sequence); the warm clause only orders threads
+  // inside the window, so it can never pull an older thread into the read.
+  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at, reply_checked_at, CASE WHEN ${seq} OR (sent_at >= ? AND ${warm}) THEN 1 ELSE 0 END AS due FROM outreach_messages
+    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? OR ${seq})
+    ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`).all(...seqArgs, windowStart, ...warmArgs, tenantId, windowStart, ...seqArgs) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number; reply_checked_at: number | null; due: number }[]
   const { maxThreads, budgetMs } = replySyncLimits((d.env ?? process.env) as Record<string, string | undefined>)
   const clock = d.clockMs ?? Date.now
   const t0 = clock()
