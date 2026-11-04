@@ -45,6 +45,7 @@ const MATRIX: [string, Work, string][] = [
   ['sequences', seqIdle('reading_not_enabled'), 'failure:reading_not_enabled'],       // active work, replies cannot be read
   ['sequences', seqIdle('gmail_unavailable'), 'failure:gmail_unavailable'],
   ['sequences', seqIdle('reply_sync_failed'), 'failure:reply_sync_failed'],
+  ['sequences', seqIdle('reply_sync_incomplete'), 'failure:reply_sync_incomplete'], // #355: a due thread left unread by the budget
   ['sequences', seqIdle('uncertain_send'), 'failure:uncertain_send'],
   ['sequences', seqIdle('gmail_or_identity'), 'failure:gmail_or_identity'],
   // a stop reason the tick does not know, or an empty one, is never read as progress
@@ -61,7 +62,8 @@ test('classification table: every worker result maps to success, hold or failure
   // failures stay failures.
   assert.equal(out(classifySync({})), 'success')
   assert.equal(out(classifySync({ error: 'reading_not_enabled' })), 'hold:reading_not_enabled')
-  for (const error of ['gmail_unavailable', 'reply_sync_failed']) assert.equal(out(classifySync({ error })), `failure:${error}`)
+  for (const error of ['gmail_unavailable', 'reply_sync_failed', 'reply_sync_incomplete']) assert.equal(out(classifySync({ error })), `failure:${error}`)
+  assert.equal(out(classifySync({ neverRead: 2 })), 'hold:reply_sync_partial', '#355: a thread never read yet is not freshness')
 })
 
 // Every stop reason the workers' source can return is in the table above and named in one of the two sets, so a new
@@ -76,7 +78,7 @@ test('the table covers every stop reason runFollowups and runSequences return', 
     for (const r of reasons) { assert.ok(known.has(r), `${file}: stop('${r}') is not classified`); assert.ok(inTable.has(r), `${file}: stop('${r}') is not in the table`) }
   }
   // runSequences also returns syncReplies' error as its stop reason
-  for (const r of ['reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed']) assert.ok(FAILURE_REASONS.has(r) && inTable.has(r), r)
+  for (const r of ['reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'reply_sync_incomplete']) assert.ok(FAILURE_REASONS.has(r) && inTable.has(r), r)
   for (const r of HOLD_REASONS) assert.ok(!FAILURE_REASONS.has(r), `${r} in both sets`)
 })
 

@@ -114,7 +114,7 @@ export type Outcome = { outcome: 'success'; freshAsOf?: number } | { outcome: 'h
 // idle state, not something failing. Every other stop (and any reason the tick does not know) is a failure: the
 // scheduler must never read an unknown refusal as progress.
 export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval', 'off', 'consent_required', 'warmup'])
-export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'uncertain_send', 'gmail_or_identity'])
+export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'reply_sync_incomplete', 'uncertain_send', 'gmail_or_identity'])
 // The autopilot drain's own holds (lib/outreach/autopilot.ts stop reasons that are the tenant's state, not a failure):
 // off or consent to renew (the tenant's switch), Gmail to reconnect or connect (the tenant's mailbox). Its uncertain send,
 // unreadable authority, lost reservation and the operator switch are failures, as for the other kinds.
