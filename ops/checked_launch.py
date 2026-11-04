@@ -19,7 +19,7 @@ its own suite. Runs without an intact check_suite identity are refused
 rather than grouped.
 
 Every run appends one sanitized JSON line to a bounded private launch log
-(--launch-log, default LAUNCH_LOG): timestamp, commit, each gate and preflight
+(--launch-log, default default_launch_log()): timestamp, commit, each gate and preflight
 result, launch_reached, the child's return code and safe_launch's own status
 file (fixed status/phase vocabulary only). No env content, no argv values and
 no child output are ever logged. An unusable log refuses before any gate.
@@ -54,7 +54,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 REQUIRED_CI = frozenset({'browser', 'migrations', 'test-sqlite', 'test-postgres', 'fail-closed', 'static-quality'})
 
-LAUNCH_LOG = '/home/ubuntu/backups/launch-log.jsonl'
+# The shipped default must pass LaunchLog's own checks on a stock host (#607):
+# a per-user private state dir, or root's own dir when run as root. A shared
+# backup dir (group-writable) is refused by those checks, so it is never a default.
+USER_LAUNCH_LOG = Path('.local/state/dazl/launch-log.jsonl')
+ROOT_LAUNCH_LOG = Path('/root/dazl-launch-log/launch-log.jsonl')
 LOG_LINES = 200
 STATUS_NAME = 'launch-status.json'
 CODE = re.compile(r'[a-z][a-z0-9_]{0,63}')
@@ -69,6 +73,31 @@ def private_file(path, flags):
         os.close(fd)
         raise ValueError('launch_log_refused')
     return fd
+
+
+def default_launch_log():
+    # Returns (log path, base dir). Directories below base may be created; base never.
+    if os.geteuid() == 0:
+        return ROOT_LAUNCH_LOG, ROOT_LAUNCH_LOG.parent.parent
+    home = os.environ.get('HOME')
+    if not home or not os.path.isabs(home):
+        raise ValueError('launch_log_home')
+    return Path(home) / USER_LAUNCH_LOG, Path(home)
+
+
+def create_absent_dirs(path, base):
+    # Only directories that do not exist are made, mode 0700. An existing one is
+    # never chmodded or chowned: LaunchLog's parent check still refuses it if unsafe.
+    missing = []
+    parent = path.parent
+    while parent != base and not os.path.lexists(parent):
+        missing.append(parent)
+        parent = parent.parent
+    for directory in reversed(missing):
+        try:
+            os.mkdir(directory, 0o700)
+        except FileExistsError:
+            pass  # Made concurrently by someone else: not ours to change.
 
 
 class LaunchLog:
@@ -323,7 +352,10 @@ def bind_target(launch, commit):
 def run(preflights, launch, timeout=120, *, repository=None, commit=None, token_file=None, log_path=None):
     started = time.monotonic()
     try:
-        log = LaunchLog(log_path or LAUNCH_LOG)
+        if log_path is None:
+            log_path, base = default_launch_log()
+            create_absent_dirs(log_path, base)
+        log = LaunchLog(log_path)
     except Exception:
         # Without a diagnosable record nothing runs: refuse before any gate.
         return {'status': 'launch_log_unavailable', 'launch_reached': False}, 2
@@ -410,7 +442,7 @@ if __name__ == '__main__':
     parser.add_argument('--preflight', type=command, action='append', required=True)
     parser.add_argument('--launch', type=command, required=True)
     parser.add_argument('--timeout', type=float, default=120)
-    parser.add_argument('--launch-log', default=LAUNCH_LOG)
+    parser.add_argument('--launch-log', default=None)
     args = parser.parse_args()
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error('timeout must be finite and positive')
