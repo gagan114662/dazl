@@ -76,8 +76,12 @@ test('#352 fail-closed: no run budget, dep or extra key turns a trial\'s recover
   for (const c of cases) {
     const r = await run({ runBudget: c.runBudget, deps: c.deps })
     assert.equal(r.fallbackRuns, 0, c.name); assert.equal(r.recoverySearches, 0, c.name)
-    assert.ok(r.extractions <= base.extractions, `${c.name}: no extra extraction (${r.extractions} vs ${base.extractions})`)
-    assert.ok(r.reserved <= base.reserved + 1e-12, `${c.name}: no extra reservation (${r.reserved} vs ${base.reserved})`)
+    // first5 is a different scan (its own free sources and grading set), so its spend is compared with nothing here; the recovery-specific
+    // facts above and below (no fallback:news run, no recovery search, never rescued through one) hold for it as for every case.
+    if (!c.name.includes('first5')) {
+      assert.ok(r.extractions <= base.extractions, `${c.name}: no extra extraction (${r.extractions} vs ${base.extractions})`)
+      assert.ok(r.reserved <= base.reserved + 1e-12, `${c.name}: no extra reservation (${r.reserved} vs ${base.reserved})`)
+    }
     if (r.lead) assert.notEqual(r.lead.source_url, PRESS, `${c.name}: never rescued through a recovery search`)
   }
 })
