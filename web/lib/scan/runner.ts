@@ -41,6 +41,7 @@ import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connector
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
@@ -917,7 +918,16 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   try { const r = await runJobUntraced(db, job, capture.deps); outcome = r; return r } finally { await capture.finish(outcome) }
 }
 
+// The hard per-scan spend cap (lib/scan/spend-cap.ts, #377/#533): the whole attempt, post-finish enrichment included, runs
+// in this scan's spend context, so every paid provider call it makes reserves its worst case on this job's ledger row
+// before the request and is refused past the cap (CAD 5, DAZL_SCAN_CAP_CAD can only lower it; so can the request's own
+// run_budget.max_usd).
 async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
+  const requestMaxUsd = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd }, () => runJobCapped(db, job, deps))
+}
+
+async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
   let trialGuard: SpendGuard | null = null
   const ledger = new SourceRunLedger()
