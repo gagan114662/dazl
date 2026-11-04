@@ -229,7 +229,7 @@ test('backup-check: the key-recovery drill report and the config bundle alert wh
   r = chk([], { KEY_DRILL_REPORT: rep }); assert.equal(r.code, 0, r.out); assert.equal(r.json.key_drill_ok, true)
   // the config leg
   const dest = path.join(T, `kc-dest-${n}`); mkdirSync(dest)
-  r = chk([], { OFFHOST_DEST: dest, CONFIG_REQUIRED: '1' }); assert.match(String(r.json.problems), /no secrets\/config bundle/)
+  r = chk([], { OFFHOST_DEST: dest, CONFIG_REQUIRED: '1' }); assert.match(String(r.json.problems), /no config bundle at/)
   const cn = 'dazl-config-20261103T000000Z-0000abcd.tar.age'
   writeFileSync(path.join(dest, cn + '.json'), JSON.stringify({ tool: 'dazl-config-copy', ciphertext: cn, ciphertext_sha256: '0'.repeat(64), bytes: 3, copied_at: new Date().toISOString() }))
   r = chk([], { OFFHOST_DEST: dest }); assert.match(String(r.json.problems), /bundle .* is missing/)

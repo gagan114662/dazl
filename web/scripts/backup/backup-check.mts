@@ -165,8 +165,9 @@ if (!offSpec) {
   const max = num('--offhost-max-age-s', 7200)
   const dest = offSpec.startsWith('rclone:') ? rcloneDest(offSpec) : localDest(offSpec)
   facts.offhost = dest.label
+  let destDown = false
   try {
-    // Copies accrue hourly and retention is not implemented, so the check reads only the newest manifests by name
+    // Copies accrue hourly (retention, prune-backups.mts, is off until BACKUP_RETENTION=1), so the check reads only the newest manifests by name
     // (copy names embed the backup timestamp): at most READ_MAX files, stopping once NEWEST_K valid ones are in hand;
     // copied_at is the authority within that window. The run stays O(1) however many copies exist; older manifests
     // are listed and counted, not read or judged.
@@ -240,25 +241,26 @@ if (!offSpec) {
         if (manifests.length && Date.parse(ledger.copied_at) < Date.parse(String(manifests[0].copied_at))) problems.push('newest off-host ledger copy is older than the newest off-host backup copy: a restore from it could undo deletions made since')
       }
     }
-  } catch (e) { problems.push(`off-host destination ${dest.label} unreadable: ${reason(e)}`) }
+  } catch (e) { destDown = true; problems.push(`off-host destination ${dest.label} unreadable: ${reason(e)}`) }
   // the secrets/config bundle (config-backup.mts, its own identity): it changes rarely, so its age is not judged, only
-  // that the newest one exists and is the copy its manifest declares. CONFIG_REQUIRED=1 makes "none" a problem.
-  try {
+  // that the newest one exists and is the copy its manifest declares. CONFIG_REQUIRED=1 makes "none" a problem. An
+  // unreadable destination is already one named problem above: not repeated here. Problem strings hold no "/".
+  if (!destDown) try {
     const cfg = (await dest.list()).filter(f => /^dazl-config-\d{8}T\d{6}Z-[0-9a-f]{8}\.tar\.age\.json$/.test(f)).sort().reverse()
     facts.config_copies_listed = cfg.length
-    if (!cfg.length) { if (process.env.CONFIG_REQUIRED === '1') problems.push(`no secrets/config bundle at ${dest.label} (CONFIG_REQUIRED=1)`) }
+    if (!cfg.length) { if (process.env.CONFIG_REQUIRED === '1') problems.push(`no config bundle at ${dest.label} (CONFIG_REQUIRED=1)`) }
     else {
       let m: { tool?: string; ciphertext?: string; bytes?: number; ciphertext_sha256?: string; copied_at?: string } | null = null
       try { m = JSON.parse(await dest.read(cfg[0])) } catch (e) { if (!(e as NodeJS.ErrnoException)?.code && !(e instanceof SyntaxError)) throw e; m = null }
-      if (!m || m.tool !== 'dazl-config-copy' || !m.ciphertext || !plainName(m.ciphertext) || typeof m.bytes !== 'number' || !/^[0-9a-f]{64}$/.test(m.ciphertext_sha256 ?? '')) problems.push(`newest secrets/config manifest ${cfg[0]} unreadable or incomplete`)
+      if (!m || m.tool !== 'dazl-config-copy' || !m.ciphertext || !plainName(m.ciphertext) || typeof m.bytes !== 'number' || !/^[0-9a-f]{64}$/.test(m.ciphertext_sha256 ?? '')) problems.push(`newest config bundle manifest ${cfg[0]} unreadable or incomplete`)
       else {
         const d = await dest.digest(m.ciphertext)
-        if (!d) problems.push(`newest secrets/config bundle ${m.ciphertext} is missing (only its manifest exists)`)
-        else if (d.bytes !== m.bytes || d.sha256 !== m.ciphertext_sha256) problems.push(`newest secrets/config bundle ${m.ciphertext} does not match its manifest`)
+        if (!d) problems.push(`newest config bundle ${m.ciphertext} is missing (only its manifest exists)`)
+        else if (d.bytes !== m.bytes || d.sha256 !== m.ciphertext_sha256) problems.push(`newest config bundle ${m.ciphertext} does not match its manifest`)
         else { facts.config_verified = true; facts.config_age_s = ageS(m.copied_at) }
       }
     }
-  } catch (e) { problems.push(`off-host destination ${dest.label} unreadable for the secrets/config bundle: ${reason(e)}`) }
+  } catch (e) { problems.push(`off-host destination ${dest.label} unreadable for the config bundle: ${reason(e)}`) }
 }
 
 const drillFlag = arg('--drill-report')
