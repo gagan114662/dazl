@@ -33,6 +33,11 @@ Stay active from step 1 to step 6. If you end your turn while CI is running, mak
 
 ## Proof
 
+Before step 1: if the issue has no `## Acceptance Contract` section agreed by Instinct or the owner (see
+`docs/PROCESS.md` § Flow step 0 and `docs/design/acceptance-contract.md`), write one and get it agreed first —
+don't start the branch on a guess at what "done" means. Your proof below must be run against that contract's
+own live-verification step, not a different procedure you came up with after building.
+
 Proof is evidence you observed yourself in this session: command output, a reproduction, a screenshot. Use the most
 direct proof the change allows:
 

@@ -26,6 +26,9 @@ The v1 score does not yet prove buyer need, that the contact is the right decisi
 
 ## Flow (no waiting)
 
+0. An item isn't "Next" until it has an `## Acceptance Contract` (journey, failure cases, the exact live check,
+   access/spend needed — see `docs/design/acceptance-contract.md`) agreed by Instinct or the owner. Without one
+   it's `needs contract`, and whoever picks it up writes the contract and gets it agreed before opening a branch.
 1. Builder takes the top item of `docs/STATUS.md` "Next", works on a branch `b/<topic>`, pushes, asks for review.
 2. Builder does NOT wait: it starts the next item on a new branch while review runs. Review findings come first:
    the builder fixes them on the same branch before starting anything new.

@@ -45,3 +45,52 @@ jobs:
       - name: No closing keyword in this PR body
         if: steps.issues.outputs.numbers == ''
         run: echo "No Closes/Fixes/Resolves keyword found — nothing to gate (this PR isn't claiming to close an issue)."
+
+  # A mocked-fetch test proves pushLead's own logic; it cannot prove the real HubSpot/Pipedrive API agreed with
+  # it (Instinct's point: "tests tagged #569 pass" is not "dazl really received the right record"). This job runs
+  # the acceptance harness that already exists for exactly that (web/lib/crm/acceptance.ts,
+  # web/scripts/crm-live-acceptance.mts, added by #634) against a free SANDBOX provider account — no real tenant
+  # data, no spend, no production credential. It is a no-op until CRM_ACCEPTANCE_PROVIDER/CRM_ACCEPTANCE_KEY
+  # secrets exist (owner/Instinct call, not a builder's): the script itself refuses (exit 2) without them, which
+  # this job treats as "not configured yet", not a failure.
+  crm-sandbox-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Only run when the PR actually touches CRM code
+        id: touches
+        run: |
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" | grep -qE '^web/(lib/crm/|app/api/crm/)'; then
+            echo "run=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=0" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.touches.outputs.run == '1'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        if: steps.touches.outputs.run == '1'
+      - name: Sandbox live-provider acceptance (skips cleanly if no sandbox secret is configured)
+        if: steps.touches.outputs.run == '1'
+        env:
+          CRM_ACCEPTANCE: sandbox
+          CRM_ACCEPTANCE_PROVIDER: ${{ secrets.CRM_ACCEPTANCE_PROVIDER }}
+          CRM_ACCEPTANCE_KEY: ${{ secrets.CRM_ACCEPTANCE_KEY }}
+          CRM_ACCEPTANCE_PIPEDRIVE_DOMAIN: ${{ secrets.CRM_ACCEPTANCE_PIPEDRIVE_DOMAIN }}
+        run: |
+          node --experimental-strip-types scripts/crm-live-acceptance.mts; code=$?
+          if [ "$code" -eq 2 ]; then
+            echo "::warning::No sandbox CRM secret configured (CRM_ACCEPTANCE_PROVIDER/CRM_ACCEPTANCE_KEY) — this PR touches CRM code and was NOT verified against a real provider. See docs/design/acceptance-contract.md."
+            exit 0
+          fi
+          exit $code
