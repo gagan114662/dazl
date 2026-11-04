@@ -16,9 +16,20 @@ process.env.DB_PATH ??= path.join(mkdtempSync(path.join(tmpdir(), 'dazl-crm-')),
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 const crm = await import('../../app/api/crm/route.ts')
 
-const calls: string[] = []
+// calls: what pushLead sent (creates); reads: its read-back GETs (#569), answered by read (a CRM that holds what it
+// created, by default) or by answer when read is null
+const calls: string[] = [], reads: string[] = []
 let answer: (u: string) => Response | Promise<Response> = () => { throw new Error('Unexpected network call') }
-globalThis.fetch = (async (u: unknown) => { calls.push(String(u)); return answer(String(u)) }) as typeof fetch
+const truthfulRead = (u: string) => {
+  const id = /\/(\d+)\?/.exec(u)?.[1] ?? ''
+  return new Response(JSON.stringify(u.startsWith('https://api.hubapi.com/') ? { id, properties: { email: 'pat@synthetic.example', company: 'Synthetic Co' }, archived: false }
+    : { success: true, data: { id: Number(id), name: 'Pat Example', active_flag: true, email: [{ value: 'pat@synthetic.example', primary: true }] } }), { status: 200 })
+}
+let read: ((u: string) => Response | Promise<Response>) | null = truthfulRead
+globalThis.fetch = (async (u: unknown, init?: RequestInit) => {
+  if ((init?.method ?? 'GET') === 'GET') { reads.push(String(u)); return (read ?? answer)(String(u)) }
+  calls.push(String(u)); return answer(String(u))
+}) as typeof fetch
 
 const db = new Database(':memory:'); migrateAllSqlite(db); setScanDb(db)
 for (const [t, provider] of [['A', 'hubspot'], ['B', 'hubspot'], ['C', 'pipedrive']] as const) {
@@ -79,7 +90,7 @@ test('every malformed or wrong-type HubSpot success is unknown through the route
 
 test('HubSpot 409 for another person\'s contact is a refusal (failed, not "already there"); the lead\'s own contact is found', async () => {
   db.prepare("DELETE FROM connector_audit WHERE tenant_id = 'A'").run(); db.prepare("DELETE FROM crm_push_claims WHERE tenant_id = 'A'").run()
-  as('A')
+  as('A'); read = null
   const conflict = (email: string) => (u: string) => u.endsWith('/contacts')
     ? new Response(JSON.stringify({ message: 'Contact already exists. Existing ID: 77' }), { status: 409 })
     : new Response(JSON.stringify({ id: '77', properties: { email } }), { status: 200 })
@@ -93,6 +104,7 @@ test('HubSpot 409 for another person\'s contact is a refusal (failed, not "alrea
   r = await push('A')
   assert.deepEqual([r.status, r.json.message, r.json.external_id], [200, 'Already in HubSpot (matching contact exists)', '77'])
   assert.deepEqual(auditOf('A').map(a => a.status), ['worker_error', 'ok'])
+  read = truthfulRead
 })
 
 test('Pipedrive through the route: string id is unknown, success:false is failed, a real person id is ok', async () => {
@@ -108,7 +120,33 @@ test('Pipedrive through the route: string id is unknown, success:false is failed
   r = await push('C')
   assert.deepEqual([r.status, r.json.message, r.json.external_id], [200, 'Person created in Pipedrive', '5'])
   assert.deepEqual(auditOf('C').map(a => a.status), ['uncertain', 'resolved_not_created', 'worker_error', 'ok'])
-  assert.ok(calls.every(u => /^https:\/\/api\.(hubapi|pipedrive)\.com\//.test(u)), 'only the mocked CRM endpoints were addressed')
+  assert.ok([...calls, ...reads].every(u => /^https:\/\/api\.(hubapi|pipedrive)\.com\//.test(u)), 'only the mocked CRM endpoints were addressed')
+})
+
+// #569 (reopened): a create the CRM answered with a well-formed id is recorded as ok only after the read-back shows
+// the lead; otherwise it is unknown through the whole route: uncertain claim and audit row, 502, a blind retry blocked.
+test('a create whose read-back does not show the lead is unknown through the route, and blocks a blind retry', async () => {
+  for (const [t, create, bad] of [
+    ['A', JSON.stringify({ id: '4321' }), () => new Response(JSON.stringify({ id: '4321', properties: { email: 'someone@else.example' } }), { status: 200 })],
+    ['C', JSON.stringify({ success: true, data: { id: 43 } }), () => new Response(JSON.stringify({ success: false, error: 'Person not found' }), { status: 404 })],
+  ] as const) {
+    db.prepare('DELETE FROM crm_push_claims WHERE tenant_id = ?').run(t); db.prepare('DELETE FROM connector_audit WHERE tenant_id = ?').run(t)
+    calls.length = 0; reads.length = 0
+    as(t); answer = reply(create, 201); read = bad
+    try {
+      let r = await push(t)
+      assert.deepEqual([r.status, r.json.outcome, r.json.ok, calls.length, reads.length], [502, 'unknown', undefined, 1, 1], t)
+      assert.match(String(r.json.error), /named (contact 4321|person 43) but .*may or may not have been created/)
+      assert.deepEqual(claimOf(t), [{ status: 'uncertain', external_id: null }])
+      assert.deepEqual(auditOf(t).map(a => [a.status, (a as unknown as { results: number }).results]), [['uncertain', 0]])
+      r = await push(t)
+      assert.deepEqual([r.status, r.json.outcome, calls.length], [409, 'unknown', 1], 'no second create')
+      // the user checks the CRM and finds it there: done, never created again
+      assert.equal((await post({ action: 'resolve', lead_id: `lead-${t}`, created: true })).status, 200)
+      r = await push(t)
+      assert.deepEqual([r.status, r.json.already, calls.length], [200, true, 1])
+    } finally { read = truthfulRead }
+  }
 })
 
 // Instinct's HOLD on 9ff1eb0: the claim is taken atomically before the create is sent, follows the lead id (not its
