@@ -56,7 +56,7 @@ const LOCAL = /^dazl-backup-\d{8}T\d{6}Z-[0-9a-f]{8}\.db$/
 
 // ---- local: what exists, and is the newest good?
 type Local = { f: string; t: number }
-let locals: Local[] = []
+const locals: Local[] = []
 const anomalies: string[] = []
 try {
   for (const f of existsSync(dir) ? readdirSync(dir) : []) {
