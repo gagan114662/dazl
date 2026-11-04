@@ -9,6 +9,7 @@ import { migratePlans } from '../../lib/plans.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateAuth } from '../../lib/auth-db.ts'
+import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
 import type { Provider } from '../../lib/llm/provider.ts'
 import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
@@ -34,11 +35,14 @@ export interface Fixture {
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   extractionFn?: (prompt: string) => Cand[]   // SYNTHETIC extraction reply that depends on the prompt it was given (replaces `extraction` when set)
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
+  beforeRun?: (db: Database.Database) => void | Promise<void>   // called once with the job claimed, before the scan starts (state an earlier play left)
 
   reviewedIcp?: object                     // a profile the USER reviewed: stored with the job exactly as POST /api/scan stores it (normalizeIcp, icp_inferred = 0); no inference is run
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
   runBudget?: string                       // the job's stored run_budget JSON (as POST /api/scan stores it)
   searchStatus?: number                    // the search API answers every query with this HTTP status (a source/infrastructure failure)
+  fundedBy?: 'trial'                       // the job is a free-trial scan (funded_by = 'trial'; the caller sets the DAZL_TRIAL_* env)
+  model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
@@ -49,7 +53,9 @@ export async function runFixture(f: Fixture) {
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
   const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
   createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
+  if (f.fundedBy) { migrateTrialBudget(db); db.prepare('UPDATE scan_jobs SET funded_by = ?').run(f.fundedBy) }   // the trial tables, so settleTrialReservation finds its table (no reservation row: admission is the route's job)
   const job = claimKeyedJob(db)!
+  await f.beforeRun?.(db)
   const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
   const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
@@ -73,7 +79,7 @@ export async function runFixture(f: Fixture) {
       complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => reply(p, maxTokens),
       // SYNTHETIC usage numbers (stub counts, not real tokens or charges): proves the usage path records what a provider reports.
       completeDetailed: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => ({ text: reply(p, maxTokens), model: 'stub-model-served', usage: { input_tokens: 1000, output_tokens: 100 } }),
-      configuredModel: () => 'stub-model-requested',
+      configuredModel: () => f.model ?? 'stub-model-requested',
     } as unknown as Provider,
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
