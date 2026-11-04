@@ -176,7 +176,8 @@ if (!offSpec) {
     // pre-migration copy, say) can never push the real newest out of the window; other names follow, newest-named first
     const rank = (f: string) => { const m = /^dazl-backup-(\d{8}T\d{6}Z)/.exec(f); return m ? `1-${m[1]}` : `0-${f}` }
     const listed = await dest.list()
-    const names = listed.filter(f => f.endsWith('.age.json') && plainName(f) && !f.startsWith('dazl-ledger-')).sort((a, b) => rank(b).localeCompare(rank(a)))
+    // dazl-ledger-* (the #359 tombstone ledger copy) and dazl-config-* (its own leg below) are never judged as database copies
+    const names = listed.filter(f => f.endsWith('.age.json') && plainName(f) && !f.startsWith('dazl-ledger-') && !f.startsWith('dazl-config-')).sort((a, b) => rank(b).localeCompare(rank(a)))
     facts.offhost_manifests_listed = names.length
     const manifests: Record<string, unknown>[] = []; let read = 0
     for (const f of names) {

@@ -234,5 +234,7 @@ test('backup-check: the key-recovery drill report and the config bundle alert wh
   writeFileSync(path.join(dest, cn + '.json'), JSON.stringify({ tool: 'dazl-config-copy', ciphertext: cn, ciphertext_sha256: '0'.repeat(64), bytes: 3, copied_at: new Date().toISOString() }))
   r = chk([], { OFFHOST_DEST: dest }); assert.match(String(r.json.problems), /bundle .* is missing/)
   writeFileSync(path.join(dest, cn), 'abc'); r = chk([], { OFFHOST_DEST: dest }); assert.match(String(r.json.problems), /does not match its manifest/)
-  writeFileSync(path.join(dest, cn + '.json'), '{"tool":"dazl-config-copy"'); r = chk([], { OFFHOST_DEST: dest }); assert.match(String(r.json.problems), /secrets\/config manifest .* unreadable or incomplete/)
+  assert.doesNotMatch(String(r.json.problems), /off-host manifest dazl-config|off-host copy dazl-config/, 'the data leg ignores config bundles')
+  writeFileSync(path.join(dest, cn + '.json'), '{"tool":"dazl-config-copy"'); r = chk([], { OFFHOST_DEST: dest }); assert.match(String(r.json.problems), /config bundle manifest .* unreadable or incomplete/)
+  assert.doesNotMatch(String(r.json.problems), /off-host manifest dazl-config/, 'a config bundle is never judged as a database copy')
 })
