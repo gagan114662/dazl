@@ -70,6 +70,133 @@ node --experimental-strip-types scripts/benchmark.mts scorecard --run /tmp/run.j
 node --experimental-strip-types scripts/benchmark.mts compare --before /tmp/cards/A.json --after /tmp/cards/B.json
 ```
 
+## The batch runner (`web/lib/benchmark/runner.ts`, #397)
+
+`node --experimental-strip-types scripts/benchmark.mts run --batch BATCH.json [--store STORE.json] [--out DIR]` runs one
+blinded, equal-budget batch. It produces each system's benchmark run, scores each one with the scorecard above (it is not
+a second scoreboard), and writes one batch report with, per system:
+- precision@5 and precision@10;
+- unique actionable yield: validated companies no other system in the batch validated;
+- coverage: complete tasks out of all tasks;
+- elapsed seconds, spend and operator interventions.
+
+**Same task for every system:**
+- Briefs are frozen (deep-frozen and hashed) before the first run.
+- Every system gets the identical brief, the same as-of day and window, and the same per-task cost and time limits.
+- The order rotates per task, seeded, so every system goes first equally often.
+
+**Idempotent:** every (batch, system, task) has a stable run id. With `--store`, a re-run reuses what is recorded and
+calls nothing again. A change to the briefs, systems, budget or seed is a different batch.
+
+**Honest gaps:**
+
+| situation | recorded as |
+| --- | --- |
+| no authorized adapter (e.g. no Pancake or Gojiberry account) | `unsupported`, with the reason; the system is **not ranked**, never a zero-result loser |
+| budget, timeout or rate-limit stop | `incomplete` |
+| login wall, paywall or missing feature | `unsupported`; it is never bypassed |
+| adapter error | `failed` |
+
+None of these is an empty market.
+
+**Durable budget:** the batch total is reserved before each task. A task with an unknown cost reserves its full limit. Once
+the total would be exceeded, the remaining tasks are `not_run`. A paid live adapter needs explicit authorization and a
+preset finite budget, or it does not run.
+
+**Blind scoring:** outputs are canonicalised (one row per company, by domain, else by normalised name; the raw output is
+kept beside it). They are then pooled per task across systems, given opaque ids, shuffled, and judged without the system,
+product, model or configuration. Any system id, product or model name in an item's text or contact is replaced with
+`[system]`, and an evidence URL that names one is withheld, so an output cannot sign itself (the count is in the
+manifest's `blinding`). An evaluator failure, or an item it leaves out, is `unknown`. Every judgement is recorded in the
+batch's `evaluations` (blind id, system after unblinding, task, entity, verdicts and the evaluator's own record).
+
+**Equal limits are enforced:** a run over the task's time limit (by the clock, or by its own report) or its cost limit is
+`incomplete`, not complete.
+
+**Frozen task set:** a recorded or live batch must run the committed task set for its version
+(`scoreboard/benchmark/v<version>/tasks.json`) unchanged, or it does not run; the CLI looks it up by version and exits 2
+(`invalid_input`) on any difference. A synthetic batch with no committed set for its version may run, labelled synthetic.
+
+**Scoring hook to the #394 contract:** `contractEvaluator()` wraps a per-lead contract scorer (`evaluateLead` from
+`lib/evals/contract.ts`, PR #571) as the blind evaluator. Per task it takes the frozen contract (none: every item is
+`unknown`, never inferred) and maps each blind item to lead evidence. The contract's field verdicts map onto the
+scorecard fields, worst first (contradicted, fail, unknown, pass):
+
+| scorecard field | contract fields |
+| --- | --- |
+| identity | `identity.entity`, `source.on_page` |
+| constraints | `place.matches`, `industry.matches`, `event.predicate`, `consent.status` |
+| event_date | `event.date_real`, `event.date_in_window` |
+| contact | `contact.usable` |
+
+A field the contract did not score is `unknown`. The tier, status, scorer and field rationales go into the judgement
+record. The hook is typed by shape; it is exercised with a stub scorer until #571 lands.
+
+With `--store`, each run is written to the store as soon as it is recorded, so an interrupted batch resumes where it
+stopped.
+
+**Origin is never upgraded:** a batch is all synthetic, all recorded or all live, and mixing is refused, so a synthetic
+fixture can never sit beside, or be presented as, a product's live result. The scorecard refuses to evaluate thresholds on
+synthetic data.
+
+`web/test/fixtures/benchmark/synthetic-batch.json` is a SYNTHETIC batch: four invented tasks, `dazl` and a plain-chat
+baseline as hand-written outputs, and Pancake and Gojiberry unavailable. It exercises the runner and is no result of any
+product.
+
+**Not built:** live adapters (a dazl adapter over `runJob`, and the competitor ones), and no live or paid batch has run.
+Each needs owner-authorized accounts, keys and a budget. Repeated runs with uncertainty are #398.
+
+## Repeated-run superiority (`web/lib/benchmark/superiority.ts`, #398)
+
+`benchmark.mts superiority --plan PLAN.json --hash HASH --ledger LOOKS.json --batches A.json,B.json,...` compares a candidate
+with a baseline over repeated batches from the runner. It returns `win`, `loss` or `inconclusive` for each metric, overall
+and per segment (region, sector). Each answer comes with its interval and its pair and cluster counts.
+
+**Preregistered.** The plan is frozen and hashed before any result is viewed. It fixes:
+- the metrics and their direction, and each one's minimum effect;
+- the precision floor (proposed 0.90) and the yield advantage (proposed ×1.25, i.e. +25%);
+- the cost ceiling and the critical floors;
+- the minimum pairs and clusters, the cluster unit, the bootstrap, the stop rule, and a stated power rationale.
+
+The analysis refuses a plan whose hash differs from the registered one. A look ledger counts analyses, and the stop rule
+refuses past `max_looks`, so results are not re-examined until they look like a win. All the values are configuration, not
+code.
+
+**Inputs are checked whole.** A plan, ledger or batch file with a wrong type, a missing or unknown key, an out-of-range
+value (for example more than 20,000 bootstrap resamples or 20 looks), a replayed batch, or a scorecard task with no run
+is refused with every problem named (exit 2). A refused call never counts a look. The first look needs `--new-ledger`.
+A missing ledger is never silently treated as a fresh one, and an existing one is never reset. The look is written to the
+ledger before the result is printed. `cluster_by` brief or account needs `--clusters MAP.json`; it never falls back to
+one cluster per task. Commit the plan and its ledger together (`scoreboard/benchmark/prereg/<plan id>/`): the tool
+cannot stop someone deleting a ledger file, but git history shows every look.
+
+**Paired and clustered:**
+- One pair is a (task, repetition) where both systems completed the task.
+- A task one side did not complete is listed as a missing pair, never scored as zero. The failure rate itself is measured.
+- `coverage` (1 when the system completed the task, else 0) and `failure_rate` are paired over every task both systems
+  were given, overall and per segment. A market one side never completed is still reported, never dropped.
+- Intervals are a cluster bootstrap over tasks (or briefs or accounts), so ten repetitions of one task are one cluster,
+  not ten pieces of evidence.
+
+**Decisions:**
+- Too few pairs or clusters, or an interval that reaches inside the minimum effect, is `inconclusive`. The interval decides,
+  never the average.
+- There is **no overall winner** when a critical floor fails: contradicted results, false alerts, precision@10 under the
+  floor, or cost per validated over the ceiling. That holds whatever the other metrics say.
+- Overall `win` needs every primary metric to win, every floor to hold and the registered yield advantage to be shown.
+
+**Evidence kept apart:** this measures evaluator-validated performance only. Customer outcomes come from an opted-in
+pilot (#399) and are reported as not measured here. Batches of different origins, or with different frozen briefs, are
+never pooled, and synthetic batches are labelled as saying nothing about any product.
+
+**Monitoring** (`monitoring(snapshots)`) covers repeated runs of one monitor:
+- net-new validated events per day;
+- the duplicate rate;
+- freshness: the median age of a new event when it first appears;
+- correction retention: a corrected event that comes back as new counts against it.
+
+A span under 14 days is reported as `adequate: false`, never stretched.
+
 ## Recorded evidence so far (`scoreboard/benchmark/history.json`)
 
 | date | source | request | counts |

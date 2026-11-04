@@ -11,6 +11,7 @@ import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
+import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { AMBIGUOUS_SAME_NAME, AMBIGUOUS_SCOPE, cleanCountry, cleanDomain, domainStated, scopeDedup } from './dedup-scope.ts'
@@ -39,7 +40,7 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
+import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
@@ -66,7 +67,7 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
-import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
+import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
@@ -1491,8 +1492,12 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
   const postTimer = setTimeout(() => postCtrl.abort(), postFinishBudgetMs())
   try {
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
-    if (!sitecrawlEnabled()) trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0')
-    else { await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl') }
+    if (!sitecrawlEnabled()) { trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0'); trace.note('tech', 'skipped', 'SITECRAWL_ENABLED=0: no crawl, so the technology branch did not run') }
+    else {
+      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
+      noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
+    }
     if (postCtrl.signal.aborted) trace.note('crawl', 'failed', `cut off at the post-finish budget (${postFinishBudgetMs()} ms): contacts and domains after that point were not read`)
     // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
     // leads, never part of verification; failures are silent.
@@ -1518,28 +1523,46 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
 // It does not stop an in-flight provider call (that still ends at its transport timeout or with the process),
 // does not cover SIGKILL/crash (the lease still applies), and a requeued scan restarts from the beginning, so
 // provider work already done by the interrupted attempt may be repeated and billed again - same as any retry.
-// Legacy runner only; queue-mode (DAZL_QUEUE_TENANTS) jobs are not tracked. The Set lives on globalThis because
-// Next bundles instrumentation and route handlers as separate module instances.
+// The legacy runner and the shared work queue (DAZL_SCAN_SHARED_QUEUE=1, with the scan's queue claim token) are tracked; DAZL_QUEUE_TENANTS canary
+// jobs are not. The map lives on globalThis because Next bundles instrumentation and route handlers as separate module
+// instances.
+// A shared-queue scan also hands its queue claim back, by its token and in the same transaction, so the next process
+// claims it at once rather than after the lease (#355). Only when the queue is on this handle (no DATABASE_URL); on
+// Postgres the lease still returns it. A claim the token no longer owns (reaped, re-claimed) is untouched.
 const IN_FLIGHT_KEY = Symbol.for('dazl.scan.inflight')
-function inFlightSet(): Set<Job> {
-  const g = globalThis as unknown as Record<symbol, Set<Job> | undefined>
-  return (g[IN_FLIGHT_KEY] ??= new Set<Job>())
+function inFlightSet(): Map<Job, number | null> {
+  const g = globalThis as unknown as Record<symbol, Map<Job, number | null> | undefined>
+  return (g[IN_FLIGHT_KEY] ??= new Map<Job, number | null>())
 }
-export function trackInFlight(job: Job): () => void { const set = inFlightSet(); set.add(job); return () => { set.delete(job) } }
+export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); return () => { m.delete(job) } }
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0
   const upd = db.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ? AND status = 'running' AND attempts = ? AND attempts < ?")
-  for (const job of inFlightSet()) {
-    try { n += upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes } catch { /* shutting down: the lease reaper is the fallback */ }
+  const queueHere = !process.env.DATABASE_URL
+  for (const [job, token] of inFlightSet()) {
+    try {
+      n += db.transaction((): number => {
+        const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
+        if (c === 1 && token !== null && queueHere) {
+          db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
+            .run(Math.floor(Date.now() / 1000), job.id, token)
+        }
+        return c
+      })()
+    } catch { /* shutting down: the lease reaper is the fallback */ }
   }
   return n
 }
 
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
-  // DAZL_SCAN_SHARED_QUEUE=1 (default OFF): every scan is claimed through the shared work queue instead (lib/queue/scan-claimer.ts).
+  // DAZL_SCAN_SHARED_QUEUE=1 (default OFF, #355): every scan is claimed through the shared work queue
+  // (lib/queue/scan-claimer.ts), fair across tenants. Off, the claimers below run as before. The queue is on Postgres
+  // when DATABASE_URL is set; otherwise on this same SQLite handle, the app's one store (getDb() wraps the same
+  // connection), its tables created here if this handle has not got them yet.
   if (sharedScanQueue()) {
-    await kickSharedScanQueue<Job>({ queue: await getDb(), domain: sqliteDb(db), run: job => runJob(db, job, deps), onCrash: (job, e) => failCrashedJob(db, job, e, 'queue-runner'),
+    const queue = process.env.DATABASE_URL ? await getDb() : (new SqliteQueue(db), sqliteDb(db))
+    await kickSharedScanQueue<Job>({ queue, domain: sqliteDb(db), run: job => runJob(db, job, deps), onCrash: (job, e) => failCrashedJob(db, job, e, 'queue-runner'),
       slots: { available: slotAvailable, acquire: acquireSlot, release: releaseSlot }, track: trackInFlight })
     return
   }
