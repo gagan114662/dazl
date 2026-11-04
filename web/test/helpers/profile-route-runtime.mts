@@ -11,7 +11,7 @@ import { setUser } from './tenant-route-db.ts'
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
 const dir = mkdtempSync(path.join(tmpdir(), 'dazl-profile-'))
 process.env.DB_PATH = path.join(dir, 'app.db')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const route = await import('../../app/api/settings/profile/route.ts')
 const db = getAuthDb()
 for (const id of ['A', 'B']) db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, 'x', 'y')").run(id, `${id}@example.test`)
@@ -49,7 +49,8 @@ test('omitting buyer keeps it, null clears it, an invalid one is refused and cha
 // checks a direct run against (effectiveOffer with the seller line, then the Memory positioning), or a reviewed run of
 // a Memory-only tenant gets no warning about the conflict a direct run is refused for.
 test('#349 new_play_offer is the base a new play is checked against: profile offer, else Memory positioning, per tenant', async () => {
-  const { sellerProfile } = await import('../../lib/auth-db.ts')
+  const { readSellerLine } = await import('../../lib/auth-db.ts')
+  const { sqliteDb } = await import('../../lib/db/client.ts')
   const { readTenantOffer } = await import('../../lib/outreach/play-memory.ts')
   const { effectiveOffer } = await import('../../lib/scan/play-offer-text.ts')
   const SAVED = 'We sell appointment booking and reminder software to independent dental practices in New York City.'
@@ -70,7 +71,7 @@ test('#349 new_play_offer is the base a new play is checked against: profile off
     for (const q of queries) {
       // the review step's resolution (leads-client startOffer) against the server's direct-run check (app/api/scan/route.ts)
       const review: ReturnType<typeof effectiveOffer>['conflict'] = base ? effectiveOffer({ seller: null, query: q }, base).conflict : null
-      const server = effectiveOffer({ seller: sellerProfile(db, id), query: q }, readTenantOffer(db, id)).conflict
+      const server = effectiveOffer({ seller: await readSellerLine(sqliteDb(db), id), query: q }, readTenantOffer(db, id)).conflict
       assert.deepEqual(review, server, `${id}: ${q.slice(0, 40)}`)
     }
   }
