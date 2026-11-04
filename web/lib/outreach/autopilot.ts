@@ -772,7 +772,7 @@ export interface DrainResult { sent: number; held: number; skipped: number; stop
 // warmup already cleared, the hold recorded under this consent version, and the offer inputs unchanged (changed words
 // or offer invalidate the authority; the draft is skipped, never sent). Warmup-manual drafts and drafts with no hold
 // record are never touched. Caps are re-checked at send time; an over-cap tenant is re-held, not sent.
-export async function drainFirstTouch(db: Database.Database, tenantId: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<DrainResult> {
+export async function drainFirstTouch(db: Database.Database, tenantId: string, d: Deps & { flags?: Record<string, string | undefined>; businessName?: string } = {}): Promise<DrainResult> {
   const out: DrainResult = { sent: 0, held: 0, skipped: 0 }
   const env = d.flags ?? process.env
   const now = d.now ?? Math.floor(Date.now() / 1000)
@@ -860,7 +860,13 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
     try {
       if (m.status === 'draft') approve(db, tenantId, m.id) // a released retry is already approved; approve() is draft-only
       const r = await sendMessage(db, tenantId, m.id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: drainAuthorize(m.lead_id, m.id, domain) })
-      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id) }
+      if (r === 'sent') {
+        out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id)
+        // #414: a first touch this drain proves sent enrolls exactly as one runAutopilot sends does (policy-gated,
+        // best-effort: a failure is audited and never touches the send or the tenant).
+        try { (await import('./sequences.ts')).enrollColdSequence(db, tenantId, m.id, { businessName: d.businessName }) }
+        catch (e) { audit(db, tenantId, 'sequence_enroll_failed', e instanceof Error ? e.message.slice(0, 40) : 'error', m.lead_id, m.id) }
+      }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', m.lead_id, m.id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
       if (!(e instanceof OutreachError)) throw e // DB/runtime faults are scheduler failures, never retry-classified
