@@ -252,19 +252,24 @@ export async function readClaimedPreview(db: Db, tenantId: string, id: string, n
 // with the exact verified email and claimed the preview); it is not a purchase, a reply or a customer result.
 export const PROOF_REPORT_PREVIEWS = 100
 export const PROOF_REPORT_RUNS = 20
-export type PreviewState = 'open' | 'claimed' | 'expired' | 'withdrawn'
+// claimed_withdrawn: the recipient claimed it, then its evidence was withdrawn (a lead quarantined, purged or gone). The
+// claim is still a fact, but it is no longer valid proof: it is counted apart from conversion, and nothing serves it.
+export type PreviewState = 'open' | 'claimed' | 'claimed_withdrawn' | 'expired' | 'withdrawn'
 export interface ProofReport {
-  previews: { id: string; runId: string; business: string; createdAt: number; expiresAt: number; state: PreviewState; version: number; companies: number; runSpendUsd: number | null; claimAttempts: Record<string, number> }[]
+  // serving: whether the preview's page shows its content right now (the public page for an open preview, the claiming
+  // workspace's private route for a claimed one). It is the same check those pages run, so the report and the pages agree.
+  previews: { id: string; runId: string; business: string; createdAt: number; expiresAt: number; state: PreviewState; serving: boolean; version: number; companies: number; runSpendUsd: number | null; claimAttempts: Record<string, number> }[]
   runs: { runId: string; finishedAt: number | null; leads: number; proof: 'ready' | 'run_not_finished' | 'no_inferred_offer' | 'no_usable_results'; companies: number; spendUsd: number | null }[]
   totals: {
-    issued: number; open: number; claimed: number; expired: number; withdrawn: number
-    conversion: { claimed: number; issued: number; rate: number | null }
+    issued: number; open: number; claimed: number; claimedWithdrawn: number; expired: number; withdrawn: number
+    // claimed counts only claims whose evidence still stands; claimedWithdrawn are reported apart, never as conversion
+    conversion: { claimed: number; claimedWithdrawn: number; issued: number; rate: number | null }
     runs: { evaluated: number; ready: number; held: number; holdReasons: Record<string, number> }
     spend: { runsWithSpend: number; runsWithoutSpend: number; totalUsd: number | null; perShownCompanyUsd: number | null }
   }
   scope: string
 }
-const REPORT_SCOPE = 'Your own issued previews (latest 100) and finished runs (latest 20). Claimed = the recipient signed in with the exact verified email and claimed the preview; it is not a purchase or a customer result. Spend is each run\'s own recorded paid-call total (scan_jobs.spend_reserved_usd, rounded to micro-dollars); runs with no recorded spend are counted apart, never as zero.'
+const REPORT_SCOPE = 'Your own issued previews (latest 100) and finished runs (latest 20). Claimed = the recipient signed in with the exact verified email and claimed the preview; it is not a purchase or a customer result. A claim whose evidence was later withdrawn is claimed_withdrawn and is not counted as conversion. Spend is each run\'s own recorded paid-call total (scan_jobs.spend_reserved_usd, rounded to micro-dollars); runs with no recorded spend are counted apart, never as zero.'
 
 export async function proofReport(db: Db, sellerTenantId: string, now = Date.now()): Promise<ProofReport> {
   const claims = await db.all<{ id: string; run_id: string; business: string; snapshot: string; created_at: number | string; expires_at: number | string; claimed_at: number | string | null }>(
@@ -285,10 +290,13 @@ export async function proofReport(db: Db, sellerTenantId: string, now = Date.now
   for (const c of claims) {
     const snap = parseSnapshot(c.snapshot)
     const events = await db.all<{ outcome: string; n: number | string }>('SELECT outcome, count(*) AS n FROM preview_claim_events WHERE claim_id = ? GROUP BY outcome', [c.id])
-    const state: PreviewState = c.claimed_at !== null ? 'claimed' : Number(c.expires_at) <= now ? 'expired'
-      : !(await stillBacked(db, c.run_id, sellerTenantId, snap)) ? 'withdrawn' : 'open'
+    // the same order of checks as readClaimedPreview and readPublicClaim: expiry, then the evidence still backing it
+    const live = Number(c.expires_at) > now
+    const isBacked = live && await stillBacked(db, c.run_id, sellerTenantId, snap)
+    const state: PreviewState = c.claimed_at !== null ? (live && !isBacked ? 'claimed_withdrawn' : 'claimed')
+      : !live ? 'expired' : !isBacked ? 'withdrawn' : 'open'
     previews.push({
-      id: c.id, runId: c.run_id, business: c.business, createdAt: Number(c.created_at), expiresAt: Number(c.expires_at), state,
+      id: c.id, runId: c.run_id, business: c.business, createdAt: Number(c.created_at), expiresAt: Number(c.expires_at), state, serving: isBacked,
       version: snap?.version ?? 0, companies: snap ? snap.companies.length : 0, runSpendUsd: await spendFor(c.run_id),
       claimAttempts: Object.fromEntries(events.map(e => [e.outcome, Number(e.n)])),
     })
@@ -315,8 +323,8 @@ export async function proofReport(db: Db, sellerTenantId: string, now = Date.now
   return {
     previews, runs,
     totals: {
-      issued: previews.length, open: count('open'), claimed, expired: count('expired'), withdrawn: count('withdrawn'),
-      conversion: { claimed, issued: previews.length, rate: previews.length ? claimed / previews.length : null },
+      issued: previews.length, open: count('open'), claimed, claimedWithdrawn: count('claimed_withdrawn'), expired: count('expired'), withdrawn: count('withdrawn'),
+      conversion: { claimed, claimedWithdrawn: count('claimed_withdrawn'), issued: previews.length, rate: previews.length ? claimed / previews.length : null },
       runs: { evaluated: runs.length, ready: ready.length, held: runs.length - ready.length, holdReasons },
       spend: { runsWithSpend: runs.filter(r => r.spendUsd !== null).length, runsWithoutSpend: runs.filter(r => r.spendUsd === null).length, totalUsd: total,
         perShownCompanyUsd: shown > 0 ? micro(priced.reduce((a, r) => a + (r.spendUsd ?? 0), 0) / shown) : null },

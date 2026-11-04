@@ -42,6 +42,10 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in', code: 'signed_out' }, { status: 401 })
+  // the report reads up to 100 previews and 20 runs (a few hundred queries): bounded per workspace
+  const rl = await rateLimit(`preview-report:${user.tenantId}`, 30, 60 * 1000)
+  if (rl.unavailable) return NextResponse.json({ error: 'Briefly unavailable. Try again in a moment.', code: 'limits_unavailable' }, { status: 503, headers: { 'Retry-After': String(UNAVAILABLE_RETRY_S) } })
+  if (!rl.ok) return NextResponse.json({ error: 'Too many requests. Try again later.', code: 'too_many' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
   try {
     return NextResponse.json(await proofReport(await getDb(), user.tenantId))
   } catch (e) {

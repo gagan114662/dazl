@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import type { Db } from '../lib/db/client.ts'
-import { issuePreviewClaim, proofReport, readPublicClaim, claimPreview, PROOF_SNAPSHOT_VERSION } from '../lib/scan/preview-claim.ts'
+import { issuePreviewClaim, proofReport, readPublicClaim, readClaimedPreview, claimPreview, PROOF_SNAPSHOT_VERSION } from '../lib/scan/preview-claim.ts'
 import { buildProofPreview, type ProofLeadRow } from '../lib/scan/proof-preview.ts'
 import { EXAMPLES } from '../lib/landing-examples.ts'
 import { bothEngines } from './helpers/engines.ts'
@@ -43,7 +43,7 @@ bothEngines('report: issued vs claimed, ready vs held runs and why, recorded spe
   const r = await proofReport(db, 'seller1', NOW)
   assert.equal(r.previews.length, 2, 'seller2\u2019s preview is not in seller1\u2019s report')
   assert.ok(r.previews.every(p => p.runId !== other))
-  assert.deepEqual({ ...r.totals.conversion }, { claimed: 1, issued: 2, rate: 0.5 })
+  assert.deepEqual({ ...r.totals.conversion }, { claimed: 1, claimedWithdrawn: 0, issued: 2, rate: 0.5 })
   assert.equal(r.totals.open, 1)
   const pa = r.previews.find(p => p.runId === a)!
   assert.deepEqual([pa.state, pa.companies, pa.runSpendUsd, pa.version], ['open', 2, 0.5, PROOF_SNAPSHOT_VERSION])
@@ -81,8 +81,44 @@ bothEngines('report: withdrawn and expired previews are named; malformed stored 
   assert.equal(state(b).state, 'expired')
   assert.deepEqual([state(c).state, state(c).companies, state(c).version], ['withdrawn', 0, 0], 'unreadable snapshot: withdrawn, never served')
   assert.deepEqual([r.totals.withdrawn, r.totals.expired, r.totals.open], [2, 1, 0])
+  assert.ok(r.previews.every(p => p.serving === false), 'nothing withdrawn or expired is served')
   if (ic?.status === 'issued') assert.equal((await readPublicClaim(db, master, ic.token, NOW)).status, 'expired')
   if (ia?.status === 'issued') assert.equal((await readPublicClaim(db, master, ia.token, NOW)).status, 'expired', 'a quarantined lead withdraws the already-issued public link')
+})
+
+// Review on 7998fec9: a claim whose evidence is withdrawn afterwards stays a claim (a fact), but is reported apart from
+// valid conversion, and the report, the claimed route, the public link and the counts agree on it.
+bothEngines('report: a claim whose evidence is later withdrawn is claimed_withdrawn, not conversion; report, routes and counts agree', async ({ db }) => {
+  const a = await run(db, 'seller1', { leads: 2, spend: 0.4 })
+  const b = await run(db, 'seller1', { leads: 1, spend: 0.2 })
+  const ia = await issue(db, a, 'seller1', 'owner@clinic2.test'), ib = await issue(db, b, 'seller1', 'owner@clinic2.test')
+  if (ia?.status !== 'issued' || ib?.status !== 'issued') throw new Error('setup')
+  await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt, created_at, email_verified_at) VALUES ('u1', 'owner@clinic2.test', 'P', 'B', 'h', 's', ?, ?)", [NOW, NOW])
+  for (const t of [ia.token, ib.token]) assert.equal((await claimPreview(db, master, t, { actorId: 'u1', tenantId: 't-prospect' }, NOW)).status, 'claimed')
+  let r = await proofReport(db, 'seller1', NOW)
+  assert.deepEqual(r.previews.map(p => [p.state, p.serving]).sort(), [['claimed', true], ['claimed', true]])
+  assert.deepEqual({ ...r.totals.conversion }, { claimed: 2, claimedWithdrawn: 0, issued: 2, rate: 1 })
+  // one of run a's two leads is quarantined after the claim
+  await db.run('UPDATE leads SET quarantined_at = ? WHERE id = ?', [NOW, `${a}-l1`])
+  r = await proofReport(db, 'seller1', NOW)
+  const pa = r.previews.find(p => p.runId === a)!, pb = r.previews.find(p => p.runId === b)!
+  assert.deepEqual([pa.state, pa.serving, pb.state, pb.serving], ['claimed_withdrawn', false, 'claimed', true])
+  assert.deepEqual({ ...r.totals.conversion }, { claimed: 1, claimedWithdrawn: 1, issued: 2, rate: 0.5 })
+  assert.deepEqual([r.totals.claimed, r.totals.claimedWithdrawn, r.totals.open, r.totals.withdrawn, r.totals.expired], [1, 1, 0, 0, 0])
+  // the private claimed route and the public link say the same thing as the report
+  assert.deepEqual(await readClaimedPreview(db, 't-prospect', ia.id, NOW), { expired: true })
+  assert.equal(((await readClaimedPreview(db, 't-prospect', ib.id, NOW)) as { business: string }).business, 'Clinic Soft')
+  assert.equal((await readPublicClaim(db, master, ia.token, NOW)).status, 'claimed', 'a claimed link has no public content either way')
+  for (const p of r.previews) {
+    const page = await readClaimedPreview(db, 't-prospect', p.id, NOW)
+    assert.equal(p.serving, !!page && !('expired' in page), `${p.runId}: serving matches the claimed route`)
+  }
+  // a claimed preview past its evidence expiry is still a claim; it serves nothing, and the route agrees
+  await db.run('UPDATE preview_claims SET expires_at = ? WHERE id = ?', [NOW - 1, ib.id])
+  r = await proofReport(db, 'seller1', NOW)
+  const eb = r.previews.find(p => p.runId === b)!
+  assert.deepEqual([eb.state, eb.serving], ['claimed', false])
+  assert.deepEqual(await readClaimedPreview(db, 't-prospect', ib.id, NOW), { expired: true })
 })
 
 bothEngines('deploy: a snapshot issued before versioning still serves and reports as version 0', async ({ db }) => {
