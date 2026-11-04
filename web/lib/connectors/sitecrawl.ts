@@ -460,7 +460,9 @@ export function recordTechObservation(db: Database.Database, tenantId: string, l
 // (TECH_SCAN_ENABLED=0: the branch did not run, and wrote nothing). Read by the run report's 'tech' stage (runner.ts).
 export const TECH_AUDIT = 'sitecrawl:tech'
 export const techScanEnabled = (env: Record<string, string | undefined> = process.env) => env.TECH_SCAN_ENABLED !== '0'
-const errName = (e: unknown) => (e instanceof Error ? `${e.name}: ${e.message}` : typeof e).replace(/[^\x20-\x7e]/g, '?').slice(0, 150)
+// A closed code, never the message: an error's own text can echo a value (a URL, a token, a provider body), and this status is stored
+// and shown in the run report. Only an error class name of plain letters passes; anything else is 'unknown'.
+const errName = (e: unknown) => { const n = e instanceof Error ? e.name : ''; return typeof n === 'string' && /^[A-Za-z]{1,40}$/.test(n) ? n : 'unknown' }
 export function techBranch(db: Database.Database, tenantId: string, jobId: string, leadId: string, site: string, r: { tech?: TechHit[]; homeObs?: Observability; pages?: number }, at: number, env?: Record<string, string | undefined>): void {
   let out: TechRecord
   if (!techScanEnabled(env ?? process.env)) out = { status: 'disabled', rows: 0 }

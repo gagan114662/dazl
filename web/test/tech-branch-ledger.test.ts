@@ -95,22 +95,21 @@ test('malformed page counts read as 0, never NaN or a negative number', () => {
   assert.ok(ledger(db).every(r => r.status === 'no_observation: no homepage verdict; pages 0'), JSON.stringify(ledger(db)))
 })
 
-test('branch_error: the branch throwing is recorded by name (Error, non-Error, control characters) and never blocks the crawl', () => {
+test('branch_error: the branch throwing is recorded by its class name only (Error, non-Error, odd names) and never blocks the crawl', () => {
   const db = fresh()
   const throwing = (thrown: unknown) => new Proxy(db, { get(t, k, r) {
     const v = Reflect.get(t, k, r)
     return k === 'prepare' ? (sql: string) => { if (/lead_enrichments/.test(sql)) throw thrown; return t.prepare(sql) } : typeof v === 'function' ? v.bind(t) : v
   } }) as Database.Database
   const errOf = (msg: string) => Object.assign(new Error(msg), { name: 'SqliteError' })
-  for (const thrown of [errOf('no such table: lead_enrichments'), 'a bare string', { code: 'X' }, null, errOf('bad \u0000\u001b[31m\u00e9 ' + 'y'.repeat(400))])
+  const named = (name: unknown) => Object.assign(new Error('m'), { name })
+  for (const thrown of [errOf('no such table: lead_enrichments'), 'a bare string', { code: 'X' }, null, errOf('bad \u0000\u001b[31m\u00e9 ' + 'y'.repeat(400)), named('Sqlite Error: x'), named(7), named('A'.repeat(41)), new TypeError('x')])
     assert.doesNotThrow(() => techBranch(throwing(thrown), 'u1', 'j1', 'l1', 'brightloop.com', { tech: [], homeObs: 'ok', pages: 1 }, AT, {}))
   const st = ledger(db).map(r => r.status)
-  assert.deepEqual(st.slice(0, 4), ['error: SqliteError: no such table: lead_enrichments', 'error: string', 'error: object', 'error: object'])
-  assert.match(st[4], /^error: SqliteError: bad \?\?\[31m\? y+$/)
-  assert.ok(st[4].length <= 157 && /^[\x20-\x7e]*$/.test(st[4]), 'bounded and printable')
+  assert.deepEqual(st, ['error: SqliteError', 'error: unknown', 'error: unknown', 'error: unknown', 'error: SqliteError', 'error: unknown', 'error: unknown', 'error: unknown', 'error: TypeError'])
   const t = new EnrichmentTrace(); noteTech(t, auditSummary(db, 'u1', 'j1', TECH_AUDIT))
   assert.equal(t.stages[0].status, 'failed')
-  assert.match(t.stages[0].reason!, /^branch_error on 5 of 5 sites: /)
+  assert.match(t.stages[0].reason!, /^branch_error on 9 of 9 sites: /)
   // a ledger that cannot be written (old schema without connector_audit) still never throws into the crawl
   const bare = new Database(':memory:')
   assert.doesNotThrow(() => techBranch(bare, 'u1', 'j1', 'l1', 'brightloop.com', { homeObs: 'ok', pages: 1 }, AT, {}))
@@ -151,3 +150,19 @@ test('the ledger row never makes a failed hiring-feed crawl read as finished', (
   db.prepare("INSERT INTO connector_audit (tenant_id, connector, scan_job_id, lookup, status, results, created_at) VALUES ('u1', 'sitecrawl', ?, 'brightloop.com', 'ok', 0, ?)").run(jobId, AT)
   assert.equal(crawlAuditCount(db, jobId), before + 1)
 })
+
+// Review on 7b3619c5: an error's message can echo a URL, a token or a provider body. Neither the ledger row nor the run report may hold it.
+test('branch_error never stores the error message: a thrown URL, token or body reaches neither the ledger nor the run report', () => {
+  const db = fresh()
+  const leaky = Object.assign(new Error('https://x.example/?token=SECRET body=PRIVATE'), { name: 'SqliteError' })
+  const throwing = new Proxy(db, { get(t, k, r) {
+    const v = Reflect.get(t, k, r)
+    return k === 'prepare' ? (sql: string) => { if (/lead_enrichments/.test(sql)) throw leaky; return t.prepare(sql) } : typeof v === 'function' ? v.bind(t) : v
+  } }) as Database.Database
+  techBranch(throwing, 'u1', 'j1', 'l1', 'brightloop.com', { tech: [], homeObs: 'ok', pages: 1 }, AT, {})
+  const t = new EnrichmentTrace(); noteTech(t, auditSummary(db, 'u1', 'j1', TECH_AUDIT))
+  const stored = JSON.stringify([ledger(db), t.stages])
+  assert.deepEqual(ledger(db).map(r => r.status), ['error: SqliteError'])
+  for (const leak of ['token', 'SECRET', 'PRIVATE', 'x.example', 'https://']) assert.ok(!stored.includes(leak), leak)
+})
+
