@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import type Database from 'better-sqlite3'
-import type { Db } from '../db/client.ts'
+import type { Db, Param, Tx, TxBody } from '../db/client.ts'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 
 // Per-tenant connector credentials, encrypted with the same envelope scheme as LLM keys.
@@ -331,11 +331,16 @@ export function readRecentAudit(db: Db, tenantId: string, limit = 20) {
 
 export interface Enrichment { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; retrieved_at: number }
 
+const ADD_ENRICHMENT_SQL = `INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (lead_id, connector, kind, value) DO NOTHING`
+const addEnrichmentParams = (tenantId: string, leadId: string, e: Enrichment): Param[] =>
+  [randomBytes(12).toString('hex'), leadId, tenantId, e.connector, e.kind, e.value, e.label, e.confidence, e.source_url, e.source_date, e.retrieved_at]
 export function addEnrichment(db: Database.Database, tenantId: string, leadId: string, e: Enrichment): void {
-  db.prepare(
-    `INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (lead_id, connector, kind, value) DO NOTHING`,
-  ).run(randomBytes(12).toString('hex'), leadId, tenantId, e.connector, e.kind, e.value, e.label, e.confidence, e.source_url, e.source_date, e.retrieved_at)
+  db.prepare(ADD_ENRICHMENT_SQL).run(...addEnrichmentParams(tenantId, leadId, e))
+}
+// addEnrichment inside a Db-layer transaction (SQLite or Postgres), the same statement: for setDomainReviewDb (#354).
+export function* addEnrichmentTx(t: Tx, tenantId: string, leadId: string, e: Enrichment): TxBody<void> {
+  yield* t.run(ADD_ENRICHMENT_SQL, addEnrichmentParams(tenantId, leadId, e))
 }
 
 // Internal records kept in lead_enrichments that are never shown to a user: the #377 timing-proof record (a JSON binding

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
+import { requireUser } from '@/lib/scan/service'
+import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { setDomainReview } from '@/lib/scan/domain-review-action'
+import { setDomainReviewDb } from '@/lib/scan/domain-review-action'
 import { denied } from '@/lib/workspace-access'
 
 // The user records (or withdraws) that the website behind a crawled address is the right company.
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   try { const b = await req.json(); action = b?.action; binding = b?.binding } catch { return NextResponse.json({ error: 'Bad request' }, { status: 400 }) }
   if (action !== 'confirm' && action !== 'withdraw') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (action === 'confirm' && !(typeof binding === 'string' && /^[a-f0-9]{64}$/.test(binding))) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  const r = setDomainReview(getScanDb(), user.tenantId, lead, action, typeof binding === 'string' ? binding : undefined)
+  const r = await setDomainReviewDb(await getDb(), user.tenantId, lead, action, typeof binding === 'string' ? binding : undefined)
   if (r.status === 'not_found') return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
   if (r.status === 'not_required') return NextResponse.json({ error: 'No website check is needed for this lead' }, { status: 409 })
   if (r.status === 'stale') return NextResponse.json({ error: 'This lead changed since you loaded the page. It was reloaded, so check the website again.', stale: true }, { status: 409 })
