@@ -172,6 +172,13 @@ test('a user takeover pauses automation for the thread', async () => {
   await sync(db, { [s.thread]: [ours(s.first), ours('by-hand', NOW - 2 * DAY), inbound('in-1', QUESTION)] })
   assert.deepEqual(rows(db).map(r => r.outcome), ['paused'])
   const g = sender(); await send(db, g.sendFn); assert.equal(g.sent.length, 0)
+  // an answer planned before the takeover is not sent after it
+  const b = await setup(); const s2 = sentLead(b.db, b.job)
+  await sync(b.db, { [s2.thread]: [ours(s2.first), inbound('in-1', QUESTION, { at: NOW - 2 * DAY })] }, NOW - 2 * DAY + 60)
+  await sync(b.db, { [s2.thread]: [ours(s2.first), inbound('in-1', QUESTION, { at: NOW - 2 * DAY }), ours('by-hand', NOW - DAY), inbound('in-2', 'Thanks!', { at: NOW - 3600 })] })
+  assert.deepEqual(rows(b.db).map(r => [r.message_id, r.outcome, r.status]), [['in-1', 'send', 'ready'], ['in-2', 'paused', 'recorded']])
+  assert.deepEqual(await send(b.db, g.sendFn), { sent: 0, held: 0, cancelled: 1 })
+  assert.equal((b.db.prepare("SELECT reason FROM buyer_answers WHERE message_id = 'in-1'").get() as { reason: string }).reason, 'taken_over')
 })
 
 test('only the DMARC-authenticated prospect is answered: missing, failed, SPF-only, other-domain or spoofed verdicts escalate', async () => {
@@ -340,4 +347,20 @@ test('a lost scheduler lease is not swallowed: the planner and the sender rethro
   assert.throws(() => planThreadAnswers(db, 'A', { threadId: s.thread, leadId: s.lead, outreachId: s.mid, prospect: PROSPECT, mailbox: MAILBOX, messages: [ours(s.first), inbound('in-2', QUESTION)] as GThreadMsg[] }, { flags, env: genv, now: NOW }), StaleLeaseWrite)
   db.prepare = prepare
   assert.equal((db.prepare("SELECT status FROM buyer_answers WHERE message_id = 'in-1'").get() as { status: string }).status, 'ready', 'nothing was claimed')
+})
+
+test('two tenants: B cannot plan, see, release, resolve or send the answers of tenant A', async () => {
+  const { db, job } = await setup(); const s = sentLead(db, job)
+  await sync(db, { [s.thread]: [ours(s.first), inbound('in-1', QUESTION), inbound('in-2', 'Do you integrate with Salesforce?', { at: NOW - 60 })] })
+  const before = JSON.stringify(db.prepare('SELECT * FROM buyer_answers ORDER BY message_id').all())
+  const g = sender()
+  assert.deepEqual(await runAnswers(db, 'B', { flags, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: gmail({}), sendFn: g.sendFn }), { sent: 0, held: 0, cancelled: 0 })
+  assert.deepEqual(answerQueue(db, 'B'), { exceptions: [], approvals: [], held: [] })
+  assert.equal(releaseAnswer(db, 'B', 'in-1', NOW), 'not_found')
+  assert.equal(resolveException(db, 'B', 'in-2', NOW), 'not_found')
+  assert.deepEqual(planThreadAnswers(db, 'B', { threadId: s.thread, leadId: s.lead, outreachId: s.mid, prospect: PROSPECT, mailbox: MAILBOX, messages: [inbound('in-3', QUESTION)] as GThreadMsg[] }, { flags, env: genv, now: NOW }), { planned: 0, ready: 0, skipped: 'no_lead' })
+  assert.equal(JSON.stringify(db.prepare('SELECT * FROM buyer_answers ORDER BY message_id').all()), before, "A's ledger is unchanged")
+  assert.equal(g.sent.length, 0)
+  // only A's own pass sends A's answer
+  assert.equal((await send(db, g.sendFn)).sent, 1)
 })

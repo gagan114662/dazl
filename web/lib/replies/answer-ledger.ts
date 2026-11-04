@@ -346,6 +346,8 @@ function rowRefusal(db: Database.Database, tenantId: string, r: Ready, env: Reco
   const t = db.prepare('SELECT stopped FROM followup_threads WHERE tenant_id = ? AND thread_id = ?').get(tenantId, r.thread_id) as { stopped: string | null } | undefined
   if (!t) return 'thread_missing'
   if (t.stopped) return `thread_${t.stopped}`.slice(0, 40)
+  // the tenant wrote in the thread by hand since this answer was planned (a later message recorded as paused)
+  if (db.prepare("SELECT 1 FROM buyer_answers WHERE tenant_id = ? AND thread_id = ? AND outcome = 'paused'").get(tenantId, r.thread_id)) return 'taken_over'
   if (isSuppressed(db, tenantId, m.to_email)) return 'suppressed'
   if (!recipientAllowed(db, tenantId, m.to_email)) return 'personal_email'
   if (r.lead_id && leadHeld(db, tenantId, r.lead_id)) return 'lead_held'
