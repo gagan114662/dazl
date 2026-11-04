@@ -170,3 +170,16 @@ test('missed-run arithmetic', () => {
   assert.equal(uncoveredDays(null, NOW, 90), 0)
   assert.equal(uncoveredDays(NOW - 100 * DAY, NOW, 90), 10)
 })
+
+test('window boundary: 90 days back is inside, 91 is out_of_window; a play\'s own window beats the default', () => {
+  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: null, date_status: 'verified', signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, held: false, reachable: false }
+  const back = (days: number) => new Date((NOW - days * DAY) * 1000).toISOString().slice(0, 10)
+  const W = DEFAULT_EVENT_WINDOW_DAYS
+  assert.equal(W, 90)
+  assert.deepEqual(decide({ ...l, event_date: back(90) }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true }, 'the cutoff day itself is inside')
+  assert.deepEqual(decide({ ...l, event_date: back(91) }, null, false, 'all', W, NOW), { suppress: 'out_of_window' })
+  // the play's own window wins over the 90-day default, in both directions
+  assert.deepEqual(decide({ ...l, event_date: back(31) }, null, false, 'all', 30, NOW), { suppress: 'out_of_window' }, '30-day play rejects 31 days')
+  assert.deepEqual(decide({ ...l, event_date: back(30) }, null, false, 'all', 30, NOW), { kind: 'new_company', alert: true })
+  assert.deepEqual(decide({ ...l, event_date: back(120) }, null, false, 'all', 180, NOW), { kind: 'new_company', alert: true }, 'a 180-day play accepts 120 days')
+})
