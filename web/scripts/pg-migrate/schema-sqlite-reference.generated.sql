@@ -469,7 +469,7 @@ CREATE TABLE oauth_states (
       tenant_id  TEXT NOT NULL,
       verifier   TEXT NOT NULL,
       expires_at INTEGER NOT NULL
-    , read_scope INTEGER NOT NULL DEFAULT 0);
+    , read_scope INTEGER NOT NULL DEFAULT 0, sender_owner TEXT);
 
 CREATE TABLE onboarding_audit (
       id         TEXT PRIMARY KEY,
@@ -540,7 +540,7 @@ CREATE TABLE outreach_messages (
       sent_at        INTEGER,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR length(error) <= 200),
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, reply_checked_at INTEGER, insert_seq INTEGER,
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, reply_checked_at INTEGER, sender_id TEXT, insert_seq INTEGER,
       UNIQUE (tenant_id, lead_id)
     );
 
@@ -770,6 +770,19 @@ CREATE TABLE seller_decisions (
  created_at INTEGER NOT NULL, version INTEGER NOT NULL CHECK (version = 1),
  UNIQUE(tenant_id,job_id,offer_id,hypothesis_id)
 );
+
+CREATE TABLE sender_identities (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    provider        TEXT NOT NULL CHECK (provider IN ('gmail')),
+    email           TEXT NOT NULL CHECK (length(email) BETWEEN 3 AND 254),
+    owner_member_id TEXT NOT NULL,
+    refresh_ct      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','needs_reconnect')),
+    verified_at     INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+    UNIQUE (tenant_id, provider, email)
+  );
 
 CREATE TABLE seo_audits (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
@@ -1219,6 +1232,8 @@ CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
 
 CREATE INDEX seller_decisions_recall ON seller_decisions(tenant_id,site,created_at,id);
 
+CREATE INDEX sender_identities_tenant ON sender_identities (tenant_id, status);
+
 CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 
 CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, checked_at);
@@ -1460,6 +1475,8 @@ CREATE TRIGGER tomb_scheduler_progress BEFORE INSERT ON scheduler_progress BEGIN
 
 CREATE TRIGGER tomb_seller_decisions BEFORE INSERT ON seller_decisions BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_sender_identities BEFORE INSERT ON sender_identities BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_seo_audits BEFORE INSERT ON seo_audits BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_seo_briefs BEFORE INSERT ON seo_briefs BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1645,6 +1662,8 @@ CREATE TRIGGER tomb_upd_scan_traces BEFORE UPDATE OF tenant_id ON scan_traces BE
 CREATE TRIGGER tomb_upd_scheduler_progress BEFORE UPDATE OF tenant_id ON scheduler_progress BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_seller_decisions BEFORE UPDATE OF tenant_id ON seller_decisions BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_sender_identities BEFORE UPDATE OF tenant_id ON sender_identities BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_seo_audits BEFORE UPDATE OF tenant_id ON seo_audits BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

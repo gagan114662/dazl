@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { approve, editDraft, OutreachError, resolveUncertain, sendMessage, skip } from '@/lib/outreach/service'
+import { approve, editDraft, OutreachError, resolveUncertain, sendMessage, setMessageSender, skip } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
-import { denied } from '@/lib/workspace-access'
+import { denied, isId } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
-const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
+const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429, sender_not_found: 404, sender_reconnect_needed: 409, sender_owner_removed: 409, sender_sequence_bound: 409, sender_disconnected: 409, sender_daily_cap: 429 }
 
 async function guard(req: NextRequest, id: string, action: Action) {
   const user = await requireUser()
@@ -49,6 +49,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     else if (action === 'skip') skip(db, g.user.tenantId, id)
     else if (action === 'mark_sent') resolveUncertain(db, g.user.tenantId, id, 'sent')
     else if (action === 'retry') resolveUncertain(db, g.user.tenantId, id, 'retry')
+    else if (action === 'set_sender') {
+      // #370: { sender: identity id | null } binds the message to an added sender identity or back to the primary; drops the approval
+      if (body?.sender !== null && !isId(body?.sender)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+      setMessageSender(db, g.user.tenantId, id, body.sender)
+    }
     else if (action === 'send') {
       const no = denied(g.user, 'send'); if (no) return no
       if (!(await rateLimit(`send:${g.user.tenantId}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })

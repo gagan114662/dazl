@@ -41,6 +41,9 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/370-multi-sender (#370, part): added sender identities per workspace (`lib/outreach/senders.ts`, PG 0048): each
+  provider-verified, owned by the connecting member (removal/demotion revokes it), own encrypted credential, own warm-up
+  cap under the shared workspace cap; approval covers the sender. Gmail only; no Microsoft 365 adapter, no UI yet.
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with

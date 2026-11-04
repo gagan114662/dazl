@@ -38,6 +38,7 @@ export const REWRAP_COLUMNS: readonly ColumnSpec[] = [
   { table: 'tenant_llm_keys', column: 'ciphertext', pk: ['tenant_id', 'vendor'], ctx: r => `llm-key:${r.tenant_id}:${r.vendor}` },
   { table: 'tenant_connectors', column: 'ciphertext', pk: ['tenant_id', 'connector'], ctx: r => `connector:${r.tenant_id}:${r.connector}` },
   { table: 'gmail_accounts', column: 'refresh_ct', pk: ['tenant_id'], ctx: r => `gmail-refresh:${r.tenant_id}` },
+  { table: 'sender_identities', column: 'refresh_ct', pk: ['tenant_id', 'id'], ctx: r => `sender-refresh:${r.tenant_id}:${r.id}` }, // #370 (lib/outreach/senders.ts senderCredentialContext)
 ]
 
 export interface RewrapColumnResult { table: string; column: string; missing: boolean; rewrapped: number; skipped: number; corrupt: number }

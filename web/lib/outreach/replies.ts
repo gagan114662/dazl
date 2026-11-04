@@ -241,8 +241,10 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   const windowStart = now - 120 * 86400
   // The WHERE clause is the old selection (window OR approved/active sequence); the warm clause only orders threads
   // inside the window, so it can never pull an older thread into the read.
+  // #370: only sends from the primary mailbox: a message from an added sender identity has its id and thread in THAT
+  // mailbox, never looked up with the primary token (no thread mixing, no follow-up from the wrong account).
   const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at, reply_checked_at, CASE WHEN ${seq} OR (sent_at >= ? AND ${warm}) THEN 1 ELSE 0 END AS due FROM outreach_messages
-    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? OR ${seq})
+    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND sender_id IS NULL AND (sent_at >= ? OR ${seq})
     ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`).all(...seqArgs, windowStart, ...warmArgs, tenantId, windowStart, ...seqArgs) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number; reply_checked_at: number | null; due: number }[]
   const { maxThreads, budgetMs } = replySyncLimits((d.env ?? process.env) as Record<string, string | undefined>)
   const clock = d.clockMs ?? Date.now
