@@ -82,6 +82,21 @@ bothEngines('report: withdrawn and expired previews are named; malformed stored 
   assert.deepEqual([state(c).state, state(c).companies, state(c).version], ['withdrawn', 0, 0], 'unreadable snapshot: withdrawn, never served')
   assert.deepEqual([r.totals.withdrawn, r.totals.expired, r.totals.open], [2, 1, 0])
   if (ic?.status === 'issued') assert.equal((await readPublicClaim(db, master, ic.token, NOW)).status, 'expired')
+  if (ia?.status === 'issued') assert.equal((await readPublicClaim(db, master, ia.token, NOW)).status, 'expired', 'a quarantined lead withdraws the already-issued public link')
+})
+
+bothEngines('report: no query it runs ever selects the recipient email', async ({ db }) => {
+  const a = await run(db, 'seller1', { leads: 1, spend: 0.2 })
+  assert.equal((await issue(db, a))?.status, 'issued')
+  const sql: string[] = []
+  const spy = new Proxy(db, { get(t, k, r) {
+    const v = Reflect.get(t, k, r)
+    return typeof v === 'function' && ['get', 'all', 'run'].includes(String(k)) ? (q: string, ...rest: unknown[]) => { sql.push(q); return v.call(t, q, ...rest) } : v
+  } }) as Db
+  const r = await proofReport(spy, 'seller1', NOW)
+  assert.equal(r.previews.length, 1)
+  assert.ok(sql.length >= 2, 'the spy saw the report queries')
+  assert.ok(sql.every(q => !/recipient_email/i.test(q)), 'recipient_email is never selected into the report')
 })
 
 bothEngines('report: spend values that are not a recorded amount read as unrecorded, never as a number', async ({ db }) => {

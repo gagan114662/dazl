@@ -204,6 +204,16 @@ test('the issue route: the selected proof of the workspace’s own run enters th
   assert.equal((await get()).status, 401)
   const otherRep = await (await get(await createSession('U1'))).json()
   assert.equal(otherRep.previews.length + otherRep.runs.length, 0, 'another workspace sees none of the seller\u2019s previews or runs')
+  // a lead quarantined AFTER the link was issued withdraws it everywhere: the seller's report names it withdrawn, the
+  // public read the /preview/[token] page renders from reads expired, and the claim route's confirmation GET is 410
+  const token = issued.url.split('/preview/')[1]
+  h.prepare('UPDATE leads SET quarantined_at = ? WHERE scan_job_id = ?').run(NOW, jobId)
+  const after = await (await get(sellerSession)).json()
+  assert.equal(after.previews.find((p: { id: string }) => p.id === issued.id).state, 'withdrawn', 'the report names the issued link withdrawn')
+  assert.equal((await readPublicClaim(sqliteDb(h), MASTER, token)).status, 'expired', 'the public page shows nothing of a withdrawn proof')
+  const confirm = await withJar(new Map([['dazl_session', sellerSession]]), () =>
+    claimRoute.GET(new NextRequest(`https://app.test/api/preview/claim?t=${token}`, { method: 'GET', headers: { host: 'app.test' } })))
+  assert.deepEqual([confirm.status, (await confirm.json()).code], [410, 'expired'], 'the claim confirmation refuses a withdrawn proof')
   console.log('PREVIEW_ISSUE_ROUTE_OK')
 })
 

@@ -221,7 +221,7 @@ test('issue: a Postgres serialization conflict retries a bounded number of times
   lead(h, jobId, 'l1', day)
   finish(h, jobId)
   const conflict = () => Object.assign(new Error('could not serialize access'), { code: '40001' })
-  const flaky = (fails: number, err = conflict) => { let n = 0; return { ...db, tx: ((b: never, i: never) => n++ < fails ? Promise.reject(err()) : db.tx(b, i)) as typeof db.tx } }
+  const flaky = (fails: number, err: () => Error = conflict) => { let n = 0; return { ...db, tx: ((b: never, i: never) => n++ < fails ? Promise.reject(err()) : db.tx(b, i)) as typeof db.tx } }
   const r = await issuePreviewClaim(flaky(2), master, ISSUE(jobId), NOW)
   assert.ok(r?.status === 'issued' && !r.reused)
   const nested = () => Object.assign(new Error('tx failed'), { cause: { code: '40P01' } })
