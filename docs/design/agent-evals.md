@@ -236,6 +236,17 @@ a lead it calls `contradicts`. It has no send or tool authority.
 
 **Limits and what is not built:**
 - No real model has been calibrated. That needs a provider adapter, a key and a paid budget, so it is the owner's call.
+- The real-model run is built but has not run (`lib/evals/judge-validation-run.ts`, `scripts/judge-validation-run.mts`).
+  It is separate from the stub harness above, which never loads it. One run covers both judges on both splits; the
+  thresholds, repeats and output limits are fixed in code. The run needs an explicit run id, model, USD cap, dated FX
+  rate and fee rate. The caps CAD equivalent must fit the owners CAD 5 approval. The key is read from
+  `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY` only.
+  - Before each request, the worst case is reserved and persisted.
+  - There are no retries. Any timeout, unknown bill, invalid response, model mismatch or failed accounting stops the run
+    as failed.
+  - Any earlier run blocks another one unless that rerun has its own approval.
+  - The result is a redacted local artifact, kept under `~/.dazl/judge-validation`. It makes no live-web claim and does
+    not update the lock.
   The scan judge also runs on each tenant's own provider and model, so no single calibration covers it.
 - The scan does not consult `judgeGate` yet. Doing so would change lead scoring for every tenant whose judge is
   uncalibrated, which is all of them today.
