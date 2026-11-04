@@ -53,6 +53,9 @@ Updated by the builder on every branch. Newest first.
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
   fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
   and never ask the user to check or confirm. Stubbed fixtures only; not verified live.
+  b/352-checkable-review: Home, the Leads card and the draft gate now agree for every hold reason (checkable-evidence
+  and date-vouch holds are review; sales_hiring_check_failed is research on all three). Trial scans are unchanged: no
+  recovery pass and no extra paid call (paidFallback stays false). Stubbed only.
 
 - PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
   `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
@@ -180,8 +183,10 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 6. #384 separate published provenance from deliverability/person-route status.
 7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
    currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
-8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+8. #385 rejection/outcome feedback improves future selection (in review: b/385-rejection-outcomes, docs/design/lead-feedback.md); #387 continuous event detection — compounding
    advantages, start once 1-7 ship.
+   #387 in review: b/387-event-detection (monitor runs alert only on novel, dated, in-window, verified events: new company /
+   new signal / now reachable, deduped across plays, per-monitor alert policy, latency and missed-run report).
 9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
    multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)

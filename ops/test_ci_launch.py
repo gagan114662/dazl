@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('checked',Path(__file__).with_name('checked_launch.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+LOGS=tempfile.TemporaryDirectory();LOG=str(Path(LOGS.name)/'launch-log.jsonl');m.default_launch_log=lambda:(Path(LOG),Path(LOGS.name))
 SHA='a'*40
 class Response:
  def __init__(self,value):self.value=value
@@ -57,9 +58,11 @@ class CiGateTests(unittest.TestCase):
     fixture.write_text('import urllib.request,json\nSTATE='+repr(state)+'\nSHA='+repr(SHA)+'\nclass R:\n def __enter__(self):return self\n def __exit__(self,*a):pass\n def read(self):\n  if "git/ref" in self.u:return json.dumps({"object":{"sha":SHA}}).encode()\n  if STATE=="malformed":return b"not json"\n  rows=[dict(name=n,head_sha=SHA,status="completed",conclusion="success",app={"slug":"github-actions"},check_suite={"id":8000+i})for i,n in enumerate(["browser","migrations","test-sqlite","test-postgres","fail-closed"])]\n  if STATE=="missing":rows.pop()\n  if STATE=="in_progress":rows[0]["status"]="in_progress"\n  if STATE=="failure":rows[0]["conclusion"]="failure"\n  return json.dumps({"total_count":len(rows),"check_runs":rows}).encode()\ndef get(req,**kw):\n if STATE=="network":raise OSError("unavailable")\n r=R();r.u=req.full_url;return r\nurllib.request.OpenerDirector.open=lambda self,req,**kw:get(req,**kw)\n')
     import os,shlex
     pre=[sys.executable,'-c','from pathlib import Path;Path('+repr(str(sentinel))+').touch()']
-    args=[sys.executable,script,'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-stdin','--preflight',json.dumps(pre),'--launch',json.dumps([sys.executable,str(Path(m.__file__).with_name('safe_launch.py')),'--commit',SHA,'--execute'])]
+    args=[sys.executable,script,'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-stdin','--launch-log',str(tmp/'launch-log.jsonl'),'--preflight',json.dumps(pre),'--launch',json.dumps([sys.executable,str(Path(m.__file__).with_name('safe_launch.py')),'--commit',SHA,'--execute'])]
     r=subprocess.run(' '.join(map(shlex.quote,args))+'; true',shell=True,env={**os.environ,'PYTHONPATH':str(tmp)},input='synthetic',capture_output=True,text=True)
     self.assertEqual(r.returncode,0);self.assertFalse(sentinel.exists());self.assertIn('ci_refused',r.stdout)
+    if hasattr(os,'memfd_create'):  # stdin credential transport is Linux-only; elsewhere it refuses before run()
+     self.assertEqual(json.loads((tmp/'launch-log.jsonl').read_text().splitlines()[-1])['status'],'ci_refused')
 
  def test_main_movement_truncated_results_and_wrong_repo_refuse(self):
   good=[dict(name=n,head_sha=SHA,status='completed',conclusion='success',app={'slug':'github-actions'},check_suite={'id':7000+i})for i,n in enumerate(m.REQUIRED_CI)]
@@ -74,7 +77,7 @@ class CiGateTests(unittest.TestCase):
    with self.assertRaises(ValueError):m.require_ci('other/repo',SHA,str(token))
  def test_positive_ci_launch_runs_exactly_once(self):
   with patch.object(m,'bind_launch'),patch.object(m,'bind_target'),patch.object(m,'require_ci') as ci,patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0))as child:
-   result,code=m.run([['check']],['launch']);self.assertEqual(code,0);self.assertTrue(result['launch_reached']);self.assertEqual(ci.call_count,2);self.assertEqual(child.call_count,2);self.assertEqual(child.call_args.args[0],['launch'])
+   result,code=m.run([['check']],['launch']);self.assertEqual(code,0);self.assertTrue(result['launch_reached']);self.assertEqual(ci.call_count,2);self.assertEqual(child.call_count,2);self.assertEqual(child.call_args.args[0],['launch','--status-file',str(Path(LOG).with_name('launch-status.json'))])
 
 class BindingAdversarialTests(unittest.TestCase):
  def test_interpreter_and_argparse_aliases_refused(self):
@@ -103,7 +106,7 @@ class BindingAdversarialTests(unittest.TestCase):
 
  def test_cli_stdin_empty_oversized_or_secret_bearing_value_never_logs(self):
   safe=str(Path(m.__file__).with_name('safe_launch.py'))
-  args=[sys.executable,str(Path(m.__file__)),'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-stdin','--preflight','["/nonexistent"]','--launch',json.dumps([sys.executable,safe,'--commit',SHA,'--execute'])]
+  args=[sys.executable,str(Path(m.__file__)),'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-stdin','--launch-log',LOG,'--preflight','["/nonexistent"]','--launch',json.dumps([sys.executable,safe,'--commit',SHA,'--execute'])]
   for value in ['', 'x'*16385, 'sentinel-secret with whitespace']:
    r=subprocess.run(args,input=value,capture_output=True,text=True)
    self.assertNotEqual(r.returncode,0);self.assertIn('ci_refused',r.stdout);self.assertNotIn('sentinel-secret',r.stdout+r.stderr)
