@@ -186,7 +186,7 @@ type Rows = { pendingAfterSignup: unknown; patWorkAfterSignup: unknown; deeBefor
 function checkFlow(r: { out: Out[]; rows: Record<string, unknown> }, engine: string) {
   const o = (n: string) => by(r.out, n)
   const rows = r.rows as unknown as Rows
-  assert.deepEqual(lifecycleErrors().map(e => `${e.where}: ${e.message}`), [], `${engine}: no conversion step failed`)
+  assert.deepEqual(lifecycleErrors().map(e => `${e.where}: ${e.error.message}`), [], `${engine}: no conversion step failed`)
   assert.equal(o('signup pat').status, 200)
   assert.deepEqual(rows.pendingAfterSignup, [{ kind: 'signup', activated_at: null }], `${engine}: the unverified sign-up queued a pending conversion`)
   assert.deepEqual(rows.patWorkAfterSignup, { status: 'draft' }, `${engine}: an unverified typed email cancels nothing`)
