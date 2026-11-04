@@ -32,7 +32,7 @@ import { migrateWarm } from '../../lib/warm/connections.ts'
 import { PATCH as outreachPATCH, POST as outreachPOST } from '../../app/api/outreach/[id]/route.ts'
 import { POST as reopenPOST } from '../../app/api/outreach/reopen/route.ts'
 import { POST as confirmPOST, DELETE as confirmDELETE } from '../../app/api/leads/[lead]/confirm/route.ts'
-import { PATCH as monitorPATCH, DELETE as monitorDELETE } from '../../app/api/monitors/[id]/route.ts'
+import { GET as monitorGET, PATCH as monitorPATCH, DELETE as monitorDELETE } from '../../app/api/monitors/[id]/route.ts'
 import { GET as playRunsGET } from '../../app/api/plays/[kind]/[id]/runs/route.ts'
 import { POST as cancelPOST } from '../../app/api/scan/cancel/route.ts'
 
@@ -110,6 +110,7 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   await hit('POST /api/outreach/reopen skip', () => reopenPOST(req('/api/outreach/reopen', 'POST', { action: 'skip', thread_id: 'tA' })), 404, 'not_found')
   await hit('POST /api/outreach/reopen edit', () => reopenPOST(req('/api/outreach/reopen', 'POST', { action: 'edit', thread_id: 'tA4', body: 'HIJACK body long enough to pass.' })), 404, 'not_found')
   await hit('DELETE /api/leads/[lead]/confirm', () => confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead })), 404, undefined)
+  await hit('GET /api/monitors/[id]', () => monitorGET(req(`/api/monitors/${mon}`, 'GET'), ctx({ id: mon })), 404, undefined) // #387 detection report
   await hit('PATCH /api/monitors/[id]', () => monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon })), 404, undefined)
   await hit('DELETE /api/monitors/[id]', () => monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon })), 404, undefined)
   await hit('GET /api/plays/[kind]/[id]/runs', () => playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #351
@@ -146,6 +147,9 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   const runsM = await playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon }))
   assert.equal(runsM.status, 200); assert.deepEqual((await runsM.json() as { runs: { job_id: string }[] }).runs.map(r => r.job_id), [job])
   setUser(A)
+  const detA = await monitorGET(req(`/api/monitors/${mon}`, 'GET'), ctx({ id: mon }))
+  assert.equal(detA.status, 200) // #387: A reads its own monitor's detection report
+  assert.deepEqual((await detA.json() as { alert_policy: string; detection: { last_run: { missed_runs: number } | null } }).alert_policy, 'all')
   assert.equal((await monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon }))).status, 200)
   assert.equal((db.prepare('SELECT enabled FROM monitors WHERE id=?').get(mon) as { enabled: number }).enabled, 0)
   assert.equal((await monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon }))).status, 200)
