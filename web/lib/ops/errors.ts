@@ -143,6 +143,8 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'C
   'LeaseLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused',
 
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
+  // lib/workers (runtime workers): a refused catalog or lifecycle change; a reviewed handler past its timeout.
+  'WorkerError', 'HandlerTimeout',
   // lib/scan/feedback.ts (#385): a lead verdict that cannot be recorded as asked; a feedback store that cannot be read.
   'FeedbackError', 'FeedbackUnreadable',
   // lib/evals (docs/design/agent-evals.md): a malformed World or case file. Offline eval tooling only.
