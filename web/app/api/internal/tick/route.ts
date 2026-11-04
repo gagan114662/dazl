@@ -8,6 +8,7 @@ import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
+import { sharedScanQueue } from '@/lib/queue/scan-claimer'
 import { getDb, type Tx } from '@/lib/db/client'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
@@ -133,6 +134,9 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // per-monitor new-lead counts. Monitor jobs respect the same quota and pipeline as manual scans.
   const monitorJobs = await runDueMonitors(shared, { fence })
   if (monitorJobs.length > 0) after(() => kickRunner(raw))
+  // With the shared scan queue switched on (DAZL_SCAN_SHARED_QUEUE=1, #355) every tick also kicks, so a scan whose
+  // worker died or whose retry backoff has passed is claimed again within one tick. Off (the default), unchanged.
+  else if (watches.ran === 0 && sharedScanQueue()) after(() => kickRunner(raw))
   const monitorAlerts = await collectMonitorResults(shared, { fence })
   // Weekly indexing checks: one TinyFish site: search per saved keyword, inside the tenant's
   // own 10-searches-per-week allowance (separate from the scan caps). Best-effort per tenant.
