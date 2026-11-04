@@ -54,9 +54,10 @@ test('requeue is a no-op for rows it does not own: finished, re-claimed, or at M
   assert.equal(requeueInFlightForShutdown(db), 0)
 })
 
-// #355: scans are claimed through the shared work queue by default. A requeued scan must also hand back its queue claim,
+// #355: with the shared work queue on (DAZL_SCAN_SHARED_QUEUE=1), a requeued scan must also hand back its queue claim,
 // or the next process would find the item still claimed and wait out the 20 min lease before running it.
-test('shared queue: requeue also hands back the queue claim by its token, so the next kick runs the scan at once; the old attempt writes nothing and its settle is refused', async () => {
+test('shared queue: requeue also hands back the queue claim by its token, so the next kick runs the scan at once; the old attempt writes nothing and its settle is refused', async (t) => {
+  process.env.DAZL_SCAN_SHARED_QUEUE = '1'; t.after(() => { delete process.env.DAZL_SCAN_SHARED_QUEUE })
   const { db, master, id } = rig()
   const releases: ((v: { text: string; citedUrls: string[] }) => void)[] = []
   let calls = 0
@@ -81,7 +82,8 @@ test('shared queue: requeue also hands back the queue claim by its token, so the
   await flush()
 })
 
-test('shared queue: with DATABASE_URL set the queue is not on this handle: only the scan row is requeued, the claim is left to its lease; an untracked claim is never touched', async () => {
+test('shared queue: with DATABASE_URL set the queue is not on this handle: only the scan row is requeued, the claim is left to its lease; an untracked claim is never touched', async (t) => {
+  process.env.DAZL_SCAN_SHARED_QUEUE = '1'; t.after(() => { delete process.env.DAZL_SCAN_SHARED_QUEUE })
   const { db, master, id } = rig()
   const releases: (() => void)[] = []
   const providers = wrap(() => new Promise(r => { releases.push(() => r({ text: '[]', citedUrls: [] })) }))

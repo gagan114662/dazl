@@ -1,5 +1,5 @@
-// Shared-queue scan claiming (lib/queue/scan-claimer.ts, the default scan path; DAZL_SCAN_SHARED_QUEUE=0 rolls back): the
-// claim rules on both engines, the per-tenant limit, and kickRunner with the queue on and rolled back. The scan run itself is a stub here (or, through kickRunner, the real runner
+// Shared-queue scan claiming (lib/queue/scan-claimer.ts, DAZL_SCAN_SHARED_QUEUE=1, default off): the
+// claim rules on both engines, the per-tenant limit, and kickRunner with the flag unset (legacy) and on. The scan run itself is a stub here (or, through kickRunner, the real runner
 // with stubbed providers that are never reached); nothing leaves the process. The two-process Postgres cases are in
 // two-instance-scan.test.ts.
 import test from 'node:test'
@@ -37,10 +37,11 @@ function harness(db: Db, slots = 10) {
 }
 const status = async (db: Db, id: string) => (await db.get<{ status: string; attempts: number; error: string | null }>('SELECT status, attempts, error FROM scan_jobs WHERE id = ?', [id]))!
 
-test('the shared queue is on unless DAZL_SCAN_SHARED_QUEUE is 0; any other value keeps it (a typo never drops the per-tenant limit)', () => {
-  assert.equal(sharedScanQueue({}), true)
-  for (const v of ['1', '', ' ', ' 1', 'true', 'yes', 'off', 'false', 'no', '00', '0.0', '-0', '\u0000', 'é', 'x'.repeat(10_000)]) assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: v }), true, JSON.stringify(v.slice(0, 8)))
-  for (const v of ['0', ' 0', '0 ', '\t0\n']) assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: v }), false, JSON.stringify(v))
+test('the flag is off unless DAZL_SCAN_SHARED_QUEUE is exactly 1 (default off; a typo stays off)', () => {
+  assert.equal(sharedScanQueue({}), false)
+  assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: undefined }), false)
+  for (const v of ['0', '', ' ', ' 1', '1 ', '01', '1.0', 'true', 'yes', 'on', 'TRUE', '\u0000', 'é', '١', 'x'.repeat(10_000)]) assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: v }), false, JSON.stringify(v.slice(0, 8)))
+  assert.equal(sharedScanQueue({ DAZL_SCAN_SHARED_QUEUE: '1' }), true)
 })
 
 test('SCAN_PER_TENANT_MAX: an integer from 1 to 8; unset or blank is 1, and every malformed or out-of-range value is 1 (the stricter limit)', () => {
@@ -219,7 +220,7 @@ bothEngines('the scan lane: runtime-worker claims of the same tenant never count
   assert.equal((await q.get('w1'))!.status, 'claimed', 'and the worker item is untouched')
 })
 
-test('kickRunner by default claims through the work queue on its own SQLite handle (the real runner, its crash path); rolled back (DAZL_SCAN_SHARED_QUEUE=0), the queue is untouched', async () => {
+test('kickRunner: with DAZL_SCAN_SHARED_QUEUE unset (the default) the legacy claimer runs and the work queue is never touched; with it 1, it claims through the work queue on its own SQLite handle (the real runner, its crash path)', async () => {
   const { kickRunner } = await import('../lib/scan/runner.ts')
   const { saveKey } = await import('../lib/llm/key-store.ts')
   const run = async (flag: boolean) => {
@@ -228,8 +229,8 @@ test('kickRunner by default claims through the work queue on its own SQLite hand
     const id = await createJob(sqliteDb(raw), A, { business_name: 'Co', industry: 'dental', location: 'Toronto' })
     const providers = { anthropic: { research: async () => { throw new Error('provider must not be reached') } } } as never
     const restore = setErrorSinks([])
-    if (!flag) process.env.DAZL_SCAN_SHARED_QUEUE = '0'
-    else setDb({ kind: 'sqlite' } as unknown as Db) // a trap: the queue must be this handle, not getDb()
+    delete process.env.DAZL_SCAN_SHARED_QUEUE
+    if (flag) { process.env.DAZL_SCAN_SHARED_QUEUE = '1'; setDb({ kind: 'sqlite' } as unknown as Db) } // a trap: the queue must be this handle, not getDb()
     try {
       // the job's clock throws before runJob's own try: a crash, so no provider call and no network
       await kickRunner(raw, { providers, master, score: false, jobBudgetMs: 60_000, clock: () => { throw new Error('clock broke') } })
@@ -244,6 +245,6 @@ test('kickRunner by default claims through the work queue on its own SQLite hand
   assert.deepEqual(on.job, { status: 'failed', error: 'crashed', attempts: 1 })
   assert.deepEqual(on.items, [{ id: on.id, status: 'failed', last_error: 'executor_failed' }], 'claimed through the queue')
   const off = await run(false)
-  assert.deepEqual(off.job, { status: 'failed', error: 'crashed', attempts: 1 }, 'the legacy claimer ran it the same way')
-  assert.deepEqual(off.items, [], 'rolled back: the work queue is never touched')
+  assert.deepEqual(off.job, { status: 'failed', error: 'crashed', attempts: 1 }, 'default: the legacy claimer ran it the same way')
+  assert.deepEqual(off.items, [], 'default (unset): the work queue is never touched')
 })

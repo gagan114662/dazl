@@ -8,6 +8,7 @@ import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
+import { sharedScanQueue } from '@/lib/queue/scan-claimer'
 import { getDb, type Tx } from '@/lib/db/client'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
@@ -126,14 +127,15 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   const shared = await getDb()
   const fence = (t: Tx) => lease.fence(t)
   const watches = await runDueWatches(shared, { fence })
+  // The scan runner works outside the tick's lease (its own claims), so it gets the raw handle.
+  if (watches.ran > 0) after(() => kickRunner(raw))
   // Continuous monitoring: queue due monitors as ordinary scans, then fold finished runs into
   // per-monitor new-lead counts. Monitor jobs respect the same quota and pipeline as manual scans.
   const monitorJobs = await runDueMonitors(shared, { fence })
-  // Every tick kicks the scan runner (#355), not only when watches or monitors queued scans: a scan whose worker died
-  // or whose retry backoff has passed is claimed again within one tick, not at the next user's status poll. The runner
-  // claims through the work queue (fair across tenants, lib/queue/scan-claimer.ts) outside the tick's lease, so it gets
-  // the raw handle.
-  after(() => kickRunner(raw))
+  if (monitorJobs.length > 0) after(() => kickRunner(raw))
+  // With the shared scan queue switched on (DAZL_SCAN_SHARED_QUEUE=1, #355) every tick also kicks, so a scan whose
+  // worker died or whose retry backoff has passed is claimed again within one tick. Off (the default), unchanged.
+  else if (watches.ran === 0 && sharedScanQueue()) after(() => kickRunner(raw))
   const monitorAlerts = await collectMonitorResults(shared, { fence })
   // Weekly indexing checks: one TinyFish site: search per saved keyword, inside the tenant's
   // own 10-searches-per-week allowance (separate from the scan caps). Best-effort per tenant.

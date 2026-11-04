@@ -4,9 +4,11 @@
 // Load: tenant A has a 300-thread sent history on a slow Gmail (each thread read takes 150 ms) and a 40-scan backlog,
 // queued first, on a model provider that never answers. Tenants B and C have one thread and one scan each; B's thread
 // carries an opt-out. One tick must give B and C their reply checks (B's opt-out applied) and their scans (run to done)
-// while A's backlog and slow provider are still in flight, and must keep doing so on the next tick. The control runs
-// the same load rolled back to the in-process claimer (DAZL_SCAN_SHARED_QUEUE=0): there, A's backlog takes every run
-// slot and B's and C's scans starve, which is the bug.
+// while A's backlog and slow provider are still in flight, and must keep doing so on the next tick. That scenario runs
+// with the shared scan queue switched on (DAZL_SCAN_SHARED_QUEUE=1). The control runs the same load with the flag unset
+// (the default): the tick's kick condition is unchanged (no watch or monitor ran, so it kicks nothing), and the next
+// status-poll kick goes to the in-process claimer, where A's backlog takes every run slot and B's and C's scans starve,
+// which is the bug.
 //
 // Synthetic data only. Gmail and the model provider are stubs (globalThis.fetch and RunDeps.providers); any other URL
 // answers 404 and is recorded, so nothing leaves the process (the net fence is loaded too). The route injects no clock,
@@ -146,9 +148,10 @@ async function settle(w: { raw: Database.Database }) {
   await sleep(50)
 }
 
-test('[sqlite] tick route under tenant load: B and C get their reply checks and their scans while A\'s backlog and slow providers are in flight; again on the next tick', async () => {
+test('[sqlite] tick route under tenant load (DAZL_SCAN_SHARED_QUEUE=1): B and C get their reply checks and their scans while A\'s backlog and slow providers are in flight; again on the next tick', async () => {
+  process.env.DAZL_SCAN_SHARED_QUEUE = '1'
   const w = await loaded()
-  try { await fairUnderLoad(w) } finally { await settle(w) }
+  try { await fairUnderLoad(w) } finally { await settle(w); delete process.env.DAZL_SCAN_SHARED_QUEUE }
 })
 
 async function fairUnderLoad(w: Awaited<ReturnType<typeof loaded>>) {
@@ -196,16 +199,22 @@ async function fairUnderLoad(w: Awaited<ReturnType<typeof loaded>>) {
   assert.ok(strays.every(u => !u.includes('googleapis')), 'every Gmail request was a stubbed thread read')
 }
 
-test('[sqlite] control, rolled back (DAZL_SCAN_SHARED_QUEUE=0): the same load starves B\'s and C\'s scans behind A\'s backlog', async () => {
-  process.env.DAZL_SCAN_SHARED_QUEUE = '0'
+test('[sqlite] control, flag unset (the default): the tick kicks no scan as before, and the in-process claimer starves B\'s and C\'s scans behind A\'s backlog', async () => {
+  delete process.env.DAZL_SCAN_SHARED_QUEUE
   const w = await loaded()
   try {
     const body = await w.tick()
     assert.equal(body.ok, true)
     await flushAfter()
+    await sleep(100)
+    assert.deepEqual([w.count('A', 'running'), w.count('B', 'pending'), w.count('C', 'pending')], [0, 1, 1], 'default: no watch or monitor ran, so the tick kicked no scan (kick condition unchanged)')
+    assert.equal((w.raw.prepare('SELECT count(*) AS n FROM work_queue').get() as { n: number }).n, 0, 'default: the work queue is never touched')
+    // the next kick (a user's status poll, as in production) goes to the in-process claimer, through the same runner
+    const { kickRunner } = await import('./tenant-load-runner-shim.ts')
+    void kickRunner(w.raw)
     await until(() => w.count('A', 'running') === 3, "A's scans take the run slots")
     await sleep(300)
     assert.deepEqual([w.count('A', 'running'), w.count('B', 'pending'), w.count('C', 'pending')], [3, 1, 1], "every slot is A's; B and C wait")
     assert.equal(providerCalls.B ?? 0, 0); assert.equal(providerCalls.C ?? 0, 0)
-  } finally { await settle(w); delete process.env.DAZL_SCAN_SHARED_QUEUE }
+  } finally { await settle(w) }
 })

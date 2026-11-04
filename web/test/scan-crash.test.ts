@@ -24,9 +24,9 @@ function capture(): { got: ErrorRecord[]; restore: () => void } {
   return { got, restore: setErrorSinks([r => got.push(r)]) }
 }
 
-// Both kickRunner paths: the shared work queue (the default, #355; its crash path reports where 'queue-runner') and the
-// in-process claimer it rolls back to (DAZL_SCAN_SHARED_QUEUE=0, 'scan-runner').
-for (const [flag, where] of [['0', 'scan-runner'], ['', 'queue-runner']] as const) test(`${flag === '0' ? 'legacy runner (DAZL_SCAN_SHARED_QUEUE=0)' : 'shared work queue (default)'}: a crashing scan job is marked failed (crashed) and an error record is written, with the alert hook called`, async (t) => {
+// Both kickRunner paths: the in-process claimer (the default, 'scan-runner') and the shared work queue
+// (DAZL_SCAN_SHARED_QUEUE=1, #355; its crash path reports where 'queue-runner').
+for (const [flag, where] of [['', 'scan-runner'], ['1', 'queue-runner']] as const) test(`${flag === '' ? 'legacy runner (default)' : 'shared work queue (DAZL_SCAN_SHARED_QUEUE=1)'}: a crashing scan job is marked failed (crashed) and an error record is written, with the alert hook called`, async (t) => {
   process.env.DAZL_SCAN_SHARED_QUEUE = flag
   t.after(() => { delete process.env.DAZL_SCAN_SHARED_QUEUE })
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db)

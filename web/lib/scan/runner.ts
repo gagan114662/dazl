@@ -1476,7 +1476,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
 // It does not stop an in-flight provider call (that still ends at its transport timeout or with the process),
 // does not cover SIGKILL/crash (the lease still applies), and a requeued scan restarts from the beginning, so
 // provider work already done by the interrupted attempt may be repeated and billed again - same as any retry.
-// The legacy runner and the shared work queue (with the scan's queue claim token) are tracked; DAZL_QUEUE_TENANTS canary
+// The legacy runner and the shared work queue (DAZL_SCAN_SHARED_QUEUE=1, with the scan's queue claim token) are tracked; DAZL_QUEUE_TENANTS canary
 // jobs are not. The map lives on globalThis because Next bundles instrumentation and route handlers as separate module
 // instances.
 // A shared-queue scan also hands its queue claim back, by its token and in the same transaction, so the next process
@@ -1509,10 +1509,10 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
 }
 
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
-  // The default (#355): every scan is claimed through the shared work queue (lib/queue/scan-claimer.ts), fair across
-  // tenants. DAZL_SCAN_SHARED_QUEUE=0 is the rollback to the claimers below. The queue is on Postgres when DATABASE_URL
-  // is set; otherwise on this same SQLite handle, the app's one store (getDb() wraps the same connection), its tables
-  // created here if this handle has not got them yet.
+  // DAZL_SCAN_SHARED_QUEUE=1 (default OFF, #355): every scan is claimed through the shared work queue
+  // (lib/queue/scan-claimer.ts), fair across tenants. Off, the claimers below run as before. The queue is on Postgres
+  // when DATABASE_URL is set; otherwise on this same SQLite handle, the app's one store (getDb() wraps the same
+  // connection), its tables created here if this handle has not got them yet.
   if (sharedScanQueue()) {
     const queue = process.env.DATABASE_URL ? await getDb() : (new SqliteQueue(db), sqliteDb(db))
     await kickSharedScanQueue<Job>({ queue, domain: sqliteDb(db), run: job => runJob(db, job, deps), onCrash: (job, e) => failCrashedJob(db, job, e, 'queue-runner'),

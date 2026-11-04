@@ -1,7 +1,7 @@
 // Scan claiming through the shared work queue (DbQueue), so several app instances on one Postgres share scans: each
 // scan is claimed by exactly one instance, and a scan whose instance died is taken over once its lease runs out.
-// The default scan path (#355): kickRunner (lib/scan/runner.ts) calls kickSharedScanQueue instead of its in-process
-// claimers unless DAZL_SCAN_SHARED_QUEUE=0 (the rollback, see sharedScanQueue).
+// Behind DAZL_SCAN_SHARED_QUEUE=1 (default OFF; switching it on is a deploy-time step, docs/PLATFORM.md); kickRunner
+// (lib/scan/runner.ts) calls kickSharedScanQueue instead of its own claimers when the flag is on. Off, nothing here runs.
 //
 // Two stores, passed separately:
 //   queue  - where work_queue lives: getDb() (Postgres when DATABASE_URL is set, else the app's SQLite file).
@@ -27,15 +27,14 @@ import { captureError } from '../ops/errors.ts'
 import { MAX_ATTEMPTS, STALE_RUNNING_S } from '../scan/store.ts'
 import { DbQueue } from './db.ts'
 
-// On unless DAZL_SCAN_SHARED_QUEUE is 0 (#355). 0 is the rollback to the in-process claimer (claimKeyedJob, plus the
-// DAZL_QUEUE_TENANTS canary) and takes a restart. Unset, empty and 1 keep the queue; any other value keeps it too and is
-// reported once, so a typo never drops the per-tenant scan limit.
+// Off unless DAZL_SCAN_SHARED_QUEUE is exactly 1. Any other set value (a typo, ' 1', 'true') stays off, today's
+// in-process claimer, and is reported once so the operator sees the flag did not take.
 let reportedFlag = false
 export function sharedScanQueue(env: Record<string, string | undefined> = process.env): boolean {
-  const v = (env.DAZL_SCAN_SHARED_QUEUE ?? '').trim()
-  if (v === '0') return false
-  if (v !== '' && v !== '1' && !reportedFlag) { reportedFlag = true; console.error('DAZL_SCAN_SHARED_QUEUE is neither 0 nor 1 - scans stay on the shared work queue') }
-  return true
+  const v = env.DAZL_SCAN_SHARED_QUEUE
+  if (v === '1') return true
+  if (v !== undefined && v !== '' && v !== '0' && !reportedFlag) { reportedFlag = true; console.error('DAZL_SCAN_SHARED_QUEUE is not exactly 1 - scans stay on the in-process claimer') }
+  return false
 }
 
 // How many of one tenant's scans may be claimed at once, counted in work_queue, so across every instance (#355).
