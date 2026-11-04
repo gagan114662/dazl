@@ -44,7 +44,7 @@ Updated by the builder on every branch. Newest first.
 - b/404-acquisition-metrics (#404): owner-only `GET /api/growth/funnel` (`lib/growth/funnel.ts`) reports dazl's own
   prospect -> qualified conversation -> signup -> usable result -> repeat -> paid -> retained funnel from recorded events
   (no analytics vendor, no migration); Stripe `charge.refunded` now lands in the audit trail. Off until
-  `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost is a lower bound (enrichment/eval $ unrecorded).
+  `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost prices recorded model tokens (scans, drafting, qualification) and stays a lower bound (enrichment credits are not converted).
 
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
