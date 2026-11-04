@@ -85,6 +85,30 @@ export function brregReject(e: BrregEntity, scope: BrregScope, from: string, tod
   return null
 }
 
+// #615 review: an HTTP 200 is not proof the register answered. A list read counts only when its envelope has the documented shape:
+// an object whose _embedded holds the endpoint's own collection as an array, or (Spring HAL omits _embedded on an empty page) no _embedded and
+// page.totalElements === 0. Anything else - {}, [], null, an error envelope, the other endpoint's collection, a non-array collection - is a schema
+// failure, reported as such (the run is partial), never a genuine empty market. Rows are kept only when every field this adapter reads has the
+// documented type; a malformed row is dropped and reported, and the endpoint's other rows (and the other endpoint) are kept.
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+const optStr = (v: unknown) => v === undefined || v === null || typeof v === 'string'
+const optBool = (v: unknown) => v === undefined || v === null || typeof v === 'boolean'
+const optCode = (v: unknown) => v === undefined || v === null || (isObj(v) && optStr(v.kode) && optStr(v.beskrivelse))
+const optAddr = (v: unknown) => v === undefined || v === null || (isObj(v) && optStr(v.kommunenummer) && optStr(v.kommune))
+export function isBrregEntity(v: unknown): v is BrregEntity {
+  return isObj(v) && typeof v.organisasjonsnummer === 'string' && typeof v.navn === 'string' && optStr(v.registreringsdatoEnhetsregisteret) && optStr(v.overordnetEnhet)
+    && optBool(v.konkurs) && optBool(v.underAvvikling) && optBool(v.underTvangsavviklingEllerTvangsopplosning) && optStr(v.slettedato)
+    && optCode(v.organisasjonsform) && optCode(v.naeringskode1) && optAddr(v.forretningsadresse) && optAddr(v.beliggenhetsadresse)
+}
+export function brregList(v: unknown, k: 'enheter' | 'underenheter'): { rows: BrregEntity[]; invalid: number } | null {
+  if (!isObj(v) || 'error' in v || 'feilmelding' in v) return null
+  if (v._embedded === undefined) return isObj(v.page) && v.page.totalElements === 0 ? { rows: [], invalid: 0 } : null
+  const a = isObj(v._embedded) ? v._embedded[k] : undefined
+  if (!Array.isArray(a)) return null
+  const rows = a.filter(isBrregEntity)
+  return { rows, invalid: a.length - rows.length }
+}
+
 export type BrregCandidate = { kind: 'new_company'; e: BrregEntity } | { kind: 'new_location'; e: BrregEntity; parent: BrregEntity }
 // Sub-units whose parent must be looked up: kept, not a parent that is itself in this window's new-company list (that is a formation, not an opening).
 export function unitsNeedingParent(units: BrregEntity[], companies: BrregEntity[], scope: BrregScope, from: string, today: string): BrregEntity[] {
@@ -128,19 +152,27 @@ export const brregAdapter: SourceAdapter = {
     if (!page) { note?.('no_page_reader'); return [] }
     const t0 = Date.now(); let cut = false
     const now = brregLimits.now(), today = day(now), from = day(now - brregLimits.windowDays * 86_400_000)
-    const json = async (url: string): Promise<Record<string, unknown> | null> => {
-      if (Date.now() - t0 > brregLimits.budgetMs) { cut = true; return null }
+    const FAILED = Symbol('failed') // the read itself failed and was already reported (unreachable / oversize / unparseable / budget)
+    const json = async (url: string): Promise<unknown> => {
+      if (Date.now() - t0 > brregLimits.budgetMs) { cut = true; return FAILED }
       const t = Date.now(); calls = calls.filter(c => t - c < HOUR_MS)
-      if (calls.length >= MAX_CALLS) { cut = true; return null }
+      if (calls.length >= MAX_CALLS) { cut = true; return FAILED }
       calls.push(t)
       const r = await http(url, { accept: 'application/json' })
-      if (!r || r.status !== 200) { note?.('unreachable'); return null }
-      if (r.truncated) { note?.('oversize'); return null }
-      try { const v = JSON.parse(r.body); return v && typeof v === 'object' ? v : null } catch { note?.('unparseable'); return null }
+      if (!r || r.status !== 200) { note?.('unreachable'); return FAILED }
+      if (r.truncated) { note?.('oversize'); return FAILED }
+      if (typeof r.body !== 'string') { note?.('unparseable'); return FAILED }
+      try { return JSON.parse(r.body) } catch { note?.('unparseable'); return FAILED }
     }
     const q = `naeringskode=${scope.codes.join(',')}${scope.kommune ? `&kommunenummer=${scope.kommune}` : ''}&fraRegistreringsdatoEnhetsregisteret=${from}&size=${brregLimits.size}&sort=registreringsdatoEnhetsregisteret,desc`
     const [cj, uj] = await Promise.all([json(`${API}/enheter?${q}`), json(`${API}/underenheter?${q}`)])
-    const list = (v: Record<string, unknown> | null, k: string): BrregEntity[] => { const a = (v?._embedded as Record<string, unknown> | undefined)?.[k]; return Array.isArray(a) ? a as BrregEntity[] : [] }
+    const list = (v: unknown, k: 'enheter' | 'underenheter'): BrregEntity[] => {
+      if (v === FAILED) return []
+      const read = brregList(v, k)
+      if (!read) { note?.('schema_invalid'); return [] }
+      for (let i = 0; i < read.invalid; i++) note?.('schema_invalid_row')
+      return read.rows
+    }
     const companies = list(cj, 'enheter'), units = list(uj, 'underenheter')
     const parents = new Map<string, BrregEntity>()
     for (const u of unitsNeedingParent(units, companies, scope, from, today)) {
@@ -148,7 +180,10 @@ export const brregAdapter: SourceAdapter = {
       if (parents.has(id)) continue
       if (parents.size >= brregLimits.maxParents) { cut = true; break }
       const p = await json(`${API}/enheter/${id}`)
-      parents.set(id, (p ?? {}) as BrregEntity)
+      if (p === FAILED) { parents.set(id, {}); continue }
+      // the parent's own record: the same row shape, and it must be the entity that was asked for
+      if (!isBrregEntity(p) || p.organisasjonsnummer !== id) { note?.('schema_invalid'); parents.set(id, {}); continue }
+      parents.set(id, p)
     }
     const out: Evidence[] = []
     for (const c of brregCandidates(scope, companies, units, parents, from, today).slice(0, brregLimits.maxPages)) {
