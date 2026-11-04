@@ -86,6 +86,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/scan/icp-from-url',
   '/api/scan/jobs',
   '/api/scan/latest',
+  '/api/scan/lookalike',
   '/api/scan/sources',
   '/api/scan/status',
   '/api/seo/audit',
