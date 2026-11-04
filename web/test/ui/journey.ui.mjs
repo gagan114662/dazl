@@ -130,9 +130,9 @@ try {
   })
   await step('reject', async () => {
     await card('Lakeside Smiles').getByRole('button', { name: 'Reject' }).click()
-    await card('Lakeside Smiles').getByRole('button', { name: 'Not a fit' }).click()
+    await card('Lakeside Smiles').getByRole('button', { name: 'Not useful' }).click()
     await card('Lakeside Smiles').getByRole('button', { name: 'Confirm reject' }).click()
-    await page.getByTestId('card-result').getByText(/Lakeside Smiles \(Not a fit\) left the list\./).waitFor(T) // it leaves the list
+    await page.getByTestId('card-result').getByText(/Lakeside Smiles \(Not useful\) left the list\./).waitFor(T) // it leaves the list
     await page.getByTestId('card-result').getByRole('button', { name: 'Undo' }).waitFor(T)
   })
   await step('approve', async () => {

@@ -101,10 +101,10 @@ try {
   // 3. Reject -> leaves the list, Undo brings it back.
   const maple = card('Maple Family Dentistry')
   await maple.getByRole('button', { name: 'Reject' }).click()
-  await maple.getByTestId('reject-reason').getByRole('button', { name: 'Not a fit' }).click()
+  await maple.getByTestId('reject-reason').getByRole('button', { name: 'Not useful' }).click()
   await maple.getByRole('button', { name: 'Confirm reject' }).click()
   await page.waitForFunction(() => document.querySelector('[data-testid=card-result]')?.getAttribute('data-kind') === 'rejected')
-  assert.match(await result.innerText(), /Maple Family Dentistry \(Not a fit\) left the list\./)
+  assert.match(await result.innerText(), /Maple Family Dentistry \(Not useful\) left the list\./)
   assert.equal(await card('Maple Family Dentistry').count(), 0, 'the rejected card leaves the list')
   assert.deepEqual(await Promise.all(['review', 'rejected'].map(t => tab(t).textContent())), ['To decide 1', 'Rejected 1'])
   await shot('after-reject')
@@ -113,7 +113,7 @@ try {
   assert.equal(await page.getByTestId('card-result').count(), 0, 'Undo clears the result')
   assert.deepEqual(writes.map(w => [w.m, w.p, w.body]), [
     ['POST', '/api/outreach', { lead_id: A }],
-    ['POST', `/api/leads/${M}/quarantine`, { reason: 'Rejected: Not a fit' }],
+    ['POST', `/api/leads/${M}/quarantine`, { reason: 'Rejected: Not useful', feedback_reason: 'not_useful' }],
     ['DELETE', `/api/leads/${M}/quarantine`, {}],
   ], 'only the existing draft and quarantine actions are written')
   // 4. At 390px the actions stack under the identity: a long company name, its email and the role warning get the card's width.

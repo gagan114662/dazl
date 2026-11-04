@@ -190,6 +190,30 @@ test('the issue route: the selected proof of the workspace’s own run enters th
   assert.equal(hold.status, 409, 'a run with no usable proof issues nothing')
   const signedOut = await withJar(new Map(), () => issueRoute.POST(new NextRequest('https://app.test/api/preview/issue', { method: 'POST', headers: { 'content-type': 'application/json', host: 'app.test', 'x-forwarded-for': '10.9.3.99' }, body: JSON.stringify({}) })))
   assert.equal(signedOut.status, 401)
+  // a repeat of the same issue returns the same live link (cached), flagged as reused
+  const again = await (await post({ runId: jobId, recipientEmail: 'buyer@prospect.test', business: 'Clinic Soft' })).json()
+  assert.deepEqual([again.url, again.reused, issued.reused], [issued.url, true, false])
+  // 'GET /api/preview/issue': the seller's own evaluation report; signed out is 401, another workspace sees none of it
+  const get = (session?: string) => withJar(new Map(session ? [['dazl_session', session]] : []), () =>
+    issueRoute.GET(new NextRequest('https://app.test/api/preview/issue', { method: 'GET', headers: { host: 'app.test' } })))
+  const rep = await get(sellerSession)
+  assert.equal(rep.status, 200)
+  const body = await rep.json()
+  assert.ok(body.previews.some((p: { id: string }) => p.id === issued.id) && body.totals.issued >= 1 && body.totals.runs.held >= 1)
+  assert.ok(!JSON.stringify(body).includes('buyer@prospect.test'), 'no recipient email in the report')
+  assert.equal((await get()).status, 401)
+  const otherRep = await (await get(await createSession('U1'))).json()
+  assert.equal(otherRep.previews.length + otherRep.runs.length, 0, 'another workspace sees none of the seller\u2019s previews or runs')
+  // a lead quarantined AFTER the link was issued withdraws it everywhere: the seller's report names it withdrawn, the
+  // public read the /preview/[token] page renders from reads expired, and the claim route's confirmation GET is 410
+  const token = issued.url.split('/preview/')[1]
+  h.prepare('UPDATE leads SET quarantined_at = ? WHERE scan_job_id = ?').run(NOW, jobId)
+  const after = await (await get(sellerSession)).json()
+  assert.equal(after.previews.find((p: { id: string }) => p.id === issued.id).state, 'withdrawn', 'the report names the issued link withdrawn')
+  assert.equal((await readPublicClaim(sqliteDb(h), MASTER, token)).status, 'expired', 'the public page shows nothing of a withdrawn proof')
+  const confirm = await withJar(new Map([['dazl_session', sellerSession]]), () =>
+    claimRoute.GET(new NextRequest(`https://app.test/api/preview/claim?t=${token}`, { method: 'GET', headers: { host: 'app.test' } })))
+  assert.deepEqual([confirm.status, (await confirm.json()).code], [410, 'expired'], 'the claim confirmation refuses a withdrawn proof')
   console.log('PREVIEW_ISSUE_ROUTE_OK')
 })
 
