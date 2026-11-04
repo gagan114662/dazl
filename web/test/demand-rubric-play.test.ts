@@ -59,3 +59,31 @@ test('ownNamesFrom: business name and website brand; generic or tiny labels are 
   assert.deepEqual(ownNamesFrom(null, 'https://shop.example.co.uk'), ['example'])
   assert.deepEqual(ownNamesFrom('', 'not a url %%'), [])
 })
+
+test('ownNamesFrom (#401 review): subdomains and short brands resolve to the registrable label, never to the subdomain', () => {
+  assert.deepEqual(ownNamesFrom(null, 'https://app.acm.io'), ['acm'])
+  assert.deepEqual(ownNamesFrom(null, 'https://www.acm.io'), ['acm'])
+  assert.deepEqual(ownNamesFrom(null, 'https://app.foo.ai'), ['foo'])
+  assert.deepEqual(ownNamesFrom(null, 'shop.acme.io'), ['acme'])
+  assert.deepEqual(ownNamesFrom(null, 'https://ibm.com'), ['ibm'])
+  assert.deepEqual(ownNamesFrom(null, 'https://www.bbc.co.uk'), ['bbc'])
+  assert.deepEqual(ownNamesFrom(null, 'https://shop.mysite.com.au'), ['mysite'])
+  assert.deepEqual(ownNamesFrom(null, 'https://app.web.io'), [])   // generic label and no business name: nothing invented
+})
+
+// Instinct's reproduction: website-only seller identity on a subdomain, quiet post by the seller's own CEO.
+bothEngines('a website-only seller on a subdomain still excludes its own CEO through the production rubric', async ({ db }) => {
+  const A = 'd'.repeat(32)
+  await tenant(db, A, 'Verified prospect lists for outbound teams')
+  await db.run('UPDATE users SET business_name = NULL, website = ? WHERE id = ?', ['https://app.acm.io', A])
+  const play = await createQueryJob(db, A, { query: 'B2B SaaS founders asking for lead sources', icp: null, seller: 'Verified prospect lists for outbound teams - https://app.acm.io', offer: 'Verified B2B prospect lists and sales leads' })
+  const { rubric } = await loadPlayDemandRubric(db, A, play)
+  assert.ok(rubric)
+  assert.deepEqual(rubric.own_names, ['acm'])
+  const asOf = new Date('2026-11-03T12:00:00Z')
+  const text = 'Our sales team needs a steady stream of qualified leads. We are looking for a prospect list provider that is verified.'
+  const base = { source_url: 'https://forum.example.test/t/3', published_at: '2026-11-01T00:00:00Z', text }
+  const own = qualifyDemand({ ...base, author: { name: 'S', headline: 'CEO, Acm', company: 'Acm' } }, rubric, asOf)
+  assert.notEqual(own.tier, 'high_intent'); assert.equal(own.class, 'competitor')
+  assert.equal(qualifyDemand({ ...base, author: { name: 'B', headline: 'CEO, Buyer Inc', company: 'Buyer Inc' } }, rubric, asOf).tier, 'high_intent')
+})
