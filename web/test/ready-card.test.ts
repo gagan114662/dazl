@@ -92,7 +92,16 @@ test('Instinct #341: held or rejected contact rows never tick qualified or conta
   // 2 source-checked leads with contacts, both held for timing; 1 rejected row with a contact is not counted at all.
   const i: ReadinessInput = { ...all, campaigns: [camp({ id: 'h1', sc: 2, held: 2, contacts: 2, ready: 0 })], messages: [] }
   assert.deepEqual(st(i).slice(3, 6), ['qualified:todo*>Review leads@/app/leads?job_id=h1', 'contact:todo', 'draft:todo'])
-  assert.equal(readyItems(i)[3].detail, '2 checked leads wait for their event date to be confirmed')
+  assert.equal(readyItems(i)[3].detail, '2 leads are held for your review - open the list to see why each was held')
+})
+
+test('Ziggy #352: Home never names a hold cause it does not know (event date vs unconfirmed quote)', () => {
+  for (const held of [1, 2, 6]) {
+    const i: ReadinessInput = { ...all, campaigns: [camp({ id: 'h1', sc: held, held, contacts: 0, ready: 0 })], messages: [] }
+    const d = readyItems(i)[3].detail
+    assert.ok(!/event date/i.test(d), d)
+    assert.ok(d.startsWith(`${held} lead${held === 1 ? ' is' : 's are'} held for your review`), d)
+  }
 })
 
 test('Instinct #341: one real draft in both reads is one draft; approved and sent too', () => {
