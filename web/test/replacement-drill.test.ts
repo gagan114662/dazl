@@ -191,9 +191,9 @@ test('key-recovery drill refuses (exit 2): shared identities, readable key files
     ['bad manual', ['--manual', 'provision=ten'], {}, /step=seconds/],
     ['manual twice', ['--manual', 'dns=1,dns=2'], {}, /twice/],
     ['bad target', ['--rpo-target-s', '-5'], {}, /whole number/],
-    ['bad mode', ['--mode', 'all'], {}, /full or keys/],
   ]
   for (const [name, extra, over, re] of cases) { const r = keysDrill(w, extra, over); assert.equal(r.code, 2, `${name}: ${r.out}`); assert.match(r.out, re, name); assert.equal(r.j, null, `${name}: no report`) }
+  const bm = node('replacement-drill.mts', ['--mode', 'all']); assert.equal(bm.code, 2); assert.match(bm.out, /full or keys/)
   assert.equal(node('replacement-drill.mts', []).code, 2)
   assert.match(node('replacement-drill.mts', ['--offhost', w.dest, '--identity', w.data.id, '--config-identity', w.cfg.id, '--key-file', w.fx.keyFile, '--work-dir', path.join(w.d, 'wf')]).out, /full mode needs --app/)
 })

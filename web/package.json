@@ -23,6 +23,7 @@
     "test:smoke:release": "node test/smoke/release-identity.smoke.mjs",
     "staging:scenarios": "node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/staging-send-scenarios.mts",
     "test:smoke:recovery": "node --experimental-strip-types --no-warnings test/smoke/recovery-drill.smoke.mjs",
+    "test:smoke:replacement": "node --experimental-strip-types --no-warnings test/smoke/replacement-drill.smoke.mjs",
     "evals": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/evals.mts",
     "test:smoke:authforms": "node test/smoke/auth-form-fallback.smoke.mjs",
     "test:smoke:enrichment": "node --experimental-strip-types --no-warnings test/smoke/enrichment-fallback.smoke.mjs"
