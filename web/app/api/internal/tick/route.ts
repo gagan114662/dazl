@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { getScanDb } from '@/lib/scan/service'
 import { syncReplies, READ_CONSENT_VERSION } from '@/lib/outreach/replies'
 import { runFollowups } from '@/lib/outreach/followups'
+import { runAnswers } from '@/lib/replies/answer-ledger'
 import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
@@ -96,6 +97,14 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
         await progress(tenantId, 'followups', f)
         if (f.outcome === 'failure') continue
       }
+      // Routine buyer answers (#406) the reply sync just recorded as ready: each sent at most once, through the same
+      // autopilot, consent, suppression, budget and uncertain-send checks as every send. Only an autopilot that is on
+      // and unpaused (both sets require it); runAnswers re-reads all of it. It reports refusals as a result and audits
+      // its own failures (stopped: 'error'), which count as a failed follow-up run (answers are sends into reply
+      // threads) and skip this tenant's first touches, like a failed follow-up run; a lost lease still throws.
+      stage = 'followups'
+      const answered = await runAnswers(db, tenantId)
+      if (answered.stopped === 'error') { await progress(tenantId, 'followups', failed(new Error('answer_run_failed'))); continue }
       if (firstTouchSet.has(tenantId)) {
         // Drain due held drafts, then pick up new leads: first touches restart without waiting for a new scan.
         // Drain and discovery are one kind of scheduled work ('first_touch'); a drain failure skips discovery (its

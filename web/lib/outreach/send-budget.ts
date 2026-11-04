@@ -13,10 +13,12 @@ export function accountSendCount(db: Database.Database, tenant: string, now: num
   if (tableExists(db, 'sequence_steps')) count += (db.prepare("SELECT count(*) AS n FROM sequence_steps WHERE tenant_id = ? AND step > 1 AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?").get(tenant, now - 86400) as { n: number }).n
   // A re-open keeps its claim time in sent_at while 'approved' (no schema change), and the delivery time once sent.
   if (tableExists(db, 'reopen_messages')) count += (db.prepare("SELECT count(*) AS n FROM reopen_messages WHERE tenant_id = ? AND status IN ('sent','approved') AND COALESCE(sent_at,created_at) >= ?").get(tenant, now - 86400) as { n: number }).n
+  // Routine buyer answers (#406, lib/replies/answer-ledger.ts): a claimed, sent or unknown answer is a send like any other.
+  if (tableExists(db, 'buyer_answers')) count += (db.prepare("SELECT count(*) AS n FROM buyer_answers WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,updated_at) >= ?").get(tenant, now - 86400) as { n: number }).n
   return count
 }
 export function anyUncertainSend(db: Database.Database, tenant: string): boolean {
-  for (const table of ['outreach_messages','followup_messages','sequence_steps']) {
+  for (const table of ['outreach_messages','followup_messages','sequence_steps','buyer_answers']) {
     if (tableExists(db, table) && db.prepare(`SELECT 1 FROM ${table} WHERE tenant_id = ? AND status = 'uncertain'`).get(tenant)) return true
   }
   // A re-open has no 'uncertain' state: 'approved' is its in-flight claim, and a claim whose outcome was never

@@ -86,10 +86,16 @@ const address = (v: string) => (/<([^>]+)>/.exec(v)?.[1] ?? v).trim().toLowerCas
 // the sender or any hop) proves nothing. DMARC pass with header.from equal to the sender's domain is the only proof
 // accepted: an SPF or DKIM pass alone can be for another domain than the one in From.
 const MAILBOX_AUTHSERV = /^\s*mx\.google\.com\s*;/i
+// The mailbox's own verdict line (the first header it stamped), or null. Non-string entries are not headers.
+export function mailboxVerdict(authResults: unknown): string | null {
+  if (!Array.isArray(authResults)) return null
+  return authResults.find((h): h is string => typeof h === 'string' && MAILBOX_AUTHSERV.test(h)) ?? null
+}
 export function senderAuthenticated(from: string, prospect: string, authResults: string[]): boolean {
+  if (typeof from !== 'string' || typeof prospect !== 'string') return false
   const f = address(from)
   if (!f.includes('@') || f !== address(prospect)) return false
-  const verdict = authResults.find(h => MAILBOX_AUTHSERV.test(h))
+  const verdict = mailboxVerdict(authResults)
   if (!verdict) return false
   const dmarc = /(?:^|;)\s*dmarc=([a-z]+)\b([^;]*)/i.exec(verdict)
   const headerFrom = dmarc ? /\bheader\.from=([^\s;()]+)/i.exec(dmarc[2])?.[1]?.toLowerCase() : undefined

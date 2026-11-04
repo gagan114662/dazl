@@ -25,6 +25,7 @@ const crm = await import('../../app/api/crm/route.ts')
 const hiringFeed = await import('../../app/api/leads/hiring-feed/route.ts')
 const polish = await import('../../app/api/outreach/polish/route.ts')
 const reopen = await import('../../app/api/outreach/reopen/route.ts')
+const answers = await import('../../app/api/outreach/answers/route.ts')
 const outreach = await import('../../app/api/outreach/route.ts')
 const replies = await import('../../app/api/replies/route.ts')
 const newsjack = await import('../../app/api/seo/newsjack/route.ts')
@@ -36,7 +37,7 @@ const A = { id: 'A', business_name: 'Acme' }, B = { id: 'B', business_name: 'Bet
 const hex = () => randomBytes(12).toString('hex')
 const req = (url: string, method: string, body?: unknown) => new NextRequest(`http://localhost${url}`, {
   method, headers: { 'content-type': 'application/json', host: 'localhost' }, body: body === undefined ? undefined : JSON.stringify(body) })
-const MARK = ['ASECRETCO8w2', 'ASECRETQUERY8w2', 'ASECRETTHREAD8w2', 'ASECRETNEWS8w2', 'ASECRETWATCH8w2', 'ASECRETREOPEN8w2', 'asecret8w2.invalid']
+const MARK = ['ASECRETCO8w2', 'ASECRETQUERY8w2', 'ASECRETTHREAD8w2', 'ASECRETNEWS8w2', 'ASECRETWATCH8w2', 'ASECRETREOPEN8w2', 'ASECRETANSWER8w2', 'asecret8w2.invalid']
 
 // Tenant A's rows only: anything owned by B (or by nobody) is left out, so B's own audit rows do not count as a change.
 function aRows(db: Database.Database): string {
@@ -77,6 +78,9 @@ function build() {
   db.prepare("INSERT INTO watches (id, user_id, query, icp, next_run_at) VALUES (?, 'A', 'ASECRETWATCH8w2', '{}', ?)").run(w, now + 86400)
   db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent) VALUES ('A', 'tA8', ?, 'pat@asecret8w2.invalid', 'r@x', ?, ?, 2)").run(lead, now - 86400 * 45, now - 86400 * 45)
   db.prepare("INSERT INTO reopen_messages (tenant_id, thread_id, lead_id, to_email, body) VALUES ('A', 'tA8', ?, 'pat@asecret8w2.invalid', 'ASECRETREOPEN8w2 body long enough to pass the check.')").run(lead)
+  // #406: one written answer waiting for release and one open exception in A's routine-answer ledger
+  const ans = (id: string, outcome: string, body: string | null) => db.prepare("INSERT INTO buyer_answers (tenant_id, message_id, thread_id, lead_id, outcome, reason, body, auth, status, created_at, updated_at) VALUES ('A', ?, 'tA8', ?, ?, ?, ?, 'pass', 'recorded', ?, ?)").run(id, lead, outcome, outcome === 'exception' ? 'unknown_integration' : null, body, now, now)
+  ans('mA-approval', 'approval', 'ASECRETANSWER8w2 pricing answer'); ans('mA-exception', 'exception', null)
   return { db, job, lead, lead2, draft, thread, news, w }
 }
 
@@ -108,6 +112,9 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
   await asB('POST /api/leads/hiring-feed', () => hiringFeed.POST(req('/api/leads/hiring-feed', 'POST', { retry_job_id: f.job })), (s, b) => s === 202 && JSON.parse(b).retrying === 0)
   await asB('POST /api/outreach/polish', () => polish.POST(req('/api/outreach/polish', 'POST', { message_id: f.draft })), (s, b) => s === 200 && JSON.parse(b).rewritten === false)
   await asB('GET /api/outreach/reopen', () => reopen.GET(), s => s === 200)
+  await asB('GET /api/outreach/answers', () => answers.GET(), (s, b) => s === 200 && b === JSON.stringify({ exceptions: [], approvals: [], held: [] }))
+  await asB('POST /api/outreach/answers', () => answers.POST(req('/api/outreach/answers', 'POST', { action: 'release', message_id: 'mA-approval' })), is404)
+  await asB('POST /api/outreach/answers (resolve)', () => answers.POST(req('/api/outreach/answers', 'POST', { action: 'resolve', message_id: 'mA-exception' })), is404)
   await asB('POST /api/outreach', () => outreach.POST(req('/api/outreach', 'POST', { lead_id: f.lead })), is404)
   await asB('GET /api/replies', () => replies.GET(), s => s === 200)
   await asB('POST /api/replies', () => replies.POST(req('/api/replies', 'POST', { action: 'dismiss', id: f.thread })), is404)
@@ -138,6 +145,18 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
   const text = async (p: Promise<Response | undefined>) => (await (await p)!.text())
   assert.match(await text(crm.GET()), /"configured":true/)
   assert.match(await text(reopen.GET()), /ASECRETREOPEN8w2/)
+  assert.match(await text(answers.GET()), /ASECRETANSWER8w2[\s\S]*mA-exception|mA-exception[\s\S]*ASECRETANSWER8w2/)
+  assert.equal((await answers.POST(req('/api/outreach/answers', 'POST', { action: 'release', message_id: 'mA-approval' })))!.status, 200)
+  assert.equal((await answers.POST(req('/api/outreach/answers', 'POST', { action: 'resolve', message_id: 'mA-exception' })))!.status, 200)
+  assert.deepEqual(db.prepare("SELECT message_id, status, resolved_at IS NOT NULL AS r FROM buyer_answers WHERE tenant_id = 'A' ORDER BY message_id").all(), [{ message_id: 'mA-approval', status: 'ready', r: 0 }, { message_id: 'mA-exception', status: 'recorded', r: 1 }])
+  // malformed bodies are refused before any lookup; a replay of a done action is 404 and changes nothing
+  const ansBefore = JSON.stringify(db.prepare('SELECT * FROM buyer_answers ORDER BY message_id').all())
+  for (const bad of [null, [], 'release', 42, true, {}, { action: 'release' }, { action: 'release', message_id: 7 }, { action: 'release', message_id: ['mA-approval'] }, { action: 'release', message_id: { id: 'mA-approval' } },
+    { action: 'release', message_id: '' }, { action: 'release', message_id: 'y'.repeat(201) }, { action: 'delete', message_id: 'mA-approval' }, { action: ['release'], message_id: 'mA-approval' }])
+    assert.equal((await answers.POST(req('/api/outreach/answers', 'POST', bad)))!.status, 400, JSON.stringify(bad))
+  assert.equal((await answers.POST(req('/api/outreach/answers', 'POST', { action: 'release', message_id: 'mA-approval', extra: { deep: [1, 2] } })))!.status, 404, 'released already: a replay changes nothing')
+  assert.equal((await answers.POST(req('/api/outreach/answers', 'POST', { action: 'resolve', message_id: 'mA-approval' })))!.status, 404, 'an approval is not an exception')
+  assert.equal(JSON.stringify(db.prepare('SELECT * FROM buyer_answers ORDER BY message_id').all()), ansBefore)
   assert.match(await text(replies.GET()), /ASECRETQUERY8w2/)
   assert.match(await text(newsjack.GET()), /ASECRETNEWS8w2/)
   assert.match(await text(watch.GET()), /ASECRETWATCH8w2/)

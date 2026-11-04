@@ -47,7 +47,10 @@ Updated by the builder on every branch. Newest first.
 - b/406-buyer-answers (#406, stacked on b/402): conversation layer for routine buyer answers (lib/replies/buyer-conversation.ts):
   thread state from the thread itself (DMARC-authenticated prospect only, takeover, duplicate ids, open exceptions, reply
   limit), answers only from the accepted product truth version, owner settings in the launch policy (`answers`: off/approve/
-  auto, signup or meeting per play). Pure; not yet wired into reply sync or a send path (needs a ledger table).
+  auto, signup or meeting per play). Wired: the reply sync records one decision per inbound message in the buyer_answers
+  ledger (lib/replies/answer-ledger.ts; no reply bodies stored), runAnswers sends ready answers once through the shared
+  send gates and budget (tick + manual sync), owner queue/release/resolve at /api/outreach/answers. PG migration TEMP 0046
+  (queue slot 0053, renumbered at merge). Not done: owner UI for the queue; live mailbox run.
 
 - b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
   (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:
