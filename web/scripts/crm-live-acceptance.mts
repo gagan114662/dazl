@@ -14,7 +14,7 @@
 import { randomBytes } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { runCrmAcceptance, type AcceptanceProvider, type RecordedCase } from '../lib/crm/acceptance.ts'
+import { runCrmAcceptance, redactSecrets, type AcceptanceProvider, type RecordedCase } from '../lib/crm/acceptance.ts'
 
 export function acceptanceConfig(env: Record<string, string | undefined>): { provider: AcceptanceProvider; key: string; expectDomain?: string } | { refuse: string } {
   if (env.CRM_ACCEPTANCE !== 'sandbox') return { refuse: 'set CRM_ACCEPTANCE=sandbox to confirm the key belongs to a sandbox CRM account' }
@@ -33,12 +33,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const arg = (name: string) => process.argv.indexOf(name) > 0 ? process.argv[process.argv.indexOf(name) + 1] : undefined
   const cases: RecordedCase[] = []
   const recordTo = arg('--record')
-  const report = await runCrmAcceptance({ ...cfg, runId: randomBytes(4).toString('hex'), record: recordTo ? c => { cases.push(c) } : undefined })
+  // An unexpected throw is printed redacted, never as a raw error (whose message or stack could quote a token URL).
+  const report = await runCrmAcceptance({ ...cfg, runId: randomBytes(4).toString('hex'), record: recordTo ? c => { cases.push(c) } : undefined }).catch((e: unknown) => {
+    console.error(`crm-live-acceptance: crashed: ${redactSecrets(e instanceof Error ? e.message : String(e), cfg.key)}`)
+    process.exit(1)
+  })
   if (recordTo) writeFileSync(recordTo, JSON.stringify({ provenance: `recorded from a ${cfg.provider} sandbox account by scripts/crm-live-acceptance.mts, run ${report.runId} at ${report.at}`, cases }, null, 2) + '\n')
   const out = arg('--out')
   const text = JSON.stringify(report, null, 2)
   if (out) writeFileSync(out, text + '\n')
   console.log(text)
   for (const s of report.steps) console.error(`${s.skipped ? 'SKIP' : s.ok ? 'PASS' : 'FAIL'} ${s.step}: ${s.detail}`)
+  for (const l of report.leftForOperator) console.error(`LEFT FOR OPERATOR record ${l.id}: ${l.reason}`)
   process.exit(report.ok ? 0 : 1)
 }

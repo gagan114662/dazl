@@ -6,12 +6,15 @@
 //                   nothing at all is pushed.
 //   1. bad_key      a push with a deliberately invalid key is a 'failed' refusal (nothing created, nothing reported)
 //   2. create       a push with the sandbox key returns a record id
-//   3. read_back    GET that id from the provider: the record exists, with the same id and the lead's email
-//   4. duplicate    HubSpot only: pushing the same lead again is the verified 409 path, naming the SAME id.
-//                   (Pipedrive has no uniqueness on email, so a second push would create a duplicate: skipped.)
+//   3. read_back    GET that id from the provider: the record exists, with the same id and EXACTLY the run's synthetic
+//                   email (dazl-acceptance-<runId>@example.com: no case folding, no trimming). Anything else (not found,
+//                   unreadable, another id, a missing, other or variant email) leaves the record unverified.
+//   4. duplicate    HubSpot only, verified record only: pushing the same lead again is the verified 409 path, naming the
+//                   SAME id. (Pipedrive has no uniqueness on email, so a second push would create a duplicate: skipped.)
+//                   An unverified record is never re-pushed; another id the re-push names is left for the operator.
 //   5. cleanup      the synthetic record is deleted and a second GET confirms it is gone. Only a record step 3 verified
-//                   as ours (same id, the run's own synthetic email) is ever deleted; any other id is reported for the
-//                   operator to check by hand, never deleted.
+//                   as ours is ever deleted; every other id lands in the report's leftForOperator ('unverified, left
+//                   for operator') and no DELETE is sent for it.
 // Every step is recorded in the report, pass or fail. pushLead itself reads a created record back (lib/crm/index.ts
 // readBack); step 3 is a second, independent read that does not trust pushLead's parsing.
 // With record set, every provider exchange of the pushLead steps is kept (method, path without the query string,
@@ -20,10 +23,22 @@
 // The key never enters the report. No real person: the lead is "Dazl Acceptance" at a reserved example.com address.
 import { pushLead, CrmPushError, type CrmLead } from './index.ts'
 
+// Every string that leaves the harness (report details, recorded fixtures, CLI output) passes through this. The
+// Pipedrive token travels in the query string (api_token=...), so an error that quotes its request URL would carry it:
+// the raw key, its URL-encoded form and the value of any token-like query parameter are all replaced.
+export function redactSecrets(text: string, key: string): string {
+  let out = String(text)
+  for (const v of [key, encodeURIComponent(key)]) if (v) out = out.split(v).join('[key]')
+  return out.replace(/([?&](?:api_token|api_key|apikey|access_token|token)=)[^&#\s"'<>]*/gi, '$1[redacted]')
+}
+// A record id the harness may read or delete: HubSpot decimal strings, Pipedrive positive integers (as strings).
+const recordId = (v: unknown): string | null => typeof v === 'string' && /^[1-9]\d{0,19}$/.test(v) ? v : null
+const show = (v: unknown) => { try { return (JSON.stringify(v) ?? String(v)).slice(0, 80) } catch { return typeof v } }
+
 export type AcceptanceProvider = 'hubspot' | 'pipedrive'
 export type StepName = 'account' | 'bad_key' | 'create' | 'read_back' | 'duplicate' | 'cleanup'
 export interface AcceptanceStep { step: StepName; ok: boolean; skipped?: boolean; detail: string }
-export interface AcceptanceReport { provider: AcceptanceProvider; runId: string; at: string; lead: { company: string; contact: string }; recordId: string | null; ok: boolean; steps: AcceptanceStep[] }
+export interface AcceptanceReport { provider: AcceptanceProvider; runId: string; at: string; lead: { company: string; contact: string }; recordId: string | null; ok: boolean; steps: AcceptanceStep[]; leftForOperator: { id: string; reason: string }[] }
 // One provider exchange, as kept in a fixture: no headers, no query string (Pipedrive's token travels there). A JSON
 // answer is kept as body; anything else (empty included) as text. A request that threw is status 0 with its message.
 export interface Exchange { method: string; path: string; status: number; body?: unknown; text?: string }
@@ -100,17 +115,20 @@ async function sandboxCheck(provider: AcceptanceProvider, key: string, expectDom
 }
 const SANDBOX_TYPES = new Set(['DEVELOPER_TEST', 'SANDBOX'])
 
-export async function runCrmAcceptance(o: { provider: AcceptanceProvider; key: string; runId: string; expectDomain?: string; fetchImpl?: typeof fetch; now?: Date; record?: (c: RecordedCase) => void }): Promise<AcceptanceReport> {
+export async function runCrmAcceptance(o: { provider: AcceptanceProvider; key: string; runId: string; expectDomain?: string; fetchImpl?: typeof fetch; now?: Date; record?: (c: RecordedCase) => void; pushImpl?: typeof pushLead }): Promise<AcceptanceReport> {
   const f = o.fetchImpl ?? fetch
+  const pl = o.pushImpl ?? pushLead
   const lead = acceptanceLead(o.runId)
   const steps: AcceptanceStep[] = []
   const rec = (step: StepName, ok: boolean, detail: string, skipped = false) => { steps.push(skipped ? { step, ok, skipped, detail } : { step, ok, detail }) }
-  // Every detail passes through this: a provider echoing the key (raw or URL-encoded) never puts it in the report.
-  const secrets = o.key ? [...new Set([o.key, encodeURIComponent(o.key)])] : []
-  const clean = (s: string) => secrets.reduce((t, k) => t.split(k).join('[key]'), s)
+  // Every detail passes through this: a provider echoing the key (raw, URL-encoded, or inside a token URL) never puts it
+  // in the report.
+  const clean = (t: string) => redactSecrets(t, o.key)
+  const leftForOperator: { id: string; reason: string }[] = []
+  const leave = (id: string, reason: string) => { if (!leftForOperator.some(x => x.id === id)) leftForOperator.push({ id, reason: clean(reason) }) }
   // pushLead through a recorder when asked: the exchanges become one replayable case, whatever the outcome.
   const push = async (name: string, key: string, which: 'valid' | 'invalid') => {
-    if (!o.record) return pushLead({ provider: o.provider, key }, lead, f)
+    if (!o.record) return pl({ provider: o.provider, key }, lead, f)
     const exchanges: Exchange[] = []
     const rf = (async (input: string | URL, init?: RequestInit) => {
       const u = new URL(String(input))
@@ -127,7 +145,7 @@ export async function runCrmAcceptance(o: { provider: AcceptanceProvider; key: s
     }) as typeof fetch
     const done = (expect: RecordedCase['expect']) => o.record!({ name: `${o.provider} ${name} (sandbox run ${o.runId})`, provider: o.provider, key: which, lead, exchanges, expect })
     try {
-      const r = await pushLead({ provider: o.provider, key }, lead, rf)
+      const r = await pl({ provider: o.provider, key }, lead, rf)
       done({ outcome: 'ok', externalId: r.externalId, message: r.message })
       return r
     } catch (e) {
@@ -136,7 +154,7 @@ export async function runCrmAcceptance(o: { provider: AcceptanceProvider; key: s
     }
   }
 
-  const report = (id: string | null): AcceptanceReport => ({ provider: o.provider, runId: o.runId, at: (o.now ?? new Date()).toISOString(), lead: { company: lead.company, contact: lead.contact ?? '' }, recordId: id, ok: steps.every(s => s.ok), steps })
+  const report = (id: string | null): AcceptanceReport => ({ provider: o.provider, runId: o.runId, at: (o.now ?? new Date()).toISOString(), lead: { company: lead.company, contact: lead.contact ?? '' }, recordId: id, ok: steps.every(s => s.ok), steps, leftForOperator })
 
   // 0. a sandbox, or nothing is sent
   const acct = await sandboxCheck(o.provider, o.key, o.expectDomain, f)
@@ -146,50 +164,70 @@ export async function runCrmAcceptance(o: { provider: AcceptanceProvider; key: s
   // 1. an invalid key must be a definite refusal
   try {
     const r = await push('bad_key', INVALID_KEY, 'invalid')
-    rec('bad_key', false, clean(`an invalid key was reported as success (${r.message}, id ${r.externalId})`))
+    rec('bad_key', false, clean(`an invalid key was reported as success (${show(r)})`))
+    const stray = recordId(obj(r)?.externalId)
+    if (stray) leave(stray, 'unverified, left for operator: created by the invalid-key push')
   } catch (e) {
     rec('bad_key', e instanceof CrmPushError && e.outcome === 'failed', clean(errText(e)))
   }
 
-  // 2. create
+  // 2. create. Only a well-formed id is a record we can point at: a "success" naming anything else (null, a number, an
+  // object, '', ' 101', '1/../2') may still have created a record, so it fails and says to check by hand.
   let id: string | null = null
   // an id pushLead could not confirm (its own read-back failed): reported for the operator, never deleted
   let unverified: string | null = null
   try {
     const r = await push('create', o.key, 'valid')
-    id = r.externalId
-    rec('create', !!id, clean(`${r.message}; id ${id ?? 'none'}`))
+    const ext = obj(r)?.externalId, msg = obj(r)?.message
+    id = recordId(ext)
+    rec('create', !!id, clean(id ? `${typeof msg === 'string' ? msg : 'created'}; id ${id}` : `create reported success with an unusable id ${show(ext)}; check the sandbox for a stray "Dazl Acceptance" record`))
   } catch (e) {
-    unverified = e instanceof CrmPushError ? e.externalId : null
+    unverified = e instanceof CrmPushError ? recordId(e.externalId) : null
     rec('create', false, clean(errText(e)))
   }
 
   if (id) {
-    // 3. the provider holds that record, with the lead's email
+    // 3. the provider holds that record, with the run's own synthetic email, exactly
+    const want = lead.contact ?? ''
     const got = await readRecord(o.provider, o.key, id, f)
-    const want = (lead.contact ?? '').toLowerCase()
-    const ours = got.kind === 'found' && got.id === id && (got.email ?? '').toLowerCase() === want
-    rec('read_back', ours,
-      clean(got.kind === 'found' ? `record ${got.id}, email ${got.email === null ? 'missing' : got.email.toLowerCase() === want ? 'matches' : 'differs'}` : got.kind === 'gone' ? 'the provider has no record with that id' : got.detail))
-    // 4. HubSpot: the same lead again is the verified 409 naming the same record
-    if (o.provider === 'hubspot') {
-      try {
-        const r = await push('duplicate', o.key, 'valid')
-        rec('duplicate', r.externalId === id && /^Already in HubSpot/.test(r.message), clean(`${r.message}; id ${r.externalId}`))
-      } catch (e) { rec('duplicate', false, clean(errText(e))) }
-    } else rec('duplicate', true, 'Pipedrive has no unique email: a second push would create a duplicate, so it is not sent', true)
-    // 5. cleanup, then confirm it is gone: only the record step 3 showed is ours. Anything else is never deleted.
-    if (!ours) rec('cleanup', false, clean(`record ${id} was not verified as this run's record, so it was not deleted; check it by hand`))
-    else {
+    const ours = !!want && got.kind === 'found' && got.id === id && got.email === want
+    const why = got.kind === 'found'
+      ? got.id !== id ? `the provider answered with record ${got.id}, not ${id}` : `record ${got.id}, email ${got.email === null ? 'missing' : got.email === want ? 'matches' : 'differs'}`
+      : got.kind === 'gone' ? 'the provider has no record with that id' : got.detail
+    rec('read_back', ours, clean(why))
+    if (ours) {
+      // 4. HubSpot: the same lead again is the verified 409 naming the same record
+      if (o.provider === 'hubspot') {
+        try {
+          const r = await push('duplicate', o.key, 'valid')
+          const again = recordId(obj(r)?.externalId), msg = obj(r)?.message
+          rec('duplicate', again === id && typeof msg === 'string' && /^Already in HubSpot/.test(msg), clean(`${typeof msg === 'string' ? msg : 'no message'}; id ${again ?? show(obj(r)?.externalId)}`))
+          if (again && again !== id) leave(again, `unverified, left for operator: the duplicate push named record ${again}, not ${id}`)
+        } catch (e) {
+          rec('duplicate', false, clean(errText(e)))
+          const other = e instanceof CrmPushError ? recordId(e.externalId) : null
+          if (other && other !== id) leave(other, `unverified, left for operator: the duplicate push named record ${other}, not ${id}`)
+        }
+      } else rec('duplicate', true, 'Pipedrive has no unique email: a second push would create a duplicate, so it is not sent', true)
+      // 5. cleanup of the verified record, then confirm it is gone
       const del = await deleteRecord(o.provider, o.key, id, f)
       const after = del ? null : await readRecord(o.provider, o.key, id, f)
-      rec('cleanup', !del && after?.kind === 'gone', clean(del ?? (after?.kind === 'gone' ? `record ${id} deleted` : `record ${id} still readable after delete (${after?.kind === 'error' ? after.detail : 'found'}); delete it by hand`)))
+      const gone = !del && after?.kind === 'gone'
+      rec('cleanup', gone, clean(del ?? (gone ? `record ${id} deleted` : `record ${id} still readable after delete (${after?.kind === 'error' ? after.detail : 'found'}); delete it by hand`)))
+      if (!gone) leave(id, `delete not confirmed: ${del ?? 'still readable after delete'}`)
+    } else {
+      // never re-pushed, never deleted: the id is not shown to be this run's record
+      rec('duplicate', false, 'read-back did not verify the record, so it was not pushed again', true)
+      rec('cleanup', false, clean(`record ${id} was not verified as this run's record, so it was not deleted (unverified, left for operator: ${why})`))
+      leave(id, `unverified, left for operator: ${why}`)
     }
   } else {
     rec('read_back', false, 'no record id to read', true)
     rec('duplicate', false, 'no record id', true)
-    if (unverified) rec('cleanup', false, clean(`pushLead could not confirm record ${unverified}, so it was not deleted; check the sandbox for it by hand`))
-    else rec('cleanup', true, 'nothing was reported created; check the sandbox for a stray "Dazl Acceptance" record if create was unknown', true)
+    if (unverified) {
+      rec('cleanup', false, clean(`pushLead could not confirm record ${unverified}, so it was not deleted; check the sandbox for it by hand`))
+      leave(unverified, 'unverified, left for operator: pushLead could not read it back as this lead')
+    } else rec('cleanup', true, 'nothing was reported created; check the sandbox for a stray "Dazl Acceptance" record if create was unknown', true)
   }
   return report(id ?? unverified)
 }
