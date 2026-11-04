@@ -65,7 +65,8 @@ paths keep the guards above.
    setting or price, an unlisted model, a store that does not answer): nothing is sent, the refusal is a `refused` row
    with its reason and the job's `spend_cap_refusals` count, and the caller gets `SpendRefused`. A scan whose model call
    is refused ends `budget_stopped`; a refused TinyFish call reads as its count cap; a refused render renders nothing;
-   a refused Apollo/PDL lookup is a failed lookup (its claim holds, as any failed lookup's does).
+   a refused Apollo/PDL lookup is a failed lookup (its claim holds, as any failed lookup's does), and
+   its workspace credit reservation is refunded, because no request was sent.
 3. **Settle once**, after the call, to the vendor-reported cost (`settled`); a replay changes nothing. A failed call, or
    one with no usable cost, keeps its full worst case (`kept`). A crash between reserve and settle leaves `reserved` at the
    worst case, which every later attempt of the scan still counts: never released.

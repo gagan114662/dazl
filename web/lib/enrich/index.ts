@@ -11,6 +11,7 @@ import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
 import { refundCredits, reserveCredits, settleCredits, CreditRefused, type CreditHold } from './credit-pool.ts'
 import { runWithJobSpend } from '../scan/spend-cap.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 import { getMasterKey } from '../secrets.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -367,6 +368,9 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
         orgAudit(org ? 'ok' : 'empty', org ? 1 : 0)
         if (!org) memo = null
       } catch (e) {
+        // The scan's hard spend cap refused the org call before any request (lib/scan/spend-cap.ts): nothing was
+        // sent, so the workspace credit goes back. Any other failure keeps it (whether Apollo charged is unknown).
+        if (e instanceof SpendRefused) await releaseUnused(db, hold)
         const code = failCode(e)
         auditSettleClaim(db, { ...orgClaim, status: code, results: 0 }, gate.id, code, 0)
         if (e instanceof EnrichError && e.code === 'auth') throw e // a bad key stops the provider for the pass (the claim's audit row carries the auth); the held org claim fails the replay CLOSED
@@ -442,7 +446,11 @@ async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: n
   const peopleKey = lookupKey('people', lead)
   let found: Awaited<ReturnType<typeof pdlPeopleSearch>>
   try { found = await pdlPeopleSearch(key, lead.company, fetchImpl, Math.max(1, maxProfiles)) }
-  catch (e) { const code = failCode(e); auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e }
+  catch (e) {
+    // A refusal by the scan's hard spend cap sent nothing: the workspace credits go back. Any other error keeps them.
+    if (e instanceof SpendRefused) await releaseUnused(db, hold)
+    const code = failCode(e); auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e
+  }
   charged.n += found.length
   // PDL charges per profile returned: the reservation moves to that count (an error above keeps all of it).
   await settleCharged(db, hold, found.length)

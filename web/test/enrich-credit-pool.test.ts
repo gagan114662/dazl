@@ -12,6 +12,7 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, recentAudit, setEnrichFallback } from '../lib/connectors/store.ts'
 import { migrateCommenterImport, enrichCommenters } from '../lib/scan/commenter-import.ts'
 import { poolRows, periodOf, sharedPool } from '../lib/llm/spend-pool.ts'
+import { runWithJobSpend } from '../lib/scan/spend-cap.ts'
 
 const T0 = Date.UTC(2026, 10, 2, 12) / 1000 // 2026-11-02 12:00 UTC
 const refused = (reason: string) => (e: unknown) => e instanceof CreditRefused && e.reason === reason
@@ -160,6 +161,21 @@ test('scan waterfall: PDL at the cap is refused before any call', async () => {
   const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: stub(calls), master, env: e })
   assert.equal(calls.pdl, 0)
   assert.deepEqual(r.skipped.map(s => `${s.provider}:${s.why}`), ['pdl:credit_cap', 'pdl:credit_cap'])
+})
+
+test('scan waterfall: a lookup the hard per-scan cap refuses sends nothing, and its workspace credits go back', async () => {
+  // Inside a scan's spend context (lib/scan/spend-cap.ts) a job that is not this tenant's running attempt refuses every
+  // paid call before the request (SpendRefused). The credit pool must not keep a reservation for a call never made.
+  const e = env({})
+  const now = () => Math.floor(Date.now() / 1000)
+  const a = seed(1, { apollo: true }); const c1: Calls = { org: 0, people: 0, pdl: 0 }
+  await runWithJobSpend(a.db, 'u1', 'not-this-tenants-job', () => enrichLeadContacts(a.db, 'u1', a.jobId, a.leads, { fetchImpl: stub(c1), master, env: e }))
+  assert.equal(c1.org, 0, 'the refused org lookup is never sent')
+  assert.deepEqual(await use(a.db, 'u1', e, now()), {}, 'the Apollo credit is refunded')
+  const b = seed(1, { pdl: true }); const c2: Calls = { org: 0, people: 0, pdl: 0 }
+  await runWithJobSpend(b.db, 'u1', 'not-this-tenants-job', () => enrichLeadContacts(b.db, 'u1', b.jobId, b.leads, { fetchImpl: stub(c2), master, env: e }))
+  assert.equal(c2.pdl, 0, 'the refused PDL search is never sent')
+  assert.deepEqual(await use(b.db, 'u1', e, now()), {}, 'the PDL credits are refunded')
 })
 
 test('scan waterfall: when the store cannot save a reservation no paid call is made (fail closed)', async () => {
