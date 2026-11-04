@@ -37,6 +37,23 @@ export function noteFromAudit(trace: EnrichmentTrace, db: Database.Database, ten
   else trace.note(stage, s.withResults > 0 ? 'ok' : 'attempted_no_result', top(s.byStatus), { lookups: s.total, with_results: s.withResults })
 }
 
+// #389: the run report's 'tech' stage, from the technology branch's ledger rows (connector 'sitecrawl:tech', one per crawled site).
+// Every outcome stays a named, visible state; none of them reads as a silent zero:
+//   branch_never_ran            no ledger row: no confirmed company site was crawled in this run
+//   crawl_ran_no_observations   rows exist, none observed: each row names why (no homepage verdict, not comparable) and the pages read
+//   branch_error                the branch itself threw on at least one site (status 'failed', with the error names)
+//   disabled                    TECH_SCAN_ENABLED=0: the branch did not run and wrote nothing
+export function noteTech(trace: EnrichmentTrace, s: { total: number; withResults: number; byStatus: Record<string, number> }): void {
+  const n = (prefix: string) => Object.entries(s.byStatus).filter(([k]) => k.startsWith(prefix)).reduce((a, [, v]) => a + v, 0)
+  const observed = n('observed'), none = n('no_observation'), errors = n('error'), disabled = n('disabled')
+  const detail = { sites: s.total, observed, no_observation: none, errors, disabled }
+  if (s.total === 0) trace.note('tech', 'attempted_no_result', 'branch_never_ran: no confirmed company site was crawled in this run')
+  else if (errors > 0) trace.note('tech', 'failed', `branch_error on ${errors} of ${s.total} sites: ${top(s.byStatus)}`, detail)
+  else if (disabled === s.total) trace.note('tech', 'skipped', 'disabled: TECH_SCAN_ENABLED=0, the technology branch did not run', detail)
+  else if (observed > 0) trace.note('tech', 'ok', top(s.byStatus), detail)
+  else trace.note('tech', 'attempted_no_result', `crawl_ran_no_observations: ${top(s.byStatus)}`, detail)
+}
+
 // Adds the trace and the yield to the stored run report for this attempt (merge, never replaces the earlier stages). Never throws.
 export function mergeIntoRunReport(db: Database.Database, jobId: string, attempt: number, patch: Record<string, unknown>): boolean {
   try {
