@@ -224,3 +224,12 @@ export const MULTI_STOP = new Set([
   // ja
   '会社', '企業', 'する', 'している', 'いる', 'ある', 'こと', 'もの', 'ため', '探す', '探して', '最近',
 ].map(w => foldText(w)))
+
+// #391: the model's English gloss of the stored quote, shown beside the original on the lead card and never used as evidence. Kept only when it belongs to
+// the quote that is stored: a string of 1-400 characters that differs from the original (a repaired or replaced quote drops its gloss where it is replaced).
+export function translationOf(l: { excerpt?: unknown; excerpt_translation?: unknown }): string | null {
+  const t = l.excerpt_translation, e = l.excerpt
+  if (typeof t !== 'string' || typeof e !== 'string' || !e.trim()) return null
+  const s = t.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 400)
+  return s && foldText(s) !== foldText(e) ? s : null
+}

@@ -16,6 +16,10 @@ export interface Candidate {
   event_date_proof_note?: string | null // the short sanitized reason for the proof (<= 200 chars); never a page quote or user text
   published_at?: string | null // the page's publication day (label only; never the event date)
   timing_note?: string | null // how the date was read from the page, or a season/"soon" label with no date (scan/page-timing.ts)
+  // #391 in-scan identity (scan/dedup-scope.ts): set by code only, never parsed from model output. dedup_domain: the website the cited page itself states
+  // for the company; dedup_scope: the suffix that keeps same-name companies apart when their domains or countries differ (absent: today's name key).
+  dedup_domain?: string | null
+  dedup_scope?: string | null
 }
 
 export type Verdict =
@@ -250,8 +254,14 @@ export function supportedEvidenceWindow(claim: { company: string; signal: string
   return best ? best.trim() : null
 }
 
-export function dedupKey(c: { company: string; name: string }): string {
+// The name part of the key (company key, else the person's name). Evidence bookkeeping (run report, source credits) pairs it with the URL.
+export function dedupBaseKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)
+}
+// The in-scan identity of a lead: the name key, plus the scope (#391) when same-name companies in one scan must stay apart.
+export function dedupKey(c: { company: string; name: string; dedup_scope?: string | null }): string {
+  const base = dedupBaseKey(c)
+  return typeof c.dedup_scope === 'string' && c.dedup_scope ? `${base}${c.dedup_scope}` : base
 }
 
 function parseDay(s: string | null): Date | null {

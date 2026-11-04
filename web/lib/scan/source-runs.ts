@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { dedupKey } from './evidence.ts'
+import { dedupBaseKey } from './evidence.ts'
 import type { Candidate } from './evidence.ts'
 import { writeSourceStats, type SourceStats } from '../search/trace.ts'
 import { buildRunReport, writeRunReport, type ReportParts } from './run-report.ts'
@@ -31,8 +31,9 @@ export function migrateSourceRuns(db: Database.Database): void {
   `)
 }
 
-// Match the actual surviving evidence, not merely a company that another source found.
-const evidenceKey = (c: Pick<Candidate, 'company' | 'name' | 'source_url'>) => `${dedupKey(c)}|${c.source_url}`
+// Match the actual surviving evidence, not merely a company that another source found. The name key plus the URL: candidates are credited before the
+// verifier decides any #391 identity scope, so the scope is not part of this bookkeeping key.
+const evidenceKey = (c: Pick<Candidate, 'company' | 'name' | 'source_url'>) => `${dedupBaseKey(c)}|${c.source_url}`
 
 type Run = { status: string; evidence: number | null; candidates: Set<string>; observed: boolean }
 export class SourceRunLedger {

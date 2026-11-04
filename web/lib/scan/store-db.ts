@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto'
 import type { Db, Param, Tx, TxBody } from '../db/client.ts'
 import { CANCEL_HOLD_S, MAX_ATTEMPTS, STALE_RUNNING_S, type QueryInput, type ScanInput, type CancelResult, type JobSummary } from './store.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
+import { translationOf } from '../text/multilingual.ts'
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
@@ -84,7 +85,7 @@ async function allHeld(db: Db, plain: string, plainCols: string, heldCols: strin
 }
 
 const LEAD_COLUMNS = `l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.evidence_translation, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
 l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage`
 
@@ -162,11 +163,12 @@ export interface LeadRow {
   evidence_origin?: string | null; own_fetch_failure?: string | null; evidence_copy_sha256?: string | null; evidence_copy_id?: string | null
   // page timing (lib/scan/page-timing.ts): the publication day is a label, never the event date
   timing_note?: string | null; published_at?: string | null
+  evidence_translation?: string | null // #391: English gloss of evidence_excerpt, display only, never evidence
 }
 export interface ReviewRow {
   name: string; company: string; signal: string; source_url: string; score: number; evidence_excerpt: string | null
   event_date: string | null; dedup_key: string; review_reason: string; source_kind?: string | null
-  timing_note?: string | null; published_at?: string | null
+  timing_note?: string | null; published_at?: string | null; evidence_translation?: string | null
 }
 export interface FinishInput {
   status: 'done' | 'failed' | 'pending'
@@ -188,17 +190,17 @@ export function finishJob(db: Db, job: { id: string; attempts: number }, input: 
     const inserted: string[] = []
     for (const l of leads) {
       const r = yield* t.run(
-        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, evidence_translation, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
         [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.dedup_key,
-          l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, l.signal_kind ?? null, l.source_kind ?? null, l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_id ?? null, l.timing_note ?? null, l.published_at ?? null, now])
+          l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, l.signal_kind ?? null, l.source_kind ?? null, l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_id ?? null, l.timing_note ?? null, l.published_at ?? null, translationOf({ excerpt: l.evidence_excerpt, excerpt_translation: l.evidence_translation }), now])
       if (r.changes) inserted.push(`${l.dedup_key}|${l.source_url}`)
     }
     for (const l of review) {
       const r = yield* t.run(
-        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, created_at)
-         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-        [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', l.dedup_key, l.review_reason, l.source_kind ?? null, l.timing_note ?? null, l.published_at ?? null, now])
+        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, evidence_translation, created_at)
+         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+        [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', l.dedup_key, l.review_reason, l.source_kind ?? null, l.timing_note ?? null, l.published_at ?? null, translationOf({ excerpt: l.evidence_excerpt, excerpt_translation: l.evidence_translation }), now])
       if (r.changes) inserted.push(`${l.dedup_key}|${l.source_url}`)
     }
     const dropped = input.dropped ? Object.values(input.dropped).reduce((a, b) => a + b, 0) : null
