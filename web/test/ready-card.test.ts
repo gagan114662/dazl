@@ -92,16 +92,25 @@ test('Instinct #341: held or rejected contact rows never tick qualified or conta
   // 2 source-checked leads with contacts, both held for timing; 1 rejected row with a contact is not counted at all.
   const i: ReadinessInput = { ...all, campaigns: [camp({ id: 'h1', sc: 2, held: 2, contacts: 2, ready: 0 })], messages: [] }
   assert.deepEqual(st(i).slice(3, 6), ['qualified:todo*>Review leads@/app/leads?job_id=h1', 'contact:todo', 'draft:todo'])
-  assert.equal(readyItems(i)[3].detail, '2 leads are held for your review - open the list to see why each was held')
+  assert.equal(readyItems(i)[3].detail, '2 leads in this search need your review - open the list to see why each was held')
 })
 
-test('Ziggy #352: Home never names a hold cause it does not know (event date vs unconfirmed quote)', () => {
+test('Ziggy #352: Home names no hold cause it does not know, and its count is the list the link opens', () => {
+  const detail = (cs: ReturnType<typeof camp>[]) => readyItems({ ...all, campaigns: cs, messages: [] })[3]
   for (const held of [1, 2, 6]) {
-    const i: ReadinessInput = { ...all, campaigns: [camp({ id: 'h1', sc: held, held, contacts: 0, ready: 0 })], messages: [] }
-    const d = readyItems(i)[3].detail
-    assert.ok(!/event date/i.test(d), d)
-    assert.ok(d.startsWith(`${held} lead${held === 1 ? ' is' : 's are'} held for your review`), d)
+    const d = detail([camp({ id: 'h1', sc: held, held })])
+    assert.ok(!/event date/i.test(d.detail), d.detail)
+    assert.equal(d.detail, `${held} lead${held === 1 ? '' : 's'} in this search ${held === 1 ? 'needs' : 'need'} your review - open the list to see why each was held`)
   }
+  // Instinct's multiple-run cases: the number must be the opened run's, never the sum across runs.
+  const a = detail([camp({ id: 'first', sc: 1, held: 1 }), camp({ id: 'second', sc: 5, held: 5 })])
+  assert.equal(a.detail.split(' ')[0], '1'); assert.equal(a.fix?.href, '/app/leads?job_id=first')
+  const b = detail([camp({ id: 'first', review: 7 }), camp({ id: 'second', sc: 6, held: 6 })])
+  assert.equal(b.detail.split(' ')[0], '7'); assert.equal(b.fix?.href, '/app/leads?job_id=first')
+  const c = detail([camp({ id: 'newest', review: 3 }), camp({ id: 'older', sc: 2, held: 2 })])
+  assert.equal(c.detail.split(' ')[0], '3'); assert.equal(c.fix?.href, '/app/leads?job_id=newest')
+  // Nothing held and nothing to review: no review claim at all.
+  assert.ok(!/need.* your review/.test(detail([camp({ id: 'z', status: 'done' })]).detail))
 })
 
 test('Instinct #341: one real draft in both reads is one draft; approved and sent too', () => {
