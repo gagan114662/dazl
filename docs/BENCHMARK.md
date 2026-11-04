@@ -173,6 +173,8 @@ cannot stop someone deleting a ledger file, but git history shows every look.
 **Paired and clustered:**
 - One pair is a (task, repetition) where both systems completed the task.
 - A task one side did not complete is listed as a missing pair, never scored as zero. The failure rate itself is measured.
+- `coverage` (1 when the system completed the task, else 0) and `failure_rate` are paired over every task both systems
+  were given, overall and per segment. A market one side never completed is still reported, never dropped.
 - Intervals are a cluster bootstrap over tasks (or briefs or accounts), so ten repetitions of one task are one cluster,
   not ten pieces of evidence.
 

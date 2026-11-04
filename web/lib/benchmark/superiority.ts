@@ -19,7 +19,9 @@ import { createHash } from 'node:crypto'
 import { validated } from './scorecard.ts'
 import type { BatchResult, AdapterOrigin } from './runner.ts'
 
-export const METRICS = ['precision_at_5', 'precision_at_10', 'validated', 'unique_actionable_yield', 'unknown_rate', 'failure_rate', 'seconds', 'cost_usd', 'interventions'] as const
+// coverage: 1 when the system completed the task, else 0 (failed, incomplete, unsupported, not run); per market through
+// the registered segments. Like failure_rate it is paired over every task both systems were given, complete or not.
+export const METRICS = ['precision_at_5', 'precision_at_10', 'validated', 'unique_actionable_yield', 'unknown_rate', 'failure_rate', 'coverage', 'seconds', 'cost_usd', 'interventions'] as const
 export type Metric = typeof METRICS[number]
 export interface MetricPlan { metric: Metric; direction: 'higher' | 'lower'; min_effect: number; primary: boolean }
 export interface Prereg {
@@ -150,7 +152,7 @@ function observations(batches: BatchResult[], system: string, clusterBy: Prereg[
         m: {
           precision_at_5: ts.precision_at_5, precision_at_10: ts.precision_at_10, validated: complete ? ts.validated : null,
           unique_actionable_yield: complete ? [...keys].filter(k => !others.has(`${ts.task_id}|${k}`)).length : null,
-          unknown_rate: ts.unknown_rate, failure_rate: ['failed', 'incomplete'].includes(ts.status) ? 1 : ts.status === 'complete' ? 0 : null,
+          unknown_rate: ts.unknown_rate, failure_rate: ['failed', 'incomplete'].includes(ts.status) ? 1 : ts.status === 'complete' ? 0 : null, coverage: complete ? 1 : 0,
           seconds: ts.seconds, cost_usd: ts.cost_usd, interventions: complete ? b.interventions[system]?.[ts.task_id] ?? null : null,
         },
       })
@@ -245,11 +247,13 @@ export function analyze(planIn: Prereg, registeredHash: string, ledgerIn: LookLe
   const paired = both.filter(x => x.c.complete && x.b.complete)
   const missing = both.filter(x => !(x.c.complete && x.b.complete)).map(x => ({ task_id: x.c.task_id, rep: x.c.rep, candidate_complete: x.c.complete, baseline_complete: x.b.complete }))
 
-  const metricsFor = (rows: typeof paired): MetricResult[] => plan.metrics.map(m => {
-    const pairs = (m.metric === 'failure_rate' ? both : rows).map(x => ({ c: x.c.m[m.metric], b: x.b.m[m.metric], cluster: x.c.cluster })).filter((x): x is { c: number; b: number; cluster: string } => x.c !== null && x.b !== null)
+  // failure_rate and coverage are paired over every task both systems were given (allRows); the rest only where both
+  // completed (rows). A segment passes its own slice of each, so a market one side never completed still appears.
+  const metricsFor = (rows: typeof paired, allRows: typeof both): MetricResult[] => plan.metrics.map(m => {
+    const pairs = (m.metric === 'failure_rate' || m.metric === 'coverage' ? allRows : rows).map(x => ({ c: x.c.m[m.metric], b: x.b.m[m.metric], cluster: x.c.cluster })).filter((x): x is { c: number; b: number; cluster: string } => x.c !== null && x.b !== null)
     return decide(m, pairs, plan)
   })
-  const metrics = metricsFor(paired)
+  const metrics = metricsFor(paired, both)
 
   // Targets: the candidate's own precision@10 interval against the floor; yield as a ratio of sums against the advantage.
   const cl = (rows: typeof paired) => { const m = new Map<string, typeof paired>(); for (const r of rows) m.set(r.c.cluster, [...(m.get(r.c.cluster) ?? []), r]); return [...m.values()] }
@@ -273,7 +277,7 @@ export function analyze(planIn: Prereg, registeredHash: string, ledgerIn: LookLe
     ...(plan.cost_ceiling_usd_per_validated === null ? [] : [{ id: 'cost_ceiling', ok: cCost === null || cValidated === 0 ? null : cCost / cValidated <= plan.cost_ceiling_usd_per_validated, detail: cCost === null ? 'cost unknown for a complete task: the ceiling cannot be shown met' : cValidated === 0 ? 'no validated result: no cost per validated' : `$${r4(cCost / cValidated)} per validated vs ceiling $${plan.cost_ceiling_usd_per_validated}` }]),
   ]
 
-  const segments: SegmentResult[] = plan.segments.flatMap(seg => [...new Set(paired.map(x => x.c[seg]))].sort().map(value => ({ segment: seg, value, metrics: metricsFor(paired.filter(x => x.c[seg] === value)) })))
+  const segments: SegmentResult[] = plan.segments.flatMap(seg => [...new Set(both.map(x => x.c[seg]))].sort().map(value => ({ segment: seg, value, metrics: metricsFor(paired.filter(x => x.c[seg] === value), both.filter(x => x.c[seg] === value)) })))
 
   const primary = metrics.filter(m => m.primary)
   const failedFloor = floors.filter(f => f.ok === false)

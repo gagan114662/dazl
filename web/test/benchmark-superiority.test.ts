@@ -94,6 +94,22 @@ test('a task one side did not complete is a missing pair, never a zero', async (
   assert.equal(s.metrics.find(m => m.metric === 'failure_rate')!.pairs, 36)          // failures themselves are measured, as a rate
 })
 
+test('coverage is measured over every task, overall and per market, never only over the tasks both completed', async () => {
+  const plan: Prereg = { ...PLAN, id: 'synthetic-sup-plan-coverage', metrics: [...PLAN.metrics, { metric: 'coverage', direction: 'higher', min_effect: 0.05, primary: false }] }
+  // the baseline cannot do any Munich task (t03, t06, t09, t12): its coverage there is 0, the candidate's 1
+  const s = run(await batches(() => ({ good: 5, bad: 0 }), b => ({ good: 2, bad: 3, fail: ['t03', 't06', 't09', 't12'].includes(b.task_id) })), plan)
+  const cov = s.metrics.find(m => m.metric === 'coverage')!
+  assert.deepEqual([cov.pairs, cov.candidate_mean, cov.baseline_mean], [36, 1, 0.6667])
+  const seg = (v: string) => s.segments.find(x => x.value === v)!.metrics.find(m => m.metric === 'coverage')!
+  assert.deepEqual([seg('Munich').pairs, seg('Munich').baseline_mean, seg('London').baseline_mean], [12, 0, 1])
+  assert.equal(s.metrics[0].pairs, 24, 'precision is paired only where both completed')
+  // the market the baseline never completed is still reported: precision there has no pairs (inconclusive), not a gap
+  assert.deepEqual([seg('Munich').pairs, s.segments.find(x => x.value === 'Munich')!.metrics[0].pairs, s.segments.find(x => x.value === 'Munich')!.metrics[0].decision], [12, 0, 'inconclusive'])
+  // failure rate per segment is that segment's own, not the whole suite's
+  const fr = (v: string) => s.segments.find(x => x.value === v)!.metrics.find(m => m.metric === 'failure_rate')!
+  assert.deepEqual([fr('Munich').pairs, fr('Munich').baseline_mean, fr('London').baseline_mean], [12, 1, 0])
+})
+
 test('preregistered: the plan is hashed, a changed plan is refused, and the stop rule refuses a second look', async () => {
   const b = await batches(() => ({ good: 5, bad: 0 }), () => ({ good: 2, bad: 3 }))
   const ledger: LookLedger = { plan_hash: preregHash(PLAN), looks: [] }
