@@ -1,3 +1,4 @@
+import { reserveScanSpend, unitCostUsd } from './spend-cap.ts'
 import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
@@ -166,15 +167,22 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
     const u = new URL(rawUrl)
     if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null
     const host = u.hostname.replace(/^\[|\]$/g, '')
-    const addrs = isIP(host) ? [host] : (await new Promise<string[]>((res, rej) => dnsLookup(host, { all: true }, (e, a) => (e ? rej(e) : res(a.map(x => x.address)))))) 
+    const addrs = isIP(host) ? [host] : (await new Promise<string[]>((res, rej) => dnsLookup(host, { all: true }, (e, a) => (e ? rej(e) : res(a.map(x => x.address))))))
     if (addrs.length === 0 || addrs.some(a => !isPublicIp(a))) return null
     const token = process.env.SCAN_RENDER_TOKEN
-    const res = await fetchImpl(`${base.replace(/\/$/, '')}/content${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: u.toString(), gotoOptions: { waitUntil: 'networkidle2', timeout: 20_000 } }),
-      signal: AbortSignal.timeout(35_000),
-    })
+    // Inside a scan: one render reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal is caught
+    // below and renders nothing.
+    const hold = await reserveScanSpend('render', () => unitCostUsd('render', 1))
+    let res: Response
+    try {
+      res = await fetchImpl(`${base.replace(/\/$/, '')}/content${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: u.toString(), gotoOptions: { waitUntil: 'networkidle2', timeout: 20_000 } }),
+        signal: AbortSignal.timeout(35_000),
+      })
+    } catch (e) { await hold?.settle(null); throw e }
+    if (hold) await hold.settle(res.ok ? hold.usd : null)
     if (!res.ok) return null
     const html = await res.text()
     return html.length > 0 && html.length <= MAX_BYTES ? html : null
