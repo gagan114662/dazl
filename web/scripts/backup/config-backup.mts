@@ -4,16 +4,18 @@
 // to its OWN age recipients (never the database copies' recipients), and writes it next to the database copies:
 //   CONFIG_FILES="/etc/dazl/env /etc/caddy/Caddyfile /etc/systemd/system/dazl.service" \
 //   CONFIG_AGE_RECIPIENTS=/etc/dazl-backup/config-recipients.txt OFFHOST_AGE_RECIPIENTS=/etc/dazl-backup/recipients.txt \
-//   OFFHOST_DEST=<dir | rclone:REMOTE:PATH> node --experimental-strip-types scripts/backup/config-backup.mts [--state-dir D] [--force]
+//   OFFHOST_DEST=<dir | rclone:REMOTE:PATH> node --experimental-strip-types scripts/backup/config-backup.mts [--force]
 // Run daily as root by ops/backup/dazl-config-backup.timer (root: the env file is root-owned). Writes
 // dazl-config-<ts>.tar.age and its manifest dazl-config-<ts>.tar.age.json (tool dazl-config-copy: file list, plaintext
-// and ciphertext sha256, bytes, recipients; no contents) only when the bundle's content differs from the last one
-// copied (state file in --state-dir, default /var/lib/dazl-backup), then reads the upload back and compares its hash.
+// and ciphertext sha256, bytes, recipients; no contents) unless the NEWEST bundle at the destination already holds this
+// content and its ciphertext is there (decided from the destination itself, so a lost state dir, another host or a
+// bundle deleted at the destination never leaves the newest bundle stale), then reads the upload back and compares its hash.
 // Fail-closed refusals (exit 2, nothing copied):
 //   - a listed file that is missing, not a regular file, or larger than 1 MB; no files; a path with whitespace;
 //   - recipients that are missing, hold a private key, or share any key with OFFHOST_AGE_RECIPIENTS (the config bundle
 //     holds live secrets: one leaked identity must not open both the data and the secrets);
-//   - an age identity (AGE-SECRET-KEY) inside a listed file.
+//   - an age identity (AGE-SECRET-KEY) inside a listed file, or a file that is not valid UTF-8 (it would not survive the
+//     master-key rewrite byte for byte).
 // The master key: every DAZL_MASTER_KEY* assignment is replaced by DAZL_MASTER_KEY...=__RESTORE_FROM_OFFLINE_KEY_STORE__,
 // then the staged bundle is searched for each original value; finding one is a failure (exit 1). The master key is
 // recovered from its own offline store (docs/RECOVERY.md "Key recovery"), never from a backup.
@@ -23,13 +25,15 @@ import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openDest, sha256File } from './offhost.mts'
+import { openDest, sha256File, type OffhostDest } from './offhost.mts'
 import { PLACEHOLDER_VALUE } from './config-placeholder.mts'
 
 const refuse = (why: string): never => { console.error(`config-backup: refused: ${why}`); process.exit(2) }
 const fail = (why: string): never => { console.error(`config-backup: FAILED: ${why}`); process.exit(1) }
-const arg = (f: string) => { const i = process.argv.indexOf(f); if (i < 0) return undefined; const v = process.argv[i + 1]; if (v === undefined || v.startsWith('--')) refuse(`${f} needs a value`); return v }
+const unknown = process.argv.slice(2).filter(a => a !== '--force')
+if (unknown.length) refuse(`unknown argument ${JSON.stringify(unknown[0].slice(0, 40))} (only --force)`)
 const PLACEHOLDER = PLACEHOLDER_VALUE
+const CONFIG_MANIFEST = /^dazl-config-\d{8}T\d{6}Z-[0-9a-f]{8}\.tar\.age\.json$/
 // DAZL_MASTER_KEY, DAZL_MASTER_KEY_PREVIOUS, ... optionally exported, any spacing around =
 const MASTER_LINE = /^(\s*(?:export\s+)?)(DAZL_MASTER_KEY[A-Z0-9_]*)(\s*=\s*)(.*)$/
 
@@ -63,6 +67,7 @@ for (const f of files) {
   if (st!.size > 1024 * 1024) refuse(`${f} is larger than 1 MB: not a config file`)
   const raw = readFileSync(f)
   const text = raw.toString('utf8')
+  if (!Buffer.from(text, 'utf8').equals(raw)) refuse(`${f} is not valid UTF-8 text: not a config file this bundle can carry`)
   if (text.includes('AGE-SECRET-KEY')) refuse(`${f} holds an age identity: identities are never backed up`)
   let n = 0
   const staged = text.split('\n').map(line => {
@@ -87,12 +92,22 @@ entries.sort((a, b) => a.path.localeCompare(b.path))
 const content = createHash('sha256').update(JSON.stringify(entries)).digest('hex')
 writeFileSync(path.join(stage, 'MANIFEST.json'), JSON.stringify({ tool: 'dazl-config-bundle', version: 1, files: entries, master_key: 'excluded: restore from the offline key store' }, null, 2) + '\n')
 
-const stateDir = arg('--state-dir') ?? '/var/lib/dazl-backup'
-const stateFile = path.join(stateDir, 'config-last-sha256')
-const last = existsSync(stateFile) ? readFileSync(stateFile, 'utf8').trim() : ''
-if (last === content && !process.argv.includes('--force')) {
-  console.log(JSON.stringify({ level: 'info', type: 'config_copy', ok: true, unchanged: true, content_sha256: content, files: entries.length }))
-  process.exit(0)
+let dest: OffhostDest
+try { dest = openDest(destSpec!) } catch (e) { refuse(e instanceof Error ? e.message : 'bad OFFHOST_DEST') }
+// unchanged = the newest bundle at the destination (by its name's timestamp) declares this content and its ciphertext
+// is listed. A newest manifest that does not parse is not "unchanged": a fresh bundle is written over it.
+if (!process.argv.includes('--force')) {
+  let listed: string[] = []
+  try { listed = dest!.list() } catch (e) { fail(`destination unreadable: ${e instanceof Error ? e.message : 'error'}`) }
+  const newest = listed.filter(f => CONFIG_MANIFEST.test(f)).sort().reverse()[0]
+  if (newest) {
+    let m: Record<string, unknown> | null = null
+    try { m = JSON.parse(dest!.read(newest)) } catch { m = null }
+    if (m && typeof m === 'object' && m.tool === 'dazl-config-copy' && m.content_sha256 === content && typeof m.ciphertext === 'string' && listed.includes(m.ciphertext)) {
+      console.log(JSON.stringify({ level: 'info', type: 'config_copy', ok: true, unchanged: true, content_sha256: content, files: entries.length, newest }))
+      process.exit(0)
+    }
+  }
 }
 
 const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
@@ -110,14 +125,10 @@ const manifest = {
   master_key: 'excluded', recipients: mine, host: os.hostname(), copied_at: new Date().toISOString(),
 }
 writeFileSync(ctFile + '.json', JSON.stringify(manifest, null, 2) + '\n')
-let dest
 try {
-  dest = openDest(destSpec!)
-  dest.put(ctFile, name)
-  dest.put(ctFile + '.json', name + '.json')
-  const back = path.join(stage, 'readback'); dest.fetch(name, back)
+  dest!.put(ctFile, name)
+  dest!.put(ctFile + '.json', name + '.json')
+  const back = path.join(stage, 'readback'); dest!.fetch(name, back)
   if (sha256File(back) !== manifest.ciphertext_sha256) fail('read-back sha256 of the uploaded bundle differs from what was written')
 } catch (e) { fail(`upload: ${e instanceof Error ? e.message : 'error'}`) }
-try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); writeFileSync(stateFile, content + '\n', { mode: 0o600 }) }
-catch (e) { console.error(`config-backup: copied, but the change marker was not written (${(e as NodeJS.ErrnoException).code ?? 'error'}); the next run copies again`) }
 console.log(JSON.stringify({ level: 'info', type: 'config_copy', ok: true, to: dest!.label, ciphertext: name, ciphertext_sha256: manifest.ciphertext_sha256, files: entries.length, master_key: 'excluded' }))

@@ -49,7 +49,7 @@ async function world(opts: { config?: (dir: string, key: string) => string[] } =
     writeFileSync(path.join(etc, 'Caddyfile'), 'dazl.ai {\n  reverse_proxy 127.0.0.1:3100\n}\n')
     return [path.join(etc, 'env'), path.join(etc, 'Caddyfile')]
   })()
-  const cb = node('config-backup.mts', ['--state-dir', path.join(d, 'state')], { CONFIG_FILES: files.join(' '), CONFIG_AGE_RECIPIENTS: cfg.pub, OFFHOST_AGE_RECIPIENTS: data.pub, OFFHOST_DEST: dest })
+  const cb = node('config-backup.mts', [], { CONFIG_FILES: files.join(' '), CONFIG_AGE_RECIPIENTS: cfg.pub, OFFHOST_AGE_RECIPIENTS: data.pub, OFFHOST_DEST: dest })
   return { d, fx, data, cfg, dest, files, cb }
 }
 const keysDrill = (w: Awaited<ReturnType<typeof world>>, extra: string[] = [], over: Record<string, string> = {}) => {
@@ -76,9 +76,18 @@ test('config bundle: only ciphertext leaves, the master key is replaced by the p
   assert.match(env, /^DAZL_MASTER_KEY=__RESTORE_FROM_OFFLINE_KEY_STORE__$/m)
   assert.match(env, /^export DAZL_MASTER_KEY_PREVIOUS=__RESTORE_FROM_OFFLINE_KEY_STORE__$/m)
   assert.ok(!env.includes(w.fx.key) && env.includes('STRIPE_SECRET_KEY=sk_test_synthetic'))
-  const again = node('config-backup.mts', ['--state-dir', path.join(w.d, 'state')], { CONFIG_FILES: w.files.join(' '), CONFIG_AGE_RECIPIENTS: w.cfg.pub, OFFHOST_AGE_RECIPIENTS: w.data.pub, OFFHOST_DEST: w.dest })
+  const again = node('config-backup.mts', [], { CONFIG_FILES: w.files.join(' '), CONFIG_AGE_RECIPIENTS: w.cfg.pub, OFFHOST_AGE_RECIPIENTS: w.data.pub, OFFHOST_DEST: w.dest })
   assert.equal(again.code, 0); assert.equal(again.json.unchanged, true)
-  assert.equal(readdirSync(w.dest).filter(f => f.startsWith('dazl-config-')).length, 2, 'a retry (or a crash before the marker) copies at most once more; unchanged content is skipped')
+  assert.equal(readdirSync(w.dest).filter(f => f.startsWith('dazl-config-')).length, 2, 'unchanged content is skipped, decided from the destination (no state dir, any host)')
+  // the newest bundle's ciphertext lost at the destination: unchanged content is copied again, not reported unchanged
+  rmSync(path.join(w.dest, files.find(f => f.endsWith('.age'))!))
+  const healed = node('config-backup.mts', [], { CONFIG_FILES: w.files.join(' '), CONFIG_AGE_RECIPIENTS: w.cfg.pub, OFFHOST_AGE_RECIPIENTS: w.data.pub, OFFHOST_DEST: w.dest })
+  assert.equal(healed.code, 0, healed.out); assert.notEqual(healed.json.unchanged, true)
+  assert.equal(readdirSync(w.dest).filter(f => f.startsWith('dazl-config-') && f.endsWith('.age')).length, 1, 'a fresh bundle replaces the lost one')
+  // every manifest garbled: a fresh bundle again, never "unchanged"
+  for (const m of readdirSync(w.dest).filter(f => f.startsWith('dazl-config-') && f.endsWith('.age.json'))) writeFileSync(path.join(w.dest, m), '{"tool":')
+  const garbled = node('config-backup.mts', [], { CONFIG_FILES: w.files.join(' '), CONFIG_AGE_RECIPIENTS: w.cfg.pub, OFFHOST_AGE_RECIPIENTS: w.data.pub, OFFHOST_DEST: w.dest })
+  assert.equal(garbled.code, 0, garbled.out); assert.notEqual(garbled.json.unchanged, true)
 })
 
 test('config bundle refuses (exit 2, nothing copied): shared or private recipients, missing/dir/huge/relative/duplicate files, an age identity inside', { skip }, async () => {
@@ -88,6 +97,7 @@ test('config bundle refuses (exit 2, nothing copied): shared or private recipien
   const big = path.join(w.d, 'big'); writeFileSync(big, Buffer.alloc(1024 * 1024 + 1, 97))
   const withId = path.join(w.d, 'with-id'); writeFileSync(withId, readFileSync(data.id))
   const notKey = path.join(w.d, 'not-a-key.txt'); writeFileSync(notKey, 'hello\n')
+  const latin1 = path.join(w.d, 'latin1.env'); writeFileSync(latin1, Buffer.from([0x41, 0x3d, 0xe9, 0x0a]))
   const cases: [string, Record<string, string>, RegExp][] = [
     ['shared recipient', { CONFIG_AGE_RECIPIENTS: data.pub }, /shares a key/],
     ['private key as recipient', { CONFIG_AGE_RECIPIENTS: cfg.id }, /private key/],
@@ -101,11 +111,14 @@ test('config bundle refuses (exit 2, nothing copied): shared or private recipien
     ['duplicate', { CONFIG_FILES: `${w.files[0]} ${w.files[0]}` }, /twice/],
     ['identity inside', { CONFIG_FILES: withId }, /holds an age identity/],
     ['no destination', { OFFHOST_DEST: '' }, /OFFHOST_DEST/],
+    ['not UTF-8', { CONFIG_FILES: latin1 }, /not valid UTF-8/],
   ]
   for (const [name, o, re] of cases) {
-    const r = node('config-backup.mts', ['--state-dir', path.join(w.d, `st-${name.replace(/\W/g, '')}`)], env(o))
+    const r = node('config-backup.mts', [], env(o))
     assert.equal(r.code, 2, `${name}: ${r.out}`); assert.match(r.out, re, name)
   }
+  const extra = node('config-backup.mts', ['--state-dir', '/tmp/x'], env({}))
+  assert.equal(extra.code, 2); assert.match(extra.out, /unknown argument/)
   assert.deepEqual(readdirSync(dest), [], 'nothing was copied by any refused run')
 })
 

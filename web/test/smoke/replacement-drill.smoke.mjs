@@ -34,7 +34,7 @@ try {
   const etc = path.join(T, 'etc'); mkdirSync(etc)
   writeFileSync(path.join(etc, 'env'), `NODE_ENV=production\nDAZL_MASTER_KEY=${fx.key}\nSTRIPE_SECRET_KEY=sk_test_synthetic\n`)
   writeFileSync(path.join(etc, 'Caddyfile'), 'dazl.ai {\n  reverse_proxy 127.0.0.1:3100\n}\n')
-  const cb = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/backup/config-backup.mts', '--state-dir', path.join(T, 'state')], { cwd: root, encoding: 'utf8', env: { ...env, CONFIG_FILES: `${etc}/env ${etc}/Caddyfile`, CONFIG_AGE_RECIPIENTS: cfg.pub } })
+  const cb = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/backup/config-backup.mts'], { cwd: root, encoding: 'utf8', env: { ...env, CONFIG_FILES: `${etc}/env ${etc}/Caddyfile`, CONFIG_AGE_RECIPIENTS: cfg.pub } })
   assert.equal(cb.status, 0, cb.stdout + cb.stderr)
   // the old host is gone: only the off-host destination and the separately held keys remain
   rmSync(path.join(T, 'old-host', 'live'), { recursive: true, force: true }); rmSync(path.join(T, 'old-host', 'backups'), { recursive: true, force: true })

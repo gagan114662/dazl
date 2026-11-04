@@ -2,7 +2,7 @@
 # "Secrets and config"). A TEMPLATE, installed with dazl-backup.service after the owner approves the destination.
 # Runs as root because the app's env file is root-owned. The bundle excludes DAZL_MASTER_KEY (replaced by a placeholder)
 # and is encrypted to CONFIG_AGE_RECIPIENTS, a key pair of its own (never the database copies' one). It uploads only
-# when the content changed since the last copy (state in /var/lib/dazl-backup).
+# when the newest bundle at the destination does not already hold this content.
 [Unit]
 Description=dazl secrets/config bundle (encrypted, master key excluded)
 
@@ -14,5 +14,5 @@ EnvironmentFile=/etc/dazl-backup/env
 # A directory destination: files are handed to the directory's owner, so the app user's monitor can read them.
 Environment=RCLONE_CONFIG=/home/CHANGE-ME-app-user/.config/rclone/rclone.conf
 WorkingDirectory=CHANGE-ME-release/web
-ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/config-backup.mts --state-dir /var/lib/dazl-backup
+ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/config-backup.mts
 TimeoutStartSec=10min
