@@ -13,6 +13,8 @@ import { hasKey } from '@/lib/llm/key-store'
 import { icpFromWebsite } from '@/lib/scan/icp-from-site'
 import { latestQueryJob } from '@/lib/scan/store'
 import { denied } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
+import { SITE_READ_ACTION, siteReadOutcome } from '@/lib/scan/activation'
 
 // Turns the user's own homepage into an editable ICP draft (returned, never saved).
 // Tight rate limit: it fetches an arbitrary URL server-side and makes an LLM call. Without the user's own key the call
@@ -61,7 +63,14 @@ export async function POST(req: NextRequest) {
   // A member, a team workspace or a workspace without its founder's row has no trial path. The free read still
   // answers - it needs no key and no one's money - with the reason the funded read was never tried.
   const ineligible = !keyed && !principal
-  const out = await icpFromWebsite(db, user.tenantId, url, { prior, decisions, ...(trial ? { trial } : {}) })
+  // #409 time-to-value and drop-off (lib/scan/activation.ts): every read that got this far is recorded with the path it
+  // took, its result and its reason - a refusal or an error included - before the answer goes back. A failed record is
+  // reported (lib/audit-route.ts) and never changes the answer; a read that throws is recorded as an error and rethrown.
+  const recordRead = (o: unknown) => { const r = siteReadOutcome(o, { keyed, ineligible }); return audit(user, req, { action: SITE_READ_ACTION, resource: 'website', summary: { ...r }, decision: r.result === 'error' ? 'denied' : 'allowed' }) }
+  let out: Awaited<ReturnType<typeof icpFromWebsite>>
+  try { out = await icpFromWebsite(db, user.tenantId, url, { prior, decisions, ...(trial ? { trial } : {}) }) }
+  catch (e) { await recordRead({ error: 'exception' }); throw e }
+  await recordRead(out)
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     if (out.error === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.' }, { status: 503 })
