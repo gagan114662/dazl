@@ -44,6 +44,12 @@ Updated by the builder on every branch. Newest first.
 - b/535-legal-policies (#535): Terms and Privacy pages render one checked text (`web/lib/legal/policy.ts`), still
   DRAFT; `test/legal-policy.test.ts` fails if a stated retention, provider, API host or opt-out behaviour drifts from
   the code. Owner/counsel items stay bracketed on the pages (NEEDS GAGAN list in the PR). Sign-up links both pages.
+- b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
+  threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
+  `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
+  at most `SCAN_PER_TENANT_MAX` (1) claimed per tenant, kicked every tick; a restart hands queue claims back. Tick-level
+  multi-tenant load test with a default-off control. Migration 0047 (Instinct's order: this PR keeps 0047, #600
+  renumbers).
 
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
