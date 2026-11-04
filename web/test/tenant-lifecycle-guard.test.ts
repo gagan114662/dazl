@@ -17,7 +17,7 @@ const A = 'guard-tenant-aaaa', B = 'guard-tenant-bbbb', NOW = 1_900_000_000
 const BY = 'operator (synthetic guard test)'
 // Tables whose own triggers also refuse every UPDATE (append-only audit, immutable evidence copies): an ownership move
 // there is refused with whichever guard fires first, which differs by engine.
-const IMMUTABLE: Record<string, RegExp> = { evidence_purge_audit: /tenant deleted|append-only/, lead_evidence_copies: /tenant deleted|immutable/, audit_events: /tenant deleted|append-only/, onboarding_audit: /tenant deleted|append-only/ } // port note: audit_events and onboarding_audit are append-only like evidence_purge_audit
+const IMMUTABLE: Record<string, RegExp> = { evidence_purge_audit: /tenant deleted|append-only/, deal_stage_events: /tenant deleted|append-only/, lead_evidence_copies: /tenant deleted|immutable/, audit_events: /tenant deleted|append-only/, onboarding_audit: /tenant deleted|append-only/ } // port note: audit_events and onboarding_audit are append-only like evidence_purge_audit
 // Tables with another BEFORE INSERT trigger: Postgres fires them in name order, so leads_only_while_running (the
 // parent scan is gone) answers before tomb_leads there; the guard itself on a leads INSERT is held by the "late inserts
 // under a deleted parent" and "parent chain onto a retained parent" cases.
