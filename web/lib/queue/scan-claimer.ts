@@ -1,7 +1,7 @@
 // Scan claiming through the shared work queue (DbQueue), so several app instances on one Postgres share scans: each
 // scan is claimed by exactly one instance, and a scan whose instance died is taken over once its lease runs out.
-// Behind DAZL_SCAN_SHARED_QUEUE=1 (default OFF); kickRunner (lib/scan/runner.ts) calls kickSharedScanQueue instead of
-// its own claimers when the flag is on. Off, nothing here runs.
+// Behind DAZL_SCAN_SHARED_QUEUE=1 (default OFF; switching it on is a deploy-time step, docs/PLATFORM.md); kickRunner
+// (lib/scan/runner.ts) calls kickSharedScanQueue instead of its own claimers when the flag is on. Off, nothing here runs.
 //
 // Two stores, passed separately:
 //   queue  - where work_queue lives: getDb() (Postgres when DATABASE_URL is set, else the app's SQLite file).
@@ -16,7 +16,8 @@
 //      has a saved key, or the scan is trial-funded) gets a queue item with the scan's id. Idempotent; a terminal item
 //      for a scan that is pending again is retired and re-enqueued (a new scheduling epoch; scan_jobs.attempts keeps
 //      counting).
-//   3. While this instance has a free run slot: claim one item, then bind the scan row with the runner's own guard
+//   3. While this instance has a free run slot: claim one item (round-robin across tenants, at most
+//      SCAN_PER_TENANT_MAX of one tenant's scans claimed at once across every instance), then bind the scan row with the runner's own guard
 //      (pending -> running, attempts + 1). A row that is already finished, cancelled or failed completes the item
 //      without running; a running row (a live attempt elsewhere, or a dead one the reaper has not freed yet) releases it
 //      for a retry. The bound scan runs; its outcome is mapped back onto the item by claim token, so a claim that was
@@ -26,7 +27,31 @@ import { captureError } from '../ops/errors.ts'
 import { MAX_ATTEMPTS, STALE_RUNNING_S } from '../scan/store.ts'
 import { DbQueue } from './db.ts'
 
-export const sharedScanQueue = (env: Record<string, string | undefined> = process.env) => env.DAZL_SCAN_SHARED_QUEUE === '1'
+// Off unless DAZL_SCAN_SHARED_QUEUE is exactly 1. Any other set value (a typo, ' 1', 'true') stays off, today's
+// in-process claimer, and is reported once so the operator sees the flag did not take.
+let reportedFlag = false
+export function sharedScanQueue(env: Record<string, string | undefined> = process.env): boolean {
+  const v = env.DAZL_SCAN_SHARED_QUEUE
+  if (v === '1') return true
+  if (v !== undefined && v !== '' && v !== '0' && !reportedFlag) { reportedFlag = true; console.error('DAZL_SCAN_SHARED_QUEUE is not exactly 1 - scans stay on the in-process claimer') }
+  return false
+}
+
+// How many of one tenant's scans may be claimed at once, counted in work_queue, so across every instance (#355).
+// Default 1: a tenant's scans share one key and one spend pool (the pool admits one unsettled call at a time), so a
+// second parallel scan of the same tenant buys little and takes a run slot another tenant is waiting for. 1 to 8; a
+// malformed or out-of-range value means 1, the stricter limit, and is reported.
+export const SCAN_PER_TENANT_DEFAULT = 1
+let reportedLimit = false
+export function scanPerTenantLimit(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.SCAN_PER_TENANT_MAX
+  if (raw === undefined || raw.trim() === '') return SCAN_PER_TENANT_DEFAULT
+  if (!/^[1-8]$/.test(raw.trim())) {
+    if (!reportedLimit) { reportedLimit = true; console.error('SCAN_PER_TENANT_MAX must be an integer from 1 to 8 - using 1') }
+    return SCAN_PER_TENANT_DEFAULT
+  }
+  return Number(raw.trim())
+}
 
 // The row claimKeyedJob returns, column for column.
 const JOB_COLUMNS = 'id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd'
@@ -39,8 +64,11 @@ export interface SharedScanDeps<J extends ClaimedScan> {
   // an exception that escaped run(): the caller fails the scan row (fenced); the item is then failed, not retried
   onCrash: (job: J, e: unknown) => void
   slots: { available(): boolean; acquire(): void; release(): void }
-  track?: (job: J) => () => void
+  // token: the queue claim, so a shutdown can hand it back (requeueInFlightForShutdown in lib/scan/runner.ts)
+  track?: (job: J, token: number) => () => void
   leaseSeconds?: number
+  // per-tenant claim limit; default scanPerTenantLimit()
+  perTenantInFlight?: number
   now?: () => number
 }
 
@@ -84,28 +112,34 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
   const lease = d.leaseSeconds ?? STALE_RUNNING_S
   const clock = d.now ?? nowS
   const q = new DbQueue(d.queue)
+  const perTenant = d.perTenantInFlight ?? scanPerTenantLimit()
   await reapStaleScans(d.domain, lease, clock())
   await mirrorScans(d.domain, q, clock())
   while (d.slots.available()) {
-    // No per-tenant or global cap beyond this instance's run slots, as with the legacy claimer. Round-robin across
-    // tenants (#355): a free slot goes to the tenant served longest ago, so one tenant's backlog cannot hold every slot
-    // while another tenant's scan waits.
-    const claim = await q.claim({ kinds: ['scan'], leaseSeconds: lease, now: clock(), perTenantInFlight: 1_000_000, maxInFlight: 1_000_000, order: 'round_robin' })
+    // Fair service (#355). Round-robin: a free slot goes to the tenant served longest ago. Per-tenant limit: a tenant
+    // with perTenant scans claimed gets no more until one settles, so one tenant's backlog or slow provider cannot hold
+    // every slot while another tenant's scan waits. The scan lane: only scan claims count against these caps, so
+    // runtime-worker items (lib/workers) never take a scan's place, nor scans theirs. No global cap beyond this
+    // instance's run slots.
+    const claim = await q.claim({ kinds: ['scan'], lane: true, leaseSeconds: lease, now: clock(), perTenantInFlight: perTenant, maxInFlight: 1_000_000, order: 'round_robin' })
     if (!claim) return
+    // The bind is scoped to the item's tenant as well as its id: an item whose tenant is not the scan's owner (a
+    // corrupted or hand-made row) binds nothing and completes, so the per-tenant limit is never charged to the wrong
+    // tenant and the scan is re-mirrored under its owner on the next kick.
     const job = await d.domain.get<J>(
       `UPDATE scan_jobs SET status = 'running', attempts = attempts + 1, claimed_at = ?
-       WHERE id = ? AND status = 'pending' RETURNING ${JOB_COLUMNS}`,
-      [clock(), claim.item.id])
+       WHERE id = ? AND user_id = ? AND status = 'pending' RETURNING ${JOB_COLUMNS}`,
+      [clock(), claim.item.id, claim.item.tenantId])
     if (!job) {
-      const row = await d.domain.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ?', [claim.item.id])
+      const row = await d.domain.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ? AND user_id = ?', [claim.item.id, claim.item.tenantId])
       if (!row || (row.status !== 'pending' && row.status !== 'running')) await q.complete(claim.token) // finished or cancelled: nothing to run
       else await q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' }) // a live attempt holds it
       continue
     }
     const bound = { ...job, attempts: Number(job.attempts) } as J
     d.slots.acquire()
-    const untrack = d.track?.(bound)
     const token = claim.token
+    const untrack = d.track?.(bound, token)
     void d.run(bound)
       .catch(e => { d.onCrash(bound, e); return 'failed' as const })
       .then(async outcome => {

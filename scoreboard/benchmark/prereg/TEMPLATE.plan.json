@@ -1,0 +1,28 @@
+{
+  "id": "TEMPLATE-dazl-vs-baseline-v1",
+  "registered_at": "2026-11-04T00:00:00Z",
+  "systems": { "candidate": "dazl", "baseline": "baseline" },
+  "metrics": [
+    { "metric": "precision_at_10", "direction": "higher", "min_effect": 0.05, "primary": true },
+    { "metric": "unique_actionable_yield", "direction": "higher", "min_effect": 0.5, "primary": true },
+    { "metric": "precision_at_5", "direction": "higher", "min_effect": 0.05, "primary": false },
+    { "metric": "validated", "direction": "higher", "min_effect": 0.5, "primary": false },
+    { "metric": "coverage", "direction": "higher", "min_effect": 0.05, "primary": false },
+    { "metric": "unknown_rate", "direction": "lower", "min_effect": 0.05, "primary": false },
+    { "metric": "failure_rate", "direction": "lower", "min_effect": 0.05, "primary": false },
+    { "metric": "seconds", "direction": "lower", "min_effect": 30, "primary": false },
+    { "metric": "cost_usd", "direction": "lower", "min_effect": 0.1, "primary": false },
+    { "metric": "interventions", "direction": "lower", "min_effect": 0.5, "primary": false }
+  ],
+  "precision_floor": 0.9,
+  "yield_advantage": 1.25,
+  "cost_ceiling_usd_per_validated": 2,
+  "critical": { "max_contradicted": 0, "max_false_alerts": 0 },
+  "min_pairs": 72,
+  "min_clusters": 14,
+  "cluster_by": "task",
+  "segments": ["region", "sector"],
+  "bootstrap": { "resamples": 10000, "level": 0.95, "seed": 398 },
+  "stop_rule": { "max_looks": 2 },
+  "power_rationale": "TEMPLATE, not a registered plan: copy it to prereg/<new id>/plan.json, replace every value you have evidence for, and register its hash before any batch is run. Sizing: to detect a 0.05 difference in precision@10 at 95% confidence and 80% power, with a per-task standard deviation of about 0.15 (an assumption until a pilot batch measures it), n = ((1.96 + 0.84) x 0.15 / 0.05)^2 = about 71 paired task-repetitions. That is 6 repetitions of the 14 frozen v1 tasks (84 pairs), clustered by task (14 clusters). If the pilot shows a larger spread, register a new plan with more repetitions before looking. The 0.90 precision floor and the x1.25 yield advantage are the issue's proposed targets, not measured achievements. The cost ceiling of $2 per validated lead is a placeholder until the owner sets one."
+}
