@@ -21,10 +21,11 @@ async function withEnv<T>(env: Record<string, string>, fn: () => Promise<T>): Pr
   try { return await fn() } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 }
 const EXTRACT = 'You turn pre-collected public items'
-async function run(o: { trial?: boolean; runBudget?: string; deps?: Record<string, unknown> }) {
+async function run(o: { trial?: boolean; runBudget?: string; deps?: Record<string, unknown>; noRescue?: boolean }) {
   const newsCalls: string[] = []
-  // The recovery search names the held company in quotes; it is the only news query that finds the company's own press.
-  const newsHttp: SafeGet = async url => { newsCalls.push(url); return { status: 200, body: gdelt([decodeURIComponent(url).includes('"Orbitly"') ? PRESS : VENDOR]) } }
+  // The recovery search names the held company in quotes; it is the only news query that finds the company's own press. noRescue: no news query ever finds
+  // the press, so no recovery could rescue anything - a control run with the same budget whose spend cannot include a rescue.
+  const newsHttp: SafeGet = async url => { newsCalls.push(url); return { status: 200, body: gdelt([!o.noRescue && decodeURIComponent(url).includes('"Orbitly"') ? PRESS : VENDOR]) } }
   const vendorCand: Cand = { company: 'Orbitly', signal: 'raised a seed round', source_url: VENDOR, excerpt: FUND, event_date: daysAgo(10) }
   const pressCand: Cand = { company: 'Orbitly', signal: 'raised a seed round', source_url: PRESS, excerpt: FUND, event_date: daysAgo(10) }
   const f: Fixture = { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: VENDOR, title: 'Orbitly runs on AcmeCRM', snippet: FUND, date: null }], tfPages: {},
@@ -62,9 +63,15 @@ test('#352 fail-closed: a TRIAL scan makes no recovery search, no recovery extra
 
 test('#352 fail-closed: no run budget, dep or extra key turns a trial\'s recovery pass back on (malformed, widening, first5, injected flags)', async () => {
   const base = await run({})
+  // first5 is a different scan (its own free keyless sources, synthesized paid_fallback=false), so it reserves a little more than a plain trial on main's own path
+  // (0.06603 vs 0.064236 in this fixture, still one extraction). Its spend is compared with its OWN control: the same first5 budget where no news query can find the
+  // company's press, so nothing in that run can be a rescue. Every other case is compared with the plain trial baseline.
+  const FIRST5 = JSON.stringify({ first5: true, paid_fallback: false, credit_enrichment: false })
+  const first5Control = await run({ runBudget: FIRST5, noRescue: true })
+  assert.equal(first5Control.fallbackRuns, 0); assert.equal(first5Control.recoverySearches, 0)
   const cases: { name: string; runBudget?: string; deps?: Record<string, unknown> }[] = [
     { name: 'budget paid_fallback=true (a widening attempt)', runBudget: JSON.stringify({ paid_fallback: true }) },
-    { name: 'budget first5', runBudget: JSON.stringify({ first5: true, paid_fallback: false, credit_enrichment: false }) },
+    { name: 'budget first5', runBudget: FIRST5 },
     { name: 'budget not JSON', runBudget: '{not json' },
     { name: 'budget array', runBudget: '[]' },
     { name: 'budget null', runBudget: 'null' },
@@ -76,12 +83,10 @@ test('#352 fail-closed: no run budget, dep or extra key turns a trial\'s recover
   for (const c of cases) {
     const r = await run({ runBudget: c.runBudget, deps: c.deps })
     assert.equal(r.fallbackRuns, 0, c.name); assert.equal(r.recoverySearches, 0, c.name)
-    // first5 is a different scan (its own free sources and grading set), so its spend is compared with nothing here; the recovery-specific
-    // facts above and below (no fallback:news run, no recovery search, never rescued through one) hold for it as for every case.
-    if (!c.name.includes('first5')) {
-      assert.ok(r.extractions <= base.extractions, `${c.name}: no extra extraction (${r.extractions} vs ${base.extractions})`)
-      assert.ok(r.reserved <= base.reserved + 1e-12, `${c.name}: no extra reservation (${r.reserved} vs ${base.reserved})`)
-    }
+    const ref = c.runBudget === FIRST5 ? first5Control : base
+    assert.ok(r.extractions <= base.extractions, `${c.name}: no extra extraction (${r.extractions} vs ${base.extractions})`)
+    assert.equal(r.extractions, ref.extractions, `${c.name}: same extractions as its baseline`)
+    assert.ok(Math.abs(r.reserved - ref.reserved) < 1e-12, `${c.name}: reserved exactly its baseline (${r.reserved} vs ${ref.reserved})`)
     if (r.lead) assert.notEqual(r.lead.source_url, PRESS, `${c.name}: never rescued through a recovery search`)
   }
 })

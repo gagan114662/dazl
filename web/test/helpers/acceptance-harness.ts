@@ -9,6 +9,7 @@ import { migratePlans } from '../../lib/plans.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateAuth } from '../../lib/auth-db.ts'
+import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
 import type { Provider } from '../../lib/llm/provider.ts'
 import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
@@ -52,7 +53,7 @@ export async function runFixture(f: Fixture) {
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
   const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
   createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
-  if (f.fundedBy) db.prepare('UPDATE scan_jobs SET funded_by = ?').run(f.fundedBy)
+  if (f.fundedBy) { migrateTrialBudget(db); db.prepare('UPDATE scan_jobs SET funded_by = ?').run(f.fundedBy) }   // the trial tables, so settleTrialReservation finds its table (no reservation row: admission is the route's job)
   const job = claimKeyedJob(db)!
   await f.beforeRun?.(db)
   const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
