@@ -15,6 +15,7 @@ says what that code does. It is not a pricing page and makes no billing claim.
 
 | Limit | Set by | Applies to | Kind |
 |---|---|---|---|
+| **Hard per-scan cap** (#377, #533) | owner rule: CAD 5 per paid scan; `DAZL_SCAN_CAP_CAD` can only lower it | every paid provider call of one scan (all attempts, retries, workers, post-finish enrichment, owner retry of its held lookups) | hard dollars, reserved on the scan's own row before each call (below) |
 | Owner day / month pool | `DAZL_RUN_MAX_USD_USERS`, `DAZL_OWNER_MONTH_MAX_USD_USERS` (per owner id) | every LLM call of that owner: scan runner and every `ownerGuarded` path | hard dollars, shared store (`tenant_spend_pools`) |
 | Per-run (per play) `max_usd` | the scan's `run_budget` | that scan job's LLM calls | hard dollars, saved on the job row per call |
 | Trial scan reserve | `DAZL_TRIAL_SCAN_RESERVE_USD` | a trial scan's LLM and TinyFish steps | hard dollars (lib/billing/trial-budget.ts) |
@@ -46,6 +47,50 @@ the vendor and the tenant's own key.
 `test/paid-paths-guarded.test.ts` fails when a new module makes a paid model call, or a credit-charging Apollo/PDL call
 without reserving on the workspace credit pool, without being listed above. `test/enrich-credit-pool.test.ts` covers the
 credit pool on both engines and through both callers with stubbed providers.
+Inside a scan, every row above that is a paid provider call also reserves on the hard per-scan cap (next section).
+
+## The hard per-scan cap (lib/scan/spend-cap.ts)
+
+The owner's rule: one paid scan may not spend more than CAD 5. It is enforced at the transport of every paid provider
+(model completions in `lib/llm/provider.ts`, TinyFish search and fetch, Apollo, PDL, the rendering service), before the
+request, against a durable record on the scan's own job row. The runner opens the scan's context around the whole
+attempt (`runJob`), so every paid call made for the scan finds it; outside a scan the transports are unchanged and the
+paths keep the guards above.
+
+1. **Reserve before the call**, in one transaction: `scan_jobs.spend_cap_reserved_usd` is raised by the call's worst case
+   only `WHERE` the new total still fits the scan's cap, for this job id, its tenant and the attempt that owns it, and the
+   call's own `scan_spend_calls` row is written (`reserved`). Two workers on one scan cannot pass the cap together (the
+   Postgres row lock re-checks the condition; SQLite transactions are IMMEDIATE).
+2. **Refused** (over the cap, another tenant's or an unknown job, a lost attempt, a finished-and-failed job, a malformed
+   setting or price, an unlisted model, a store that does not answer): nothing is sent, the refusal is a `refused` row
+   with its reason and the job's `spend_cap_refusals` count, and the caller gets `SpendRefused`. A scan whose model call
+   is refused ends `budget_stopped`; a refused TinyFish call reads as its count cap; a refused render renders nothing;
+   a refused Apollo/PDL lookup is a failed lookup (its claim holds, as any failed lookup's does).
+3. **Settle once**, after the call, to the vendor-reported cost (`settled`); a replay changes nothing. A failed call, or
+   one with no usable cost, keeps its full worst case (`kept`). A crash between reserve and settle leaves `reserved` at the
+   worst case, which every later attempt of the scan still counts: never released.
+4. **The cap**: `DAZL_SCAN_CAP_CAD` (default and hard ceiling 5; higher values are clamped) over
+   `DAZL_SCAN_CAP_FX_CAD_PER_USD` (default and floor 1.50 CAD per USD; lower values are clamped), so USD 3.3333 at most;
+   the column's CHECK holds the same bound. The scan's own `run_budget.max_usd` only lowers it, and the first cap a scan
+   reserved under is stored on its row, so a later attempt under a looser setting cannot raise it.
+5. **Worst-case prices** (USD; each env-overridable, a malformed value refuses):
+
+| Kind | Default worst case | Setting | Source |
+|---|---|---|---|
+| model completion | (prompt UTF-8 bytes + 1,000) x input price + `max_tokens` x output price, requested model | price table in `lib/scan/spend-cap.ts` | claude-sonnet-4-5 3 / 15 per 1M (Anthropic pricing); gpt-4.1 3.50 / 14.00 per 1M (OpenAI Priority rate; Standard is 2 / 8) |
+| TinyFish search / fetch | 0 inside the free allowance (12,000 searches, 1,000 URLs per UTC day); a global daily cap above it is refused unless priced | `DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD`, `_FETCH_USD` (else the trial's `DAZL_TRIAL_TINYFISH_*_USD`) | TinyFish docs, Billing |
+| Apollo organization enrich | 0.20 per request (1 credit) | `DAZL_SCAN_PRICE_APOLLO_ORG_USD` | Apollo add-on credit price; API pricing doc: 1 credit |
+| Apollo people search | 0.20 per request (1 credit, although the doc lists 0; legacy plans can differ) | `DAZL_SCAN_PRICE_APOLLO_PEOPLE_USD` | as above |
+| PDL person search | 0.28 per profile, reserved for the size asked for, settled to the profiles returned (a 404 is not billed) | `DAZL_SCAN_PRICE_PDL_PROFILE_USD` | PDL Pro tier-1 monthly price |
+| rendering service | 0.01 per render (Browserless: 2 units of 30 s at 0.0020) | `DAZL_SCAN_PRICE_RENDER_USD` (0 for a self-hosted renderer) | Browserless pricing |
+
+Any other model is refused before the call. `test/scan-spend-cap-paths.test.ts` lists every paid host and transport
+and fails when a new endpoint appears unclassified or a paid one is called from a module without the gate;
+`test/scan-spend-cap.test.ts` (both engines) and `test/scan-spend-cap-runner.test.ts` prove the ledger and the runner.
+
+Not covered by the cap: paths that are not a scan (replies, drafts, SEO, previews, the ICP-from-website read, CRM push)
+and the LinkedIn commenter import's company enrichment (lib/scan/commenter-import.ts, its own count cap of 50 lookups).
+Those keep the guards listed above.
 
 Exclusions:
 - **Free sources, not paid:** Greenhouse, Ashby, Lever, GDELT, HN Algolia and GitHub (public APIs, no key); Jina Reader
@@ -97,9 +142,10 @@ claim), on both engines, including two SQLite connections to one file as two ins
 - **Scan runner completions** keep their worst-case reservation instead of settling to reported usage.
 - **Per-play limits** exist only for scans (`run_budget.max_usd`). Polish, follow-ups and qualification for a play
   count against the owner pool, not a per-play limit.
-- **TinyFish and Apollo/PDL** are bounded by counts, not dollars. For BYOK enrichment that is the disclosed limit: the
-  workspace credit pool (day/month credits per tenant) is persistent and atomic, but its limits are operator-wide
-  settings, not per-tenant choices, and no UI shows them yet.
+- **TinyFish and Apollo/PDL** are bounded by counts, not dollars, outside a scan (inside one, the hard per-scan cap
+  also prices them). For BYOK enrichment that is the disclosed limit: the workspace credit pool (day/month credits per
+  tenant) is persistent and atomic, but its limits are operator-wide settings, not per-tenant choices, and no UI shows
+  them yet.
 - **Disclosure:** the prelaunch estimate (lib/scan/estimate-request.ts) reads the owner pool rows.
   - Proved: a stale or failed pending marker blocks the estimate with the reason (`accounting_unsettled`), and
     `POST /api/scan` refuses with 409 and creates no job, the same rule the pool enforces. A fresh marker does not block.

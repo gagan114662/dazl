@@ -4,25 +4,37 @@
 import { EnrichError, type ApolloPerson } from './apollo.ts'
 
 const BASE = 'https://api.peopledatalabs.com'
+import { reserveScanSpend, unitCostUsd } from '../scan/spend-cap.ts'
 const TIMEOUT_MS = 15_000
 
 // 1 credit per profile returned. Names/titles only - emails/phones are never read.
 import { formatPlace } from '../scan/contact-agreement.ts'
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : null)
 export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5): Promise<ApolloPerson[]> {
+  // Inside a scan: PDL bills per profile returned, so the worst case is the size asked for, reserved on the scan's
+  // spend cap first (lib/scan/spend-cap.ts); a refusal (SpendRefused) sends nothing.
+  const hold = await reserveScanSpend('pdl.people', () => unitCostUsd('pdl.people', max))
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
-    const r = await fetchImpl(`${BASE}/v5/person/search`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-Api-Key': apiKey },
-      body: JSON.stringify({ size: max, query: { bool: { must: [{ term: { job_company_name: orgName.toLowerCase() } }] } } }),
-      signal: ctrl.signal,
-    })
+    let r: Response
+    try {
+      r = await fetchImpl(`${BASE}/v5/person/search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Api-Key': apiKey },
+        body: JSON.stringify({ size: max, query: { bool: { must: [{ term: { job_company_name: orgName.toLowerCase() } }] } } }),
+        signal: ctrl.signal,
+      })
+    } catch (e) { await hold?.settle(null); throw e }
+    // PDL bills per profile RETURNED: the reservation (the size asked for) moves to what came back. A 404 is PDL's "no
+    // match", which it does not bill; any other failure, or a body that cannot be read, keeps the full reservation.
+    if (!r.ok) await hold?.settle(r.status === 404 ? 0 : null)
     if (r.status === 429) throw new EnrichError('rate_limited', 'PDL rate limit reached')
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'PDL rejected the key')
     if (!r.ok) throw new EnrichError('upstream', `PDL returned ${r.status}`)
-    const j = await r.json() as { data?: Record<string, unknown>[] }
+    let j: { data?: Record<string, unknown>[] }
+    try { j = await r.json() as { data?: Record<string, unknown>[] } } catch (e) { await hold?.settle(null); throw e }
+    if (hold) await hold.settle(Array.isArray(j?.data) ? (hold.usd / max) * j.data.length : null)
     return (j.data ?? []).slice(0, max).map(p => ({
       name: (typeof p.full_name === 'string' ? p.full_name : '').slice(0, 120),
       title: typeof p.job_title === 'string' ? p.job_title.slice(0, 120) : null,

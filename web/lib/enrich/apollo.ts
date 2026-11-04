@@ -13,21 +13,29 @@ export class EnrichError extends Error {
 }
 
 const BASE = 'https://api.apollo.io'
+import { reserveScanSpend, unitCostUsd } from '../scan/spend-cap.ts'
 const TIMEOUT_MS = 15_000
 
 export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null; address?: string | null }
 export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
 
 async function call(apiKey: string, path: string, body: Record<string, unknown>, fetchImpl: typeof fetch): Promise<unknown> {
+  // Inside a scan: reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal (SpendRefused) sends nothing.
+  const kind = path.startsWith('/api/v1/organizations/') ? 'apollo.org' : 'apollo.people'
+  const hold = await reserveScanSpend(kind, () => unitCostUsd(kind, 1))
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
-    const r = await fetchImpl(`${BASE}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'cache-control': 'no-cache' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    })
+    let r: Response
+    try {
+      r = await fetchImpl(`${BASE}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'cache-control': 'no-cache' },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      })
+    } catch (e) { await hold?.settle(null); throw e }
+    if (hold) await hold.settle(r.ok ? hold.usd : null)
     if (r.status === 429) throw new EnrichError('rate_limited', 'Apollo rate limit reached')
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'Apollo rejected the key')
     if (!r.ok) throw new EnrichError('upstream', `Apollo returned ${r.status}`)
