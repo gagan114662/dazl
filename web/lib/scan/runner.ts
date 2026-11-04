@@ -37,7 +37,7 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
+import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
@@ -64,7 +64,7 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
-import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
+import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
@@ -1449,8 +1449,12 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
   const postTimer = setTimeout(() => postCtrl.abort(), postFinishBudgetMs())
   try {
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
-    if (!sitecrawlEnabled()) trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0')
-    else { await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl') }
+    if (!sitecrawlEnabled()) { trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0'); trace.note('tech', 'skipped', 'SITECRAWL_ENABLED=0: no crawl, so the technology branch did not run') }
+    else {
+      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
+      noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
+    }
     if (postCtrl.signal.aborted) trace.note('crawl', 'failed', `cut off at the post-finish budget (${postFinishBudgetMs()} ms): contacts and domains after that point were not read`)
     // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
     // leads, never part of verification; failures are silent.
