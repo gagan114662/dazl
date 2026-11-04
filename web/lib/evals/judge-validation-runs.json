@@ -1,5 +1,5 @@
 {
- "contract": "dazl.judge-validation-runs/1",
- "note": "The one approved real-model judge validation run (#396). The runner refuses while this list is non-empty. After the owner run, add {run_id, started_at, artifact_sha256} here; a second run needs a code change and a new review.",
- "runs": []
+ "contract": "dazl.judge-validation-runs/2",
+ "note": "The one approved real-model judge validation run (#396). --execute refuses unless this list holds exactly one unexpired, unconsumed claim that matches the run (run id, approval, machine fingerprint, model, cap, FX, fee, state dir, code sha256). Add the claim the plan-only CLI prints by a reviewed PR before the run; after the run, add its artifact_sha256 and ended_at to that claim by a reviewed PR (consumed: every later run refuses).",
+ "claims": []
 }

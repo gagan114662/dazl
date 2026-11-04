@@ -18,11 +18,19 @@
 //    cannot be persisted stops the run as FAILED. Every such attempt is recorded, and when its bill is unknown its full
 //    reservation stays counted as spent. Nothing after a stop is sent.
 //  - One run, ever, for this approval. There is no rerun path: no input, flag, env var or file authorizes a second run.
-//    A second run needs a code change (RUN_RECORD below) and a new review. The run is recorded in three places, and any
-//    one of them refuses a new run: (1) the committed record lib/evals/judge-validation-runs.json, which lists the run
-//    once its record is committed and is checked in every checkout; (2) a host claim outside the state directory
-//    (~/.dazl/judge-validation.host-claim), so a new or deleted state directory on this machine does not reset the
-//    guard; (3) the exclusive approval claim and run marker in the explicit, required state directory.
+//    Before anything is claimed or sent, the run needs a pre-call claim in the committed record
+//    lib/evals/judge-validation-runs.json, merged to main by a reviewed PR before --execute. Exactly one claim may exist;
+//    it binds the run id, the approval text, this machine's fingerprint (a hash of the macOS IOPlatformUUID or Linux
+//    /etc/machine-id, never HOME), the model, the USD cap, the FX rate/date/source, the fee rate/basis, the state
+//    directory and the sha256 of every runner code file, plus an expiry. The runner recomputes each of them and refuses
+//    on any mismatch, a consumed claim (artifact_sha256 recorded after the run), an expired claim or any extra entry.
+//    Local consumption is then claimed exclusively before the first request: first the approval claim in the claimed
+//    state directory, then a host claim outside it (~/.dazl/judge-validation.host-claim), then the run marker and ledger.
+//    A crashed run leaves them, so a rerun refuses on this machine; any other machine fails the fingerprint. A machine
+//    cloned from the claimed one (a VM or container image copying its machine id) shares the fingerprint: run on the
+//    machine the claim names.
+//    Residual: wiping both HOME's host claim and the claimed state directory on the claimed machine removes the local
+//    markers; only the post-run consumption record (a reviewed PR adding artifact_sha256 to the claim) closes that.
 //  - Model refusals and max_tokens stops are recorded per attempt (stop_reason) and counted. A refused item has no
 //    verdict and counts as unknown (an abstain, never a pass). More than MAX_REFUSALS refusals stop the run as FAILED, so
 //    systematic refusal cannot spend the budget on a non-result.
@@ -30,6 +38,7 @@
 //    reserved/settled costs. It is a synthetic-fixture result: it makes no live-web accuracy claim and updates no lock.
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -75,7 +84,10 @@ export const FX_SOURCE_RE = /^https:\/\/www\.bankofcanada\.ca\/[\x21-\x7e]{1,300
 export const FEE_BASIS_RE = /^[\x20-\x7e]{3,300}$/
 // Run-once records outside the state directory (see the header). Neither is an input: only a code change moves them.
 export const RUN_RECORD_FILE = 'lib/evals/judge-validation-runs.json'
-export const RUN_RECORD_CONTRACT = 'dazl.judge-validation-runs/1'
+export const RUN_RECORD_CONTRACT = 'dazl.judge-validation-runs/2'
+// A claim is valid for at most this long after its created_at, and never after its expires_at.
+export const CLAIM_MAX_DAYS = 7
+export const MACHINE_FINGERPRINT_PREFIX = 'dazl.judge-validation/machine/1:'
 export const hostClaimPath = (): string => join(homedir(), '.dazl', 'judge-validation.host-claim')
 
 const sha = (s: string | Uint8Array) => createHash('sha256').update(s).digest('hex')
@@ -416,14 +428,12 @@ export function priorRuns(stateDir: string): RunMarker[] {
     try { const o: unknown = JSON.parse(readFileSync(join(runsDir(stateDir), n), 'utf8')); return isObj(o) ? o as unknown as RunMarker : unreadable } catch { return unreadable }
   })
 }
-// The committed record of runs made (RUN_RECORD_FILE). Missing, unreadable or malformed refuses (fail closed); any listed
-// run refuses. After the owner run, its record (run id, start time, artifact sha256) is committed here.
-export interface RunRecord { contract: typeof RUN_RECORD_CONTRACT; runs: { run_id: string; started_at: string; artifact_sha256: string }[] }
-export function readRunRecord(path: string): { runs: RunRecord['runs'] } | { problem: string } {
+// The committed record (RUN_RECORD_FILE): {contract, note, claims}. Missing, unreadable or malformed refuses (fail closed).
+export function readRunRecord(path: string): { claims: unknown[] } | { problem: string } {
   let o: unknown
   try { o = JSON.parse(readFileSync(path, 'utf8')) } catch (e) { return { problem: `the committed run record ${RUN_RECORD_FILE} is missing or not JSON: ${describe(e)}` } }
-  if (!isObj(o) || o.contract !== RUN_RECORD_CONTRACT || !Array.isArray(o.runs) || Object.keys(o).some(k => !['contract', 'note', 'runs'].includes(k))) return { problem: `the committed run record ${RUN_RECORD_FILE} is malformed` }
-  return { runs: o.runs as RunRecord['runs'] }
+  if (!isObj(o) || o.contract !== RUN_RECORD_CONTRACT || !Array.isArray(o.claims) || Object.keys(o).some(k => !['contract', 'note', 'claims'].includes(k))) return { problem: `the committed run record ${RUN_RECORD_FILE} is malformed` }
+  return { claims: o.claims }
 }
 export const runRecordPath = (): string => fileURLToPath(new URL(`../../${RUN_RECORD_FILE}`, import.meta.url))
 function writeAtomic(path: string, text: string) {
@@ -438,14 +448,116 @@ export function codeHashes(): Record<string, string> {
   const root = new URL('../../', import.meta.url)
   return Object.fromEntries(CODE_FILES.map(f => { try { return [f, sha(readFileSync(new URL(f, root)))] } catch { return [f, 'unreadable'] } }))
 }
+// The claim binds every code file except the record itself (which holds the claim, so it cannot hold its own hash).
+export const CLAIM_CODE_FILES: readonly string[] = Object.freeze(CODE_FILES.filter(f => f !== RUN_RECORD_FILE))
+
+// --- the machine ---------------------------------------------------------------------------------------------------
+// The OS machine id: macOS IOPlatformUUID (ioreg), Linux /etc/machine-id. Never HOME, a hostname or anything a user
+// sets per account. Unreadable, malformed, ambiguous or an unsupported platform throws (the run refuses).
+const UUID_RE = /"IOPlatformUUID" = "([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})"/g
+export function machineIdFrom(platform: unknown, raw: unknown): string {
+  let s: string
+  if (typeof raw === 'string') s = raw
+  else if (raw instanceof Uint8Array) { try { s = new TextDecoder('utf-8', { fatal: true }).decode(raw) } catch { throw new Error('machine id: not valid UTF-8') } }
+  else throw new Error('machine id: not text')
+  if (s.length > 1 << 20) throw new Error('machine id: source too large')
+  if (platform === 'darwin') {
+    const m = [...s.matchAll(UUID_RE)]
+    if (m.length !== 1) throw new Error('machine id: IOPlatformUUID missing or ambiguous')
+    const id = m[0][1].toUpperCase()
+    if (/^[0-]+$/.test(id)) throw new Error('machine id: IOPlatformUUID is all zeros')
+    return id
+  }
+  if (platform === 'linux') {
+    if (!/^[0-9a-f]{32}\n?$/.test(s)) throw new Error('machine id: /etc/machine-id is not 32 lower-case hex characters')
+    const id = s.slice(0, 32)
+    if (/^0+$/.test(id)) throw new Error('machine id: /etc/machine-id is all zeros')
+    return id
+  }
+  throw new Error(`machine id: platform ${String(platform).slice(0, 20)} is not supported`)
+}
+export const fingerprintOf = (machineId: string): string => sha(`${MACHINE_FINGERPRINT_PREFIX}${machineId}`)
+export function machineFingerprint(platform: string = process.platform): string {
+  const raw = platform === 'darwin' ? execFileSync('/usr/sbin/ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 1 << 20 })
+    : platform === 'linux' ? readFileSync('/etc/machine-id', 'utf8') : null
+  return fingerprintOf(machineIdFrom(platform, raw))
+}
+
+// --- the pre-call claim --------------------------------------------------------------------------------------------
+// Exactly one claim, committed to main by a reviewed PR before --execute. Every field must equal what the runner
+// recomputes; consumption (artifact_sha256 and ended_at, added after the run by a reviewed PR) or any other key refuses.
+export interface RunClaim {
+  run_id: string; approval: string; machine_fingerprint: string; model: string; cap_usd: number
+  fx: { cad_per_usd: number; date: string; source: string }; fee: { rate: number; basis: string }
+  state_dir: string; code_sha256: Record<string, string>; created_at: string; expires_at: string
+}
+const CLAIM_KEYS = ['run_id', 'approval', 'machine_fingerprint', 'model', 'cap_usd', 'fx', 'fee', 'state_dir', 'code_sha256', 'created_at', 'expires_at']
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
+const isoMs = (v: unknown): number | null => (typeof v === 'string' && ISO_RE.test(v) && !Number.isNaN(Date.parse(v)) && new Date(Date.parse(v)).toISOString().slice(0, 19) === v.slice(0, 19) ? Date.parse(v) : null)
+const HEX64 = /^[0-9a-f]{64}$/
+const sameKeys = (o: Record<string, unknown>, keys: readonly string[]) => Object.keys(o).length === keys.length && keys.every(k => Object.hasOwn(o, k))
+// The claim this run needs: what an operator commits (for review) before --execute.
+export function claimFor(i: RunInputs, machine_fingerprint: string, code: Record<string, string>, createdAt: Date): RunClaim {
+  return {
+    run_id: i.runId, approval: APPROVAL, machine_fingerprint, model: i.model, cap_usd: i.capUsd,
+    fx: { cad_per_usd: i.fxCadPerUsd, date: i.fxDate, source: i.fxSource }, fee: { rate: i.feeRate, basis: i.feeBasis },
+    state_dir: i.stateDir, code_sha256: Object.fromEntries(CLAIM_CODE_FILES.map(f => [f, code[f]])),
+    created_at: createdAt.toISOString(), expires_at: new Date(createdAt.getTime() + CLAIM_MAX_DAYS * 86_400_000).toISOString(),
+  }
+}
+// Every reason the committed claims do not authorize this run; empty means exactly one claim matches it.
+export function checkClaims(claims: unknown, i: RunInputs, fingerprint: string, code: Record<string, string>, now: Date): string[] {
+  if (!Array.isArray(claims)) return ['the claims are not a list']
+  if (!claims.length) return [`no pre-call claim in ${RUN_RECORD_FILE}: a run needs one claim for this run id, machine, inputs and code, merged to main by a reviewed PR before --execute`]
+  if (claims.length > 1) return [`${RUN_RECORD_FILE} holds ${claims.length} entries: exactly one claim may exist`]
+  const c = claims[0]
+  if (!isObj(c)) return ['the claim is not an object']
+  if (Object.hasOwn(c, 'artifact_sha256') || Object.hasOwn(c, 'ended_at')) return [`the claim for ${String(c.run_id).slice(0, 64)} is consumed (its run is recorded): there is no rerun`]
+  if (!sameKeys(c, CLAIM_KEYS)) return [`the claim's keys are not exactly ${CLAIM_KEYS.join(', ')}: ${keyList(Object.keys(c))}`]
+  const p: string[] = []
+  if (typeof fingerprint !== 'string' || !HEX64.test(fingerprint)) return ['this machine has no usable fingerprint']
+  const want = claimFor(i, fingerprint, code, now)
+  for (const k of ['run_id', 'approval', 'machine_fingerprint', 'model', 'cap_usd', 'state_dir'] as const) {
+    if (c[k] !== want[k]) p.push(k === 'machine_fingerprint' ? 'the claim is for another machine (machine_fingerprint differs)' : `claim ${k} does not match this run`)
+  }
+  for (const [k, w] of [['fx', want.fx], ['fee', want.fee]] as const) {
+    const v = c[k]
+    if (!isObj(v) || !sameKeys(v, Object.keys(w))) { p.push(`claim ${k} is malformed`); continue }
+    for (const [f, x] of Object.entries(w)) if (v[f] !== x) p.push(`claim ${k}.${f} does not match this run`)
+  }
+  const cs = c.code_sha256
+  if (!isObj(cs) || !sameKeys(cs, CLAIM_CODE_FILES)) p.push(`claim code_sha256 must list exactly ${CLAIM_CODE_FILES.join(', ')}`)
+  else for (const f of CLAIM_CODE_FILES) {
+    if (typeof code[f] !== 'string' || !HEX64.test(code[f])) p.push(`code file ${f} is unreadable here`)
+    else if (cs[f] !== code[f]) p.push(`code file ${f} changed since the claim (sha256 differs)`)
+  }
+  const created = isoMs(c.created_at), expires = isoMs(c.expires_at)
+  if (created === null || expires === null) p.push('claim created_at/expires_at are not ISO-8601 UTC times')
+  else {
+    if (created > now.getTime() + 5 * 60_000) p.push('the claim is created in the future')
+    if (expires <= created || expires - created > CLAIM_MAX_DAYS * 86_400_000) p.push(`the claim's expiry must be after created_at and within ${CLAIM_MAX_DAYS} days of it`)
+    if (now.getTime() >= expires) p.push(`the claim expired at ${String(c.expires_at)}: a run needs a new reviewed claim`)
+  }
+  return p
+}
+// Plan-only help for the operator: the claim this host, these inputs and this code need, and whether the committed record
+// already holds it. Reads only; writes nothing.
+export function claimStatus(i: RunInputs, now: Date): { claim: RunClaim | null; problems: string[] } {
+  let fp: string
+  try { fp = machineFingerprint() } catch (e) { return { claim: null, problems: [`machine fingerprint unavailable: ${describe(e)}`] } }
+  const code = codeHashes()
+  const rec = readRunRecord(runRecordPath())
+  return { claim: claimFor(i, fp, code, now), problems: 'problem' in rec ? [rec.problem] : checkClaims(rec.claims, i, fp, code, now) }
+}
 
 // --- the run -------------------------------------------------------------------------------------------------------
 export interface RunDeps {
   transport: Transport; secrets: string[]; corpus: JudgeCorpus
   now?: () => Date; timeoutMs?: number; ledger?: (path: string) => Ledger; code?: Record<string, string>
   writeArtifact?: (path: string, text: string) => void
-  // Code-level only (tests): the CLI never sets these, so no flag, env var or file can move the run-once records.
-  hostClaim?: string; runRecord?: string
+  // Code-level only (tests): the CLI never sets these, so no flag, env var or file can move the run-once records or
+  // change the machine fingerprint and code hashes the claim is checked against.
+  hostClaim?: string; runRecord?: string; machineFingerprint?: () => string
 }
 export interface PhaseResult { fingerprint: string; report: CalibrationReport | null; note: string | null }
 export interface Artifact {
@@ -455,7 +567,7 @@ export interface Artifact {
   model: { requested: string; served: string[] }
   cap: { usd: number; micro: number; fx_cad_per_usd: number; fx_date: string; fee_rate: number; cad_equivalent: number; approved_cad: number
     fx: { source: 'Bank of Canada'; cad_per_usd: number; date: string; url: string }; fee: { rate: number; basis: string } }
-  run_guard: { state_dir: string; host_claim: string; committed_record: string; max_refusals: number }
+  run_guard: { state_dir: string; host_claim: string; committed_record: string; claim_sha256: string; machine_fingerprint: string; max_refusals: number }
   plan: { calls: number; worst_case_usd: number; by_phase: Record<string, number> }
   fixed_before_run: { thresholds: typeof FIXED.thresholds; thresholds_sha256: string; repeats: number; reverse_sources: boolean; max_output_tokens: Record<JudgeId, number>; request_timeout_ms: number; max_retries: number; input_margin_tokens: number; temperature: string }
   corpus: { id: string; origin: string; hash: string; items: number; calibration: number; holdout: number }
@@ -467,7 +579,7 @@ export interface Artifact {
 }
 export type RunResult =
   | { status: 'refused'; problems: string[] }
-  | { status: 'completed' | 'failed'; problems: string[]; artifact: Artifact; artifact_path: string; artifact_error: string | null }
+  | { status: 'completed' | 'failed'; problems: string[]; artifact: Artifact; artifact_path: string; artifact_error: string | null; artifact_sha256: string | null }
 
 export function preflight(inputs: unknown, corpus: JudgeCorpus, now: Date): { problems: string[]; plan: Plan | null } {
   const problems = checkInputs(inputs, now)
@@ -489,11 +601,18 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
   const i = inputs as RunInputs
   const NO_RERUN = 'there is no rerun: a second run needs a code change and a new review'
 
-  // One run, ever, for this approval: the committed record, then the host claim, then the state directory.
+  // One run, ever, for this approval. First the committed pre-call claim (exactly one, matching this machine, these
+  // inputs and this code, unexpired, unconsumed); then local consumption: the host claim, then the state directory.
   const recordPath = deps.runRecord ?? runRecordPath()
   const record = readRunRecord(recordPath)
   if ('problem' in record) return { status: 'refused', problems: [record.problem] }
-  if (record.runs.length) return { status: 'refused', problems: [`the committed record ${RUN_RECORD_FILE} lists ${record.runs.length} run(s) already made: ${NO_RERUN}`] }
+  let fingerprint: string
+  try { fingerprint = (deps.machineFingerprint ?? machineFingerprint)() } catch (e) { return { status: 'refused', problems: [`machine fingerprint unavailable: ${describe(e)}`] } }
+  const code = deps.code ?? codeHashes()
+  let claimProblems: string[]
+  try { claimProblems = checkClaims(record.claims, i, fingerprint, code, now()) } catch (e) { claimProblems = [`the claim could not be checked: ${describe(e)}`] }
+  if (claimProblems.length) return { status: 'refused', problems: claimProblems.map(p => p.slice(0, 300)) }
+  const claim_sha256 = sha(JSON.stringify(record.claims[0]))
   const hostClaim = deps.hostClaim ?? hostClaimPath()
   let prior: RunMarker[]
   try { mkdirSync(runsDir(i.stateDir), { recursive: true, mode: 0o700 }); prior = priorRuns(i.stateDir) } catch (e) { return { status: 'refused', problems: [`state directory unusable: ${describe(e)}`] } }
@@ -505,15 +624,16 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
   const base = join(runsDir(i.stateDir), i.runId)
   const marker: RunMarker = { run_id: i.runId, status: 'started', started_at: now().toISOString() }
   // Each claim is exclusive (wx), so two runs started at once cannot both pass, and stays claimed even if the run then
-  // fails to start (fail closed). The host claim lives outside the state directory: a new or wiped state dir does not reset it.
-  try { mkdirSync(dirname(hostClaim), { recursive: true, mode: 0o700 }); writeFileSync(hostClaim, JSON.stringify({ run_id: i.runId, state_dir: i.stateDir, started_at: marker.started_at }), { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`this host already claimed the one validation run (${hostClaim}): ${NO_RERUN}; ${describe(e)}`] } }
+  // fails to start (fail closed). The state directory (bound by the committed claim) is claimed first, so a crash or a
+  // failure before the host claim still spends it for every HOME. The host claim lives outside the state directory: a new
+  // or wiped state dir does not reset it.
   try { writeFileSync(join(runsDir(i.stateDir), 'initial.approval'), i.runId, { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`the approval is already claimed in the state directory: ${describe(e)}`] } }
+  try { mkdirSync(dirname(hostClaim), { recursive: true, mode: 0o700 }); writeFileSync(hostClaim, JSON.stringify({ run_id: i.runId, state_dir: i.stateDir, started_at: marker.started_at, machine_fingerprint: fingerprint, claim_sha256 }), { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`this host already claimed the one validation run, or its host claim cannot be written (${hostClaim}); the state directory stays claimed: ${NO_RERUN}; ${describe(e)}`] } }
   try { writeFileSync(`${base}.run.json`, JSON.stringify(marker), { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`could not claim run ${i.runId}: ${describe(e)}`] } }
 
   const redact = redactor(deps.secrets)
   const capMicro = capMicroOf(i.capUsd)
   const thresholds_sha256 = sha(JSON.stringify(FIXED.thresholds))
-  const code = deps.code ?? codeHashes()
   let ledger: Ledger | null = null
   let openError: string | null = null
   try { ledger = (deps.ledger ?? fileLedger)(`${base}.ledger.jsonl`) } catch (e) { openError = describe(e) }
@@ -567,7 +687,7 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
       usd: i.capUsd, micro: capMicro, fx_cad_per_usd: i.fxCadPerUsd, fx_date: i.fxDate, fee_rate: i.feeRate, cad_equivalent: Number(capCad(i).toFixed(6)), approved_cad: APPROVED_CAD,
       fx: { source: 'Bank of Canada', cad_per_usd: i.fxCadPerUsd, date: i.fxDate, url: i.fxSource }, fee: { rate: i.feeRate, basis: i.feeBasis },
     },
-    run_guard: { state_dir: i.stateDir, host_claim: hostClaim, committed_record: RUN_RECORD_FILE, max_refusals: MAX_REFUSALS },
+    run_guard: { state_dir: i.stateDir, host_claim: hostClaim, committed_record: RUN_RECORD_FILE, claim_sha256, machine_fingerprint: fingerprint, max_refusals: MAX_REFUSALS },
     plan: { calls: plan.calls.length, worst_case_usd: usd(plan.worst_case_micro), by_phase: plan.by_phase },
     fixed_before_run: { thresholds: FIXED.thresholds, thresholds_sha256, repeats: FIXED.repeats, reverse_sources: FIXED.reverseSources, max_output_tokens: { ...MAX_OUTPUT_TOKENS }, request_timeout_ms: deps.timeoutMs ?? REQUEST_TIMEOUT_MS, max_retries: MAX_RETRIES, input_margin_tokens: INPUT_MARGIN_TOKENS, temperature: 'provider default (not sent)' },
     corpus: { id: deps.corpus.id, origin: deps.corpus.origin, hash: corpusHash(deps.corpus), items: deps.corpus.items.length, calibration: deps.corpus.items.filter(x => x.split === 'calibration').length, holdout: deps.corpus.items.filter(x => x.split === 'holdout').length },
@@ -578,7 +698,7 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
     limits: [
       `synthetic corpus only (${deps.corpus.items.length} developer-labelled items): agreement with these labels is not ground truth, and this run makes no live-web accuracy claim`,
       'thresholds, repeats and output limits were fixed in code before the run; the holdout split is reported separately and was not used to choose them',
-      `one run, ever, for this approval: no rerun path and no tuning; the run is recorded in the state directory, in a host claim outside it, and (once committed) in ${RUN_RECORD_FILE}; this artifact does not update the judge lock`,
+      `one run, ever, for this approval: no rerun path and no tuning; the run needed the one reviewed pre-call claim in ${RUN_RECORD_FILE} (claim sha256 ${claim_sha256}), bound to this machine, inputs and code, and is consumed locally in the state directory and a host claim outside it; record its artifact_sha256 in that claim by a reviewed PR; this artifact does not update the judge lock`,
       `refusals: a refused item (stop_reason refusal) has no verdict and counts as unknown (abstain, never a pass); ${st.refusals} refusal(s) here, and more than ${MAX_REFUSALS} stop the run as failed`,
       `max_tokens: ${st.max_tokens_stops} answer(s) were cut at max_tokens; a cut answer with no parseable verdict counts as unknown`,
       `cost bound: input tokens are assumed to be at most the prompt's UTF-8 bytes + ${INPUT_MARGIN_TOKENS}, priced from lib/llm/spend-guard.ts; an attempt whose bill is unknown counts its whole reservation`,
@@ -586,11 +706,12 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
     ],
   }
   const artifact_path = `${base}.result.json`
-  let artifact_error: string | null = null
-  try { (deps.writeArtifact ?? writeAtomic)(artifact_path, redact(JSON.stringify(artifact, null, 1))) } catch (e) { artifact_error = describe(e) }
+  let artifact_error: string | null = null, artifact_sha256: string | null = null
+  const artifactText = redact(JSON.stringify(artifact, null, 1))
+  try { (deps.writeArtifact ?? writeAtomic)(artifact_path, artifactText); artifact_sha256 = sha(artifactText) } catch (e) { artifact_error = describe(e) }
   try { writeAtomic(`${base}.run.json`, JSON.stringify({ ...marker, status, ended_at: ended })) } catch { /* the 'started' marker stays, which still blocks reruns */ }
   const outProblems = stop ? [`${stop.reason}${stop.detail ? `: ${stop.detail}` : ''}`] : []
-  return { status, problems: outProblems, artifact: JSON.parse(redact(JSON.stringify(artifact))) as Artifact, artifact_path, artifact_error }
+  return { status, problems: outProblems, artifact: JSON.parse(redact(JSON.stringify(artifact))) as Artifact, artifact_path, artifact_error, artifact_sha256 }
 }
 
 // --- the command line ----------------------------------------------------------------------------------------------
