@@ -1,7 +1,7 @@
 // Child process for shutdown-requeue.test.ts: runs the REAL instrumentation register() against a temp DB.
 process.env.NEXT_RUNTIME = 'nodejs'
 const { register } = await import('../../instrumentation.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const { migrateScan } = await import('../../lib/scan/store.ts')
 const { trackInFlight } = await import('../../lib/scan/runner.ts')
 const db = getAuthDb(); migrateScan(db)

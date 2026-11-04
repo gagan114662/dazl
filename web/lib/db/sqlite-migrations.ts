@@ -3,7 +3,7 @@ import {migratePlayResearch} from './play-research-schema.ts'
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'
 import { migrateInsertionOrder } from './insertion-order.ts'
-import { migrateAuth } from '../auth-db.ts'
+import { migrateAuth } from './sqlite-store.ts'
 import { migratePlatform } from './platform-tables.ts'
 import { migrateScan } from '../scan/store.ts'
 import { migrateSourceRuns } from '../scan/source-runs.ts'

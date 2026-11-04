@@ -21,7 +21,7 @@ process.env.PUBLIC_BASE_URL = 'https://dazl.test'
 
 const { getDb, setDb, pgDb } = await import('../../lib/db/client.ts')
 const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const stripe = await import('../../app/api/stripe/route.ts')
 const checkout = await import('../../app/api/billing/checkout/route.ts')
 const usage = await import('../../app/api/usage/route.ts')

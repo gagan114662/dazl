@@ -22,7 +22,7 @@ globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network 
 
 const { getDb, setDb, pgDb } = await import('../../lib/db/client.ts')
 const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const { ONBOARDING_POLICY_VERSION, onboardingSendAllowed } = await import('../../lib/outreach/onboarding-policy.ts')
 const { POST: tick } = await import('../../app/api/internal/tick/route.ts')
 const { GET: sequencesGet } = await import('../../app/api/outreach/sequences/route.ts')
