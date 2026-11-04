@@ -188,8 +188,38 @@ function dsnFromNotice(g: GMsg): DsnReport {
   return { recipient, status, failed: action === 'failed', messageRef }
 }
 
-export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch }
-export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; error?: string }
+export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number }
+// remaining: background threads (no automated send can reach them) not read this call because of the per-call cap or
+// the time budget; they are read on later calls, oldest check first. neverRead: those of them never read at all (no
+// freshness exists yet: the tick records a hold). freshAsOf: the OLDEST last-read time over every thread in scope after
+// this call (a thread read now counts as now), i.e. the mailbox is known to be read as of then and no later; the tick
+// records it as the reply-sync success time, so the 2-hour send-side gate (replySafetyStale) keeps meaning "every
+// thread read within the last 2 hours", exactly as when every call read everything.
+export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; remaining?: number; neverRead?: number; freshAsOf?: number; error?: string }
+
+// #355: bounded, checkpointed reply reading. A tenant with a long sent history must not consume the serial tick before
+// the next tenant gets its reply checks, and must not re-read its whole 120-day history every tick.
+//   - DUE threads are the ones an automated send can still reach: a step-1 message of an approved/active sequence, or a
+//     thread with a lead reply that follow-ups may answer (followup_threads not stopped). They are ALWAYS read on every
+//     call, before anything else, regardless of age; if the time budget runs out before every due thread is read, the
+//     call fails closed (error reply_sync_incomplete) and the caller sends nothing for this tenant.
+//   - BACKGROUND threads (sent in the last 120 days, no automated send pending) are read at most REPLY_SYNC_MAX_THREADS
+//     per call (default 50, 1..1000), never-read first, then the oldest check first, so every one of them is read within
+//     ceil(n / cap) calls. The rest are reported as `remaining`; while any thread in scope has never been read the tick
+//     records a 'hold'; otherwise a success as of `freshAsOf`, the oldest read time (never "now" after a partial read).
+//   - The whole call is bounded by REPLY_SYNC_BUDGET_MS (default 120000, 1000..600000); anything else is the default.
+//   - outreach_messages.reply_checked_at is stamped only after a thread was read and processed without error; a failed
+//     read keeps its old stamp, so it is first in line next time.
+export const REPLY_SYNC_DEFAULT_MAX_THREADS = 50
+export const REPLY_SYNC_DEFAULT_BUDGET_MS = 120_000
+const boundedInt = (raw: unknown, def: number, min: number, max: number) => {
+  if (typeof raw !== 'string' || !/^\d{1,7}$/.test(raw.trim())) return def
+  const v = Number(raw.trim())
+  return v >= min && v <= max ? v : def
+}
+export function replySyncLimits(env: Record<string, string | undefined> = process.env): { maxThreads: number; budgetMs: number } {
+  return { maxThreads: boundedInt(env.REPLY_SYNC_MAX_THREADS, REPLY_SYNC_DEFAULT_MAX_THREADS, 1, 1000), budgetMs: boundedInt(env.REPLY_SYNC_BUDGET_MS, REPLY_SYNC_DEFAULT_BUDGET_MS, 1000, 600_000) }
+}
 
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
   const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
@@ -202,9 +232,22 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   if (isStaging((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
   const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
 
-  const seqPriority = tableExists(db, 'sequences') ? " OR id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : ''
-  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? ${seqPriority}) ORDER BY sent_at DESC`).all(tenantId, now - 120 * 86400,...(seqPriority ? [tenantId] : [])) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
+  const seq = tableExists(db, 'sequences') ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : '0'
+  const warm = tableExists(db, 'followup_threads') ? '(thread_id IS NOT NULL AND thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND stopped IS NULL AND last_lead_reply_at IS NOT NULL))' : '0'
+  const dueArgs = [...(seq !== '0' ? [tenantId] : []), ...(warm !== '0' ? [tenantId] : [])]
+  const due = `(${seq} OR ${warm})`
+  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at, reply_checked_at, CASE WHEN ${due} THEN 1 ELSE 0 END AS due FROM outreach_messages
+    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? OR ${due})
+    ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`).all(...dueArgs, tenantId, now - 120 * 86400, ...dueArgs) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number; reply_checked_at: number | null; due: number }[]
+  const { maxThreads, budgetMs } = replySyncLimits((d.env ?? process.env) as Record<string, string | undefined>)
+  const clock = d.clockMs ?? Date.now
+  const t0 = clock()
+  let background = 0, remaining = 0, dueUnread = 0
+  const skipBackground = () => { remaining++ }
+  const readNow = new Set<string>()
   for (const m of sent) {
+    if (clock() - t0 > budgetMs) { if (m.due) dueUnread++; else skipBackground(); continue }
+    if (!m.due) { if (background >= maxThreads) { skipBackground(); continue } background++ }
     try {
       let thread = m.thread_id
       if (!thread) { thread = ((await get(`messages/${m.gmail_id}?format=minimal`)) as GMsg).threadId; db.prepare('UPDATE outreach_messages SET thread_id = ? WHERE id = ?').run(thread, m.id) }
@@ -250,11 +293,22 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }
+      db.prepare('UPDATE outreach_messages SET reply_checked_at = ? WHERE id = ? AND tenant_id = ?').run(now, m.id, tenantId) // read and processed: checkpoint
+      readNow.add(m.id)
     } catch (e) {
       out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
   }
+  if (remaining) out.remaining = remaining
+  {
+    let never = 0, oldest = now
+    for (const m of sent) { const t = readNow.has(m.id) ? now : m.reply_checked_at; if (t === null) never++; else if (t < oldest) oldest = t }
+    if (never) out.neverRead = never
+    else if (oldest < now) out.freshAsOf = oldest // a full read is fresh as of now: the result is unchanged for it
+  }
+  // a thread an automated send can reach was not read: nothing may be sent on the strength of this call
+  if (dueUnread && !out.error) { out.error = 'reply_sync_incomplete'; auditAt(db, tenantId, 'sync_error', `budget ${budgetMs} ms ran out with ${dueUnread} due thread(s) unread`, undefined, undefined, now) }
   // Phase 2 (#415): daemon notices on their own threads, correlated to the exact recorded send before anything is
   // suppressed. Window: since the last successful sync, never wider than 7 days (first sync: 2 days).
   try {

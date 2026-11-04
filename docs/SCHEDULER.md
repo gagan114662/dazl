@@ -38,13 +38,25 @@ The workers report ordinary refusals as a result (`stopped`), not an exception. 
 | both | `uncertain_send`, `gmail_unavailable`, `gmail_or_identity` | failure (an uncertain send outranks earlier progress in the same tick) |
 | `runFollowups` | `not_available` (operator switch off or kill switch, while the tenant has follow-ups on) | failure |
 | `runSequences` | `sequences_disabled` (operator switch off or kill switch, while the tenant has approved or active sequences), `reading_not_enabled`, `reply_sync_failed` | failure |
-| `syncReplies` | `error` (`gmail_unavailable`, `reply_sync_failed`) | failure; follow-ups are not attempted that tick |
+| `syncReplies` | `error` (`gmail_unavailable`, `reply_sync_failed`, `reply_sync_incomplete`) | failure; follow-ups are not attempted that tick |
+| `syncReplies` | no error, but a thread in scope never read yet (`neverRead`) | hold `reply_sync_partial` (#355); with every thread read at least once it is a success as of the oldest read |
 | `syncReplies` | `error` = `reading_not_enabled` | hold: the tenant's own consent/mailbox state, never a provider call that failed. Active work blocked by it fails under `followups`/`sequences` (their selectors pick tenants with work), so an idle tenant does not count as failing |
 | any | a thrown error, or a `stopped` reason the tick does not know | failure (an unknown refusal is never read as progress) |
 
 An operator switch that is off while tenants have work is deliberate, and still a failure here: the tick is running and refusing the work, and the alert after three ticks is the reminder. A tenant's own pause, cap or withdrawn consent is a hold: it is not progress, but nothing is failing. A hold after failures means the tenant is not currently failing - the state shows held, not blocked - but it does not resolve the failures either: the count stands, a failure after the hold re-blocks immediately, and only a success clears the count.
 
 A run is `partial` when some work failed; holds alone leave it `ok`. The tick's response carries `tenant_failures` and `tenant_holds`.
+
+## Bounded, checkpointed reply reading (#355)
+
+`syncReplies` no longer re-reads a tenant's whole 120-day sent history on every call, so one tenant with a long history cannot hold the serial tick before the next tenant's reply checks:
+
+- **Due threads** are read on every call, first, whatever their age: the step-1 message of an approved or active sequence, and every thread with a lead reply that follow-ups may answer (`followup_threads`, not stopped). If the time budget runs out before all of them are read, the call fails closed (`reply_sync_incomplete`): a failure, so the tick sends nothing for that tenant.
+- **Background threads** are the other messages sent in the last 120 days. At most `REPLY_SYNC_MAX_THREADS` of them are read per call (default 50, from 1 to 1000), never-read ones first and then the oldest check, so each is read within `ceil(n / cap)` calls.
+- **Time budget.** A call stops after `REPLY_SYNC_BUDGET_MS` (default 120000, from 1000 to 600000). A malformed or out-of-range value means the default, never an unbounded or zero limit.
+- **Checkpoint.** `outreach_messages.reply_checked_at` is stamped only after a thread was read and processed without error. A failed read keeps its old stamp, so it is first in line next time.
+- **Freshness.** While some thread in scope has never been read, the outcome is a hold (`reply_sync_partial`). Otherwise it is a success **as of the oldest thread read** (`freshAsOf`), which `recordProgress` stores as `last_success_at`. So `replySafetyStale` (2 h) and `reply sync stale` keep their old meaning: every thread was read within the window. A partial read is never recorded as "now".
+- **Sizing.** With 5-minute ticks and a cap of 50, a tenant gets up to 600 background threads read per hour. Above about 1200 background threads, its sends to recipients it has already contacted hold, and the alerts say `reply sync stale`, until `REPLY_SYNC_MAX_THREADS` is raised. This is the honest state; such a tenant is not starved silently.
 
 ## States and thresholds
 
