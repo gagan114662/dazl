@@ -43,7 +43,7 @@ Updated by the builder on every branch. Newest first.
 
 - b/366-revenue-pipeline (#366): deals with an owner member, routing rules for new qualified conversations, audited
   stage history, won/lost reasons and a history-rebuilt report (`lib/pipeline/`, `/api/pipeline/*`, `/app/pipeline`).
-  Migration: TEMP 0047_revenue_pipeline on the branch for CI (draft); renumbered to main highest + 1 when the PRs ahead of it in the queue have landed. Refs #366 (accounts/contacts, tasks, CRM reconciliation not built).
+  Migration: TEMP 0048_revenue_pipeline on the branch for CI (draft); renumbered to main highest + 1 when the PRs ahead of it in the queue have landed. Refs #366 (accounts/contacts, tasks, CRM reconciliation not built).
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
