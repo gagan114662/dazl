@@ -42,7 +42,7 @@ Updated by the builder on every branch. Newest first.
 ## In review (code fixes only)
 
 - b/395-evidence-verifier (#395, part): independent evidence verifier service (`web/lib/verifier/`, design in
-  docs/design/evidence-verifier.md, PG 0045 `evidence_verdicts`, after #385's 0044). Blinded claim, its own re-fetch of
+  docs/design/evidence-verifier.md, PG 0047 `evidence_verdicts`, after #599's 0046). Blinded claim, its own re-fetch of
   every cited source, its own deterministic checks, a judge only for predicates (none configured: predicates hold),
   versioned replayable records, its own tenant budget. Not called by any scan yet; stubbed fetchers only, nothing live.
 
@@ -181,7 +181,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 6. #384 separate published provenance from deliverability/person-route status.
 7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
    currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
-8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+8. #385 rejection/outcome feedback improves future selection (in review: b/385-rejection-outcomes, docs/design/lead-feedback.md); #387 continuous event detection — compounding
    advantages, start once 1-7 ship.
 9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
    multilingual, #392 API/MCP — by measured marginal yield, lowest priority.

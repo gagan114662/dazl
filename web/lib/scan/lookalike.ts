@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { sameAccount, type FeedbackRow } from './feedback.ts'
 
 // Lookalike signals: does a lead resemble the tenant's OWN past leads that graded
 // fit 4+ or drew an 'interested' reply? The reference cohort is those past leads -
@@ -31,23 +32,39 @@ export function tokens(text: string): Set<string> {
 
 interface CohortRow { id: string; signal: string; industry: string | null; location: string | null }
 
-// The reference cohort: the tenant's own past leads graded fit 4+ or with an
-// 'interested' classified reply, minus test rows, opted-out contacts, and the leads
-// being scored right now.
+// The reference cohort: the tenant's own past leads graded fit 4+, with an 'interested'
+// classified reply, or explicitly ACCEPTED by the tenant (#385), minus test rows, opted-out
+// contacts (a passive opt-out never trains a positive cohort, accepted or not), the leads
+// being scored right now, and any lead whose account, person or event the tenant rejected
+// (whatever its fit grade). A feedback store that cannot be read gives no cohort at all
+// ('insufficient'), never one that may contain a rejected lead.
+type Verdict = Pick<FeedbackRow, 'verdict' | 'level' | 'company_key' | 'domain' | 'lead_id'>
+function activeVerdicts(db: Database.Database, tenantId: string): { rows: Verdict[]; table: boolean } | null {
+  try { return { rows: db.prepare('SELECT verdict, level, company_key, domain, lead_id FROM lead_feedback WHERE tenant_id = ? AND reset_at IS NULL').all(tenantId) as Verdict[], table: true } }
+  catch (e) { return /no such table/i.test(e instanceof Error ? e.message : '') ? { rows: [], table: false } : null }   // missing table: an older store, nothing recorded
+}
 export function referenceCohort(db: Database.Database, tenantId: string, excludeLeadIds: string[]): CohortRow[] {
   const exclude = new Set(excludeLeadIds)
+  const verdicts = activeVerdicts(db, tenantId)
+  if (!verdicts) return []
+  const rejected = verdicts.rows.filter(v => v.verdict === 'reject')
+  const rejectedLeads = new Set(rejected.map(v => v.lead_id).filter(Boolean))
   const rows = db.prepare(
-    `SELECT DISTINCT l.id, l.signal, j.industry, j.location
+    `SELECT DISTINCT l.id, l.signal, l.company, l.company_domain, j.industry, j.location
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      LEFT JOIN suppressions s ON s.tenant_id = j.user_id AND s.email = lower(trim(l.contact))
      WHERE j.user_id = ?
        AND (l.source_kind IS NULL OR l.source_kind <> 'test')
        AND l.company NOT LIKE '%(test only)%'
        AND s.email IS NULL
-       AND (l.fit >= 4 OR l.id IN (SELECT lead_id FROM inbound_messages WHERE tenant_id = ? AND classification = 'positive' AND lead_id IS NOT NULL))
-     LIMIT 200`
-  ).all(tenantId, tenantId) as CohortRow[]
-  return rows.filter(r => !exclude.has(r.id))
+       AND (l.fit >= 4 OR l.id IN (SELECT lead_id FROM inbound_messages WHERE tenant_id = ? AND classification = 'positive' AND lead_id IS NOT NULL)${verdicts.table ? `
+            OR l.id IN (SELECT lead_id FROM lead_feedback WHERE tenant_id = ? AND verdict = 'accept' AND reset_at IS NULL AND lead_id IS NOT NULL)` : ''})
+     LIMIT 1000`
+  ).all(...(verdicts.table ? [tenantId, tenantId, tenantId] : [tenantId, tenantId])) as (CohortRow & { company: string; company_domain: string | null })[]
+  return rows
+    .filter(r => !exclude.has(r.id) && !rejectedLeads.has(r.id) && !rejected.some(v => v.level === 'account' && sameAccount(v, r)))
+    .slice(0, 200)
+    .map(({ id, signal, industry, location }) => ({ id, signal, industry, location }))
 }
 
 export function lookalikeSignals(db: Database.Database, tenantId: string, leads: { id: string; signal: string; industry?: string | null; location?: string | null }[]): Map<string, LookalikeSignal> {

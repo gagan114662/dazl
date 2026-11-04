@@ -1,5 +1,5 @@
 // SQLite DDL for the independent evidence verifier's verdict records (lib/verifier/store.ts).
-// PG: lib/db/migrations/pg/0045_evidence_verdicts.sql.
+// PG: lib/db/migrations/pg/0047_evidence_verdicts.sql.
 // One row per verification run, tenant-scoped. A row is written 'running' with the run's budget reserved before anything
 // is fetched, then completed once with its verdict and full record; a completed row can never change (trigger). Rows are
 // erased with their tenant (lib/tenant/lifecycle.ts); nothing else deletes them (no retention purge is defined).

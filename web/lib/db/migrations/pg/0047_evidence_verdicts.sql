@@ -1,7 +1,7 @@
 -- Independent evidence verifier (#395; lib/verifier/, docs/design/evidence-verifier.md): one tenant-scoped row per
 -- verification run. Written 'running' with the run's budget reserved, completed once with its verdict and full versioned
 -- record (blinded claim, the verifier's own source snapshots, judge samples, budget, log); final once done (trigger).
--- Erased with its tenant; no retention purge is defined. Numbered after #385's 0044 (claim file: 0045 i395 #395).
+-- Erased with its tenant; no retention purge is defined. Numbered 0047: main holds 0044_lead_feedback (#385) and 0045_runtime_workers (#623); 0046 is #599's monitor events (claim file: 0047 i395 #395).
 CREATE TABLE evidence_verdicts (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,

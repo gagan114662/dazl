@@ -173,3 +173,60 @@ Use the reviewed target checkout's own helper, retain operational custody of
 that checkout until cutover, and do not bypass refused checks. A failed local
 identity read refuses before any subsequent preflight or launch; no secret
 configuration is read or logged by this guard.
+
+## Launch failure: diagnose from the launch log, then stop (#607)
+
+The November 3, 2026 cutover ended in `{"status":"launch_failed","returncode":1,"launch_reached":true}` with no
+way to tell why: safe_launch's own status JSON went to /dev/null with the application output. Two records now
+survive every run, and neither weakens a gate or relaxes the /dev/null rule for application output.
+
+- **Launch log.** `checked_launch.py` appends one JSON line per run to `--launch-log` (default
+  `/home/ubuntu/backups/launch-log.jsonl`), keeping only the newest 200 lines (atomic private rewrite).
+  Each line has: UTC timestamp, commit, every gate result per round (bind_launch, bind_target, require_ci:
+  pass, or fail with its fixed code; any other exception by class name only), each preflight's program name
+  (executable basename plus a script basename, never option values or inline code), its return code /
+  `timeout` / `os_error` and wall time, `launch_reached`, the launch child's return code / `timeout` /
+  `os_error`, the status-file path and its sanitized content, the wrapper's own status and return code, and
+  total wall time. No env content, no argv values and no child output are ever written.
+- **safe_launch status file.** checked_launch runs the launch with `--status-file <log dir>/launch-status.json`
+  appended (the operator argv still may not contain `--status-file`; bind_launch refuses it). safe_launch
+  creates that file exclusively (O_EXCL, no symlink, mode 0600) before any gate and writes the same JSON it
+  prints: `status`, `service_changed`, `phase`, plus `commit`/`launcher_pid` on success. `status` is always
+  one of safe_launch's fixed `STATUS_CODES` and `phase` one of `PHASES` (`preflight` = no signal was sent;
+  `old_signalled`, `new_start`, `rollback_start` = the old listener was signalled). checked_launch re-checks
+  ownership/mode, reads at most 4 KiB and keeps only `status`/`phase` words from that vocabulary,
+  `service_changed`, a 40-hex `commit` and a valid `cause`; other words are logged as `unrecognised`, other
+  fields are dropped, and a missing, refused or unparsable file is logged as `missing`/`refused`/`invalid`.
+- **Listener identity cause (#621).** `listener_identity_unverifiable` stays the status code, and the status
+  file adds `cause`: `{"step": "fd_enumeration" | "tcp_table", "exception": <built-in class name>, "errno":
+  <int or null>}`. No exception message or path is recorded. An fd that vanishes between the `/proc/<pid>/fd`
+  listing and its readlink (`FileNotFoundError`, normal connection churn) is skipped, since it cannot be the
+  persisting listener; if any fd vanished, the fd directory is listed again and must still be readable. A
+  listing failure, any other readlink error (process gone, permission denied) or an unreadable tcp table still
+  refuses before any signal.
+- **Log custody.** The log and status file are owned by the uid running checked_launch (root when it is run as
+  root), mode 0600, never symlinks; their directory must be owned by that uid or root and not group/world
+  writable. If the log cannot be opened that way, checked_launch refuses with `launch_log_unavailable`
+  (exit 2) before any gate, preflight or launch. Reading the log is GET-only diagnosis, not a release action.
+
+Tests: `ops/test_checked_launch.py` LaunchLogTests (failing real safe_launch child leaves a sanitized
+`verified_backup_required` line and a never-signalled stub pid plus an untouched database file; preflight and
+launch timeouts; secret-printing children and a forged status file never reach the log; positive control
+launches exactly once; 200-line bound; unusable log refuses before anything runs) and `ops/test_safe_launch.py`
+StatusFileTest (every pre-SIGTERM error path writes its status file and delivers no signal to a live stub pid;
+exclusive status-file creation; post-signal phases; vocabulary covers every code the helper can report).
+`ops/test_owns_listener_launch.py` (#621): vanished fds are skipped while permission, process-gone and tcp-table
+failures still refuse with their `cause`; the cause reaches the status file and the launch log, forged causes are
+dropped (wrong types, unhashable arrays/objects, null, huge or non-UTF-8 files, missing or extra keys,
+nesting) while the fixed status/phase/service_changed and the launch result are still logged through the real
+wrapper path; on Linux, a real fd-churning child and a quiet child never raise and a reaped pid refuses.
+
+### Fail-stop rule
+
+Any launch failure, from the wrapper or from anything else (`launch_failed`, `launch_error`, `ci_refused`,
+`preflight_failed`, `preflight_error`, `launch_log_unavailable`, a timeout, a lost session), means **stop and
+report**: read the newest launch-log line, report it with the failure, and change nothing else. A retry is only
+an identical `checked_launch.py` invocation after explicit owner clearance. Never run a standalone
+`safe_launch.py --execute`, never hand-run the launch step from a following shell line, and never edit or skip a
+preflight or gate to get past the failure. This is the failure-handling half of the single-outer-command rule
+above.

@@ -26,6 +26,7 @@ import { migrateNewsjacks } from '../seo/newsjack.ts'
 import { migrateMonitors } from '../monitors.ts'
 import { migratePlans } from '../plans.ts'
 import { migrateMemory } from '../memory.ts'
+import { migrateFeedback } from '../scan/feedback.ts'
 import { migrateKeys } from '../llm/key-store.ts'
 import { migrateWatch } from '../watch.ts'
 import { migrateWarm } from '../warm/connections.ts'
@@ -49,6 +50,7 @@ import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
 import { migrateTenantLifecycle } from './tenant-guard.ts'
 import { migratePreviewClaim } from '../scan/preview-claim.ts'
 import { migrateTraceStore } from '../evals/trace-tables.ts'
+import { migrateWorkers } from '../workers/store.ts'
 import { migrateEvidenceVerdicts } from '../verifier/tables.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
@@ -58,11 +60,11 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateScan, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
     migrateOutreach, migrateSequences, migrateReplies, migrateBounceLedger, migrateBounceScan, migrateLedger, migrateReopen,
     migrateAutopilot, migrateCalcom, migrateIndexing, migrateBriefs, migrateSeo,
-    migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateKeys,
+    migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateFeedback, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
     migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
-    migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateEvidenceVerdicts,
+    migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers, migrateEvidenceVerdicts,
   ]
   for (const m of migrates) m(db)
   // The queue adapter owns its tables and creates them in its constructor.
