@@ -45,10 +45,20 @@ import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
+import { runNewLabel } from '@/lib/run-new-label'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
-const REJECT_PRESETS = ['Not a fit', 'Wrong company', 'Wrong contact', 'Already a customer']
+// A preset is also a structured reason (#385, lib/scan/feedback.ts): later runs do not bring that account, person or
+// event back, and Undo resets it. Free text alone only quarantines: nothing is learned from it. Wrong person needs a
+// person on the lead, wrong timing a dated event, so they are offered only then.
+const REJECT_PRESETS: { label: string; code: string; needs?: 'person' | 'date' }[] = [
+  { label: 'Wrong industry', code: 'wrong_industry' }, { label: 'Wrong location', code: 'wrong_location' },
+  { label: 'Wrong person', code: 'wrong_person', needs: 'person' }, { label: 'Wrong timing', code: 'wrong_timing', needs: 'date' },
+  { label: 'Competitor', code: 'competitor' }, { label: 'Already a customer', code: 'existing_relationship' }, { label: 'Not useful', code: 'not_useful' },
+]
+const presetsFor = (l: { name: string; contact: string | null; event_date: string | null }) =>
+  REJECT_PRESETS.filter(p => p.needs === 'person' ? !!(l.name.trim() || l.contact) : p.needs === 'date' ? /^\d{4}-\d{2}-\d{2}$/.test(l.event_date ?? '') : true)
 const rejectReason = (why: string) => { const t = why.replace(/\s+/g, ' ').trim().slice(0, 120); return t ? `Rejected: ${t}` : 'Rejected' }
 const isRejection = (r: string | null | undefined) => !!r && /^Rejected(:|$)/.test(r)
 interface Lead { timing?: 'proof_backed' | 'unconfirmed'; timing_reason?: string | null; day_verified?: boolean; window_missed?: boolean; timing_note?: string | null; evidence_copy_id?: string | null; evidence_purged_at?: number | null; evidence_origin?: string | null; own_fetch_failure?: string | null; discovered_via?: string | null; discovered_via_link?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; window_held?: boolean; stored_intent?: number | null; stored_why?: string | null; fit_rationale?: string | null; timing_proof_gap?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
@@ -278,10 +288,10 @@ export default function LeadsClient() {
     if (!rejecting) return
     const { id, why } = rejecting
     setRejecting(null)
-    if (await quarantine(id, false, rejectReason(why))) setCardResult({ kind: 'rejected', id, company: leads.find(l => l.id === id)?.company ?? 'This lead', reason: why.trim() || undefined })
+    if (await quarantine(id, false, rejectReason(why), REJECT_PRESETS.find(p => p.label === why.trim())?.code)) setCardResult({ kind: 'rejected', id, company: leads.find(l => l.id === id)?.company ?? 'This lead', reason: why.trim() || undefined })
   }
-  async function quarantine(leadId: string, release = false, reason = 'Wrong company or wrong contact details') {
-    const r = await fetch(`/api/leads/${leadId}/quarantine`, { method: release ? 'DELETE' : 'POST', headers: { 'content-type': 'application/json' }, body: release ? '{}' : JSON.stringify({ reason }) })
+  async function quarantine(leadId: string, release = false, reason = 'Wrong company or wrong contact details', feedbackReason?: string) {
+    const r = await fetch(`/api/leads/${leadId}/quarantine`, { method: release ? 'DELETE' : 'POST', headers: { 'content-type': 'application/json' }, body: release ? '{}' : JSON.stringify(feedbackReason ? { reason, feedback_reason: feedbackReason } : { reason }) })
     if (r.ok && release) setCardResult(c => c?.id === leadId ? null : c)
     if (!r.ok) return false
     setLeads(ls => ls.map(l => l.id === leadId ? { ...l, quarantined_at: release ? null : Math.floor(Date.now() / 1000), quarantine_reason: release ? null : reason } : l))
@@ -1046,7 +1056,7 @@ export default function LeadsClient() {
                 </div>
                 {rejecting?.id === l.id && !l.quarantined_at && <div className="mt-2 border-l-2 border-black pl-3 text-xs" data-testid="reject-reason">
                   <p className="mb-1.5 font-semibold">Why reject? <span className="font-normal text-[var(--ink-3)]">(optional)</span><InfoTip>It leaves this list; nothing is drafted, sent or exported, and Undo brings it back.</InfoTip></p>
-                  <div className="flex flex-wrap gap-1.5 mb-1.5">{REJECT_PRESETS.map(r => <button key={r} type="button" aria-pressed={rejecting.why === r} onClick={() => setRejecting({ id: l.id, why: rejecting.why === r ? '' : r })} className={`border rounded-full px-2 py-0.5 ${rejecting.why === r ? 'border-black bg-black/5' : 'border-black/20'}`}>{r}</button>)}</div>
+                  <div className="flex flex-wrap gap-1.5 mb-1.5">{presetsFor(l).map(({ label: r }) => <button key={r} type="button" aria-pressed={rejecting.why === r} onClick={() => setRejecting({ id: l.id, why: rejecting.why === r ? '' : r })} className={`border rounded-full px-2 py-0.5 ${rejecting.why === r ? 'border-black bg-black/5' : 'border-black/20'}`}>{r}</button>)}</div>
                   <form className="flex gap-2 items-center" onSubmit={e => { e.preventDefault(); void confirmReject() }}>
                     <input className="field flex-1 text-xs" aria-label="Reason (optional)" placeholder="Reason (optional)" maxLength={120} value={rejecting.why} autoFocus onKeyDown={e => { if (e.key === 'Escape') setRejecting(null) }} onChange={e => setRejecting({ id: l.id, why: e.target.value })} />
                     <button className="btn-primary text-xs px-3 py-1.5">Confirm reject</button>
@@ -1259,7 +1269,7 @@ export default function LeadsClient() {
             {monitors.map(m => (
               <div key={m.id} className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">
                 <span className="flex-1 truncate">{m.query}</span>
-                {m.last_new_count != null && <span className="text-green-400">+{m.last_new_count} new</span>}
+                {m.last_new_count != null && <span className="text-green-400">+{runNewLabel('monitor', m.last_new_count)}</span>}
                 <span>{m.run_count ?? 0} runs</span>
                 <button onClick={() => toggleMonitor(m.id, !m.enabled)} className="hover:text-white">{m.enabled ? 'Pause' : 'Resume'}</button>
                 <button onClick={() => removeMonitor(m.id)} className="hover:text-red-400">Delete</button>
