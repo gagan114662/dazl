@@ -4,6 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createServer } from 'node:net'
 import { FetchFailure } from '../src/util.ts'
 import { FETCHERS, checkBilibili, checkInstagram, checkLinkedin, checkReddit, checkX, type Platform } from '../src/fetchers.ts'
 
@@ -85,17 +86,24 @@ test('the checks read only the envelope: extra keys and unknown item shapes neve
 
 // The booted worker over HTTP with a stubbed platform (test/platform-stub.ts): a 200 login-wall answer is a 502 with its
 // outcome, a genuine empty result is a 200 with no items.
-async function boot(body: string): Promise<{ base: string; child: ChildProcess }> {
-  const port = 4800 + Math.floor(Math.random() * 400)
+// A free port from the OS (never a random guess that can collide with another suite's worker), a 30 s start budget, and one
+// retry on a fresh port if the child exits early (CI runners can be slow or racy on a port just released).
+const freePort = () => new Promise<number>((resolve, reject) => { const srv = createServer(); srv.once('error', reject); srv.listen(0, '127.0.0.1', () => { const a = srv.address(); srv.close(() => resolve(typeof a === 'object' && a ? a.port : 0)) }) })
+async function boot(body: string, attempt = 1): Promise<{ base: string; child: ChildProcess }> {
+  const port = await freePort()
   const child = spawn(process.execPath, ['--experimental-strip-types', '--import', './test/platform-stub.ts', 'src/server.ts'], {
     env: { PATH: process.env.PATH, ADVANCED_WORKER_TOKEN: 'tok-436', PORT: String(port), PLATFORM_STUB_BODY: body }, stdio: 'ignore',
   })
+  let exited = false
+  child.once('exit', () => { exited = true })
   const base = `http://127.0.0.1:${port}`
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 300 && !exited; i++) {
     try { if ((await realFetch(`${base}/health`)).ok) return { base, child } } catch { /* not up yet */ }
     await new Promise(r => setTimeout(r, 100))
   }
-  child.kill(); throw new Error('worker did not start')
+  child.kill()
+  if (attempt < 2) return boot(body, attempt + 1)
+  throw new Error(`worker did not start (port ${port}, exited ${exited})`)
 }
 const post = (base: string, platform: string) => realFetch(`${base}/fetch`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer tok-436' }, body: JSON.stringify({ platform, query: 'hiring sales', session: SESSION[platform] }) })
 
@@ -112,6 +120,6 @@ test('over HTTP: a 200 login-wall answer from the platform is a 502 with its out
       assert.equal(r.status, status, `${platform} ${body}`)
       const j = await r.json() as Record<string, unknown>
       assert.deepEqual(status === 200 ? { items: j.items } : j, want)
-    } finally { child.kill() }
+    } finally { child.kill(); await new Promise(r => child.exitCode !== null || child.signalCode !== null ? r(null) : child.once('exit', r)) }
   }
 })

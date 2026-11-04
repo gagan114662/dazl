@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createServer } from 'node:net'
 import { randomBytes } from 'node:crypto'
 import { migrateConnectors, saveCredential, recentAudit } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent, collectAdvanced, httpWorker, parseWorkerReply, type WorkerFetch } from '../lib/advanced/index.ts'
@@ -113,7 +114,8 @@ test('over the wire: a 200 login-wall or rate-limit answer from the platform is 
     ['reddit', { message: 'a JSON login page' }, 'schema_error'],
     ['reddit', { kind: 'Listing', data: { children: [] } }, 'empty'],
   ] as const) {
-    const port = 5500 + Math.floor(Math.random() * 300)
+    // A port from the OS, never a random guess that can collide with another suite's worker.
+    const port = await new Promise<number>((resolve, reject) => { const srv = createServer(); srv.once('error', reject); srv.listen(0, '127.0.0.1', () => { const ad = srv.address(); srv.close(() => resolve(typeof ad === 'object' && ad ? ad.port : 0)) }) })
     const token = 'e2e-token'
     const child: ChildProcess = spawn(process.execPath, ['--experimental-strip-types', '--import', './test/platform-stub.ts', 'src/server.ts'], {
       cwd: new URL('../../session-worker/', import.meta.url), env: { ...process.env, ADVANCED_WORKER_TOKEN: token, PORT: String(port), PLATFORM_STUB_BODY: JSON.stringify(body) }, stdio: 'ignore',
@@ -121,13 +123,13 @@ test('over the wire: a 200 login-wall or rate-limit answer from the platform is 
     try {
       const base = `http://127.0.0.1:${port}`
       let up = false
-      for (let i = 0; i < 100 && !up; i++) { try { up = (await fetch(`${base}/health`)).ok } catch { await new Promise(r => setTimeout(r, 100)) } }
+      for (let i = 0; i < 300 && !up; i++) { try { up = (await fetch(`${base}/health`)).ok } catch { await new Promise(r => setTimeout(r, 100)) } }
       assert.ok(up, 'worker did not start')
       const db = setup(); acceptConsent(db, 'A', 'advanced')
       saveCredential(db, 'A', `adv:${platform}`, 'session-of-tenant-A-1234', master)
       const out = await collectAdvanced(db, 'A', 'j1', [platform], 'hiring sales', { worker: httpWorker({ ADVANCED_WORKER_URL: base, ADVANCED_WORKER_TOKEN: token }), master, env: ON })
       assert.deepEqual(out, [])
       assert.deepEqual(statuses(db, 'A'), [`adv:${platform}:${want}`], `${platform} ${JSON.stringify(body)}`)
-    } finally { child.kill() }
+    } finally { child.kill(); await new Promise(r => child.exitCode !== null || child.signalCode !== null ? r(null) : child.once('exit', r)) }
   }
 })
