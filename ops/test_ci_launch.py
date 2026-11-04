@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('checked',Path(__file__).with_name('checked_launch.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-LOGS=tempfile.TemporaryDirectory();m.LAUNCH_LOG=str(Path(LOGS.name)/'launch-log.jsonl')
+LOGS=tempfile.TemporaryDirectory();LOG=str(Path(LOGS.name)/'launch-log.jsonl');m.default_launch_log=lambda:(Path(LOG),Path(LOGS.name))
 SHA='a'*40
 class Response:
  def __init__(self,value):self.value=value
@@ -77,7 +77,7 @@ class CiGateTests(unittest.TestCase):
    with self.assertRaises(ValueError):m.require_ci('other/repo',SHA,str(token))
  def test_positive_ci_launch_runs_exactly_once(self):
   with patch.object(m,'bind_launch'),patch.object(m,'bind_target'),patch.object(m,'require_ci') as ci,patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0))as child:
-   result,code=m.run([['check']],['launch']);self.assertEqual(code,0);self.assertTrue(result['launch_reached']);self.assertEqual(ci.call_count,2);self.assertEqual(child.call_count,2);self.assertEqual(child.call_args.args[0],['launch','--status-file',str(Path(m.LAUNCH_LOG).with_name('launch-status.json'))])
+   result,code=m.run([['check']],['launch']);self.assertEqual(code,0);self.assertTrue(result['launch_reached']);self.assertEqual(ci.call_count,2);self.assertEqual(child.call_count,2);self.assertEqual(child.call_args.args[0],['launch','--status-file',str(Path(LOG).with_name('launch-status.json'))])
 
 class BindingAdversarialTests(unittest.TestCase):
  def test_interpreter_and_argparse_aliases_refused(self):
@@ -106,7 +106,7 @@ class BindingAdversarialTests(unittest.TestCase):
 
  def test_cli_stdin_empty_oversized_or_secret_bearing_value_never_logs(self):
   safe=str(Path(m.__file__).with_name('safe_launch.py'))
-  args=[sys.executable,str(Path(m.__file__)),'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-stdin','--launch-log',m.LAUNCH_LOG,'--preflight','["/nonexistent"]','--launch',json.dumps([sys.executable,safe,'--commit',SHA,'--execute'])]
+  args=[sys.executable,str(Path(m.__file__)),'--repository','gagan114662/dazl','--commit',SHA,'--ci-token-stdin','--launch-log',LOG,'--preflight','["/nonexistent"]','--launch',json.dumps([sys.executable,safe,'--commit',SHA,'--execute'])]
   for value in ['', 'x'*16385, 'sentinel-secret with whitespace']:
    r=subprocess.run(args,input=value,capture_output=True,text=True)
    self.assertNotEqual(r.returncode,0);self.assertIn('ci_refused',r.stdout);self.assertNotIn('sentinel-secret',r.stdout+r.stderr)

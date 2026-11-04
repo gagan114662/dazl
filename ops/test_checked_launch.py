@@ -1,5 +1,6 @@
 import contextlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -8,9 +9,10 @@ import unittest
 from unittest.mock import patch
 import importlib.util
 spec=importlib.util.spec_from_file_location("checked",Path(__file__).with_name("checked_launch.py")); checked=importlib.util.module_from_spec(spec);spec.loader.exec_module(checked)
-# The production default log path is not available to tests; every run() logs privately here.
+# Tests that are not about the default log privately here; DefaultLaunchLogTests use the real resolver.
 LOGS = tempfile.TemporaryDirectory()
-checked.LAUNCH_LOG = str(Path(LOGS.name) / 'launch-log.jsonl')
+REAL_DEFAULT_LAUNCH_LOG = checked.default_launch_log
+checked.default_launch_log = lambda: (Path(LOGS.name) / 'launch-log.jsonl', Path(LOGS.name))
 
 SCRIPT = str(Path(__file__).with_name('checked_launch.py'))
 COMMIT = 'a' * 40
@@ -444,6 +446,146 @@ class LaunchLogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'launch_options'):
             checked.bind_launch([sys.executable, SAFE, '--commit', COMMIT, '--execute', '--status-file', str(self.status)], COMMIT)
         checked.bind_launch([sys.executable, SAFE, '--commit', COMMIT, '--execute'], COMMIT)
+
+
+class DefaultLaunchLogTests(unittest.TestCase):
+    # #607: the shipped default must work out of the box on a stock host, without loosening any check.
+
+    def setUp(self):
+        if os.geteuid() == 0 and self._testMethodName != 'test_root_default_is_roots_own_dir_regardless_of_home':
+            self.skipTest('the per-user default needs a non-root uid; the root path is never written by tests')
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / 'home'
+        self.home.mkdir(mode=0o755); self.home.chmod(0o755)
+        self.state = self.home / '.local' / 'state' / 'dazl'
+        self.log = self.state / 'launch-log.jsonl'
+        self.sentinel = self.root / 'launched'
+        self.touch = [sys.executable, '-c', 'import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', str(self.sentinel)]
+        stack = contextlib.ExitStack()
+        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(stack.close)
+        old_umask = os.umask(0o022)
+        self.addCleanup(os.umask, old_umask)
+        stack.enter_context(patch.object(checked, 'default_launch_log', REAL_DEFAULT_LAUNCH_LOG))
+        stack.enter_context(patch.dict(os.environ, {'HOME': str(self.home)}))
+        stack.enter_context(patch.object(checked, 'bind_launch'))
+        stack.enter_context(patch.object(checked, 'bind_target'))
+        self.ci = stack.enter_context(patch.object(checked, 'require_ci'))
+
+    def run_default(self, **kwargs):
+        return checked.run([[sys.executable, '-c', 'pass']], self.touch, repository='gagan114662/dazl', commit=COMMIT, **kwargs)
+
+    def mode(self, path):
+        return os.lstat(path).st_mode & 0o7777
+
+    def assert_refused_before_anything(self, report, code):
+        self.assertEqual((code, report), (2, {'status': 'launch_log_unavailable', 'launch_reached': False}))
+        self.ci.assert_not_called(); self.assertFalse(self.sentinel.exists())
+
+    def test_shipped_default_writes_out_of_the_box_and_creates_absent_dirs_0700(self):
+        # Fails on the old default: /home/ubuntu/backups is absent here (and 0775 on the host) -> launch_log_unavailable.
+        report, code = self.run_default()
+        self.assertEqual((code, report), (0, {'status': 'launched', 'returncode': 0, 'launch_reached': True}))
+        self.assertTrue(self.sentinel.exists())
+        for directory in [self.home / '.local', self.home / '.local' / 'state', self.state]:
+            self.assertEqual(self.mode(directory), 0o700, directory)
+        self.assertEqual(self.mode(self.log), 0o600)
+        [line] = [json.loads(x) for x in self.log.read_text().splitlines()]
+        self.assertEqual((line['status'], line['launch']['status_file']), ('launched', str(self.state / 'launch-status.json')))
+        self.assertEqual(self.mode(self.home), 0o755)
+        report, code = self.run_default()
+        self.assertEqual(code, 0); self.assertEqual(len(self.log.read_text().splitlines()), 2)
+
+    def test_existing_dirs_are_never_chmodded(self):
+        (self.home / '.local').mkdir(mode=0o755); (self.home / '.local').chmod(0o755)
+        (self.home / '.local' / 'state').mkdir(); (self.home / '.local' / 'state').chmod(0o751)
+        self.assertEqual(self.run_default()[1], 0)
+        self.assertEqual((self.mode(self.home / '.local'), self.mode(self.home / '.local' / 'state'), self.mode(self.state)), (0o755, 0o751, 0o700))
+        # An existing private state dir looser than 0700 but not group/world-writable is used as is.
+        self.state.chmod(0o755)
+        self.assertEqual(self.run_default()[1], 0)
+        self.assertEqual(self.mode(self.state), 0o755)
+
+    def test_existing_unsafe_state_dir_is_refused_and_left_alone(self):
+        for unsafe in [0o775, 0o757, 0o777]:
+            with self.subTest(mode=oct(unsafe)):
+                self.state.mkdir(parents=True, exist_ok=True); self.state.chmod(unsafe)
+                self.assert_refused_before_anything(*self.run_default())
+                self.assertEqual(self.mode(self.state), unsafe)
+                self.assertFalse(self.log.exists())
+
+    def test_state_dir_symlink_or_file_is_refused(self):
+        target = self.root / 'private'; target.mkdir(mode=0o700)
+        (self.home / '.local' / 'state').mkdir(parents=True)
+        self.state.symlink_to(target)
+        self.assert_refused_before_anything(*self.run_default())
+        self.assertEqual(list(target.iterdir()), [])
+        self.state.unlink(); self.state.write_text('')
+        self.assert_refused_before_anything(*self.run_default())
+        self.assertEqual(self.state.read_text(), '')
+
+    def test_concurrently_created_unsafe_dir_is_not_chmodded(self):
+        # The dir appears between the existence check and mkdir: FileExistsError, then the parent check decides.
+        self.state.mkdir(parents=True); self.state.chmod(0o777)
+        real = os.path.lexists
+        with patch.object(checked.os.path, 'lexists', side_effect=lambda p: False if Path(p) == self.state else real(p)):
+            self.assert_refused_before_anything(*self.run_default())
+        self.assertEqual(self.mode(self.state), 0o777)
+
+    def test_bad_or_unusable_home_refuses_and_creates_nothing(self):
+        cwd = os.getcwd(); os.chdir(self.root); self.addCleanup(os.chdir, cwd)
+        before = sorted(p.name for p in self.root.iterdir())
+        for home in [None, '', 'relative/home', '.', str(self.root / 'absent-home')]:
+            with self.subTest(home=home):
+                env = {k: v for k, v in os.environ.items() if k != 'HOME'}
+                if home is not None:
+                    env['HOME'] = home
+                with patch.dict(os.environ, env, clear=True):
+                    self.assert_refused_before_anything(*self.run_default())
+                self.assertEqual(sorted(p.name for p in self.root.iterdir()), before)
+        # An unwritable HOME (PermissionError from mkdir) refuses the same way; HOME keeps its mode.
+        if os.geteuid() != 0:
+            self.home.chmod(0o555)
+            self.addCleanup(self.home.chmod, 0o755)
+            self.assert_refused_before_anything(*self.run_default())
+            self.assertEqual(self.mode(self.home), 0o555)
+
+    def test_root_default_is_roots_own_dir_regardless_of_home(self):
+        with patch.object(checked.os, 'geteuid', return_value=0):
+            self.assertEqual(checked.default_launch_log(), (Path('/root/dazl-launch-log/launch-log.jsonl'), Path('/root')))
+        with patch.object(checked.os, 'geteuid', return_value=1000):
+            self.assertEqual(checked.default_launch_log(), (self.home / '.local/state/dazl/launch-log.jsonl', self.home))
+
+    def test_explicit_launch_log_override_is_unchanged_and_creates_nothing(self):
+        logs = self.root / 'logs'; logs.mkdir(mode=0o700)
+        report, code = self.run_default(log_path=str(logs / 'override.jsonl'))
+        self.assertEqual(code, 0)
+        self.assertEqual(len((logs / 'override.jsonl').read_text().splitlines()), 1)
+        self.assertFalse((self.home / '.local').exists())
+        self.sentinel.unlink(); self.ci.reset_mock()
+        for bad in [str(self.root / 'absent' / 'x.jsonl'), '']:
+            with self.subTest(override=bad):
+                self.assert_refused_before_anything(*self.run_default(log_path=bad))
+                self.assertFalse((self.root / 'absent').exists()); self.assertFalse((self.home / '.local').exists())
+
+    def test_cli_without_launch_log_uses_the_shipped_default(self):
+        env = dict(os.environ, HOME=str(self.home))
+        p = subprocess.run([sys.executable, SCRIPT, '--repository', 'gagan114662/dazl', '--commit', COMMIT,
+                            '--preflight', json.dumps(self.touch), '--launch', json.dumps(self.touch)],
+                           env=env, capture_output=True, text=True, timeout=60)
+        # bind_launch refuses this launch argv before any network or child: the run is still recorded.
+        self.assertEqual((p.returncode, json.loads(p.stdout)), (1, {'status': 'ci_refused', 'launch_reached': False}))
+        [line] = [json.loads(x) for x in self.log.read_text().splitlines()]
+        self.assertEqual((line['status'], line['gates']), ('ci_refused', [{'round': 'initial', 'gate': 'bind_launch', 'result': 'fail', 'code': 'launch_entrypoint'}]))
+        self.assertEqual(self.mode(self.state), 0o700); self.assertFalse(self.sentinel.exists())
+
+    def test_docs_name_the_shipped_default(self):
+        docs = Path(__file__).with_name('SAFE_LAUNCH.md').read_text()
+        self.assertIn('~/' + str(checked.USER_LAUNCH_LOG), docs)
+        self.assertIn(str(checked.ROOT_LAUNCH_LOG), docs)
+        self.assertNotIn('/home/ubuntu/backups/launch-log', docs)
+        self.assertNotIn('/home/ubuntu/backups/launch-log', Path(SCRIPT).read_text())
 
 
 if __name__ == '__main__':
