@@ -38,7 +38,7 @@ export const JOBS: JobEntry[] = [
 // Tick-route lib imports that are not tenant work: scheduler bookkeeping, lease fencing, error capture. A new lib
 // import into the tick route that is not listed here or in JOBS fails the manifest test.
 export const TICK_INFRA = new Set([
-  'getScanDb', 'getDb', 'kickRunner', 'tryLease', 'dueTenants', 'captureError', 'requestIdOf',
+  'getScanDb', 'getDb', 'kickRunner', 'sharedScanQueue', 'tryLease', 'dueTenants', 'captureError', 'requestIdOf',
   'classifySync', 'classifyWork', 'finishRun', 'migrateSchedulerRuns', 'recordProgress', 'startRun',
   'auditRetention', 'READ_CONSENT_VERSION', 'DRAIN_HOLD_REASONS',
 ])
