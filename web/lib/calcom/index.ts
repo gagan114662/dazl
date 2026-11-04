@@ -8,7 +8,7 @@ import { recordTx } from '../audit.ts'
 // recipients with a sent/sending/uncertain row - an unsent draft or skipped row proves no contact ever happened and must
 // not associate a booking) plus leads storing it as their contact. Exactly one candidate lead across both -> linked;
 // zero or several stay "unmatched" - a booking is never guessed onto a lead. Reads and writes run on the Db layer
-// (SQLite or Postgres); migrateCalcom is the SQLite schema (PG: 0001 baseline + 0047_booking_outcomes.sql).
+// (SQLite or Postgres); migrateCalcom is the SQLite schema (PG: 0001 baseline + 0048_booking_outcomes.sql).
 //
 // Outcomes (#367). One row per Cal.com booking uid keeps the booking's history: no event deletes it. Each webhook is
 // merged into the row field by field with order-independent rules, so any delivery order, retry or replay of the same
