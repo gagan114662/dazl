@@ -77,6 +77,16 @@ test('the auth area is off the raw SQLite handle: no app/api/auth module and not
   for (const f of AUTH_PORTED.filter(f => f.startsWith('app/'))) assert.doesNotMatch(readFileSync(join(root, f), 'utf8'), /getScanDb|getAuthDb/, f)
 })
 
+// #354 leads routes, first slice: the evidence, source-metrics, page-signals and domain-review routes, and the two
+// modules now fully on the Db layer, are off the raw handle and stay off it.
+const LEADS_PORTED = ['app/api/leads/[lead]/domain-review/route.ts', 'app/api/leads/evidence/route.ts', 'app/api/leads/page-signals/route.ts', 'app/api/leads/source-metrics/route.ts', 'lib/scan/page-signals.ts', 'lib/scan/source-metrics.ts']
+test('the ported leads routes are off the raw SQLite handle', () => {
+  const raw = rawSqliteModules(root).map(f => f.replace(/\\/g, '/'))
+  assert.deepEqual(raw.filter(f => LEADS_PORTED.includes(f)), [])
+  assert.deepEqual(Object.keys(RAW_SQLITE_MODULES).filter(f => LEADS_PORTED.includes(f)), [])
+  for (const f of LEADS_PORTED.filter(f => f.startsWith('app/'))) assert.doesNotMatch(readFileSync(join(root, f), 'utf8'), /getScanDb|getAuthDb/, f)
+})
+
 // lib/db/sqlite-store.ts is engine code (the SQLite file the engine wraps, and the auth schema's SQLite half). It may
 // hold schema statements and exactly the three one-time backfills whose Postgres half is a migration file, nothing else.
 test('lib/db/sqlite-store.ts holds only schema setup and the backfills Postgres migrations 0015/0021/0022 mirror', () => {

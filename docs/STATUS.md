@@ -45,6 +45,13 @@ Updated by the builder on every branch. Newest first.
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
   Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.
 
+- b/354-pg-leads-routes (#354, area 2, first slice; stacked on b/354-pg-auth): the leads evidence, source-metrics,
+  page-signals and domain-review routes run on the Db layer (`getDb()`), with Db-layer twins `evidenceCopyForLeadDb`,
+  `evidencePurgedAtDb`, `setDomainReviewDb`; `sourceMetrics` and `leadSignals` take a Db. `RAW_SQLITE_MODULES`
+  131 -> 125. Postgres-only fixture: `test/pg-port-leads-routes`. The other 17 leads/scan routes still call sync
+  `lib/scan`/`lib/outreach` code (runner, crawler, enrichment, qualification, currentness gate, fixtures) or need an
+  insert_seq migration; blocker per route on #354. #354 stays open.
+
 - b/354-pg-auth (#354, area 1 of the porting order): sign-up, sign-in, verification, reset and the Google callback reach
   the #417 conversion boundary on the Db layer, and `lib/auth-db.ts` has no raw-handle code left (its sync profile
   readers are gone; their callers read through Db). The store opener and the auth schema's SQLite half moved to engine

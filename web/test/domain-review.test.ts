@@ -9,7 +9,8 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { domainReviewFor } from '../lib/outreach/domain-review.ts'
 import { domainBasisFor } from '../lib/outreach/published-email.ts'
-import { setDomainReview } from '../lib/scan/domain-review-action.ts'
+import { setDomainReview, setDomainReviewDb } from '../lib/scan/domain-review-action.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 type Row = { connector: string; kind: string; value: string; label: string | null; source_url: string; retrieved_at: number }
 const email = (v = 'info@acme.test', url = 'https://acme.test/contact', at = 10): Row => ({ connector: 'sitecrawl', kind: 'email', value: v, label: null, source_url: url, retrieved_at: at })
@@ -112,6 +113,59 @@ test('confirm takes the write lock before reading: a concurrent writer on the sa
   a.exec('COMMIT')
   assert.deepEqual(setDomainReview(b, 'A', id, 'confirm', bind), { status: 'confirmed', domain: 'acme.test' })
   a.close(); b.close(); rmSync(dir, { recursive: true })
+})
+
+// #354: the Db-layer twin the domain-review route uses. On SQLite it takes the same IMMEDIATE lock before the read, and a
+// conflict records nothing; across a run of actions it answers and writes exactly as setDomainReview does.
+test('setDomainReviewDb: blocked by a concurrent writer (nothing recorded), then confirms once the lock is released', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dr3-')); const f = join(dir, 'a.db')
+  const a = new Database(f); const b = new Database(f, { timeout: 0 })
+  migrateScan(a); migrateConnectors(a)
+  const job = createJob(a, 'A', { business_name: 'S', industry: 'x', location: 'y' }); a.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const id = 'd'.repeat(24)
+  a.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run(id, job, 'Acme', null, 's', 'https://jobs.test/a', 'q', 90, 50)
+  const ins = a.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', ?, ?, ?, ?, '2026-10-24', 10)")
+  ins.run(id, 'email', 'info@acme.test', null, 'https://acme.test/contact'); ins.run(id, 'domain', 'acme.test|name_probe', 'domain-basis-v1:name_probe', 'https://acme.test/')
+  const bind = domainReviewFor({ id, contact: null }, a.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id) as never).binding!
+  const reviews = () => (a.prepare("SELECT count(*) n FROM lead_enrichments WHERE connector = 'user'").get() as { n: number }).n
+  a.exec('BEGIN IMMEDIATE')
+  await assert.rejects(setDomainReviewDb(sqliteDb(b), 'A', id, 'confirm', bind), /locked|busy/i, 'blocked while another writer holds the lock, not a stale read')
+  a.exec('COMMIT')
+  assert.equal(reviews(), 0, 'the refused confirm recorded nothing')
+  assert.deepEqual(await setDomainReviewDb(sqliteDb(b), 'A', id, 'confirm', bind), { status: 'confirmed', domain: 'acme.test' })
+  assert.equal(reviews(), 1)
+  a.close(); b.close(); rmSync(dir, { recursive: true })
+})
+
+test('setDomainReviewDb answers and writes exactly as setDomainReview, including a same-second address tie and other tenants', async () => {
+  const NOW = Date.parse('2026-10-24T12:00:00Z')
+  const L = (n: number) => `l${n}`.repeat(12).slice(0, 24)
+  const build = () => {
+    const d = new Database(':memory:'); migrateScan(d); migrateConnectors(d)
+    for (const [t, jid] of [['A', 'ja'], ['B', 'jb']]) d.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES (?, ?, 'S', 'x', 'y', 'running')").run(jid, t)
+    const lead = (lid: string, job: string, contact: string | null = null) => d.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run(lid, job, 'Acme', contact, 's', 'https://jobs.test/a', 'q', 90, 50)
+    lead(L(1), 'ja'); lead(L(2), 'ja'); lead(L(3), 'ja', 'sales@cited.test'); lead(L(4), 'jb')
+    const e = (lid: string, kind: string, value: string, label: string | null, url: string, at: number) => addEnrichment(d, lid === L(4) ? 'B' : 'A', lid, { connector: 'sitecrawl', kind, value, label, confidence: null, source_url: url, source_date: '2026-10-24', retrieved_at: at })
+    e(L(1), 'email', 'info@acme.test', null, 'https://acme.test/contact', 10); e(L(1), 'domain', 'acme.test|name_probe', 'domain-basis-v1:name_probe', 'https://acme.test/', 10)
+    e(L(2), 'email', 'zed@acme.test', null, 'https://acme.test/a', 20); e(L(2), 'email', 'amy@acme.test', null, 'https://acme.test/b', 20); e(L(2), 'domain', 'acme.test|evidence_link_text', 'domain-basis-v1:evidence_link_text', 'https://jobs.test/a', 20)
+    e(L(4), 'email', 'info@beta.test', null, 'https://beta.test/c', 10)
+    return d
+  }
+  const rowsOf = (d: Database.Database, lid: string) => d.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? ORDER BY insert_seq').all(lid) as never
+  const sync = build(), viaDb = build()
+  const b1 = domainReviewFor({ id: L(1), contact: null }, rowsOf(sync, L(1))).binding!, b2 = domainReviewFor({ id: L(2), contact: null }, rowsOf(sync, L(2))).binding!
+  const steps: [string, string, 'confirm' | 'withdraw', string | undefined][] = [
+    ['B', L(1), 'confirm', b1], ['B', L(1), 'withdraw', undefined], ['A', L(4), 'confirm', b1], ['A', 'f'.repeat(24), 'confirm', b1], ['A', L(3), 'confirm', b1],
+    ['A', L(1), 'confirm', undefined], ['A', L(1), 'confirm', 'f'.repeat(64)], ['A', L(1), 'confirm', b2], ['A', L(1), 'confirm', b1], ['A', L(1), 'confirm', b1],
+    ['A', L(2), 'confirm', b2], ['A', L(1), 'withdraw', undefined], ['A', L(1), 'withdraw', undefined], ['A', L(1), 'confirm', b1],
+  ]
+  for (const [t, lid, act, bind] of steps) {
+    const want = setDomainReview(sync, t, lid, act, bind, NOW)
+    assert.deepEqual(await setDomainReviewDb(sqliteDb(viaDb), t, lid, act, bind, NOW), want, `${t} ${lid} ${act} ${bind?.slice(0, 6)}`)
+  }
+  const dump = (d: Database.Database) => d.prepare('SELECT lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at, insert_seq FROM lead_enrichments ORDER BY insert_seq').all()
+  assert.deepEqual(dump(viaDb), dump(sync), 'the same rows on both paths')
+  assert.equal((sync.prepare("SELECT count(*) n FROM lead_enrichments WHERE connector = 'user'").get() as { n: number }).n, 2, 'one review each for L1 and L2; nothing for B or the cited-page lead')
 })
 
 test('createDraft reads the identity state under the write lock: a concurrent writer blocks it, and a withdraw committed first blocks the draft', async () => {

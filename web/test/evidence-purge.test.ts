@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob, exportLeads } from '../lib/scan/store.ts'
-import { storeEvidenceCopy, purgeTenantEvidence, evidenceCopyForLead, evidencePurgedAt, purgeExpiredEvidenceCopies } from '../lib/scan/evidence-copies.ts'
+import { storeEvidenceCopy, purgeTenantEvidence, evidenceCopyForLead, evidencePurgedAt, purgeExpiredEvidenceCopies, evidenceCopyForLeadDb, evidencePurgedAtDb } from '../lib/scan/evidence-copies.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { exportEvidenceOrigin } from '../lib/scan/evidence-origin.ts'
 
 const hex = () => randomBytes(12).toString('hex')
@@ -69,6 +70,24 @@ test('an authorized purge removes ONLY the named tenant\'s evidence, audits it, 
   const label = exportEvidenceOrigin(row as never)
   assert.match(label, /copy of the page fetched by TinyFish/); assert.match(label, /deleted at the account owner's request/); assert.match(label, /can no longer be shown or re-checked/)
   assert.doesNotMatch(exportEvidenceOrigin({ ...(exportLeads(db, 'B')[0] as object), evidence_purged_at: null } as never), /deleted/)
+})
+// #354: the Db-layer reads the evidence route uses return what the sync reads return, before and after a purge, for
+// both tenants and for ids that are not theirs; the expiry clock is the caller's.
+test('evidenceCopyForLeadDb / evidencePurgedAtDb match the sync reads; expiry is bound to the given clock', async () => {
+  const { db, a, a2, b } = fixture()
+  const d = sqliteDb(db)
+  const check = async (label: string) => {
+    for (const t of ['A', 'B', 'C']) for (const l of [a.lead, a2.lead, b.lead, hex()]) {
+      assert.deepEqual(await evidenceCopyForLeadDb(d, t, l), evidenceCopyForLead(db, t, l), `${label}: copy ${t} ${l}`)
+      assert.equal(await evidencePurgedAtDb(d, t, l), evidencePurgedAt(db, t, l), `${label}: purged ${t} ${l}`)
+    }
+  }
+  await check('before the purge')
+  const exp = (db.prepare('SELECT expires_at FROM lead_evidence_copies WHERE id = ?').get(b.copy) as { expires_at: number }).expires_at
+  assert.equal((await evidenceCopyForLeadDb(d, 'B', b.lead, exp - 1))?.integrity, 'ok')
+  assert.equal(await evidenceCopyForLeadDb(d, 'B', b.lead, exp), null, 'expired at expires_at, as strftime(now) > expires_at would be')
+  purgeTenantEvidence(db, { ...REQ, execute: true })
+  await check('after the purge')
 })
 test('a second purge is harmless and audited; expired-row cleanup still works for everyone', () => {
   const { db, b } = fixture()
