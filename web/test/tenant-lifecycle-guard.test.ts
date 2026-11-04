@@ -253,8 +253,8 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
   // scan_traces (#463), 0041 guards audit_events (#464), 0042 guards bounce_records and mail_bounce_scan_consent (#513),
   // 0043 guards the three onboarding tables (#417; renumbered from 0042 after #513 landed first), 0044 guards lead_feedback (#385), 0045 guards worker_grants and worker_runs (runtime workers, #355; renumbered from 0051 to close the gap against main),
   // 0046 guards the three monitor event-detection tables (#387; renumbered from 0045 after #623 landed first).
-  // 0047 guards sender_identities (TEMP number for CI; takes main's highest + 1 at its merge).
-  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0044_lead_feedback.sql', '0045_runtime_workers.sql', '0046_monitor_events.sql', '0047_sender_identities.sql']
+  // 0050 guards sender_identities (queue slot; contiguous once the PRs before it land).
+  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0044_lead_feedback.sql', '0045_runtime_workers.sql', '0046_monitor_events.sql', '0050_sender_identities.sql']
     .flatMap(f => [...readFileSync(new URL(`../lib/db/migrations/pg/${f}`, import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1])).sort()
   assert.deepEqual(pgNames, want, 'the static PG migrations drifted from the generated guard set')
   const live = c.kind === 'sqlite'
