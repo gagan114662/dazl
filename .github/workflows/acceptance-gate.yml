@@ -1,0 +1,47 @@
+name: acceptance-gate
+# Issue-closure gate (docs/design/issue-closure-gate.md): a PR that claims "Closes #N" / "Fixes #N" /
+# "Resolves #N" must have a test under web/test/ tagged "#N" (the convention already used for #569), and
+# that test must pass. Reports pass/fail per issue; see the design doc's "Open question" for why this is
+# not yet a required check (no branch protection on main today).
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Extract closed issue numbers from the PR body
+        id: issues
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          node -e '
+            const body = process.env.BODY || "";
+            const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)/gi;
+            const nums = [...new Set([...body.matchAll(re)].map(m => m[1]))];
+            console.log("numbers=" + nums.join(","));
+          ' >> "$GITHUB_OUTPUT"
+      - run: npm ci
+        if: steps.issues.outputs.numbers != ''
+        working-directory: web
+      - name: Run the issue-closure gate
+        if: steps.issues.outputs.numbers != ''
+        working-directory: web
+        run: |
+          IFS=',' read -ra NUMS <<< "${{ steps.issues.outputs.numbers }}"
+          node scripts/gate-check.mjs "${NUMS[@]}"
+      - name: No closing keyword in this PR body
+        if: steps.issues.outputs.numbers == ''
+        run: echo "No Closes/Fixes/Resolves keyword found — nothing to gate (this PR isn't claiming to close an issue)."

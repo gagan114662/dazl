@@ -10,3 +10,5 @@ Before reporting a PR as ready, run full-stop (council review with the opus/sonn
 - Skills are in `.claude/skills` (vendored from t3dotgg/tstack, MIT; changes listed in its `README.md`). The
   reviewer agents are in `.claude/agents`.
 - Report every PR with its exact head SHA, the test commands and their output, and what is not verified.
+- Claiming `Closes #N` requires `node web/scripts/gate-check.mjs N` to print `PASS` on your head commit
+  (`docs/PROCESS.md` § "Proving an issue closed"). Use `refs #N` for anything that doesn't pass that gate yet.

@@ -71,3 +71,21 @@ Changes to the evidence verifier, grading/scoring rules, product policy, spend g
 The scheduled builder (Sonnet) writes a design note in `docs/design/<topic>.md`, opens a "DESIGN:" PR, marks the item
 "needs design" in STATUS.md and moves on. An interactive session (Opus) or the owner decides and implements;
 Instinct reviews as usual.
+
+## Proving an issue closed (not just a diff reviewed)
+
+A merged PR and a closed issue are not the same thing, and only the second one counts (see "done means Instinct's
+visible final acceptance", 2026-10-30). Two rules make that mechanical instead of something Instinct has to
+remember to check by hand:
+
+- **Close with a closing keyword only when the issue's own reported scenario now passes as a committed test.**
+  Tag the test with the issue number in a comment or its test name (the existing informal convention — see
+  `test/crm-contract.test.ts`'s `#569 repro` tests) and run `node web/scripts/gate-check.mjs <N>` before filing.
+  `Closes #N` / `Fixes #N` / `Resolves #N` in the PR body means "the tagged test for #N exists and is green,
+  verified by `acceptance-gate.yml`" — not "this PR touches #N." Partial or related work uses `refs #N`, which
+  does not close anything and is not gated.
+- **An issue with 3+ merged PRs against it and no close gets a tracked checklist before another PR opens
+  against it.** The next builder to touch it edits the issue body into an explicit `- [ ]` list of the specific
+  remaining acceptance criteria (not "more work needed"), so partial PRs can check boxes instead of silently
+  accumulating. See `docs/design/issue-closure-gate.md` for the audit that motivated this and a worked example
+  (#569, already fixed on `main`, never closed because every merged PR used `refs #569`).

@@ -52,6 +52,12 @@ stop and say what Instinct needs to verify.
 
 When you cannot prove a change, you do not have full confidence. Say so in the handoff.
 
+**If this PR claims `Closes #N`:** the reproduction you proved must be a committed test tagged `#N` (see
+`docs/PROCESS.md` § "Proving an issue closed"), not just something you showed in chat or a terminal that nobody
+re-runs. Run `node web/scripts/gate-check.mjs <N>` and get `PASS` before using a closing keyword for that issue.
+If it's not everything the issue asked for, use `refs #N` instead — that's not a lesser outcome, it's the
+honest one.
+
 ## Never merge
 
 You may commit and push to this task's own branch. Never merge, enable auto-merge, enter a merge queue, push to
@@ -72,6 +78,7 @@ The PR is ready when all of these are true on the latest commit:
 - CI is green on the exact head.
 - Every Instinct finding is fixed, or answered with a reason on the PR.
 - The branch is mergeable with `main` (no conflicts).
+- Every `Closes #N` in the PR body has a `GATE #N: PASS` from `node web/scripts/gate-check.mjs <N>` on this head.
 
 Then stop and report, on the PR and to the user: the PR link, the **exact head SHA**, the test commands and their
 output, the council result, what is NOT verified, and that the PR is open and unmerged, waiting for Instinct.
