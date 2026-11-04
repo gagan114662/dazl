@@ -176,7 +176,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 6. #384 separate published provenance from deliverability/person-route status.
 7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
    currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
-8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+8. #385 rejection/outcome feedback improves future selection (in review: b/385-rejection-outcomes, docs/design/lead-feedback.md); #387 continuous event detection — compounding
    advantages, start once 1-7 ship.
 9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
    multilingual (in review: b/391-multilingual, script-aware keywords/identity/lookalike/dates + per-market search and yield), #392 API/MCP — by measured marginal yield, lowest priority.

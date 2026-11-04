@@ -314,6 +314,29 @@ CREATE TABLE lead_evidence_copies (
   UNIQUE (tenant_id, job_id, attempt, canonical_url)
 );
 
+CREATE TABLE lead_feedback (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('accept', 'reject')),
+    level TEXT NOT NULL CHECK (level IN ('account', 'person', 'event')),
+    reason TEXT CHECK (reason IS NULL OR reason IN ('wrong_industry', 'wrong_location', 'competitor', 'existing_relationship', 'not_useful', 'wrong_person', 'wrong_timing')),
+    company_key TEXT NOT NULL,
+    domain TEXT,
+    person_name TEXT,
+    person_contact TEXT,
+    event_date TEXT,
+    source_host TEXT,
+    signal_kind TEXT,
+    lead_id TEXT,
+    job_id TEXT,
+    actor_id TEXT,
+    note TEXT CHECK (note IS NULL OR length(note) <= 300),
+    created_at INTEGER NOT NULL,
+    reset_at INTEGER,
+    reset_reason TEXT CHECK (reset_reason IS NULL OR length(reset_reason) <= 200)
+  );
+
 CREATE TABLE lead_qualifications (
     tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, prompt_sha256 TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('running','done','failed')),
@@ -991,6 +1014,72 @@ CREATE TABLE work_queue (
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 
+CREATE TABLE worker_catalog (
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    code_hash TEXT NOT NULL CHECK (length(code_hash) = 64),
+    effect TEXT NOT NULL CHECK (effect IN ('none', 'draft', 'send', 'spend')),
+    state_version INTEGER NOT NULL,
+    definition TEXT NOT NULL CHECK (length(definition) <= 65536),
+    registered_by TEXT NOT NULL CHECK (length(registered_by) <= 80),
+    registered_at INTEGER NOT NULL,
+    PRIMARY KEY (name, version)
+  );
+
+CREATE TABLE worker_deployments (
+    name TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('running', 'draining', 'stopped', 'failed')),
+    generation INTEGER NOT NULL,
+    max_in_flight INTEGER NOT NULL,
+    per_tenant_in_flight INTEGER NOT NULL,
+    max_backlog INTEGER NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    drain_deadline INTEGER,
+    failures INTEGER NOT NULL DEFAULT 0,
+    restarts INTEGER NOT NULL DEFAULT 0,
+    restart_after INTEGER,
+    reason TEXT CHECK (reason IS NULL OR length(reason) <= 200),
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL CHECK (length(updated_by) <= 80)
+  );
+
+CREATE TABLE worker_events (
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    actor TEXT NOT NULL CHECK (length(actor) <= 80),
+    action TEXT NOT NULL CHECK (length(action) <= 40),
+    decision TEXT NOT NULL CHECK (decision IN ('allowed', 'denied')),
+    name TEXT CHECK (name IS NULL OR length(name) <= 40),
+    version TEXT CHECK (version IS NULL OR length(version) <= 20),
+    code_hash TEXT CHECK (code_hash IS NULL OR length(code_hash) = 64),
+    generation INTEGER,
+    detail TEXT CHECK (detail IS NULL OR length(detail) <= 200)
+  );
+
+CREATE TABLE worker_grants (
+    tenant_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    granted_by TEXT NOT NULL CHECK (length(granted_by) <= 80),
+    granted_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, name)
+  );
+
+CREATE TABLE worker_runs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    actor_id TEXT NOT NULL CHECK (length(actor_id) <= 80),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'done', 'failed', 'refused')),
+    input TEXT NOT NULL CHECK (length(input) <= 65536),
+    version TEXT,
+    generation INTEGER,
+    output TEXT CHECK (output IS NULL OR length(output) <= 65536),
+    error TEXT CHECK (error IS NULL OR length(error) <= 200),
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+
 CREATE INDEX audit_events_at ON audit_events (at);
 
 CREATE INDEX audit_events_seq ON audit_events (seq);
@@ -1038,6 +1127,10 @@ CREATE INDEX invitations_tenant ON invitations (tenant_id, created_at);
 CREATE INDEX lead_enrichments_insert_seq_idx ON lead_enrichments (insert_seq);
 
 CREATE INDEX lead_enrichments_lead ON lead_enrichments (lead_id);
+
+CREATE INDEX lead_feedback_active ON lead_feedback (tenant_id, reset_at);
+
+CREATE UNIQUE INDEX lead_feedback_version ON lead_feedback (tenant_id, version);
 
 CREATE UNIQUE INDEX lead_qualifications_one_per_lead ON lead_qualifications (tenant_id, lead_id);
 
@@ -1127,6 +1220,10 @@ CREATE INDEX work_queue_claimable
 CREATE UNIQUE INDEX work_queue_dedupe
         ON work_queue(tenant_id, kind, dedupe_key)
         WHERE dedupe_key IS NOT NULL AND status IN ('pending','claimed');
+
+CREATE INDEX worker_events_at ON worker_events (at);
+
+CREATE INDEX worker_runs_tenant ON worker_runs (tenant_id, created_at);
 
 CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events
     WHEN NOT EXISTS (SELECT 1 FROM audit_purge_gate)
@@ -1249,6 +1346,8 @@ CREATE TRIGGER tomb_invitations BEFORE INSERT ON invitations BEGIN SELECT NEW.te
 CREATE TRIGGER tomb_lead_enrichments BEFORE INSERT ON lead_enrichments BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_lead_evidence_copies BEFORE INSERT ON lead_evidence_copies BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_lead_feedback BEFORE INSERT ON lead_feedback BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_lead_qualifications BEFORE INSERT ON lead_qualifications BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
@@ -1428,6 +1527,8 @@ CREATE TRIGGER tomb_upd_lead_enrichments BEFORE UPDATE OF tenant_id ON lead_enri
 
 CREATE TRIGGER tomb_upd_lead_evidence_copies BEFORE UPDATE OF tenant_id ON lead_evidence_copies BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
+CREATE TRIGGER tomb_upd_lead_feedback BEFORE UPDATE OF tenant_id ON lead_feedback BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
 CREATE TRIGGER tomb_upd_lead_qualifications BEFORE UPDATE OF tenant_id ON lead_qualifications BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_lead_sources BEFORE UPDATE OF lead_id ON lead_sources BEGIN SELECT (SELECT (SELECT user_id FROM scan_jobs WHERE id = scan_job_id) FROM leads WHERE id = NEW.lead_id); SELECT (SELECT (SELECT user_id FROM scan_jobs WHERE id = scan_job_id) FROM leads WHERE id = OLD.lead_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.lead_id IS NOT OLD.lead_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR EXISTS (SELECT 1 FROM leads p0 WHERE p0.id = NEW.lead_id AND EXISTS (SELECT 1 FROM scan_jobs p1 JOIN tenant_tombstones t1 ON t1.deleted_tenant = p1.user_id WHERE p1.id = p0.scan_job_id))) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = OLD.lead_id) OR EXISTS (SELECT 1 FROM leads p0 WHERE p0.id = OLD.lead_id AND EXISTS (SELECT 1 FROM scan_jobs p1 JOIN tenant_tombstones t1 ON t1.deleted_tenant = p1.user_id WHERE p1.id = p0.scan_job_id)))); END;
@@ -1554,6 +1655,10 @@ CREATE TRIGGER tomb_upd_watches BEFORE UPDATE OF user_id ON watches BEGIN SELECT
 
 CREATE TRIGGER tomb_upd_work_queue BEFORE UPDATE OF tenant_id ON work_queue BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
+CREATE TRIGGER tomb_upd_worker_grants BEFORE UPDATE OF tenant_id ON worker_grants BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_worker_runs BEFORE UPDATE OF tenant_id ON worker_runs BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
 CREATE TRIGGER tomb_users BEFORE INSERT ON users BEGIN SELECT NEW.id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id); END;
 
 CREATE TRIGGER tomb_warm_user_paths BEFORE INSERT ON warm_user_paths BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1564,4 +1669,14 @@ CREATE TRIGGER tomb_watches BEFORE INSERT ON watches BEGIN SELECT NEW.user_id; S
 
 CREATE TRIGGER tomb_work_queue BEFORE INSERT ON work_queue BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_worker_grants BEFORE INSERT ON worker_grants BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_worker_runs BEFORE INSERT ON worker_runs BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER warm_user_paths_insert_seq AFTER INSERT ON warm_user_paths WHEN NEW.insert_seq IS NULL BEGIN UPDATE warm_user_paths SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM warm_user_paths) WHERE rowid = NEW.rowid; END;
+
+CREATE TRIGGER worker_catalog_no_update BEFORE UPDATE ON worker_catalog BEGIN SELECT RAISE(ABORT, 'worker catalog entries are immutable'); END;
+
+CREATE TRIGGER worker_events_no_delete BEFORE DELETE ON worker_events BEGIN SELECT RAISE(ABORT, 'worker events are append-only'); END;
+
+CREATE TRIGGER worker_events_no_update BEFORE UPDATE ON worker_events BEGIN SELECT RAISE(ABORT, 'worker events are append-only'); END;
