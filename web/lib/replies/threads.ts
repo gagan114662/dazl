@@ -201,6 +201,8 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
     for (const q of queries.slice(0, budget)) {
       const r = await worker({ platform: p, query: q, session }).catch(() => null)
       if (r === null) { audit(db, { tenantId, connector, lookup: q, status: 'worker_error', results: 0 }); anyError = true; continue }
+      // A failed platform call (auth, throttling, schema) is audited by its reason, never as empty.
+      if ('failed' in r) { audit(db, { tenantId, connector, lookup: q, status: r.failed, results: 0 }); anyError = true; continue }
       // Version skew: the worker refuses a platform this build still reads. Not an error, not ok.
       if (r.unsupported) { audit(db, { tenantId, connector, lookup: q, status: 'unsupported', results: 0 }); anyUnsupported = true; continue }
       const items = r.items

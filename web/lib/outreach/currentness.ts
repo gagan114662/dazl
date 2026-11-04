@@ -1,17 +1,25 @@
 import type Database from 'better-sqlite3'
 import { parseWindowDays, windowStatus } from '../scan/window.ts'
 import { requiredGateHeld } from '../scan/held-state.ts'
+import { uncheckableCause } from '../lead-state.ts'
+import { timingProofGap } from '../scan/timing-proof.ts'
 // A legacy nearby-year verdict proves no event association. Human confirmation
 // remains a user's review choice, not a machine freshness or consent verdict.
 // The user's own recency window (#198) is a hard gate on top: a lead whose event date is not inside the window of the
 // scan that found it (stale, undated, invalid or future) is research only. Ordinary source or identity review never
 // lifts it; only a scan run with a window that covers the date does. An unreadable profile holds too.
 export function currentnessHeld(db: Database.Database, tenant: string, lead: string, now: Date = new Date()): boolean {
- const row=db.prepare('SELECT l.human_confirmed_at,l.confidence,l.event_date,j.icp,j.query FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {human_confirmed_at:number|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null}|undefined
+ const row=db.prepare('SELECT l.human_confirmed_at,l.human_confirmed_from,l.review_reason,l.confidence,l.event_date,j.icp,j.query FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null}|undefined
  if (!row) return false
  if (windowHeld(row, now)) return true
+ // Someone else's customer, a different place, a closed opening: research only, and confirming it does not change that (#352).
+ if (uncheckableCause(row.review_reason) || uncheckableCause(row.human_confirmed_from)) return true
  if (requiredGateHeld(db, tenant, lead)) return true   // a failed REQUIRED gate survives lead / domain confirmation
- return row.human_confirmed_at===null && row.confidence!==null
+ if (row.human_confirmed_at!==null || row.confidence===null) return false
+ // A machine-verified lead with no human review is held unless its durable, versioned timing proof stands right now
+ // (#377, lib/scan/timing-proof.ts): proven event day in the window, confirmed domain, named person and published route,
+ // all still bound to the recorded proof. Model confidence alone never lifts this hold.
+ try { return timingProofGap(db, tenant, lead, now)!==null } catch { return true }   // an unreadable proof store holds
 }
 
 // Read alone for the page: a window hold survives the user's own review, so the page must not clear it optimistically.

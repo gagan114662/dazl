@@ -248,7 +248,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         setWhy.run((line + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
         { const dn = g.postings.length // dated postings actually READ; a '+' when the detail read itself was capped - never a masked total
           addEnrichment(db, job.user_id, l.id, { connector: `signals:${g.board}-gtm`, kind: 'hiring', value: `${dn}${g.datedCapped ? '+' : ''} sales/GTM role${dn === 1 && !g.datedCapped ? '' : 's'} posted, newest ${g.newest}`, label: (g.postings.map(x => x.title).slice(0, 3).join('; ') + ` (${Math.min(dn, 3)} of ${dn}${g.datedCapped ? '+' : ''} dated shown; ${g.listedCount} listed titles${g.listedCount > g.allTitles.length ? `, sample capped at ${g.allTitles.length}` : ''})`).slice(0, 200) || null, confidence: 70, source_url: g.url, source_date: g.newest, retrieved_at: now }) }
-        const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
+        const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
         for (const e of withRepostHistory(postingEvidence(g, now, null), g.board, existingEvidence)) addEnrichment(db, job.user_id, l.id, { ...e, label: roles.length ? `Requested role: ${matchedHiringRole(e.value.split(' - posted ')[0], roles)!.term}; ${e.label}`.slice(0, 200) : e.label })
         { const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
           const auditRows = withRepostHistory(boardTitleAudit(g, now, checkedDay, null), g.board, existingEvidence)
@@ -267,7 +267,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const heuristicC = c.via === 'domain' && domainRelationship(db, job.user_id, l.id, l.company_domain) !== 'established' && !(c.domain && l.company_domain && c.domain.replace(/^www\./, '') === l.company_domain.replace(/^www\./, ''))
         if (c.via === 'domain' && !heuristicC) {
           const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
-          const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
+          const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
           const checkedRows = withRepostHistory(checkedAuditRows(c, windowDays, now, checkedDay, null), c.board, existingEvidence)
           for (const e of checkedRows) addEnrichment(db, job.user_id, l.id, e) // #533 F-B: zero-match audit trail
           addEnrichment(db, job.user_id, l.id, checkedCoverageRow(c, windowDays, now, checkedDay))
@@ -296,22 +296,36 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
           if (established || (namesCompany && (place === 'agrees' || place === 'no_geography'))) {
             const day = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
             const roleMatch = roles.length ? matchedHiringRole(v.title, roles) : null
-            audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: roleMatch ? 'checked_vacancy_requested_role' : 'checked_vacancy', results: 1 })
-            if (roleMatch) {
-              setWhy.run((`Hiring for ${v.title} (requested: ${roleMatch.term}) on its careers page (${l.company_domain}), checked ${day}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-              addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open role on its careers page: ${v.title}`.slice(0, 254), label: `Requested role: ${roleMatch.term}; ${v.quote}`.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
+            // #533 AC4: when the careers link IS a public ATS posting, its board-supplied first-published date is the freshness date (never
+            // updated_at, never the retrieval day). Inside the window -> dated evidence; older -> long-open, repost history unknown, NOT current
+            // hiring (the lead is held, as a stale board posting is). No date supplied -> unchanged: date unknown, the retrieval day is only 'checked'.
+            const posted = v.posted ?? null
+            const pt = posted ? Date.parse(`${posted}T00:00:00Z`) : NaN
+            const longOpen = !!posted && !(Number.isFinite(pt) && pt <= (now + 86_400) * 1000 && now * 1000 - pt <= windowDays * 86_400_000)
+            const dated = posted ? ` - posted ${posted}` : ''
+            const dateLabel = posted ? `${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} first-published date read from the linked posting; ` : ''
+            const existingC = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
+            // a careers row whose posting id / URL is already stored from an ATS board (or vice versa) is labeled the same posting, counted once
+            const careersRow = (kind: 'hiring' | 'hiring-role', value: string, label: string, confidence: number | null) => withRepostHistory([{ connector: 'signals:careers-gtm', kind, value: value.slice(0, 254), label: label.slice(0, 200), confidence, source_url: v.url, source_date: posted ?? day, retrieved_at: v.retrievedAt }], 'careers', existingC)[0]
+            audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: `${roleMatch ? 'checked_vacancy_requested_role' : 'checked_vacancy'}${longOpen ? '_long_open' : ''}`, results: 1 })
+            if (longOpen) {
+              // Stored as an audit row (kind hiring-role, unscored), never as a hiring signal: a long-open posting is not renewed demand.
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring-role', `Open ${roleMatch || roles.length ? '' : 'sales '}role on its careers page: ${v.title}${dated}`, `Long-open: first published ${posted}, older than the last ${windowDays} days (repost history unknown, not renewed demand)${roleMatch ? `; requested role: ${roleMatch.term}` : ''}; ${v.quote}`, null))
+              careersNote = `its careers page links ${v.title}${roleMatch ? ` (requested: ${roleMatch.term})` : ''}, but that ${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} posting was first published ${posted}, older than the last ${windowDays} days (long-open; repost history unknown) - not current hiring evidence. `
+            } else if (roleMatch) {
+              setWhy.run((`Hiring for ${v.title} (requested: ${roleMatch.term}) on its careers page (${l.company_domain}), ${posted ? `posted ${posted}` : `checked ${day}`}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open role on its careers page: ${v.title}${dated}`, `Requested role: ${roleMatch.term}; ${dateLabel}${v.quote}`, 60))
               passed++; passedIds.push(l.id); continue
-            }
-            if (!roles.length) {
-              setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), checked ${day}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-              addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: v.quote.slice(0, 200), confidence: 60, source_url: v.url, source_date: day, retrieved_at: v.retrievedAt })
+            } else if (!roles.length) {
+              setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), ${posted ? `posted ${posted}` : `checked ${day}`}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open sales role on its careers page: ${v.title}${dated}`, `${dateLabel}${v.quote}`, 60))
               passed++; passedIds.push(l.id); continue
+            } else {
+              // AC3: requested roles were named and this verified vacancy matched none - generic careers hiring is recorded as
+              // generic (never role-qualified) and the lead is still demoted below for the missing role match.
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open sales role on its careers page: ${v.title}${dated}`, `generic hiring - no requested-role match in the sampled roles; ${dateLabel}${v.quote}`, 60))
+              careersNote = `its careers page lists ${v.title}, a sales/GTM role; no requested-role match among the sampled open roles (up to 3 verified per page across ${c.readPages ?? c.pages} page${(c.readPages ?? c.pages) === 1 ? '' : 's'} read - a match outside the sample is not excluded). `
             }
-            // AC3: requested roles were named and this verified vacancy matched none - generic careers hiring is recorded as
-            // generic (never role-qualified) and the lead is still demoted below for the missing role match.
-            const day2 = new Date(v.retrievedAt * 1000).toISOString().slice(0, 10)
-            addEnrichment(db, job.user_id, l.id, { connector: 'signals:careers-gtm', kind: 'hiring', value: `Open sales role on its careers page: ${v.title}`.slice(0, 254), label: `generic hiring - no requested-role match in the sampled roles; ${v.quote}`.slice(0, 200), confidence: 60, source_url: v.url, source_date: day2, retrieved_at: v.retrievedAt })
-            careersNote = `its careers page lists ${v.title}, a sales/GTM role; no requested-role match among the sampled open roles (up to 3 verified per page across ${c.readPages ?? c.pages} page${(c.readPages ?? c.pages) === 1 ? '' : 's'} read - a match outside the sample is not excluded). `
           } else {
             audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'checked_rejected', results: -1 })
             careersNote = `its careers page lists ${v.title} but the page is not established as this company's (${namesCompany ? 'place not confirmed' : 'company not named'}). `

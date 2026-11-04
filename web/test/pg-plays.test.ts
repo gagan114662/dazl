@@ -62,11 +62,12 @@ test('[pg] watches and monitors: tenant-scoped reads and actions, scheduled runs
     for (const job of mjobs) {
       const owner = (await db.get<{ user_id: string }>('SELECT user_id FROM scan_jobs WHERE id = ?', [job]))!.user_id
       await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [job])
-      await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key) VALUES (?, ?, 'n', 'c', 's', 'https://e.example', ?)", [job.slice(0, 12) + 'aaaaaaaaaaaa', job, `key-${owner.slice(0, 1)}`])
+      // a verified, dated event (#387: only novel, dated, in-window, verified events count as new)
+      await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key, event_date, date_status, confidence) VALUES (?, ?, 'n', 'c', 's', 'https://e.example', ?, ?, 'verified', 80)", [job.slice(0, 12) + 'aaaaaaaaaaaa', job, `key-${owner.slice(0, 1)}`, new Date(due * 1000).toISOString().slice(0, 10)])
       await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [due, job])
     }
-    assert.equal(await collectMonitorResults(db), 2)
-    assert.equal(await collectMonitorResults(db), 0, 'each run is folded once')
+    assert.equal(await collectMonitorResults(db, { now: due + 3600 }), 2)
+    assert.equal(await collectMonitorResults(db, { now: due + 3600 }), 0, 'each run is folded once')
     assert.deepEqual(await db.all('SELECT monitor_id, dedup_key FROM monitor_seen ORDER BY dedup_key'), [{ monitor_id: mid.A, dedup_key: 'key-a' }, { monitor_id: mid.B, dedup_key: 'key-b' }])
     assert.deepEqual((await listMonitors(db, A)).map(x => [x.last_new_count, x.run_count]), [[1, 1]])
 

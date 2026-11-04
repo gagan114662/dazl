@@ -11,6 +11,7 @@ import { setScanDb } from './tenant-route-db.ts'
 import { withJar } from './pg-session-headers.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { createJob } from '../../lib/scan/store.ts'
+import { optInOnboarding } from '../../lib/outreach/onboarding-policy.ts'
 
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
 process.env.SYSTEM_MAIL_SMTP_URL = 'smtp://fixture.invalid'; process.env.SYSTEM_MAIL_FROM = 'fixture@example.test'
@@ -47,6 +48,8 @@ const seedWork = (email: string, tag: string) => {
   return `m-${tag}`
 }
 const msgStatus = (id: string) => (raw.prepare('SELECT status FROM outreach_messages WHERE id = ?').get(id) as { status: string }).status
+const enrollments = (email: string) => raw.prepare('SELECT tenant_id, source FROM onboarding_enrollments WHERE email = ?').all(email) as { tenant_id: string; source: string }[]
+optInOnboarding(raw, 'T', 'T') // the seller's explicit onboarding opt-in (#417 transition)
 const events = (email: string) => raw.prepare('SELECT kind, activated_at FROM lifecycle_events WHERE email = ? ORDER BY created_at').all(email) as { kind: string; activated_at: number | null }[]
 
 test('unverified signup queues a PENDING conversion only; the verification link activates the cancel', async () => {
@@ -56,6 +59,7 @@ test('unverified signup queues a PENDING conversion only; the verification link 
   assert.equal((raw.prepare("SELECT email_verified_at FROM users WHERE email = 'newprospect@example.test'").get() as { email_verified_at: number | null }).email_verified_at, null)
   assert.deepEqual(events('newprospect@example.test'), [{ kind: 'signup', activated_at: null }], 'durable pending conversion, nothing activated')
   assert.equal(msgStatus(m), 'draft', 'unverified typed email cancels nothing')
+  assert.deepEqual(enrollments('newprospect@example.test'), [], 'and transitions nothing')
 
   const token = link('newprospect@example.test', 'verify')!
   assert.ok(token, 'a verification link went to the address')
@@ -65,6 +69,8 @@ test('unverified signup queues a PENDING conversion only; the verification link 
   assert.equal((raw.prepare('SELECT error FROM outreach_messages WHERE id = ?').get(m) as { error: string }).error, 'converted_signup')
   assert.equal((raw.prepare("SELECT status FROM sequences WHERE id = 'sq-a'").get() as { status: string }).status, 'stopped')
   assert.deepEqual(events('newprospect@example.test').map(e => e.activated_at !== null), [true])
+  // The verification is also the transition: seller T opted in, so the new customer is on T's onboarding path.
+  assert.deepEqual(enrollments('newprospect@example.test'), [{ tenant_id: 'T', source: 'conversion:signup' }])
   // The link is spent: a replay cannot re-run anything.
   assert.equal((await verify.POST(req('/api/auth/verify', { token }))).status, 410)
 })

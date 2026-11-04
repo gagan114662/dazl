@@ -41,6 +41,18 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
+  (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
+  Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.
+
+- b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
+  same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
+  fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
+  and never ask the user to check or confirm. Stubbed fixtures only; not verified live.
+  b/352-checkable-review: Home, the Leads card and the draft gate now agree for every hold reason (checkable-evidence
+  and date-vouch holds are review; sales_hiring_check_failed is research on all three). Trial scans are unchanged: no
+  recovery pass and no extra paid call (paidFallback stays false). Stubbed only.
+
 - PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
   `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)
   and the tombstone ledger functions. No request flow or UI in this part; the ledger writer and the recovery-runbook
@@ -162,13 +174,16 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
 2. #380 explicit AND/OR/NOT targeting with per-condition proof.
 3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
-4. #382 real Apollo-to-PDL enrichment fallback waterfall.
+4. #382 real Apollo-to-PDL enrichment fallback waterfall (per-lead per-provider outcomes, timeout/skip notices in the scan view: PR on `b/382-enrich-waterfall`, in review; stubbed providers only, not run live).
 5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
 6. #384 separate published provenance from deliverability/person-route status.
-7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop).
-8. #385 rejection/outcome feedback improves future selection; #387 continuous event detection — compounding
+7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
+   currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
+8. #385 rejection/outcome feedback improves future selection (in review: b/385-rejection-outcomes, docs/design/lead-feedback.md); #387 continuous event detection — compounding
    advantages, start once 1-7 ship.
-9. #386 real lookalikes, #388 tested source coverage, #389 technographics, #390 first-party signals, #391
+   #387 in review: b/387-event-detection (monitor runs alert only on novel, dated, in-window, verified events: new company /
+   new signal / now reachable, deduped across plays, per-monitor alert policy, latency and missed-run report).
+9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
    multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
     as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.

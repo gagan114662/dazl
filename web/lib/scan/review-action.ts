@@ -6,8 +6,12 @@
 //   - a valid date older than the window: research only for THIS lead; only a NEW scan with a wider window can find it
 //     as current (window-notice.ts: "a new scan uses your usual scan budget");
 //   - held but the date facts are not known here: safe common wording, no claimed cure.
+// A hold no check can change (someone else's customer, a different place, a closed opening - uncheckableCause in lib/lead-state.ts) is research only too, the same
+// classification the home journey shows (#352): confirming keeps it for reading and the draft gate keeps it out of drafting. So is a REQUIRED check that could
+// not run (sales_hiring_check_failed): requiredGateHeld (lib/scan/held-state.ts) holds it whatever the user confirms, until the check runs again and passes.
 // Pure and client-safe.
 import { windowStatus } from './window.ts'
+import { uncheckableCause, CAUSE_TEXT, REQUIRED_GATE_REASONS } from '../lead-state.ts'
 
 const DATE = new Set(['event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date'])
 
@@ -33,6 +37,9 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   if (kind === 'no_date') return { label: 'Keep as research', hint: `${RESEARCH}: it has no valid event date (missing, invalid or in the future), so it stays out of drafting. A wider time window does not change that.` }
   if (kind === 'older') return { label: 'Keep as research', hint: `${RESEARCH}: its event date is older than the time window you asked for, so it stays out of drafting. Confirming does not change that for this lead; only a new scan with a wider window can find it as current (it uses your usual scan budget).` }
   if (kind === 'unknown') return { label: 'Keep as research', hint: `${RESEARCH}: it is outside the time window you asked for, so it stays out of drafting.` }
+  const cause = uncheckableCause(l.review_reason)
+  if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
+  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
   if (DATE.has(l.review_reason ?? '')) return {
     label: 'I checked the date - use it',
     hint: 'Moves it to your list as confirmed by you, and it can be drafted. dazl has not verified the date or current need; you are vouching for it.',

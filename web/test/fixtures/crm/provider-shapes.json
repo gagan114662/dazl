@@ -1,0 +1,1435 @@
+{
+  "provenance": "Provider response SHAPES, not live captures. Bodies follow the providers' published API specs: HubSpot CRM Contacts v3 (SimplePublicObject, Error) and Account Info v3 from github.com/HubSpot/HubSpot-public-api-spec-collection; HubSpot 409 bodies (legacy CONFLICT and current OBJECT_ALREADY_EXISTS/CONTACT_EXISTS) as quoted from HubSpot API responses on community.hubspot.com; Pipedrive v1 persons POST/GET/DELETE examples and the 401 body from developers.pipedrive.com/docs/api/v1/openapi.json (2025-03 snapshot). Values are synthetic (Synthetic Co, pat@synthetic.example). Real sandbox captures go in recorded/ (scripts/crm-live-acceptance.mts --record).",
+  "cases": [
+    {
+      "name": "hubspot create 201, read-back shows the lead",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 201,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "firstname": "Pat",
+              "hs_is_unworked": "true",
+              "hs_lead_status": "NEW",
+              "hs_object_id": "151",
+              "hs_pipeline": "contacts-lifecycle-pipeline",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z",
+              "lastname": "Example",
+              "lifecyclestage": "lead"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 200,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "hs_object_id": "151",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "ok",
+        "externalId": "151",
+        "message": "Contact created in HubSpot"
+      }
+    },
+    {
+      "name": "hubspot create 201, read-back holds another email",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 201,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "firstname": "Pat",
+              "hs_is_unworked": "true",
+              "hs_lead_status": "NEW",
+              "hs_object_id": "151",
+              "hs_pipeline": "contacts-lifecycle-pipeline",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z",
+              "lastname": "Example",
+              "lifecyclestage": "lead"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 200,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "someone@else.example",
+              "hs_object_id": "151",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "hubspot create 201, read-back 404 (no such contact)",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 201,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "firstname": "Pat",
+              "hs_is_unworked": "true",
+              "hs_lead_status": "NEW",
+              "hs_object_id": "151",
+              "hs_pipeline": "contacts-lifecycle-pipeline",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z",
+              "lastname": "Example",
+              "lifecyclestage": "lead"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 404,
+          "body": {
+            "status": "error",
+            "message": "resource not found",
+            "correlationId": "8a2f61c4-0c0f-4b71-8d36-2b9f0b6e7d12",
+            "category": "OBJECT_NOT_FOUND"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "hubspot create 201, read-back archived",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 201,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "firstname": "Pat",
+              "hs_is_unworked": "true",
+              "hs_lead_status": "NEW",
+              "hs_object_id": "151",
+              "hs_pipeline": "contacts-lifecycle-pipeline",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z",
+              "lastname": "Example",
+              "lifecyclestage": "lead"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 200,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "hs_object_id": "151",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": true,
+            "archivedAt": "2026-11-04T07:00:00.000Z"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "hubspot create 201, read-back names another id",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 201,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "firstname": "Pat",
+              "hs_is_unworked": "true",
+              "hs_lead_status": "NEW",
+              "hs_object_id": "151",
+              "hs_pipeline": "contacts-lifecycle-pipeline",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z",
+              "lastname": "Example",
+              "lifecyclestage": "lead"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 200,
+          "body": {
+            "id": "152",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "hs_object_id": "152",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "hubspot create 201, read-back rate limited (429)",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 201,
+          "body": {
+            "id": "151",
+            "properties": {
+              "company": "Synthetic Co",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "email": "pat@synthetic.example",
+              "firstname": "Pat",
+              "hs_is_unworked": "true",
+              "hs_lead_status": "NEW",
+              "hs_object_id": "151",
+              "hs_pipeline": "contacts-lifecycle-pipeline",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z",
+              "lastname": "Example",
+              "lifecyclestage": "lead"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 429,
+          "body": {
+            "status": "error",
+            "message": "You have reached your secondly limit.",
+            "errorType": "RATE_LIMIT",
+            "correlationId": "c1a7e7f0-6a7b-4c55-9e0f-1f6d5c0b2e33",
+            "policyName": "SECONDLY"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "hubspot 409 CONFLICT (legacy body), the existing contact holds the lead email",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 409,
+          "body": {
+            "status": "error",
+            "message": "Contact already exists. Existing ID: 151",
+            "correlationId": "14342612-8f27-4d22-b1fa-cb161e0d4e08",
+            "category": "CONFLICT"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 200,
+          "body": {
+            "id": "151",
+            "properties": {
+              "email": "pat@synthetic.example",
+              "hs_object_id": "151",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "ok",
+        "externalId": "151",
+        "message": "Already in HubSpot (matching contact exists)"
+      }
+    },
+    {
+      "name": "hubspot 409 OBJECT_ALREADY_EXISTS (current body), the existing contact holds the lead email",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 409,
+          "body": {
+            "message": "Contact already exists. Existing ID: 151",
+            "identityProfile": {
+              "vid": 151,
+              "identity": [
+                {
+                  "value": "066239b5-a5b8-4caf-af47-ead811935663",
+                  "type": "LEAD_GUID",
+                  "timestamp": 1665417061496
+                },
+                {
+                  "value": "pat@synthetic.example",
+                  "type": "EMAIL",
+                  "timestamp": 1665417061370,
+                  "isPrimary": true
+                }
+              ],
+              "linkedVid": [],
+              "isContact": true,
+              "isCanonicalProfile": true,
+              "savedAtTimestamp": 1699288594350,
+              "promotedToContact": true
+            },
+            "errors": [
+              {
+                "message": "A contact with email pat@synthetic.example already exists. Existing ID: 151",
+                "in": "email"
+              }
+            ],
+            "status": "error",
+            "correlationId": "b6881283-187e-4088-a778-5c933a14547c",
+            "category": "OBJECT_ALREADY_EXISTS",
+            "error": "CONTACT_EXISTS"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 200,
+          "body": {
+            "id": "151",
+            "properties": {
+              "email": "pat@synthetic.example",
+              "hs_object_id": "151",
+              "createdate": "2026-11-04T07:00:00.000Z",
+              "lastmodifieddate": "2026-11-04T07:00:00.000Z"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "ok",
+        "externalId": "151",
+        "message": "Already in HubSpot (matching contact exists)"
+      }
+    },
+    {
+      "name": "hubspot 409, the existing contact holds another email",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 409,
+          "body": {
+            "status": "error",
+            "message": "Contact already exists. Existing ID: 151",
+            "correlationId": "14342612-8f27-4d22-b1fa-cb161e0d4e08",
+            "category": "CONFLICT"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/crm/v3/objects/contacts/151",
+          "status": 200,
+          "body": {
+            "id": "151",
+            "properties": {
+              "email": "someone@else.example",
+              "hs_object_id": "151"
+            },
+            "createdAt": "2026-11-04T07:00:00.000Z",
+            "updatedAt": "2026-11-04T07:00:00.000Z",
+            "archived": false
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "failed"
+      }
+    },
+    {
+      "name": "hubspot 401 INVALID_AUTHENTICATION",
+      "provider": "hubspot",
+      "key": "invalid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 401,
+          "body": {
+            "status": "error",
+            "message": "Authentication credentials not found. This API supports OAuth 2.0 authentication and you can find more details at https://developers.hubspot.com/docs/methods/auth/oauth-overview",
+            "correlationId": "5c4e3c1d-1f1e-4b0e-9a55-0d1b6d1f2a01",
+            "category": "INVALID_AUTHENTICATION"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "failed"
+      }
+    },
+    {
+      "name": "hubspot 400 VALIDATION_ERROR",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 400,
+          "body": {
+            "status": "error",
+            "message": "Property values were not valid: [{\"isValid\":false,\"message\":\"Email address pat@synthetic is invalid\",\"error\":\"INVALID_EMAIL\",\"name\":\"email\",\"localizedErrorMessage\":\"Email address pat@synthetic is invalid\"}]",
+            "correlationId": "0a9b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d",
+            "category": "VALIDATION_ERROR"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "failed"
+      }
+    },
+    {
+      "name": "hubspot 200 {} (the #569 repro)",
+      "provider": "hubspot",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/crm/v3/objects/contacts",
+          "status": 200,
+          "body": {}
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "pipedrive create 201, read-back shows the lead",
+      "provider": "pipedrive",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/v1/persons",
+          "status": 201,
+          "body": {
+            "success": true,
+            "data": {
+              "id": 101,
+              "company_id": 12,
+              "owner_id": {
+                "id": 123,
+                "name": "Jane Doe",
+                "email": "jane@pipedrive.com",
+                "has_pic": 1,
+                "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                "active_flag": true,
+                "value": 123
+              },
+              "org_id": {
+                "name": "Synthetic Co",
+                "people_count": 1,
+                "owner_id": 123,
+                "address": null,
+                "active_flag": true,
+                "cc_email": "org@pipedrivemail.com",
+                "value": 1234
+              },
+              "name": "Pat Example",
+              "first_name": "Pat",
+              "last_name": "Example",
+              "open_deals_count": 0,
+              "related_open_deals_count": 0,
+              "closed_deals_count": 0,
+              "related_closed_deals_count": 0,
+              "participant_open_deals_count": 0,
+              "participant_closed_deals_count": 0,
+              "email_messages_count": 0,
+              "activities_count": 0,
+              "done_activities_count": 0,
+              "undone_activities_count": 0,
+              "files_count": 0,
+              "notes_count": 0,
+              "followers_count": 1,
+              "won_deals_count": 0,
+              "related_won_deals_count": 0,
+              "lost_deals_count": 0,
+              "related_lost_deals_count": 0,
+              "active_flag": true,
+              "phone": [
+                {
+                  "value": "",
+                  "primary": true
+                }
+              ],
+              "email": [
+                {
+                  "value": "pat@synthetic.example",
+                  "primary": true,
+                  "label": "work"
+                }
+              ],
+              "primary_email": "pat@synthetic.example",
+              "first_char": "p",
+              "update_time": "2026-11-04 07:00:00",
+              "add_time": "2026-11-04 07:00:00",
+              "visible_to": "3",
+              "marketing_status": "no_consent",
+              "picture_id": null,
+              "next_activity_date": null,
+              "next_activity_time": null,
+              "next_activity_id": null,
+              "last_activity_id": null,
+              "last_activity_date": null,
+              "last_incoming_mail_time": null,
+              "last_outgoing_mail_time": null,
+              "label": null,
+              "label_ids": [],
+              "org_name": "Synthetic Co",
+              "owner_name": "Jane Doe",
+              "cc_email": "org@pipedrivemail.com"
+            },
+            "related_objects": {
+              "user": {
+                "123": {
+                  "id": 123,
+                  "name": "Jane Doe",
+                  "email": "jane@pipedrive.com",
+                  "has_pic": 1,
+                  "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                  "active_flag": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/persons/101",
+          "status": 200,
+          "body": {
+            "success": true,
+            "data": {
+              "id": 101,
+              "company_id": 12,
+              "owner_id": {
+                "id": 123,
+                "name": "Jane Doe",
+                "email": "jane@pipedrive.com",
+                "has_pic": 1,
+                "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                "active_flag": true,
+                "value": 123
+              },
+              "org_id": {
+                "name": "Synthetic Co",
+                "people_count": 1,
+                "owner_id": 123,
+                "address": null,
+                "active_flag": true,
+                "cc_email": "org@pipedrivemail.com",
+                "value": 1234
+              },
+              "name": "Pat Example",
+              "first_name": "Pat",
+              "last_name": "Example",
+              "open_deals_count": 0,
+              "related_open_deals_count": 0,
+              "closed_deals_count": 0,
+              "related_closed_deals_count": 0,
+              "participant_open_deals_count": 0,
+              "participant_closed_deals_count": 0,
+              "email_messages_count": 0,
+              "activities_count": 0,
+              "done_activities_count": 0,
+              "undone_activities_count": 0,
+              "files_count": 0,
+              "notes_count": 0,
+              "followers_count": 1,
+              "won_deals_count": 0,
+              "related_won_deals_count": 0,
+              "lost_deals_count": 0,
+              "related_lost_deals_count": 0,
+              "active_flag": true,
+              "phone": [
+                {
+                  "value": "",
+                  "primary": true
+                }
+              ],
+              "email": [
+                {
+                  "value": "pat@synthetic.example",
+                  "primary": true,
+                  "label": "work"
+                }
+              ],
+              "primary_email": "pat@synthetic.example",
+              "first_char": "p",
+              "update_time": "2026-11-04 07:00:00",
+              "add_time": "2026-11-04 07:00:00",
+              "visible_to": "3",
+              "marketing_status": "no_consent",
+              "picture_id": null,
+              "next_activity_date": null,
+              "next_activity_time": null,
+              "next_activity_id": null,
+              "last_activity_id": null,
+              "last_activity_date": null,
+              "last_incoming_mail_time": null,
+              "last_outgoing_mail_time": null,
+              "label": null,
+              "label_ids": [],
+              "org_name": "Synthetic Co",
+              "owner_name": "Jane Doe",
+              "cc_email": "org@pipedrivemail.com"
+            },
+            "additional_data": {
+              "dropbox_email": "synthetic@pipedrivemail.com"
+            },
+            "related_objects": {
+              "organization": {
+                "1234": {
+                  "id": 1234,
+                  "name": "Synthetic Co",
+                  "people_count": 1,
+                  "owner_id": 123,
+                  "address": null,
+                  "active_flag": true,
+                  "cc_email": "org@pipedrivemail.com"
+                }
+              },
+              "user": {
+                "123": {
+                  "id": 123,
+                  "name": "Jane Doe",
+                  "email": "jane@pipedrive.com",
+                  "has_pic": 1,
+                  "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                  "active_flag": true
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "ok",
+        "externalId": "101",
+        "message": "Person created in Pipedrive"
+      }
+    },
+    {
+      "name": "pipedrive create 201, read-back holds another email",
+      "provider": "pipedrive",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/v1/persons",
+          "status": 201,
+          "body": {
+            "success": true,
+            "data": {
+              "id": 101,
+              "company_id": 12,
+              "owner_id": {
+                "id": 123,
+                "name": "Jane Doe",
+                "email": "jane@pipedrive.com",
+                "has_pic": 1,
+                "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                "active_flag": true,
+                "value": 123
+              },
+              "org_id": {
+                "name": "Synthetic Co",
+                "people_count": 1,
+                "owner_id": 123,
+                "address": null,
+                "active_flag": true,
+                "cc_email": "org@pipedrivemail.com",
+                "value": 1234
+              },
+              "name": "Pat Example",
+              "first_name": "Pat",
+              "last_name": "Example",
+              "open_deals_count": 0,
+              "related_open_deals_count": 0,
+              "closed_deals_count": 0,
+              "related_closed_deals_count": 0,
+              "participant_open_deals_count": 0,
+              "participant_closed_deals_count": 0,
+              "email_messages_count": 0,
+              "activities_count": 0,
+              "done_activities_count": 0,
+              "undone_activities_count": 0,
+              "files_count": 0,
+              "notes_count": 0,
+              "followers_count": 1,
+              "won_deals_count": 0,
+              "related_won_deals_count": 0,
+              "lost_deals_count": 0,
+              "related_lost_deals_count": 0,
+              "active_flag": true,
+              "phone": [
+                {
+                  "value": "",
+                  "primary": true
+                }
+              ],
+              "email": [
+                {
+                  "value": "pat@synthetic.example",
+                  "primary": true,
+                  "label": "work"
+                }
+              ],
+              "primary_email": "pat@synthetic.example",
+              "first_char": "p",
+              "update_time": "2026-11-04 07:00:00",
+              "add_time": "2026-11-04 07:00:00",
+              "visible_to": "3",
+              "marketing_status": "no_consent",
+              "picture_id": null,
+              "next_activity_date": null,
+              "next_activity_time": null,
+              "next_activity_id": null,
+              "last_activity_id": null,
+              "last_activity_date": null,
+              "last_incoming_mail_time": null,
+              "last_outgoing_mail_time": null,
+              "label": null,
+              "label_ids": [],
+              "org_name": "Synthetic Co",
+              "owner_name": "Jane Doe",
+              "cc_email": "org@pipedrivemail.com"
+            },
+            "related_objects": {
+              "user": {
+                "123": {
+                  "id": 123,
+                  "name": "Jane Doe",
+                  "email": "jane@pipedrive.com",
+                  "has_pic": 1,
+                  "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                  "active_flag": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/persons/101",
+          "status": 200,
+          "body": {
+            "success": true,
+            "data": {
+              "id": 101,
+              "company_id": 12,
+              "owner_id": {
+                "id": 123,
+                "name": "Jane Doe",
+                "email": "jane@pipedrive.com",
+                "has_pic": 1,
+                "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                "active_flag": true,
+                "value": 123
+              },
+              "org_id": {
+                "name": "Synthetic Co",
+                "people_count": 1,
+                "owner_id": 123,
+                "address": null,
+                "active_flag": true,
+                "cc_email": "org@pipedrivemail.com",
+                "value": 1234
+              },
+              "name": "Pat Example",
+              "first_name": "Pat",
+              "last_name": "Example",
+              "open_deals_count": 0,
+              "related_open_deals_count": 0,
+              "closed_deals_count": 0,
+              "related_closed_deals_count": 0,
+              "participant_open_deals_count": 0,
+              "participant_closed_deals_count": 0,
+              "email_messages_count": 0,
+              "activities_count": 0,
+              "done_activities_count": 0,
+              "undone_activities_count": 0,
+              "files_count": 0,
+              "notes_count": 0,
+              "followers_count": 1,
+              "won_deals_count": 0,
+              "related_won_deals_count": 0,
+              "lost_deals_count": 0,
+              "related_lost_deals_count": 0,
+              "active_flag": true,
+              "phone": [
+                {
+                  "value": "",
+                  "primary": true
+                }
+              ],
+              "email": [
+                {
+                  "value": "someone@else.example",
+                  "primary": true,
+                  "label": "work"
+                }
+              ],
+              "primary_email": "someone@else.example",
+              "first_char": "p",
+              "update_time": "2026-11-04 07:00:00",
+              "add_time": "2026-11-04 07:00:00",
+              "visible_to": "3",
+              "marketing_status": "no_consent",
+              "picture_id": null,
+              "next_activity_date": null,
+              "next_activity_time": null,
+              "next_activity_id": null,
+              "last_activity_id": null,
+              "last_activity_date": null,
+              "last_incoming_mail_time": null,
+              "last_outgoing_mail_time": null,
+              "label": null,
+              "label_ids": [],
+              "org_name": "Synthetic Co",
+              "owner_name": "Jane Doe",
+              "cc_email": "org@pipedrivemail.com"
+            },
+            "additional_data": {
+              "dropbox_email": "synthetic@pipedrivemail.com"
+            },
+            "related_objects": {
+              "organization": {
+                "1234": {
+                  "id": 1234,
+                  "name": "Synthetic Co",
+                  "people_count": 1,
+                  "owner_id": 123,
+                  "address": null,
+                  "active_flag": true,
+                  "cc_email": "org@pipedrivemail.com"
+                }
+              },
+              "user": {
+                "123": {
+                  "id": 123,
+                  "name": "Jane Doe",
+                  "email": "jane@pipedrive.com",
+                  "has_pic": 1,
+                  "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                  "active_flag": true
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "pipedrive create 201, read-back soft-deleted (active_flag false)",
+      "provider": "pipedrive",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/v1/persons",
+          "status": 201,
+          "body": {
+            "success": true,
+            "data": {
+              "id": 101,
+              "company_id": 12,
+              "owner_id": {
+                "id": 123,
+                "name": "Jane Doe",
+                "email": "jane@pipedrive.com",
+                "has_pic": 1,
+                "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                "active_flag": true,
+                "value": 123
+              },
+              "org_id": {
+                "name": "Synthetic Co",
+                "people_count": 1,
+                "owner_id": 123,
+                "address": null,
+                "active_flag": true,
+                "cc_email": "org@pipedrivemail.com",
+                "value": 1234
+              },
+              "name": "Pat Example",
+              "first_name": "Pat",
+              "last_name": "Example",
+              "open_deals_count": 0,
+              "related_open_deals_count": 0,
+              "closed_deals_count": 0,
+              "related_closed_deals_count": 0,
+              "participant_open_deals_count": 0,
+              "participant_closed_deals_count": 0,
+              "email_messages_count": 0,
+              "activities_count": 0,
+              "done_activities_count": 0,
+              "undone_activities_count": 0,
+              "files_count": 0,
+              "notes_count": 0,
+              "followers_count": 1,
+              "won_deals_count": 0,
+              "related_won_deals_count": 0,
+              "lost_deals_count": 0,
+              "related_lost_deals_count": 0,
+              "active_flag": true,
+              "phone": [
+                {
+                  "value": "",
+                  "primary": true
+                }
+              ],
+              "email": [
+                {
+                  "value": "pat@synthetic.example",
+                  "primary": true,
+                  "label": "work"
+                }
+              ],
+              "primary_email": "pat@synthetic.example",
+              "first_char": "p",
+              "update_time": "2026-11-04 07:00:00",
+              "add_time": "2026-11-04 07:00:00",
+              "visible_to": "3",
+              "marketing_status": "no_consent",
+              "picture_id": null,
+              "next_activity_date": null,
+              "next_activity_time": null,
+              "next_activity_id": null,
+              "last_activity_id": null,
+              "last_activity_date": null,
+              "last_incoming_mail_time": null,
+              "last_outgoing_mail_time": null,
+              "label": null,
+              "label_ids": [],
+              "org_name": "Synthetic Co",
+              "owner_name": "Jane Doe",
+              "cc_email": "org@pipedrivemail.com"
+            },
+            "related_objects": {
+              "user": {
+                "123": {
+                  "id": 123,
+                  "name": "Jane Doe",
+                  "email": "jane@pipedrive.com",
+                  "has_pic": 1,
+                  "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                  "active_flag": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/persons/101",
+          "status": 200,
+          "body": {
+            "success": true,
+            "data": {
+              "id": 101,
+              "company_id": 12,
+              "owner_id": {
+                "id": 123,
+                "name": "Jane Doe",
+                "email": "jane@pipedrive.com",
+                "has_pic": 1,
+                "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                "active_flag": true,
+                "value": 123
+              },
+              "org_id": {
+                "name": "Synthetic Co",
+                "people_count": 1,
+                "owner_id": 123,
+                "address": null,
+                "active_flag": true,
+                "cc_email": "org@pipedrivemail.com",
+                "value": 1234
+              },
+              "name": "Pat Example",
+              "first_name": "Pat",
+              "last_name": "Example",
+              "open_deals_count": 0,
+              "related_open_deals_count": 0,
+              "closed_deals_count": 0,
+              "related_closed_deals_count": 0,
+              "participant_open_deals_count": 0,
+              "participant_closed_deals_count": 0,
+              "email_messages_count": 0,
+              "activities_count": 0,
+              "done_activities_count": 0,
+              "undone_activities_count": 0,
+              "files_count": 0,
+              "notes_count": 0,
+              "followers_count": 1,
+              "won_deals_count": 0,
+              "related_won_deals_count": 0,
+              "lost_deals_count": 0,
+              "related_lost_deals_count": 0,
+              "active_flag": false,
+              "phone": [
+                {
+                  "value": "",
+                  "primary": true
+                }
+              ],
+              "email": [
+                {
+                  "value": "pat@synthetic.example",
+                  "primary": true,
+                  "label": "work"
+                }
+              ],
+              "primary_email": "pat@synthetic.example",
+              "first_char": "p",
+              "update_time": "2026-11-04 07:00:00",
+              "add_time": "2026-11-04 07:00:00",
+              "visible_to": "3",
+              "marketing_status": "no_consent",
+              "picture_id": null,
+              "next_activity_date": null,
+              "next_activity_time": null,
+              "next_activity_id": null,
+              "last_activity_id": null,
+              "last_activity_date": null,
+              "last_incoming_mail_time": null,
+              "last_outgoing_mail_time": null,
+              "label": null,
+              "label_ids": [],
+              "org_name": "Synthetic Co",
+              "owner_name": "Jane Doe",
+              "cc_email": "org@pipedrivemail.com"
+            },
+            "additional_data": {
+              "dropbox_email": "synthetic@pipedrivemail.com"
+            },
+            "related_objects": {
+              "organization": {
+                "1234": {
+                  "id": 1234,
+                  "name": "Synthetic Co",
+                  "people_count": 1,
+                  "owner_id": 123,
+                  "address": null,
+                  "active_flag": true,
+                  "cc_email": "org@pipedrivemail.com"
+                }
+              },
+              "user": {
+                "123": {
+                  "id": 123,
+                  "name": "Jane Doe",
+                  "email": "jane@pipedrive.com",
+                  "has_pic": 1,
+                  "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                  "active_flag": true
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "pipedrive create 201, read-back 404 Person not found",
+      "provider": "pipedrive",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/v1/persons",
+          "status": 201,
+          "body": {
+            "success": true,
+            "data": {
+              "id": 101,
+              "company_id": 12,
+              "owner_id": {
+                "id": 123,
+                "name": "Jane Doe",
+                "email": "jane@pipedrive.com",
+                "has_pic": 1,
+                "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                "active_flag": true,
+                "value": 123
+              },
+              "org_id": {
+                "name": "Synthetic Co",
+                "people_count": 1,
+                "owner_id": 123,
+                "address": null,
+                "active_flag": true,
+                "cc_email": "org@pipedrivemail.com",
+                "value": 1234
+              },
+              "name": "Pat Example",
+              "first_name": "Pat",
+              "last_name": "Example",
+              "open_deals_count": 0,
+              "related_open_deals_count": 0,
+              "closed_deals_count": 0,
+              "related_closed_deals_count": 0,
+              "participant_open_deals_count": 0,
+              "participant_closed_deals_count": 0,
+              "email_messages_count": 0,
+              "activities_count": 0,
+              "done_activities_count": 0,
+              "undone_activities_count": 0,
+              "files_count": 0,
+              "notes_count": 0,
+              "followers_count": 1,
+              "won_deals_count": 0,
+              "related_won_deals_count": 0,
+              "lost_deals_count": 0,
+              "related_lost_deals_count": 0,
+              "active_flag": true,
+              "phone": [
+                {
+                  "value": "",
+                  "primary": true
+                }
+              ],
+              "email": [
+                {
+                  "value": "pat@synthetic.example",
+                  "primary": true,
+                  "label": "work"
+                }
+              ],
+              "primary_email": "pat@synthetic.example",
+              "first_char": "p",
+              "update_time": "2026-11-04 07:00:00",
+              "add_time": "2026-11-04 07:00:00",
+              "visible_to": "3",
+              "marketing_status": "no_consent",
+              "picture_id": null,
+              "next_activity_date": null,
+              "next_activity_time": null,
+              "next_activity_id": null,
+              "last_activity_id": null,
+              "last_activity_date": null,
+              "last_incoming_mail_time": null,
+              "last_outgoing_mail_time": null,
+              "label": null,
+              "label_ids": [],
+              "org_name": "Synthetic Co",
+              "owner_name": "Jane Doe",
+              "cc_email": "org@pipedrivemail.com"
+            },
+            "related_objects": {
+              "user": {
+                "123": {
+                  "id": 123,
+                  "name": "Jane Doe",
+                  "email": "jane@pipedrive.com",
+                  "has_pic": 1,
+                  "pic_hash": "2611ace8ac6a3afe2f69ed56f9e08c6b",
+                  "active_flag": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/persons/101",
+          "status": 404,
+          "body": {
+            "success": false,
+            "error": "Person not found",
+            "error_info": "Please check developers.pipedrive.com for more information about Pipedrive API.",
+            "data": null,
+            "additional_data": null
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    },
+    {
+      "name": "pipedrive 401 unauthorized access",
+      "provider": "pipedrive",
+      "key": "invalid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/v1/persons",
+          "status": 401,
+          "body": {
+            "success": false,
+            "error": "unauthorized access",
+            "errorCode": 401,
+            "error_info": "Please check developers.pipedrive.com for more information about Pipedrive API.",
+            "data": null,
+            "additional_data": null
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "failed"
+      }
+    },
+    {
+      "name": "pipedrive 200 {} (the #569 repro)",
+      "provider": "pipedrive",
+      "key": "valid",
+      "lead": {
+        "company": "Synthetic Co",
+        "name": "Pat Example",
+        "contact": "pat@synthetic.example",
+        "signal": "s",
+        "source_url": "https://news.example/a"
+      },
+      "exchanges": [
+        {
+          "method": "POST",
+          "path": "/v1/persons",
+          "status": 200,
+          "body": {}
+        }
+      ],
+      "expect": {
+        "outcome": "unknown"
+      }
+    }
+  ]
+}
