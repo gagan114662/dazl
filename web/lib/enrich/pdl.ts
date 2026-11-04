@@ -9,6 +9,7 @@ const TIMEOUT_MS = 15_000
 // 1 credit per profile returned. Names/titles only - emails/phones are never read.
 import { formatPlace } from '../scan/contact-agreement.ts'
 import { isMailboxShaped } from './person-name.ts'
+import { latestDay } from '../people/currency.ts'
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : null)
 export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5): Promise<ApolloPerson[]> {
   const ctrl = new AbortController()
@@ -33,6 +34,8 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
       place: formatPlace(str(p.job_company_location_locality), str(p.job_company_location_region), str(p.job_company_location_country)),
       address: str(p.job_company_location_street_address),
       domain: str(p.job_company_website),
+      // The record's own job last-verified / last-changed date (#383 criterion 4); any other shape is null.
+      recordDay: latestDay(p.job_last_verified, p.job_last_changed),
     })).filter(p => p.name && !isMailboxShaped(p.name))
   } finally { clearTimeout(t) }
 }

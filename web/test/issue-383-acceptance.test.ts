@@ -6,10 +6,10 @@
 //   2. A former employee and an assistant-to-the-buyer are rejected, never attached.
 //   3. No person is inferred from a generic inbox (mailbox-shaped names never attach; a lead whose
 //      only contact is a generic inbox gets EMPTY best-person fields, never an invented person).
-//   4. PARTIAL. "Show named verified-current versus search-result-only contacts separately": pinned here is only
-//      the offline half (distinct named sources per contact; the public search result keeps its "not verified as
-//      current" label). NOT met: no contact class is verified-current (every source is labelled not verified) and the
-//      leads page shows one mixed "Right people" list. What evidence counts as verified-current is an owner decision.
+//   4. "Show named verified-current versus search-result-only contacts separately", on the owner's definition
+//      (Gagan, 2026-11-03, PR #566): verified current = a first-party company page read within 180 days, or a
+//      provider record (Apollo/PDL) confirmed/updated within 90 days; everything else is search-result-only. The
+//      LinkedIn-session basis waits for #192's follow-up and is not counted. The leads page shows two sections.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -22,6 +22,8 @@ import { migrateConnectors, saveCredential, addEnrichment, enrichmentsForLeads }
 import { bestPeople } from '../lib/people/best-person.ts'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '../lib/people/rank.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { contactCurrency, isoDay, providerContactLabel, splitByCurrency, FIRST_PARTY_DAYS, PROVIDER_DAYS } from '../lib/people/currency.ts'
+import { readFileSync } from 'node:fs'
 
 const master = randomBytes(32)
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
@@ -94,20 +96,103 @@ test('criterion 3b: a lead whose only contact is a generic inbox gets EMPTY best
   assert.deepEqual(best.get('lead1'), { best_person: '', best_person_title: '', best_person_link: '', best_person_found_via: '' }, 'nothing is invented from a generic inbox')
 })
 
-test('criterion 4 (PARTIAL - offline half only): provider and search-result-only contacts each carry their own named source; no verified-current class exists yet', async () => {
+const DAY = 86_400_000
+const dayAgo = (n: number, now = Date.now()) => new Date(now - n * DAY).toISOString().slice(0, 10)
+
+test('criterion 4a: a provider record dated within 90 days is verified current; older or undated stays search-result-only (through the real enrichment path)', async () => {
   const { db, jobId, leads } = seed({ confirmed: ['VP Sales'] })
+  const now = Date.now()
   await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: (async (url: RequestInfo | URL) => {
     if (String(url).includes('organizations/enrich')) return ok(ORG_RESP)
-    return ok({ people: [person('Jane Buyer', 'VP Sales')] })
+    return ok({ people: [
+      { ...person('Jane Buyer', 'VP Sales'), last_refreshed_at: new Date(now - 30 * DAY).toISOString() },
+      { ...person('Olga Old', 'VP Sales'), updated_at: dayAgo(120, now) },
+      { ...person('Uma Undated', 'VP Sales') },
+    ] })
   }) as never, master })
-  addEnrichment(db, 'u1', 'lead1', { connector: 'search:people', kind: 'person', value: 'Sam Maybe, VP Sales', label: 'public search result (profile title), not verified as current staff', confidence: null, source_url: 'https://linkedin.com/in/sammaybe', source_date: '2026-11-02', retrieved_at: 1 })
   const rows = enrichmentsForLeads(db, 'u1', ['lead1']).lead1
-  const ranked = contactsFromEnrichments(rows, 'VP Sales')
-  assert.equal(ranked.length, 2, 'both classes are listed for the lead')
-  const sources = ranked.map(r => PEOPLE_SOURCE[r.connector] ?? r.connector)
-  assert.ok(sources.includes('a public LinkedIn search result (not verified as current)'), 'the search-result-only contact is named as such')
-  assert.ok(sources.includes('Apollo (provider search result, not verified as current)'), 'the provider contact is named with its own source')
-  assert.notEqual(PEOPLE_SOURCE['search:people'], PEOPLE_SOURCE['enrich:apollo'], 'the two classes are never merged into one label')
-  const stored = rows.find(r => r.kind === 'person')
-  assert.equal(stored?.label, 'public search result (profile title), not verified as current staff', 'the stored label itself carries the not-verified wording')
+  assert.equal(rows.find(r => r.value.startsWith('Jane'))?.label, `Apollo, record dated ${dayAgo(30, now)}`, 'the record date is stored with the contact')
+  assert.equal(rows.find(r => r.value.startsWith('Uma'))?.label, 'Apollo', 'an undated record stores no date')
+  const ranked = contactsFromEnrichments(rows, 'VP Sales', now)
+  const by = (n: string) => ranked.find(r => r.name === n)!
+  assert.deepEqual(by('Jane Buyer').verified, { currency: 'verified_current', basis: 'provider_record', dated: dayAgo(30, now) })
+  assert.equal(by('Olga Old').currency, 'search_only', '120 days is outside the 90-day provider window')
+  assert.equal(by('Uma Undated').currency, 'search_only', 'an undated provider row is search-result-only')
+  // PDL: job_last_verified / job_last_changed are the record's own dates
+  const pdl = await pdlPeopleSearch('k', 'Acme', (async () => ok({ data: [
+    { full_name: 'Pia Fresh', job_title: 'VP Sales', job_company_website: 'acme.com', job_last_verified: dayAgo(10, now) },
+    { full_name: 'Pat Changed', job_title: 'VP Sales', job_company_website: 'acme.com', job_last_changed: dayAgo(200, now), job_last_verified: dayAgo(95, now) },
+    { full_name: 'Pam Month', job_title: 'VP Sales', job_company_website: 'acme.com', job_last_verified: '2026-10' },
+  ] })) as never, 5)
+  assert.deepEqual(pdl.map(p => p.recordDay), [dayAgo(10, now), dayAgo(95, now), '2026-10-01'], 'the latest valid date; a month-only date is its first day (older, never newer)')
+  const pdlRow = (name: string, day: string | null) => ({ kind: 'contact', value: `${name} - VP Sales`, label: providerContactLabel('enrich:pdl', day), source_url: '', connector: 'enrich:pdl' })
+  const p = contactsFromEnrichments([pdlRow('Pia Fresh', pdl[0].recordDay ?? null), pdlRow('Pat Changed', pdl[1].recordDay ?? null)], 'VP Sales', now)
+  assert.deepEqual(p.map(x => [x.name, x.currency]), [['Pia Fresh', 'verified_current'], ['Pat Changed', 'search_only']])
+})
+
+test('criterion 4b: a first-party company page read within 180 days is verified current; public search, SEC filings and the LinkedIn session are not counted', () => {
+  const now = Date.UTC(2026, 10, 4)
+  const sec = (d: number) => Math.floor((now - d * DAY) / 1000)
+  const rows = [
+    { kind: 'person', value: 'Cara Crawl, VP Sales', label: 'listed with this title on this company page, not verified as current staff', source_url: 'https://acme.com/team', connector: 'sitecrawl', retrieved_at: sec(10) },
+    { kind: 'person', value: 'Stale Stan, VP Sales', label: 'listed with this title on this company page, not verified as current staff', source_url: 'https://acme.com/team', connector: 'sitecrawl', retrieved_at: sec(181) },
+    { kind: 'person', value: 'Sam Search, VP Sales', label: 'public search result (profile title), not verified as current staff', source_url: 'https://linkedin.com/in/sam', connector: 'search:people', retrieved_at: sec(1) },
+    { kind: 'person', value: 'Fil Filing, VP Sales', label: 'named in SEC Form D', source_url: 'https://sec.gov/x', connector: 'signals:sec-form-d', retrieved_at: sec(1) },
+    { kind: 'person', value: 'Lin Session, VP Sales', label: 'LinkedIn', source_url: 'https://linkedin.com/in/lin', connector: 'adv:linkedin', retrieved_at: sec(1) },
+  ]
+  const ranked = contactsFromEnrichments(rows, 'VP Sales', now)
+  const cur = Object.fromEntries(ranked.map(r => [r.name, r.verified]))
+  assert.deepEqual(cur['Cara Crawl'], { currency: 'verified_current', basis: 'first_party_page', dated: '2026-10-25' })
+  for (const n of ['Stale Stan', 'Sam Search', 'Fil Filing', 'Lin Session']) assert.equal(cur[n]?.currency, 'search_only', `${n} is search-result-only`)
+  assert.equal(FIRST_PARTY_DAYS, 180); assert.equal(PROVIDER_DAYS, 90)
+})
+
+test('criterion 4c: malformed, forged, future or contradicted evidence fails closed to search-result-only', async () => {
+  const now = Date.now()
+  const bad: unknown[] = [12345, 1730000000, [dayAgo(1)], { date: dayAgo(1) }, null, true, '', '2026', '2026-13-45', '2026-02-30', '2026-10T10:00', 'yesterday', 'x'.repeat(100_000), `${dayAgo(1)}\ud800`, `${dayAgo(1)}\u0000`, '1989-12-31', `${dayAgo(1)} DROP TABLE`]
+  for (const v of bad) assert.equal(isoDay(v), null, `isoDay(${JSON.stringify(v)?.slice(0, 40)})`)
+  const apollo = await apolloPeopleSearch('k', { domain: 'acme.com', name: 'Acme' }, (async () => ok({ people: bad.map((v, i) => ({ ...person(`Bad Case${String.fromCharCode(65 + i)}`, 'VP Sales'), last_refreshed_at: v, updated_at: v })) })) as never, 50)
+  assert.ok(apollo.length === bad.length && apollo.every(p => p.recordDay === null), 'no malformed provider date becomes a record date')
+  assert.ok(apollo.every(p => providerContactLabel('enrich:apollo', p.recordDay ?? null) === 'Apollo'))
+  const fresh = dayAgo(1, now)
+  const C = (connector: string, label: string | null, kind = 'contact', retrieved_at?: unknown) => contactCurrency({ kind, connector, label, retrieved_at }, true, now).currency
+  assert.equal(C('enrich:apollo', `Apollo, record dated ${fresh}`), 'verified_current', 'control: the genuine label verifies')
+  assert.equal(C('search:people', `Apollo, record dated ${fresh}`, 'person'), 'search_only', 'a provider-style label on another connector is ignored')
+  assert.equal(C('enrich:pdl', `Apollo, record dated ${fresh}`), 'search_only', 'a label naming the other provider is ignored')
+  assert.equal(C('enrich:apollo', `Apollo, record dated ${fresh} (edited)`), 'search_only', 'trailing text is not a date')
+  assert.equal(C('enrich:apollo', `Apollo, record dated ${dayAgo(-2, now)}`), 'search_only', 'a future record date')
+  assert.equal(C('enrich:apollo', 'Apollo, record dated 2026-02-30'), 'search_only', 'an impossible date')
+  assert.equal(C('enrich:apollo', null), 'search_only')
+  for (const t of ['123abc', Number.NaN, -5, 1.5, 1e15, Math.floor((now + 2 * DAY) / 1000), null, [1], { s: 1 }]) assert.equal(C('sitecrawl', 'x', 'person', t), 'search_only', `retrieved_at ${String(t)}`)
+  assert.equal(C('sitecrawl', 'x', 'person', String(Math.floor(now / 1000) - 60)), 'verified_current', 'control: a numeric string from the PG driver is read as seconds')
+  assert.equal(contactCurrency({ kind: 'contact', connector: 'enrich:apollo', label: `Apollo, record dated ${fresh}` }, true, Number.NaN).currency, 'search_only', 'no clock, no verification')
+  // the role must be held: a contradicted or missing title is never verified, however fresh
+  const rows = [
+    { kind: 'contact', value: 'Fred Former - Former VP Sales', label: `Apollo, record dated ${fresh}`, source_url: '', connector: 'enrich:apollo' },
+    { kind: 'contact', value: 'Asa Aide - Assistant to the VP Sales', label: `Apollo, record dated ${fresh}`, source_url: '', connector: 'enrich:apollo' },
+    { kind: 'contact', value: 'Nina Notitle', label: `Apollo, record dated ${fresh}`, source_url: '', connector: 'enrich:apollo' },
+  ]
+  assert.deepEqual(contactsFromEnrichments(rows, 'VP Sales', now).map(r => r.currency), ['search_only', 'search_only', 'search_only'])
+})
+
+test('criterion 4d: the leads page shows "Verified current" and "Search result only" separately, each ordered by title match; the export names the evidence', async () => {
+  const now = Date.now()
+  const fresh = dayAgo(5, now)
+  const rows = [
+    { kind: 'contact', value: 'Wes Weak - Sales Lead', label: 'Apollo', source_url: '', connector: 'enrich:apollo' },
+    { kind: 'contact', value: 'Vera Verified - Head of Ops', label: `Apollo, record dated ${fresh}`, source_url: '', connector: 'enrich:apollo' },
+    { kind: 'contact', value: 'Sue Strong - VP Sales', label: 'Apollo', source_url: '', connector: 'enrich:apollo' },
+    { kind: 'contact', value: 'Val Vp - VP Sales', label: `Apollo, record dated ${fresh}`, source_url: '', connector: 'enrich:apollo' },
+  ]
+  const { verified, searchOnly } = splitByCurrency(contactsFromEnrichments(rows, 'VP Sales; Head of Ops', now))
+  assert.deepEqual(verified.map(p => p.name), ['Vera Verified', 'Val Vp'], 'verified current, equal title match keeps stored order')
+  assert.deepEqual(searchOnly.map(p => p.name), ['Sue Strong', 'Wes Weak'], 'search-result-only, strongest title match first')
+  for (const sec of [verified, searchOnly]) for (let i = 1; i < sec.length; i++) assert.ok(sec[i - 1].score >= sec[i].score, 'ordered by title match within the section')
+  const page = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.ok(page.includes('splitByCurrency(people)') && page.includes('>Verified current<') && page.includes('>Search result only<'), 'the Right people block renders the two sections from splitByCurrency')
+  // export: Best Person found-via names the verified evidence; a search-only best person keeps its plain source
+  const { db, jobId } = seed()
+  addEnrichment(db, 'u1', 'lead1', { connector: 'enrich:apollo', kind: 'contact', value: 'Val Vp - VP Sales', label: providerContactLabel('enrich:apollo', fresh), confidence: 70, source_url: 'https://linkedin.com/in/valvp', source_date: fresh, retrieved_at: Math.floor(now / 1000) })
+  const best = await bestPeople(sqliteDb(db), 'u1', [{ lead_id: 'lead1', job_id: jobId }])
+  assert.equal(best.get('lead1')?.best_person_found_via, `${PEOPLE_SOURCE['enrich:apollo']}; verified current: Apollo record dated ${fresh}`)
 })

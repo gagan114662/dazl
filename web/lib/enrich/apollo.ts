@@ -16,7 +16,7 @@ const BASE = 'https://api.apollo.io'
 const TIMEOUT_MS = 15_000
 
 export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null; address?: string | null }
-export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
+export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; recordDay?: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
 
 async function call(apiKey: string, path: string, body: Record<string, unknown>, fetchImpl: typeof fetch): Promise<unknown> {
   const ctrl = new AbortController()
@@ -37,6 +37,7 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
 
 import { formatPlace } from '../scan/contact-agreement.ts'
 import { isMailboxShaped } from './person-name.ts'
+import { latestDay } from '../people/currency.ts'
 const clean = (v: unknown, max = 200) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max) : null)
 
 // 1 credit per call.
@@ -85,6 +86,9 @@ export async function apolloPeopleSearch(apiKey: string, org: { domain?: string 
     title: clean(p.title, 120),
     linkedin: clean(p.linkedin_url),
     organization: orgOf(p),
+    // The provider record's own last-refreshed / updated date (#383 criterion 4: verified current within 90 days). Kept
+    // only as a strict YYYY-MM-DD; any other shape is null, so the contact stays search-result-only.
+    recordDay: latestDay(p.last_refreshed_at, p.updated_at),
     // p.email / p.phone_numbers deliberately never read
   })).filter(p => p.name && !isMailboxShaped(p.name))
 }
