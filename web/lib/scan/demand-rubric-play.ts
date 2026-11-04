@@ -9,6 +9,8 @@ import { readCompetitors } from '../signals/competitor-reddit.ts'
 import { rubricForPlay, type DemandRubric } from './demand-qualifier.ts'
 
 // Generic labels that would exclude real buyers if treated as a brand ("Sales", "Group"): never an own name on their own.
+// Second-level labels that sit under a two-letter country code (bbc.co.uk, shop.mysite.com.au), not brand names.
+const SECOND_LEVEL = new Set(['co', 'com', 'org', 'net', 'gov', 'edu', 'ac', 'or', 'ne', 'go', 'gob', 'nom', 'mil'])
 const GENERIC = new Set(['inc', 'llc', 'ltd', 'corp', 'co', 'company', 'group', 'the', 'sales', 'labs', 'app', 'web', 'shop', 'online'])
 
 // The seller's own brand names: the business name as typed, and the website's registrable label ("acme.io" -> "acme").
@@ -21,7 +23,10 @@ export function ownNamesFrom(businessName: string | null | undefined, website: s
     try {
       const host = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.replace(/^www\./, '')
       const parts = host.split('.')
-      const label = parts.length >= 2 ? parts[parts.length - (parts[parts.length - 2].length <= 3 && parts.length >= 3 && parts[parts.length - 1].length === 2 ? 3 : 2)] : ''
+      // Registrable label: one label left of the suffix. Only a real second-level suffix (co.uk, com.au) moves it one more;
+      // a short ordinary label (app.acm.io, app.foo.ai) is a name or subdomain, never a suffix (#401 review).
+      const sld = parts.length >= 3 && parts[parts.length - 1].length === 2 && SECOND_LEVEL.has(parts[parts.length - 2])
+      const label = parts.length >= 2 ? parts[parts.length - (sld ? 3 : 2)] : ''
       if (label.length >= 3 && !GENERIC.has(label)) out.add(label)
     } catch { /* unparseable website: the business name still applies */ }
   }
