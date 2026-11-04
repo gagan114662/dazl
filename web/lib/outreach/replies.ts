@@ -188,6 +188,54 @@ function dsnFromNotice(g: GMsg): DsnReport {
   return { recipient, status, failed: action === 'failed', messageRef }
 }
 
+// One delivery notice from the daemon-notice listing, judged and turned into the inbound_messages row it is stored as.
+// Pure: the caller looks up the exact recorded send (NOTICE_SEND_SQL) and writes the row. The reply sync below and the
+// test-only inbox fixture (lib/outreach/inbox-fixture.ts, #369) store notices through this one judgement, so a fixture
+// bounce_review row is exactly what a real notice of that shape would produce.
+export type NoticeMsg = GMsg
+export interface NoticeSend { id: string; lead_id: string; to_email: string }
+export interface NoticeRow { gmail_id: string; thread_id: string; lead_id: string | null; from_email: string; excerpt: string; classification: 'bounce_unmatched' | 'bounce_review' | 'soft_bounce'; received_at: number; outreach_message_id: string | null }
+export interface NoticeVerdict { row: NoticeRow; unmatched: 'not_daemon' | 'no_correlation' | null; send: NoticeSend | null; status: string | null }
+export const NOTICE_SEND_SQL = "SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')"
+export const NOTICE_INSERT = '(gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+export const noticeParams = (tenantId: string, r: NoticeRow): (string | number | null)[] =>
+  [r.gmail_id, tenantId, r.thread_id, r.lead_id, r.from_email, r.excerpt, r.classification, r.received_at, r.outreach_message_id]
+export function judgeDeliveryNotice(hitId: string, g: NoticeMsg, now: number, findSend: (refId: string) => NoticeSend | undefined): NoticeVerdict {
+  const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
+  const from = addr(header(g, 'from'))
+  // Retention minimum for anything that does not correlate to an exact recorded send: the opaque id (for
+  // one-time accounting), the time and the classification. No sender, recipient or content of mail that may
+  // not be ours - the read consent covers replies and delivery notices FOR OUR THREADS only.
+  const unmatched = (why: 'not_daemon' | 'no_correlation'): NoticeVerdict => ({
+    row: { gmail_id: hitId, thread_id: g.threadId ?? '', lead_id: null, from_email: '', excerpt: '', classification: 'bounce_unmatched', received_at: at, outreach_message_id: null },
+    unmatched: why, send: null, status: null,
+  })
+  if (!/^(mailer-daemon|postmaster)@/.test(from)) return unmatched('not_daemon')
+  const dsn = dsnFromNotice(g)
+  // Correlate to the exact recorded send: the notice must reference our Message-ID AND name the recipient we
+  // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
+  // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
+  // stop a thread or end a sequence. They are counted unmatched and left for review.
+  // An exact Message-ID ref is CORRELATION, never authentication: a party who saw the send's headers could
+  // quote it. Correlation alone therefore never suppresses and never stops anything: a 5.x.x that correlates
+  // but cannot be PROVEN to come from the recipient's own mail infrastructure is classified bounce_review and
+  // left for a human. Automatic suppression exists only behind authenticated DSN provenance.
+  const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
+  let m: NoticeSend | undefined
+  if (refId && dsn.recipient) m = findSend(refId) ?? undefined
+  if (m && norm(m.to_email) !== dsn.recipient) m = undefined // the notice must name who we actually wrote to
+  if (!m || !dsn.failed || !dsn.status) return unmatched('no_correlation')
+  // A permanent failure WITHOUT authenticated provenance: review, never an automatic action. The notice
+  // correlates to our send (exact ref + recipient), so it is not noise - but nothing about it proves the
+  // recipient's mail infrastructure issued it, and unauthenticated mail must never suppress a contact or
+  // stop a thread. 4.x.x and anything non-permanent: soft_bounce, never a suppression.
+  const classification = /^5\.\d{1,3}\.\d{1,3}$/.test(dsn.status) ? 'bounce_review' : 'soft_bounce'
+  return {
+    row: { gmail_id: hitId, thread_id: g.threadId ?? '', lead_id: m.lead_id, from_email: from, excerpt: `dsn status ${dsn.status}`, classification, received_at: at, outreach_message_id: m.id },
+    unmatched: null, send: m, status: dsn.status,
+  }
+}
+
 export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number }
 // remaining: background threads (no automated send can reach them) not read this call because of the per-call cap or
 // the time budget; they are read on later calls, oldest check first. neverRead: those of them never read at all (no
@@ -324,43 +372,19 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
     for (const hit of list.messages ?? []) {
       if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, hit.id)) continue // increments once: seen notices are never reprocessed
       const g = (await get(`messages/${hit.id}?format=full`)) as GMsg
-      const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
-      const from = addr(header(g, 'from'))
-      // Retention minimum for anything that does not correlate to an exact recorded send: the opaque id (for
-      // one-time accounting), the time and the classification. No sender, recipient or content of mail that may
-      // not be ours - the read consent covers replies and delivery notices FOR OUR THREADS only.
-      const logUnmatched = () => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL)').run(hit.id, tenantId, g.threadId ?? '', '', '', 'bounce_unmatched', at)
-      if (!/^(mailer-daemon|postmaster)@/.test(from)) { logUnmatched(); continue }
-      const dsn = dsnFromNotice(g)
-      // Correlate to the exact recorded send: the notice must reference our Message-ID AND name the recipient we
-      // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
-      // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
-      // stop a thread or end a sequence. They are counted unmatched and left for review.
-      // An exact Message-ID ref is CORRELATION, never authentication: a party who saw the send's headers could
-      // quote it. Correlation alone therefore never suppresses and never stops anything: a 5.x.x that correlates
-      // but cannot be PROVEN to come from the recipient's own mail infrastructure is classified bounce_review and
-      // left for a human. Automatic suppression exists only behind authenticated DSN provenance.
-      const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
-      let m: { id: string; lead_id: string; to_email: string } | undefined
-      if (refId && dsn.recipient) m = (db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')").get(tenantId, refId) as typeof m) ?? undefined
-      if (m && norm(m.to_email) !== dsn.recipient) m = undefined // the notice must name who we actually wrote to
-      const log = (cls: string, mid: string | null, leadId: string | null) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(hit.id, tenantId, g.threadId ?? '', leadId, from, `dsn status ${dsn.status ?? 'none'}`, cls, at, mid)
-      if (!m || !dsn.failed || !dsn.status) {
-        logUnmatched()
-        auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
+      const v = judgeDeliveryNotice(hit.id, g, now, refId => db.prepare(NOTICE_SEND_SQL).get(tenantId, refId) as NoticeSend | undefined)
+      const store = () => db.prepare(`INSERT OR IGNORE INTO inbound_messages ${NOTICE_INSERT}`).run(...noticeParams(tenantId, v.row))
+      if (v.unmatched) {
+        store()
+        if (v.unmatched === 'no_correlation') auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
         continue
       }
-      if (/^5\.\d{1,3}\.\d{1,3}$/.test(dsn.status)) {
-        // A permanent failure WITHOUT authenticated provenance: review, never an automatic action. The notice
-        // correlates to our send (exact ref + recipient), so it is not noise - but nothing about it proves the
-        // recipient's mail infrastructure issued it, and unauthenticated mail must never suppress a contact or
-        // stop a thread. Counted once per send; the classification carries the correlation.
-        if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, m.id)) {
-          auditAt(db, tenantId, 'bounce_review', `dsn ${dsn.status} correlated, provenance unverified`, m.lead_id, m.id, now)
-          out.reviews++
-        }
-        log('bounce_review', m.id, m.lead_id)
-      } else log('soft_bounce', m.id, m.lead_id) // 4.x.x and anything non-permanent: never a suppression
+      // Counted once per send; the classification carries the correlation.
+      if (v.row.classification === 'bounce_review' && !db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, v.send!.id)) {
+        auditAt(db, tenantId, 'bounce_review', `dsn ${v.status} correlated, provenance unverified`, v.send!.lead_id, v.send!.id, now)
+        out.reviews++
+      }
+      store()
     }
   } catch (e) {
     out.error = 'reply_sync_failed' // fail closed, same contract as the thread loop
