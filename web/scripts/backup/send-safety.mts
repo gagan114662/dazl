@@ -17,7 +17,7 @@ export type SendSafety = {
   leases_unexpired: number; queue_claims_unexpired: number; tenants_autopilot_on: number
 }
 export const BLOCKING: (keyof SendSafety)[] = ['messages_sending', 'messages_uncertain', 'sequence_steps_unresolved', 'followups_unresolved', 'leases_unexpired', 'queue_claims_unexpired']
-export const REQUIRED_TABLES = ['outreach_messages', 'sequence_steps', 'followup_messages', 'app_leases'] as const
+export const REQUIRED_TABLES = ['outreach_messages', 'sequence_steps', 'followup_messages', 'app_leases', 'work_queue'] as const
 
 const hasTable = (db: Database.Database, t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t)
 export const missingTables = (db: Database.Database) => REQUIRED_TABLES.filter(t => !hasTable(db, t))

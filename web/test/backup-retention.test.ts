@@ -194,7 +194,7 @@ test('send gate: a lease written by the real tryLease and expired is not counted
 test('send gate: an empty store or one missing a counted table is not a dazl store: refused (exit 2), never clear', () => {
   const empty = path.join(T, 'empty.db'); new Database(empty).close()
   const e = run('send-gate.mts', ['--db', empty]); assert.equal(e.code, 2, e.out); assert.match(e.out, /not a current dazl store/)
-  for (const t of ['outreach_messages', 'sequence_steps', 'followup_messages', 'app_leases']) {
+  for (const t of ['outreach_messages', 'sequence_steps', 'followup_messages', 'app_leases', 'work_queue']) {
     const r = run('send-gate.mts', ['--db', store({ drop: t })]); assert.equal(r.code, 2, `${t}: ${r.out}`); assert.match(r.out, new RegExp(`no ${t}`))
   }
 })
