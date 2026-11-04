@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { dayOf, savedPlays, type MonitorRow, type SavedPlay, type WatchRow } from '@/lib/saved-plays'
 import type { PlayRun, PlayRuns } from '@/lib/play-runs'
+import { runNewLabel } from '@/lib/run-new-label'
 import { Icon } from '../ui/icons'
 import { Pill, type Tone } from '../ui/bits'
 
@@ -89,7 +90,7 @@ export default function PlaysClient() {
                   <button type="button" className="btn-ghost btn-sm" disabled={busy === p.id} onClick={() => void act(p, p.active ? 'pause' : 'resume')} data-testid="play-toggle">{p.active ? 'Pause' : 'Resume'}</button>
                   <button type="button" className="btn-ghost btn-sm" disabled={busy === p.id} onClick={() => void act(p, 'delete')} data-testid="play-delete">Delete</button>
                 </div>
-                {`${p.kind}-${p.id}` in runs && <PlayRunList runs={runs[`${p.kind}-${p.id}`]} active={p.active} />}
+                {`${p.kind}-${p.id}` in runs && <PlayRunList runs={runs[`${p.kind}-${p.id}`]} active={p.active} kind={p.kind} />}
               </article>
             ))}
           </div>
@@ -101,7 +102,7 @@ export default function PlaysClient() {
 
 // #351: a play's latest runs, newest first; each opens that run's own leads. Says when older runs exist.
 const RUN_STATUS: Record<string, string> = { done: 'Finished', failed: 'Failed', pending: 'Queued', running: 'Running', enriching: 'Finishing' }
-function PlayRunList({ runs: r, active }: { runs: PlayRuns | null | 'failed'; active: boolean }) {
+function PlayRunList({ runs: r, active, kind }: { runs: PlayRuns | null | 'failed'; active: boolean; kind: 'watch' | 'monitor' }) {
   if (r === null) return <p className="text-sm text-[var(--ink-2)] mt-3">Loading runs...</p>
   if (r === 'failed') return <p className="text-sm mt-3" role="alert" data-testid="play-runs-failed">Could not load this play&apos;s runs. Try again.</p>
   if (r.runs.length === 0) return <p className="text-sm text-[var(--ink-2)] mt-3" data-testid="play-runs-empty">{active ? 'No runs yet. The first runs on its next scheduled date.' : 'No runs yet. It is paused: resume it to run.'}</p>
@@ -110,7 +111,7 @@ function PlayRunList({ runs: r, active }: { runs: PlayRuns | null | 'failed'; ac
       <ol className="mt-3 divide-y divide-[var(--line)] border-t border-[var(--line)] text-sm" data-testid="play-runs">
         {r.runs.map(run => (
           <li key={run.job_id} className="flex flex-wrap items-center justify-between gap-2 py-2 min-w-0" data-testid="play-run">
-            <span className="min-w-0">{dayOf(run.at)} · {RUN_STATUS[run.status] ?? run.status} · {run.leads} lead{run.leads === 1 ? '' : 's'}{run.new_leads !== null ? `, ${run.new_leads} new` : ''}</span>
+            <span className="min-w-0">{dayOf(run.at)} · {RUN_STATUS[run.status] ?? run.status} · {run.leads} lead{run.leads === 1 ? '' : 's'}{run.new_leads !== null ? `, ${runNewLabel(kind, run.new_leads)}` : ''}</span>
             <Link href={`/app/leads?job_id=${run.job_id}`} className="underline underline-offset-2 shrink-0" data-testid="play-run-link">Open these leads</Link>
           </li>
         ))}
