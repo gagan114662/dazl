@@ -40,6 +40,10 @@
 // Known one-off: create-backup writes its sidecar in place (lib.ts), so a check that reads it at that instant can see a
 // partial file and alert "unreadable sidecar" once; the next run clears it. offhost-copy.sh writes its manifest via a
 // .partial rename, so the off-host side has no such window.
+//   - the secrets/config bundle at the same destination (config-backup.mts): the newest one missing or not matching its
+//     manifest, or none with CONFIG_REQUIRED=1;
+//   - the separate key-recovery drill report (KEY_DRILL_REPORT / --key-drill-report, or KEY_DRILL_REQUIRED=1): missing,
+//     failed or older than --key-drill-max-age-s (default 92 days).
 //   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --max-age-s 7200 \
 //     [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s 7200] [--drill-report FILE --drill-max-age-s 691200] [--state-dir DIR]
 import { createHash } from 'node:crypto'
@@ -237,6 +241,24 @@ if (!offSpec) {
       }
     }
   } catch (e) { problems.push(`off-host destination ${dest.label} unreadable: ${reason(e)}`) }
+  // the secrets/config bundle (config-backup.mts, its own identity): it changes rarely, so its age is not judged, only
+  // that the newest one exists and is the copy its manifest declares. CONFIG_REQUIRED=1 makes "none" a problem.
+  try {
+    const cfg = (await dest.list()).filter(f => /^dazl-config-\d{8}T\d{6}Z-[0-9a-f]{8}\.tar\.age\.json$/.test(f)).sort().reverse()
+    facts.config_copies_listed = cfg.length
+    if (!cfg.length) { if (process.env.CONFIG_REQUIRED === '1') problems.push(`no secrets/config bundle at ${dest.label} (CONFIG_REQUIRED=1)`) }
+    else {
+      let m: { tool?: string; ciphertext?: string; bytes?: number; ciphertext_sha256?: string; copied_at?: string } | null = null
+      try { m = JSON.parse(await dest.read(cfg[0])) } catch (e) { if (!(e as NodeJS.ErrnoException)?.code && !(e instanceof SyntaxError)) throw e; m = null }
+      if (!m || m.tool !== 'dazl-config-copy' || !m.ciphertext || !plainName(m.ciphertext) || typeof m.bytes !== 'number' || !/^[0-9a-f]{64}$/.test(m.ciphertext_sha256 ?? '')) problems.push(`newest secrets/config manifest ${cfg[0]} unreadable or incomplete`)
+      else {
+        const d = await dest.digest(m.ciphertext)
+        if (!d) problems.push(`newest secrets/config bundle ${m.ciphertext} is missing (only its manifest exists)`)
+        else if (d.bytes !== m.bytes || d.sha256 !== m.ciphertext_sha256) problems.push(`newest secrets/config bundle ${m.ciphertext} does not match its manifest`)
+        else { facts.config_verified = true; facts.config_age_s = ageS(m.copied_at) }
+      }
+    }
+  } catch (e) { problems.push(`off-host destination ${dest.label} unreadable for the secrets/config bundle: ${reason(e)}`) }
 }
 
 const drillFlag = arg('--drill-report')
@@ -250,6 +272,26 @@ const drill = (drillFlag && drillFlag.trim() ? drillFlag : undefined) ?? (proces
     if (typeof r.started_at === 'string' && age !== null && future(r.started_at)) problems.push('last recovery drill report has a future timestamp')
     if (r.ok !== true) problems.push(`last recovery drill FAILED (${(r.steps ?? []).filter((s: { ok: boolean }) => !s.ok).map((s: { step: string }) => s.step).join(', ') || 'unknown step'})`)
     if (age === null || age > max) problems.push(`last recovery drill is ${age}s old (limit ${max}s)`)
+  }
+}
+
+// the separate key-recovery drill (replacement-drill.mts --mode keys, quarterly; a full replacement-host report counts
+// too): --key-drill-report FILE, else KEY_DRILL_REPORT. Checked when a path is set or KEY_DRILL_REQUIRED=1; missing,
+// not ok or older than --key-drill-max-age-s (default 92 days) is a problem.
+{
+  const flag = arg('--key-drill-report')
+  const f = (flag && flag.trim() ? flag : undefined) ?? (process.env.KEY_DRILL_REPORT?.trim() || undefined)
+  if (!f && process.env.KEY_DRILL_REQUIRED === '1') problems.push('a key-recovery drill is required (KEY_DRILL_REQUIRED=1) but KEY_DRILL_REPORT is not set')
+  else if (f) {
+    const max = num('--key-drill-max-age-s', 92 * 86_400)
+    const r = readJson(f)
+    if (!r || typeof r !== 'object' || !['dazl key recovery drill', 'dazl replacement-host restore report'].includes(r.kind)) problems.push('no readable key-recovery drill report')
+    else {
+      const age = typeof r.started_at === 'string' ? ageS(r.started_at) : null; facts.key_drill_age_s = age; facts.key_drill_ok = r.ok === true
+      if (typeof r.started_at === 'string' && age !== null && future(r.started_at)) problems.push('last key-recovery drill report has a future timestamp')
+      if (r.ok !== true) problems.push(`last key-recovery drill FAILED (${(Array.isArray(r.steps) ? r.steps : []).filter((s: { ok?: boolean }) => s?.ok !== true).map((s: { step?: unknown }) => String(s?.step ?? '?')).join(', ') || 'unknown step'})`)
+      if (age === null || age > max) problems.push(`last key-recovery drill is ${age}s old (limit ${max}s)`)
+    }
   }
 }
 

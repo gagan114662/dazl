@@ -1,0 +1,15 @@
+# Daily encrypted off-host copy of the service's secrets and config (scripts/backup/config-backup.mts; docs/RECOVERY.md
+# "Secrets and config"). A TEMPLATE, installed with dazl-backup.service after the owner approves the destination.
+# Runs as root because the app's env file is root-owned. The bundle excludes DAZL_MASTER_KEY (replaced by a placeholder)
+# and is encrypted to CONFIG_AGE_RECIPIENTS, a key pair of its own (never the database copies' one). It uploads only
+# when the content changed since the last copy (state in /var/lib/dazl-backup).
+[Unit]
+Description=dazl secrets/config bundle (encrypted, master key excluded)
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/dazl-backup/env
+WorkingDirectory=CHANGE-ME-release/web
+ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/config-backup.mts --state-dir /var/lib/dazl-backup
+TimeoutStartSec=10min
