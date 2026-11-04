@@ -4,7 +4,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { budgetedIcp, flatProfile, normalizeIcp } from '../lib/scan/icp.ts'
-import { compareToBaseline, deriveModel, discover, dropKnown, leadLookalikeFit, lookalikeOf, MAX_EXAMPLES, normalizeLookalike, orderByIcp, orderByLookalike, parseCohort, split, validate, type Example, type LookalikeBlock } from '../lib/scan/lookalike-discovery.ts'
+import { accountKeys, compareToBaseline, deriveModel, discover, dropKnown, keyHash, knownAccount, leadLookalikeFit, lookalikeOf, MAX_EXAMPLES, normalizeLookalike, orderByIcp, orderByLookalike, parseCohort, split, validate, type Example, type LookalikeBlock } from '../lib/scan/lookalike-discovery.ts'
 import { dropSupplied, type Job } from '../lib/scan/runner.ts'
 import { runFixture, daysAgo } from './helpers/acceptance-harness.ts'
 
@@ -146,4 +146,73 @@ test('the real runner on a lookalike scan: supplied accounts are dropped before 
 test('the block module icp.ts imports stays import-free (client bundles reach icp.ts; evidence.ts reads process.env)', () => {
   assert.doesNotMatch(readFileSync(new URL('../lib/scan/lookalike-block.ts', import.meta.url), 'utf8'), /^\s*import\s/m)
   assert.match(readFileSync(new URL('../lib/scan/icp.ts', import.meta.url), 'utf8'), /from '\.\/lookalike-block\.ts'/)
+})
+
+
+// #606 review (Instinct, 2026-11-04): domain keys were exact-host, so a supplied customer or competitor came back as "net-new" through a
+// subdomain. Supplied accounts now key on the registrable domain; a candidate is checked on its registrable domain and its exact host.
+const run = (accts: { name: string; domain?: string | null }[]) => [...new Set(accts.flatMap(accountKeys).map(keyHash))].sort().join('')
+const probe = (over: Partial<LookalikeBlock['k']> = {}): LookalikeBlock => ({ ...block(), k: {
+  c: run([{ name: 'Acme Robotics', domain: 'acme.com' }, { name: 'Bücher Haus', domain: 'bücher.de' }, { name: 'Northwind Shop', domain: 'shop.northwind.example' }, { name: 'Kiwi Store', domain: 'kiwi.myshopify.com' }]),
+  x: run([{ name: 'Rivalco', domain: 'rival.io' }]), n: run([{ name: 'Gamma Freight', domain: 'gamma.co.uk' }]), ...over } })
+type Cand = Parameters<typeof knownAccount>[1]
+const kind = (c: Record<string, unknown>, b = probe()) => knownAccount(b, { company: 'Unrelated', ...c } as Cand)
+
+test('#606: Instinct\'s probe - names and exact domains (already excluded) and subdomains (the bug) of supplied accounts are all excluded', () => {
+  for (const company of ['Acme Robotics', 'Acme Robotics Inc.', 'ACME ROBOTICS LLC', '\uff21cme Robotics']) assert.equal(kind({ company }), 'customer', company)
+  for (const company_domain of ['www.acme.com', 'acme.com.', 'jobs.acme.com']) assert.equal(kind({ company_domain }), 'customer', company_domain)
+  for (const company_domain of ['https://RIVAL.io/', 'eu.rival.io']) assert.equal(kind({ company_domain }), 'competitor', company_domain)
+  assert.equal(kind({ company: 'Acme Labs', source_url: 'https://careers.acme.com/job/1' }), 'customer', 'the customer\'s own careers host, under another name of the same company')
+})
+
+test('#606: the whole class - case, trailing dots, www, ports, userinfo, deep subdomains, full-width, IDN, multi-label suffixes, supplied subdomains', () => {
+  for (const company_domain of ['ACME.COM', 'acme.com..', 'WWW.Acme.Com.', 'https://user:pw@Jobs.ACME.com:8443/x?y#z', 'a.b.c.jobs.acme.com', '\uff41\uff43\uff4d\uff45.com', 'http://eu.ACME.com/', ' jobs.acme.com ']) assert.equal(kind({ company_domain }), 'customer', company_domain)
+  for (const company_domain of ['xn--bcher-kva.de', 'shop.BÜCHER.de', 'https://bücher.de./kontakt']) assert.equal(kind({ company_domain }), 'customer', `IDN ${company_domain}`)
+  assert.equal(kind({ company_domain: 'depot.gamma.co.uk' }), 'negative', 'registrable domain under a multi-label public suffix')
+  assert.equal(kind({ company_domain: 'northwind.example' }), 'customer', 'a supplied subdomain (shop.northwind.example) covers its registrable domain')
+  assert.equal(kind({ company_domain: 'blog.northwind.example' }), 'customer')
+  assert.equal(kind({ company_domain: 'kiwi.myshopify.com' }), 'customer')
+  assert.equal(kind({ company: 'Acme', source_url: 'https://eu.careers.acme.com/' }), 'customer')
+  assert.equal(kind({ company: 'Rival Co', source_url: 'https://jobs.rival.io/a' }), 'competitor', 'name tokens joining to the domain label')
+  // the import itself accepts IDN and stores the punycode host, so the same account is one key either way
+  const pc = parseCohort([{ kind: 'customer', name: 'Bücher Haus', domain: 'BÜCHER.de' }])
+  assert.ok(pc.ok && pc.examples[0].domain === 'xn--bcher-kva.de')
+  assert.deepEqual(accountKeys({ name: 'x', domain: 'bücher.de' }), accountKeys({ name: 'x', domain: 'https://www.xn--bcher-kva.de/' }))
+})
+
+test('#606: no over-exclusion - lookalike hosts, other tenants on one platform, a public suffix and pages on a supplied domain about someone else', () => {
+  for (const company_domain of ['acme.com.evil.io', 'notacme.com', 'acme.co', 'acme-robotics.net', 'acmecom.io', 'rival.io.example', 'other.myshopify.com', 'myshopify.com', 'co.uk', 'com', 'example']) assert.equal(kind({ company_domain }), null, company_domain)
+  assert.equal(kind({ company: 'Maple Row Dental', source_url: 'https://careers.acme.com/job/2' }), null, 'a page on the customer\'s domain about another company')
+  assert.equal(kind({ company: 'Acmeville Corp', source_url: 'https://careers.acme.com/' }), null, 'a name that only starts with the label is another business')
+  assert.equal(kind({ company: 'Labs Acme', source_url: 'https://jobs.acme.com/' }), null)
+  assert.equal(kind({ company: 'Other Store', source_url: 'https://kiwi.myshopify.com/blog' }), null)
+})
+
+test('#606: wrong types, null, empty, huge and non-UTF8 inputs never throw and never invent a match', () => {
+  for (const v of [42, {}, [], null, undefined, true, '', '   ', 'http://', '//', '[::1]', '10.0.0.1', 'a'.repeat(1_000_000) + '.acme.com', '\ud800acme.com', 'acme\u0000.com', 'ac me.com', '..', '.acme.com.', 'x'.repeat(64) + '.acme.com']) {
+    assert.doesNotThrow(() => kind({ company_domain: v, source_url: v }))
+    const r = kind({ company_domain: v, source_url: v })
+    assert.ok(r === null || r === 'customer', String(v).slice(0, 40)) // '.acme.com.' and an over-long first label may still resolve to the customer: fail closed
+  }
+  for (const company of [null, undefined, 42, {}, '']) assert.doesNotThrow(() => kind({ company, company_domain: 'jobs.acme.com', source_url: 'https://careers.acme.com/' }))
+  assert.equal(kind({ company: null, company_domain: 'jobs.acme.com' }), 'customer', 'a missing name still matches on the domain')
+  assert.equal(kind({ company: 42, name: 'Acme Robotics' }), 'customer', 'a non-string company falls back to the name')
+})
+
+test('#606: blocks stored before registrable keys (exact supplied host) still match that exact host', () => {
+  const old = probe({ c: [keyHash('n:acme robotics'), keyHash('d:jobs.acme.com')].sort().join('') })
+  assert.equal(kind({ company_domain: 'jobs.acme.com' }, old), 'customer')
+  assert.equal(kind({ company_domain: 'https://Jobs.Acme.com/' }, old), 'customer')
+})
+
+test('#606: through dropKnown, the run reasons name the supplied kind for each subdomain return', () => {
+  const rows = [
+    { company: 'Unrelated', company_domain: 'jobs.acme.com', source_url: 'https://x.example/a' },
+    { company: 'Unrelated Two', company_domain: 'eu.rival.io', source_url: 'https://x.example/b' },
+    { company: 'Acme Labs', source_url: 'https://careers.acme.com/job/1' },
+    { company: 'Harbor Orthodontics', company_domain: 'harborortho.example', source_url: 'https://harborortho.example/' },
+  ]
+  const r = dropKnown(probe(), rows)
+  assert.deepEqual(r.kept.map(x => x.company), ['Harbor Orthodontics'])
+  assert.deepEqual(r.dropped.map(x => x.reason), ['lookalike_supplied_customer', 'lookalike_supplied_competitor', 'lookalike_supplied_customer'])
 })

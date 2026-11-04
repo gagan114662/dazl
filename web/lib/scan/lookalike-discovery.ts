@@ -11,6 +11,7 @@
 // - "Lookalike fit" is its own label. It never raises a grade, an intent or a gate; a lookalike without a proof-backed
 //   current event is labelled "no verified current intent", never ready-to-buy.
 // - Pure: no model call, no search, no network, no database.
+import { getDomain } from 'tldts'
 import { companyKey, companyOwnsDomain, hasPhrase } from './evidence.ts'
 import { lookalikeOf, normalizeLookalike, slug, MAX_EXAMPLES, MAX_FEATURES, MIN_LIFT, MIN_NEGATIVES, MIN_POSITIVES, MIN_SUPPORT, type LookalikeBlock } from './lookalike-block.ts'
 export { lookalikeOf, normalizeLookalike, slug, MAX_EXAMPLES, MAX_FEATURES, MIN_LIFT, MIN_NEGATIVES, MIN_POSITIVES, MIN_SUPPORT, type LookalikeBlock }
@@ -24,8 +25,21 @@ export const MIN_FIT = 0.35
 const CAP = { name: 150, domain: 253, field: 100, description: 400 }
 
 const STOP = new Set('this that with from have been were they their will would could should about into over after before more most other these those when where which while company companies inc llc ltd group services service solutions business businesses based provider providers offering offers customers clients'.split(' '))
-const host = (d?: string | null) => (d ?? '').toLowerCase().trim().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0].replace(/\.$/, '')
-const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
+// A bare host from a domain or URL: the WHATWG URL parser lowercases, maps full-width and other compatibility forms, punycodes IDN
+// (bücher.de and xn--bcher-kva.de are one host), and drops scheme, userinfo, port, path, query and fragment; then trailing dots and www.
+// Anything that is not a string, or does not parse, is no host.
+export const host = (d?: unknown) => {
+  let s = typeof d === 'string' ? d.trim().slice(0, 2048) : ''
+  if (!s) return ''
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `http://${s}`
+  let h: string
+  try { h = new URL(s).hostname } catch { return '' }
+  return h.replace(/\.+$/, '').replace(/^www\./, '')
+}
+const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/
+// The registrable domain of a host (public-suffix aware, private suffixes included, so two stores on one hosting platform stay two
+// accounts); the host itself when it has none (a bare public suffix, an unknown shape).
+export const registrable = (h: string) => { const r = HOST_RE.test(h) ? getDomain(h, { allowPrivateDomains: true }) : null; return r && HOST_RE.test(r) ? r : h }
 const text = (v: unknown, max: number) => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : ''
 
 // ---- import ------------------------------------------------------------------------------------------------------
@@ -128,11 +142,27 @@ const DIM: Record<Dimension, LookalikeBlock['f'][number]['d']> = { industry: 'i'
 const MID: Record<string, Dimension> = { i: 'industry', s: 'size', l: 'location', k: 'keyword' }
 // 25-bit FNV-1a in base36, 5 chars. A collision can only exclude a candidate (fail closed), never admit a supplied account.
 export const keyHash = (k: string) => (h32(k) >>> 7).toString(36).padStart(5, '0')
+// A supplied account's keys: its name, and its domain as the REGISTRABLE domain, so jobs.acme.com, eu.acme.com and acme.com are one
+// account whichever of them was supplied or comes back (#606 review: exact-host keys let a supplied account return via a subdomain).
 export function accountKeys(e: { name: string; domain?: string | null }): string[] {
-  const out: string[] = []; const n = companyKey(e.name), d = host(e.domain)
+  const out: string[] = []; const n = companyKey(typeof e.name === 'string' ? e.name : ''), d = host(e.domain)
   if (n.length >= 2) out.push(`n:${n}`)
-  if (HOST_RE.test(d)) out.push(`d:${d}`)
+  if (HOST_RE.test(d)) out.push(`d:${registrable(d)}`)
   return out
+}
+// A candidate host's domain keys: the registrable domain (matches every block built by accountKeys) and the exact host (matches blocks
+// stored before registrable keys, which hashed the supplied host as given).
+const hostKeys = (h: string) => HOST_RE.test(h) ? [...new Set([`d:${registrable(h)}`, `d:${h}`])] : []
+// Whether the company is plausibly the owner of a page host: its own domain (companyOwnsDomain), or the registrable domain's label is the
+// leading part of its name ("Acme Labs" on careers.acme.com). Only used to match a SUPPLIED account's domain, so a news, platform or
+// partner host never makes another company "known" (Maple Row Dental on a customer's blog stays net-new).
+const nameOwnsHost = (company: string, h: string) => {
+  if (companyOwnsDomain(company, h)) return true
+  const label = registrable(h).split('.')[0].replace(/-/g, '')
+  if (label.length < 3) return false
+  let acc = ''
+  for (const t of companyKey(company).split(' ')) { acc += t.replace(/[^a-z0-9]/g, ''); if (acc === label) return true; if (acc.length >= label.length) return false }
+  return false
 }
 const round = (x: number, p = 2) => Math.round(x * 10 ** p) / 10 ** p
 
@@ -155,9 +185,11 @@ export type KnownKind = 'customer' | 'competitor' | 'negative'
 // Which supplied account a candidate is, if any. The name key always counts; the source page's host counts only when that
 // host is the company's own domain (a news site hosting the article is not the company), plus an explicit company domain.
 export function knownAccount(b: LookalikeBlock, c: { company: string; name?: string; source_url?: string | null; company_domain?: string | null }): KnownKind | null {
-  const keys = accountKeys({ name: c.company || c.name || '', domain: c.company_domain ?? null })
-  const src = host(c.source_url ?? '')
-  if (src && companyOwnsDomain(c.company, src)) keys.push(`d:${src}`)
+  const company = typeof c.company === 'string' ? c.company : '', name = typeof c.name === 'string' ? c.name : ''
+  const n = companyKey(company || name)
+  const keys = [...(n.length >= 2 ? [`n:${n}`] : []), ...hostKeys(host(c.company_domain))]
+  const src = host(c.source_url)
+  if (src && company && nameOwnsHost(company, src)) keys.push(...hostKeys(src))
   const has = (run: string, h: string) => { for (let i = 0; i < run.length; i += 5) if (run.slice(i, i + 5) === h) return true; return false }
   for (const h of keys.map(keyHash)) {
     if (has(b.k.c, h)) return 'customer'
