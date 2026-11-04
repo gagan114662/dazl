@@ -9,6 +9,7 @@ import { EnrichmentTrace, auditSummary, noteFromAudit, noteTech } from '../lib/s
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, recentAudit } from '../lib/connectors/store.ts'
 import { migrateMemory } from '../lib/memory.ts'
+import { crawlAuditCount } from '../lib/scan/job-feed.ts'
 
 const FILLER = '<p>Brightloop is a design and web agency in Leeds. We build marketing sites, run brand workshops and help growing teams publish faster. Talk to us about your next launch, your content plan or your site migration.</p>'
 const page = (scripts: string) => `<!doctype html><html><head><title>Brightloop</title>${scripts}</head><body>${FILLER}</body></html>`
@@ -136,4 +137,17 @@ test('the ledger never changes the crawl stage or the settings audit list', asyn
   const crawlRows = (db.prepare("SELECT count(*) AS n FROM connector_audit WHERE connector = 'sitecrawl' AND scan_job_id = ?").get(jobId) as { n: number }).n
   assert.equal(t.stages[0].detail!.lookups, crawlRows, "the 'crawl' stage counts only sitecrawl rows, not the tech ledger")
   assert.ok((recentAudit(db, 'u1') as { connector: string }[]).every(r => r.connector !== TECH_AUDIT), 'not shown in the settings status list')
+})
+
+// Every caller of connector_audit counts: the hiring-feed crawl reads 'finished' when the crawl added a row. The ledger row is written
+// before the crawl's own row, so it must never count: a crawl that failed after the ledger row stays 'failed'.
+test('the ledger row never makes a failed hiring-feed crawl read as finished', () => {
+  const db = fresh()
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  const before = crawlAuditCount(db, jobId)
+  techBranch(db, 'u1', jobId, 'lead-1', 'brightloop.com', {}, AT)
+  assert.equal(ledger(db).length, 1, 'the ledger row was written')
+  assert.equal(crawlAuditCount(db, jobId), before, 'and is not a crawl row')
+  db.prepare("INSERT INTO connector_audit (tenant_id, connector, scan_job_id, lookup, status, results, created_at) VALUES ('u1', 'sitecrawl', ?, 'brightloop.com', 'ok', 0, ?)").run(jobId, AT)
+  assert.equal(crawlAuditCount(db, jobId), before + 1)
 })
