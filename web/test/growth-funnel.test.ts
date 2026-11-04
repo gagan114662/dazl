@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import type { Db } from '../lib/db/client.ts'
 import { record } from '../lib/audit.ts'
 import { applyStripeEvent } from '../lib/billing/stripe.ts'
-import { funnelReport, syntheticEmail } from '../lib/growth/funnel.ts'
+import { ACTIVATION_DAYS, jsonUsage, MAX_CALL_TOKENS, priceModelRows, REPEAT_DAYS, RETENTION_DAYS, funnelReport, syntheticEmail, usageOf } from '../lib/growth/funnel.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const DAY = 86400
@@ -170,7 +170,11 @@ bothEngines('funnel: one count per customer, distinct setup/payment states, firs
 
   assert.equal(r.cost.recorded_usd, 20.4)
   assert.equal(r.cost.complete, false)
-  assert.deepEqual(r.cost.components.filter(c => c.status === 'not_recorded').map(c => c.name), ['enrichment', 'evaluation', 'outreach_drafting'])
+  assert.deepEqual(r.cost.components.filter(c => c.status === 'not_recorded').map(c => c.name), ['enrichment'])
+  // no model call rows: the pool's vendor-settled total is the model spend (the larger of the two, never added)
+  assert.deepEqual(r.cost.model_spend, { token_priced_usd: 0, pool_reported_usd: 20, counted_usd: 20, rule: r.cost.model_spend.rule })
+  assert.deepEqual(r.cost.components.filter(c => ['scans', 'outreach_drafting', 'evaluation'].includes(c.name)).map(c => [c.name, c.usd, c.status, c.priced_calls, c.unpriced_calls]),
+    [['scans', 0, 'recorded', 0, 0], ['outreach_drafting', 0, 'recorded', 0, 0], ['evaluation', 0, 'recorded', 0, 0]])
   assert.deepEqual(r.cost.per_activated_paying, { customers: 3, usd_lower_bound: 6.8 })
   assert.deepEqual(r.cost.per_retained_paying, { window_days: 30, customers: 3, usd_lower_bound: 6.8 })
   assert.deepEqual(r.coverage.payment_timeline, { audit: 3, lifecycle_fallback: 1 })
@@ -233,6 +237,125 @@ bothEngines('charge.refunded is recorded for the report and changes no plan; a r
   assert.equal((await db.get<{ plan: string }>("SELECT plan FROM tenant_plans WHERE tenant_id = 'R'"))!.plan, 'pro')
   // a refund for a customer no tenant has changes nothing
   assert.equal(await applyStripeEvent(db, { id: 'evt_r2', type: 'charge.refunded', data: { object: { customer: 'cus_unknown', refunded: true } } }, { log: () => {} }), 'ignored')
+})
+
+// #404 cost: model calls priced from recorded tokens at the served model's listed price (claude-sonnet-4-5: $3 in, $15 out per
+// million; cache reads 0.1x and writes 2x the input price). Every malformed or unpriced row is an unpriced call, never $0.
+async function scanCall(db: Db, tenant: string, model: string | null, input: number | null, output: number | null) {
+  await db.run("INSERT INTO scan_model_calls (tenant_id, job_id, attempt, seq, stage, method, model_served, input_tokens, output_tokens, outcome, prompt_chars) VALUES (?, NULL, 0, ?, 'extraction', 'completeDetailed', ?, ?, ?, 'ok', 100)",
+    [tenant, ++seq, model, input, output])
+}
+async function draftCall(db: Db, tenant: string, outcome: string, model: string | null, t: (number | null)[] = [null, null, null, null]) {
+  await db.run("INSERT INTO outreach_llm_usage (tenant_id, message_id, purpose, vendor, outcome, model, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens) VALUES (?, ?, 'polish', 'anthropic', ?, ?, ?, ?, ?, ?)",
+    [tenant, `m${++seq}`, outcome, model, ...t])
+}
+async function qualCall(db: Db, tenant: string, status: string, model: string | null, usage: string | null) {
+  await db.run('INSERT INTO lead_qualifications (tenant_id, lead_id, prompt_sha256, status, vendor, model, served_model, usage) VALUES (?, ?, ?, ?, \'anthropic\', \'claude-sonnet-4-5\', ?, ?)',
+    [tenant, `lead${++seq}`, 'sha', status, model, usage])
+}
+async function seedCalls(db: Db) {
+  await user(db, G, 'founder@growth.dazl-fixture.co', T0 - DAY)
+  // scans: one priced ($3 + $1.50), a research call with no tokens, an unlisted model, a corrupt huge count; another workspace's call
+  await scanCall(db, G, 'claude-sonnet-4-5-20250929', 1_000_000, 100_000)
+  await scanCall(db, G, null, null, null)
+  await scanCall(db, G, 'gpt-unlisted', 10, 10)
+  await scanCall(db, G, 'claude-sonnet-4-5', MAX_CALL_TOKENS + 1, 10)
+  await scanCall(db, 'A', 'claude-sonnet-4-5', 1_000_000, 0)
+  // drafting: one priced with cache ($0.30 + $0.15 + $0.30 + $0.60); a refusal before any call; a pending (crashed) call; a negative count
+  await draftCall(db, G, 'rewritten', 'claude-sonnet-4-5', [100_000, 10_000, 1_000_000, 100_000])
+  await draftCall(db, G, 'no_key', null)
+  await draftCall(db, G, 'spend_limit', null)
+  await draftCall(db, G, 'pending', null)
+  await draftCall(db, G, 'error', 'claude-sonnet-4-5', [-5, 10, null, null])
+  await draftCall(db, 'B', 'rewritten', 'claude-sonnet-4-5', [1_000_000, 0, null, null])
+  // evaluation: one priced ($0.60 + $0.30); not JSON, an array, a string count, a failed and a running claim; another workspace's
+  await qualCall(db, G, 'done', 'claude-sonnet-4-5', '{"input_tokens":200000,"output_tokens":20000}')
+  await qualCall(db, G, 'done', 'claude-sonnet-4-5', 'not json')
+  await qualCall(db, G, 'done', 'claude-sonnet-4-5', '[1,2]')
+  await qualCall(db, G, 'done', 'claude-sonnet-4-5', '{"input_tokens":"5","output_tokens":1}')
+  await qualCall(db, G, 'failed', null, null)
+  await qualCall(db, G, 'running', null, null)
+  await qualCall(db, 'B', 'done', 'claude-sonnet-4-5', '{"input_tokens":1000000,"output_tokens":0}')
+}
+
+bothEngines('cost: model tokens of the growth workspace are priced per call; malformed rows are unpriced, other workspaces never count', async ({ db }) => {
+  await seedCalls(db)
+  await db.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 5, 5, 1, ?)', [G, 'm:2026-06', T0])
+  const r = await funnelReport(db, G, { now: NOW, env: ENV })
+  const by = Object.fromEntries(r.cost.components.map(c => [c.name, [c.usd, c.status, c.priced_calls, c.unpriced_calls]]))
+  assert.deepEqual(by.scans, [4.5, 'partial', 1, 3])
+  assert.deepEqual(by.outreach_drafting, [1.35, 'partial', 1, 2])
+  assert.deepEqual(by.evaluation, [0.9, 'partial', 1, 5])
+  assert.deepEqual(by.enrichment, [null, 'not_recorded', undefined, undefined])
+  assert.deepEqual({ ...r.cost.model_spend, rule: '' }, { token_priced_usd: 6.75, pool_reported_usd: 5, counted_usd: 6.75, rule: '' })
+  assert.equal(r.cost.recorded_usd, 6.75)
+  assert.equal(r.cost.complete, false)
+  // a larger pool total (calls with no token row) is counted instead; the two are never added
+  await db.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 5, 5, 1, ?)', [G, 'm:2026-07', T0])
+  const r2 = await funnelReport(db, G, { now: NOW, env: ENV })
+  assert.deepEqual([r2.cost.model_spend.counted_usd, r2.cost.recorded_usd], [10, 10])
+  // with scan usage recording off the scan line is a lower bound even when every stored call is priced
+  const r3 = await funnelReport(db, G, { now: NOW, env: { ...ENV, DAZL_MODEL_USAGE: '0' } })
+  assert.match(r3.cost.components.find(c => c.name === 'scans')!.note, /DAZL_MODEL_USAGE=0/)
+  // fails without the fix: before #404 pricing, drafting and evaluation were not_recorded and recorded_usd was the pool alone
+  assert.notEqual(r.cost.recorded_usd, 5)
+})
+
+test('usage parsing: wrong types, negatives, fractions, huge, non-JSON and nested values are no price (fail closed)', () => {
+  assert.equal(usageOf(null, null), undefined)
+  assert.deepEqual(usageOf('12', '3'), { input_tokens: 12, output_tokens: 3 }) // Postgres BIGINT text
+  for (const [i, o] of [[1.5, 2], [true, 1], [-1, 1], ['1e3', 1], [MAX_CALL_TOKENS + 1, 1], [{}, 1], [[1], 1], [5, null], [NaN, 1], [Infinity, 1]] as unknown[][]) {
+    const priced = priceModelRows([{ purpose: 'scans', model: 'claude-sonnet-4-5', usage: usageOf(i, o), call: true }])
+    assert.deepEqual([priced.scans.priced_calls, priced.scans.unpriced_calls], [0, 1], JSON.stringify([i, o]))
+  }
+  for (const t of [undefined, null, 123, '', 'x'.repeat(3000), 'null', '[]', '"s"', '{"input_tokens":{"a":1},"output_tokens":1}', '{"input_tokens":1}', '{\uD800}'] as unknown[])
+    assert.equal(priceModelRows([{ purpose: 'evaluation', model: 'claude-sonnet-4-5', usage: jsonUsage(t), call: true }]).evaluation.unpriced_calls, 1, String(t).slice(0, 40))
+  // extra keys are ignored; an unlisted or missing model is unpriced; a refusal row is not a call
+  const ok = priceModelRows([
+    { purpose: 'evaluation', model: 'claude-sonnet-4-5', usage: jsonUsage('{"input_tokens":1000000,"output_tokens":0,"server_tool_use":{"web_search_requests":2}}'), call: true },
+    { purpose: 'evaluation', model: 'other-model', usage: usageOf(1, 1), call: true },
+    { purpose: 'evaluation', model: null, usage: usageOf(1, 1), call: true },
+    { purpose: 'evaluation', model: 'claude-sonnet-4-5', usage: undefined, call: false },
+  ]).evaluation
+  assert.deepEqual(ok, { usd: 3, priced_calls: 1, unpriced_calls: 2 })
+})
+
+// #404 owner decision (2026-11-03 night): 14-day activation, 30- and 90-day retention. Boundaries are inclusive and a
+// window counts only once it has fully elapsed.
+bothEngines('windows: activation within exactly 14 days, repeat within 30, retention at 30 and 90 days; immature windows are not counted', async ({ db }) => {
+  assert.equal(ACTIVATION_DAYS, 14); assert.equal(REPEAT_DAYS, 30); assert.deepEqual([...RETENTION_DAYS], [30, 90])
+  await user(db, G, 'founder@growth.dazl-fixture.co', T0 - DAY)
+  // W1: first usable play finishes exactly 14 days after signup (activated), and its repeat exactly 30 days later (counts)
+  await user(db, 'W1', 'wa@northfield.co', T0)
+  await play(db, 'W1', T0 + 14 * DAY - 600, { verified: 1, usable: 1 })
+  await play(db, 'W1', T0 + 44 * DAY - 600, { verified: 1, usable: 1 })
+  // W2: one second too late for activation
+  await user(db, 'W2', 'wb@northfield.co', T0)
+  await play(db, 'W2', T0 + 14 * DAY - 599, { verified: 1, usable: 1 })
+  // W5: activated on day 1; its second play is one second past the 30-day repeat window
+  await user(db, 'W5', 'we@northfield.co', T0)
+  await play(db, 'W5', T0 + DAY - 600, { verified: 1, usable: 1 })
+  await play(db, 'W5', T0 + 31 * DAY - 599, { verified: 1, usable: 1 })
+  // W3 signed up exactly 14 days before the report (eligible); W4 one second later (not yet eligible)
+  await user(db, 'W3', 'wc@northfield.co', NOW - 14 * DAY)
+  await user(db, 'W4', 'wd@northfield.co', NOW - 14 * DAY + 1)
+  const r = await funnelReport(db, G, { now: NOW, env: ENV })
+  assert.deepEqual(r.totals.activated, { eligible: 4, count: 2, rate: 0.5 })
+  // W2's late first result is its setup state, not an activation: it never enters repeat use (fails without activatedInWindow: eligible 3)
+  assert.deepEqual(r.totals.repeat_use, { eligible: 2, count: 1, rate: 0.5 })
+  assert.equal(r.totals.setup.activated, 3)
+  assert.match(r.definitions.activation, /within 14 days/)
+  assert.match(r.definitions.retained, /30, 90/)
+
+  // retention: P pays on day 1 and stays on Pro
+  await user(db, 'P', 'pat@northfield.co', T0)
+  const paid = T0 + DAY
+  await plan(db, 'P', paid, 'billing.plan_changed', { plan: 'pro', previous: 'free', ends: false })
+  const at = async (now: number) => (await funnelReport(db, G, { now, env: ENV })).totals.retained
+  assert.deepEqual(await at(paid + 30 * DAY - 1), { d30: { eligible: 0, count: 0, rate: null }, d90: { eligible: 0, count: 0, rate: null } })
+  assert.deepEqual(await at(paid + 30 * DAY), { d30: { eligible: 1, count: 1, rate: 1 }, d90: { eligible: 0, count: 0, rate: null } })
+  assert.deepEqual(await at(paid + 90 * DAY - 1), { d30: { eligible: 1, count: 1, rate: 1 }, d90: { eligible: 0, count: 0, rate: null } })
+  assert.deepEqual(await at(paid + 90 * DAY), { d30: { eligible: 1, count: 1, rate: 1 }, d90: { eligible: 1, count: 1, rate: 1 } })
 })
 
 test('reserved test domains are synthetic; ordinary domains are not', () => {

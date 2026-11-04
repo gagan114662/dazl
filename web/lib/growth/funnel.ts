@@ -32,6 +32,9 @@
 //                test messages are excluded and counted. On a staging server everything is excluded.
 import type { Db } from '../db/client.ts'
 import { isStaging, type Env } from '../staging.ts'
+import { completionCost } from '../llm/spend-guard.ts'
+import type { CompletionUsage } from '../llm/provider.ts'
+import { modelUsageEnabled } from '../scan/model-usage.ts'
 
 export const ACTIVATION_DAYS = 14
 export const REPEAT_DAYS = 30
@@ -51,10 +54,14 @@ export interface FunnelReport {
   attribution: { direct: number; assisted: number; unattributed: number; unknown_opted_out: number; causal: 'not_established'; by_source: { signal_kind: string | null; source_kind: string | null; contacted: number; qualified: number; signed_up: number; activated: number; paid: number }[] }
   totals: CohortRow
   cohorts: CohortRow[]
-  cost: { components: { name: string; usd: number | null; status: 'recorded' | 'not_recorded'; note: string }[]; recorded_usd: number; complete: false; per_activated_paying: { customers: number; usd_lower_bound: number | null }; per_retained_paying: { window_days: number; customers: number; usd_lower_bound: number | null } }
+  cost: { components: CostComponent[]; model_spend: { token_priced_usd: number; pool_reported_usd: number; counted_usd: number; rule: string }; recorded_usd: number; complete: false; per_activated_paying: { customers: number; usd_lower_bound: number | null }; per_retained_paying: { window_days: number; customers: number; usd_lower_bound: number | null } }
   coverage: { attribution_known: number; payment_timeline: { audit: number; lifecycle_fallback: number }; retention_unknown: number; refund_events: number; unmatched_paid_workspaces: number; unsettled_trial_reservations: number; notes: string[] }
   excluded: { staging_environment: boolean; synthetic_accounts: number; internal_accounts: number; invited_members: number; test_runs: number; test_messages: number }
 }
+
+// recorded: every call of this kind is priced; partial: some calls have no price (no usage, an unlisted model, invalid
+// counts) or recording is off, so usd is a lower bound; not_recorded: dazl stores no dollar figure for it at all.
+export interface CostComponent { name: string; usd: number | null; status: 'recorded' | 'partial' | 'not_recorded'; note: string; priced_calls?: number; unpriced_calls?: number }
 
 export interface CohortRow {
   cohort: string // UTC signup month, or 'all'
@@ -103,6 +110,52 @@ export interface Data {
   bookingsHook: boolean
   researchUsd: number
   trial: { tenant_id: string; spent_usd: number | null; settled_at: number | null }[]
+  modelRows: ModelRow[]
+}
+
+// ---------- model cost (#404) ----------
+// Every model call of the growth workspace is priced from the tokens the vendor reported for it, at the listed price of
+// the model that SERVED it (lib/llm/spend-guard.ts completionCost: input, output, cache writes and reads). A call with no
+// usage, an unlisted model or invalid counts is an unpriced call, never $0; a row that records a refusal before any
+// request was made is not a call. Prompt and response text are never read.
+export type ModelPurpose = 'scans' | 'outreach_drafting' | 'evaluation'
+export interface ModelRow { purpose: ModelPurpose; model: string | null; usage: CompletionUsage | undefined; call: boolean }
+export interface PricedPurpose { usd: number; priced_calls: number; unpriced_calls: number }
+// No model dazl lists takes more than this in one call; a larger count is a corrupt row (unpriced), not a cost.
+export const MAX_CALL_TOKENS = 10_000_000
+// Draft-polish outcomes recorded before any provider request (lib/outreach/draft-llm.ts recordRefusal / spend refusal).
+const DRAFT_NO_CALL = new Set(['no_key', 'no_profile', 'offer_conflict', 'offer_unreadable', 'spend_limit'])
+
+const count = (v: unknown): number | undefined => {
+  if (v === null || v === undefined) return undefined
+  const x = typeof v === 'number' ? v : typeof v === 'string' && /^\d{1,15}$/.test(v) ? Number(v) : NaN // Postgres BIGINT arrives as a string
+  return Number.isInteger(x) && x >= 0 && x <= MAX_CALL_TOKENS ? x : NaN
+}
+// Usage from stored counts; none at all is no usage. Any count that is not a sane non-negative integer makes the call unpriced.
+export function usageOf(input: unknown, output: unknown, cacheRead?: unknown, cacheWrite?: unknown): CompletionUsage | undefined {
+  const i = count(input), o = count(output), r = count(cacheRead), w = count(cacheWrite)
+  if (i === undefined && o === undefined && r === undefined && w === undefined) return undefined
+  return { input_tokens: i ?? NaN, output_tokens: o ?? NaN, ...(r !== undefined ? { cache_read_input_tokens: r } : {}), ...(w !== undefined ? { cache_creation_input_tokens: w } : {}) }
+}
+// lead_qualifications.usage is the provider's usage object as JSON text. Anything else (not JSON, not an object, too long) is no usage.
+export function jsonUsage(text: unknown): CompletionUsage | undefined {
+  if (typeof text !== 'string' || text.length > 2000) return undefined
+  let u: unknown
+  try { u = JSON.parse(text) } catch { return undefined }
+  if (!u || typeof u !== 'object' || Array.isArray(u)) return undefined
+  const o = u as Record<string, unknown>
+  const num = (v: unknown) => v === undefined || v === null ? v : typeof v === 'number' ? v : NaN // a string count in JSON is invalid
+  return usageOf(num(o.input_tokens), num(o.output_tokens), num(o.cache_read_input_tokens), num(o.cache_creation_input_tokens))
+}
+export function priceModelRows(rows: readonly ModelRow[]): Record<ModelPurpose, PricedPurpose> {
+  const out: Record<ModelPurpose, PricedPurpose> = { scans: { usd: 0, priced_calls: 0, unpriced_calls: 0 }, outreach_drafting: { usd: 0, priced_calls: 0, unpriced_calls: 0 }, evaluation: { usd: 0, priced_calls: 0, unpriced_calls: 0 } }
+  for (const r of rows) {
+    if (!r.call) continue
+    const o = out[r.purpose]
+    const c = completionCost(r.model, r.usage)
+    if ('usd' in c && Number.isFinite(c.usd)) { o.usd += c.usd; o.priced_calls++ } else o.unpriced_calls++
+  }
+  return out
 }
 
 async function load(db: Db, growth: string): Promise<Data> {
@@ -144,7 +197,19 @@ async function load(db: Db, growth: string): Promise<Data> {
   const pool = await db.get<{ usd: unknown }>("SELECT coalesce(sum(reported_usd), 0) AS usd FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'm:%'", [growth])
   const trial = (await db.all<{ tenant_id: string; spent_usd: unknown; settled_at: unknown }>('SELECT tenant_id, spent_usd, settled_at FROM trial_reservations'))
     .map(r => ({ tenant_id: r.tenant_id, spent_usd: n(r.spent_usd), settled_at: n(r.settled_at) }))
-  return { users, owners, invited, jobs, billing, ended, plans, checkout, claims, sent, positive, bookings, optedOut, replyReading, bookingsHook, researchUsd: n(pool?.usd) ?? 0, trial }
+  // the growth workspace's own model calls only (its plays, profile generation, draft polish, lead qualification); a dazl-funded
+  // trial run of a customer is the trial subsidy above, never these rows
+  const str = (v: unknown) => typeof v === 'string' ? v : null
+  const modelRows: ModelRow[] = [
+    ...(await db.all<Record<string, unknown>>('SELECT model_served, input_tokens, output_tokens FROM scan_model_calls WHERE tenant_id = ?', [growth]))
+      .map(r => ({ purpose: 'scans' as const, model: str(r.model_served), usage: usageOf(r.input_tokens, r.output_tokens), call: true })),
+    ...(await db.all<Record<string, unknown>>('SELECT outcome, model, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens FROM outreach_llm_usage WHERE tenant_id = ?', [growth]))
+      .map(r => { const usage = usageOf(r.input_tokens, r.output_tokens, r.cache_read_input_tokens, r.cache_creation_input_tokens); return { purpose: 'outreach_drafting' as const, model: str(r.model), usage, call: usage !== undefined || !DRAFT_NO_CALL.has(String(r.outcome)) } }),
+    // every claim row may have been billed (a running one is in flight or crashed; a failed one kept its claim because the request may have gone out)
+    ...(await db.all<Record<string, unknown>>('SELECT served_model, usage FROM lead_qualifications WHERE tenant_id = ?', [growth]))
+      .map(r => ({ purpose: 'evaluation' as const, model: str(r.served_model), usage: jsonUsage(r.usage), call: true })),
+  ]
+  return { users, owners, invited, jobs, billing, ended, plans, checkout, claims, sent, positive, bookings, optedOut, replyReading, bookingsHook, researchUsd: n(pool?.usd) ?? 0, trial, modelRows }
 }
 
 // ---------- compute ----------
@@ -160,9 +225,12 @@ interface Customer {
 const month = (s: number) => new Date(s * 1000).toISOString().slice(0, 7)
 const rate = (c: number, e: number): number | null => e > 0 ? c / e : null
 const win = (eligible: number, count: number): Windowed => ({ eligible, count, rate: rate(count, eligible) })
+// Activation is the first usable result WITHIN ACTIVATION_DAYS of signup. A later first result still sets the setup state
+// (the account did get value) but is not an activation, so it never feeds repeat use, activated-paying or cost per activated.
+const activatedInWindow = (c: Customer) => c.activated_at !== null && c.activated_at <= c.signup_at + ACTIVATION_DAYS * DAY
 const parse = (s: string): Record<string, unknown> => { try { const v = JSON.parse(s); return v && typeof v === 'object' ? v : {} } catch { return {} } }
 
-export function computeFunnel(d: Data, opts: { now: number; staging: boolean; internal: Set<string> }): FunnelReport {
+export function computeFunnel(d: Data, opts: { now: number; staging: boolean; internal: Set<string>; modelUsage?: boolean }): FunnelReport {
   const now = opts.now
   const excluded = { staging_environment: opts.staging, synthetic_accounts: 0, internal_accounts: 0, invited_members: 0, test_runs: 0, test_messages: 0 }
   // the growth workspace's own people are dazl, not customers (funnelReport also drops its memberships)
@@ -272,8 +340,8 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
     const setup = { abandoned_setup: 0, runs_failed: 0, zero_result: 0, activated: 0 } as Record<SetupState, number>
     for (const c of cs) { att[c.attribution]++; setup[c.setup]++ }
     const actElig = cs.filter(c => c.signup_at + ACTIVATION_DAYS * DAY <= now)
-    const activated = actElig.filter(c => c.activated_at !== null && c.activated_at <= c.signup_at + ACTIVATION_DAYS * DAY)
-    const repElig = cs.filter(c => c.activated_at !== null && c.activated_at + REPEAT_DAYS * DAY <= now)
+    const activated = actElig.filter(activatedInWindow)
+    const repElig = cs.filter(c => activatedInWindow(c) && c.activated_at! + REPEAT_DAYS * DAY <= now)
     const repeat = repElig.filter(c => c.repeat_at !== null && c.repeat_at <= c.activated_at! + REPEAT_DAYS * DAY)
     const paying = cs.filter(c => c.paid_at !== null)
     const retained: Record<string, Windowed> = {}
@@ -285,7 +353,7 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
     return {
       cohort, signups: cs.length, attribution: att, setup,
       activated: win(actElig.length, activated.length), repeat_use: win(repElig.length, repeat.length),
-      paid: paying.length, activated_paying: paying.filter(c => c.activated_at !== null).length,
+      paid: paying.length, activated_paying: paying.filter(activatedInWindow).length,
       payment_failed: cs.filter(c => c.payment_failed).length, refunded: cs.filter(c => c.refunded_at !== null).length,
       churned: cs.filter(c => c.churned_at !== null).length, lapsed: cs.filter(c => c.lapsed_at !== null && c.churned_at === null).length,
       retained, mature: cs.every(c => c.signup_at + (ACTIVATION_DAYS + REPEAT_DAYS) * DAY <= now),
@@ -306,7 +374,7 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
     const s = sources.get(key) ?? { signal_kind: f.signal_kind, source_kind: f.source_kind, contacted: 0, qualified: 0, signed_up: 0, activated: 0, paid: 0 }
     const add = (o: { contacted: number; signed_up: number; activated: number; paid: number }) => {
       o.contacted++
-      if (signed) { o.signed_up++; if (c!.activated_at !== null) o.activated++; if (c!.paid_at !== null) o.paid++ }
+      if (signed) { o.signed_up++; if (activatedInWindow(c!)) o.activated++; if (c!.paid_at !== null) o.paid++ }
     }
     add(pf); add(s)
     if (qualified) { pf.qualified_conversations++; s.qualified++ }
@@ -317,10 +385,18 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
   const tenantsOf = new Set(all.flatMap(c => [...c.tenants]))
   const trialRows = d.trial.filter(t => tenantsOf.has(t.tenant_id))
   const trialUsd = trialRows.reduce((s, t) => s + (t.settled_at !== null ? t.spent_usd ?? 0 : 0), 0)
-  const recorded = d.researchUsd + trialUsd
-  const activatedPaying = all.filter(c => c.paid_at !== null && c.activated_at !== null).length
+  // Model spend: the token-priced calls, or the spend pool's vendor-settled total when that is larger. The pool holds the
+  // same calls (only while an owner limit is set) plus a few kinds with no token row; adding the two would count a call twice.
+  const priced = priceModelRows(d.modelRows)
+  const tokenUsd = priced.scans.usd + priced.outreach_drafting.usd + priced.evaluation.usd
+  const modelUsd = Math.max(tokenUsd, d.researchUsd)
+  const recorded = modelUsd + trialUsd
+  const scanRecording = opts.modelUsage !== false
+  const activatedPaying = all.filter(c => c.paid_at !== null && activatedInWindow(c)).length
   const retainedPaying = all.filter(c => c.paid_at !== null && c.proAt !== null && c.paid_at + RETENTION_DAYS[0] * DAY <= now && c.proAt(c.paid_at + RETENTION_DAYS[0] * DAY) && (c.refunded_at === null || c.refunded_at > c.paid_at + RETENTION_DAYS[0] * DAY)).length
   const round = (x: number) => Math.round(x * 100) / 100
+  const line = (name: string, p: PricedPurpose, off: boolean, note: string): CostComponent =>
+    ({ name, usd: round(p.usd), status: p.unpriced_calls > 0 || off ? 'partial' : 'recorded', priced_calls: p.priced_calls, unpriced_calls: p.unpriced_calls, note })
 
   return {
     generated_at: now,
@@ -340,12 +416,14 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
     cohorts: cohortKeys.map(k => row(k, all.filter(c => c.cohort === k))),
     cost: {
       components: [
-        { name: 'growth_workspace_llm', usd: round(d.researchUsd), status: 'recorded', note: 'vendor-reported model spend of the growth workspace (research, scans), all months' },
+        line('scans', priced.scans, !scanRecording,
+          `model calls of the growth workspace's plays and profile generation (scan_model_calls), at the served model's listed price; that table keeps no cache or web-search counts, and research calls report no tokens (unpriced)${scanRecording ? '' : '; recording is off on this server (DAZL_MODEL_USAGE=0), so later calls are missing'}`),
+        line('outreach_drafting', priced.outreach_drafting, false, 'draft polish calls (outreach_llm_usage), input, output and cache tokens at the served model\'s listed price'),
+        line('evaluation', priced.evaluation, false, 'lead qualification calls (lead_qualifications), from the usage the vendor returned, at the served model\'s listed price'),
         { name: 'trial_subsidy', usd: round(trialUsd), status: 'recorded', note: 'settled dazl-funded trial runs of measured accounts' },
-        { name: 'enrichment', usd: null, status: 'not_recorded', note: 'provider credits are not stored in dollars' },
-        { name: 'evaluation', usd: null, status: 'not_recorded', note: 'qualification/eval model calls store tokens, not dollars' },
-        { name: 'outreach_drafting', usd: null, status: 'not_recorded', note: 'drafting model calls store tokens, not dollars' },
+        { name: 'enrichment', usd: null, status: 'not_recorded', note: 'Apollo / People Data Labs credits have no listed dollar price in dazl, so they are not converted' },
       ],
+      model_spend: { token_priced_usd: round(tokenUsd), pool_reported_usd: round(d.researchUsd), counted_usd: round(modelUsd), rule: 'the larger of the two; the spend pool settles the same calls while an owner limit is set, so they are never added' },
       recorded_usd: round(recorded),
       complete: false,
       per_activated_paying: { customers: activatedPaying, usd_lower_bound: activatedPaying ? round(recorded / activatedPaying) : null },
@@ -377,5 +455,5 @@ export async function funnelReport(db: Db, growthTenant: string, opts: { now?: n
   // workspace itself is never a customer's
   const internal = new Set(d.owners.filter(m => m.tenant_id === growthTenant).map(m => m.member_id))
   internal.add(growthTenant)
-  return computeFunnel({ ...d, owners: d.owners.filter(m => m.tenant_id !== growthTenant) }, { now, staging, internal })
+  return computeFunnel({ ...d, owners: d.owners.filter(m => m.tenant_id !== growthTenant) }, { now, staging, internal, modelUsage: modelUsageEnabled(opts.env ?? process.env) })
 }
