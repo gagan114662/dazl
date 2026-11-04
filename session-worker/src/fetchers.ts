@@ -9,36 +9,47 @@ export type Fetcher = (query: string, session: string, env: Record<string, strin
 
 // --- A 200 JSON answer is not always a search result (#436). Each platform has its own error envelope (a login wall,
 // a rate limit, a blocked request) and its own result container. Before parsing, every fetcher checks its answer:
-//   - a known error envelope is that failure (auth_failed / throttled; any other platform error is upstream_error);
+//   - a known error envelope is that failure (auth_failed / throttled; any other platform error is upstream_error), and a
+//     refusal marker wins even when a result container sits beside it (a login wall often sends an empty one, #632);
 //   - an answer without the platform's result container is schema_error (a JSON login page, a changed API), never [];
-//   - a result container that is present and empty is a genuine search that found nothing: [].
+//   - a result container that is present and empty is a genuine search that found nothing, [], only when the answer says
+//     so explicitly (Reddit kind 'Listing', Bilibili numResults 0, Instagram status 'ok', LinkedIn paging.total 0).
 // Checks read only the envelope, never the items, so a changed item shape still degrades to fewer items, not a failure.
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null)
 const fail = (kind: FailureKind): never => { throw new FetchFailure(kind) }
 // The recursive walkers (X, LinkedIn) on a hostile, deeply nested answer: a stack overflow is an unreadable answer.
 const readable = <T>(f: () => T): T => { try { return f() } catch (e) { if (e instanceof RangeError) throw new FetchFailure('schema_error'); throw e } }
 const httpKind = (status: unknown): FailureKind => (status === 401 || status === 403 ? 'auth_failed' : status === 429 ? 'throttled' : 'upstream_error')
+// An error code as a number: numbers as they are, numeric strings read, anything else NaN (never a coercion that throws).
+const num = (v: unknown): number => (typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN)
+const present = (v: unknown) => v !== undefined && v !== null
 
-// Reddit: {kind: 'Listing', data: {children: [...]}}; errors come back as {error: <http status>, message}.
+// Reddit: {kind: 'Listing', data: {children: [...]}}; errors come back as {error: <http status>, message}, and an error
+// field wins over any listing beside it.
 export function checkReddit(raw: unknown): void {
   const o = obj(raw) ?? fail('schema_error')
-  if (o.error !== undefined && o.error !== null) fail(httpKind(Number(o.error)))
-  if (!Array.isArray(obj(o.data)?.children)) fail('schema_error')
+  if (present(o.error)) fail(httpKind(num(o.error)))
+  if (o.kind !== 'Listing' || !Array.isArray(obj(o.data)?.children)) fail('schema_error')
 }
-// X GraphQL: {data: {search_by_raw_query: ...}}; a refusal is {errors: [{code}]} without data. 32/64/89/215/326 = the
-// session is not authenticated, suspended or locked; 88 = rate limit.
+// X GraphQL: {data: {search_by_raw_query: {search_timeline: {timeline: {instructions: [...]}}}}}; a refusal is
+// {errors: [{code}]}. 32/64/89/215/326 = the session is not authenticated, suspended or locked; 88 = rate limit. Those
+// codes are a refusal even beside a data block. Other errors beside timeline entries are partial errors (the entries are
+// read); beside no entries, or no timeline, the answer is that error.
 const X_AUTH = new Set([32, 64, 89, 215, 326])
 export function checkX(raw: unknown): void {
   const o = obj(raw) ?? fail('schema_error')
-  const data = obj(o.data)
-  if (Array.isArray(o.errors) && o.errors.length > 0 && !data?.search_by_raw_query) {
-    const codes = o.errors.map(e => Number(obj(e)?.code))
-    fail(codes.some(c => X_AUTH.has(c)) ? 'auth_failed' : codes.includes(88) ? 'throttled' : 'upstream_error')
-  }
-  if (!data || !('search_by_raw_query' in data)) fail('schema_error')
+  if (present(o.errors) && !Array.isArray(o.errors)) fail('schema_error')
+  const errors: unknown[] = Array.isArray(o.errors) ? o.errors : []
+  const codes = errors.map(e => num(obj(e)?.code))
+  if (codes.some(c => X_AUTH.has(c))) fail('auth_failed')
+  if (codes.includes(88)) fail('throttled')
+  const instructions = obj(obj(obj(obj(o.data)?.search_by_raw_query)?.search_timeline)?.timeline)?.instructions
+  if (!Array.isArray(instructions)) fail(errors.length > 0 ? 'upstream_error' : 'schema_error')
+  if (errors.length > 0 && (instructions as unknown[]).length === 0) fail('upstream_error')
 }
 // Bilibili: {code: 0, data: {...}}; non-zero codes are refusals even on HTTP 200. -101 = not signed in, -111 = csrf;
-// -352 (risk control), -412 (request blocked), -509 / -799 (too frequent) = throttled.
+// -352 (risk control), -412 (request blocked), -509 / -799 (too frequent) = throttled. Risk control can also answer code 0
+// with a v_voucher challenge in place of results: throttled.
 const BILI_AUTH = new Set([-101, -111]), BILI_THROTTLE = new Set([-352, -412, -509, -799])
 export function checkBilibili(raw: unknown): void {
   const o = obj(raw) ?? fail('schema_error')
@@ -46,25 +57,41 @@ export function checkBilibili(raw: unknown): void {
   const code = o.code as number
   if (code !== 0) fail(BILI_AUTH.has(code) ? 'auth_failed' : BILI_THROTTLE.has(code) ? 'throttled' : 'upstream_error')
   const data = obj(o.data) ?? fail('schema_error')
-  // No hits: Bilibili omits result or sends an empty one with numResults 0. Anything else without a list is a changed API.
-  if (!Array.isArray(data.result) && !(data.result === undefined && data.numResults === 0)) fail('schema_error')
+  if (present(data.v_voucher)) fail('throttled')
+  if (Array.isArray(data.result) && data.result.length > 0) return
+  // No hits: Bilibili says numResults 0 and omits result or sends an empty one. Anything else is a changed API.
+  if (!(data.numResults === 0 && (data.result === undefined || Array.isArray(data.result)))) fail('schema_error')
 }
-// Instagram topsearch: {users: [...], status: 'ok'}; a refusal is {status: 'fail', message, require_login?, spam?}.
+// Instagram topsearch: {users: [...], status: 'ok'}; a refusal is {status: 'fail', message, require_login?, spam?}. A
+// refusal marker wins over a users list beside it; a result needs the explicit status 'ok'.
 export function checkInstagram(raw: unknown): void {
   const o = obj(raw) ?? fail('schema_error')
-  if (o.status === 'fail') {
-    const msg = typeof o.message === 'string' ? o.message.toLowerCase() : ''
-    fail(o.require_login === true || msg === 'login_required' || msg === 'checkpoint_required' || msg === 'challenge_required' ? 'auth_failed'
-      : o.spam === true || msg.includes('wait a few minutes') || msg === 'rate_limited' ? 'throttled' : 'upstream_error')
-  }
-  if (!Array.isArray(o.users)) fail('schema_error')
+  const msg = typeof o.message === 'string' ? o.message.toLowerCase() : ''
+  const auth = o.require_login === true || msg === 'login_required' || msg === 'checkpoint_required' || msg === 'challenge_required'
+  const throttled = o.spam === true || msg.includes('wait a few minutes') || msg === 'rate_limited'
+  if (o.status === 'fail' || auth || throttled) fail(auth ? 'auth_failed' : throttled ? 'throttled' : 'upstream_error')
+  if (o.status !== 'ok' || !Array.isArray(o.users)) fail('schema_error')
 }
-// LinkedIn voyager: {data, included} or {elements}; a refusal is {status: <http status>} without them.
+// LinkedIn voyager: {data: {elements, paging}, included} (normalized) or {elements, paging}. A refusal is {status: <http
+// status>, serviceErrorCode?, message?}, sometimes beside an empty or message-only data block, so (#632):
+//   - a status field must be an integer; a non-2xx one is that refusal whatever sits beside it; any other type is unreadable;
+//   - a serviceErrorCode / exceptionClass is a refusal even with a 2xx status;
+//   - a result needs content (a non-empty included or elements list), or an explicit zero-result answer (an empty elements
+//     list with paging.total 0); an empty or message-only container is schema_error, never an empty search.
 export function checkLinkedin(raw: unknown): void {
   const o = obj(raw) ?? fail('schema_error')
-  const hasResult = obj(o.data) !== null || Array.isArray(o.included) || Array.isArray(o.elements)
-  if (!hasResult && typeof o.status === 'number') fail(httpKind(o.status))
-  if (!hasResult) fail('schema_error')
+  if (Object.hasOwn(o, 'status')) {
+    const s = o.status
+    if (typeof s !== 'number' || !Number.isInteger(s)) fail('schema_error')
+    if ((s as number) < 200 || (s as number) > 299) fail(httpKind(s))
+  }
+  if (present(o.serviceErrorCode) || present(o.exceptionClass)) fail('upstream_error')
+  if (Object.hasOwn(o, 'data') && obj(o.data) === null) fail('schema_error')
+  const data = obj(o.data)
+  const lists = [o.elements, data?.elements, data?.['*elements']]
+  if ((Array.isArray(o.included) && o.included.length > 0) || lists.some(l => Array.isArray(l) && l.length > 0)) return
+  const total = (obj(o.paging) ?? obj(data?.paging))?.total
+  if (!(lists.some(l => Array.isArray(l)) && (o.included === undefined || Array.isArray(o.included)) && total === 0)) fail('schema_error')
 }
 
 // --- Reddit: public search JSON with the session cookie. ---
