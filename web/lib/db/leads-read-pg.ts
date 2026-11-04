@@ -13,6 +13,7 @@ import { groupUnderlyingEvents, scoreEvidence } from '../events/prioritize.ts'
 import type { LeadPriority } from '../events/prioritize.ts'
 import { tokens, MIN_COHORT } from '../scan/lookalike.ts'
 import type { LookalikeSignal } from '../scan/lookalike.ts'
+import { sameAccount, type FeedbackRow } from '../scan/feedback.ts'
 
 type CohortRow = { id: string; signal: string; industry: string | null; location: string | null }
 
@@ -197,19 +198,28 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
       const out = new Map<string, LookalikeSignal>()
       if (leads.length === 0) return out as never
       const exclude = new Set(leads.map(l => l.id))
+      // Same cohort as lib/scan/lookalike.ts referenceCohort: explicit accepts in (#385), every rejected lead or account out.
+      // A store without the table (a schema before 0044) has no feedback; any other read failure throws (no cohort is guessed).
+      let rejected: Pick<FeedbackRow, 'verdict' | 'level' | 'company_key' | 'domain' | 'lead_id'>[] = [], table = true
+      try { rejected = (await pg.query("SELECT verdict, level, company_key, domain, lead_id FROM lead_feedback WHERE tenant_id = $1 AND reset_at IS NULL AND verdict = 'reject'", [tenantId])).rows as typeof rejected }
+      catch (e) { if (!/relation "lead_feedback" does not exist/.test(e instanceof Error ? e.message : '')) throw e; table = false }
+      const rejectedLeads = new Set(rejected.map(v => v.lead_id).filter(Boolean))
       const { rows } = await pg.query(
-        `SELECT DISTINCT l.id, l.signal, j.industry, j.location
+        `SELECT DISTINCT l.id, l.signal, l.company, l.company_domain, j.industry, j.location
          FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
          LEFT JOIN suppressions s ON s.tenant_id = j.user_id AND s.email = lower(btrim(l.contact))
          WHERE j.user_id = $1
            AND (l.source_kind IS NULL OR l.source_kind <> 'test')
            AND l.company NOT LIKE '%(test only)%'
            AND s.email IS NULL
-           AND (l.fit >= 4 OR l.id IN (SELECT lead_id FROM inbound_messages WHERE tenant_id = $2 AND classification = 'positive' AND lead_id IS NOT NULL))
-         LIMIT 200`,
+           AND (l.fit >= 4 OR l.id IN (SELECT lead_id FROM inbound_messages WHERE tenant_id = $2 AND classification = 'positive' AND lead_id IS NOT NULL)${table ? `
+                OR l.id IN (SELECT lead_id FROM lead_feedback WHERE tenant_id = $1 AND verdict = 'accept' AND reset_at IS NULL AND lead_id IS NOT NULL)` : ''})
+         LIMIT 1000`,
         [tenantId, tenantId],
       )
-      const cohort = (rows as CohortRow[]).filter(r => !exclude.has(r.id))
+      const cohort = (rows as (CohortRow & { company: string; company_domain: string | null })[])
+        .filter(r => !exclude.has(r.id) && !rejectedLeads.has(r.id) && !rejected.some(v => v.level === 'account' && sameAccount(v, r)))
+        .slice(0, 200)
       const cohortTok = cohort.map(c => ({ row: c, tok: tokens(c.signal) }))
       for (const l of leads) {
         if (cohort.length < MIN_COHORT) { out.set(l.id, { state: 'insufficient', cohort_size: cohort.length, matches: 0, matched_on: [] }); continue }

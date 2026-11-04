@@ -1,0 +1,12 @@
+{
+ "v": 1,
+ "kind": "dazl.judge-lock",
+ "judges": [],
+ "registered": [
+  {
+   "id": "scan_verification_judge",
+   "fingerprint": "77f64d5c231da0b06735c863c1df2f5aa213c6383123146715e0dcef6e5328c1",
+   "note": "lib/scan/runner.ts judgePrompt + parseJudgement as of #396. Scored here only under stub models; never calibrated against a real model (that needs a paid run, the owner's call), so judgeGate reports it unusable. The scan does not consult the gate yet."
+  }
+ ]
+}
