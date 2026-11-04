@@ -126,7 +126,124 @@ These evaluators deliberately do not reuse the scan's own checks (`place_on_page
 `placeAgreement`): the pipeline must not be its own sole judge (#395).
 
 LLM judges come only where no deterministic check exists (buyer need, semantic claim support), with their own model
-configuration and budget, and only after their agreement with labelled synthetic fixtures is measured (#396). None exist yet.
+configuration and budget, and only after their agreement with labelled synthetic fixtures is measured (#396, section 4c).
+
+### 4c. Judges, their calibration and drift (`lib/evals/judge.ts`, #396)
+
+A judge answers one question: do these sources support this claim about this company? Its answer counts only under rules
+that keep agreement between models from passing for ground truth.
+
+- **Fail closed.** These are all `unknown`, and unknown is never pass:
+  - a timeout or a thrown error;
+  - an unparseable reply;
+  - a reply with any field beyond `{answer, quote, source}`;
+  - a `supported` whose quote is not verbatim (case and whitespace aside) in the source it names.
+- **Unanimity, not votes.** A panel is `supported` or `not_supported` only when every judge says so. One abstention or one
+  dissent is unknown, so 2-of-3 is not a pass. A judge that answers the same item differently on a repeat is unknown on it.
+- **Sources are data.**
+  - Page text goes in blocks fenced with a per-call nonce. The nonce is stripped from page text, so a page cannot close its
+    own block.
+  - The judge is a text-in/text-out function with no tools. `judge.ts` imports nothing at runtime beyond `node:crypto`.
+  - An injected `send_email` field makes the whole reply unknown, and the attempt alone fails calibration.
+  - An instruction the judge obeys within the three fields is caught by calibration, below.
+- **Calibrated or silent.** A judge's identity is a fingerprint over its id, version, model, prompt version and a hash of
+  its prompt template. Its verdicts count (`judgeGate`) only when both hold:
+  - the lock (`test/fixtures/evals/judges/judges.lock.json`) has a passing calibration for that exact fingerprint on the
+    current corpus hash;
+  - no drift report over its stored verdicts says `drifted`.
+
+  Any change to the model, prompt or corpus means recalibrating. Until then the judge yields `unknown`, never `pass`. The
+  committed lock has no calibrations, so no judge counts yet.
+
+**Any judge.** The harness scores a `JudgeAdapter`. Three exist:
+- `claimJudge`: the strict judge above;
+- `scanJudge`: the scan's existing verification judge (`lib/scan/runner.ts` `judgePrompt` + `parseJudgement`, via
+  `makeJudge`);
+- `panelJudge`: a unanimous panel of either. A panel is calibrated like a single judge, because a blind spot all its
+  members share passes the panel too.
+
+The lock's `registered` list holds the scan judge's fingerprint. A test recomputes it from the code, so an edit to that
+prompt or parser fails CI until someone runs the harness and updates the entry.
+
+**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, origin `synthetic`, 44 items) is labelled, and every
+company, page and address in it is invented. It has seven conditions:
+- plain;
+- multilingual (French, German, Spanish, Portuguese);
+- negation;
+- contradicting sources, including a former employee who is still on an archived page;
+- copied/syndicated press with look-alike names;
+- date traps: publication or refresh dates that are not the event date, and future events;
+- injected instructions: fake rubric updates, fake block closes, fake tool calls, and replies with an action field.
+
+Each split has a positive and a negative for each condition, plus a critical negative for each of wrong identity, wrong
+contact, wrong date and an obeyed injection. Groups tie reworded, translated or reordered copies of one fact together.
+
+`checkCorpus` refuses:
+- splits that share an id, or the same claim and sources (a leak);
+- a group that spans both splits or mixes labels;
+- a positive without a gold quote on the page;
+- a critical item that is not a negative;
+- a condition or critical kind missing from either split.
+
+**Calibration** (`calibrate`) runs on the `calibration` split only. The `holdout` split is the scored benchmark: it is
+reported with the same measures but is never used to choose thresholds, and a holdout report cannot be locked.
+
+Each item is asked twice, plus once with its sources reversed when it has more than one. Its answer is the attempts'
+common answer, else unknown. Calls stop at `maxCalls`; items the budget did not reach are unknown and the report fails.
+
+Reports carry:
+- agreement with the labels: agree rate, accuracy on decided items, coverage;
+- false-positive, false-negative and abstention rates, overall and per condition;
+- flip rate (attempts that disagree) and group flip rate (a group whose items got different answers);
+- critical false positives: a `supported` on a critical negative on any attempt;
+- action attempts: an extra reply field on an injection item;
+- every item's attempts with their reasons, and the calls used;
+- `limits`: what the report does not show.
+
+A critical false positive or an action attempt blocks the judge whatever its rates. Thresholds default to:
+- 5% false positives, 20% false negatives and 20% abstention overall;
+- at most 25% false positives and 50% abstention in any one condition;
+- at most 10% flips and 10% group flips.
+
+`pairAgreement` compares two judges and lists the items they get wrong together. That is where a unanimous panel would
+still pass a false claim.
+
+**Drift** works over stored verdicts. `toStoredVerdicts` turns a report into JSON-lines records, one per item. Each
+record holds the run, time, judge, fingerprint, model, corpus hash, origin, split, item, label and answer.
+`parseStoredVerdicts` refuses a damaged line instead of skipping it.
+
+`detectDrift` compares a judge's latest run with its baseline run on the same corpus version and split, per origin. It
+flags each of:
+- a new fingerprint (model, version or prompt changed): recalibrate;
+- answers that changed under the same fingerprint (the model behind the name changed);
+- a condition whose false-positive, false-negative or abstention rate rose by more than 0.1;
+- a new critical false positive.
+
+Fewer than two runs is `insufficient`, which never reads as stable. Synthetic and live-web results are never compared
+or pooled.
+
+`scripts/judges.mts` scores both real judge adapters under every reference stub model and checks the harness still has
+teeth: on the calibration split only the truthful stub may pass. `--verdicts <log.jsonl>` appends the run and reports
+drift. It runs offline, with stub models only:
+
+    SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/judges.mts
+
+**What the stub runs show about the scan's verification judge.** Its one-word reply has no quote, and `parseJudgement`
+keeps a leading `supports` and drops whatever follows. So a model that obeys a page instruction cannot be stopped by the
+parser; only calibration catches it. The judge's effect is bounded, though. It runs only on candidates that already
+passed the deterministic checks (quote on the page, company named, date). Its answer can only nudge confidence, or drop
+a lead it calls `contradicts`. It has no send or tool authority.
+
+**Limits and what is not built:**
+- No real model has been calibrated. That needs a provider adapter, a key and a paid budget, so it is the owner's call.
+  The scan judge also runs on each tenant's own provider and model, so no single calibration covers it.
+- The scan does not consult `judgeGate` yet. Doing so would change lead scoring for every tenant whose judge is
+  uncalibrated, which is all of them today.
+- No judge is wired into `scoreCase` as an evaluator.
+- No live-web corpus exists. Agreement with labels written by the developers is not ground truth, and 23 calibration
+  items cannot show a rate of zero in use.
+
+Until these exist, every claim a judge would settle stays with the deterministic evaluators or is `unknown`.
 
 ### 5. Replay harness (`test/helpers/eval-replay.ts`, result shape `lib/evals/result.ts`)
 
@@ -305,5 +422,6 @@ verified lead's contact.
 3. Drafting and autopilot: inbox snapshot in the World; verifiers for no send without consent, opt-out and suppression respected,
    no claim absent from evidence.
 4. Reply classification: inbox messages in the World; verifiers against labelled synthetic replies; disagreement flags.
-5. LLM judges with calibration against labelled adversarial fixtures and drift checks (#396).
+5. ~~LLM judges with calibration against labelled adversarial fixtures and drift checks~~ (harness built, section 4c). Next: a
+   real-model calibration run (owner: key and budget), then the scan consulting `judgeGate` (#396).
 6. Two-version runs with repeated replays, paired comparisons and intervals (#397, #398); outcome pilots stay #399.
