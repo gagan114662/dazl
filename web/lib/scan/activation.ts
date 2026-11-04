@@ -5,8 +5,9 @@
 // Where each stage comes from:
 //   - signed up: the workspace's organizations row (created_at; the founder's users row when there is none);
 //   - read the website: an `onboarding.site_read` audit event (lib/audit.ts), written by POST /api/scan/icp-from-url
-//     for every read that reached the page, with the path it took (own key, free trial, free facts-only read), its result
-//     (a drafted profile, the page's own facts, or an error) and the refusal or error reason;
+//     for every read past the route's own rate limit, with the path it took (own key, free trial, free facts-only read, or
+//     none when it stopped before the fetch), its result (a drafted profile, the page's own facts, or an error) and the
+//     refusal or error reason;
 //   - saved the offer: the first `settings.changed` audit event on the profile (POST /api/settings/profile, the only
 //     place a reviewed offer is saved);
 //   - first scan: the workspace's first scan_jobs row;
@@ -21,7 +22,8 @@ import { captureError } from '../ops/errors.ts'
 export const SITE_READ_ACTION = 'onboarding.site_read'
 export const STAGES = ['signed_up', 'read_site', 'saved_offer', 'started_scan', 'verified_lead'] as const
 export type Stage = typeof STAGES[number]
-export type SiteReadPath = 'own_key' | 'trial' | 'free'
+// 'none': the read stopped before the page was fetched (a bad address, saved targeting that could not be read).
+export type SiteReadPath = 'own_key' | 'trial' | 'free' | 'none'
 export type SiteReadResult = 'profile' | 'facts' | 'error'
 export interface SiteReadOutcome { path: SiteReadPath; result: SiteReadResult; reason: string | null }
 
@@ -61,7 +63,7 @@ function parseRead(summary: unknown): SiteReadOutcome {
   let s: unknown = summary
   if (typeof s === 'string') { try { s = JSON.parse(s) } catch { s = null } }
   const r = s && typeof s === 'object' && !Array.isArray(s) ? s as Record<string, unknown> : {}
-  const path = r.path === 'own_key' || r.path === 'trial' || r.path === 'free' ? r.path : null
+  const path = r.path === 'own_key' || r.path === 'trial' || r.path === 'free' || r.path === 'none' ? r.path : null
   const result = r.result === 'profile' || r.result === 'facts' || r.result === 'error' ? r.result : null
   if (!path || !result) return { path: path ?? 'free', result: 'error', reason: 'unreadable' }
   return { path, result, reason: code(r.reason) }

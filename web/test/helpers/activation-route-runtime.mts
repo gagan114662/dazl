@@ -84,6 +84,17 @@ test('#409 every website read is recorded with its path, result and reason; the 
   assert.equal(r.status, 200); assert.equal(r.body.funded, 'trial', 'a failed record never changes the answer')
   raw.exec('DROP TRIGGER audit_fail')
 
+  // 6b. A bad address stops before the fetch: recorded with path 'none'. Past the route's 5-per-hour limit a press is
+  //     refused 429 and NOT recorded, so a looping client cannot turn refusals into unbounded audit writes.
+  const BAD = await founder(8, 'bad@gmail.com')
+  for (let i = 0; i < 5; i++) {
+    const b = await POST(new NextRequest('http://localhost/api/scan/icp-from-url', { method: 'POST', headers: headers(), body: JSON.stringify({ url: i % 2 ? 'x' : { not: 'a string' } }) }))
+    assert.equal(b.status, 400)
+  }
+  const limited = await POST(new NextRequest('http://localhost/api/scan/icp-from-url', { method: 'POST', headers: headers(), body: JSON.stringify({ url: 'x' }) }))
+  assert.equal(limited.status, 429)
+  assert.deepEqual((await events(BAD)).map(e => [e.decision, e.path, e.result, e.reason]), Array(5).fill(['denied', 'none', 'error', 'invalid']))
+
   // 7. The whole journey for the trial founder: profile saved through the real route, a scan, then a verified lead.
   setUser({ id: OK, business_name: 'b', email: 'ok@gmail.com' })
   let j = await readActivation(db, db, OK)
