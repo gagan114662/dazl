@@ -45,6 +45,7 @@ import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
+import { runNewLabel } from '@/lib/run-new-label'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -1268,7 +1269,7 @@ export default function LeadsClient() {
             {monitors.map(m => (
               <div key={m.id} className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">
                 <span className="flex-1 truncate">{m.query}</span>
-                {m.last_new_count != null && <span className="text-green-400">+{m.last_new_count} new</span>}
+                {m.last_new_count != null && <span className="text-green-400">+{runNewLabel('monitor', m.last_new_count)}</span>}
                 <span>{m.run_count ?? 0} runs</span>
                 <button onClick={() => toggleMonitor(m.id, !m.enabled)} className="hover:text-white">{m.enabled ? 'Pause' : 'Resume'}</button>
                 <button onClick={() => removeMonitor(m.id)} className="hover:text-red-400">Delete</button>
