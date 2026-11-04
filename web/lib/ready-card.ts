@@ -63,11 +63,18 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const msgsComplete = !!msgsRaw && msgsRaw.length < MESSAGES_CAP
   const msgs = msgsRaw ? msgsRaw.filter(m => !m.test) : null
   const campsComplete = !!camps && camps.length < CAMPAIGNS_CAP
-  const ready = (c: Camp) => Math.max(0, (c.qualification.sourceChecked ?? 0) + (c.qualification.confirmedByYou ?? 0) - (c.qualification.held ?? 0))
+  // A per-search count as the campaigns read returned it: a non-negative number, else 0. A missing qualification, null,
+  // a string or NaN never adds to a step, never picks its search and never throws.
+  const count = (x: unknown) => typeof x === 'number' && Number.isFinite(x) && x > 0 ? Math.floor(x) : 0
+  const qual = (c: Camp): Partial<Camp['qualification']> => c.qualification ?? {}
+  const ready = (c: Camp) => Math.max(0, count(qual(c).sourceChecked) + count(qual(c).confirmedByYou) - count(qual(c).held))
+  // Leads of one search waiting on you: the held ones (checked, but a timing, place or other gate holds them) and the ones
+  // in Needs your review. The same two counts the Campaigns row and that search's leads page are built from.
+  const toReview = (c: Camp) => count(qual(c).held) + count(qual(c).needsReview)
   const sum = (f: (c: Camp) => number) => camps ? camps.reduce((n, c) => n + f(c), 0) : 0
   const first = (f: (c: Camp) => boolean) => camps?.find(f) ?? null
   const href = (c: Camp | null) => c ? `/app/leads?job_id=${c.id}` : null
-  const qualifiedN = sum(ready), heldN = sum(c => c.qualification.held ?? 0)
+  const qualifiedN = sum(ready)
   const contactN = sum(c => c.contact?.readyWithContact ?? 0)
   // The two reads overlap (a campaign's drafts are also in the emails read), so they are never added together. A complete
   // emails read is the whole count; a capped one gives at least the larger of the two.
@@ -77,11 +84,14 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const draftAtLeast = !msgsComplete
   const campGap = !camps ? 'could not check - your searches\' results did not load' : `could not check - only your latest ${CAMPAIGNS_CAP} searches could be checked`
   const noSearchYet = finishedN === 0
-  // Qualified: point at held or to-review leads first (something to act on), else the newest finished search.
-  const reviewCamp = first(c => (c.qualification.held ?? 0) + (c.qualification.needsReview ?? 0) > 0) ?? first(c => c.status === 'done')
+  // Qualified: point at held or to-review leads first (something to act on), else the newest finished search. The detail
+  // counts that one search only, the same set its button opens (#352): never a workspace total beside a one-search link,
+  // and never a hold reason (the counted leads are held or in review for different reasons).
+  const reviewCamp = first(c => toReview(c) > 0) ?? first(c => c.status === 'done')
+  const reviewN = reviewCamp ? toReview(reviewCamp) : 0
   const qualified: ReadyItem = qualifiedN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'done', detail: `${qualifiedN} source-checked or confirmed by you`, fix: null }
     : !campsComplete ? unknown('qualified', 'Qualified lead', campGap)
-    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : heldN > 0 ? `${heldN} checked lead${heldN === 1 ? ' waits for its' : 's wait for their'} event date to be confirmed` : 'no lead has passed the source check yet', fix: noSearchYet || !reviewCamp ? null : { href: href(reviewCamp)!, label: 'Review leads' } }
+    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : reviewN > 0 ? `${reviewN} lead${reviewN === 1 ? '' : 's'} in your latest search with leads to check need${reviewN === 1 ? 's' : ''} your review` : 'no lead has passed the source check yet', fix: noSearchYet || !reviewCamp ? null : { href: href(reviewCamp)!, label: 'Review leads' } }
   const contactCamp = first(c => ready(c) > 0)
   const contact: ReadyItem = contactN > 0 ? { id: 'contact', label: 'Contact found', state: 'done', detail: `${contactN} qualified lead${contactN === 1 ? '' : 's'} with a contact`, fix: null }
     : !campsComplete ? unknown('contact', 'Contact found', campGap)

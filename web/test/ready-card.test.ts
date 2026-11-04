@@ -92,7 +92,53 @@ test('Instinct #341: held or rejected contact rows never tick qualified or conta
   // 2 source-checked leads with contacts, both held for timing; 1 rejected row with a contact is not counted at all.
   const i: ReadinessInput = { ...all, campaigns: [camp({ id: 'h1', sc: 2, held: 2, contacts: 2, ready: 0 })], messages: [] }
   assert.deepEqual(st(i).slice(3, 6), ['qualified:todo*>Review leads@/app/leads?job_id=h1', 'contact:todo', 'draft:todo'])
-  assert.equal(readyItems(i)[3].detail, '2 checked leads wait for their event date to be confirmed')
+  assert.equal(readyItems(i)[3].detail, '2 leads in your latest search with leads to check need your review')
+})
+
+// #352: the detail counts the one search its button opens, and names no hold reason.
+const qd = (campaigns: unknown[]) => { const q = readyItems({ ...all, campaigns: campaigns as ReadinessInput['campaigns'], messages: [] })[3]; return { detail: q.detail, href: q.fix?.href ?? null, state: q.state } }
+const n = (detail: string) => Number(/^(\d+) /.exec(detail)?.[1] ?? NaN)
+
+test('#352: several searches with held / to-review leads - the number is the linked search\'s own held + review', () => {
+  // The live shape: 6 held across two searches; the first one with anything to check holds 1 and has 7 in review.
+  const camps = [camp({ id: 'new0' }), camp({ id: 'r1', sc: 1, held: 1, review: 7 }), camp({ id: 'r2', sc: 5, held: 5 }), camp({ id: 'r3', review: 6 })]
+  const q = qd(camps)
+  assert.equal(q.href, '/app/leads?job_id=r1')
+  const linked = camps.find(c => `/app/leads?job_id=${c.id}` === q.href)!
+  assert.equal(n(q.detail), linked.qualification.held + linked.qualification.needsReview)
+  assert.equal(q.detail, '8 leads in your latest search with leads to check need your review')
+  assert.doesNotMatch(q.detail, /event|date|timing|quote|wait/i, 'no hold reason is claimed for the counted leads')
+  // Every ordering of the same searches: the count always belongs to the search the button opens.
+  for (const order of [[0, 1, 2, 3], [0, 3, 2, 1], [2, 1, 3, 0], [3, 2, 1, 0]]) {
+    const cs = order.map(k => camps[k]), r = qd(cs)
+    const c = cs.find(x => `/app/leads?job_id=${x.id}` === r.href)!
+    assert.equal(n(r.detail), c.qualification.held + c.qualification.needsReview, `${order} -> ${r.href}: ${r.detail}`)
+  }
+})
+
+test('#352 adversarial: only needsReview, singular, ties, all zero, missing or malformed counts', () => {
+  assert.deepEqual(qd([camp({ id: 'x', review: 3 })]), { state: 'todo', href: '/app/leads?job_id=x', detail: '3 leads in your latest search with leads to check need your review' }, 'review-only search is counted')
+  assert.equal(qd([camp({ id: 'x', review: 1 })]).detail, '1 lead in your latest search with leads to check needs your review')
+  assert.equal(qd([camp({ id: 'x', sc: 1, held: 1 })]).detail, '1 lead in your latest search with leads to check needs your review')
+  // Ties: equal counts in two searches -> the first in the read is both the link and the count.
+  assert.deepEqual(qd([camp({ id: 't1', review: 2 }), camp({ id: 't2', review: 2 })]).href, '/app/leads?job_id=t1')
+  // All searches zero: no count, the newest finished search is opened.
+  assert.deepEqual(qd([camp({ id: 'z1', status: 'running' }), camp({ id: 'z2' }), camp({ id: 'z3' })]), { state: 'todo', href: '/app/leads?job_id=z2', detail: 'no lead has passed the source check yet' })
+  // Missing / null qualification never throws and never counts.
+  const noQual = { ...camp({ id: 'nq' }), qualification: undefined }, nullQual = { ...camp({ id: 'nl' }), qualification: null }
+  assert.deepEqual(qd([noQual, nullQual, camp({ id: 'ok', review: 2 })]), { state: 'todo', href: '/app/leads?job_id=ok', detail: '2 leads in your latest search with leads to check need your review' })
+  assert.deepEqual(qd([noQual]), { state: 'todo', href: '/app/leads?job_id=nq', detail: 'no lead has passed the source check yet' })
+  // Non-number counts (string, NaN, negative, Infinity, bool, object, array, null) are 0: they never pick a search, and a
+  // string never concatenates into a bigger number.
+  for (const bad of ['3', NaN, -2, Infinity, true, {}, [4], null]) {
+    const c = { ...camp({ id: 'bad' }), qualification: { rejected: 0, sourceChecked: bad, confirmedByYou: bad, held: bad, needsReview: bad } }
+    const r = qd([c, camp({ id: 'good', review: 1 })])
+    assert.deepEqual(r, { state: 'todo', href: '/app/leads?job_id=good', detail: '1 lead in your latest search with leads to check needs your review' }, String(bad))
+  }
+  const mixed = { ...camp({ id: 'mx' }), qualification: { rejected: 0, sourceChecked: 2, held: 2, needsReview: '5' } }
+  assert.equal(qd([mixed]).detail, '2 leads in your latest search with leads to check need your review', 'a string count never becomes "25"')
+  // A fractional count is floored, never rendered as "2.5 leads".
+  assert.equal(n(qd([camp({ id: 'f', review: 2.5 as number })]).detail), 2)
 })
 
 test('Instinct #341: one real draft in both reads is one draft; approved and sent too', () => {
