@@ -45,7 +45,7 @@ setScanDb(db)
 
 const post = (id: string, headers: Record<string, string> = { 'content-type': 'application/json' }) =>
   POST(new NextRequest(`http://localhost/api/leads/${id}/find-contact`, { method: 'POST', headers, body: '{}' }), { params: Promise.resolve({ lead: id }) })
-const enr = (id: string) => db.prepare("SELECT connector, kind, value, source_url FROM lead_enrichments WHERE lead_id = ? AND kind <> 'domain_check'").all(id)
+const enr = (id: string) => db.prepare("SELECT connector, kind, value, source_url FROM lead_enrichments WHERE lead_id = ? AND kind NOT IN ('domain_check', 'tech_scan')").all(id)   // tech_scan: #389 per-crawl observation
 
 test('route refusals: origin, id shape, other user, unconfirmed, person handle, switched off', async () => {
   assert.equal((await post(ID(1), { 'content-type': 'text/plain' })).status, 403)

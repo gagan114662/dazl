@@ -3,7 +3,8 @@
 // the next provider is tried when the previous one finds nothing usable (empty, rejected as a different company,
 // rate-limited, timed out, upstream error or a bad key). Per-pass circuit breaker per provider, per-tenant call budget
 // (an exhausted budget is a visible audit row, never a silent skip), no repeat charge for a lookup this job already made.
-// Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar).
+// Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar). The summary records each
+// provider's outcome per lead in waterfall order, and failures/skips reach the scan view (lib/scan/provider-issues.ts).
 import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, latestAuditStatus, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
@@ -52,7 +53,19 @@ export const MAX_FAILS = 3          // transient failures that open a provider's
 export const APOLLO_CALLS = MAX_LEADS * 2   // org + people lookups per scan
 export const PDL_CALLS = MAX_LEADS          // PDL PROFILES per scan: PDL charges 1 credit per profile RETURNED (adapter contract), so the budget caps profiles and each search's size is capped by what remains - the scan can never be charged for more than this many PDL profiles
 type Prov = 'apollo' | 'pdl'
-export interface EnrichSummary { attached: number; byProvider: Record<Prov, number>; skipped: { provider: Prov; why: 'circuit_open' | 'budget_exhausted' | 'replayed' | 'uncertain' | 'not_configured' | 'unresolved' }[] }
+type SkipWhy = 'circuit_open' | 'budget_exhausted' | 'replayed' | 'uncertain' | 'not_configured' | 'unresolved' | 'fallback_off'
+// A provider failure code: the EnrichError code, 'timeout' for an aborted/timed-out request (the adapters' 15s
+// abort), else 'error'. Non-terminal like the others: a timed-out lookup may have been billed, so its claim holds.
+export type FailCode = 'auth' | 'rate_limited' | 'upstream' | 'timeout' | 'error'
+export function failCode(e: unknown): FailCode {
+  if (e instanceof EnrichError) return e.code
+  const name = typeof e === 'object' && e !== null ? (e as { name?: unknown }).name : null
+  return name === 'AbortError' || name === 'TimeoutError' ? 'timeout' : 'error'
+}
+// Per-lead, per-provider outcome in waterfall order (#382): what each provider did for each lead this pass -
+// attached a verified contact, came back empty, every candidate rejected, failed (by code), or was skipped (why).
+export interface ProviderOutcome { leadId: string; provider: Prov; outcome: 'attached' | 'empty' | 'rejected' | FailCode | SkipWhy; attached: number }
+export interface EnrichSummary { attached: number; byProvider: Record<Prov, number>; skipped: { provider: Prov; why: SkipWhy }[]; outcomes: ProviderOutcome[] }
 
 export async function enrichLeadContacts(
   db: Database.Database,
@@ -62,7 +75,7 @@ export async function enrichLeadContacts(
   deps: { fetchImpl?: typeof fetch; master?: Buffer; budget?: Partial<Record<Prov, number>>; only?: Prov } = {},
 ): Promise<EnrichSummary> {
   const fetchImpl = deps.fetchImpl ?? fetch
-  const summary: EnrichSummary = { attached: 0, byProvider: { apollo: 0, pdl: 0 }, skipped: [] }
+  const summary: EnrichSummary = { attached: 0, byProvider: { apollo: 0, pdl: 0 }, skipped: [], outcomes: [] }
   const connector: Record<Prov, string> = { apollo: ENRICH_APOLLO, pdl: ENRICH_PDL }
   // Setup failures are NEVER silent (the old blanket catch made master/decrypt/DB failures vanish with zero
   // record): refuse explicitly - an audit row when the database allows it, a sanitized log line always.
@@ -90,8 +103,11 @@ export async function enrichLeadContacts(
   }
   const keys: Record<Prov, string | null> = { apollo: loadKey('apollo'), pdl: loadKey('pdl') }
   let where: string[]
+  // A saved PDL key the fallback opt-in does not cover: never called, but a lead Apollo leaves without a contact
+  // records a visible 'fallback_off' notice instead of a silent zero result.
+  let fallbackOff = false
   try {
-    if (keys.apollo && !enrichFallbackEnabled(db, tenantId)) keys.pdl = null
+    if (keys.apollo && !enrichFallbackEnabled(db, tenantId)) { fallbackOff = !!keys.pdl; keys.pdl = null }
     if (!keys.apollo && !keys.pdl) return summary
     where = scanWhere(db, jobId) // an agreement basis: unreadable = the pass refuses rather than agrees on a guess
   } catch (e) { return setupFailed(e) }
@@ -100,13 +116,15 @@ export async function enrichLeadContacts(
   const budget: Record<Prov, number> = { apollo: deps.budget?.apollo ?? APOLLO_CALLS, pdl: deps.budget?.pdl ?? PDL_CALLS }
   const used: Record<Prov, number> = { apollo: 0, pdl: 0 }, fails: Record<Prov, number> = { apollo: 0, pdl: 0 }, open: Record<Prov, boolean> = { apollo: false, pdl: false }
   const told = new Set<string>()
-  const skip = (prov: Prov, why: EnrichSummary['skipped'][number]['why'], lead: LeadRow) => {
+  const skip = (prov: Prov, why: SkipWhy, lead: LeadRow) => {
     summary.skipped.push({ provider: prov, why })
+    summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: why, attached: 0 })
     // visible once per provider and reason per pass
     const k = `${prov}:${why}`; if (!told.has(k) && why !== 'replayed') { told.add(k); audit(db, { tenantId, connector: connector[prov], jobId, lookup: `people ${lead.company}`.slice(0, 200), status: why, results: 0 }) }
   }
-  const failed = (prov: Prov, e: unknown) => {
-    const code = e instanceof EnrichError ? e.code : 'error'
+  const failed = (prov: Prov, e: unknown, lead: LeadRow) => {
+    const code = failCode(e)
+    summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: code, attached: 0 })
     if (code === 'auth') open[prov] = true                    // a bad key stops THAT provider for the pass, not the pass
     else if (++fails[prov] >= MAX_FAILS) open[prov] = true    // repeated transient failures open the circuit
   }
@@ -129,10 +147,12 @@ export async function enrichLeadContacts(
       const why = `setup unreadable: ${e instanceof Error ? e.message.slice(0, 120) : 'error'}`
       audit(db, { tenantId, connector: keys.apollo ? ENRICH_APOLLO : ENRICH_PDL, jobId, lookup: lookupKey('people', lead), status: why, results: 0 })
       summary.skipped.push({ provider: keys.apollo ? 'apollo' : 'pdl', why: 'unresolved' })
+      summary.outcomes.push({ leadId: lead.id, provider: keys.apollo ? 'apollo' : 'pdl', outcome: 'unresolved', attached: 0 })
       continue
     }
     const src = lead.company_domain ? `https://${lead.company_domain}` : `https://www.linkedin.com/company/${encodeURIComponent(lead.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}`
     const ctx: Ctx = { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl, buyerTitles }
+    let stopped = false // a verified/replayed result or a held (uncertain) claim ended this lead's waterfall on purpose
     for (const prov of ['apollo', 'pdl'] as Prov[]) {
       if (deps.only && prov !== deps.only) continue // an owner retry runs exactly the provider whose cost they saw
       if (!keys[prov]) continue
@@ -144,15 +164,16 @@ export async function enrichLeadContacts(
         // call; a replayed or double-run job loses the race and reads the winner's outcome instead of paying again.
         const gate = auditTryReserve(db, { tenantId, connector: connector[prov], jobId, lookup: lookupKey('people', lead), status: 'reserved', results: 0 })
         if ('prior' in gate) {
-          if (gate.prior === 'ok') { skip(prov, 'replayed', lead); break }            // already found for this lead in this job
+          if (gate.prior === 'ok') { skip(prov, 'replayed', lead); stopped = true; break } // already found for this lead in this job
           if (gate.prior === 'empty' || gate.prior === 'rejected') { skip(prov, 'replayed', lead); continue } // known empty/terminally rejected: do not pay again, try the next provider
-          skip(prov, 'uncertain', lead); break                                       // a crashed pass may have paid: fail closed, never pay twice
+          skip(prov, 'uncertain', lead); stopped = true; break                       // a crashed pass may have paid: fail closed, never pay twice
         }
-        let n = 0
-        try { const charged = { n: 0 }; n = await runPdl(ctx, gate.id, keys.pdl!, Math.min(MAX_CONTACTS, budget.pdl - used.pdl), charged); used.pdl += charged.n }
-        catch (e) { failed(prov, e); continue }
-        summary.byProvider[prov] += n; summary.attached += n
-        if (n > 0) break      // a verified candidate: the next provider is not needed (and is not charged)
+        let res: { n: number; verdict: 'attached' | 'empty' | 'rejected' }
+        try { const charged = { n: 0 }; res = await runPdl(ctx, gate.id, keys.pdl!, Math.min(MAX_CONTACTS, budget.pdl - used.pdl), charged); used.pdl += charged.n }
+        catch (e) { failed(prov, e, lead); continue }
+        summary.byProvider[prov] += res.n; summary.attached += res.n
+        summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: res.verdict, attached: res.n })
+        if (res.n > 0) { stopped = true; break } // a verified candidate: the next provider is not needed (and is not charged)
         continue
       }
       // Apollo: honor a legacy whole-attempt outcome READ-ONLY (a legacy terminal replays free; a legacy HELD
@@ -161,20 +182,24 @@ export async function enrichLeadContacts(
       // per-step claims: the org claim (paid, settles with a memo) and the people claim (0-credit endpoint).
       const legacy = readOutcome(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: lookupKey('people', lead) })
       if (legacy) {
-        if (legacy.prior === 'ok') { skip(prov, 'replayed', lead); break }
+        if (legacy.prior === 'ok') { skip(prov, 'replayed', lead); stopped = true; break }
         if (legacy.prior === 'empty' || legacy.prior === 'rejected') { skip(prov, 'replayed', lead); continue }
-        skip(prov, 'uncertain', lead); break
+        skip(prov, 'uncertain', lead); stopped = true; break
       }
       let out: AttemptOutcome
       try { out = await runApollo(ctx, keys.apollo!, { used, budget }) }
-      catch (e) { failed(prov, e); continue }
-      if (out.kind === 'replayed-ok') { skip(prov, 'replayed', lead); break }
+      catch (e) { failed(prov, e, lead); continue }
+      if (out.kind === 'replayed-ok') { skip(prov, 'replayed', lead); stopped = true; break }
       if (out.kind === 'replayed-terminal') { skip(prov, 'replayed', lead); continue }
-      if (out.kind === 'uncertain') { skip(prov, 'uncertain', lead); break }
+      if (out.kind === 'uncertain') { skip(prov, 'uncertain', lead); stopped = true; break }
       if (out.kind === 'budget') { skip(prov, 'budget_exhausted', lead); continue }
       summary.byProvider.apollo += out.n; summary.attached += out.n
-      if (out.n > 0) break
+      summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: out.verdict, attached: out.n })
+      if (out.n > 0) { stopped = true; break }
     }
+    // Apollo left this lead without a contact and a saved PDL key sits outside the opt-in: say so (audited once
+    // per pass), never a silent zero. No PDL call is made. An owner retry scoped to one provider is not a waterfall.
+    if (fallbackOff && !stopped && !deps.only) skip('pdl', 'fallback_off', lead)
   }
   return summary
 }
@@ -221,7 +246,7 @@ export function roleRejection(title: string | null, icpText: string): string | n
 }
 
 type AttemptOutcome =
-  | { kind: 'ran'; n: number }     // the attempt ran this pass; n contacts attached
+  | { kind: 'ran'; n: number; verdict: 'attached' | 'empty' | 'rejected' } // the attempt ran this pass; n contacts attached
   | { kind: 'replayed-ok' }        // contacts already attached for this lead+job: replay free, stop the waterfall
   | { kind: 'replayed-terminal' }  // known empty / terminally rejected: do not pay again, try the next provider
   | { kind: 'uncertain' }          // a held claim MAY have been charged: fail closed - owner resolution only
@@ -297,7 +322,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
           const pg = auditTryReserve(db, peopleClaim)
           if ('id' in pg) auditSettleClaim(db, { ...peopleClaim, status: agree.reason, results: 0 }, pg.id, agree.reason, 0)
           recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: agree.reason, sourceUrl: org.website ?? src })
-          return { kind: 'ran', n: 0 }
+          return { kind: 'ran', n: 0, verdict: 'rejected' }
         }
         if (org && (org.employees || org.industry)) {
           const bits = [org.employees ? `${org.employees} employees` : null, org.industry, org.founded ? `founded ${org.founded}` : null].filter(Boolean).join(' \u00b7 ')
@@ -310,10 +335,11 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
         orgAudit(org ? 'ok' : 'empty', org ? 1 : 0)
         if (!org) memo = null
       } catch (e) {
-        const code = e instanceof EnrichError ? e.code : 'error'
+        const code = failCode(e)
         auditSettleClaim(db, { ...orgClaim, status: code, results: 0 }, gate.id, code, 0)
         if (e instanceof EnrichError && e.code === 'auth') throw e // a bad key stops the provider for the pass (the claim's audit row carries the auth); the held org claim fails the replay CLOSED
-        orgAudit(code, 0)
+        // No second 'org X' row for a failure: the claim's own audit row already carries the code, and a duplicate
+        // would double the scan view's "lookups affected" count for ONE failed call (lib/scan/provider-issues.ts).
         orgFailure = e  // any other org failure: the people search below may still run on an already-known domain
         org = null
       }
@@ -337,7 +363,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
     if ('id' in pg) auditSettleClaim(db, { ...peopleClaim, status: 'contact rejected: no domain to confirm the company', results: 0 }, pg.id, 'contact rejected: no domain to confirm the company', 0)
     recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: 'contact rejected: no domain to confirm the company', sourceUrl: src })
     if (orgFailure) throw orgFailure
-    return { kind: 'ran', n: 0 }
+    return { kind: 'ran', n: 0, verdict: 'rejected' }
   }
   if (spend.used.apollo >= spend.budget.apollo) return { kind: 'budget' }
   spend.used.apollo += 1
@@ -351,7 +377,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   // unfiltered page can omit the buyer entirely, and no later ranking recovers a person never fetched.
   let found: Awaited<ReturnType<typeof apolloPeopleSearch>>
   try { found = await apolloPeopleSearch(key, { domain: orgDomain, name: lead.company }, fetchImpl, MAX_CONTACTS, c.buyerTitles.length ? { titles: c.buyerTitles } : undefined) }
-  catch (e) { const code = e instanceof EnrichError ? e.code : 'error'; auditSettleClaim(db, { ...peopleClaim, status: code, results: 0 }, pgate.id, code, 0); throw e }
+  catch (e) { const code = failCode(e); auditSettleClaim(db, { ...peopleClaim, status: code, results: 0 }, pgate.id, code, 0); throw e }
   // No unfiltered fallback (#383 review): an extra query per lead is a NEW call shape whose cost is not
   // account-verified (Apollo pricing is plan-dependent), so it cannot ship as a free fact. The recall
   // contract instead: an unreviewed persona never filters at all (the old unfiltered query, unchanged);
@@ -373,18 +399,18 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:apollo', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
   const out = people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty')
   auditSettleClaim(db, { ...peopleClaim, status: out, results: people.length }, pgate.id, out, people.length)
-  return { kind: 'ran', n: people.length }
+  return { kind: 'ran', n: people.length, verdict: people.length ? 'attached' : found.length ? 'rejected' : 'empty' }
 }
 
 // maxProfiles caps the request size to the scan's remaining PDL profile budget: PDL charges 1 credit per profile
 // RETURNED (adapter contract), so the size cap is the credit cap. Returns profiles ATTACHED; c.charged gets the
 // number of profiles returned (the credits actually spent, including profiles the agreement check then rejects).
-async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: number, charged: { n: number }): Promise<number> {
+async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: number, charged: { n: number }): Promise<{ n: number; verdict: 'attached' | 'empty' | 'rejected' }> {
   const { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl } = c
   const peopleKey = lookupKey('people', lead)
   let found: Awaited<ReturnType<typeof pdlPeopleSearch>>
   try { found = await pdlPeopleSearch(key, lead.company, fetchImpl, Math.max(1, maxProfiles)) }
-  catch (e) { auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: e instanceof EnrichError ? e.code : 'error', results: 0 }, reservationId, e instanceof EnrichError ? e.code : 'error', 0); throw e }
+  catch (e) { const code = failCode(e); auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e }
   charged.n += found.length
   // PDL matches on the company NAME only: each person's company must agree with the lead on its domain or place.
   // Post-fetch role classification is shared with the Apollo path (#383): no extra PDL query, the
@@ -397,7 +423,7 @@ async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: n
   }
   for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:pdl', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
   auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), results: people.length }, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), people.length)
-  return people.length
+  return { n: people.length, verdict: people.length ? 'attached' : found.length ? 'rejected' : 'empty' }
 }
 
 // ---- Owner resolution for held enrichment claims (the recovery follow-up named in store.ts) ----
