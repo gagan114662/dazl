@@ -101,6 +101,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'preview/[token]/google', method: 'GET', auth: 'public', note: 'continue-with-Google for a preview claim: a validated, live one-time claim token gates the handoff; foreign, expired or unknown tokens redirect, never reach Google, and no input URL is redirected to' },
   { path: 'preview/claim', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'preview/claim', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/preview-claim-route-runtime.mts' }, role: 'read' },
+  { path: 'preview/issue', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'preview/issue', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/preview-claim-route-runtime.mts' }, role: 'read' },
   { path: 'monitors', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'onboarding/policy', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },

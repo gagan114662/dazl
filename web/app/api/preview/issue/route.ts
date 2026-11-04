@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { getMasterKey } from '@/lib/secrets'
-import { issuePreviewClaim } from '@/lib/scan/preview-claim'
+import { issuePreviewClaim, proofReport } from '@/lib/scan/preview-claim'
 import { sameOriginJson } from '@/lib/same-origin'
 import { cleanText, validateEmail } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
@@ -29,9 +29,23 @@ export async function POST(req: NextRequest) {
     if (r === null) return NextResponse.json({ error: 'Run not found.', code: 'not_found' }, { status: 404 })
     if (r.status === 'hold') return NextResponse.json({ error: 'This run has no proof ready to show yet.', code: 'hold', reason: r.reason }, { status: 409 })
     const url = `${process.env.PUBLIC_BASE_URL || new URL(req.url).origin}/preview/${r.token}`
-    return NextResponse.json({ ok: true, id: r.id, url, expiresAt: r.expiresAt })
+    return NextResponse.json({ ok: true, id: r.id, url, expiresAt: r.expiresAt, reused: r.reused })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/preview/issue', method: 'POST', requestId: requestIdOf(req) })
+    return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 })
+  }
+}
+
+// The seller's own evaluation of its proof previews (#403): sample quality (ready vs held runs and why, companies
+// shown), cost (each run's recorded spend) and conversion (issued vs claimed). Session tenant only; no recipient
+// email or preview content leaves this route.
+export async function GET(req: NextRequest) {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Not signed in', code: 'signed_out' }, { status: 401 })
+  try {
+    return NextResponse.json(await proofReport(await getDb(), user.tenantId))
+  } catch (e) {
+    captureError(e, { source: 'route', where: '/api/preview/issue', method: 'GET', requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 })
   }
 }

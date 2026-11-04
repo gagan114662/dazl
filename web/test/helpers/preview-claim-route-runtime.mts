@@ -190,6 +190,20 @@ test('the issue route: the selected proof of the workspace’s own run enters th
   assert.equal(hold.status, 409, 'a run with no usable proof issues nothing')
   const signedOut = await withJar(new Map(), () => issueRoute.POST(new NextRequest('https://app.test/api/preview/issue', { method: 'POST', headers: { 'content-type': 'application/json', host: 'app.test', 'x-forwarded-for': '10.9.3.99' }, body: JSON.stringify({}) })))
   assert.equal(signedOut.status, 401)
+  // a repeat of the same issue returns the same live link (cached), flagged as reused
+  const again = await (await post({ runId: jobId, recipientEmail: 'buyer@prospect.test', business: 'Clinic Soft' })).json()
+  assert.deepEqual([again.url, again.reused, issued.reused], [issued.url, true, false])
+  // 'GET /api/preview/issue': the seller's own evaluation report; signed out is 401, another workspace sees none of it
+  const get = (session?: string) => withJar(new Map(session ? [['dazl_session', session]] : []), () =>
+    issueRoute.GET(new NextRequest('https://app.test/api/preview/issue', { method: 'GET', headers: { host: 'app.test' } })))
+  const rep = await get(sellerSession)
+  assert.equal(rep.status, 200)
+  const body = await rep.json()
+  assert.ok(body.previews.some((p: { id: string }) => p.id === issued.id) && body.totals.issued >= 1 && body.totals.runs.held >= 1)
+  assert.ok(!JSON.stringify(body).includes('buyer@prospect.test'), 'no recipient email in the report')
+  assert.equal((await get()).status, 401)
+  const otherRep = await (await get(await createSession('U1'))).json()
+  assert.equal(otherRep.previews.length + otherRep.runs.length, 0, 'another workspace sees none of the seller\u2019s previews or runs')
   console.log('PREVIEW_ISSUE_ROUTE_OK')
 })
 
