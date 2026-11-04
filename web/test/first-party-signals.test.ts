@@ -11,6 +11,15 @@ import {
 } from '../lib/signals/first-party.ts'
 import { fpTypeLabel } from '../lib/signals/first-party-labels.ts'
 import { connectorStatus } from '../lib/connectors/store.ts'
+import Database from 'better-sqlite3'
+import { sqliteDb } from '../lib/db/client.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
+import { createDraft, draftBlockReason, OutreachError } from '../lib/outreach/service.ts'
+import { contactSearchNote, publishedEmail } from '../lib/outreach/published-email.ts'
+import { approveState, leadCardSummary } from '../lib/scan/lead-card.ts'
+import type { CardLead } from '../lib/scan/opportunity.ts'
+import { companySearchEligible } from '../lib/scan/find-contact-eligible.ts'
 
 process.env.DAZL_MASTER_KEY ??= randomBytes(32).toString('base64')
 const NOW = 1_793_000_000 // 2026-10-26
@@ -148,4 +157,48 @@ bothEngines('opt-out disables collection; withdrawn consent erases the subject; 
   assert.equal((await fpEvents(db, 'A')).length, 0)
   const audit = (await db.all<{ lookup: string; status: string }>("SELECT lookup, status FROM connector_audit WHERE tenant_id = 'A' AND connector = 'first_party'")).map(a => a.status)
   for (const s of ['recorded', 'disabled', 'enabled', 'ok', 'erased']) assert.ok(audit.includes(s), s)
+})
+
+// #390 review point 2: a CONFIRMED first-party lead still has no stored contact (the submitter's address is never kept),
+// so no draft gate accepts it. The server gate names the reason (no_email_contact, the outreach route's 422 "no
+// published email address"), and the card rule the Leads view and Home share (approveState via leadCardSummary) gives
+// one named reason, never a silent empty state. The only way on is the existing user-requested contact search on the
+// company website (companySearchEligible), after which every draft gate applies as for any confirmed lead.
+test('[sqlite] a confirmed first-party lead with no contact is not draftable: one named reason on the gate, the Leads view and Home', async () => {
+  const raw = new Database(':memory:')
+  migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  try {
+    await recordConfig(db, 'A', CFG, 'actor-a', NOW)
+    const r = await run(db, 'A', form('f1', 'jane@acme.io'), visit('v1'))
+    assert.deepEqual(r.results.map(x => x.outcome), ['created', 'created'])
+    const ids = (await fpLeads(db, 'A')).map(l => l.id)
+    assert.equal(ids.length, 2) // a named person (form) and an account-level visit
+    const card = (id: string) => {
+      const l = raw.prepare('SELECT * FROM leads WHERE id = ?').get(id) as CardLead & { id: string }
+      return { ...l, enrichments: raw.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id) as NonNullable<CardLead['enrichments']> }
+    }
+    for (const id of ids) {
+      // before confirming: held for review, and the gate says so
+      assert.equal(draftBlockReason(raw, 'A', id), 'lead_not_verified')
+      assert.equal(approveState(card(id)).ok, false)
+      assert.equal(await confirmLeadReview(db, 'A', id, NOW), true)
+      const l = card(id)
+      assert.equal(l.contact, null); assert.ok(l.human_confirmed_at); assert.equal(l.review_reason, null)
+      // the server gate: one named reason, and createDraft writes nothing
+      assert.equal(draftBlockReason(raw, 'A', id), 'no_email_contact')
+      assert.throws(() => createDraft(raw, 'A', id, 'Seller'), (e: unknown) => e instanceof OutreachError && e.code === 'no_email_contact')
+      // the card rule both views render (Leads cards and Home's journey/first-run cards): the same reason, in words
+      assert.equal(publishedEmail(l), null)
+      const NO_EMAIL = { ok: false, reason: 'No published email address to draft to yet. See Details to look for one.' }
+      assert.deepEqual(approveState(l), NO_EMAIL)
+      assert.deepEqual(leadCardSummary(l).approve, NO_EMAIL)
+      // the Leads view's details: a named note and the existing contact search on the company website, not an empty state
+      assert.equal(companySearchEligible(l), true)
+      assert.match(contactSearchNote(l) ?? '', /^No contact stored\./)
+    }
+    assert.equal((raw.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = 'A'").get() as { n: number }).n, 0)
+    // another tenant cannot reach the lead through the gate
+    assert.equal(draftBlockReason(raw, 'B', ids[0]), 'not_found')
+  } finally { await db.close() }
 })
