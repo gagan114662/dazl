@@ -380,7 +380,7 @@ export function planRun(corpus: JudgeCorpus, model: string): Plan {
 }
 
 // --- inputs --------------------------------------------------------------------------------------------------------
-// There is no rerun input: an unknown key (approvedRerun, rerun, force, ...) is refused like any other.
+// There is no rerun input: an unknown key (a rerun approval, rerun, force, ...) is refused like any other.
 export interface RunInputs { runId: string; model: string; capUsd: number; fxCadPerUsd: number; fxDate: string; fxSource: string; feeRate: number; feeBasis: string; stateDir: string }
 const INPUT_KEYS = new Set(['runId', 'model', 'capUsd', 'fxCadPerUsd', 'fxDate', 'fxSource', 'feeRate', 'feeBasis', 'stateDir'])
 export const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/
@@ -456,6 +456,7 @@ export const CLAIM_CODE_FILES: readonly string[] = Object.freeze(CODE_FILES.filt
 // sets per account. Unreadable, malformed, ambiguous or an unsupported platform throws (the run refuses).
 const UUID_RE = /"IOPlatformUUID" = "([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})"/g
 export function machineIdFrom(platform: unknown, raw: unknown): string {
+  if (platform !== 'darwin' && platform !== 'linux') throw new Error(`machine id: platform ${String(platform).slice(0, 20)} is not supported`)
   let s: string
   if (typeof raw === 'string') s = raw
   else if (raw instanceof Uint8Array) { try { s = new TextDecoder('utf-8', { fatal: true }).decode(raw) } catch { throw new Error('machine id: not valid UTF-8') } }
@@ -468,13 +469,11 @@ export function machineIdFrom(platform: unknown, raw: unknown): string {
     if (/^[0-]+$/.test(id)) throw new Error('machine id: IOPlatformUUID is all zeros')
     return id
   }
-  if (platform === 'linux') {
-    if (!/^[0-9a-f]{32}\n?$/.test(s)) throw new Error('machine id: /etc/machine-id is not 32 lower-case hex characters')
-    const id = s.slice(0, 32)
-    if (/^0+$/.test(id)) throw new Error('machine id: /etc/machine-id is all zeros')
-    return id
-  }
-  throw new Error(`machine id: platform ${String(platform).slice(0, 20)} is not supported`)
+  // linux
+  if (!/^[0-9a-f]{32}\n?$/.test(s)) throw new Error('machine id: /etc/machine-id is not 32 lower-case hex characters')
+  const id = s.slice(0, 32)
+  if (/^0+$/.test(id)) throw new Error('machine id: /etc/machine-id is all zeros')
+  return id
 }
 export const fingerprintOf = (machineId: string): string => sha(`${MACHINE_FINGERPRINT_PREFIX}${machineId}`)
 export function machineFingerprint(platform: string = process.platform): string {
