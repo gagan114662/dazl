@@ -81,7 +81,7 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const reviewCamp = first(c => (c.qualification.held ?? 0) + (c.qualification.needsReview ?? 0) > 0) ?? first(c => c.status === 'done')
   const qualified: ReadyItem = qualifiedN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'done', detail: `${qualifiedN} source-checked or confirmed by you`, fix: null }
     : !campsComplete ? unknown('qualified', 'Qualified lead', campGap)
-    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : heldN > 0 ? `${heldN} checked lead${heldN === 1 ? ' waits for its' : 's wait for their'} event date to be confirmed` : 'no lead has passed the source check yet', fix: noSearchYet || !reviewCamp ? null : { href: href(reviewCamp)!, label: 'Review leads' } }
+    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : heldN > 0 ? `${heldN} lead${heldN === 1 ? ' is' : 's are'} held for your review - open the list to see why each was held` : 'no lead has passed the source check yet', fix: noSearchYet || !reviewCamp ? null : { href: href(reviewCamp)!, label: 'Review leads' } }
   const contactCamp = first(c => ready(c) > 0)
   const contact: ReadyItem = contactN > 0 ? { id: 'contact', label: 'Contact found', state: 'done', detail: `${contactN} qualified lead${contactN === 1 ? '' : 's'} with a contact`, fix: null }
     : !campsComplete ? unknown('contact', 'Contact found', campGap)
