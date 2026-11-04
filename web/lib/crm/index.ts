@@ -37,7 +37,9 @@ export const disconnectCrm = (db: Database.Database, tenantId: string): boolean 
 export type PushFailure = 'failed' | 'unknown'
 export class CrmPushError extends Error {
   readonly outcome: PushFailure
-  constructor(message: string, outcome: PushFailure) { super(message); this.outcome = outcome }
+  // the record id the CRM answered with, when its read-back did not confirm it (#569): the record to check by hand
+  readonly externalId: string | null
+  constructor(message: string, outcome: PushFailure, externalId: string | null = null) { super(message); this.outcome = outcome; this.externalId = externalId }
 }
 export interface PushResult { message: string; externalId: string | null }
 
@@ -60,7 +62,47 @@ const refused = (crm: string, status: number) => status >= 500 || status < 400
 const hubspotId = (v: unknown) => typeof v === 'string' && /^\d{1,20}$/.test(v) ? v : null
 const pipedriveId = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? String(v) : null
 
-// Pushes one lead. Returns what was created (or found) and its record id; throws CrmPushError otherwise.
+// #569: a create counts only when the provider, asked again, shows a live record with that id holding this lead: its
+// email (case-insensitive), or, for a lead without one, its company (HubSpot) or name (Pipedrive). An id the provider
+// cannot show back, or shows holding someone else, or a read-back that fails or cannot be read, is 'unknown' (a record
+// may exist somewhere), never "created". One GET per create, no retry.
+type ReadBackCheck = (rec: Record<string, unknown>) => string | null
+const same = (a: unknown, b: string) => typeof a === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase()
+async function readBack(crm: 'HubSpot' | 'Pipedrive', f: typeof fetch, url: string, init: RequestInit, id: string, check: ReadBackCheck): Promise<void> {
+  const what = crm === 'HubSpot' ? 'contact' : 'person'
+  const unknown = (why: string) => new CrmPushError(`${crm} named ${what} ${id} but ${why}; the ${what} may or may not have been created`, 'unknown', id)
+  let got: Response
+  // any thrown read is unknown: the create has already been answered, so "never connected" says nothing about it
+  try { got = await call(crm, f, url, init) } catch { throw unknown('reading it back failed') }
+  if (got.status === 404 || got.status === 410) throw unknown('has no such record')
+  if (!got.ok) throw unknown(`reading it back answered ${got.status}`)
+  const rec = obj(await readJson(got))
+  const why = rec ? check(rec) : 'reading it back gave no record'
+  if (why) throw unknown(why)
+}
+const hubspotCheck = (id: string, lead: CrmLead): ReadBackCheck => rec => {
+  if (hubspotId(rec.id) !== id) return 'reading it back showed another record'
+  if (rec.archived === true) return 'it is archived'
+  const p = obj(rec.properties)
+  const email = (lead.contact ?? '').trim()
+  if (email) return same(p?.email, email) ? null : "it does not hold this lead's email"
+  return same(p?.company, lead.company) ? null : "it does not hold this lead's company"
+}
+const pipedriveCheck = (id: string, lead: CrmLead, name: string): ReadBackCheck => rec => {
+  const d = rec.success === true ? obj(rec.data) : null
+  if (!d) return 'reading it back was not a success'
+  if (pipedriveId(d.id) !== id) return 'reading it back showed another record'
+  if (d.active_flag !== true) return 'it is deleted'
+  const email = (lead.contact ?? '').trim()
+  if (email) {
+    const emails = [...(Array.isArray(d.email) ? d.email.map(x => obj(x)?.value) : []), d.primary_email]
+    return emails.some(v => same(v, email)) ? null : "it does not hold this lead's email"
+  }
+  return same(d.name, name) ? null : "it does not hold this lead's name"
+}
+
+// Pushes one lead. Returns what was created (or found) and its record id, after reading it back from the provider
+// (readBack); throws CrmPushError otherwise.
 export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl?: typeof fetch, deps: { lookup?: Lookup } = {}): Promise<PushResult> {
   const name = lead.name || lead.company
   const f = fetchImpl ?? fetch
@@ -90,6 +132,7 @@ export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl?: typeof
     if (!res.ok) throw refused('HubSpot', res.status)
     const id = hubspotId(obj(await readJson(res))?.id)
     if (!id) throw new CrmPushError('HubSpot answered without a contact id; the contact may or may not have been created', 'unknown')
+    await readBack('HubSpot', f, `https://api.hubapi.com/crm/v3/objects/contacts/${id}?properties=email,company`, { headers: auth, signal: AbortSignal.timeout(TIMEOUT) }, id, hubspotCheck(id, lead))
     return { message: 'Contact created in HubSpot', externalId: id }
   }
   if (cfg.provider === 'pipedrive') {
@@ -104,6 +147,7 @@ export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl?: typeof
     if (j?.success === false) throw new CrmPushError('Pipedrive rejected the contact', 'failed')
     const id = j?.success === true ? pipedriveId(obj(j.data)?.id) : null
     if (!id) throw new CrmPushError('Pipedrive answered without a person id; the person may or may not have been created', 'unknown')
+    await readBack('Pipedrive', f, `https://api.pipedrive.com/v1/persons/${id}?api_token=${encodeURIComponent(cfg.key ?? '')}`, { signal: AbortSignal.timeout(TIMEOUT) }, id, pipedriveCheck(id, lead, name))
     return { message: 'Person created in Pipedrive', externalId: id }
   }
   // generic webhook: the tenant's own HTTPS endpoint gets the full lead payload.

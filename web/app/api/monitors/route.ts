@@ -6,6 +6,7 @@ import { cleanText } from '@/lib/validate'
 import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { normalizeSources } from '@/lib/sources'
 import { createMonitor, listMonitors } from '@/lib/monitors'
+import { isAlertPolicy } from '@/lib/monitor-events'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
 
@@ -27,12 +28,15 @@ export async function POST(req: NextRequest) {
   if (body?.icp !== undefined && body?.icp !== null && !icp) return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
   const sel = body?.sources ? normalizeSources(body.sources) : null
   const intervalHours = typeof body?.interval_hours === 'number' ? body.interval_hours : undefined
-  const r = await createMonitor(await getDb(), user.tenantId, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, intervalHours })
+  // which state changes alert (lib/monitor-events.ts): 'all' (default), 'reachable' or 'new_companies'; anything else is refused
+  if (body?.alert_policy !== undefined && !isAlertPolicy(body.alert_policy)) return NextResponse.json({ error: 'Unknown alert policy' }, { status: 400 })
+  const alertPolicy = isAlertPolicy(body?.alert_policy) ? body.alert_policy : undefined
+  const r = await createMonitor(await getDb(), user.tenantId, { query, icp: icp ? JSON.stringify(icp) : null, sources: sel ? JSON.stringify(sel) : null, intervalHours, alertPolicy })
   if ('error' in r) return NextResponse.json(
     r.error === 'limit' ? { error: 'monitor_limit', limit: r.limit } : { error: 'interval_too_short', min: r.min },
     { status: 400 },
   )
   // a monitor runs scans on a schedule, so it is recorded like any other standing spend; the query is the user's text
-  await audit(user, req, { action: 'monitor.created', resource: 'monitor', id: r.id, summary: { interval_hours: intervalHours } })
+  await audit(user, req, { action: 'monitor.created', resource: 'monitor', id: r.id, summary: { interval_hours: intervalHours, alert_policy: alertPolicy ?? 'all' } })
   return NextResponse.json({ id: r.id }, { status: 201 })
 }
