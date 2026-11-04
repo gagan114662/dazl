@@ -21,6 +21,7 @@ export const JOBS: JobEntry[] = [
   { id: 'tick:first_touch_autopilot', worker: 'runAutopilot', isolation: { covered: 'job-isolation.test.ts' } },
   { id: 'tick:sequences', worker: 'runSequences', isolation: { covered: 'job-isolation.test.ts' } },
   { id: 'tick:index_checks', worker: 'runIndexChecks', isolation: { covered: 'indexing.test.ts' } },
+  { id: 'tick:pipeline_routing', worker: 'routeQualifiedConversations', isolation: { covered: 'pipeline.test.ts' } },
   // Cross-tenant iterators: they select due rows across tenants; every row must run inside its own tenant's scope.
   { id: 'tick:watches', worker: 'runDueWatches', isolation: { covered: 'job-isolation.test.ts' } },
   { id: 'tick:monitors_enqueue', worker: 'runDueMonitors', isolation: { covered: 'job-isolation.test.ts' } },
@@ -41,4 +42,7 @@ export const TICK_INFRA = new Set([
   'getScanDb', 'getDb', 'kickRunner', 'tryLease', 'dueTenants', 'captureError', 'requestIdOf',
   'classifySync', 'classifyWork', 'finishRun', 'migrateSchedulerRuns', 'recordProgress', 'startRun',
   'auditRetention', 'READ_CONSENT_VERSION', 'DRAIN_HOLD_REASONS',
+  // lib/pipeline/deals.ts (#366): lists the tenants with an active routing rule and an unrouted positive reply; like
+  // dueTenants it only selects tenant ids, and each one is then routed in its own scope (tick:pipeline_routing).
+  'routingTenants',
 ])
