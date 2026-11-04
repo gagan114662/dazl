@@ -43,7 +43,7 @@ Updated by the builder on every branch. Newest first.
 
 - b/355-fair-reply-sync (#355, part): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). Migration
-  claimed 0055 (TEMP 0046 on the branch). Durable scan workers and a tick-level load test are still open.
+  claimed 0055 (TEMP 0047 on the branch). Durable scan workers and a tick-level load test are still open.
 
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
