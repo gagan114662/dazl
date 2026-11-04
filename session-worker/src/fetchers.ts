@@ -2,10 +2,70 @@
 // risk notice) and a query, and returns items for the app's evidence pipeline. Platforms that
 // disallow automated access (X, Instagram, Facebook, LinkedIn) can rate-limit or ban the account:
 // that risk is the tenant's acknowledged choice, and calls are rate-limited server-side.
-import { epochDay, FetchFailure, getJson, item, latinRun, latinUsable, type WorkerItem } from './util.ts'
+import { epochDay, FetchFailure, getJson, item, latinRun, latinUsable, type FailureKind, type WorkerItem } from './util.ts'
 
 export type Platform = 'x' | 'reddit' | 'instagram' | 'facebook' | 'bilibili' | 'xiaohongshu' | 'linkedin'
 export type Fetcher = (query: string, session: string, env: Record<string, string | undefined>) => Promise<WorkerItem[]>
+
+// --- A 200 JSON answer is not always a search result (#436). Each platform has its own error envelope (a login wall,
+// a rate limit, a blocked request) and its own result container. Before parsing, every fetcher checks its answer:
+//   - a known error envelope is that failure (auth_failed / throttled; any other platform error is upstream_error);
+//   - an answer without the platform's result container is schema_error (a JSON login page, a changed API), never [];
+//   - a result container that is present and empty is a genuine search that found nothing: [].
+// Checks read only the envelope, never the items, so a changed item shape still degrades to fewer items, not a failure.
+const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null)
+const fail = (kind: FailureKind): never => { throw new FetchFailure(kind) }
+// The recursive walkers (X, LinkedIn) on a hostile, deeply nested answer: a stack overflow is an unreadable answer.
+const readable = <T>(f: () => T): T => { try { return f() } catch (e) { if (e instanceof RangeError) throw new FetchFailure('schema_error'); throw e } }
+const httpKind = (status: unknown): FailureKind => (status === 401 || status === 403 ? 'auth_failed' : status === 429 ? 'throttled' : 'upstream_error')
+
+// Reddit: {kind: 'Listing', data: {children: [...]}}; errors come back as {error: <http status>, message}.
+export function checkReddit(raw: unknown): void {
+  const o = obj(raw) ?? fail('schema_error')
+  if (o.error !== undefined && o.error !== null) fail(httpKind(Number(o.error)))
+  if (!Array.isArray(obj(o.data)?.children)) fail('schema_error')
+}
+// X GraphQL: {data: {search_by_raw_query: ...}}; a refusal is {errors: [{code}]} without data. 32/64/89/215/326 = the
+// session is not authenticated, suspended or locked; 88 = rate limit.
+const X_AUTH = new Set([32, 64, 89, 215, 326])
+export function checkX(raw: unknown): void {
+  const o = obj(raw) ?? fail('schema_error')
+  const data = obj(o.data)
+  if (Array.isArray(o.errors) && o.errors.length > 0 && !data?.search_by_raw_query) {
+    const codes = o.errors.map(e => Number(obj(e)?.code))
+    fail(codes.some(c => X_AUTH.has(c)) ? 'auth_failed' : codes.includes(88) ? 'throttled' : 'upstream_error')
+  }
+  if (!data || !('search_by_raw_query' in data)) fail('schema_error')
+}
+// Bilibili: {code: 0, data: {...}}; non-zero codes are refusals even on HTTP 200. -101 = not signed in, -111 = csrf;
+// -352 (risk control), -412 (request blocked), -509 / -799 (too frequent) = throttled.
+const BILI_AUTH = new Set([-101, -111]), BILI_THROTTLE = new Set([-352, -412, -509, -799])
+export function checkBilibili(raw: unknown): void {
+  const o = obj(raw) ?? fail('schema_error')
+  if (typeof o.code !== 'number' || !Number.isInteger(o.code)) fail('schema_error')
+  const code = o.code as number
+  if (code !== 0) fail(BILI_AUTH.has(code) ? 'auth_failed' : BILI_THROTTLE.has(code) ? 'throttled' : 'upstream_error')
+  const data = obj(o.data) ?? fail('schema_error')
+  // No hits: Bilibili omits result or sends an empty one with numResults 0. Anything else without a list is a changed API.
+  if (!Array.isArray(data.result) && !(data.result === undefined && data.numResults === 0)) fail('schema_error')
+}
+// Instagram topsearch: {users: [...], status: 'ok'}; a refusal is {status: 'fail', message, require_login?, spam?}.
+export function checkInstagram(raw: unknown): void {
+  const o = obj(raw) ?? fail('schema_error')
+  if (o.status === 'fail') {
+    const msg = typeof o.message === 'string' ? o.message.toLowerCase() : ''
+    fail(o.require_login === true || msg === 'login_required' || msg === 'checkpoint_required' || msg === 'challenge_required' ? 'auth_failed'
+      : o.spam === true || msg.includes('wait a few minutes') || msg === 'rate_limited' ? 'throttled' : 'upstream_error')
+  }
+  if (!Array.isArray(o.users)) fail('schema_error')
+}
+// LinkedIn voyager: {data, included} or {elements}; a refusal is {status: <http status>} without them.
+export function checkLinkedin(raw: unknown): void {
+  const o = obj(raw) ?? fail('schema_error')
+  const hasResult = obj(o.data) !== null || Array.isArray(o.included) || Array.isArray(o.elements)
+  if (!hasResult && typeof o.status === 'number') fail(httpKind(o.status))
+  if (!hasResult) fail('schema_error')
+}
 
 // --- Reddit: public search JSON with the session cookie. ---
 export function parseReddit(raw: unknown): WorkerItem[] {
@@ -22,6 +82,7 @@ export function parseReddit(raw: unknown): WorkerItem[] {
 }
 const reddit: Fetcher = async (query, session) => {
   const json = await getJson(`https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=new&limit=15&raw_json=1`, { cookie: session, headers: { referer: 'https://www.reddit.com/search/' } })
+  checkReddit(json)
   return parseReddit(json)
 }
 
@@ -60,7 +121,8 @@ const x: Fetcher = async (query, session, env) => {
   const features = JSON.stringify({ rweb_video_screen_enabled: false, payments_enabled: false, profile_label_improvements_pcf_label_in_post_enabled: true })
   const url = `https://x.com/i/api/graphql/${qid}/SearchTimeline?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(features)}`
   const json = await getJson(url, { cookie: `auth_token=${authToken}; ct0=${ct0}`, headers: { authorization: `Bearer ${decodeURIComponent(X_BEARER)}`, 'x-csrf-token': ct0, 'x-twitter-active-user': 'yes', 'x-twitter-auth-type': 'OAuth2Session', referer: 'https://x.com/search' } })
-  return parseX(json)
+  checkX(json)
+  return readable(() => parseX(json))
 }
 
 // --- Bilibili: official web search API with the session cookie (SESSDATA). ---
@@ -78,6 +140,7 @@ export function parseBilibili(raw: unknown): WorkerItem[] {
 }
 const bilibili: Fetcher = async (query, session) => {
   const json = await getJson(`https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encodeURIComponent(query)}`, { cookie: session, headers: { referer: 'https://search.bilibili.com/' } })
+  checkBilibili(json)
   return parseBilibili(json)
 }
 
@@ -96,6 +159,7 @@ export function parseInstagram(raw: unknown): WorkerItem[] {
 }
 const instagram: Fetcher = async (query, session) => {
   const json = await getJson(`https://www.instagram.com/api/v1/web/search/topsearch/?query=${encodeURIComponent(query)}`, { cookie: session, headers: { 'x-ig-app-id': '936619743392459', referer: 'https://www.instagram.com/' } })
+  checkInstagram(json)
   return parseInstagram(json)
 }
 
@@ -108,6 +172,7 @@ const linkedin: Fetcher = async (query, session) => {
     cookie: `li_at=${liAt}; JSESSIONID="${jsession}"`,
     headers: { 'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer: 'https://www.linkedin.com/search/results/all/' },
   })
+  checkLinkedin(json)
   // Voyager payloads shift; walk for posts with commentary text.
   const out: WorkerItem[] = []
   const walk = (v: unknown) => {
@@ -123,7 +188,7 @@ const linkedin: Fetcher = async (query, session) => {
     }
     for (const e of Object.values(o)) walk(e)
   }
-  walk(json)
+  readable(() => walk(json))
   return out
 }
 

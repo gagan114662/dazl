@@ -101,3 +101,33 @@ test('over the wire: the real worker reports auth_failed for an x session withou
     assert.deepEqual(r, { failed: 'auth_failed' })
   } finally { child.kill() }
 })
+
+// #436 (refusal envelopes): a platform that answers HTTP 200 with its own login wall or rate limit. The REAL worker, its
+// platform requests answered by a synthetic body (session-worker/test/platform-stub.ts, never the network), through the
+// real httpWorker and collectAdvanced: the scan audits the platform's refusal by its reason, never 'empty'. Before this
+// fix the worker parsed these answers to [] and the app audited a successful zero-result search.
+test('over the wire: a 200 login-wall or rate-limit answer from the platform is audited by its reason, never empty', async () => {
+  for (const [platform, body, want] of [
+    ['bilibili', { code: -101, message: 'not logged in' }, 'auth_failed'],
+    ['instagram', { status: 'fail', message: 'Please wait a few minutes before you try again.' }, 'throttled'],
+    ['reddit', { message: 'a JSON login page' }, 'schema_error'],
+    ['reddit', { kind: 'Listing', data: { children: [] } }, 'empty'],
+  ] as const) {
+    const port = 5500 + Math.floor(Math.random() * 300)
+    const token = 'e2e-token'
+    const child: ChildProcess = spawn(process.execPath, ['--experimental-strip-types', '--import', './test/platform-stub.ts', 'src/server.ts'], {
+      cwd: new URL('../../session-worker/', import.meta.url), env: { ...process.env, ADVANCED_WORKER_TOKEN: token, PORT: String(port), PLATFORM_STUB_BODY: JSON.stringify(body) }, stdio: 'ignore',
+    })
+    try {
+      const base = `http://127.0.0.1:${port}`
+      let up = false
+      for (let i = 0; i < 100 && !up; i++) { try { up = (await fetch(`${base}/health`)).ok } catch { await new Promise(r => setTimeout(r, 100)) } }
+      assert.ok(up, 'worker did not start')
+      const db = setup(); acceptConsent(db, 'A', 'advanced')
+      saveCredential(db, 'A', `adv:${platform}`, 'session-of-tenant-A-1234', master)
+      const out = await collectAdvanced(db, 'A', 'j1', [platform], 'hiring sales', { worker: httpWorker({ ADVANCED_WORKER_URL: base, ADVANCED_WORKER_TOKEN: token }), master, env: ON })
+      assert.deepEqual(out, [])
+      assert.deepEqual(statuses(db, 'A'), [`adv:${platform}:${want}`], `${platform} ${JSON.stringify(body)}`)
+    } finally { child.kill() }
+  }
+})
