@@ -81,9 +81,15 @@ until an operator does it.
 - **Generated code** (sandbox in a separate OS process; no network, database, keys or inherited env; hard time,
   memory and output caps; outputs are schema-checked proposals; promotion needs recorded fixture tests, review, a
   versioned catalog entry and a per-tenant allowlist). This is the next PR, default-off.
-- No tenant-data, network or model capability is handed to a worker. `PROVIDED_PERMISSIONS` is empty, so a worker
-  that declares one is refused at start.
+- **Trust boundary (part 1): no capability isolation.** Reviewed workers run in-process, as static imports in the host.
+  The guarantee is application-level trust: code review plus the sha256 pin, nothing more. An empty
+  `PROVIDED_PERMISSIONS` means the runtime hands a worker no tenant-data, network or model capability, and a worker that
+  declares one is refused at start. It is not an OS or VM sandbox: a statically imported module can still import
+  `fs`/`net`/`child_process` or read env. CPU and memory are bounded only by the reviewed code and its input caps;
+  `Promise.race` cannot stop a synchronous loop, so the runtime cannot kill a runaway worker. Process isolation and
+  kill belong to part 2 (generated code).
 - `send`/`spend` workers never run here. They need their own send/spend authority, with no automatic retry and
   reconcile-before-retry (#363). SpendGuard coverage is unchanged by this work.
-- An HTTP route for tenants to enqueue and read runs. `enqueueRun`/`getRun` take the session user, and the route and
-  its isolation-manifest entry come with the first worker a tenant should trigger.
+- No worker is wired to a tenant trigger yet. The tenant route `web/app/api/workers/route.ts` (POST enqueue, GET list)
+  is in this change and only reaches workers an operator granted to the workspace; the first worker a tenant should
+  trigger comes later.
