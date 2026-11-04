@@ -165,7 +165,7 @@ try {
   // Reject asks for an optional reason; Cancel and Escape write nothing.
   await lakeside.getByRole('button', { name: 'Reject' }).click()
   const reasonRow = lakeside.getByTestId('reject-reason'); await reasonRow.waitFor()
-  assert.deepEqual(await reasonRow.getByRole('button').allTextContents(), ['i', 'Not a fit', 'Wrong company', 'Wrong contact', 'Already a customer', 'Confirm reject', 'Cancel']) // the (i) holds what rejecting does
+  assert.deepEqual(await reasonRow.getByRole('button').allTextContents(), ['i', 'Wrong industry', 'Wrong location', 'Wrong timing', 'Competitor', 'Already a customer', 'Not useful', 'Confirm reject', 'Cancel']) // the (i) holds what rejecting does; no person on this lead, so no 'Wrong person'
   await reasonRow.getByRole('button', { name: 'Cancel' }).click()
   assert.equal(await lakeside.getByTestId('reject-reason').count(), 0)
   await lakeside.getByRole('button', { name: 'Reject' }).click()
@@ -174,15 +174,15 @@ try {
   assert.deepEqual(quarantineCalls, [], 'cancelling writes nothing')
   // A preset reason.
   await lakeside.getByRole('button', { name: 'Reject' }).click()
-  await lakeside.getByTestId('reject-reason').getByRole('button', { name: 'Wrong company' }).click()
+  await lakeside.getByTestId('reject-reason').getByRole('button', { name: 'Wrong industry' }).click()
   await shot('reject-reason')
   await lakeside.getByRole('button', { name: 'Confirm reject' }).click()
   // The rejected card leaves the list; the result line says so, and the card is under Rejected with its reason.
   const result = page.getByTestId('card-result')
-  await result.getByText(/Lakeside Smiles \(Wrong company\) left the list\./).waitFor()
+  await result.getByText(/Lakeside Smiles \(Wrong industry\) left the list\./).waitFor()
   assert.equal(await lakeside.count(), 0)
   await page.getByTestId('tab-rejected').click()
-  assert.match(await lakeside.textContent(), /^LSLakeside SmilesRejected[\s\S]*Rejected: Wrong companyiKept with its evidence; it will not be drafted, sent or exported\./)
+  assert.match(await lakeside.textContent(), /^LSLakeside SmilesRejected[\s\S]*Rejected: Wrong industryiKept with its evidence; it will not be drafted, sent or exported\./)
   await shot('after-actions')
   await lakeside.getByRole('button', { name: 'Undo' }).click()
   await page.getByTestId('tab-review').click()
@@ -195,7 +195,7 @@ try {
   await lakeside.getByRole('button', { name: 'Reject' }).waitFor()
   const C = 'c'.repeat(24)
   assert.deepEqual(quarantineCalls, [
-    { method: 'POST', lead: C, body: { reason: 'Rejected: Wrong company' } }, { method: 'DELETE', lead: C, body: {} },
+    { method: 'POST', lead: C, body: { reason: 'Rejected: Wrong industry', feedback_reason: 'wrong_industry' } }, { method: 'DELETE', lead: C, body: {} },
     { method: 'POST', lead: C, body: { reason: 'Rejected' } }, { method: 'DELETE', lead: C, body: {} },
   ])
   assert.deepEqual(writes, ['POST /api/outreach', 'POST /api/outreach', `POST /api/leads/${C}/quarantine`, `DELETE /api/leads/${C}/quarantine`, `POST /api/leads/${C}/quarantine`, `DELETE /api/leads/${C}/quarantine`], 'no other writes')
