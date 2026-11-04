@@ -28,7 +28,10 @@ test('crm config: save/get roundtrip encrypted, webhook requires https, bad blob
 
 test('pushLead hubspot: standard properties only; 409 means already exists; errors throw', async () => {
   let seen: { url: string; body: { properties: Record<string, unknown> } } | null = null
-  const f = async (url: RequestInfo | URL, init?: RequestInit) => { seen = { url: String(url), body: JSON.parse(String(init?.body)) }; return ok({ id: '1' }) }
+  const f = async (url: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? 'GET') === 'GET') return ok({ id: '1', properties: { email: 'ada@acme.example' } }) // the read-back (#569)
+    seen = { url: String(url), body: JSON.parse(String(init?.body)) }; return ok({ id: '1' })
+  }
   const msg = await pushLead({ provider: 'hubspot', key: 'k' }, LEAD, f as never)
   assert.deepEqual(msg, { message: 'Contact created in HubSpot', externalId: '1' })
   assert.equal(seen!.url, 'https://api.hubapi.com/crm/v3/objects/contacts')
@@ -43,7 +46,10 @@ test('pushLead hubspot: standard properties only; 409 means already exists; erro
 
 test('pushLead pipedrive + webhook payloads', async () => {
   let url = ''; let body: Record<string, unknown> = {}
-  const f = async (u: RequestInfo | URL, init?: RequestInit) => { url = String(u); body = JSON.parse(String(init?.body)); return ok({ success: true, data: { id: 7 } }) }
+  const f = async (u: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? 'GET') === 'GET') return ok({ success: true, data: { id: 7, active_flag: true, email: [{ value: 'ada@acme.example', primary: true }] } }) // the read-back (#569)
+    url = String(u); body = JSON.parse(String(init?.body)); return ok({ success: true, data: { id: 7 } })
+  }
   const msg = await pushLead({ provider: 'pipedrive', key: 'tok123' }, LEAD, f as never)
   assert.deepEqual(msg, { message: 'Person created in Pipedrive', externalId: '7' })
   assert.ok(url.startsWith('https://api.pipedrive.com/v1/persons?api_token=tok123'))
