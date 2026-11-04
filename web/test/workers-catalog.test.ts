@@ -113,7 +113,7 @@ bothEngines('start: registration grants nothing; send/spend effects and unprovid
     await register(db, OP, { name: n, version: '1.0.0', codeHash: pin(n, '1.0.0') }, TEST_REGISTRY, NOW)
     await refused(start(db, OP, n, '1.0.0', NOW), 'unrunnable')
     assert.equal(await deployment(db, n), null)
-    // a grant does not make it runnable either: the tenant's enqueue is refused and recorded
+    // a grant does not make it runnable either: the tenant's enqueue is unavailable, and writes nothing
     await grant(db, OP, A.tenantId, n, NOW)
     assert.deepEqual(await enqueueRun(db, A, n, {}, NOW), { ok: false, error: 'unavailable' })
   }
@@ -123,10 +123,103 @@ bothEngines('start: registration grants nothing; send/spend effects and unprovid
   await refused(start(db, OP, 'echo', '1.0.0', NOW), 'exists')
   // no grant, no runs: tenant B cannot use what A was granted
   assert.deepEqual(await enqueueRun(db, B, 'echo', { n: 1 }, NOW), { ok: false, error: 'unavailable' })
-  const refusedRuns = await db.all<{ tenant_id: string; status: string; error: string }>("SELECT tenant_id, status, error FROM worker_runs WHERE status = 'refused' ORDER BY tenant_id")
-  assert.deepEqual(refusedRuns.map(r => [r.tenant_id, r.error]), [[A.tenantId, 'unavailable'], [A.tenantId, 'unavailable'], [A.tenantId, 'unavailable'], [B.tenantId, 'unavailable']])
+  // none of those four refusals (three unrunnable-but-granted, one not granted) left a run or a queue item
+  assert.equal(Number((await db.get<{ c: number }>('SELECT count(*) AS c FROM worker_runs'))!.c), 0)
+  assert.equal(Number((await db.get<{ c: number }>('SELECT count(*) AS c FROM work_queue'))!.c), 0)
   const ev = (await events(db)).filter(x => x.action === 'start' && x.decision === 'denied').map(x => x.detail)
   assert.deepEqual(ev.slice(0, 3), ['unrunnable: effect_requires_authority', 'unrunnable: effect_requires_authority', 'unrunnable: permission_unavailable'])
+})
+
+// What a tenant request can leave behind before an operator has registered, started and granted a worker: nothing.
+// (#623 review: 1000 enqueues against no deployed worker used to leave 1000 'refused' worker_runs rows.)
+const rowCounts = async (db: Db) => {
+  const out: Record<string, number> = {}
+  for (const t of ['worker_runs', 'work_queue', 'worker_events', 'worker_catalog', 'worker_deployments', 'worker_grants', 'audit_events']) {
+    out[t] = Number((await db.get<{ c: number }>(`SELECT count(*) AS c FROM ${t}`))!.c)
+  }
+  return out
+}
+const BIG = { n: 1, pad: 'x'.repeat(100_000) }
+const NAMES: unknown[] = [
+  undefined, null, true, false, 0, 1, -1, 1.5, Number.NaN, Infinity, BigInt(10), ['echo'], [], {}, { name: 'echo' }, () => 'echo', Symbol('echo'),
+  new String('echo'), '', ' ', 'echo ', ' echo', 'ECHO', 'Echo', 'e', 'x'.repeat(41), 'echo'.repeat(250_000), 'echo\u0000', 'echo\uD800', '\uFFFD\uFFFD',
+  'ech\u00f6', '../echo', 'echo;DROP TABLE worker_runs', "echo' OR '1'='1", '__proto__', 'constructor', 'toString', 'worker:echo',
+]
+const INPUTS: unknown[] = [undefined, null, true, 1, 'x', [], [1], {}, { n: 1 }, BIG, { n: 1, tenantId: 'tenant-b' }]
+
+bothEngines('not registered, not running, not granted: every enqueue answers unavailable and writes no row anywhere', async ({ db }) => {
+  await seed(db)
+  const empty = await rowCounts(db)
+  // Instinct's repro: 500 unknown names and 500 'echo' enqueues with 100KB payloads, nothing registered
+  for (let i = 0; i < 500; i++) assert.deepEqual(await enqueueRun(db, A, `unknown-${i}`, BIG, NOW), { ok: false, error: 'unavailable' })
+  for (let i = 0; i < 500; i++) assert.deepEqual(await enqueueRun(db, A, 'echo', BIG, NOW), { ok: false, error: 'unavailable' })
+  assert.deepEqual(await rowCounts(db), empty)
+  // malformed names of every type, with inputs of every type, replayed: unavailable (never a throw), nothing written
+  for (const name of NAMES) for (const input of INPUTS) for (let k = 0; k < 2; k++) {
+    assert.deepEqual(await enqueueRun(db, A, name, input, NOW), { ok: false, error: 'unavailable' }, String(typeof name === 'string' ? name.slice(0, 40) : typeof name))
+  }
+  // concurrent: 200 at once, from two tenants
+  const rs = await Promise.all(Array.from({ length: 200 }, (_, i) => enqueueRun(db, i % 2 ? A : B, i % 3 ? 'echo' : `nope-${i}`, { n: i }, NOW)))
+  assert.ok(rs.every(r => !r.ok && r.error === 'unavailable'))
+  assert.deepEqual(await rowCounts(db), empty)
+
+  // walk the operator steps; before the last one, a tenant still writes nothing
+  const states: [string, () => Promise<unknown>][] = [
+    ['registered, not started', () => register(db, OP, { name: 'echo', version: '1.0.0', codeHash: pin('echo', '1.0.0') }, TEST_REGISTRY, NOW)],
+    ['running, not granted', () => start(db, OP, 'echo', '1.0.0', NOW)],
+    ['running, granted to another tenant only', () => grant(db, OP, B.tenantId, 'echo', NOW)],
+  ]
+  for (const [label, step] of states) {
+    await step()
+    const before = await rowCounts(db)
+    for (let i = 0; i < 50; i++) assert.deepEqual(await enqueueRun(db, A, 'echo', i % 2 ? BIG : { n: i }, NOW), { ok: false, error: 'unavailable' }, label)
+    for (const input of INPUTS) assert.deepEqual(await enqueueRun(db, A, 'echo', input, NOW), { ok: false, error: 'unavailable' }, label)
+    await Promise.all(Array.from({ length: 50 }, (_, i) => enqueueRun(db, A, 'echo', { n: i }, NOW)))
+    assert.deepEqual(await rowCounts(db), before, label)
+  }
+  // granted to A, then not running (fenced stop, drained stop, crash-looped/failed): nothing written while not running
+  await grant(db, OP, A.tenantId, 'echo', NOW)
+  const stopped: [string, () => Promise<unknown>][] = [
+    ['stopped (fence)', () => stop(db, OP, 'echo', { mode: 'fence' }, NOW)],
+    ['stopped (drain)', async () => { await restart(db, OP, 'echo', NOW); await stop(db, OP, 'echo', {}, NOW) }],
+    ['failed', () => db.run("UPDATE worker_deployments SET state = 'failed', restart_after = NULL WHERE name = 'echo'")],
+  ]
+  for (const [label, step] of stopped) {
+    await step()
+    const before = await rowCounts(db)
+    for (const input of INPUTS) for (let k = 0; k < 3; k++) assert.deepEqual(await enqueueRun(db, A, 'echo', input, NOW), { ok: false, error: 'unavailable' }, label)
+    assert.deepEqual(await rowCounts(db), before, label)
+  }
+  // granted to A but revoked: nothing written
+  await restart(db, OP, 'echo', NOW)
+  await revoke(db, OP, A.tenantId, 'echo', NOW)
+  let before = await rowCounts(db)
+  for (const input of INPUTS) assert.deepEqual(await enqueueRun(db, A, 'echo', input, NOW), { ok: false, error: 'unavailable' })
+  assert.deepEqual(await rowCounts(db), before)
+  // a deployment row pointing at a version that is not catalogued, or whose definition cannot run here (rows edited
+  // behind the app's back), granted to A: still unavailable, nothing written
+  await register(db, OP, { name: 'sender', version: '1.0.0', codeHash: pin('sender', '1.0.0') }, TEST_REGISTRY, NOW)
+  await grant(db, OP, A.tenantId, 'sender', NOW)
+  await db.run(`INSERT INTO worker_deployments (name, version, state, generation, max_in_flight, per_tenant_in_flight, max_backlog, max_attempts, updated_at, updated_by)
+    VALUES ('sender', '1.0.0', 'running', 1, 1, 1, 10, 1, ?, 'test')`, [NOW])
+  await grant(db, OP, A.tenantId, 'echo', NOW)
+  await db.run("UPDATE worker_deployments SET version = '9.9.9' WHERE name = 'echo'")
+  before = await rowCounts(db)
+  for (const name of ['sender', 'echo']) for (const input of INPUTS) assert.deepEqual(await enqueueRun(db, A, name, input, NOW), { ok: false, error: 'unavailable' }, name)
+  assert.deepEqual(await rowCounts(db), before)
+  // an unknown role or a viewer: forbidden, nothing written
+  for (const role of ['viewer', 'nope', null, 1]) assert.deepEqual(await enqueueRun(db, { ...A, role: role as RunUser['role'] }, 'echo', { n: 1 }, NOW), { ok: false, error: 'forbidden' })
+  assert.deepEqual(await rowCounts(db), before)
+  assert.equal(Number((await db.get<{ c: number }>('SELECT count(*) AS c FROM worker_runs'))!.c), 0)
+
+  // only once running AND granted are refusals recorded: bad_input (input not stored), backlog
+  await db.run("UPDATE worker_deployments SET version = '1.0.0' WHERE name = 'echo'")
+  assert.equal((await enqueueRun(db, A, 'echo', { n: 1 }, NOW)).ok, true)
+  const bad = await enqueueRun(db, A, 'echo', { n: 'secret-ish' }, NOW)
+  assert.equal(bad.ok ? 'ok' : bad.error, 'bad_input')
+  const runs = await db.all<{ tenant_id: string; status: string; input: string }>("SELECT tenant_id, status, input FROM worker_runs ORDER BY status")
+  assert.deepEqual(runs.map(r => [r.tenant_id, r.status]), [[A.tenantId, 'queued'], [A.tenantId, 'refused']])
+  assert.equal(runs[1].input, 'null')
 })
 
 bothEngines('grant: a real tenant only; written to the tenant audit trail; revoke closes it again', async ({ db }) => {

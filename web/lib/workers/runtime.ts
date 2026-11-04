@@ -32,23 +32,26 @@ const nowS = () => Math.floor(Date.now() / 1000)
 export type RunUser = { tenantId: string; actorId: string; role: Role }
 export type EnqueueOutcome = { ok: true; id: string } | { ok: false; error: 'forbidden' | 'unavailable' | 'bad_input' | 'backlog'; detail?: string }
 
-// Queue one run of `name` for the session's tenant. 'unavailable' covers an unknown worker, one not running, and one
-// not granted to this tenant alike, so the answer says nothing about the catalog. Every refusal past the name check
-// is recorded as a 'refused' run in the tenant's own runs.
+// Queue one run of `name` for the session's tenant. 'unavailable' covers an unknown worker, one not running, one not
+// granted to this tenant and one whose stored definition can no longer run, alike, so the answer says nothing about
+// the catalog. None of those writes anything: until an operator has registered, started and granted the worker, a
+// tenant request leaves no row anywhere. Only a running, granted worker's refusals (bad_input, backlog) are recorded, as
+// 'refused' runs in the tenant's own runs (input never stored, a fixed error code).
+const unavailable = (): EnqueueOutcome => ({ ok: false, error: 'unavailable' })
 export async function enqueueRun(db: Db, user: RunUser, name: unknown, input: unknown, now = nowS()): Promise<EnqueueOutcome> {
   if (!can(user.role, 'operate')) return { ok: false, error: 'forbidden' }
-  if (typeof name !== 'string' || !NAME_RE.test(name)) return { ok: false, error: 'unavailable' }
-  const id = randomBytes(12).toString('hex')
-  const refuse = async (error: 'unavailable' | 'bad_input' | 'backlog', detail?: string): Promise<EnqueueOutcome> => {
-    await db.run("INSERT INTO worker_runs (id, tenant_id, name, actor_id, status, input, error, created_at, finished_at) VALUES (?, ?, ?, ?, 'refused', 'null', ?, ?, ?)",
-      [id, user.tenantId, name, user.actorId.slice(0, 80), detail ? `${error}: ${detail}`.slice(0, 200) : error, now, now])
-    return detail ? { ok: false, error, detail } : { ok: false, error }
-  }
+  if (typeof name !== 'string' || !NAME_RE.test(name)) return unavailable()
   const d = await deployment(db, name)
-  if (!d || d.state !== 'running' || !await granted(db, user.tenantId, name)) return refuse('unavailable')
+  if (!d || d.state !== 'running' || !await granted(db, user.tenantId, name)) return unavailable()
   const cat = await catalogEntry(db, name, d.version)
   const def = cat && storedDefinition(cat)
-  if (!def || unrunnable(def)) return refuse('unavailable')
+  if (!def || unrunnable(def)) return unavailable()
+  const id = randomBytes(12).toString('hex')
+  const refuse = async (error: 'bad_input', detail: string): Promise<EnqueueOutcome> => {
+    await db.run("INSERT INTO worker_runs (id, tenant_id, name, actor_id, status, input, error, created_at, finished_at) VALUES (?, ?, ?, ?, 'refused', 'null', ?, ?, ?)",
+      [id, user.tenantId, name, user.actorId.slice(0, 80), `${error}: ${detail}`.slice(0, 200), now, now])
+    return { ok: false, error, detail }
+  }
   const bad = validate(def.input, input)
   if (bad) return refuse('bad_input', bad)
   const text = JSON.stringify(input)

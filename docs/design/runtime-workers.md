@@ -29,7 +29,7 @@ Modules are imported statically. Nothing is loaded from a path a caller names.
 | `register name version sha256` | operator (host CLI) | The (name, version) must be in the reviewed registry. The given hash must equal both the pin and the file on disk. Rows are immutable. |
 | `start name version` | operator | The worker must be registered. Its effect must be `none` or `draft`. Every permission must be one this runtime provides, and it provides none today. `send`/`spend` workers can be catalogued but never started (#363). |
 | `grant tenant name` | operator | Per-tenant allowlist. The tenant must exist. The grant is also written to the tenant's own `audit_events`. |
-| enqueue | tenant session | The tenant comes from the session (`RunUser`) and is never a parameter. The caller needs the `operate` role. The worker must be running and granted. The input must pass the schema and the byte cap. |
+| enqueue | tenant session | The tenant comes from the session (`RunUser`) and is never a parameter. The caller needs the `operate` role. The worker must be running and granted; until it is, a request answers `unavailable` (404) and writes nothing, so a tenant cannot fill any table before an operator acts. For a running, granted worker, an input that fails the schema or the byte cap, and a full backlog, are recorded as `refused` runs (input not stored). |
 
 Every lifecycle change and every refusal goes into `worker_events` (append-only; UPDATE and DELETE are refused by
 triggers). Each row records the actor, action, name, version, code hash, generation and a short detail.
