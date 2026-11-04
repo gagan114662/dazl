@@ -27,6 +27,7 @@ import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '..
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
+import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
 import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
@@ -41,6 +42,7 @@ import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connector
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
@@ -747,7 +749,8 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hitByUrl = new Map(hits.map(h => [h.url, h]))
   // A request that needs an event beyond hiring (seed funding, an opening) is not answered by job postings alone: within each window class
   // the pages that can carry the event come before job-board / careers pages, which only corroborate the hiring half. Nothing is excluded.
-  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
+  // #380 / #204 Test B: under an OR plan ("seed funding OR first sales hire") a job page can prove a branch on its own, so it is not ranked behind the event pages.
+  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '') && !salesGateOr(job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
@@ -917,7 +920,16 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   try { const r = await runJobUntraced(db, job, capture.deps); outcome = r; return r } finally { await capture.finish(outcome) }
 }
 
+// The hard per-scan spend cap (lib/scan/spend-cap.ts, #377/#533): the whole attempt, post-finish enrichment included, runs
+// in this scan's spend context, so every paid provider call it makes reserves its worst case on this job's ledger row
+// before the request and is refused past the cap (CAD 5, DAZL_SCAN_CAP_CAD can only lower it; so can the request's own
+// run_budget.max_usd).
 async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
+  const requestMaxUsd = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd }, () => runJobCapped(db, job, deps))
+}
+
+async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
   let trialGuard: SpendGuard | null = null
   const ledger = new SourceRunLedger()
@@ -1114,7 +1126,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         }
         // Seed funding AND hiring sales: a board-sourced candidate proves the hiring half only. For the few such companies, search the news for their funding round; the results are ordinary
         // candidates (verified quote, identity, date window) that the sales-hiring gate later merges with the posting. A run that disabled the paid fallback makes no extra model call.
-        const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
+        const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })), leads.slice(0, leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
         if (targets.length > 0) {
           const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
@@ -1400,7 +1412,9 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
-    if (jobStartsAutopilot(job) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    // Autopilot's drafting and sends are outreach work under their own guards (docs/spend-safety.md), not this scan's
+    // spend: it runs outside the scan's spend context, so the hard per-scan cap neither counts nor refuses it.
+    if (jobStartsAutopilot(job) && !trial) try { await outsideScanSpend(() => (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '')) } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }

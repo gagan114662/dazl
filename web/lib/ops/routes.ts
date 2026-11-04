@@ -60,6 +60,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/outreach/conversion',
   '/api/outreach/followups',
   '/api/outreach/inbox',
+  '/api/outreach/inbox/fixture',
   '/api/outreach/polish',
   '/api/outreach/reopen',
   '/api/outreach/replies',

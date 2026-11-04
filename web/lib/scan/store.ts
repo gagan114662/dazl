@@ -1,3 +1,4 @@
+import { migrateScanSpendCap } from './spend-cap.ts'
 import { SELLER_DECISION_INSERT, sellerDecisionArgs, type SellerDecision } from './intelligence.ts'
 import { migrateSellerDecisions } from './intelligence-schema.ts'
 import { randomBytes } from 'node:crypto'
@@ -86,6 +87,7 @@ export function migrateScan(db: Database.Database): void {
   migrateEvidenceCopies(db)
   migrateRunReport(db)
   migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
+  migrateScanSpendCap(db) // the per-scan hard spend cap's ledger columns and call rows (lib/scan/spend-cap.ts)
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
