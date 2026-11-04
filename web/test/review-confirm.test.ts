@@ -9,6 +9,8 @@ import { migrateScan, createJob, listLeads } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { confirmLeadReview, unconfirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { createDraft } from '../lib/outreach/service.ts'
+import { REVIEWABLE, RESEARCH_REASONS, heldState } from '../lib/lead-state.ts'
+import { reviewAction } from '../lib/scan/review-action.ts'
 
 // Human confirmation of needs-review leads: the machine verdict never changes, the
 // original reason is preserved, confirmation is reversible, tenant-scoped, and it makes
@@ -120,4 +122,27 @@ test('#352: a lead confirmed out of counterparty_signal / location_mismatch / jo
   const { id } = addReviewLead(db, 'A', { reason: 'location_unconfirmed' })
   assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)
   assert.ok(createDraft(db, 'A', id, 'Acme'))
+})
+
+// #352 review follow-up: the three surfaces agree for every reason. Home's "review" (heldState) <=> the card offers a draftable confirm (reviewAction) <=> after the
+// user confirms, the server draft gate lets it draft. Each research reason (a hold no check can change, a required check that could not run, a window hold) is refused.
+test('#352: for every hold reason, Home, the Leads card and the draft gate agree on whether confirming makes the lead draftable', async () => {
+  const outcome = async (reason: string) => {
+    const db = setup()
+    const { id, job } = addReviewLead(db, 'A', { reason })
+    // A window hold is recorded only on a job whose request has a window; give those reasons the job and the stale date that produced them.
+    const windowed = reason === 'outside_window' || reason === 'outside_window_undated'
+    if (windowed) db.prepare("UPDATE scan_jobs SET icp = ?, query = 'roofers hiring in the past 30 days' WHERE id = ?").run(JSON.stringify({ window_days: 30 }), job)
+    if (reason === 'outside_window') db.prepare("UPDATE leads SET event_date = '2025-01-01' WHERE id = ?").run(id)
+    assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true, reason)
+    try { createDraft(db, 'A', id, 'Acme'); return 'drafted' } catch (e) { return (e as Error).message }
+  }
+  for (const reason of [...REVIEWABLE, ...RESEARCH_REASONS]) {
+    const dated = { review_reason: reason, event_date: '2026-10-20', window_held: reason === 'outside_window' || reason === 'outside_window_undated' }
+    const card = reviewAction(dated, new Date('2026-11-03T12:00:00Z')).label !== 'Keep as research'
+    const home = heldState({ id: 'x', company: 'C', signal: 's', source_url: 'https://a.example', evidence_excerpt: 'e', date_status: 'verified', fit: 4, intent: 4, why: '', icp_match: null, company_domain: null, contact: null, quarantined_at: null, confidence: null, human_confirmed_at: null, currentness_held: false, enrichments: [], ...dated } as never)?.state === 'review'
+    const server = (await outcome(reason)) === 'drafted'
+    assert.equal(card, REVIEWABLE.has(reason), `${reason}: reviewable reasons, and only they, get a draftable confirm`)
+    assert.ok(card === home && home === server, `${reason}: card=${card} home=${home} server=${server}`)
+  }
 })

@@ -15,6 +15,9 @@
 //   In-flight 'sending' rows are not retracted; everything still pending is.
 // - Rows are STOPPED with a terminal conversion reason, never deleted: experiment attribution
 //   (outreach_signal_context snapshots) and history are preserved.
+// - The stop is also the TRANSITION: each tenant whose work it stopped enrolls the address in that tenant's
+//   onboarding path in the same transaction, only under an active opted-in policy (onboarding-policy.ts);
+//   without one nothing replaces the stopped campaign.
 // - This is not a suppression: no suppressions row is written, so transactional service mail to the now-
 //   customer is unaffected. Marketing cold plays stop through the mechanisms here.
 // - Re-recording the same event is a no-op (event key is the primary key) and the cancels are status-guarded,
@@ -27,6 +30,7 @@ import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { stopSequenceForThread } from './sequences.ts'
 import { tableExists } from './send-budget.ts'
+import { transitionToOnboarding, transitionToOnboardingTx } from './onboarding-policy.ts'
 
 export type LifecycleKind = 'signup' | 'activation' | 'payment'
 
@@ -58,13 +62,20 @@ export const LIFECYCLE_NOT_CONVERTED = `NOT EXISTS (SELECT 1 FROM lifecycle_even
 function cancelPendingFor(db: Database.Database, email: string, kind: LifecycleKind, now: number): number {
   const reason = `converted_${kind}`
   let stopped = 0
+  const tenants = new Set<string>() // tenants whose acquisition work this conversion stopped
   // Approved/active cold sequences: the audited stop path, per owning tenant.
   const seqs = db.prepare("SELECT tenant_id, lead_id FROM sequences WHERE status IN ('approved','active') AND lower(trim(to_email)) = ?").all(email) as { tenant_id: string; lead_id: string }[]
-  for (const s of seqs) { stopSequenceForThread(db, s.tenant_id, s.lead_id, 'stopped', reason, now); stopped++ }
+  for (const s of seqs) { stopSequenceForThread(db, s.tenant_id, s.lead_id, 'stopped', reason, now); stopped++; tenants.add(s.tenant_id) }
   // Open warm follow-up threads.
+  for (const r of db.prepare('SELECT DISTINCT tenant_id FROM followup_threads WHERE stopped IS NULL AND lower(trim(to_email)) = ?').all(email) as { tenant_id: string }[]) tenants.add(r.tenant_id)
   stopped += (db.prepare('UPDATE followup_threads SET stopped = ? WHERE stopped IS NULL AND lower(trim(to_email)) = ?').run(reason.slice(0, 40), email) as { changes: number }).changes
   // Scheduler-held first touches (autopilot queue). Manual drafts carry no hold record and are untouched.
+  for (const r of db.prepare("SELECT DISTINCT tenant_id FROM outreach_messages WHERE status IN ('draft','approved') AND hold_reason IS NOT NULL AND lower(trim(to_email)) = ?").all(email) as { tenant_id: string }[]) tenants.add(r.tenant_id)
   stopped += (db.prepare("UPDATE outreach_messages SET status = 'skipped', error = ?, hold_reason = NULL, hold_until = NULL WHERE status IN ('draft','approved') AND hold_reason IS NOT NULL AND lower(trim(to_email)) = ?").run(reason, email) as { changes: number }).changes
+  // The transition, in the same transaction: each such tenant moves the address onto ITS OWN opted-in
+  // onboarding path, and only where it holds an active policy (onboarding-policy.ts). No policy, no
+  // enrollment: the cold campaign never continues as onboarding by default.
+  for (const t of tenants) transitionToOnboarding(db, t, email, kind, now)
   return stopped
 }
 
@@ -175,16 +186,21 @@ export function conversionEventFor(db: Database.Database, rawEmail: string): { k
 function* cancelPendingForTx(t: Tx, email: string, kind: LifecycleKind, now: number): TxBody<number> {
   const reason = `converted_${kind}`
   let stopped = 0
+  const tenants = new Set<string>()
   const seqs = yield* t.all<{ tenant_id: string; lead_id: string }>("SELECT tenant_id, lead_id FROM sequences WHERE status IN ('approved','active') AND lower(trim(to_email)) = ?", [email])
   for (const s of seqs) {
     const r = yield* t.run("UPDATE sequences SET status = 'stopped', stop_reason = ? WHERE tenant_id = ? AND lead_id = ? AND status IN ('approved','active')", [reason.slice(0, 40), s.tenant_id, s.lead_id])
     if (r.changes > 0) {
       yield* t.run("INSERT INTO autopilot_audit (id, tenant_id, lead_id, message_id, action, detail, created_at) VALUES (?, ?, ?, NULL, 'sequence_stopped', ?, ?)", [randomBytes(12).toString('hex'), s.tenant_id, s.lead_id, reason.slice(0, 200), now])
       stopped++
+      tenants.add(s.tenant_id)
     }
   }
+  for (const r of yield* t.all<{ tenant_id: string }>('SELECT DISTINCT tenant_id FROM followup_threads WHERE stopped IS NULL AND lower(trim(to_email)) = ?', [email])) tenants.add(r.tenant_id)
   stopped += (yield* t.run('UPDATE followup_threads SET stopped = ? WHERE stopped IS NULL AND lower(trim(to_email)) = ?', [reason.slice(0, 40), email])).changes
+  for (const r of yield* t.all<{ tenant_id: string }>("SELECT DISTINCT tenant_id FROM outreach_messages WHERE status IN ('draft','approved') AND hold_reason IS NOT NULL AND lower(trim(to_email)) = ?", [email])) tenants.add(r.tenant_id)
   stopped += (yield* t.run("UPDATE outreach_messages SET status = 'skipped', error = ?, hold_reason = NULL, hold_until = NULL WHERE status IN ('draft','approved') AND hold_reason IS NOT NULL AND lower(trim(to_email)) = ?", [reason, email])).changes
+  for (const tenant of tenants) yield* transitionToOnboardingTx(t, tenant, email, kind, now)
   return stopped
 }
 
