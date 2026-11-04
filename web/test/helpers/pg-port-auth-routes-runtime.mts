@@ -166,20 +166,6 @@ async function onSqlite() {
   return scenario(sqliteDb(lite))
 }
 
-async function onPg() {
-  errors.length = 0
-  const s = await freshSchema()
-  const pg = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 3 })
-  try {
-    await runPgMigrations(pg.pool)
-    trapScanDb() // getScanDb() now throws: Postgres deployments have no raw SQLite handle
-    setDb(pg)
-    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres')
-    await seed(pg)
-    return await scenario(pg)
-  } finally { await pg.close(); await s.drop() }
-}
-
 const by = (out: Out[], n: string) => out.find(o => o.name === n)!
 type Rows = { pendingAfterSignup: unknown; patWorkAfterSignup: unknown; deeBeforeSignin: unknown; events: { email: string; kind: string; activated_at: unknown }[]; messages: { id: string; status: string; error: string | null }[]; sequences: { id: string; status: string }[]; enrollments: unknown[] }
 
@@ -249,6 +235,22 @@ test('a failing conversion step is captured and never blocks sign-in, sign-up or
   assert.deepEqual(await (await verify.POST(post('/api/auth/verify', { token: tv }))).json(), { ok: true })
   assert.deepEqual(lifecycleErrors().map(e => e.where), ['/api/auth/signin:lifecycle', '/api/auth/signup:lifecycle', '/api/auth/verify:lifecycle'])
 })
+
+// The Postgres leg. Defined after the SQLite-only tests on purpose: test/pg-fixture-honesty.test.ts allows no
+// setScanDb(fixture) in the source after the first setDb(pg...), so those tests' fixture stores stay above this line.
+async function onPg() {
+  errors.length = 0
+  const s = await freshSchema()
+  const pg = pgDb({ connectionString: PG_URL!, searchPath: s.schema, max: 3 })
+  try {
+    await runPgMigrations(pg.pool)
+    trapScanDb() // getScanDb() now throws: Postgres deployments have no raw SQLite handle
+    setDb(pg)
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route-facing store IS Postgres')
+    await seed(pg)
+    return await scenario(pg)
+  } finally { await pg.close(); await s.drop() }
+}
 
 test('auth routes on a Postgres-only fixture: identical responses and writes; no SQLite handle anywhere', { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
   const sqlite = await onSqlite()
