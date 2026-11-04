@@ -32,8 +32,16 @@ export const TEST_INBOX = 'instinct114114@gmail.com'
 export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
   norm(email) === TEST_INBOX && isAllowlistedTestRecipient(db,tenantId,email)
+// Synthetic recipients of the test-only inbox fixture (lib/outreach/inbox-fixture.ts, #369). The .invalid TLD cannot
+// resolve, and no draft, send, follow-up or sequence step may ever be addressed to one: recipientAllowed refuses them
+// (every follow-up and sequence path checks it), and draft and send refuse them first with their own code.
+export const INBOX_FIXTURE_DOMAIN = 'inbox-fixture.dazl.invalid'
+export const isInboxFixtureAddress = (email: string): boolean => {
+  const d = norm(email).split('@').pop() ?? ''
+  return d === INBOX_FIXTURE_DOMAIN || d.endsWith(`.${INBOX_FIXTURE_DOMAIN}`)
+}
 export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
-  !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
+  !isInboxFixtureAddress(email) && (!CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email))
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -241,6 +249,8 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
+  // A test-only inbox fixture contact (#369) is never drafted to, whatever else holds the lead.
+  if (isInboxFixtureAddress(lead.contact ?? '')) throw new OutreachError('fixture_recipient')
   if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
   if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
@@ -271,6 +281,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
     addressUrl = addressCitationUrl({ contact: lead.contact, source_url: lead.source_url, enrichments: crawled }) ?? lead.source_url
   } catch { /* enrichment table not present */ }
   const to = norm(published)
+  if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   // Published is not the same as sales-contactable: press, support, privacy,
   // careers and similar inboxes exist for another purpose. Never aim a sales
@@ -449,6 +460,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
 type StoredMsg = NonNullable<ReturnType<typeof getMsg>>
 // Every check sendMessage makes before it claims the message, in the same order. Throws OutreachError on the first refusal.
 function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg): void {
+  if (isInboxFixtureAddress(pre.to_email)) throw new OutreachError('fixture_recipient')
   if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')

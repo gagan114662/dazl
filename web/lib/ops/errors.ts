@@ -139,12 +139,20 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
 // event is built field by field below. The full scrubbed record stays in the server's own log (stderr).
 const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError', 'DOMException', 'ChunkLoadError'])
 // This app's error classes (test/ops-sentry.test.ts fails when a class extending an Error in lib/ or app/ is missing).
-export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxQueryError', 'JobFeedError',
+export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxFixtureError', 'InboxQueryError', 'JobFeedError',
   'LeaseLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused',
 
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
+  // lib/workers (runtime workers): a refused catalog or lifecycle change; a reviewed handler past its timeout.
+  'WorkerError', 'HandlerTimeout',
+  // lib/scan/feedback.ts (#385): a lead verdict that cannot be recorded as asked; a feedback store that cannot be read.
+  'FeedbackError', 'FeedbackUnreadable',
   // lib/evals (docs/design/agent-evals.md): a malformed World or case file. Offline eval tooling only.
-  'WorldError', 'CaseError',
+  'WorldError', 'CaseError', 'JudgeCorpusError',
+  // lib/benchmark/runner.ts (#397): a batch that cannot run as asked (no preset budget, mixed origins). Offline benchmark tooling only.
+  'BenchmarkRunError',
+  // lib/benchmark/superiority.ts (#398): an analysis refused (plan changed after registration, stop rule, mixed origins).
+  'PreregError',
   // lib/ops/client-errors.ts (#312): the wrapper for a browser report. Its runtime name is always replaced by an
   // allowlisted built-in type before capture, so this class name itself is never what is sent.
   'ClientReport',

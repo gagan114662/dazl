@@ -1,3 +1,5 @@
+import { SpendRefused } from '../llm/spend-guard.ts'
+import { reserveScanSpend, unitCostUsd, type SpendHold } from '../scan/spend-cap.ts'
 import type Database from 'better-sqlite3'
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { migratePlatform } from '../db/platform-tables.ts'
@@ -109,8 +111,15 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   })
   if (gate !== 'go') { d.trace?.search({ query, attempted: false, outcome: gate, hits: null }); return { ok: false, reason: gate } }
   await d.charge?.('search', 1)
+  // Inside a scan: reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal sends nothing.
+  let hold: SpendHold | null
+  try { hold = await reserveScanSpend('tinyfish.search', () => unitCostUsd('tinyfish.search', 1, env)) } catch (e) {
+    if (!(e instanceof SpendRefused)) throw e
+    d.trace?.search({ query, attempted: false, outcome: 'cap', hits: null }); return { ok: false, reason: 'cap' }
+  }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
+  if (hold) await hold.settle(r.ok ? hold.usd : null)
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
@@ -142,7 +151,13 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   if (gate.out === 'cap') { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' } }
   if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
   await d.charge?.('fetch', batch.length)
+  let hold: SpendHold | null
+  try { hold = await reserveScanSpend('tinyfish.fetch', () => unitCostUsd('tinyfish.fetch', batch.length, env)) } catch (e) {
+    if (!(e instanceof SpendRefused)) throw e
+    d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' }
+  }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
+  if (hold) await hold.settle(r.ok ? hold.usd : null)
   if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []

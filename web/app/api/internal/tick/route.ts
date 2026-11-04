@@ -8,6 +8,7 @@ import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { kickRunner } from '@/lib/scan/runner'
+import { sharedScanQueue } from '@/lib/queue/scan-claimer'
 import { getDb, type Tx } from '@/lib/db/client'
 import { LeaseLost, StaleLeaseWrite, tryLease } from '@/lib/shared/lease'
 import type { Lease } from '@/lib/shared/lease'
@@ -105,7 +106,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
         // verified leads (#448). Every send runs within every autopilot and send check; the lease is kept alive
         // between its messages.
         stage = 'first_touch'
-        const dr = classifyWork(await drainFirstTouch(db, tenantId))
+        const dr = classifyWork(await drainFirstTouch(db, tenantId, { businessName: firstTouchSet.get(tenantId) ?? '' }))
         await progress(tenantId, 'first_touch', dr)
         if (dr.outcome === 'failure') continue
         const ap = await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? '', { keep: () => lease.keep() })
@@ -117,9 +118,11 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
     } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
   }
   let sequences = 0
-  for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
+  // The account's business name, as runAutopilot is given it: an auto-enrolled set's claims fingerprint includes it
+  // (#414), so passing anything else would stop every such set as claims_changed before its first due step.
+  for (const t of db.prepare("SELECT DISTINCT s.tenant_id, u.business_name FROM sequences s LEFT JOIN users u ON u.id = s.tenant_id WHERE s.status IN ('approved','active')").all() as { tenant_id: string; business_name: string | null }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
+    try { const r = await runSequences(db,t.tenant_id,t.business_name ?? ''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
@@ -132,6 +135,9 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // per-monitor new-lead counts. Monitor jobs respect the same quota and pipeline as manual scans.
   const monitorJobs = await runDueMonitors(shared, { fence })
   if (monitorJobs.length > 0) after(() => kickRunner(raw))
+  // With the shared scan queue switched on (DAZL_SCAN_SHARED_QUEUE=1, #355) every tick also kicks, so a scan whose
+  // worker died or whose retry backoff has passed is claimed again within one tick. Off (the default), unchanged.
+  else if (watches.ran === 0 && sharedScanQueue()) after(() => kickRunner(raw))
   const monitorAlerts = await collectMonitorResults(shared, { fence })
   // Weekly indexing checks: one TinyFish site: search per saved keyword, inside the tenant's
   // own 10-searches-per-week allowance (separate from the scan caps). Best-effort per tenant.

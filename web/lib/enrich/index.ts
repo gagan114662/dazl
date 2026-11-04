@@ -9,6 +9,7 @@ import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, latestAuditStatus, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
+import { runWithJobSpend } from '../scan/spend-cap.ts'
 import { getMasterKey } from '../secrets.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -478,6 +479,7 @@ export async function retryHeldEnrichment(db: Database.Database, tenantId: strin
     ? 'owner retry: people search resumed on the saved org memo; Apollo documents this endpoint as 0 credits (cost confirmed by the operator for this account)'
     : 'owner retry: the earlier attempt could not prove its outcome; the lookup may be charged again'
   if (!releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)) return { status: 'nothing_held' }
-  const r = await enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider })
+  // The re-run draws on the scan's own hard spend cap (lib/scan/spend-cap.ts), as the scan's first pass did.
+  const r = await runWithJobSpend(db, tenantId, lead.scan_job_id, () => enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider }))
   return { status: 'retried', attached: r.attached, releases: [`${h.provider} ${h.step}`] }
 }

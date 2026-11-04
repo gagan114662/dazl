@@ -11,6 +11,7 @@ import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
+import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
@@ -26,6 +27,7 @@ import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '..
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
+import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
 import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
@@ -36,13 +38,15 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
+import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
+import { applyRejections, readRejections, stripRejectedPeople, type Rejections } from './feedback.ts'
 import { enrichJobSignals } from '../signals/index.ts'
 import { techQueries } from '../signals/tech-observations.ts'
 import { compileTargeting, planConditions } from './targeting.ts'
@@ -62,7 +66,7 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
-import { EnrichmentTrace, noteFromAudit, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
+import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
@@ -288,6 +292,28 @@ const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
 // ats_structured is a HIRING-ONLY proof label: the write guard is the canonical strict trigger test (signal kind
 // when the grader has assigned one, strict hiring wording otherwise). The old broad text regex matched 'opening ...'
 // expansions and could persist a false hiring-proof label; consumer fail-closed is no excuse for a false persisted label.
+
+// #385 (lib/scan/feedback.ts): what the tenant explicitly rejected is not brought back by a later run. Read once per run,
+// from the scan's own store, at the first use (no new checkpoint ahead of the provider calls). A store that exists but
+// cannot be read is UNKNOWN, never "nothing rejected": every candidate is dropped as feedback_unreadable. Each drop is in
+// the run report's candidate audit with the feedback id and reason, so an absent company is explained.
+export function feedbackGate(db: Database.Database, tenantId: string) {
+  let read: Promise<Rejections | null> | null = null
+  const rejections = () => (read ??= readRejections(sqliteDb(db), tenantId).catch(() => null))
+  return {
+    rejections,
+    // Candidates (or verified rows) -> what stays; drops are counted by reason. `audit` gets an entry per drop.
+    async apply<T extends LeadDraft>(list: T[], counts: Record<string, number>, onDrop: (rows: T[], reason: string) => void, knownDomain: string | null = null): Promise<T[]> {
+      if (list.length === 0) return list
+      const rj = await rejections()
+      if (!rj) { counts['feedback_unreadable'] = (counts['feedback_unreadable'] ?? 0) + list.length; onDrop(list, 'feedback_unreadable'); return [] }
+      const r = applyRejections(list, rj, knownDomain)
+      for (const d of r.dropped) { counts['previously_rejected'] = (counts['previously_rejected'] ?? 0) + 1; onDrop([d.cand], `previously_rejected:${d.reason}:${d.feedback_id}`) }
+      return r.kept
+    },
+  }
+}
+const auditDrop = (audit: CandidateAudit[]) => (rows: LeadDraft[], reason: string) => { for (const l of rows) audit.push({ key: `${dedupKey(l)}|${l.source_url}`, company: l.company, url: l.source_url, outcome: 'dropped', reason }) }
 
 export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
@@ -682,7 +708,9 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     if (leads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
     const judge = deps.judge === undefined ? makeJudge(provider, key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
-    const outcome = await verifyLeads(leads, fetchP, deps.now, judge, job.csv_domain ?? null)
+    const fbCounts: Record<string, number> = {}
+    const outcome = await verifyLeads(await feedbackGate(db, job.user_id).apply(leads, fbCounts, () => {}, job.csv_domain ?? null), fetchP, deps.now, judge, job.csv_domain ?? null)
+    for (const [r, n] of Object.entries(fbCounts)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
     try { applyEvidenceQualityGate(outcome.leads) } catch { /* gate only, never fails the job */ }
     const owned = finish(db, job, 'done', null, outcome, leads.length, ledger)
     // Same stale-attempt gate as the main path: no side effects for a job
@@ -752,7 +780,8 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hitByUrl = new Map(hits.map(h => [h.url, h]))
   // A request that needs an event beyond hiring (seed funding, an opening) is not answered by job postings alone: within each window class
   // the pages that can carry the event come before job-board / careers pages, which only corroborate the hiring half. Nothing is excluded.
-  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
+  // #380 / #204 Test B: under an OR plan ("seed funding OR first sales hire") a job page can prove a branch on its own, so it is not ranked behind the event pages.
+  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '') && !salesGateOr(job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
@@ -922,7 +951,16 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   try { const r = await runJobUntraced(db, job, capture.deps); outcome = r; return r } finally { await capture.finish(outcome) }
 }
 
+// The hard per-scan spend cap (lib/scan/spend-cap.ts, #377/#533): the whole attempt, post-finish enrichment included, runs
+// in this scan's spend context, so every paid provider call it makes reserves its worst case on this job's ledger row
+// before the request and is refused past the cap (CAD 5, DAZL_SCAN_CAP_CAD can only lower it; so can the request's own
+// run_budget.max_usd).
 async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
+  const requestMaxUsd = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd }, () => runJobCapped(db, job, deps))
+}
+
+async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
   let trialGuard: SpendGuard | null = null
   const ledger = new SourceRunLedger()
@@ -1044,6 +1082,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
     const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
     const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
+    const fb = feedbackGate(db, job.user_id), fbCounts: Record<string, number> = {}
+    const forget = <T extends LeadDraft>(list: T[]) => fb.apply(list, fbCounts, auditDrop(audit))   // before the verifier: a rejected company costs no fetch
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
     const fetchP = cachedFetcher(recordingFetcher(deps.trace ? deps.trace.pageFetcher(deps.fetchPage ?? fetchPageDetailed) : deps.fetchPage ?? fetchPageDetailed, verifierFetch))
@@ -1117,7 +1157,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         }
         // Seed funding AND hiring sales: a board-sourced candidate proves the hiring half only. For the few such companies, search the news for their funding round; the results are ordinary
         // candidates (verified quote, identity, date window) that the sales-hiring gate later merges with the posting. A run that disabled the paid fallback makes no extra model call.
-        const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
+        const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })), leads.slice(0, leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
         if (targets.length > 0) {
           const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
@@ -1182,7 +1222,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    let outcome = partial.outcome = await verifyLeads(leads, fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
+    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -1203,7 +1243,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
-          const o2 = await verifyLeads(found, fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
+          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
@@ -1238,7 +1278,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
+          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))
@@ -1266,6 +1306,12 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
       markDropped(outcome.review.filter(l => !keptReview.includes(l)), 'excluded')
       outcome.review = keptReview
     }
+    // #385, after the verifier: the authoritative pass on what it kept (a contact the verifier read off the page can be a
+    // rejected person; a run that could not read the store holds everything), and the rows added outside the verifier.
+    outcome.leads = await fb.apply(outcome.leads, fbCounts, markDropped)
+    outcome.review = await fb.apply(outcome.review, fbCounts, markDropped)
+    for (const list of [walledLeads, selfDescribedLeads]) { const kept = await fb.apply(list, fbCounts, auditDrop(audit)); list.length = 0; list.push(...kept) }
+    for (const [r, n] of Object.entries(fbCounts)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
     // The user's recency window (#198): with an explicit window only a valid, in-window event date is a scored lead.
     // Stale, undated, invalid and future dates go to the review lane with their own reason (same rule as the outreach
     // gate), so verified / qualified counts never include a lead the gate would hold. Stored, not dropped.
@@ -1340,6 +1386,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
     else if (trial) trace.note('people_search', 'skipped', 'a free trial scan makes no search outside its budget')
     else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
+    // #385: a person the tenant rejected is not re-added by the crawl or the people search.
+    try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
     // Buyer-fit gate (after the crawl, which confirms each company's own site): a hiring lead keeps fit >= 4 only when
@@ -1397,7 +1445,9 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
-    if (jobStartsAutopilot(job) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    // Autopilot's drafting and sends are outreach work under their own guards (docs/spend-safety.md), not this scan's
+    // spend: it runs outside the scan's spend context, so the hard per-scan cap neither counts nor refuses it.
+    if (jobStartsAutopilot(job) && !trial) try { await outsideScanSpend(() => (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '')) } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }
@@ -1446,8 +1496,12 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
   const postTimer = setTimeout(() => postCtrl.abort(), postFinishBudgetMs())
   try {
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
-    if (!sitecrawlEnabled()) trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0')
-    else { await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl') }
+    if (!sitecrawlEnabled()) { trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0'); trace.note('tech', 'skipped', 'SITECRAWL_ENABLED=0: no crawl, so the technology branch did not run') }
+    else {
+      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
+      noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
+    }
     if (postCtrl.signal.aborted) trace.note('crawl', 'failed', `cut off at the post-finish budget (${postFinishBudgetMs()} ms): contacts and domains after that point were not read`)
     // Intent-signal enrichment (SEC Form D, public job boards). Bonus rows beside the
     // leads, never part of verification; failures are silent.
@@ -1473,28 +1527,46 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
 // It does not stop an in-flight provider call (that still ends at its transport timeout or with the process),
 // does not cover SIGKILL/crash (the lease still applies), and a requeued scan restarts from the beginning, so
 // provider work already done by the interrupted attempt may be repeated and billed again - same as any retry.
-// Legacy runner only; queue-mode (DAZL_QUEUE_TENANTS) jobs are not tracked. The Set lives on globalThis because
-// Next bundles instrumentation and route handlers as separate module instances.
+// The legacy runner and the shared work queue (DAZL_SCAN_SHARED_QUEUE=1, with the scan's queue claim token) are tracked; DAZL_QUEUE_TENANTS canary
+// jobs are not. The map lives on globalThis because Next bundles instrumentation and route handlers as separate module
+// instances.
+// A shared-queue scan also hands its queue claim back, by its token and in the same transaction, so the next process
+// claims it at once rather than after the lease (#355). Only when the queue is on this handle (no DATABASE_URL); on
+// Postgres the lease still returns it. A claim the token no longer owns (reaped, re-claimed) is untouched.
 const IN_FLIGHT_KEY = Symbol.for('dazl.scan.inflight')
-function inFlightSet(): Set<Job> {
-  const g = globalThis as unknown as Record<symbol, Set<Job> | undefined>
-  return (g[IN_FLIGHT_KEY] ??= new Set<Job>())
+function inFlightSet(): Map<Job, number | null> {
+  const g = globalThis as unknown as Record<symbol, Map<Job, number | null> | undefined>
+  return (g[IN_FLIGHT_KEY] ??= new Map<Job, number | null>())
 }
-export function trackInFlight(job: Job): () => void { const set = inFlightSet(); set.add(job); return () => { set.delete(job) } }
+export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); return () => { m.delete(job) } }
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0
   const upd = db.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ? AND status = 'running' AND attempts = ? AND attempts < ?")
-  for (const job of inFlightSet()) {
-    try { n += upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes } catch { /* shutting down: the lease reaper is the fallback */ }
+  const queueHere = !process.env.DATABASE_URL
+  for (const [job, token] of inFlightSet()) {
+    try {
+      n += db.transaction((): number => {
+        const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
+        if (c === 1 && token !== null && queueHere) {
+          db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
+            .run(Math.floor(Date.now() / 1000), job.id, token)
+        }
+        return c
+      })()
+    } catch { /* shutting down: the lease reaper is the fallback */ }
   }
   return n
 }
 
 export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Promise<void> {
-  // DAZL_SCAN_SHARED_QUEUE=1 (default OFF): every scan is claimed through the shared work queue instead (lib/queue/scan-claimer.ts).
+  // DAZL_SCAN_SHARED_QUEUE=1 (default OFF, #355): every scan is claimed through the shared work queue
+  // (lib/queue/scan-claimer.ts), fair across tenants. Off, the claimers below run as before. The queue is on Postgres
+  // when DATABASE_URL is set; otherwise on this same SQLite handle, the app's one store (getDb() wraps the same
+  // connection), its tables created here if this handle has not got them yet.
   if (sharedScanQueue()) {
-    await kickSharedScanQueue<Job>({ queue: await getDb(), domain: sqliteDb(db), run: job => runJob(db, job, deps), onCrash: (job, e) => failCrashedJob(db, job, e, 'queue-runner'),
+    const queue = process.env.DATABASE_URL ? await getDb() : (new SqliteQueue(db), sqliteDb(db))
+    await kickSharedScanQueue<Job>({ queue, domain: sqliteDb(db), run: job => runJob(db, job, deps), onCrash: (job, e) => failCrashedJob(db, job, e, 'queue-runner'),
       slots: { available: slotAvailable, acquire: acquireSlot, release: releaseSlot }, track: trackInFlight })
     return
   }

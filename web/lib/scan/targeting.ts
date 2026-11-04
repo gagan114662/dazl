@@ -138,6 +138,10 @@ function findAtoms(q: string): Atom[] {
     const role = m[1] ? cleanRole(m[1]) : ''
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
   }
+  // "made their first sales hire": the hire the request asks about, read as the hiring condition its role names (proven like any open role: a dated posting or a source naming it).
+  for (const m of q.matchAll(/\b(?:made|making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
+    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[1] })
+  }
   // 4. Other events.
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
   return atoms.sort((a, b) => a.start - b.start)

@@ -22,7 +22,7 @@ import { estimateForBody } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
-import { cleanOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { cleanOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -55,8 +55,13 @@ export async function POST(req: NextRequest) {
   // refused until the caller chooses which one this play is for, before anything is queued or counted.
   const seller = sellerProfile(getAuthDb(), user.tenantId)
   const offerSupplied = body?.offer !== undefined && body?.offer !== null
-  const offer = offerSupplied ? cleanOffer(body.offer) : ''
+  let offer = offerSupplied ? cleanOffer(body.offer) : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
+  // The next run of the same play (#349): the offer this tenant already confirmed for this exact request, while the
+  // profile says what it says now, is this run's offer too. Nothing confirmed: the checks below, unchanged.
+  if (!offerSupplied && query.length >= 3) {
+    try { offer = (await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller))?.offer ?? '' } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+  }
   if (query.length >= 3 && !offer) {
     // the same inputs drafting reads later (draftOffer: this play's seller snapshot, then the tenant's Memory positioning or
     // profile offer), so a conflict surfaces here, at creation, for a Memory-only tenant too

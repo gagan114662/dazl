@@ -2,9 +2,24 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
-import { deleteMonitor, setMonitorEnabled } from '@/lib/monitors'
+import { deleteMonitor, monitorWindowDays, setMonitorEnabled } from '@/lib/monitors'
+import { detectionReport } from '@/lib/monitor-events'
 import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
+
+// Detection report for one of the tenant's monitors (#387): alerts by kind, detection latency (event date -> alert),
+// the last run's missed-run recovery and the per-source cursors. Another tenant's monitor reads as not found.
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const user = await requireUser()
+  if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const { id } = await params
+  if (!/^[a-f0-9]{24}$/.test(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  const db = await getDb()
+  const m = await db.get<{ query: string; icp: string | null; alert_policy: string; interval_hours: number }>('SELECT query, icp, alert_policy, interval_hours FROM monitors WHERE id = ? AND user_id = ?', [id, user.tenantId])
+  if (!m) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  const windowDays = monitorWindowDays(m)
+  return NextResponse.json({ alert_policy: m.alert_policy, interval_hours: Number(m.interval_hours), window_days: windowDays, detection: await detectionReport(db, user.tenantId, id, windowDays) })
+}
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser()
