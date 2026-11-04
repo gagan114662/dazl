@@ -181,7 +181,8 @@ way to tell why: safe_launch's own status JSON went to /dev/null with the applic
 survive every run, and neither weakens a gate or relaxes the /dev/null rule for application output.
 
 - **Launch log.** `checked_launch.py` appends one JSON line per run to `--launch-log` (default
-  `/home/ubuntu/backups/launch-log.jsonl`), keeping only the newest 200 lines (atomic private rewrite).
+  `~/.local/state/dazl/launch-log.jsonl` from `$HOME`, or `/root/dazl-launch-log/launch-log.jsonl` when run as
+  root, whatever `$HOME` says), keeping only the newest 200 lines (atomic private rewrite).
   Each line has: UTC timestamp, commit, every gate result per round (bind_launch, bind_target, require_ci:
   pass, or fail with its fixed code; any other exception by class name only), each preflight's program name
   (executable basename plus a script basename, never option values or inline code), its return code /
@@ -208,11 +209,24 @@ survive every run, and neither weakens a gate or relaxes the /dev/null rule for 
   root), mode 0600, never symlinks; their directory must be owned by that uid or root and not group/world
   writable. If the log cannot be opened that way, checked_launch refuses with `launch_log_unavailable`
   (exit 2) before any gate, preflight or launch. Reading the log is GET-only diagnosis, not a release action.
+- **Default log location (#607).** A shared backup dir such as `/home/ubuntu/backups` (ubuntu:ubuntu 0775 on
+  the host) fails the custody check, so it is not the default. For the default path only, checked_launch creates
+  the directories that are absent below `$HOME` (or below `/root`), each mode 0700; it never creates `$HOME` or
+  `/root`, and never chmods, chowns or otherwise changes a directory that already exists. An existing state dir
+  that fails the check (group/world-writable, a symlink, not a directory, wrong owner) is refused exactly as
+  before. A missing, empty or relative `$HOME` refuses with `launch_log_unavailable`. `--launch-log <path>`
+  stays the explicit override: its directory must already exist and pass the same check (nothing is created
+  for it). Diagnosis after a default run: `tail -n 1 ~/.local/state/dazl/launch-log.jsonl` (as root:
+  `/root/dazl-launch-log/launch-log.jsonl`).
 
 Tests: `ops/test_checked_launch.py` LaunchLogTests (failing real safe_launch child leaves a sanitized
 `verified_backup_required` line and a never-signalled stub pid plus an untouched database file; preflight and
 launch timeouts; secret-printing children and a forged status file never reach the log; positive control
-launches exactly once; 200-line bound; unusable log refuses before anything runs) and `ops/test_safe_launch.py`
+launches exactly once; 200-line bound; unusable log refuses before anything runs), DefaultLaunchLogTests (#607:
+with `HOME` at a temp dir, the real default writes out of the box through `run()` and the CLI with absent dirs
+made 0700; existing dirs keep their mode; an unsafe, symlinked or concurrently created state dir is refused
+untouched; a missing, empty, relative, absent or unwritable `HOME` refuses and creates nothing; root resolves to
+`/root/dazl-launch-log`; `--launch-log` still overrides and creates nothing) and `ops/test_safe_launch.py`
 StatusFileTest (every pre-SIGTERM error path writes its status file and delivers no signal to a live stub pid;
 exclusive status-file creation; post-signal phases; vocabulary covers every code the helper can report).
 `ops/test_owns_listener_launch.py` (#621): vanished fds are skipped while permission, process-gone and tcp-table
