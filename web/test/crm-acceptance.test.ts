@@ -1,8 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { runCrmAcceptance, type AcceptanceReport } from '../lib/crm/acceptance.ts'
+import { runCrmAcceptance, type AcceptanceReport, type RecordedCase } from '../lib/crm/acceptance.ts'
 import { acceptanceConfig } from '../scripts/crm-live-acceptance.mts'
+import { replayCase } from './helpers/crm-replay.ts'
 
 // #569 live-provider acceptance harness, against an in-memory stub CRM (no network). The real run is a sandbox
 // account only; these tests prove the harness catches what an id-only check cannot, and refuses anything else.
@@ -10,11 +11,13 @@ const KEY = 'sandbox-key-123'
 type Opts = {
   accountType?: unknown; domain?: unknown; acceptAnyKey?: boolean; createBody?: (id: number) => unknown; forgetOnCreate?: boolean
   readEmail?: string; deleteStatus?: number; deleteIgnored?: boolean; conflictId?: string; throwOnRead?: string
+  // reads answered truthfully before readEmail / throwOnRead apply (pushLead's own read-back is the first read)
+  honestReads?: number
 }
 function stubCrm(provider: 'hubspot' | 'pipedrive', o: Opts = {}) {
   const recs = new Map<string, { email: string; active: boolean }>()
   const calls: { method: string; url: string }[] = []
-  let next = 100
+  let next = 100, reads = 0
   const f = (async (input: string | URL, init?: RequestInit) => {
     const url = String(input), method = init?.method ?? 'GET'
     calls.push({ method, url: url.replace(KEY, '[key]') })
@@ -46,10 +49,11 @@ function stubCrm(provider: 'hubspot' | 'pipedrive', o: Opts = {}) {
       if (r && !o.deleteIgnored) { if (provider === 'hubspot') recs.delete(id!); else r.active = false }
       return provider === 'hubspot' ? new Response(null, { status: 204 }) : j({ success: true, data: { id: Number(id) } })
     }
-    if (o.throwOnRead) throw new Error(o.throwOnRead)
+    const honest = reads++ < (o.honestReads ?? 0)
+    if (o.throwOnRead && !honest) throw new Error(o.throwOnRead)
     const r = recs.get(id!)
     if (!r || (provider === 'hubspot' && !r.active)) return j({ message: 'not found' }, 404)
-    const email = o.readEmail ?? r.email
+    const email = honest ? r.email : o.readEmail ?? r.email
     return provider === 'hubspot' ? j({ id: id, properties: { email } }) : j({ success: true, data: { id: Number(id), email: [{ value: email, primary: true }], active_flag: r.active } })
   }) as typeof fetch
   return { f, recs, calls }
@@ -110,13 +114,58 @@ test('the #569 bug class: a {} 200 create is unknown, never a pass, and no read-
   }
 })
 
-test('a provider that names an id it does not hold, or holds another email, fails read-back', async () => {
+test('pushLead itself catches an id the provider does not hold, or holding another email: create is unknown, the id is named, nothing deleted', async () => {
   for (const provider of ['hubspot', 'pipedrive'] as const) {
-    const ghost = await run(provider, stubCrm(provider, { forgetOnCreate: true }))
-    assert.deepEqual([ghost.ok, step(ghost, 'create').ok, step(ghost, 'read_back').ok, step(ghost, 'read_back').detail], [false, true, false, 'the provider has no record with that id'])
-    const other = await run(provider, stubCrm(provider, { readEmail: 'someone@else.test' }))
-    assert.deepEqual([other.ok, step(other, 'read_back').detail], [false, 'record 101, email differs'])
+    const what = provider === 'hubspot' ? 'HubSpot named contact' : 'Pipedrive named person'
+    for (const [why, o, msg] of [['ghost id', { forgetOnCreate: true }, 'has no such record'], ['another email', { readEmail: 'someone@else.test' }, "it does not hold this lead's email"]] as const) {
+      const s = stubCrm(provider, o)
+      const r = await run(provider, s)
+      assert.deepEqual([r.ok, step(r, 'create').ok, step(r, 'create').detail], [false, false, `unknown: ${what} 101 but ${msg}; the ${provider === 'hubspot' ? 'contact' : 'person'} may or may not have been created`], `${provider} ${why}`)
+      assert.equal(r.recordId, '101', 'the report names the record to check')
+      assert.deepEqual([step(r, 'cleanup').ok, step(r, 'cleanup').skipped], [false, undefined])
+      assert.match(step(r, 'cleanup').detail, /could not confirm record 101, so it was not deleted/)
+      assert.equal(s.calls.filter(c => c.method === 'DELETE').length, 0, 'never deletes a record it did not verify')
+    }
   }
+})
+
+// Review on 8f2827d7: cleanup deleted whatever id pushLead returned, even when the independent read-back showed a record
+// that is not this run's. Now only a record step 3 verified is deleted.
+test('the independent read-back sees another email after pushLead passed: no DELETE is sent and the id is reported', async () => {
+  for (const provider of ['hubspot', 'pipedrive'] as const) {
+    const s = stubCrm(provider, { readEmail: 'someone@else.test', honestReads: 1 })
+    const r = await run(provider, s)
+    assert.deepEqual([step(r, 'create').ok, step(r, 'read_back').ok, step(r, 'read_back').detail], [true, false, 'record 101, email differs'], provider)
+    assert.deepEqual([r.ok, step(r, 'cleanup').ok], [false, false])
+    assert.match(step(r, 'cleanup').detail, /^record 101 was not verified as this run's record, so it was not deleted/)
+    assert.equal(s.calls.filter(c => c.method === 'DELETE').length, 0, 'no DELETE')
+    assert.equal(s.recs.get('101')?.active, true, 'the record is left for the operator')
+    const ghost = stubCrm(provider, { honestReads: 1, throwOnRead: 'ECONNRESET' })
+    const g = await run(provider, ghost)
+    assert.deepEqual([step(g, 'read_back').ok, step(g, 'cleanup').ok, ghost.calls.filter(c => c.method === 'DELETE').length], [false, false, 0], `${provider}: an unreadable record is not deleted either`)
+  }
+})
+
+test('--record: every pushLead step becomes a replayable case with no key, no query string and no headers', async () => {
+  for (const provider of ['hubspot', 'pipedrive'] as const) {
+    const cases: RecordedCase[] = []
+    const s = stubCrm(provider)
+    const r = await runCrmAcceptance({ provider, key: KEY, runId: 'r1', fetchImpl: s.f, expectDomain: provider === 'pipedrive' ? 'dazl-sandbox' : undefined, now: new Date(0), record: c => { cases.push(c) } })
+    assert.equal(r.ok, true, JSON.stringify(r.steps))
+    assert.deepEqual(cases.map(c => [c.key, c.expect.outcome]), provider === 'hubspot' ? [['invalid', 'failed'], ['valid', 'ok'], ['valid', 'ok']] : [['invalid', 'failed'], ['valid', 'ok']])
+    const text = JSON.stringify(cases)
+    assert.ok(!text.includes(KEY) && !text.includes('api_token') && !/authorization|bearer/i.test(text), 'no key, no token parameter, no headers')
+    assert.ok(cases.every(c => c.exchanges.every(x => !x.path.includes('?'))))
+    // the create case holds the create and pushLead's read-back, and replays to the same outcome
+    assert.deepEqual(cases[1].exchanges.map(x => [x.method, x.status]), [['POST', 201], ['GET', 200]])
+    for (const c of cases) assert.deepEqual(await replayCase(c), { got: c.expect, problems: [], requests: c.exchanges.length }, c.name)
+  }
+  // a read-back that threw is recorded as status 0 and replays to the same unknown
+  const cases: RecordedCase[] = []
+  await runCrmAcceptance({ provider: 'hubspot', key: KEY, runId: 'r1', fetchImpl: stubCrm('hubspot', { throwOnRead: `down ${KEY}` }).f, now: new Date(0), record: c => { cases.push(c) } })
+  const create = cases.find(c => c.name.startsWith('hubspot create'))!
+  assert.deepEqual([create.expect.outcome, create.exchanges[1].status, create.exchanges[1].text], ['unknown', 0, 'down [key]'])
+  assert.equal((await replayCase(create)).got.outcome, 'unknown')
 })
 
 test('an invalid key reported as success fails the bad_key step', async () => {
@@ -141,11 +190,15 @@ test('cleanup failures are named with the record id; a delete the provider ignor
   }
 })
 
-test('a thrown read carrying the key is redacted in the report', async () => {
-  const r = await run('hubspot', stubCrm('hubspot', { throwOnRead: `boom ${KEY} boom` }))
+test('a thrown read carrying the key (raw or URL-encoded) is redacted in the report', async () => {
+  const r = await run('hubspot', stubCrm('hubspot', { throwOnRead: `boom ${KEY} boom`, honestReads: 1 }))
   assert.equal(step(r, 'read_back').ok, false)
   assert.ok(!JSON.stringify(r).includes(KEY))
   assert.match(step(r, 'read_back').detail, /\[key\]/)
+  const odd = 'key/with+odd?chars'
+  const s = stubCrm('hubspot', { acceptAnyKey: true, honestReads: 1, throwOnRead: `boom ${encodeURIComponent(odd)}` })
+  const e = await runCrmAcceptance({ provider: 'hubspot', key: odd, runId: 'r1', fetchImpl: s.f, now: new Date(0) })
+  assert.ok(!JSON.stringify(e).includes(encodeURIComponent(odd)) && !JSON.stringify(e).includes(odd))
 })
 
 test('config: refuses unless CRM_ACCEPTANCE=sandbox, a known provider and a sane key (pipedrive also needs its domain)', () => {
