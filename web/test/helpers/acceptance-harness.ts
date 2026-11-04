@@ -40,6 +40,8 @@ export interface Fixture {
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
   runBudget?: string                       // the job's stored run_budget JSON (as POST /api/scan stores it)
   searchStatus?: number                    // the search API answers every query with this HTTP status (a source/infrastructure failure)
+  fundedBy?: 'trial'                       // the job is a free-trial scan (funded_by = 'trial'; the caller sets the DAZL_TRIAL_* env)
+  model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
@@ -50,6 +52,7 @@ export async function runFixture(f: Fixture) {
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
   const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
   createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
+  if (f.fundedBy) db.prepare('UPDATE scan_jobs SET funded_by = ?').run(f.fundedBy)
   const job = claimKeyedJob(db)!
   await f.beforeRun?.(db)
   const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
@@ -75,7 +78,7 @@ export async function runFixture(f: Fixture) {
       complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => reply(p, maxTokens),
       // SYNTHETIC usage numbers (stub counts, not real tokens or charges): proves the usage path records what a provider reports.
       completeDetailed: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => ({ text: reply(p, maxTokens), model: 'stub-model-served', usage: { input_tokens: 1000, output_tokens: 100 } }),
-      configuredModel: () => 'stub-model-requested',
+      configuredModel: () => f.model ?? 'stub-model-requested',
     } as unknown as Provider,
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
