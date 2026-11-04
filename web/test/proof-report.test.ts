@@ -85,6 +85,22 @@ bothEngines('report: withdrawn and expired previews are named; malformed stored 
   if (ia?.status === 'issued') assert.equal((await readPublicClaim(db, master, ia.token, NOW)).status, 'expired', 'a quarantined lead withdraws the already-issued public link')
 })
 
+bothEngines('deploy: a snapshot issued before versioning still serves and reports as version 0', async ({ db }) => {
+  const a = await run(db, 'seller1', { leads: 1, spend: 0.2 })
+  const ia = await issue(db, a)
+  if (ia?.status !== 'issued') throw new Error('setup')
+  const row = await db.get<{ snapshot: string }>('SELECT snapshot FROM preview_claims WHERE id = ?', [ia.id])
+  const legacy = JSON.parse(row!.snapshot) as Record<string, unknown>
+  delete legacy.version
+  await db.run('UPDATE preview_claims SET snapshot = ? WHERE id = ?', [JSON.stringify(legacy), ia.id])
+  assert.equal((await readPublicClaim(db, master, ia.token, NOW)).status, 'ok', 'an existing live link keeps working after deploy')
+  const r = await proofReport(db, 'seller1', NOW)
+  assert.deepEqual([r.previews[0].state, r.previews[0].version, r.previews[0].companies], ['open', 0, 1])
+  // and a re-issue of the same proof under the new builder is a new version, never the legacy row reused
+  const again = await issue(db, a)
+  assert.ok(again?.status === 'issued' && !again.reused && again.id !== ia.id)
+})
+
 bothEngines('report: no query it runs ever selects the recipient email', async ({ db }) => {
   const a = await run(db, 'seller1', { leads: 1, spend: 0.2 })
   assert.equal((await issue(db, a))?.status, 'issued')
