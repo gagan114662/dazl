@@ -18,12 +18,17 @@ const LEAD = { company: 'Synthetic Co', name: 'Pat Example', contact: 'pat@synth
 const HS: CrmConfig = { provider: 'hubspot', key: 'synthetic' }, PD: CrmConfig = { provider: 'pipedrive', key: 'synthetic' }
 const res = (body: string | null, status = 200) => async () => new Response(body, { status })
 const json = (v: unknown, status = 200) => res(JSON.stringify(v), status)
-async function outcome(cfg: CrmConfig, f: (u: string) => Promise<Response>, lead: CrmLead = LEAD): Promise<string> {
+// a CRM that creates, then shows the record back on the read-back GET (#569)
+const created = (createBody: unknown, readBody: unknown, status = 201) => async (_u: string, init?: RequestInit) =>
+  (init?.method ?? 'GET') === 'POST' ? new Response(JSON.stringify(createBody), { status }) : new Response(JSON.stringify(readBody), { status: 200 })
+const HS_READ = { id: '1234', properties: { email: LEAD.contact, company: LEAD.company }, archived: false }
+const PD_READ = { success: true, data: { id: 5, name: LEAD.name, active_flag: true, email: [{ value: LEAD.contact, primary: true, label: 'work' }] } }
+async function outcome(cfg: CrmConfig, f: (u: string, init?: RequestInit) => Promise<Response>, lead: CrmLead = LEAD): Promise<string> {
   try { const r = await pushLead(cfg, lead, f as never); return `ok:${r.externalId}` } catch (e) { return e instanceof CrmPushError ? e.outcome : `plain:${(e as Error).message}` }
 }
 
 test('HubSpot: success needs a decimal-string contact id; anything else after a 2xx or a 5xx is unknown; a 4xx is failed', async () => {
-  assert.equal(await outcome(HS, json({ id: '1234' }, 201)), 'ok:1234')
+  assert.equal(await outcome(HS, created({ id: '1234' }, HS_READ)), 'ok:1234')
   for (const [why, f] of [['empty {}', json({})], ['empty body', res('')], ['malformed JSON', res('{"id": ')], ['null', res('null')], ['array', json([{ id: '1' }])],
     ['numeric id', json({ id: 1234 })], ['empty id', json({ id: '' })], ['non-decimal id', json({ id: 'abc' })], ['object id', json({ id: { v: '1' } })],
     ['500', json({ id: '1' }, 500)], ['503 empty', res('', 503)]] as const)
@@ -54,7 +59,7 @@ test('HubSpot 409: "already there" only when the named contact has the lead\'s e
 })
 
 test('Pipedrive: success needs success:true and a positive integer person id; an explicit success:false is failed', async () => {
-  assert.equal(await outcome(PD, json({ success: true, data: { id: 5 } }, 201)), 'ok:5')
+  assert.equal(await outcome(PD, created({ success: true, data: { id: 5 } }, PD_READ)), 'ok:5')
   for (const [why, f] of [['empty {}', json({})], ['empty body', res('')], ['malformed', res('{')], ['null', res('null')], ['success without data', json({ success: true })],
     ['string id', json({ success: true, data: { id: '5' } })], ['zero id', json({ success: true, data: { id: 0 } })], ['fractional id', json({ success: true, data: { id: 1.5 } })],
     ['no success flag', json({ data: { id: 5 } })], ['500', json({ success: true, data: { id: 5 } }, 500)]] as const)
@@ -77,6 +82,63 @@ test('#569 repro: an empty {} 200 is never "created"; a 409 naming no contact is
   const err = await pushLead(HS, LEAD, (async (u: RequestInfo | URL) => { calls.push(String(u)); return new Response('{}', { status: 409 }) }) as never).then(() => null, (e: unknown) => e)
   assert.ok(err instanceof CrmPushError && err.outcome === 'failed')
   assert.deepEqual(calls, ['https://api.hubapi.com/crm/v3/objects/contacts'])
+})
+
+// #569 (reopened): a 2xx create with a well-formed id is still not "created" until the provider, asked again, shows a
+// live record with that id holding this lead. Anything else is unknown (the record may exist), naming the id to check.
+test('#569 read-back: created only when the provider shows the record back with this lead; anything else is unknown', async () => {
+  const thrown = (code?: string) => Object.assign(new TypeError('fetch failed'), code ? { cause: { code } } : {})
+  const two = (cfg: CrmConfig, createBody: unknown, read: (() => Response) | Error) => {
+    const seen: { method: string; url: string; auth: string | null }[] = []
+    const f = async (u: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      seen.push({ method, url: String(u), auth: (init?.headers as Record<string, string> | undefined)?.authorization ?? null })
+      if (method === 'POST') return new Response(JSON.stringify(createBody), { status: 201 })
+      if (read instanceof Error) throw read
+      return read()
+    }
+    return { f, seen, cfg }
+  }
+  const body = (v: unknown, status = 200) => () => new Response(typeof v === 'string' ? v : JSON.stringify(v), { status })
+  // HubSpot: the read-back asks for the contact's email and company, with the same key
+  const good = two(HS, { id: '1234' }, body({ ...HS_READ, properties: { email: '  PAT@Synthetic.Example ', company: 'x' } }))
+  assert.equal(await outcome(HS, good.f), 'ok:1234')
+  assert.deepEqual(good.seen.map(s => [s.method, s.url]), [['POST', 'https://api.hubapi.com/crm/v3/objects/contacts'], ['GET', 'https://api.hubapi.com/crm/v3/objects/contacts/1234?properties=email,company']])
+  assert.equal(good.seen[1].auth, good.seen[0].auth)
+  const hsBad: [string, (() => Response) | Error][] = [
+    ['another email', body({ ...HS_READ, properties: { email: 'someone@else.example' } })], ['no properties', body({ id: '1234' })], ['email not a string', body({ id: '1234', properties: { email: ['pat@synthetic.example'] } })],
+    ['email null', body({ id: '1234', properties: { email: null } })], ['another id', body({ ...HS_READ, id: '1235' })], ['numeric id', body({ ...HS_READ, id: 1234 })], ['archived', body({ ...HS_READ, archived: true })],
+    ['404', body({ status: 'error', category: 'OBJECT_NOT_FOUND' }, 404)], ['410', body('', 410)], ['500', body('', 500)], ['429', body({ status: 'error' }, 429)], ['401', body({}, 401)],
+    ['malformed', body('{"id":')], ['null', body('null')], ['array', body([HS_READ])], ['empty body', body('')], ['huge junk', body('x'.repeat(200_000))], ['non-UTF8 bytes', () => new Response(new Uint8Array([0xff, 0xfe, 0x00, 0x7b]), { status: 200 })],
+    ['thrown, never connected', thrown('ECONNREFUSED')], ['thrown reset', thrown('ECONNRESET')], ['timeout', new DOMException('timed out', 'TimeoutError')],
+  ]
+  for (const [why, read] of hsBad) assert.equal(await outcome(HS, two(HS, { id: '1234' }, read).f), 'unknown', `HubSpot read-back ${why}`)
+  // the error names the record to check and never the key
+  const err = await pushLead({ provider: 'hubspot', key: 'secret-key-569' }, LEAD, two(HS, { id: '1234' }, body({ ...HS_READ, properties: { email: 'x@y.example' } })).f as never).catch((e: unknown) => e)
+  assert.ok(err instanceof CrmPushError && err.outcome === 'unknown' && err.externalId === '1234')
+  assert.match(err.message, /^HubSpot named contact 1234 but it does not hold this lead's email; the contact may or may not have been created$/)
+  // a lead with no email is matched on its company
+  const noEmail = { ...LEAD, contact: null }
+  assert.equal(await outcome(HS, two(HS, { id: '1234' }, body({ id: '1234', properties: { company: 'Synthetic Co' } })).f, noEmail), 'ok:1234')
+  assert.equal(await outcome(HS, two(HS, { id: '1234' }, body({ id: '1234', properties: { company: 'Other Co' } })).f, noEmail), 'unknown')
+  // Pipedrive: GET /v1/persons/<id>, live (active_flag true), holding the lead's email (array or primary_email)
+  const pgood = two(PD, { success: true, data: { id: 5 } }, body(PD_READ))
+  assert.equal(await outcome(PD, pgood.f), 'ok:5')
+  assert.match(pgood.seen[1].url, /^https:\/\/api\.pipedrive\.com\/v1\/persons\/5\?api_token=synthetic$/)
+  assert.equal(await outcome(PD, two(PD, { success: true, data: { id: 5 } }, body({ success: true, data: { id: 5, active_flag: true, email: [], primary_email: 'pat@synthetic.example' } })).f), 'ok:5')
+  const d = PD_READ.data
+  const pdBad: [string, (() => Response) | Error][] = [
+    ['soft-deleted', body({ success: true, data: { ...d, active_flag: false } })], ['no active_flag', body({ success: true, data: { id: 5, email: d.email } })], ['active_flag "true"', body({ success: true, data: { ...d, active_flag: 'true' } })],
+    ['success false', body({ success: false, data: d })], ['no success', body({ data: d })], ['string id', body({ success: true, data: { ...d, id: '5' } })], ['another id', body({ success: true, data: { ...d, id: 6 } })],
+    ['another email', body({ success: true, data: { ...d, email: [{ value: 'someone@else.example', primary: true }] } })], ['email entries malformed', body({ success: true, data: { ...d, email: [null, 7, { value: 5 }] } })], ['data null', body({ success: true, data: null })],
+    ['404', body({ success: false, error: 'Person not found' }, 404)], ['500', body('', 500)], ['malformed', body('{')], ['thrown', thrown('ENOTFOUND')],
+  ]
+  for (const [why, read] of pdBad) assert.equal(await outcome(PD, two(PD, { success: true, data: { id: 5 } }, read).f), 'unknown', `Pipedrive read-back ${why}`)
+  const perr = await pushLead({ provider: 'pipedrive', key: 'tok/569+?' }, LEAD, two(PD, { success: true, data: { id: 5 } }, body({}, 404)).f as never).catch((e: unknown) => e)
+  assert.ok(perr instanceof CrmPushError && perr.externalId === '5' && !perr.message.includes('tok') && !perr.message.includes(encodeURIComponent('tok/569+?')))
+  // a lead with no email is matched on its name
+  assert.equal(await outcome(PD, two(PD, { success: true, data: { id: 5 } }, body({ success: true, data: { id: 5, active_flag: true, name: 'Pat Example', email: [{ value: '', primary: true }] } })).f, noEmail), 'ok:5')
+  assert.equal(await outcome(PD, two(PD, { success: true, data: { id: 5 } }, body({ success: true, data: { id: 5, active_flag: true, name: 'Someone Else' } })).f, noEmail), 'unknown')
 })
 
 test('a thrown fetch is unknown, unless it says no connection was made', async () => {
@@ -106,7 +168,7 @@ test('route: truthful outcomes, audit rows, unknown blocks a blind retry until r
     '--test', './test/helpers/crm-route-runtime.mts'], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 13\b/)
+  assert.match(r.stdout, /# pass 14\b/)
   assert.match(r.stdout, /# fail 0\b/)
 })
 
