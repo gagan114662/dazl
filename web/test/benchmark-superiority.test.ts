@@ -250,3 +250,11 @@ test('CLI: the first look needs --new-ledger, a ledger is never reset, the look 
   writeFileSync(plan, '{"id": ')
   r = cli('--hash-only'); assert.equal(r.status, 2); assert.match(r.stderr, /not valid JSON/)
 })
+
+test('the committed plan template is a valid plan with the issue’s proposed targets, and is marked as a template', () => {
+  const raw = JSON.parse(readFileSync(new URL('../../scoreboard/benchmark/prereg/TEMPLATE.plan.json', import.meta.url), 'utf8')) as unknown
+  const plan = checkPrereg(raw)
+  assert.deepEqual([plan.precision_floor, plan.yield_advantage, plan.stop_rule.max_looks], [0.9, 1.25, 2])
+  assert.match(plan.id, /^TEMPLATE-/)
+  assert.match(plan.power_rationale, /^TEMPLATE, not a registered plan/)
+})
