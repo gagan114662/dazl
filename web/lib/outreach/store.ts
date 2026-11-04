@@ -117,6 +117,7 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
   addCol('outreach_messages', 'hold_reason', 'TEXT') // why a first-touch draft is held; NULL = never held by the scheduler (legacy/manual)
   addCol('outreach_messages', 'hold_until', 'INTEGER') // earliest retry time (unix seconds); NULL = no scheduler retry
+  addCol('outreach_messages', 'reply_checked_at', 'INTEGER') // #355: last time syncReplies read this thread without error (unix seconds); NULL = never
   addCol('outreach_messages', 'hold_policy', 'TEXT') // consent version the hold was recorded under; drain never acts on another version
   migrateLifecycle(db) // #417: conversion events stop queued acquisition work
   migrateOnboardingPolicy(db) // #417: the opted-in onboarding/customer-success policy gate for anything after conversion

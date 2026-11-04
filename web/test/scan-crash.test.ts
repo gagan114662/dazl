@@ -24,7 +24,11 @@ function capture(): { got: ErrorRecord[]; restore: () => void } {
   return { got, restore: setErrorSinks([r => got.push(r)]) }
 }
 
-test('legacy runner: a crashing scan job is marked failed (crashed) and an error record is written, with the alert hook called', async () => {
+// Both kickRunner paths: the in-process claimer (the default, 'scan-runner') and the shared work queue
+// (DAZL_SCAN_SHARED_QUEUE=1, #355; its crash path reports where 'queue-runner').
+for (const [flag, where] of [['', 'scan-runner'], ['1', 'queue-runner']] as const) test(`${flag === '' ? 'legacy runner (default)' : 'shared work queue (DAZL_SCAN_SHARED_QUEUE=1)'}: a crashing scan job is marked failed (crashed) and an error record is written, with the alert hook called`, async (t) => {
+  process.env.DAZL_SCAN_SHARED_QUEUE = flag
+  t.after(() => { delete process.env.DAZL_SCAN_SHARED_QUEUE })
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db)
   const master = randomBytes(32); saveKey(db, TA, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const id = createJob(db, TA, { business_name: 'Acme Roofing', industry: 'roofing', location: 'Toronto' })
@@ -42,7 +46,7 @@ test('legacy runner: a crashing scan job is marked failed (crashed) and an error
   const j = getJob(db, TA, id)!
   assert.deepEqual([j.status, j.error, j.claimed_at], ['failed', 'crashed', null])
   assert.equal(got.length, 1)
-  assert.deepEqual([got[0].source, got[0].where, got[0].tenant, got[0].ref], ['worker', 'scan-runner', TA, id])
+  assert.deepEqual([got[0].source, got[0].where, got[0].tenant, got[0].ref], ['worker', where, TA, id])
   assert.equal(got[0].error.message, 'clock broke for [email]')
   assert.equal(posted.length, 1)
   assert.equal(JSON.parse(posted[0]).fingerprint, got[0].fingerprint)
