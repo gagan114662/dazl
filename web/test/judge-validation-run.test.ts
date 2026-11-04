@@ -14,8 +14,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_THRESHOLDS, type JudgeCorpus } from '../lib/evals/judge.ts'
 import {
-  anthropicTransport, checkInputs, createMeter, fileLedger, parseMessageEnvelope, parseValidationArgs, planRun, readKeyFromEnv, reservationMicro, runValidation,
-  scanJudgeTemplate, servedMatches, FIXED, KEY_ENV, MAX_OUTPUT_TOKENS, MAX_RESPONSE_BYTES, MAX_RETRIES, RunStopped,
+  anthropicTransport, checkInputs, createMeter, fileLedger, hostClaimPath, parseMessageEnvelope, parseValidationArgs, planRun, readKeyFromEnv, readRunRecord, reservationMicro, runRecordPath, runValidation,
+  scanJudgeTemplate, servedMatches, APPROVAL, FIXED, KEY_ENV, MAX_OUTPUT_TOKENS, MAX_REFUSALS, MAX_RESPONSE_BYTES, MAX_RETRIES, RUN_RECORD_CONTRACT, RunStopped, VALIDATION_MODELS,
   type Ledger, type RunDeps, type TransportRequest, type TransportResponse,
 } from '../lib/evals/judge-validation-run.ts'
 import { claimCall, scanCall, scanJudgeTemplate as stubScanTemplate, STUB_MODELS } from './helpers/judge-stubs.ts'
@@ -28,7 +28,9 @@ const NOW = new Date('2026-11-04T12:00:00Z')
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const enc = (s: string) => new TextEncoder().encode(s)
 const tmp = () => mkdtempSync(join(tmpdir(), 'dazl-jv-'))
-const inputs = (stateDir: string, over: Record<string, unknown> = {}) => ({ runId: 'val-1', model: MODEL, capUsd: 3, fxCadPerUsd: 1.4, fxDate: '2026-11-03', feeRate: 0.13, stateDir, ...over })
+const FX_URL = 'https://www.bankofcanada.ca/rates/exchange/daily-exchange-rates/'
+const FEE_BASIS = 'Anthropic console invoice: 13% HST, card FX fee 0'
+const inputs = (stateDir: string, over: Record<string, unknown> = {}) => ({ runId: 'val-1', model: MODEL, capUsd: 3, fxCadPerUsd: 1.4, fxDate: '2026-11-03', fxSource: FX_URL, feeRate: 0.13, feeBasis: FEE_BASIS, stateDir, ...over })
 type Env = Record<string, unknown>
 const envelope = (text: string, over: Env = {}): Env => ({ id: 'msg_stub', type: 'message', role: 'assistant', model: MODEL, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 100, output_tokens: 5 }, ...over })
 const R = (o: unknown, status = 200): TransportResponse => ({ status, body: enc(JSON.stringify(o)) })
@@ -57,7 +59,7 @@ function stub(o: { model?: keyof typeof STUB_MODELS; override?: Override; ledger
   }
   return t
 }
-const deps = (t: { transport: RunDeps['transport'] }, over: Partial<RunDeps> = {}): RunDeps => ({ transport: t.transport, secrets: [KEY], corpus: CORPUS, now: () => NOW, ...over })
+const deps = (t: { transport: RunDeps['transport'] }, over: Partial<RunDeps> = {}): RunDeps => ({ transport: t.transport, secrets: [KEY], corpus: CORPUS, now: () => NOW, hostClaim: join(tmp(), 'host-claim'), ...over })
 const fileOf = (dir: string, ext: string) => { const f = readdirSync(join(dir, 'runs')).find(x => x.endsWith(ext)); return f ? readFileSync(join(dir, 'runs', f), 'utf8') : null }
 const PLAN = planRun(CORPUS, MODEL)
 const EXPECTED_CALLS = 2 * CORPUS.items.reduce((n, it) => n + 2 + (it.sources.length > 1 ? 1 : 0), 0)
@@ -104,7 +106,17 @@ test('one stubbed run: every planned call reserved and persisted first, both jud
     assert.equal(x.outcome, 'ok'); assert.equal(x.billing, 'settled'); assert.equal(x.request_sent, true)
     assert.equal(x.requested_model, MODEL); assert.equal(x.served_model, MODEL)
     assert.ok(x.settled_micro! <= x.reserved_micro)
+    assert.equal(x.stop_reason, 'end_turn')
   })
+  assert.deepEqual([a.totals.refusals, a.totals.max_tokens], [0, 0])
+  // Item 1: the approval is the owner's own messages, never a comment URL. Item 5: the dated BoC rate and fee basis.
+  assert.equal(a.approval, APPROVAL); assert.match(a.approval, /Gagan, WhatsApp messages 2026-11-03 19:52 and 19:53 ET: ONE .* hard CAD 5/)
+  assert.doesNotMatch(a.approval, /https?:|github|issuecomment|#\d/)
+  assert.equal('approved_rerun' in a, false)
+  assert.deepEqual(a.cap.fx, { source: 'Bank of Canada', cad_per_usd: 1.4, date: '2026-11-03', url: FX_URL })
+  assert.deepEqual(a.cap.fee, { rate: 0.13, basis: FEE_BASIS })
+  assert.equal(a.run_guard.state_dir, dir); assert.equal(a.run_guard.committed_record, 'lib/evals/judge-validation-runs.json'); assert.equal(a.run_guard.max_refusals, MAX_REFUSALS)
+  assert.ok(a.limits.some(l => /refused item .* counts as unknown \(abstain/.test(l)), 'refusals count as unknown/abstain')
   assert.ok(a.totals.committed_usd <= a.cap.usd && a.totals.committed_usd === a.totals.settled_usd)
   for (const judge of ['claim_support', 'scan_verification_judge'] as const) {
     assert.equal(a.results[judge].calibration.report!.split, 'calibration'); assert.equal(a.results[judge].holdout.report!.split, 'holdout')
@@ -112,7 +124,7 @@ test('one stubbed run: every planned call reserved and persisted first, both jud
     assert.match(a.results[judge].holdout.note!, /reported separately/)
   }
   assert.equal(a.corpus.hash, a.results.claim_support.calibration.report!.corpus.hash); assert.equal(a.corpus.origin, 'synthetic')
-  assert.deepEqual(Object.keys(a.code).sort(), ['lib/evals/judge-validation-run.ts', 'lib/evals/judge.ts', 'lib/llm/spend-guard.ts', 'lib/scan/runner.ts', 'scripts/judge-validation-run.mts', 'test/fixtures/evals/judges/corpus.synthetic.json'])
+  assert.deepEqual(Object.keys(a.code).sort(), ['lib/evals/judge-validation-run.ts', 'lib/evals/judge-validation-runs.json', 'lib/evals/judge.ts', 'lib/llm/spend-guard.ts', 'lib/scan/runner.ts', 'scripts/judge-validation-run.mts', 'test/fixtures/evals/judges/corpus.synthetic.json'])
   assert.ok(Object.values(a.code).every(h => /^[0-9a-f]{64}$/.test(h)))
   assert.equal(a.fixed_before_run.thresholds_sha256, sha(JSON.stringify(DEFAULT_THRESHOLDS)))
   assert.ok(a.limits.some(l => /no live-web accuracy claim/.test(l)))
@@ -141,19 +153,29 @@ test('inputs are explicit and fail closed: no default cap, model, run id, FX or 
     ['no cap', { capUsd: undefined }], ['cap string', { capUsd: '3' }], ['cap NaN', { capUsd: NaN }], ['cap Infinity', { capUsd: Infinity }], ['cap negative', { capUsd: -1 }],
     ['cap zero', { capUsd: 0 }], ['cap null', { capUsd: null }], ['cap bool', { capUsd: true }], ['cap list', { capUsd: [3] }],
     ['no model', { model: undefined }], ['empty model', { model: '' }], ['model number', { model: 4 }], ['unpriced model', { model: 'gpt-4.1' }], ['look-alike model', { model: 'claude-sonnet-4-5-evil' }],
+    ['model null', { model: null }], ['model list', { model: [MODEL] }], ['model snapshot id (not the reviewed alias)', { model: `${MODEL}-20250929` }], ['other priced-looking model', { model: 'claude-opus-4-1' }],
     ['no run id', { runId: undefined }], ['path run id', { runId: '../x' }], ['short run id', { runId: 'a' }], ['long run id', { runId: 'x'.repeat(65) }], ['run id number', { runId: 5 }],
     ['no fx', { fxCadPerUsd: undefined }], ['fx string', { fxCadPerUsd: '1.4' }], ['fx implausible low', { fxCadPerUsd: 0.7 }], ['fx implausible high', { fxCadPerUsd: 3 }],
     ['no fx date', { fxDate: undefined }], ['bad fx date', { fxDate: '2026-13-01' }], ['impossible fx date', { fxDate: '2026-02-30' }], ['future fx date', { fxDate: '2026-12-01' }], ['stale fx date', { fxDate: '2026-10-01' }], ['fx date number', { fxDate: 20261103 }],
     ['no fee', { feeRate: undefined }], ['fee negative', { feeRate: -0.1 }], ['fee huge', { feeRate: 0.6 }], ['fee string', { feeRate: '0.13' }],
+    ['no fx source', { fxSource: undefined }], ['fx source empty', { fxSource: '' }], ['fx source not the Bank of Canada', { fxSource: 'https://www.xe.com/currencyconverter/' }],
+    ['fx source look-alike host', { fxSource: 'https://www.bankofcanada.ca.evil.example/x' }], ['fx source http', { fxSource: 'http://www.bankofcanada.ca/rates/' }],
+    ['fx source with whitespace', { fxSource: `${FX_URL} x` }], ['fx source number', { fxSource: 1.4 }], ['fx source list', { fxSource: [FX_URL] }], ['fx source huge', { fxSource: `${FX_URL}${'x'.repeat(400)}` }],
+    ['no fee basis', { feeBasis: undefined }], ['fee basis empty', { feeBasis: '' }], ['fee basis control chars', { feeBasis: 'HST\n13%' }], ['fee basis non-ASCII', { feeBasis: 'HST 13 % \u202e' }],
+    ['fee basis object', { feeBasis: { hst: 0.13 } }], ['fee basis null', { feeBasis: null }], ['fee basis huge', { feeBasis: 'x'.repeat(301) }],
     ['tuning input', { thresholds: { ...DEFAULT_THRESHOLDS, max_fp_rate: 1 } }], ['repeats input', { repeats: 1 }],
-    ['rerun approval not a url', { approvedRerun: 'yes' }], ['no state dir', { stateDir: '' }],
+    ['rerun approval input (no rerun path)', { approvedRerun: 'https://github.com/gagan114662/dazl/issues/396#issuecomment-123456' }], ['rerun input', { rerun: true }], ['force input', { force: true }],
+    ['no state dir', { stateDir: '' }], ['state dir missing', { stateDir: undefined }], ['relative state dir', { stateDir: 'state' }], ['state dir number', { stateDir: 7 }], ['state dir with NUL', { stateDir: '/tmp/a\0b' }],
     ['over the CAD approval', { capUsd: 3.2 }], // 3.2 x 1.4 x 1.13 = 5.06 CAD
   ]
   for (const [name, over] of bad) {
-    const t = stub(), r = await runValidation({ ...inputs(dir), ...over }, deps(t))
+    const host = join(tmp(), 'host-claim')
+    const t = stub(), r = await runValidation({ ...inputs(dir), ...over }, deps(t, { hostClaim: host }))
     assert.equal(r.status, 'refused', name); assert.equal(t.requests, 0, name)
+    assert.equal(existsSync(host), false, `${name}: a refused input claims nothing`)
   }
   assert.equal(existsSync(join(dir, 'runs')), false, 'a refused run claims nothing')
+  assert.deepEqual(VALIDATION_MODELS, ['claude-sonnet-4-5'])
   assert.deepEqual(checkInputs(inputs(dir, { capUsd: 4, fxCadPerUsd: 1.25, feeRate: 0 }), NOW), [], 'exactly CAD 5 is within the approval')
   assert.equal((await runValidation(inputs(dir), deps(stub(), { secrets: [] }))).status, 'refused', 'no key, no run')
   assert.equal((await runValidation(null, deps(stub()))).status, 'refused')
@@ -236,6 +258,14 @@ const ADVERSARIAL: [string, Override, string][] = [
   ['role is user', (_n, _r, t) => R(envelope(t, { role: 'user' })), 'invalid_response'],
   ['id is missing', (_n, _r, t) => R(envelope(t, { id: undefined })), 'invalid_response'],
   ['stop_reason is unknown', (_n, _r, t) => R(envelope(t, { stop_reason: 'tool_use' })), 'invalid_response'],
+  ['stop_reason is missing', (_n, _r, t) => R(envelope(t, { stop_reason: undefined })), 'invalid_response'],
+  ['stop_reason is null', (_n, _r, t) => R(envelope(t, { stop_reason: null })), 'invalid_response'],
+  ['stop_reason is empty', (_n, _r, t) => R(envelope(t, { stop_reason: '' })), 'invalid_response'],
+  ['stop_reason is a number', (_n, _r, t) => R(envelope(t, { stop_reason: 1 })), 'invalid_response'],
+  ['stop_reason is a list', (_n, _r, t) => R(envelope(t, { stop_reason: ['refusal'] })), 'invalid_response'],
+  ['stop_reason is an object', (_n, _r, t) => R(envelope(t, { stop_reason: { reason: 'refusal' } })), 'invalid_response'],
+  ['stop_reason is upper case', (_n, _r, t) => R(envelope(t, { stop_reason: 'REFUSAL' })), 'invalid_response'],
+  ['stop_reason is pause_turn', (_n, _r, t) => R(envelope(t, { stop_reason: 'pause_turn' })), 'invalid_response'],
   ['extra top-level key (an action)', (_n, _r, t) => R(envelope(t, { send_email: 'founders@x.example' })), 'invalid_response'],
   ['extra key named like the key', (_n, _r, t) => R(envelope(t, { [KEY]: 1 })), 'invalid_response'],
   ['extra content-block key', (_n, _r, t) => R(envelope(t, { content: [{ type: 'text', text: t, tool: 'send' }] })), 'invalid_response'],
@@ -289,6 +319,8 @@ for (const [name, override, outcome] of ADVERSARIAL) {
     const a = r.artifact, x = a.attempts[0]
     assert.equal(a.stop!.reason, outcome); assert.equal(x.outcome, outcome); assert.equal(a.results_valid, false)
     assert.equal(x.request_sent, true)
+    if (outcome === 'invalid_response' || outcome === 'http_error' || outcome === 'network_error') assert.equal(x.stop_reason, null, 'no stop_reason without a well-formed answer')
+    assert.deepEqual([a.totals.refusals, a.totals.max_tokens], [0, 0])
     if (outcome === 'over_reservation') { assert.equal(x.billing, 'settled'); assert.ok(x.settled_micro! > x.reserved_micro); assert.equal(a.totals.committed_usd, x.settled_micro! / 1e6) }
     else { assert.equal(x.billing, 'unknown'); assert.equal(a.totals.committed_usd, x.reserved_micro / 1e6, 'unknown billing keeps the whole reservation') }
     assert.equal(a.attempts.length, 1); assert.ok(a.totals.refused_after_stop > 0)
@@ -358,29 +390,57 @@ test('persistence failures fail closed: no request without a persisted reservati
   assert.equal(String(r3.status), 'completed'); if (r3.status !== 'refused') assert.match(r3.artifact_error!, /non-Error/)
 })
 
-test('one run per approval: any earlier run refuses a new one (same id, new id, crashed run) unless a separate approval is supplied once', async () => {
-  const dir = tmp()
-  assert.equal((await runValidation(inputs(dir), deps(stub()))).status, 'completed')
-  for (const over of [{}, { runId: 'val-2' }, { runId: 'val-2', approvedRerun: 'https://example.com/ok' }]) {
-    const t = stub(), r = await runValidation(inputs(dir, over), deps(t))
-    assert.equal(r.status, 'refused', JSON.stringify(over)); assert.equal(t.requests, 0)
+test('one run, ever: no rerun path; the state dir, a host claim outside it and the committed record each refuse a second run', async () => {
+  const dir = tmp(), host = join(tmp(), 'host-claim')
+  const first = await runValidation(inputs(dir), deps(stub(), { hostClaim: host }))
+  assert.equal(String(first.status), 'completed')
+  assert.equal(JSON.parse(readFileSync(host, 'utf8')).run_id, 'val-1', 'the host claim records the first run outside the state dir')
+  const refusedWith = async (inp: Record<string, unknown>, over: Partial<RunDeps>, re: RegExp, name: string) => {
+    const t = stub(), r = await runValidation(inp, deps(t, over))
+    assert.equal(r.status, 'refused', name); assert.equal(t.requests, 0, name); assert.match(r.problems.join(), re, name)
   }
-  const approval = 'https://github.com/gagan114662/dazl/issues/396#issuecomment-123456'
-  assert.equal((await runValidation(inputs(dir, { approvedRerun: approval }), deps(stub()))).status, 'refused', 'a rerun still needs a new run id')
-  const ok = await runValidation(inputs(dir, { runId: 'val-2', approvedRerun: approval }), deps(stub()))
-  assert.equal(String(ok.status), 'completed')
-  if (ok.status !== 'refused') assert.equal(ok.artifact.approved_rerun, approval)
-  const again = await runValidation(inputs(dir, { runId: 'val-3', approvedRerun: approval }), deps(stub()))
-  assert.equal(again.status, 'refused'); assert.match(again.problems.join(), /already used/)
-  const crashed = tmp(); mkdirSync(join(crashed, 'runs'), { recursive: true })
-  writeFileSync(join(crashed, 'runs', 'old.run.json'), JSON.stringify({ run_id: 'old', status: 'started', started_at: 'x', approved_rerun: null }))
-  writeFileSync(join(crashed, 'runs', 'junk.run.json'), '{not json')
-  const r = await runValidation(inputs(crashed), deps(stub()))
-  assert.equal(r.status, 'refused'); assert.match(r.problems.join(), /old:started/)
-  // A claimed approval with no run file (another process mid-start, or a start that failed): refused, nothing sent.
-  const racing = tmp(); mkdirSync(join(racing, 'runs'), { recursive: true }); writeFileSync(join(racing, 'runs', 'initial.approval'), 'other')
-  const t = stub(), r2 = await runValidation(inputs(racing), deps(t))
-  assert.equal(r2.status, 'refused'); assert.match(r2.problems.join(), /approval is already claimed/); assert.equal(t.requests, 0)
+  // Same state dir, any id: refused (even with a fresh host claim path).
+  for (const runId of ['val-1', 'val-2']) await refusedWith(inputs(dir, { runId }), {}, /earlier validation run exists .*no rerun/, `same dir ${runId}`)
+  // State reset: a new, empty state dir on the same host is refused by the host claim.
+  await refusedWith(inputs(tmp(), { runId: 'val-2' }), { hostClaim: host }, /host already claimed .*no rerun/, 'fresh state dir')
+  // The old rerun approval is now an unknown input: refused like any other, with or without a fresh dir and host.
+  await refusedWith(inputs(tmp(), { runId: 'val-2', approvedRerun: 'https://github.com/gagan114662/dazl/issues/396#issuecomment-123456' }), {}, /unknown input\(s\): approvedRerun/, 'approvedRerun')
+  // Another machine (fresh dir, fresh host) once the run is committed to the record: refused in every checkout.
+  const rec = join(tmp(), 'runs.json')
+  writeFileSync(rec, JSON.stringify({ contract: RUN_RECORD_CONTRACT, runs: [{ run_id: 'val-1', started_at: NOW.toISOString(), artifact_sha256: 'a'.repeat(64) }] }))
+  const otherHost = join(tmp(), 'host-claim')
+  await refusedWith(inputs(tmp(), { runId: 'val-9' }), { runRecord: rec, hostClaim: otherHost }, /committed record .* lists 1 run.*no rerun/, 'committed record')
+  assert.equal(existsSync(otherHost), false, 'the committed record is checked before anything is claimed')
+  // A missing or malformed committed record fails closed, before anything is claimed.
+  for (const [name, text] of [['missing', null], ['not JSON', '{x'], ['null', 'null'], ['list', '[]'], ['wrong contract', JSON.stringify({ contract: 'x', runs: [] })],
+    ['runs not a list', JSON.stringify({ contract: RUN_RECORD_CONTRACT, runs: {} })], ['runs null', JSON.stringify({ contract: RUN_RECORD_CONTRACT, runs: null })],
+    ['extra key (an override)', JSON.stringify({ contract: RUN_RECORD_CONTRACT, runs: [], allow_rerun: true })]] as const) {
+    const f = join(tmp(), 'runs.json'); if (text !== null) writeFileSync(f, text)
+    const h = join(tmp(), 'host-claim')
+    await refusedWith(inputs(tmp(), { runId: 'val-9' }), { runRecord: f, hostClaim: h }, /committed run record/, `record ${name}`)
+    assert.equal(existsSync(h), false, `record ${name}: nothing claimed`)
+  }
+  // A crashed run (started marker), an unreadable or non-object marker, or a leftover approval claim: refused, nothing sent.
+  for (const [name, file, text] of [['crashed', 'old.run.json', JSON.stringify({ run_id: 'old', status: 'started', started_at: 'x' })], ['junk marker', 'junk.run.json', '{not json'],
+    ['null marker', 'n.run.json', 'null'], ['number marker', 'k.run.json', '7'], ['approval claim only', 'initial.approval', 'other'], ['a ledger only', 'x.ledger.jsonl', '']] as const) {
+    const d = tmp(); mkdirSync(join(d, 'runs'), { recursive: true }); writeFileSync(join(d, 'runs', file), text)
+    await refusedWith(inputs(d), {}, /earlier validation run exists|already holds run files/, name)
+  }
+  // Two runs racing on one host: exactly one gets the claim.
+  const raceHost = join(tmp(), 'host-claim'), ta = stub(), tb = stub()
+  const [ra, rb] = await Promise.all([runValidation(inputs(tmp(), { runId: 'race-a' }), deps(ta, { hostClaim: raceHost })), runValidation(inputs(tmp(), { runId: 'race-b' }), deps(tb, { hostClaim: raceHost }))])
+  assert.deepEqual([ra.status, rb.status].sort(), ['completed', 'refused']); assert.equal(Math.min(ta.requests, tb.requests), 0)
+})
+
+test('the committed run record is valid and empty, the host claim is outside any state dir, and nothing else (env, flag, file) is read', () => {
+  const rec = readRunRecord(runRecordPath())
+  assert.ok(!('problem' in rec), JSON.stringify(rec)); if (!('problem' in rec)) assert.deepEqual(rec.runs, [], 'no run has been made')
+  assert.match(hostClaimPath(), /[\\/]\.dazl[\\/]judge-validation\.host-claim$/)
+  const lib = readFileSync(new URL('lib/evals/judge-validation-run.ts', WEB), 'utf8'), cliSrc = readFileSync(new URL('scripts/judge-validation-run.mts', WEB), 'utf8')
+  assert.doesNotMatch(lib, /process\.env|approved_rerun|RERUN_APPROVAL|defaultStateDir|--approved-rerun/, 'the library reads no env var and has no rerun or default-state-dir path')
+  assert.deepEqual([...cliSrc.matchAll(/process\.env/g)].length, 1, 'the CLI hands process.env to readKeyFromEnv only')
+  assert.match(cliSrc, /readKeyFromEnv\(process\.env\)/)
+  assert.doesNotMatch(cliSrc, /hostClaim|runRecord/, 'the CLI cannot move the run-once records')
 })
 
 test('a refusal from the model is a billed, well-formed answer: recorded and settled, read by the judge as unknown, the run goes on', async () => {
@@ -390,9 +450,39 @@ test('a refusal from the model is a billed, well-formed answer: recorded and set
   const r = await runValidation(inputs(tmp()), deps(t))
   assert.equal(String(r.status), 'completed')
   if (r.status === 'refused') return
-  assert.deepEqual([r.artifact.attempts[0].outcome, r.artifact.attempts[0].billing], ['ok', 'settled'])
+  assert.deepEqual([r.artifact.attempts[0].outcome, r.artifact.attempts[0].billing, r.artifact.attempts[0].stop_reason], ['ok', 'settled', 'refusal'])
+  assert.deepEqual([r.artifact.totals.refusals, r.artifact.totals.max_tokens], [1, 0])
   const first = r.artifact.attempts[0].item!
   assert.equal(r.artifact.results.claim_support.calibration.report!.outcomes[first], 'unknown')
+  assert.ok(r.artifact.limits.some(l => /1 refusal\(s\) here/.test(l)))
+})
+
+test('refusal limit: up to MAX_REFUSALS refusals complete; the next one stops the run as failed, settled and recorded', async () => {
+  assert.equal(MAX_REFUSALS, 9)
+  const refuse = () => R(envelope('', { content: [], stop_reason: 'refusal', usage: { input_tokens: 50, output_tokens: 0 } }))
+  const ok = await runValidation(inputs(tmp()), deps(stub({ override: n => (n <= MAX_REFUSALS ? refuse() : undefined) })))
+  assert.equal(String(ok.status), 'completed')
+  if (ok.status !== 'refused') assert.equal(ok.artifact.totals.refusals, MAX_REFUSALS)
+  const dir = tmp(), t = stub({ override: n => (n <= MAX_REFUSALS + 1 ? refuse() : undefined) })
+  const r = await runValidation(inputs(dir), deps(t))
+  assert.equal(String(r.status), 'failed')
+  if (r.status === 'refused') return
+  assert.equal(t.requests, MAX_REFUSALS + 1, 'nothing is sent after the limit')
+  const last = r.artifact.attempts.at(-1)!
+  assert.deepEqual([r.artifact.stop!.reason, last.outcome, last.stop_reason, last.billing], ['refusal_limit', 'refusal_limit', 'refusal', 'settled'])
+  assert.equal(r.artifact.totals.refusals, MAX_REFUSALS + 1); assert.equal(r.artifact.results_valid, false)
+  assert.equal(r.artifact.totals.committed_usd, r.artifact.totals.settled_usd, 'refusals are billed and settled, not unknown')
+  assert.ok(fileOf(dir, '.ledger.jsonl')!.includes('"reason":"refusal_limit"') || fileOf(dir, '.ledger.jsonl')!.includes('"outcome":"refusal_limit"'))
+  assert.equal(JSON.parse(fileOf(dir, '.run.json')!).status, 'failed')
+})
+
+test('max_tokens stops are recorded per attempt and counted; the cut answer is parsed as given (unknown when no verdict)', async () => {
+  const t = stub({ override: (n, _r, text) => (n === 1 ? R(envelope(text.slice(0, 3), { stop_reason: 'max_tokens' })) : undefined) })
+  const r = await runValidation(inputs(tmp()), deps(t))
+  assert.equal(String(r.status), 'completed')
+  if (r.status === 'refused') return
+  assert.equal(r.artifact.attempts[0].stop_reason, 'max_tokens'); assert.deepEqual([r.artifact.totals.max_tokens, r.artifact.totals.refusals], [1, 0])
+  assert.equal(r.artifact.results.claim_support.calibration.report!.outcomes[r.artifact.attempts[0].item!], 'unknown')
 })
 
 test('served-model rules: the dated snapshot of the requested alias is the same model; anything else is a mismatch', () => {
@@ -427,12 +517,18 @@ test('the Anthropic transport: one fetch, the explicit model and max_tokens, the
 const cli = (args: string[]) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/judge-validation-run.mts', ...args], { cwd: fileURLToPath(WEB), encoding: 'utf8', env: { ...process.env, [KEY_ENV]: KEY }, timeout: 60_000 })
 test('the command line: plan-only by default, every input required, the paid path refuses without a key', () => {
   const dir = tmp(), today = new Date().toISOString().slice(0, 10)
-  const full = ['--run-id', 'cli-1', '--model', MODEL, '--cap-usd', '3', '--fx-cad-per-usd', '1.4', '--fx-date', today, '--fee-rate', '0.13', '--state-dir', dir]
+  const full = ['--run-id', 'cli-1', '--model', MODEL, '--cap-usd', '3', '--fx-cad-per-usd', '1.4', '--fx-date', today, '--fx-source', FX_URL, '--fee-rate', '0.13', '--fee-basis', FEE_BASIS, '--state-dir', dir]
+  const without = (flag: string) => { const k = full.indexOf(flag); return full.filter((_, j) => j !== k && j !== k + 1) }
   const none = cli([]); assert.equal(none.status, 2); assert.match(none.stderr, /REFUSED/)
-  const noCap = cli(full.filter((_, k) => k !== 4 && k !== 5)); assert.equal(noCap.status, 2); assert.match(noCap.stderr, /capUsd is required/)
+  const noCap = cli(without('--cap-usd')); assert.equal(noCap.status, 2); assert.match(noCap.stderr, /capUsd is required/)
+  for (const [flag, re] of [['--model', /model is required/], ['--state-dir', /stateDir is required/], ['--fx-source', /fxSource is required/], ['--fee-basis', /feeBasis is required/]] as const) {
+    const r = cli(without(flag)); assert.equal(r.status, 2, flag); assert.match(r.stderr, re, flag)
+  }
+  const relDir = cli([...without('--state-dir'), '--state-dir', 'relative/dir']); assert.equal(relDir.status, 2); assert.match(relDir.stderr, /absolute/)
+  const rerun = cli([...full, '--approved-rerun', 'https://github.com/gagan114662/dazl/issues/396#issuecomment-1']); assert.equal(rerun.status, 2); assert.match(rerun.stderr, /unknown argument "--approved-rerun"/)
   const badCap = cli(full.map(x => (x === '3' ? '3usd' : x))); assert.equal(badCap.status, 2)
   const tune = cli([...full, '--max-fp-rate', '1']); assert.equal(tune.status, 2); assert.match(tune.stderr, /unknown argument/)
-  const plan = cli(full); assert.equal(plan.status, 0, plan.stderr); assert.match(plan.stdout, /188 calls, worst case/); assert.match(plan.stdout, /plan only: no key read, no request made/)
+  const plan = cli(full); assert.equal(plan.status, 0, plan.stderr); assert.match(plan.stdout, /188 calls, worst case/); assert.match(plan.stdout, /Bank of Canada/); assert.match(plan.stdout, /plan only: no key read, no request made/)
   assert.equal(existsSync(join(dir, 'runs')), false, 'plan only claims no run')
   // The net fence clears *KEY* variables, so --execute here has no key: it must refuse with nothing sent.
   const exec = cli([...full, '--execute']); assert.equal(exec.status, 2); assert.match(exec.stderr, new RegExp(`${KEY_ENV} is not set`))

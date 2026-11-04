@@ -238,15 +238,23 @@ a lead it calls `contradicts`. It has no send or tool authority.
 - No real model has been calibrated. That needs a provider adapter, a key and a paid budget, so it is the owner's call.
 - The real-model run is built but has not run (`lib/evals/judge-validation-run.ts`, `scripts/judge-validation-run.mts`).
   It is separate from the stub harness above, which never loads it. One run covers both judges on both splits; the
-  thresholds, repeats and output limits are fixed in code. The run needs an explicit run id, model, USD cap, dated FX
-  rate and fee rate. The caps CAD equivalent must fit the owners CAD 5 approval. The key is read from
-  `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY` only.
+  thresholds, repeats and output limits are fixed in code. The run needs an explicit run id, model (named by the owner
+  at run time; only `claude-sonnet-4-5` is priced), USD cap, the dated Bank of Canada USD/CAD rate with its
+  bankofcanada.ca source URL, and the billing account's fee/tax rate with its stated basis. All of these are recorded in
+  the artifact. The cap's CAD equivalent must fit the owner's approval: Gagan's WhatsApp messages of 2026-11-03 (19:52
+  and 19:53 ET), ONE run, hard CAD 5 total. The key is read from `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY` only.
   - Before each request, the worst case is reserved and persisted.
   - There are no retries. Any timeout, unknown bill, invalid response, model mismatch or failed accounting stops the run
     as failed.
-  - Any earlier run blocks another one unless that rerun has its own approval.
-  - The result is a redacted local artifact, kept under `~/.dazl/judge-validation`. It makes no live-web claim and does
-    not update the lock.
+  - Each attempt records the model's `stop_reason`; the totals count refusals and max_tokens stops. A refused item has
+    no verdict and counts as unknown (abstain). More than `MAX_REFUSALS` (9) refusals stop the run as failed.
+  - One run, ever. There is no rerun path: no flag, env var or file authorizes a second run. The run is recorded in
+    three places, and any one refuses another run: the explicit `--state-dir` (required, absolute, no default), a host
+    claim outside it (`~/.dazl/judge-validation.host-claim`), and the committed record
+    `web/lib/evals/judge-validation-runs.json`. After the owner run, commit its record (run id, start time, artifact
+    sha256) to that file. That blocks every checkout, so a second run needs a code change and a new review. Until the
+    record is committed, a run on another machine with another state dir and host is not blocked by code.
+  - The result is a redacted local artifact under the state dir. It makes no live-web claim and does not update the lock.
   The scan judge also runs on each tenant's own provider and model, so no single calibration covers it.
 - The scan does not consult `judgeGate` yet. Doing so would change lead scoring for every tenant whose judge is
   uncalibrated, which is all of them today.

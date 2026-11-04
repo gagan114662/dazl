@@ -17,14 +17,22 @@
 //    response, a served model that is not the requested one, invalid usage, a cost over the reservation, or a settle that
 //    cannot be persisted stops the run as FAILED. Every such attempt is recorded, and when its bill is unknown its full
 //    reservation stays counted as spent. Nothing after a stop is sent.
-//  - One run per approval: a run id is claimed with an exclusive file in the state directory, and any earlier run (any id,
-//    any outcome, including one that crashed) refuses a new run unless a separate approval reference is supplied.
+//  - One run, ever, for this approval. There is no rerun path: no input, flag, env var or file authorizes a second run.
+//    A second run needs a code change (RUN_RECORD below) and a new review. The run is recorded in three places, and any
+//    one of them refuses a new run: (1) the committed record lib/evals/judge-validation-runs.json, which lists the run
+//    once its record is committed and is checked in every checkout; (2) a host claim outside the state directory
+//    (~/.dazl/judge-validation.host-claim), so a new or deleted state directory on this machine does not reset the
+//    guard; (3) the exclusive approval claim and run marker in the explicit, required state directory.
+//  - Model refusals and max_tokens stops are recorded per attempt (stop_reason) and counted. A refused item has no
+//    verdict and counts as unknown (an abstain, never a pass). More than MAX_REFUSALS refusals stop the run as FAILED, so
+//    systematic refusal cannot spend the budget on a non-result.
 //  - The artifact reports calibration and holdout separately, per judge, with corpus and code hashes, every attempt, and
 //    reserved/settled costs. It is a synthetic-fixture result: it makes no live-web accuracy claim and updates no lock.
 import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import {
   calibrate, checkCorpus, claimJudge, corpusHash, judgeFingerprint, judgePrompt, scanJudge, DEFAULT_THRESHOLDS,
   type CalibrationReport, type JudgeAdapter, type JudgeCorpus, type JudgeItem, type JudgeQuestion, type JudgeSource, type JudgeSpec, type Split,
@@ -34,9 +42,16 @@ import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, priceOf } f
 import type { Provider } from '../llm/provider.ts'
 
 export const VALIDATION_CONTRACT = 'dazl.judge-validation/1'
-// The owner's approval (issue #396, 2026-11-04T00:39:47Z): one paid judge-validation run, CAD $5 total.
+// The owner's approval: Gagan's own WhatsApp messages of 2026-11-03, 19:52 and 19:53 ET. ONE paid judge-validation
+// run, hard CAD 5 total. A GitHub comment is not the authority and is not cited here.
 export const APPROVED_CAD = 5
-export const APPROVAL = 'gagan114662/dazl#396 owner decision 2026-11-04T00:39:47Z: one paid judge-validation run, CAD $5 total'
+export const APPROVAL = 'owner approval: Gagan, WhatsApp messages 2026-11-03 19:52 and 19:53 ET: ONE paid judge-validation run, hard CAD 5 total'
+// The only model this run may use: the one model with a listed price (lib/llm/spend-guard.ts). The owner names it at run
+// time (--model); there is no default. A model added to the price table later is still refused here until reviewed.
+export const VALIDATION_MODELS: readonly string[] = Object.freeze(['claude-sonnet-4-5'])
+// Refusals: a refused item has no verdict (unknown). The run stops as FAILED on the refusal that takes the count over
+// this limit (about 5% of the 188 planned calls), so systematic refusal cannot spend the budget on a non-result.
+export const MAX_REFUSALS = 9
 export const JUDGE_IDS = ['claim_support', 'scan_verification_judge'] as const
 export type JudgeId = typeof JUDGE_IDS[number]
 export const SPLITS: readonly Split[] = ['calibration', 'holdout']
@@ -53,7 +68,15 @@ export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages'
 export const FX_CAD_PER_USD_RANGE = Object.freeze({ min: 1, max: 2 })
 export const FX_MAX_AGE_DAYS = 7
 export const MAX_FEE_RATE = 0.5
-export const defaultStateDir = (): string => join(homedir(), '.dazl', 'judge-validation')
+// The FX rate must be the Bank of Canada's dated USD/CAD rate: its source is a bankofcanada.ca URL, recorded in the artifact.
+export const FX_SOURCE_RE = /^https:\/\/www\.bankofcanada\.ca\/[\x21-\x7e]{1,300}$/
+// The billing account's fee/tax figure: a stated basis (for example "Anthropic console invoice: 13% HST, card FX fee
+// 2.5%"), recorded in the artifact next to the rate.
+export const FEE_BASIS_RE = /^[\x20-\x7e]{3,300}$/
+// Run-once records outside the state directory (see the header). Neither is an input: only a code change moves them.
+export const RUN_RECORD_FILE = 'lib/evals/judge-validation-runs.json'
+export const RUN_RECORD_CONTRACT = 'dazl.judge-validation-runs/1'
+export const hostClaimPath = (): string => join(homedir(), '.dazl', 'judge-validation.host-claim')
 
 const sha = (s: string | Uint8Array) => createHash('sha256').update(s).digest('hex')
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -217,7 +240,7 @@ function describe(e: unknown): string {
 
 // --- the meter: reserve, persist, send once, settle ----------------------------------------------------------------
 export type AttemptOutcome = 'ok' | 'invalid_request' | 'concurrent_attempt' | 'cap_exhausted' | 'persist_failed' | 'timeout' | 'network_error' | 'http_error'
-  | 'invalid_response' | 'invalid_usage' | 'model_mismatch' | 'over_reservation' | 'accounting_failed'
+  | 'invalid_response' | 'invalid_usage' | 'model_mismatch' | 'over_reservation' | 'accounting_failed' | 'refusal_limit'
 export interface Attempt {
   n: number; judge: JudgeId; split: Split | null; item: string | null
   requested_model: string; served_model: string | null; request_id: string | null
@@ -227,12 +250,16 @@ export interface Attempt {
   // so its whole reservation counts as spent.
   billing: 'none' | 'settled' | 'unknown'
   request_sent: boolean; http_status: number | null; usage: Usage | null
+  // The model's stop_reason from a well-formed response (end_turn, max_tokens, stop_sequence, refusal); null when none was
+  // parsed (nothing sent, no answer, or a malformed or missing stop_reason, which stops the run as invalid_response).
+  stop_reason: string | null
   outcome: AttemptOutcome; detail: string | null; started_at: string; ended_at: string | null
 }
 export interface MeterState {
   attempts: Attempt[]; requests: number; committed_micro: number; in_flight: boolean
   stop: { reason: AttemptOutcome; attempt: number; detail: string | null } | null
   refused_after_stop: number; stop_unpersisted: boolean
+  refusals: number; max_tokens_stops: number
 }
 export class RunStopped extends Error {
   reason: string
@@ -246,7 +273,7 @@ export function createMeter(o: MeterOptions): Meter {
   const timeoutMs = o.timeoutMs ?? REQUEST_TIMEOUT_MS
   const redact = redactor(o.secrets)
   const write = (ev: Record<string, unknown>) => o.ledger.write(redact(JSON.stringify({ at: now().toISOString(), ...ev })))
-  const state: MeterState = { attempts: [], requests: 0, committed_micro: 0, in_flight: false, stop: null, refused_after_stop: 0, stop_unpersisted: false }
+  const state: MeterState = { attempts: [], requests: 0, committed_micro: 0, in_flight: false, stop: null, refused_after_stop: 0, stop_unpersisted: false, refusals: 0, max_tokens_stops: 0 }
   const meter: Meter = {
     state, ctx: { split: null, item: null },
     async call(prompt, judge, maxOutputTokens) {
@@ -256,7 +283,7 @@ export function createMeter(o: MeterOptions): Meter {
         requested_model: o.model, served_model: null, request_id: null,
         prompt_bytes: Buffer.byteLength(String(prompt), 'utf8'), prompt_sha256: sha(String(prompt)), max_output_tokens: maxOutputTokens,
         reserved_micro: 0, settled_micro: null, billing: 'none', request_sent: false, http_status: null, usage: null,
-        outcome: 'ok', detail: null, started_at: now().toISOString(), ended_at: null,
+        stop_reason: null, outcome: 'ok', detail: null, started_at: now().toISOString(), ended_at: null,
       }
       state.attempts.push(a)
       const stop = (outcome: AttemptOutcome, detail: string | null): never => {
@@ -293,7 +320,7 @@ export function createMeter(o: MeterOptions): Meter {
         const env = parseMessageEnvelope(r.body, maxOutputTokens)
         if (!env.ok) { a.served_model = env.model; stop(env.outcome, env.why) }
         const ok = env as Extract<Envelope, { ok: true }>
-        a.served_model = ok.model; a.request_id = ok.id; a.usage = ok.usage
+        a.served_model = ok.model; a.request_id = ok.id; a.usage = ok.usage; a.stop_reason = ok.stop_reason
         if (!servedMatches(o.model, ok.model)) stop('model_mismatch', `requested ${o.model}, served ${ok.model}`)
         const settled = settledMicro(ok.model, ok.usage)
         if (settled > reserve) {
@@ -301,9 +328,11 @@ export function createMeter(o: MeterOptions): Meter {
           stop('over_reservation', `settled ${usd(settled)} USD over the ${usd(reserve)} USD reserved`)
         }
         try {
-          write({ event: 'settle', attempt: a.n, served_model: ok.model, request_id: ok.id, usage: ok.usage, reserve_micro: reserve, settled_micro: settled })
+          write({ event: 'settle', attempt: a.n, served_model: ok.model, request_id: ok.id, stop_reason: ok.stop_reason, usage: ok.usage, reserve_micro: reserve, settled_micro: settled })
         } catch (e) { stop('accounting_failed', `settle not persisted; reservation kept as spent: ${describe(e)}`) }
         a.settled_micro = settled; a.billing = 'settled'; state.committed_micro += settled - reserve
+        if (ok.stop_reason === 'max_tokens') state.max_tokens_stops++
+        if (ok.stop_reason === 'refusal' && ++state.refusals > MAX_REFUSALS) stop('refusal_limit', `${state.refusals} refusals, over the limit of ${MAX_REFUSALS}: refused items have no verdict, so the run stops as failed`)
         a.ended_at = now().toISOString()
         return ok.text
       } finally { state.in_flight = false }
@@ -339,10 +368,10 @@ export function planRun(corpus: JudgeCorpus, model: string): Plan {
 }
 
 // --- inputs --------------------------------------------------------------------------------------------------------
-export interface RunInputs { runId: string; model: string; capUsd: number; fxCadPerUsd: number; fxDate: string; feeRate: number; stateDir: string; approvedRerun?: string | null }
-const INPUT_KEYS = new Set(['runId', 'model', 'capUsd', 'fxCadPerUsd', 'fxDate', 'feeRate', 'stateDir', 'approvedRerun'])
+// There is no rerun input: an unknown key (approvedRerun, rerun, force, ...) is refused like any other.
+export interface RunInputs { runId: string; model: string; capUsd: number; fxCadPerUsd: number; fxDate: string; fxSource: string; feeRate: number; feeBasis: string; stateDir: string }
+const INPUT_KEYS = new Set(['runId', 'model', 'capUsd', 'fxCadPerUsd', 'fxDate', 'fxSource', 'feeRate', 'feeBasis', 'stateDir'])
 export const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/
-export const RERUN_APPROVAL_RE = /^https:\/\/github\.com\/gagan114662\/dazl\/(?:issues|pull)\/\d+#issuecomment-\d+$/
 const finitePos = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
 export const capMicroOf = (capUsd: number) => Math.floor(capUsd * 1e6 + 1e-6)
 export const capCad = (i: Pick<RunInputs, 'capUsd' | 'fxCadPerUsd' | 'feeRate'>) => i.capUsd * i.fxCadPerUsd * (1 + i.feeRate)
@@ -355,7 +384,7 @@ export function checkInputs(i: unknown, now: Date): string[] {
   if (extra.length) p.push(`unknown input(s): ${keyList(extra)} (thresholds, repeats and output limits are fixed in code)`)
   if (typeof i.runId !== 'string' || !RUN_ID_RE.test(i.runId)) p.push('runId is required: 3-64 characters of letters, digits, . _ -')
   if (typeof i.model !== 'string' || !i.model) p.push('model is required (no default)')
-  else if (!priceOf(i.model)) p.push(`model ${JSON.stringify(i.model).slice(0, 80)} has no listed price: refused`)
+  else if (!VALIDATION_MODELS.includes(i.model) || !priceOf(i.model)) p.push(`model ${JSON.stringify(i.model).slice(0, 80)} is not a priced validation model (${VALIDATION_MODELS.join(', ')}): refused`)
   if (!finitePos(i.capUsd)) p.push('capUsd is required: a positive number of US dollars (no default)')
   if (!finitePos(i.fxCadPerUsd)) p.push('fxCadPerUsd is required: CAD per 1 USD on fxDate')
   else if (i.fxCadPerUsd < FX_CAD_PER_USD_RANGE.min || i.fxCadPerUsd > FX_CAD_PER_USD_RANGE.max) p.push(`fxCadPerUsd ${i.fxCadPerUsd} is outside ${FX_CAD_PER_USD_RANGE.min}-${FX_CAD_PER_USD_RANGE.max}: check the rate`)
@@ -365,9 +394,10 @@ export function checkInputs(i: unknown, now: Date): string[] {
     if (age < -1) p.push('fxDate is in the future')
     else if (age > FX_MAX_AGE_DAYS) p.push(`fxDate is more than ${FX_MAX_AGE_DAYS} days old: verify a current rate`)
   }
+  if (typeof i.fxSource !== 'string' || !FX_SOURCE_RE.test(i.fxSource)) p.push('fxSource is required: the bankofcanada.ca URL of the dated USD/CAD rate used')
   if (typeof i.feeRate !== 'number' || !Number.isFinite(i.feeRate) || i.feeRate < 0 || i.feeRate > MAX_FEE_RATE) p.push(`feeRate is required: billing fees and tax as a fraction between 0 and ${MAX_FEE_RATE}`)
-  if (typeof i.stateDir !== 'string' || !i.stateDir) p.push('stateDir is required')
-  if (!(i.approvedRerun === undefined || i.approvedRerun === null || (typeof i.approvedRerun === 'string' && RERUN_APPROVAL_RE.test(i.approvedRerun)))) p.push('approvedRerun must be the URL of the GitHub comment approving a rerun')
+  if (typeof i.feeBasis !== 'string' || !FEE_BASIS_RE.test(i.feeBasis)) p.push('feeBasis is required: the billing account fee/tax figure used (3-300 printable ASCII characters)')
+  if (typeof i.stateDir !== 'string' || !i.stateDir || !isAbsolute(i.stateDir) || i.stateDir.includes('\0')) p.push('stateDir is required: an explicit absolute directory (no default)')
   if (!p.length) {
     const cad = capCad(i as unknown as RunInputs)
     if (cad > APPROVED_CAD + 1e-9) p.push(`cap ${i.capUsd} USD x ${i.fxCadPerUsd} CAD/USD x (1 + ${i.feeRate}) = ${cad.toFixed(4)} CAD is over the approved ${APPROVED_CAD} CAD`)
@@ -376,15 +406,26 @@ export function checkInputs(i: unknown, now: Date): string[] {
 }
 
 // --- the one-shot guard --------------------------------------------------------------------------------------------
-interface RunMarker { run_id: string; status: 'started' | 'completed' | 'failed'; started_at: string; ended_at?: string; approved_rerun: string | null }
+interface RunMarker { run_id: string; status: 'started' | 'completed' | 'failed'; started_at: string; ended_at?: string }
 const runsDir = (stateDir: string) => join(stateDir, 'runs')
 export function priorRuns(stateDir: string): RunMarker[] {
   let names: string[]
   try { names = readdirSync(runsDir(stateDir)) } catch (e) { if ((e as { code?: unknown })?.code === 'ENOENT') return []; throw e }
   return names.filter(n => n.endsWith('.run.json')).map(n => {
-    try { return JSON.parse(readFileSync(join(runsDir(stateDir), n), 'utf8')) as RunMarker } catch { return { run_id: n.slice(0, -'.run.json'.length), status: 'started', started_at: '?', approved_rerun: null } as RunMarker }
+    const unreadable = { run_id: n.slice(0, -'.run.json'.length), status: 'started', started_at: '?' } as RunMarker
+    try { const o: unknown = JSON.parse(readFileSync(join(runsDir(stateDir), n), 'utf8')); return isObj(o) ? o as unknown as RunMarker : unreadable } catch { return unreadable }
   })
 }
+// The committed record of runs made (RUN_RECORD_FILE). Missing, unreadable or malformed refuses (fail closed); any listed
+// run refuses. After the owner run, its record (run id, start time, artifact sha256) is committed here.
+export interface RunRecord { contract: typeof RUN_RECORD_CONTRACT; runs: { run_id: string; started_at: string; artifact_sha256: string }[] }
+export function readRunRecord(path: string): { runs: RunRecord['runs'] } | { problem: string } {
+  let o: unknown
+  try { o = JSON.parse(readFileSync(path, 'utf8')) } catch (e) { return { problem: `the committed run record ${RUN_RECORD_FILE} is missing or not JSON: ${describe(e)}` } }
+  if (!isObj(o) || o.contract !== RUN_RECORD_CONTRACT || !Array.isArray(o.runs) || Object.keys(o).some(k => !['contract', 'note', 'runs'].includes(k))) return { problem: `the committed run record ${RUN_RECORD_FILE} is malformed` }
+  return { runs: o.runs as RunRecord['runs'] }
+}
+export const runRecordPath = (): string => fileURLToPath(new URL(`../../${RUN_RECORD_FILE}`, import.meta.url))
 function writeAtomic(path: string, text: string) {
   const tmp = `${path}.tmp-${process.pid}`
   writeFileSync(tmp, text, { mode: 0o600 })
@@ -392,7 +433,7 @@ function writeAtomic(path: string, text: string) {
 }
 
 // --- code identity -------------------------------------------------------------------------------------------------
-export const CODE_FILES = ['lib/evals/judge.ts', 'lib/evals/judge-validation-run.ts', 'lib/scan/runner.ts', 'lib/llm/spend-guard.ts', 'scripts/judge-validation-run.mts', 'test/fixtures/evals/judges/corpus.synthetic.json'] as const
+export const CODE_FILES = ['lib/evals/judge.ts', 'lib/evals/judge-validation-run.ts', 'lib/scan/runner.ts', 'lib/llm/spend-guard.ts', 'scripts/judge-validation-run.mts', 'test/fixtures/evals/judges/corpus.synthetic.json', RUN_RECORD_FILE] as const
 export function codeHashes(): Record<string, string> {
   const root = new URL('../../', import.meta.url)
   return Object.fromEntries(CODE_FILES.map(f => { try { return [f, sha(readFileSync(new URL(f, root)))] } catch { return [f, 'unreadable'] } }))
@@ -403,19 +444,23 @@ export interface RunDeps {
   transport: Transport; secrets: string[]; corpus: JudgeCorpus
   now?: () => Date; timeoutMs?: number; ledger?: (path: string) => Ledger; code?: Record<string, string>
   writeArtifact?: (path: string, text: string) => void
+  // Code-level only (tests): the CLI never sets these, so no flag, env var or file can move the run-once records.
+  hostClaim?: string; runRecord?: string
 }
 export interface PhaseResult { fingerprint: string; report: CalibrationReport | null; note: string | null }
 export interface Artifact {
   contract: typeof VALIDATION_CONTRACT; run_id: string; status: 'completed' | 'failed'; results_valid: boolean
   stop: MeterState['stop'] | { reason: string; attempt: null; detail: string }
-  approval: string; approved_rerun: string | null; started_at: string; ended_at: string
+  approval: string; started_at: string; ended_at: string
   model: { requested: string; served: string[] }
-  cap: { usd: number; micro: number; fx_cad_per_usd: number; fx_date: string; fee_rate: number; cad_equivalent: number; approved_cad: number }
+  cap: { usd: number; micro: number; fx_cad_per_usd: number; fx_date: string; fee_rate: number; cad_equivalent: number; approved_cad: number
+    fx: { source: 'Bank of Canada'; cad_per_usd: number; date: string; url: string }; fee: { rate: number; basis: string } }
+  run_guard: { state_dir: string; host_claim: string; committed_record: string; max_refusals: number }
   plan: { calls: number; worst_case_usd: number; by_phase: Record<string, number> }
   fixed_before_run: { thresholds: typeof FIXED.thresholds; thresholds_sha256: string; repeats: number; reverse_sources: boolean; max_output_tokens: Record<JudgeId, number>; request_timeout_ms: number; max_retries: number; input_margin_tokens: number; temperature: string }
   corpus: { id: string; origin: string; hash: string; items: number; calibration: number; holdout: number }
   code: Record<string, string>
-  totals: { requests: number; attempts: number; refused_after_stop: number; reserved_usd: number; settled_usd: number; committed_usd: number; unknown_billing_attempts: number; stop_unpersisted: boolean }
+  totals: { requests: number; attempts: number; refused_after_stop: number; reserved_usd: number; settled_usd: number; committed_usd: number; unknown_billing_attempts: number; stop_unpersisted: boolean; refusals: number; max_tokens: number }
   attempts: (Attempt & { reserved_usd: number; settled_usd: number | null })[]
   results: Record<JudgeId, Record<Split, PhaseResult>>
   limits: string[]
@@ -442,20 +487,27 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
   const { problems, plan } = preflight(inputs, deps.corpus, now())
   if (problems.length || !plan) return { status: 'refused', problems }
   const i = inputs as RunInputs
-  const approvedRerun = i.approvedRerun ?? null
+  const NO_RERUN = 'there is no rerun: a second run needs a code change and a new review'
 
-  // One run per approval.
+  // One run, ever, for this approval: the committed record, then the host claim, then the state directory.
+  const recordPath = deps.runRecord ?? runRecordPath()
+  const record = readRunRecord(recordPath)
+  if ('problem' in record) return { status: 'refused', problems: [record.problem] }
+  if (record.runs.length) return { status: 'refused', problems: [`the committed record ${RUN_RECORD_FILE} lists ${record.runs.length} run(s) already made: ${NO_RERUN}`] }
+  const hostClaim = deps.hostClaim ?? hostClaimPath()
   let prior: RunMarker[]
   try { mkdirSync(runsDir(i.stateDir), { recursive: true, mode: 0o700 }); prior = priorRuns(i.stateDir) } catch (e) { return { status: 'refused', problems: [`state directory unusable: ${describe(e)}`] } }
-  if (prior.some(r => r.run_id === i.runId)) return { status: 'refused', problems: [`run ${i.runId} already exists: a run id is used once`] }
-  if (prior.length && !approvedRerun) return { status: 'refused', problems: [`an earlier validation run exists (${prior.map(r => `${r.run_id}:${r.status}`).join(', ')}): a rerun needs its own approval (approvedRerun)`] }
-  if (approvedRerun && prior.some(r => r.approved_rerun === approvedRerun)) return { status: 'refused', problems: ['that rerun approval was already used'] }
+  if (prior.length) return { status: 'refused', problems: [`an earlier validation run exists in the state directory (${prior.map(r => `${String(r.run_id).slice(0, 64)}:${String(r.status).slice(0, 16)}`).join(', ')}): ${NO_RERUN}`] }
+  // Any other leftover (an approval claim with no run file, a ledger, a result) also refuses: the directory must be fresh.
+  let leftovers: string[]
+  try { leftovers = readdirSync(runsDir(i.stateDir)) } catch (e) { return { status: 'refused', problems: [`state directory unusable: ${describe(e)}`] } }
+  if (leftovers.length) return { status: 'refused', problems: [`the state directory already holds run files (${leftovers.slice(0, 5).map(n => n.slice(0, 64)).join(', ')}): the approval is already claimed; ${NO_RERUN}`] }
   const base = join(runsDir(i.stateDir), i.runId)
-  const marker: RunMarker = { run_id: i.runId, status: 'started', started_at: now().toISOString(), approved_rerun: approvedRerun }
-  // The approval itself is claimed exclusively, so two runs started at once under different ids cannot both pass the
-  // check above. A claimed approval stays claimed even if the run then fails to start (fail closed).
-  const slot = approvedRerun ? `rerun-${sha(approvedRerun).slice(0, 16)}` : 'initial'
-  try { writeFileSync(join(runsDir(i.stateDir), `${slot}.approval`), i.runId, { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`the ${approvedRerun ? 'rerun' : 'initial'} approval is already claimed: ${describe(e)}`] } }
+  const marker: RunMarker = { run_id: i.runId, status: 'started', started_at: now().toISOString() }
+  // Each claim is exclusive (wx), so two runs started at once cannot both pass, and stays claimed even if the run then
+  // fails to start (fail closed). The host claim lives outside the state directory: a new or wiped state dir does not reset it.
+  try { mkdirSync(dirname(hostClaim), { recursive: true, mode: 0o700 }); writeFileSync(hostClaim, JSON.stringify({ run_id: i.runId, state_dir: i.stateDir, started_at: marker.started_at }), { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`this host already claimed the one validation run (${hostClaim}): ${NO_RERUN}; ${describe(e)}`] } }
+  try { writeFileSync(join(runsDir(i.stateDir), 'initial.approval'), i.runId, { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`the approval is already claimed in the state directory: ${describe(e)}`] } }
   try { writeFileSync(`${base}.run.json`, JSON.stringify(marker), { flag: 'wx', mode: 0o600 }) } catch (e) { return { status: 'refused', problems: [`could not claim run ${i.runId}: ${describe(e)}`] } }
 
   const redact = redactor(deps.secrets)
@@ -509,20 +561,26 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
   const settled = st.attempts.reduce((s, a) => s + (a.settled_micro ?? 0), 0)
   const artifact: Artifact = {
     contract: VALIDATION_CONTRACT, run_id: i.runId, status, results_valid: status === 'completed', stop,
-    approval: APPROVAL, approved_rerun: approvedRerun, started_at: marker.started_at, ended_at: ended,
+    approval: APPROVAL, started_at: marker.started_at, ended_at: ended,
     model: { requested: i.model, served: [...new Set(st.attempts.map(a => a.served_model).filter((m): m is string => !!m))] },
-    cap: { usd: i.capUsd, micro: capMicro, fx_cad_per_usd: i.fxCadPerUsd, fx_date: i.fxDate, fee_rate: i.feeRate, cad_equivalent: Number(capCad(i).toFixed(6)), approved_cad: APPROVED_CAD },
+    cap: {
+      usd: i.capUsd, micro: capMicro, fx_cad_per_usd: i.fxCadPerUsd, fx_date: i.fxDate, fee_rate: i.feeRate, cad_equivalent: Number(capCad(i).toFixed(6)), approved_cad: APPROVED_CAD,
+      fx: { source: 'Bank of Canada', cad_per_usd: i.fxCadPerUsd, date: i.fxDate, url: i.fxSource }, fee: { rate: i.feeRate, basis: i.feeBasis },
+    },
+    run_guard: { state_dir: i.stateDir, host_claim: hostClaim, committed_record: RUN_RECORD_FILE, max_refusals: MAX_REFUSALS },
     plan: { calls: plan.calls.length, worst_case_usd: usd(plan.worst_case_micro), by_phase: plan.by_phase },
     fixed_before_run: { thresholds: FIXED.thresholds, thresholds_sha256, repeats: FIXED.repeats, reverse_sources: FIXED.reverseSources, max_output_tokens: { ...MAX_OUTPUT_TOKENS }, request_timeout_ms: deps.timeoutMs ?? REQUEST_TIMEOUT_MS, max_retries: MAX_RETRIES, input_margin_tokens: INPUT_MARGIN_TOKENS, temperature: 'provider default (not sent)' },
     corpus: { id: deps.corpus.id, origin: deps.corpus.origin, hash: corpusHash(deps.corpus), items: deps.corpus.items.length, calibration: deps.corpus.items.filter(x => x.split === 'calibration').length, holdout: deps.corpus.items.filter(x => x.split === 'holdout').length },
     code,
-    totals: { requests: st.requests, attempts: st.attempts.length, refused_after_stop: st.refused_after_stop, reserved_usd: usd(st.attempts.reduce((s, a) => s + a.reserved_micro, 0)), settled_usd: usd(settled), committed_usd: usd(st.committed_micro), unknown_billing_attempts: st.attempts.filter(a => a.billing === 'unknown').length, stop_unpersisted: st.stop_unpersisted },
+    totals: { requests: st.requests, attempts: st.attempts.length, refused_after_stop: st.refused_after_stop, reserved_usd: usd(st.attempts.reduce((s, a) => s + a.reserved_micro, 0)), settled_usd: usd(settled), committed_usd: usd(st.committed_micro), unknown_billing_attempts: st.attempts.filter(a => a.billing === 'unknown').length, stop_unpersisted: st.stop_unpersisted, refusals: st.refusals, max_tokens: st.max_tokens_stops },
     attempts: st.attempts.map(a => ({ ...a, reserved_usd: usd(a.reserved_micro), settled_usd: a.settled_micro === null ? null : usd(a.settled_micro) })),
     results,
     limits: [
       `synthetic corpus only (${deps.corpus.items.length} developer-labelled items): agreement with these labels is not ground truth, and this run makes no live-web accuracy claim`,
       'thresholds, repeats and output limits were fixed in code before the run; the holdout split is reported separately and was not used to choose them',
-      'one run per approval: no rerun or tuning to improve results; this artifact does not update the judge lock',
+      `one run, ever, for this approval: no rerun path and no tuning; the run is recorded in the state directory, in a host claim outside it, and (once committed) in ${RUN_RECORD_FILE}; this artifact does not update the judge lock`,
+      `refusals: a refused item (stop_reason refusal) has no verdict and counts as unknown (abstain, never a pass); ${st.refusals} refusal(s) here, and more than ${MAX_REFUSALS} stop the run as failed`,
+      `max_tokens: ${st.max_tokens_stops} answer(s) were cut at max_tokens; a cut answer with no parseable verdict counts as unknown`,
       `cost bound: input tokens are assumed to be at most the prompt's UTF-8 bytes + ${INPUT_MARGIN_TOKENS}, priced from lib/llm/spend-guard.ts; an attempt whose bill is unknown counts its whole reservation`,
       ...(status === 'failed' ? ['the run FAILED: partial rates in it are not results'] : []),
     ],
@@ -536,7 +594,7 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
 }
 
 // --- the command line ----------------------------------------------------------------------------------------------
-const FLAGS: Record<string, keyof RunInputs | 'execute'> = { '--run-id': 'runId', '--model': 'model', '--cap-usd': 'capUsd', '--fx-cad-per-usd': 'fxCadPerUsd', '--fx-date': 'fxDate', '--fee-rate': 'feeRate', '--state-dir': 'stateDir', '--approved-rerun': 'approvedRerun', '--execute': 'execute' }
+const FLAGS: Record<string, keyof RunInputs | 'execute'> = { '--run-id': 'runId', '--model': 'model', '--cap-usd': 'capUsd', '--fx-cad-per-usd': 'fxCadPerUsd', '--fx-date': 'fxDate', '--fx-source': 'fxSource', '--fee-rate': 'feeRate', '--fee-basis': 'feeBasis', '--state-dir': 'stateDir', '--execute': 'execute' }
 const NUMERIC = new Set(['capUsd', 'fxCadPerUsd', 'feeRate'])
 export function parseValidationArgs(argv: string[]): { inputs: Record<string, unknown>; execute: boolean; problems: string[] } {
   const inputs: Record<string, unknown> = {}
@@ -555,6 +613,5 @@ export function parseValidationArgs(argv: string[]): { inputs: Record<string, un
       inputs[name] = Number(v)
     } else inputs[name] = v
   }
-  if (!('stateDir' in inputs)) inputs.stateDir = defaultStateDir()
   return { inputs, execute, problems }
 }
