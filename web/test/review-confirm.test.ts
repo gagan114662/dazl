@@ -140,7 +140,7 @@ test('#352: for every hold reason, Home, the Leads card and the draft gate agree
   for (const reason of [...REVIEWABLE, ...RESEARCH_REASONS]) {
     const dated = { review_reason: reason, event_date: '2026-10-20', window_held: reason === 'outside_window' || reason === 'outside_window_undated' }
     const card = reviewAction(dated, new Date('2026-11-03T12:00:00Z')).label !== 'Keep as research'
-    const home = heldState({ id: 'x', company: 'C', signal: 's', source_url: 'https://a.example', evidence_excerpt: 'e', event_date: '2026-10-20', date_status: 'verified', fit: 4, intent: 4, why: '', icp_match: null, company_domain: null, contact: null, quarantined_at: null, confidence: null, human_confirmed_at: null, currentness_held: false, enrichments: [], ...dated } as never)?.state === 'review'
+    const home = heldState({ id: 'x', company: 'C', signal: 's', source_url: 'https://a.example', evidence_excerpt: 'e', date_status: 'verified', fit: 4, intent: 4, why: '', icp_match: null, company_domain: null, contact: null, quarantined_at: null, confidence: null, human_confirmed_at: null, currentness_held: false, enrichments: [], ...dated } as never)?.state === 'review'
     const server = (await outcome(reason)) === 'drafted'
     assert.equal(card, REVIEWABLE.has(reason), `${reason}: reviewable reasons, and only they, get a draftable confirm`)
     assert.ok(card === home && home === server, `${reason}: card=${card} home=${home} server=${server}`)
