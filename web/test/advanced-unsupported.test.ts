@@ -87,6 +87,31 @@ test('httpWorker: a non-200 worker reply keeps its known failure outcome; anythi
   assert.deepEqual(await call(reply(200, { items: [] })), { items: [], unsupported: null })
 })
 
+// #632 review (the same hole on the app side): a 200 worker reply that names a failure outcome is that failure; one that
+// carries an error field or has no item list is worker_error. Neither is ever audited as a zero-result search.
+test('httpWorker: a 200 worker reply with a failure outcome, an error field or no item list is never an empty search', async () => {
+  const reply = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
+  const call = (f: typeof fetch) => httpWorker({ ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }, f)({ platform: 'reddit', query: 'q', session: 's' })
+  assert.deepEqual(await call(reply(200, { items: [], outcome: 'auth_failed' })), { failed: 'auth_failed' })
+  assert.deepEqual(await call(reply(200, { items: [], outcome: 'throttled' })), { failed: 'throttled' })
+  assert.deepEqual(await call(reply(200, { error: 'fetch_failed', outcome: 'schema_error' })), { failed: 'schema_error' })
+  for (const body of [{ items: [], error: 'fetch_failed' }, { items: [], error: 0 }, {}, { items: 'x' }, { items: {} }, { items: null }, null, [], 'ok', 42, true]) {
+    assert.equal(await call(reply(200, body)), null, JSON.stringify(body))
+  }
+  // Still read as a list (the #517 contract): a genuine empty search, an unknown outcome string, and the exact refusal.
+  assert.deepEqual(await call(reply(200, { items: [] })), { items: [], unsupported: null })
+  assert.deepEqual(await call(reply(200, { items: [], outcome: 'empty' })), { items: [], unsupported: null })
+  assert.deepEqual(await call(reply(200, { items: [], error: null })), { items: [], unsupported: null })
+  assert.deepEqual(await call(reply(200, { items: [], outcome: 'unsupported', reason: 'r' })), { items: [], unsupported: 'r' })
+  // And the scan audits it by that reason.
+  for (const [body, want] of [[{ items: [], outcome: 'auth_failed' }, 'auth_failed'], [{}, 'worker_error'], [{ items: [], error: 'boom' }, 'worker_error'], [{ items: [] }, 'empty']] as const) {
+    const db = setup(); acceptConsent(db, 'A', 'advanced')
+    const out = await collectAdvanced(db, 'A', 'j1', ['reddit'], 'q', { worker: httpWorker(ON, reply(200, body)), master, env: ON })
+    assert.deepEqual(out, [])
+    assert.deepEqual(statuses(db, 'A'), [`adv:reddit:${want}`], JSON.stringify(body))
+  }
+})
+
 test('over the wire: the real worker reports auth_failed for an x session without auth cookies', async () => {
   const port = 5100 + Math.floor(Math.random() * 300)
   const token = 'e2e-token'
