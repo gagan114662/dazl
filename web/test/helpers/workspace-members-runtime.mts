@@ -100,6 +100,7 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
   await fails('role change, write fails', ta, () => members.PATCH(req('/api/workspace/members', 'PATCH', { member_id: 'D', role: 'viewer' })))
   refuse('BEFORE DELETE ON memberships')
   await fails('removal, write fails', ta, () => members.DELETE(req('/api/workspace/members', 'DELETE', { member_id: 'D' })))
+  assert.deepEqual((await call(td, () => workspace.GET())).body.current, { tenant_id: 'A', role: 'operator' }, 'a failed removal revokes no session')
   const invE = await call(ta, () => invitations.POST(req('/api/workspace/invitations', 'POST', { email: 'e@example.test', role: 'viewer' })))
   refuse('BEFORE INSERT ON invitations')
   await fails('replacing an invitation, write fails: the earlier link is not revoked', ta, () => invitations.POST(req('/api/workspace/invitations', 'POST', { email: 'e@example.test', role: 'admin' })))
@@ -120,6 +121,15 @@ test('invite, join and switch through the routes; nothing of workspace A is reac
     assert.deepEqual(r, { status: 200, body: { ok: true, tenant_id: 'A', role: 'viewer', switched: false } })
   } finally { allow() }
   assert.equal((raw.prepare("SELECT role FROM memberships WHERE tenant_id = 'A' AND member_id = 'E'").get() as { role: string }).role, 'viewer')
+  assert.deepEqual((await call(te, () => workspace.GET())).body.current, { tenant_id: 'E', role: 'owner' })
+  // offboarding (#358): E switches into A on a second device; A removes E. That device is signed out at once
+  // (revoked: offboarded, by A); E's device in its own workspace keeps working.
+  const te2 = await createSession('E')
+  assert.equal((await call(te2, () => sw.POST(req('/api/workspace/switch', 'POST', { tenant_id: 'A' })))).status, 200)
+  assert.equal((await call(ta, () => members.DELETE(req('/api/workspace/members', 'DELETE', { member_id: 'E' })))).status, 200)
+  assert.equal((await call(te2, () => workspace.GET())).status, 401)
+  assert.equal((await call(te2, () => workspace.GET())).status, 401)
+  assert.deepEqual(raw.prepare("SELECT revoked_by, revoke_reason FROM sessions WHERE user_id = 'E' AND revoked_at IS NOT NULL").all(), [{ revoked_by: 'A', revoke_reason: 'offboarded' }])
   assert.deepEqual((await call(te, () => workspace.GET())).body.current, { tenant_id: 'E', role: 'owner' })
   console.log('WORKSPACE MEMBERS ok')
 })

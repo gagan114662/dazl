@@ -6,6 +6,7 @@ import { INVITE_TTL_S, MemberError, acceptInvitation, changeRole, createInvitati
 import type { Acting } from '../lib/workspace-members.ts'
 import type { Role } from '../lib/workspaces.ts'
 import type { Db } from '../lib/db/client.ts'
+import { listSessions } from '../lib/sessions.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const code = (c: string) => (e: unknown) => e instanceof MemberError && e.code === c
@@ -128,7 +129,7 @@ bothEngines('switching: only into a workspace the account belongs to, only for i
   assert.deepEqual(u && [u.actorId, u.tenantId, u.role, u.business_name], ['B', 'A', 'viewer', 'Biz A'])
   await removeMember(db, OWNER_A, 'B')
   assert.equal(await getSessionUser(tb, db), null)
-  assert.equal((await getSessionUser(tb, db))?.tenantId, 'B')
+  assert.equal(await getSessionUser(tb, db), null, 'a session acting in A when B was removed is revoked (offboarded), not pointed elsewhere')
 })
 
 // A request authenticates, then waits behind a demotion or removal before it reaches the workspace lock: it must act
@@ -320,4 +321,76 @@ bothEngines('invitation variants: email case and lookalikes, tampered tokens, an
   for (let i = 0; i < 50; i++) await createInvitation(db, OWNER_A, `p${i}@example.test`, 'viewer', now)
   assert.equal((await listInvitations(db, 'A', now)).length, 50)
   await assert.rejects(createInvitation(db, OWNER_A, 'p51@example.test', 'viewer', now), code('too_many_invites'))
+})
+
+// Offboarding (#358): removal ends the member's sessions acting in the workspace, on the next request, and says who and
+// when; their sessions acting in their own workspaces keep working.
+const sessionRow = (db: Db, token: string) => db.get<{ revoked_at: number | null; revoked_by: string | null; revoke_reason: string | null; active_tenant_id: string | null }>(
+  'SELECT revoked_at, revoked_by, revoke_reason, active_tenant_id FROM sessions WHERE id = ?', [hashToken(token)])
+
+bothEngines('offboarding: removal revokes the member\'s sessions acting in the workspace, by whom and when, and nothing else', async ({ db }) => {
+  await users(db, 'A', 'B', 'C')
+  await add(db, 'A', 'B', 'admin')
+  const inA = await createSession('B', db), inOwn = await createSession('B', db), aOwn = await createSession('A', db)
+  await switchWorkspace(db, hashToken(inA), 'B', 'A')
+  const sent = await createInvitation(db, act('A', 'B', 'admin'), 'c@example.test', 'operator')
+  const byOwner = await createInvitation(db, OWNER_A, 'd@example.test', 'viewer')
+  const before = Math.floor(Date.now() / 1000)
+  await removeMember(db, OWNER_A, 'B')
+
+  assert.equal(await getSessionUser(inA, db), null)
+  assert.equal(await getSessionUser(inA, db), null, 'still refused: revoked, not just unpointed')
+  const row = await sessionRow(db, inA)
+  assert.deepEqual([row?.revoked_by, row?.revoke_reason], ['A', 'offboarded'])
+  assert.ok(Number(row?.revoked_at) >= before && Number(row?.revoked_at) <= before + 5)
+  assert.equal((await getSessionUser(inOwn, db))?.tenantId, 'B', 'B keeps working in its own workspace')
+  assert.equal((await sessionRow(db, inOwn))?.revoked_at, null)
+  assert.equal((await getSessionUser(aOwn, db))?.tenantId, 'A', "the remover's session is untouched")
+  // B's device list shows only what still works, never a token or a hash
+  const listed = await listSessions(db, 'B', hashToken(inOwn))
+  assert.deepEqual(listed.map(s => s.current), [true])
+  assert.ok(!JSON.stringify(listed).includes(inA) && !JSON.stringify(listed).includes(hashToken(inA)))
+  // the link B sent is revoked (gone from the list, adds nothing); the owner's own invitation stays
+  assert.deepEqual((await listInvitations(db, 'A')).map(i => i.id), [byOwner.id])
+  await assert.rejects(acceptInvitation(db, me('C'), sent.token), code('invalid_invite'))
+  assert.equal(await roleIn(db, 'A', 'C'), null)
+  assert.ok((await db.get<{ r: number | null }>('SELECT revoked_at AS r FROM invitations WHERE id = ?', [sent.id]))?.r)
+})
+
+bothEngines('offboarding: a session with no chosen workspace is revoked only when the removed workspace was its default', async ({ db }) => {
+  await users(db, 'A', 'B', 'X')
+  // B has no personal workspace: its default is its oldest membership, A (created_at ties break on tenant id)
+  await db.run("DELETE FROM memberships WHERE tenant_id = 'B' AND member_id = 'B'")
+  await add(db, 'A', 'B', 'viewer')
+  await add(db, 'X', 'B', 'viewer')
+  const byDefault = await createSession('B', db), inX = await createSession('B', db)
+  await switchWorkspace(db, hashToken(inX), 'B', 'X')
+  assert.equal((await getSessionUser(byDefault, db))?.tenantId, 'A')
+  await removeMember(db, OWNER_A, 'B')
+  assert.equal(await getSessionUser(byDefault, db), null)
+  assert.equal((await sessionRow(db, byDefault))?.revoke_reason, 'offboarded')
+  assert.equal((await getSessionUser(inX, db))?.tenantId, 'X')
+  // removed from X too, which is no longer its default (the account keeps a workspace only while it has one): refused
+  await assert.rejects(removeMember(db, act('X', 'X', 'owner'), 'B'), code('only_workspace'))
+  assert.equal((await getSessionUser(inX, db))?.tenantId, 'X', 'a refused removal revokes nothing')
+})
+
+bothEngines('offboarding: a session whose default is elsewhere stays when the member is removed; leaving revokes the leaver\'s pending links', async ({ db }) => {
+  await users(db, 'A', 'B', 'C')
+  await add(db, 'A', 'B', 'admin')
+  const t = await createSession('B', db) // no workspace chosen: default is B's own
+  await removeMember(db, OWNER_A, 'B')
+  assert.equal((await getSessionUser(t, db))?.tenantId, 'B')
+  assert.equal((await sessionRow(db, t))?.revoked_at, null)
+  // an expired session is not marked as offboarded
+  await add(db, 'A', 'B', 'admin')
+  const old = await createSession('B', db)
+  await switchWorkspace(db, hashToken(old), 'B', 'A')
+  await db.run('UPDATE sessions SET expires_at = 1 WHERE id = ?', [hashToken(old)])
+  const link = await createInvitation(db, act('A', 'B', 'admin'), 'c@example.test', 'viewer')
+  await leave(db, act('A', 'B', 'admin'))
+  assert.equal((await sessionRow(db, old))?.revoked_at, null)
+  assert.deepEqual(await listInvitations(db, 'A'), [])
+  await assert.rejects(acceptInvitation(db, me('C'), link.token), code('invalid_invite'))
+  assert.equal((await getSessionUser(t, db))?.tenantId, 'B', 'leaving revokes no session of the leaver')
 })
