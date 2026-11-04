@@ -26,9 +26,6 @@ The v1 score does not yet prove buyer need, that the contact is the right decisi
 
 ## Flow (no waiting)
 
-0. An item isn't "Next" until it has an `## Acceptance Contract` (journey, failure cases, the exact live check,
-   access/spend needed — see `docs/design/acceptance-contract.md`) agreed by Instinct or the owner. Without one
-   it's `needs contract`, and whoever picks it up writes the contract and gets it agreed before opening a branch.
 1. Builder takes the top item of `docs/STATUS.md` "Next", works on a branch `b/<topic>`, pushes, asks for review.
 2. Builder does NOT wait: it starts the next item on a new branch while review runs. Review findings come first:
    the builder fixes them on the same branch before starting anything new.
@@ -75,20 +72,22 @@ The scheduled builder (Sonnet) writes a design note in `docs/design/<topic>.md`,
 "needs design" in STATUS.md and moves on. An interactive session (Opus) or the owner decides and implements;
 Instinct reviews as usual.
 
-## Proving an issue closed (not just a diff reviewed)
+## Closing issues
 
 A merged PR and a closed issue are not the same thing, and only the second one counts (see "done means Instinct's
-visible final acceptance", 2026-10-30). Two rules make that mechanical instead of something Instinct has to
-remember to check by hand:
+visible final acceptance", 2026-10-30).
 
-- **Close with a closing keyword only when the issue's own reported scenario now passes as a committed test.**
-  Tag the test with the issue number in a comment or its test name (the existing informal convention — see
-  `test/crm-contract.test.ts`'s `#569 repro` tests) and run `node web/scripts/gate-check.mjs <N>` before filing.
-  `Closes #N` / `Fixes #N` / `Resolves #N` in the PR body means "the tagged test for #N exists and is green,
-  verified by `acceptance-gate.yml`" — not "this PR touches #N." Partial or related work uses `refs #N`, which
-  does not close anything and is not gated.
+- **Builders never use GitHub closing keywords** (`Closes`/`Fixes`/`Resolves #N`) in a PR body or a commit
+  message. They write `Refs #N`. An issue closes only after the fix is deployed and verified live (owner comment
+  on #569, 2026-11-02, after a PR body auto-closed it from an offline pin). The reviewer or the owner closes it,
+  and the issue/PR records the live evidence: the deployed commit, the real-provider or real-user-journey result,
+  and the cleanup. `acceptance-gate.yml` job `no-closing-keywords` fails any PR that has a closing keyword.
+- **A passing tagged test is necessary evidence, never sufficient.** A test is tagged `#N` when its own
+  `test()`/`it()` name contains `#N` (see `test/crm-contract.test.ts`'s `#569 repro`). `node web/scripts/gate-check.mjs
+  <N>` prints `GATE #N: PASS` only if at least one tagged test executed (not skipped, not todo) and everything in
+  the files it ran passed, with the executed/skipped counts. CI job `tagged-tests` runs it for each `Refs #N` that
+  has a tagged test, and is skipped otherwise. It never closes anything and is not a live check.
 - **An issue with 3+ merged PRs against it and no close gets a tracked checklist before another PR opens
   against it.** The next builder to touch it edits the issue body into an explicit `- [ ]` list of the specific
   remaining acceptance criteria (not "more work needed"), so partial PRs can check boxes instead of silently
-  accumulating. See `docs/design/issue-closure-gate.md` for the audit that motivated this and a worked example
-  (#569, already fixed on `main`, never closed because every merged PR used `refs #569`).
+  accumulating. See `docs/design/issue-closure-gate.md` for the audit that motivated this.

@@ -33,11 +33,6 @@ Stay active from step 1 to step 6. If you end your turn while CI is running, mak
 
 ## Proof
 
-Before step 1: if the issue has no `## Acceptance Contract` section agreed by Instinct or the owner (see
-`docs/PROCESS.md` § Flow step 0 and `docs/design/acceptance-contract.md`), write one and get it agreed first —
-don't start the branch on a guess at what "done" means. Your proof below must be run against that contract's
-own live-verification step, not a different procedure you came up with after building.
-
 Proof is evidence you observed yourself in this session: command output, a reproduction, a screenshot. Use the most
 direct proof the change allows:
 
@@ -57,11 +52,10 @@ stop and say what Instinct needs to verify.
 
 When you cannot prove a change, you do not have full confidence. Say so in the handoff.
 
-**If this PR claims `Closes #N`:** the reproduction you proved must be a committed test tagged `#N` (see
-`docs/PROCESS.md` § "Proving an issue closed"), not just something you showed in chat or a terminal that nobody
-re-runs. Run `node web/scripts/gate-check.mjs <N>` and get `PASS` before using a closing keyword for that issue.
-If it's not everything the issue asked for, use `refs #N` instead — that's not a lesser outcome, it's the
-honest one.
+**Never write a closing keyword** (`Closes`/`Fixes`/`Resolves #N`) in a PR body or commit message: use `Refs #N`.
+Issues are closed by Instinct or the owner after deploy + live proof (`docs/PROCESS.md` § "Closing issues").
+Where you can, commit the issue's reported scenario as a test whose name carries `#N` and paste the output of
+`node web/scripts/gate-check.mjs <N>`. That is additive evidence only; it does not replace the live check.
 
 ## Never merge
 
@@ -83,7 +77,7 @@ The PR is ready when all of these are true on the latest commit:
 - CI is green on the exact head.
 - Every Instinct finding is fixed, or answered with a reason on the PR.
 - The branch is mergeable with `main` (no conflicts).
-- Every `Closes #N` in the PR body has a `GATE #N: PASS` from `node web/scripts/gate-check.mjs <N>` on this head.
+- The PR body and commit messages say `Refs #N`, never a closing keyword (CI job `no-closing-keywords`).
 
 Then stop and report, on the PR and to the user: the PR link, the **exact head SHA**, the test commands and their
 output, the council result, what is NOT verified, and that the PR is open and unmerged, waiting for Instinct.

@@ -1,61 +1,93 @@
 name: acceptance-gate
-# Issue-closure gate (docs/design/issue-closure-gate.md): a PR that claims "Closes #N" / "Fixes #N" /
-# "Resolves #N" must have a test under web/test/ tagged "#N" (the convention already used for #569), and
-# that test must pass. Reports pass/fail per issue; see the design doc's "Open question" for why this is
-# not yet a required check (no branch protection on main today).
+# docs/design/issue-closure-gate.md. Every job here reports what it actually did: success means the check ran and
+# passed, failure means it ran and failed, and a check with nothing to run is SKIPPED by a job-level `if` - never a
+# green step that only echoes "nothing to do". Nothing here closes an issue: the reviewer/owner closes issues after
+# deploy + live proof (docs/PROCESS.md § "Closing issues").
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  # Manual only, and only meaningful on main: the one way the CRM sandbox job below can ever run.
+  workflow_dispatch:
 permissions:
   contents: read
-  pull-requests: read
 jobs:
-  gate:
+  # Builders never use GitHub closing keywords (repo rule; owner comment on #569, 2026-11-02): a merged PR must not
+  # auto-close an issue that has not been verified live. Fails if the PR body or any PR commit message has one.
+  no-closing-keywords:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: PR body and commit messages use Refs, never Closes/Fixes/Resolves
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '.[].commit.message' > /tmp/commits.txt
+          printf '%s\n' "$BODY" > /tmp/body.txt
+          node -e '
+            const fs = require("fs");
+            // GitHub closing keywords followed by #N, owner/repo#N or an issues URL (the forms GitHub acts on).
+            const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+(?:#\d+|[\w.-]+\/[\w.-]+#\d+|https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)/gi;
+            let bad = 0;
+            for (const [where, f] of [["the PR body", "/tmp/body.txt"], ["a commit message", "/tmp/commits.txt"]]) {
+              for (const m of fs.readFileSync(f, "utf8").matchAll(re)) {
+                bad++;
+                console.log(`::error::closing keyword in ${where}: "${m[0]}". Use "Refs #N"; the reviewer/owner closes issues after live proof.`);
+              }
+            }
+            if (bad) process.exit(1);
+            console.log("No closing keyword in the PR body or its commit messages.");
+          '
+
+  # Which "Refs #N" issues declare at least one test NAMED with #N (static scan: runs no test, installs nothing).
+  tag-scope:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      numbers: ${{ steps.scope.outputs.numbers }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Extract closed issue numbers from the PR body
-        id: issues
+      - name: Referenced issues that have a tagged test
+        id: scope
+        working-directory: web
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
-          node -e '
-            const body = process.env.BODY || "";
-            const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)/gi;
-            const nums = [...new Set([...body.matchAll(re)].map(m => m[1]))];
-            console.log("numbers=" + nums.join(","));
-          ' >> "$GITHUB_OUTPUT"
-      - run: npm ci
-        if: steps.issues.outputs.numbers != ''
-        working-directory: web
-      - name: Run the issue-closure gate
-        if: steps.issues.outputs.numbers != ''
-        working-directory: web
-        run: |
-          IFS=',' read -ra NUMS <<< "${{ steps.issues.outputs.numbers }}"
-          node scripts/gate-check.mjs "${NUMS[@]}"
-      - name: No closing keyword in this PR body
-        if: steps.issues.outputs.numbers == ''
-        run: echo "No Closes/Fixes/Resolves keyword found — nothing to gate (this PR isn't claiming to close an issue)."
+          set -euo pipefail
+          nums=$(node -e '
+            const b = process.env.BODY || "";
+            const re = /\brefs?\b\s*:?\s*(#[1-9]\d{0,6}\b(?:\s*(?:,|\/|&|and)?\s*#[1-9]\d{0,6}\b)*)/gi;
+            const s = new Set([...b.matchAll(re)].flatMap((m) => [...m[1].matchAll(/#(\d+)/g)].map((x) => x[1])));
+            console.log([...s].join(" "));
+          ')
+          if [ -z "$nums" ]; then
+            echo "numbers=" >> "$GITHUB_OUTPUT"
+            echo "No Refs #N in the PR body: tagged-tests will be SKIPPED."
+            exit 0
+          fi
+          node scripts/gate-check.mjs --list $nums | tee -a "$GITHUB_OUTPUT"
 
-  # A mocked-fetch test proves pushLead's own logic; it cannot prove the real HubSpot/Pipedrive API agreed with
-  # it (Instinct's point: "tests tagged #569 pass" is not "dazl really received the right record"). This job runs
-  # the acceptance harness that already exists for exactly that (web/lib/crm/acceptance.ts,
-  # web/scripts/crm-live-acceptance.mts, added by #634) against a free SANDBOX provider account — no real tenant
-  # data, no spend, no production credential. It is a no-op until CRM_ACCEPTANCE_PROVIDER/CRM_ACCEPTANCE_KEY
-  # secrets exist (owner/Instinct call, not a builder's): the script itself refuses (exit 2) without them, which
-  # this job treats as "not configured yet", not a failure.
-  crm-sandbox-acceptance:
+  # Additive evidence: runs the tests named #N for each referenced issue with one; fails unless at least one tagged
+  # test executed and everything passed (counts printed). SKIPPED when no referenced issue has a tagged test.
+  tagged-tests:
+    needs: tag-scope
+    if: needs.tag-scope.outputs.numbers != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
@@ -63,34 +95,69 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Only run when the PR actually touches CRM code
-        id: touches
-        run: |
-          if git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" | grep -qE '^web/(lib/crm/|app/api/crm/)'; then
-            echo "run=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=0" >> "$GITHUB_OUTPUT"
-          fi
+          persist-credentials: false
       - uses: actions/setup-node@v4
-        if: steps.touches.outputs.run == '1'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
-        if: steps.touches.outputs.run == '1'
-      - name: Sandbox live-provider acceptance (skips cleanly if no sandbox secret is configured)
-        if: steps.touches.outputs.run == '1'
+      - name: gate-check on the referenced issues (evidence only; a PASS never closes an issue)
+        env:
+          NUMBERS: ${{ needs.tag-scope.outputs.numbers }}
+        run: node scripts/gate-check.mjs ${NUMBERS//,/ }
+
+  # Live sandbox-CRM check (scripts/crm-live-acceptance.mts, #634). Never runs on pull_request (SKIPPED there): a key
+  # in a job that executes the PR head's own web/lib/crm code could be read by any same-repo PR that edits it
+  # (PR #641 review, 2026-11-04). It can run only by manual dispatch on main (main's code), and only when a sandbox
+  # key is present; without one it is SKIPPED, never a green no-op. No secret exists and a builder must not add
+  # one: whether to provision it (an environment-scoped secret limited to main, never a repo secret that any
+  # branch's workflow can read) is the owner's decision.
+  crm-sandbox-preflight:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: crm-sandbox
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Is a sandbox CRM key configured? (presence only; no value is printed)
+        id: check
+        env:
+          HAS_PROVIDER: ${{ secrets.CRM_ACCEPTANCE_PROVIDER != '' }}
+          HAS_KEY: ${{ secrets.CRM_ACCEPTANCE_KEY != '' }}
+        run: |
+          if [ "$HAS_PROVIDER" = "true" ] && [ "$HAS_KEY" = "true" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "No sandbox CRM key configured: crm-sandbox-acceptance will be SKIPPED."
+          fi
+
+  crm-sandbox-acceptance:
+    needs: crm-sandbox-preflight
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.crm-sandbox-preflight.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: crm-sandbox
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      # Exit 2 (refused), 1 (a step failed) or any other non-zero fails this job: nothing is mapped to success.
+      - name: Sandbox live-provider acceptance (main's code)
         env:
           CRM_ACCEPTANCE: sandbox
           CRM_ACCEPTANCE_PROVIDER: ${{ secrets.CRM_ACCEPTANCE_PROVIDER }}
           CRM_ACCEPTANCE_KEY: ${{ secrets.CRM_ACCEPTANCE_KEY }}
           CRM_ACCEPTANCE_PIPEDRIVE_DOMAIN: ${{ secrets.CRM_ACCEPTANCE_PIPEDRIVE_DOMAIN }}
-        run: |
-          node --experimental-strip-types scripts/crm-live-acceptance.mts; code=$?
-          if [ "$code" -eq 2 ]; then
-            echo "::warning::No sandbox CRM secret configured (CRM_ACCEPTANCE_PROVIDER/CRM_ACCEPTANCE_KEY) — this PR touches CRM code and was NOT verified against a real provider. See docs/design/acceptance-contract.md."
-            exit 0
-          fi
-          exit $code
+        run: node --experimental-strip-types scripts/crm-live-acceptance.mts
