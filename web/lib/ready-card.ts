@@ -67,7 +67,7 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const sum = (f: (c: Camp) => number) => camps ? camps.reduce((n, c) => n + f(c), 0) : 0
   const first = (f: (c: Camp) => boolean) => camps?.find(f) ?? null
   const href = (c: Camp | null) => c ? `/app/leads?job_id=${c.id}` : null
-  const qualifiedN = sum(ready), heldN = sum(c => c.qualification.held ?? 0)
+  const qualifiedN = sum(ready)
   const contactN = sum(c => c.contact?.readyWithContact ?? 0)
   // The two reads overlap (a campaign's drafts are also in the emails read), so they are never added together. A complete
   // emails read is the whole count; a capped one gives at least the larger of the two.
