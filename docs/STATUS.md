@@ -50,8 +50,8 @@ Updated by the builder on every branch. Newest first.
   fallback); Home's research-only state and the Leads research section show what that pass tried or why it did not run,
   and never ask the user to check or confirm. Stubbed fixtures only; not verified live.
   b/352-checkable-review: Home, the Leads card and the draft gate now agree for every hold reason (checkable-evidence
-  and date-vouch holds are review; sales_hiring_check_failed is research on all three), and a free-trial scan gets the one
-  bounded recovery pass (owner decision 2026-11-03) unless the user's own budget set paid_fallback=false. Stubbed only.
+  and date-vouch holds are review; sales_hiring_check_failed is research on all three). Trial scans are unchanged: no
+  recovery pass and no extra paid call (paidFallback stays false). Stubbed only.
 
 - PR #455 fresh port (#359 part 1, tenant export and deletion lifecycle): `exportTenant`, the five-step resumable
   `deleteTenant`, the recreation guard (two generated triggers per guarded column on both engines, PG migration 0039)

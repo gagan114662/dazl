@@ -68,7 +68,7 @@ export const CAUSE_TEXT: Record<ResearchCause, string> = {
   place: 'evidence names a different place', closed: 'the opening is closed', unsupported: 'evidence not verified',
 }
 const LOOKED_FOR: Record<string, string> = { undated: 'a dated source', quote_unconfirmed: 'a page that carries the quote', counterparty_signal: 'a source about the company itself', blocked_by_site: 'a readable source', needs_javascript: 'a readable source' }
-const NOT_RUN: Record<string, string> = { 'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run', 'the free scan had no budget room left for it': 'the free scan had no budget left for an extra search' }
+const NOT_RUN: Record<string, string> = { 'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run' }
 export interface RecoveryNote { ran: boolean; text: string }
 export function recoveryNote(l: { enrichments?: { connector: string; label: string | null; value: string }[] | null }): RecoveryNote | null {
   const r = (l.enrichments ?? []).find(e => e.connector === 'scan:recovery')

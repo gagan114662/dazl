@@ -37,7 +37,7 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled } from '../connectors/sitecrawl.ts'
-import { anthropicCountTokens, callCostUsd, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
@@ -826,25 +826,6 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   return leads
 }
 
-// A trial's recovery pass (#352): the extraction goes through only with room for itself plus one more call of the same maximum size; otherwise it is skipped
-// (answers "[]": no call, no reservation, the guard is not refused). An unpriced or unreadable model is no room: skipped, never a stop.
-export const TRIAL_NO_ROOM = 'the free scan had no budget room left for it'
-export function trialRoomCheck(p: Provider, guard: SpendGuard): { provider: Provider; skipped: () => boolean } {
-  let skipped = false
-  const complete = p.complete
-  const fits = (prompt: string, max: number | undefined): boolean => {
-    try {
-      const c = callCostUsd(p.configuredModel?.(), Buffer.byteLength(prompt), typeof max === 'number' && max > 0 ? max : 4096)
-      return Number.isFinite(c) && c >= 0 && guard.limitUsd - guard.reservedUsd >= 2 * c && !guard.refused
-    } catch { return false }
-  }
-  const provider = { ...p, ...(complete ? { complete: async (k: string, prompt: string, f?: typeof fetch, max?: number) => {
-    if (!fits(prompt, max)) { skipped = true; return '[]' }
-    return complete.call(p, k, prompt, f, max)
-  } } : {}) } as Provider
-  return { provider, skipped: () => skipped }
-}
-
 export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolean; judge?: boolean; max_usd?: number; first5?: boolean }   // first5: the fast first scan (lib/scan/first5.ts): free keyless sources only
 // Per-run explicit budget controls, stored on the job row by the CSV import route.
 // Absent or malformed JSON means current behavior - the control only ever NARROWS.
@@ -890,7 +871,6 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
   return {
     ...deps,
     ...(budget.paid_fallback === false ? { paidFallback: false } : {}),
-    ...(budget.paid_fallback === false && !budget.first5 ? { trialRecovery: false } : {}),   // the user's own opt-out also covers the trial's recovery pass
     ...(budget.credit_enrichment === false ? { creditEnrichment: false } : {}),
     ...(budget.judge === false ? { judge: null } : {}),
     ...(budget.first5 ? { first5: true, paidFallback: false, creditEnrichment: false } : {}),
@@ -898,8 +878,6 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 }
 
 export interface RunDeps {
-  // trialRecovery: a trial scan's one bounded recovery pass despite paidFallback=false (#352 owner decision); set only by the runner for funded_by='trial'.
-  trialRecovery?: boolean
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
   // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
   trace?: import('../evals/trace.ts').TraceRecorder
@@ -1001,10 +979,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
     // autopilot (TinyFish or other paid calls the trial charge does not see).
-    // One exception, decided by the owner (Gagan, 2026-11-03, #352): the bounded automatic recovery pass (lib/scan/blocked-fallback.ts: the free news search for
-    // at most MAX_FALLBACK held companies, then ONE extraction call through this trial's guard) runs on a trial too, to rescue research-only leads. A budget the
-    // user set with paid_fallback=false still switches it off (budgetDeps); first5's own synthesized paid_fallback=false does not.
-    if (trial) deps = { ...deps, paidFallback: false, trialRecovery: true }
+    if (trial) deps = { ...deps, paidFallback: false }
     if (trial) trialCharges.set(job, async (kind, units) => { await reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)) })
     // Narrowing flags of a query job's own budget (paid_fallback / credit_enrichment / judge = false). They only ever switch a paid
     // surface off; before this the query path honoured max_usd but ignored the flags.
@@ -1209,21 +1184,15 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     // same company's dated coverage elsewhere; a held lead whose page is unreadable or lacks the quote gets the same search. Every replacement goes through the SAME verifier and window gate.
     if (icpForSources?.window_days) { try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ } }
     const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
-    const recoveryOn = deps.paidFallback !== false || deps.trialRecovery === true
-    const blocked = !recoveryOn || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
+    const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
-    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: !recoveryOn ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
+    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
       const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
-      // On a trial the pass is optional: its extraction is sent only when the trial's guard still has room for it AND for one more call of the same size after it
-      // (the fit grading that follows), so the extra search never pushes the scan into its budget stop. Without that room nothing is sent or reserved, the guard is
-      // not marked refused, and the hold records why.
-      const room = trialGuard ? trialRoomCheck(providers_[vendor], trialGuard) : null
       ledger.record('fallback:news', 'started')
       try {
         assertOwned(db, job)
-        const found = await newsLeads(job, icpForSources!, room?.provider ?? providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, blocked.map(b => b.query))
-        if (room?.skipped()) recoveryRan = { searched: false, why: TRIAL_NO_ROOM }
+        const found = await newsLeads(job, icpForSources!, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, blocked.map(b => b.query))
         ledger.record('fallback:news', newsStatus(found, note), note.searched ? note.hits : null)
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
