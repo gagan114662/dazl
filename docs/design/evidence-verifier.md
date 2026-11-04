@@ -61,7 +61,7 @@ for a person.
   capped at 100k chars, metadata days, canonical URL, linked domains, sha256 of the body), the provenance groups, judge
   samples, budget used and the verifier's own log. `replayRecord` recomputes the verdict from the record alone, with no
   network and no judge.
-- **Store**: `evidence_verdicts` (PG `0047_evidence_verdicts.sql`), tenant-scoped, read only by its own tenant. A run
+- **Store**: `evidence_verdicts` (PG `0048_evidence_verdicts.sql`), tenant-scoped, read only by its own tenant. A run
   is written `running` with its whole per-run cap reserved inside one serializable transaction, before anything is
   fetched. It is then completed once. A completed row can never change (trigger on both engines). Rows are erased with
   their tenant. No retention purge is defined.

@@ -402,6 +402,39 @@ CREATE TABLE memberships (
     PRIMARY KEY (tenant_id, member_id)
   );
 
+CREATE TABLE monitor_alerts (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+      run_id     TEXT NOT NULL,
+      event_key  TEXT NOT NULL,
+      kind       TEXT NOT NULL CHECK (kind IN ('new_company','new_signal','now_reachable')),
+      company    TEXT NOT NULL,
+      latency_s  INTEGER NOT NULL,
+      at         INTEGER NOT NULL
+    );
+
+CREATE TABLE monitor_cursors (
+      monitor_id      TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+      source          TEXT NOT NULL,
+      last_event_at   INTEGER,
+      last_checked_at INTEGER NOT NULL,
+      PRIMARY KEY (monitor_id, source)
+    );
+
+CREATE TABLE monitor_events (
+      user_id         TEXT NOT NULL,
+      event_key       TEXT NOT NULL,
+      entity_key      TEXT NOT NULL,
+      monitor_id      TEXT NOT NULL,
+      occurred_at     INTEGER NOT NULL,
+      first_seen_at   INTEGER NOT NULL,
+      last_checked_at INTEGER NOT NULL,
+      actionable_at   INTEGER,
+      reachable_at    INTEGER,
+      PRIMARY KEY (user_id, event_key)
+    );
+
 CREATE TABLE monitor_runs (
       id         TEXT PRIMARY KEY,
       monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
@@ -409,7 +442,7 @@ CREATE TABLE monitor_runs (
       ran_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       processed  INTEGER NOT NULL DEFAULT 0,
       new_count  INTEGER
-    );
+    , missed_runs INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE monitor_seen (
       monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
@@ -430,7 +463,7 @@ CREATE TABLE monitors (
       last_run_at    INTEGER,
       next_run_at    INTEGER,
       created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
-    );
+    , alert_policy TEXT NOT NULL DEFAULT 'all' CHECK (alert_policy IN ('all','reachable','new_companies')));
 
 CREATE TABLE newsjacks (
       id         TEXT PRIMARY KEY,
@@ -1164,6 +1197,10 @@ CREATE INDEX lifecycle_events_email ON lifecycle_events (email);
 
 CREATE INDEX memberships_member ON memberships (member_id);
 
+CREATE INDEX monitor_alerts_monitor ON monitor_alerts (monitor_id, at);
+
+CREATE INDEX monitor_events_entity ON monitor_events (user_id, entity_key);
+
 CREATE INDEX monitor_runs_monitor ON monitor_runs (monitor_id, ran_at);
 
 CREATE INDEX monitors_due ON monitors (enabled, next_run_at);
@@ -1389,6 +1426,12 @@ CREATE TRIGGER tomb_memberships BEFORE INSERT ON memberships BEGIN SELECT NEW.te
 
 CREATE TRIGGER tomb_memberships_member_id BEFORE INSERT ON memberships BEGIN SELECT NEW.member_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.member_id); END;
 
+CREATE TRIGGER tomb_monitor_alerts BEFORE INSERT ON monitor_alerts BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
+
+CREATE TRIGGER tomb_monitor_cursors BEFORE INSERT ON monitor_cursors BEGIN SELECT (SELECT user_id FROM monitors WHERE id = NEW.monitor_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id); END;
+
+CREATE TRIGGER tomb_monitor_events BEFORE INSERT ON monitor_events BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
+
 CREATE TRIGGER tomb_monitor_runs BEFORE INSERT ON monitor_runs BEGIN SELECT (SELECT user_id FROM monitors WHERE id = NEW.monitor_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id); END;
 
 CREATE TRIGGER tomb_monitor_seen BEFORE INSERT ON monitor_seen BEGIN SELECT (SELECT user_id FROM monitors WHERE id = NEW.monitor_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id); END;
@@ -1570,6 +1613,12 @@ CREATE TRIGGER tomb_upd_mail_read_consent BEFORE UPDATE OF tenant_id ON mail_rea
 CREATE TRIGGER tomb_upd_memberships BEFORE UPDATE OF tenant_id ON memberships BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_memberships_member_id BEFORE UPDATE OF member_id ON memberships BEGIN SELECT NEW.member_id; SELECT OLD.member_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.member_id IS NOT OLD.member_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.member_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.member_id))); END;
+
+CREATE TRIGGER tomb_upd_monitor_alerts BEFORE UPDATE OF user_id ON monitor_alerts BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
+
+CREATE TRIGGER tomb_upd_monitor_cursors BEFORE UPDATE OF monitor_id ON monitor_cursors BEGIN SELECT (SELECT user_id FROM monitors WHERE id = NEW.monitor_id); SELECT (SELECT user_id FROM monitors WHERE id = OLD.monitor_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.monitor_id IS NOT OLD.monitor_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = OLD.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.monitor_id))); END;
+
+CREATE TRIGGER tomb_upd_monitor_events BEFORE UPDATE OF user_id ON monitor_events BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_monitor_runs BEFORE UPDATE OF monitor_id ON monitor_runs BEGIN SELECT (SELECT user_id FROM monitors WHERE id = NEW.monitor_id); SELECT (SELECT user_id FROM monitors WHERE id = OLD.monitor_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.monitor_id IS NOT OLD.monitor_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = NEW.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.monitor_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'monitors' AND key = OLD.monitor_id) OR EXISTS (SELECT 1 FROM monitors p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.monitor_id))); END;
 
