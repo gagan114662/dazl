@@ -22,6 +22,7 @@ process.env.DB_PATH ??= path.join(mkdtempSync(path.join(tmpdir(), 'dazl-ids-')),
 const confirm = await import('../../app/api/leads/[lead]/confirm/route.ts')
 const domainReview = await import('../../app/api/leads/[lead]/domain-review/route.ts')
 const quarantine = await import('../../app/api/leads/[lead]/quarantine/route.ts')
+const leadFeedback = await import('../../app/api/leads/[lead]/feedback/route.ts')
 const warm = await import('../../app/api/leads/[lead]/warm-path/route.ts')
 const findContact = await import('../../app/api/leads/[lead]/find-contact/route.ts')
 const enrichRetry = await import('../../app/api/leads/[lead]/enrich-retry/route.ts')
@@ -100,6 +101,10 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   await asB('POST /api/leads/[lead]/domain-review', () => domainReview.POST(req(`/api/leads/${L}/domain-review`, 'POST', { action: 'withdraw' }), ctx({ lead: L })), is404)
   await asB('POST /api/leads/[lead]/quarantine', () => quarantine.POST(req(`/api/leads/${L}/quarantine`, 'POST', { reason: 'x' }), ctx({ lead: L })), is404)
   await asB('DELETE /api/leads/[lead]/quarantine', () => quarantine.DELETE(req(`/api/leads/${f.quarantined}/quarantine`, 'DELETE'), ctx({ lead: f.quarantined })), is404)
+  await asB('POST /api/leads/[lead]/quarantine (feedback_reason)', () => quarantine.POST(req(`/api/leads/${L}/quarantine`, 'POST', { reason: 'x', feedback_reason: 'competitor' }), ctx({ lead: L })), is404)
+  await asB('GET /api/leads/[lead]/feedback', () => leadFeedback.GET(req(`/api/leads/${L}/feedback`, 'GET'), ctx({ lead: L })), is404)
+  await asB('POST /api/leads/[lead]/feedback', () => leadFeedback.POST(req(`/api/leads/${L}/feedback`, 'POST', { verdict: 'accept' }), ctx({ lead: L })), is404)
+  await asB('DELETE /api/leads/[lead]/feedback', () => leadFeedback.DELETE(req(`/api/leads/${L}/feedback`, 'DELETE', { id: 'x', reason: 'y' }), ctx({ lead: L })), is404)
   // GET answers for the caller's own (empty) warm paths: 200 with nothing of A's in it
   await asB('GET /api/leads/[lead]/warm-path', () => warm.GET(req(`/api/leads/${L}/warm-path`, 'GET'), ctx({ lead: L })), s => s === 200 || s === 404)
   await asB('POST /api/leads/[lead]/warm-path', () => warm.POST(req(`/api/leads/${L}/warm-path`, 'POST', { contact_url: 'https://www.linkedin.com/in/b-someone', mutual_name: 'B mutual' }), ctx({ lead: L })), s => s === 404 || s === 422) // 422 is also what a nonexistent lead gets: no existence oracle
@@ -128,6 +133,12 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   assert.equal(await st(enrichRetry.POST(req(`/api/leads/${L}/enrich-retry`, 'POST', { provider: 'apollo', step: 'org' }), ctx({ lead: L }))), 409)
   assert.equal(await st(quarantine.POST(req(`/api/leads/${L}/quarantine`, 'POST', { reason: 'x' }), ctx({ lead: L }))), 200)
   assert.equal(await st(quarantine.DELETE(req(`/api/leads/${f.quarantined}/quarantine`, 'DELETE'), ctx({ lead: f.quarantined }))), 200)
+  const acc = await leadFeedback.POST(req(`/api/leads/${L}/feedback`, 'POST', { verdict: 'accept' }), ctx({ lead: L }))
+  assert.equal(acc.status, 200)
+  const accId = ((await acc.json()) as { feedback: { id: string } }).feedback.id
+  assert.equal(await st(quarantine.POST(req(`/api/leads/${L}/quarantine`, 'POST', { reason: 'x', feedback_reason: 'competitor' }), ctx({ lead: L }))), 200)
+  assert.deepEqual(((await (await leadFeedback.GET(req(`/api/leads/${L}/feedback`, 'GET'), ctx({ lead: L }))).json()) as { feedback: { verdict: string }[] }).feedback.map(x => x.verdict), ['reject', 'accept'])
+  assert.equal(await st(leadFeedback.DELETE(req(`/api/leads/${L}/feedback`, 'DELETE', { id: accId, reason: 'changed my mind' }), ctx({ lead: L }))), 200)
   const wg = await warm.GET(req(`/api/leads/${L}/warm-path`, 'GET'), ctx({ lead: L }))
   assert.match(await wg.text(), /ASECRETMUTUAL4q7/)
   assert.equal(await st(warm.POST(req(`/api/leads/${L}/warm-path`, 'POST', { contact_url: 'https://www.linkedin.com/in/a-other', mutual_name: 'A mutual' }), ctx({ lead: L }))), 200)

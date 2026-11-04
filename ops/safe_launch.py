@@ -5,8 +5,16 @@ No shell expansion, command substitution, tracing, credential argv, or inherited
 app output. Requires known exact PID/cwd and build markers before execution.
 Application stdout/stderr intentionally go to /dev/null to avoid secret logging.
 This does not rotate credentials or repair an incompatible env file.
+
+--status-file PATH writes this helper's own result JSON (fixed status code,
+service_changed, phase) to a fresh private file. It is created exclusively
+(never a symlink, never reused) before any gate runs; it never contains env
+values or command output, only the STATUS_CODES/PHASES vocabulary below, plus
+for listener_identity_unverifiable a `cause` (CAUSE_STEPS step, built-in
+exception class name, errno) so the refused step stays diagnosable.
 """
 import argparse
+import builtins
 import json
 import os
 from pathlib import Path
@@ -23,7 +31,47 @@ import urllib.request
 
 
 class LaunchError(Exception):
-    pass
+    # cause: optional failure_cause() record for a refusal whose original
+    # exception is otherwise discarded (fixed step word, class name, errno only).
+    def __init__(self, code, cause=None):
+        super().__init__(code)
+        self.cause = cause
+
+
+# The complete fixed vocabulary this helper may report. Anything else becomes
+# operation_failed, so a status file can never carry free text.
+STATUS_CODES = frozenset({
+    'env_format_unsupported', 'env_duplicate_name', 'env_expansion_unsupported',
+    'env_permissions_refused', 'env_read_failed', 'invalid_commit',
+    'build_commit_mismatch', 'build_missing', 'build_unreadable', 'pid_unavailable',
+    'listener_identity_unverifiable', 'supervisor_unverifiable',
+    'unexpected_process_ancestry', 'process_identity_mismatch',
+    'supervised_process_refused', 'runtime_missing', 'runtime_untrusted',
+    'existing_database_required', 'verified_backup_required', 'backup_integrity_failed',
+    'backup_verification_required', 'database_or_backup_unverifiable',
+    'invalid_process_or_port', 'same_stage_refused', 'required_env_missing_DB_PATH',
+    'required_env_missing_DAZL_MASTER_KEY', 'required_env_missing_PUBLIC_BASE_URL',
+    'runtime_env_override_refused', 'env_port_mismatch', 'pid_stage_mismatch',
+    'pid_listener_mismatch', 'live_commit_mismatch', 'pid_changed', 'preflight_only',
+    'old_listener_did_not_stop', 'deployed', 'new_listener_stuck_manual_recovery_required',
+    'rollback_launch_failed', 'rolled_back', 'rollback_unhealthy_manual_recovery_required',
+    'operation_failed', 'status_file_unavailable',
+})
+# preflight: no signal sent yet. Every later phase means the old listener was signalled.
+PHASES = frozenset({'preflight', 'old_signalled', 'new_start', 'rollback_start'})
+PHASE = 'preflight'
+# Steps a listener_identity_unverifiable `cause` may name (#621).
+CAUSE_STEPS = frozenset({'fd_enumeration', 'tcp_table'})
+# Built-in exception class names: the only `cause.exception` words, never free text.
+EXCEPTION_NAMES = frozenset(n for n, v in vars(builtins).items() if isinstance(v, type) and issubclass(v, BaseException))
+
+
+def failure_cause(step, error):
+    # Class name and errno only: never the message or filename.
+    name = type(error).__name__
+    number = getattr(error, 'errno', None)
+    return {'step': step, 'exception': name if name in EXCEPTION_NAMES else 'unrecognised',
+            'errno': number if type(number) is int and 0 <= number < 4096 else None}
 
 
 def parse_env(text):
@@ -107,9 +155,30 @@ def pid_cwd(pid):
         raise LaunchError('pid_unavailable') from None
 
 
+def fd_links(pid):
+    # An fd closed between the listing and its readlink (normal churn on a
+    # serving process) cannot be the persisting listening socket: skip it.
+    # A listing failure or any other readlink failure (process gone,
+    # permission denied) still raises and refuses.
+    fd_dir = f'/proc/{pid}/fd'
+    links, vanished = set(), False
+    for name in os.listdir(fd_dir):
+        try:
+            links.add(os.readlink(f'{fd_dir}/{name}'))
+        except FileNotFoundError:
+            vanished = True
+    if vanished:
+        # Every fd vanishing is also what an exiting process looks like: the
+        # fd directory must still be listable afterwards, or the pid refuses.
+        os.listdir(fd_dir)
+    return links
+
+
 def owns_listener(pid, port):
+    step = 'fd_enumeration'
     try:
-        sockets = {os.readlink(fd) for fd in Path(f'/proc/{pid}/fd').iterdir()}
+        sockets = fd_links(pid)
+        step = 'tcp_table'
         for table in ['/proc/net/tcp', '/proc/net/tcp6']:
             for row in Path(table).read_text().splitlines()[1:]:
                 cols = row.split()
@@ -117,8 +186,8 @@ def owns_listener(pid, port):
                     if f'socket:[{cols[9]}]' in sockets:
                         return True
         return False
-    except Exception:
-        raise LaunchError('listener_identity_unverifiable') from None
+    except Exception as error:
+        raise LaunchError('listener_identity_unverifiable', failure_cause(step, error)) from None
 
 
 def port_free(port):
@@ -219,7 +288,8 @@ def check_database_backup(env, args):
 RUNTIME = []
 
 def run(args):
-    global RUNTIME
+    global RUNTIME, PHASE
+    PHASE = 'preflight'
     if args.pid <= 1 or args.pid == os.getpid() or not 1024 <= args.port <= 65535:
         raise LaunchError('invalid_process_or_port')
     stage = stage_path(args.stage, args.commit)
@@ -250,8 +320,10 @@ def run(args):
         raise LaunchError('pid_changed')
     check_process(args.pid)
     os.kill(args.pid, signal.SIGTERM)
+    PHASE = 'old_signalled'
     if not await_state(lambda: port_free(args.port), 15):
         return {'status': 'old_listener_did_not_stop', 'service_changed': True}
+    PHASE = 'new_start'
     try:
         child = launch(stage, env, args.port)
     except Exception:
@@ -266,6 +338,7 @@ def run(args):
             pass
     if not await_state(lambda: port_free(args.port), 15):
         return {'status': 'new_listener_stuck_manual_recovery_required', 'service_changed': True}
+    PHASE = 'rollback_start'
     try:
         old = launch(rollback, env, args.port)
     except Exception:
@@ -286,15 +359,40 @@ def main():
     p.add_argument('--backup-db', required=True)
     p.add_argument('--backup-verified', action='store_true')
     p.add_argument('--execute', action='store_true')
+    p.add_argument('--status-file')
     args = p.parse_args()
+    global PHASE
+    PHASE = 'preflight'
+    status_fd = None
+    if args.status_file is not None:
+        try:
+            # Exclusive private create before any gate: no symlink, no reuse.
+            status_fd = os.open(args.status_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        except Exception:
+            print(json.dumps({'status': 'status_file_unavailable', 'service_changed': False, 'phase': PHASE}))
+            return 1
     try:
         result = run(args)
     except LaunchError as e:
         result = {'status': str(e), 'service_changed': False}
+        if e.cause is not None:
+            result['cause'] = e.cause
     except Exception:
         # Never print repr/traceback: parsers and subprocesses can carry secrets.
         result = {'status': 'operation_failed', 'service_changed': 'unknown'}
-    print(json.dumps(result))
+    if result['status'] not in STATUS_CODES:
+        result['status'] = 'operation_failed'
+    result['phase'] = PHASE
+    text = json.dumps(result)
+    if status_fd is not None:
+        try:
+            os.write(status_fd, (text + '\n').encode())
+            os.fsync(status_fd)
+        except OSError:
+            pass  # checked_launch then records this status file as invalid.
+        finally:
+            os.close(status_fd)
+    print(text)
     return 0 if result['status'] in ['preflight_only', 'deployed'] else 1
 
 
