@@ -44,6 +44,13 @@ Updated by the builder on every branch. Newest first.
 - b/366-revenue-pipeline (#366): deals with an owner member, routing rules for new qualified conversations, audited
   stage history, won/lost reasons and a history-rebuilt report (`lib/pipeline/`, `/api/pipeline/*`, `/app/pipeline`).
   Migration: TEMP 0047_revenue_pipeline on the branch for CI (draft); renumbered to main highest + 1 when the PRs ahead of it in the queue have landed. Refs #366 (accounts/contacts, tasks, CRM reconciliation not built).
+- b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
+  threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
+  `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
+  at most `SCAN_PER_TENANT_MAX` (1) claimed per tenant, kicked every tick; a restart hands queue claims back. Tick-level
+  multi-tenant load test with a default-off control. Migration 0047 (Instinct's order: this PR keeps 0047, #600
+  renumbers).
+
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
   Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.

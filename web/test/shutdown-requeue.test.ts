@@ -54,6 +54,52 @@ test('requeue is a no-op for rows it does not own: finished, re-claimed, or at M
   assert.equal(requeueInFlightForShutdown(db), 0)
 })
 
+// #355: with the shared work queue on (DAZL_SCAN_SHARED_QUEUE=1), a requeued scan must also hand back its queue claim,
+// or the next process would find the item still claimed and wait out the 20 min lease before running it.
+test('shared queue: requeue also hands back the queue claim by its token, so the next kick runs the scan at once; the old attempt writes nothing and its settle is refused', async (t) => {
+  process.env.DAZL_SCAN_SHARED_QUEUE = '1'; t.after(() => { delete process.env.DAZL_SCAN_SHARED_QUEUE })
+  const { db, master, id } = rig()
+  const releases: ((v: { text: string; citedUrls: string[] }) => void)[] = []
+  let calls = 0
+  const providers = wrap(() => { calls++; return new Promise(r => { releases.push(r) }) })
+  await kickRunner(db, { providers, master, score: false })
+  await flush()
+  const item = () => db.prepare('SELECT status, claim_token, attempts FROM work_queue WHERE id = ?').get(id) as { status: string; claim_token: number | null; attempts: number }
+  assert.equal(item().status, 'claimed'); const firstToken = item().claim_token!
+  assert.equal(requeueInFlightForShutdown(db), 1)
+  assert.equal(getJob(db, 'A', id)!.status, 'pending')
+  assert.deepEqual(item(), { status: 'pending', claim_token: null, attempts: 1 }, 'claim handed back; the attempt it used stays counted')
+  await kickRunner(db, { providers, master, score: false }) // the next process: no lease wait
+  await flush()
+  assert.equal(calls, 2); assert.equal(getJob(db, 'A', id)!.attempts, 2)
+  assert.equal(item().status, 'claimed'); assert.notEqual(item().claim_token, firstToken)
+  const secondToken = item().claim_token
+  releases[0]({ text: cand, citedUrls: ['https://a.com'] }) // the old attempt's provider call returns late
+  await flush()
+  assert.equal(listLeads(db, 'A', id).length, 0, 'old attempt wrote nothing')
+  assert.deepEqual([item().status, item().claim_token], ['claimed', secondToken], "old attempt's settle was refused: attempt 2 still owns the item")
+  releases[1]({ text: cand, citedUrls: ['https://a.com'] })
+  await flush()
+})
+
+test('shared queue: with DATABASE_URL set the queue is not on this handle: only the scan row is requeued, the claim is left to its lease; an untracked claim is never touched', async (t) => {
+  process.env.DAZL_SCAN_SHARED_QUEUE = '1'; t.after(() => { delete process.env.DAZL_SCAN_SHARED_QUEUE })
+  const { db, master, id } = rig()
+  const releases: (() => void)[] = []
+  const providers = wrap(() => new Promise(r => { releases.push(() => r({ text: '[]', citedUrls: [] })) }))
+  await kickRunner(db, { providers, master, score: false })
+  await flush()
+  db.prepare("INSERT INTO work_queue (id, tenant_id, kind, status, attempts, max_attempts, not_before, created_at, claimed_at, lease_expires_at, claim_token) VALUES ('other', 'B', 'scan', 'claimed', 1, 3, 0, 0, 0, 9999999999, 424242)").run()
+  const saved = process.env.DATABASE_URL
+  process.env.DATABASE_URL = 'postgres://unused.invalid/x'
+  try { assert.equal(requeueInFlightForShutdown(db), 1) } finally { if (saved === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = saved }
+  assert.equal(getJob(db, 'A', id)!.status, 'pending')
+  assert.equal((db.prepare('SELECT status FROM work_queue WHERE id = ?').get(id) as { status: string }).status, 'claimed', 'Postgres claim: the lease returns it')
+  assert.equal((db.prepare("SELECT claim_token FROM work_queue WHERE id = 'other'").get() as { claim_token: number }).claim_token, 424242, "another process's claim untouched")
+  for (const r of releases) r()
+  await flush()
+})
+
 test('REAL SIGTERM -> process.exit: the exit hook requeues only this process\'s own running attempts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'shut-')); const dbPath = join(dir, 'app.db')
   const child = spawn(process.execPath, ['--experimental-strip-types', join(import.meta.dirname, 'helpers/shutdown-child.ts')], { env: { ...process.env, DB_PATH: dbPath, SCAN_MASTER_KEY: '', NODE_ENV: 'test' }, stdio: ['ignore', 'pipe', 'pipe'] })
