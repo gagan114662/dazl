@@ -9,9 +9,12 @@ This does not rotate credentials or repair an incompatible env file.
 --status-file PATH writes this helper's own result JSON (fixed status code,
 service_changed, phase) to a fresh private file. It is created exclusively
 (never a symlink, never reused) before any gate runs; it never contains env
-values or command output, only the STATUS_CODES/PHASES vocabulary below.
+values or command output, only the STATUS_CODES/PHASES vocabulary below, plus
+for listener_identity_unverifiable a `cause` (CAUSE_STEPS step, built-in
+exception class name, errno) so the refused step stays diagnosable.
 """
 import argparse
+import builtins
 import json
 import os
 from pathlib import Path
@@ -28,7 +31,11 @@ import urllib.request
 
 
 class LaunchError(Exception):
-    pass
+    # cause: optional failure_cause() record for a refusal whose original
+    # exception is otherwise discarded (fixed step word, class name, errno only).
+    def __init__(self, code, cause=None):
+        super().__init__(code)
+        self.cause = cause
 
 
 # The complete fixed vocabulary this helper may report. Anything else becomes
@@ -53,6 +60,18 @@ STATUS_CODES = frozenset({
 # preflight: no signal sent yet. Every later phase means the old listener was signalled.
 PHASES = frozenset({'preflight', 'old_signalled', 'new_start', 'rollback_start'})
 PHASE = 'preflight'
+# Steps a listener_identity_unverifiable `cause` may name (#621).
+CAUSE_STEPS = frozenset({'fd_enumeration', 'tcp_table'})
+# Built-in exception class names: the only `cause.exception` words, never free text.
+EXCEPTION_NAMES = frozenset(n for n, v in vars(builtins).items() if isinstance(v, type) and issubclass(v, BaseException))
+
+
+def failure_cause(step, error):
+    # Class name and errno only: never the message or filename.
+    name = type(error).__name__
+    number = getattr(error, 'errno', None)
+    return {'step': step, 'exception': name if name in EXCEPTION_NAMES else 'unrecognised',
+            'errno': number if type(number) is int and 0 <= number < 4096 else None}
 
 
 def parse_env(text):
@@ -136,9 +155,30 @@ def pid_cwd(pid):
         raise LaunchError('pid_unavailable') from None
 
 
+def fd_links(pid):
+    # An fd closed between the listing and its readlink (normal churn on a
+    # serving process) cannot be the persisting listening socket: skip it.
+    # A listing failure or any other readlink failure (process gone,
+    # permission denied) still raises and refuses.
+    fd_dir = f'/proc/{pid}/fd'
+    links, vanished = set(), False
+    for name in os.listdir(fd_dir):
+        try:
+            links.add(os.readlink(f'{fd_dir}/{name}'))
+        except FileNotFoundError:
+            vanished = True
+    if vanished:
+        # Every fd vanishing is also what an exiting process looks like: the
+        # fd directory must still be listable afterwards, or the pid refuses.
+        os.listdir(fd_dir)
+    return links
+
+
 def owns_listener(pid, port):
+    step = 'fd_enumeration'
     try:
-        sockets = {os.readlink(fd) for fd in Path(f'/proc/{pid}/fd').iterdir()}
+        sockets = fd_links(pid)
+        step = 'tcp_table'
         for table in ['/proc/net/tcp', '/proc/net/tcp6']:
             for row in Path(table).read_text().splitlines()[1:]:
                 cols = row.split()
@@ -146,8 +186,8 @@ def owns_listener(pid, port):
                     if f'socket:[{cols[9]}]' in sockets:
                         return True
         return False
-    except Exception:
-        raise LaunchError('listener_identity_unverifiable') from None
+    except Exception as error:
+        raise LaunchError('listener_identity_unverifiable', failure_cause(step, error)) from None
 
 
 def port_free(port):
@@ -335,6 +375,8 @@ def main():
         result = run(args)
     except LaunchError as e:
         result = {'status': str(e), 'service_changed': False}
+        if e.cause is not None:
+            result['cause'] = e.cause
     except Exception:
         # Never print repr/traceback: parsers and subprocesses can carry secrets.
         result = {'status': 'operation_failed', 'service_changed': 'unknown'}

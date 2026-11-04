@@ -12,7 +12,7 @@
 // timestamps; each monitor keeps a cursor per source host; each alert keeps its detection latency.
 // No network and no paid calls: this only reads rows the scan pipeline already wrote and gated, inside the caller's
 // transaction. The scans themselves stay on the scheduler's quota and the runner's spend reservation (lib/monitors.ts).
-// Db layer (SQLite + Postgres); migrateMonitorEvents is the SQLite setup, pg/0045_monitor_events.sql the Postgres one.
+// Db layer (SQLite + Postgres); migrateMonitorEvents is the SQLite setup, pg/0046_monitor_events.sql the Postgres one.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'

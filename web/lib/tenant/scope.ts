@@ -31,6 +31,9 @@ export const NOT_DIRECT: Record<string, { via: [string, string] } | { global: st
   audit_closing_gate: { global: "one row per closing tenant deletion, existing only inside deleteTenant's own closing transactions (lib/tenant/lifecycle.ts); never at rest, so the audit INSERT exception it gates stays closed" },
   preview_claims: { global: "issued proof previews bound to a recipient email (#416): run/seller/recipient/expiry are immutable at insert, claimed_by_tenant is set once atomically; served by token, per-tenant reads use claimed_by_tenant" },
   trial_budget_lock: { global: 'one row every free-trial admission locks in turn (lib/billing/trial-budget.ts); a counter, no tenant data' },
+  worker_catalog: { global: 'reviewed worker versions registered at runtime (lib/workers/store.ts): name, version, code hash, definition; platform code, no tenant data' },
+  worker_deployments: { global: 'one row per runtime worker: active version, state, generation and limits (lib/workers/store.ts); no tenant data' },
+  worker_events: { global: 'append-only operator/host lifecycle trail for runtime workers: actor, name, version, code hash; never a tenant id (grants are also written to the tenant audit trail, audit_events)' },
 }
 
 

@@ -187,6 +187,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'watch', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'watch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'workspace', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'workers', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'workers', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'workspace/audit', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/audit-routes-runtime.mts' }, role: 'members' },
   { path: 'workspace/invitations/accept', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'read' },
   { path: 'workspace/invitations', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'members' },

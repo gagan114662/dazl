@@ -125,7 +125,22 @@ def safe_launch_vocabulary():
     spec = importlib.util.spec_from_file_location('safe_launch_vocabulary', Path(__file__).with_name('safe_launch.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return frozenset(module.STATUS_CODES), frozenset(module.PHASES)
+    return frozenset(module.STATUS_CODES), frozenset(module.PHASES), frozenset(module.CAUSE_STEPS), frozenset(module.EXCEPTION_NAMES)
+
+
+def read_cause(cause, steps, names):
+    # Kept only when every field is from safe_launch's fixed vocabulary.
+    if not isinstance(cause, dict) or set(cause) != {'step', 'exception', 'errno'}:
+        return None
+    step, exception, number = cause['step'], cause['exception'], cause['errno']
+    # Type before membership: a list/dict word is unhashable and must not raise.
+    if not isinstance(step, str) or not isinstance(exception, str):
+        return None
+    if step not in steps or exception not in names | {'unrecognised'}:
+        return None
+    if number is not None and not (type(number) is int and 0 <= number < 4096):
+        return None
+    return {'step': cause['step'], 'exception': cause['exception'], 'errno': number}
 
 
 def read_status(path):
@@ -145,7 +160,7 @@ def read_status(path):
         os.close(fd)
     try:
         data = json.loads(raw.decode()) if len(raw) <= 4096 else None
-        codes, phases = safe_launch_vocabulary()
+        codes, phases, steps, names = safe_launch_vocabulary()
     except Exception:
         return {'state': 'invalid'}
     if not isinstance(data, dict):
@@ -154,10 +169,15 @@ def read_status(path):
     result = {'state': 'read',
               'status': status if isinstance(status, str) and status in codes else 'unrecognised',
               'phase': phase if isinstance(phase, str) and phase in phases else 'unrecognised'}
-    if data.get('service_changed') in (True, False, 'unknown'):
-        result['service_changed'] = data['service_changed']
+    # Identity, not equality: 1, 0 and 1.0 are not the booleans safe_launch writes.
+    changed = data.get('service_changed')
+    if changed is True or changed is False or changed == 'unknown':
+        result['service_changed'] = changed
     if isinstance(data.get('commit'), str) and re.fullmatch(r'[a-f0-9]{40}', data['commit']):
         result['commit'] = data['commit']
+    cause = read_cause(data.get('cause'), steps, names)
+    if cause is not None:
+        result['cause'] = cause
     return result
 
 
