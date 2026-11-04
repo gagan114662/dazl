@@ -127,7 +127,12 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: unknown }> {
   const cancel = ev({ triggerEvent: 'BOOKING_CANCELLED', createdAt: '2026-01-03T10:00:00.000Z', payload: { uid: 'bk-1', iCalSequence: 2, attendees: [{ email: 'nobody@x.example' }] } })
   out.push(await call('hook cancelled', hook.POST(signed(cancel))))
   out.push(await call('hook cancelled replay', hook.POST(signed(cancel))))
-  out.push(await call('calcom after', calcom.GET(req('/api/settings/calcom'))))
+  // The list is created_at DESC, then uid; created_at is the wall clock in seconds, so a second boundary that falls
+  // between these writes on one engine and not the other reorders the list (seen on CI at fa0601b1). Compare the
+  // engines on content: sort by uid here.
+  const after = await call('calcom after', calcom.GET(req('/api/settings/calcom')))
+  ;(after.body as { bookings?: { booking_uid: string }[] }).bookings?.sort((x, y) => x.booking_uid.localeCompare(y.booking_uid))
+  out.push(after)
   out.push(await call('enrichment save', enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: 'apollo-test-key-0000001234' }))))
   out.push(await call('enrichment save pdl', enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:pdl', key: 'pdl-test-key-00000000005678' }))))
   out.push(await call('enrichment read', enrichment.GET()))
