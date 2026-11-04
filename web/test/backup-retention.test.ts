@@ -11,6 +11,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { nameTime, openDest, plainName } from '../scripts/backup/offhost.mts'
 import { blockers, sendSafety } from '../scripts/backup/send-safety.mts'
+import { migratePlatform } from '../lib/db/platform-tables.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import { tryLease } from '../lib/shared/lease.ts'
+import { fixtureBackup } from './helpers/recovery-fixture.mts'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
 const T = mkdtempSync(path.join(tmpdir(), 'prune-test-'))
@@ -36,7 +40,7 @@ function backups(count: number, opts: { stepMs?: number; drillOk?: boolean } = {
     writeFileSync(path.join(dir, f + '.json'), JSON.stringify({ tool: 'dazl-create-backup', sha256: createHash('sha256').update(body).digest('hex'), bytes: body.length, createdAt: new Date(t).toISOString() }))
     names.push(f)
   }
-  writeFileSync(path.join(dir, 'drill-report.json'), JSON.stringify({ ok: opts.drillOk ?? true, started_at: new Date().toISOString() }))
+  writeFileSync(path.join(dir, 'drill-report.json'), JSON.stringify({ tool: 'dazl-restore-drill', ok: opts.drillOk ?? true, started_at: new Date().toISOString(), backup: names[0] }))
   return { dir, names }
 }
 const offhost = (names: string[]) => { const d = path.join(T, `o${++n}`); mkdirSync(d); for (const b of names) { writeFileSync(path.join(d, b + '.age'), 'age-encryption.org/v1 x'); writeFileSync(path.join(d, b + '.age.json'), '{}') } return d }
@@ -83,6 +87,9 @@ test('fail closed: the newest backup modified, the drill failing or missing, or 
   assert.equal(r.code, 1); assert.match(String(r.json.refused), /drill report/)
   b = backups(4); writeFileSync(path.join(b.dir, 'drill-report.json'), '[true]'); r = run('prune-backups.mts', ['--dir', b.dir], { RETAIN_LOCAL: '1' })
   assert.equal(r.code, 1, 'a drill report of the wrong shape is not ok')
+  b = backups(4); writeFileSync(path.join(b.dir, 'drill-report.json'), JSON.stringify({ tool: 'dazl-restore-drill', ok: true, started_at: new Date().toISOString(), backup: b.names[1] }))
+  r = run('prune-backups.mts', ['--dir', b.dir], { RETAIN_LOCAL: '1' })
+  assert.equal(r.code, 1); assert.match(String(r.json.refused), /not about the newest backup/); assert.equal(readdirSync(b.dir).filter(f => f.endsWith('.db')).length, 4, 'an ok report for an older backup deletes nothing')
   r = run('prune-backups.mts', ['--dir', path.join(T, 'missing-dir')]); assert.equal(r.code, 1); assert.match(String(r.json.refused), /no usable local backup/)
 })
 
@@ -148,24 +155,48 @@ test('offhost helpers: only plain names, timestamps that round-trip', () => {
 })
 
 // ---- send gate
-function store(rows: { msg?: string[]; steps?: string[]; leaseExp?: number[] }) {
+function store(rows: { msg?: string[]; steps?: string[]; leaseExpMs?: number[]; claims?: number[]; drop?: string }) {
   const f = path.join(T, `s${++n}.db`), db = new Database(f)
-  db.exec("CREATE TABLE outreach_messages (id TEXT, status TEXT); CREATE TABLE sequence_steps (id TEXT, status TEXT); CREATE TABLE app_leases (name TEXT, expires_at INTEGER); CREATE TABLE autopilot_settings (enabled INTEGER, paused INTEGER)")
+  db.exec("CREATE TABLE outreach_messages (id TEXT, status TEXT); CREATE TABLE sequence_steps (id TEXT, status TEXT); CREATE TABLE followup_messages (id TEXT, status TEXT); CREATE TABLE autopilot_settings (enabled INTEGER, paused INTEGER); CREATE TABLE work_queue (id TEXT, status TEXT, lease_expires_at INTEGER)")
+  migratePlatform(db) // the real app_leases table
   for (const s of rows.msg ?? []) db.prepare('INSERT INTO outreach_messages VALUES (?, ?)').run('m', s)
   for (const s of rows.steps ?? []) db.prepare('INSERT INTO sequence_steps VALUES (?, ?)').run('s', s)
-  for (const e of rows.leaseExp ?? []) db.prepare('INSERT INTO app_leases VALUES (?, ?)').run('tick', e)
+  for (const e of rows.leaseExpMs ?? []) db.prepare("INSERT INTO app_leases (name, owner, expires_at) VALUES (?, 'old-host', ?)").run(`l${e}`, e)
+  for (const e of rows.claims ?? []) db.prepare("INSERT INTO work_queue VALUES ('q', 'claimed', ?)").run(e)
+  if (rows.drop) db.exec(`DROP TABLE ${rows.drop}`)
   db.close(); return f
 }
-test('send gate: clear only when nothing is sending or uncertain and every old lease has expired', () => {
-  const now = Math.floor(Date.now() / 1000)
-  let r = run('send-gate.mts', ['--db', store({ msg: ['sent', 'failed'], leaseExp: [now - 10] })])
+test('send gate: clear only when nothing is sending or uncertain and every old lease and queue claim has expired', () => {
+  const nowMs = Date.now(), nowS = Math.floor(nowMs / 1000)
+  // app_leases.expires_at is epoch ms (tryLease): a tick lease that expired 31 minutes ago does not block
+  let r = run('send-gate.mts', ['--db', store({ msg: ['sent', 'failed'], leaseExpMs: [nowMs - 31 * 60_000], claims: [nowS - 10] })])
   assert.equal(r.code, 0, r.out); assert.equal(r.json.sending_may_be_enabled, true); assert.deepEqual(r.json.blocked_by, [])
-  r = run('send-gate.mts', ['--db', store({ msg: ['uncertain', 'sending'], steps: ['uncertain'], leaseExp: [now + 600] })])
-  assert.equal(r.code, 1); assert.deepEqual(r.json.blocked_by, ['messages_sending', 'messages_uncertain', 'sequence_steps_unresolved', 'leases_unexpired'])
+  r = run('send-gate.mts', ['--db', store({ msg: ['uncertain', 'sending'], steps: ['uncertain'], leaseExpMs: [nowMs + 600_000], claims: [nowS + 600] })])
+  assert.equal(r.code, 1); assert.deepEqual(r.json.blocked_by, ['messages_sending', 'messages_uncertain', 'sequence_steps_unresolved', 'leases_unexpired', 'queue_claims_unexpired'])
   assert.match(r.out, /keep AUTOPILOT_KILL=1/)
-  // a store without the tables (an older schema) has nothing to reconcile
+  // a lease still running for 5 more minutes blocks on its own
+  r = run('send-gate.mts', ['--db', store({ leaseExpMs: [nowMs + 300_000] })])
+  assert.equal(r.code, 1); assert.deepEqual(r.json.blocked_by, ['leases_unexpired'])
+})
+test('send gate: a lease written by the real tryLease and expired is not counted; a live one is (ms, not seconds)', async () => {
+  const f = store({}), h = new Database(f), db = sqliteDb(h)
+  const past = Date.now() - 2 * 3_600_000
+  const old = await tryLease(db, 'internal-tick', { ttlMs: 30 * 60_000, stepBudgetMs: 60_000, heartbeat: false, clock: () => past })
+  assert.ok(old, 'lease taken at the old host\'s time')
+  assert.equal(sendSafety(h).leases_unexpired, 0, 'expired 90 minutes ago: never "unexpired" (the seconds comparison counted it)')
+  assert.ok(sendSafety(h, Math.floor(Date.now() / 1000)).leases_unexpired === 1, 'the same row read against a seconds clock looks unexpired: the bug this guards against')
+  const live = await tryLease(db, 'other-lease', { ttlMs: 30 * 60_000, stepBudgetMs: 60_000, heartbeat: false })
+  assert.ok(live)
+  assert.equal(sendSafety(h).leases_unexpired, 1)
+  await live!.release()
+  h.close()
+})
+test('send gate: an empty store or one missing a counted table is not a dazl store: refused (exit 2), never clear', () => {
   const empty = path.join(T, 'empty.db'); new Database(empty).close()
-  assert.equal(run('send-gate.mts', ['--db', empty]).code, 0)
+  const e = run('send-gate.mts', ['--db', empty]); assert.equal(e.code, 2, e.out); assert.match(e.out, /not a current dazl store/)
+  for (const t of ['outreach_messages', 'sequence_steps', 'followup_messages', 'app_leases']) {
+    const r = run('send-gate.mts', ['--db', store({ drop: t })]); assert.equal(r.code, 2, `${t}: ${r.out}`); assert.match(r.out, new RegExp(`no ${t}`))
+  }
 })
 test('send gate: a missing, unreadable or non-database file is never "clear" (exit 2); usage errors exit 2', () => {
   assert.equal(run('send-gate.mts', ['--db', path.join(T, 'nope.db')]).code, 2)
@@ -176,4 +207,26 @@ test('send gate: a missing, unreadable or non-database file is never "clear" (ex
 test('send safety counts are shared by the drill and the gate', () => {
   const db = new Database(store({ msg: ['uncertain'] }), { readonly: true })
   try { const s = sendSafety(db); assert.equal(s.messages_uncertain, 1); assert.deepEqual(blockers(s), ['messages_uncertain']) } finally { db.close() }
+})
+
+// the shipped wiring: ops/backup/run-backup.sh prunes only with BACKUP_RETENTION=1 exactly, after its backup and drill
+test('run-backup.sh: retention runs only with BACKUP_RETENTION=1, keeps the newest RETAIN_LOCAL, never the one it just took', async () => {
+  const fx = await fixtureBackup(path.join(T, 'rb')), bdir = path.join(T, 'rb-backups')
+  const runBackup = (env: Record<string, string>) => {
+    const r = spawnSync('bash', [path.join(web, '../ops/backup/run-backup.sh')], { encoding: 'utf8', env: { PATH: process.env.PATH!, HOME: process.env.HOME!, WEB_DIR: web, DB_PATH: fx.source, BACKUP_DIR: bdir, RETAIN_LOCAL: '2', ...env } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr }
+  }
+  const dbs = () => readdirSync(bdir).filter(f => /^dazl-backup-.*\.db$/.test(f)).sort()
+  for (const v of ['', '0', 'yes', 'true']) { const r = runBackup({ BACKUP_RETENTION: v }); assert.equal(r.code, 0, r.out) }
+  assert.equal(dbs().length, 4, 'BACKUP_RETENTION unset, 0, yes or true: nothing is ever deleted')
+  const before = dbs()
+  const r = runBackup({ BACKUP_RETENTION: '1' })
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /"type":"backup_prune"/)
+  const after = dbs()
+  assert.equal(after.length, 2, r.out)
+  const newest = after.find(f => !before.includes(f))
+  assert.ok(newest, 'the backup this run took is kept')
+  const bad = runBackup({ BACKUP_RETENTION: '1', RETAIN_LOCAL: 'all' })
+  assert.notEqual(bad.code, 0, 'a malformed retention number fails the run'); assert.match(bad.out, /retention refused or failed/)
+  assert.equal(dbs().length, 3, 'and deletes nothing (the new backup is added, none removed)')
 })

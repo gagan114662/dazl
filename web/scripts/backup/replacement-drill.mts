@@ -211,7 +211,7 @@ if (decryptOk && restoredBackup) {
 
 const ds = (name: string) => (drill.steps ?? []).find(s => s.step.startsWith(name))
 const appD = ds('app')?.detail ?? {}, keyD = ds('key recovery')?.detail ?? {}, sendD = ds('send safety')?.detail ?? {}
-const blockedBy = ['messages_sending', 'messages_uncertain', 'sequence_steps_unresolved', 'followups_unresolved', 'leases_unexpired_at_drill'].filter(k => typeof sendD[k] !== 'number' || sendD[k] !== 0)
+const blockedBy = ['messages_sending', 'messages_uncertain', 'sequence_steps_unresolved', 'followups_unresolved', 'leases_unexpired_at_drill', 'queue_claims_unexpired'].filter(k => typeof sendD[k] !== 'number' || sendD[k] !== 0)
 const cfg = steps.find(s => s.step.startsWith('secrets'))
 const dec = steps.find(s => s.step.startsWith('decrypt'))
 const checks: Record<string, boolean> = {

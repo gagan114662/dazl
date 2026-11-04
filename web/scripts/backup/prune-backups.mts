@@ -7,7 +7,8 @@
 //                         last RETAIN_OFFHOST_DAILY UTC days (14) and each of the last RETAIN_OFFHOST_WEEKLY ISO weeks (8)
 // Fail-closed rules (each refuses the WHOLE run, exit 1, nothing deleted):
 //   - a retention number that is not a decimal integer >= 1 (exit 2);
-//   - no usable local backup, the newest no longer matches its sidecar sha256, or the drill report is missing or not ok:
+//   - no usable local backup, the newest no longer matches its sidecar sha256, or the drill report is missing, not ok,
+//     or about another backup than the newest (restore-drill.ts --report names it in `backup`):
 //     while the newest is in doubt, the older ones may be the only good ones;
 //   - the off-host destination cannot be listed (when one is configured).
 // Never deleted: anything not named dazl-backup-<YYYYMMDDTHHMMSSZ>-..., a timestamp more than 300 s in the future
@@ -77,6 +78,8 @@ if (!locals.length) finish(1, 'no usable local backup: nothing is pruned while t
   if (!same) finish(1, `newest backup ${newest.f} does not match its sidecar sha256`)
   const drill = readJson(drillPath)
   if (drill?.ok !== true) finish(1, 'the drill report is missing or not ok')
+  // an ok report about an OLDER backup says nothing about the newest one
+  if (drill.backup !== newest.f) finish(1, `the drill report is not about the newest backup ${newest.f}`)
   out.newest = newest.f
 }
 if (anomalies.length) out.anomalies = anomalies

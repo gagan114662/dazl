@@ -172,7 +172,7 @@ CI runs the whole path on synthetic data on every PR (`release-gate.yml`, step "
 
 **Key-recovery drill (separate, quarterly).** `--mode keys` runs steps 1 to 4 without the app. A person other than the one who stored the keys recovers all three from their offline stores into mode-600 files and runs it; `--report /var/backups/dazl/key-drill-report.json` is the file `backup-check.mts` watches once `KEY_DRILL_REPORT` is set (missing, failed or older than 92 days alerts).
 
-**Send gate.** `scripts/backup/send-gate.mts --db <restored app.db>` is read-only and exits 0 only when no outreach message, sequence step or follow-up is `sending` or `uncertain` and no lease taken on the old host is unexpired; a missing or unreadable database exits 2, never "clear". `AUTOPILOT_KILL` stays set and the tick secret stays off until it exits 0.
+**Send gate.** `scripts/backup/send-gate.mts --db <restored app.db>` is read-only and exits 0 only when no outreach message, sequence step or follow-up is `sending` or `uncertain` no lease taken on the old host (`app_leases`, epoch ms) is unexpired and no `work_queue` item is still claimed under a live lease; a missing or unreadable database, or one without the tables it counts, exits 2, never "clear". `AUTOPILOT_KILL` stays set and the tick secret stays off until it exits 0.
 
 **Install (Instinct, after approval):**
 1. Copy `ops/backup/*.service` and `*.timer` to `/etc/systemd/system/` and replace the `CHANGE-ME` user and paths (also `RCLONE_CONFIG` in `dazl-config-backup.service`).
