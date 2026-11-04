@@ -5,7 +5,7 @@
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
 import { planConditions, eventMatches, eventMatchIndex } from './targeting.ts'
 import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, type Stage } from './sales-hiring-gate.ts'
-import { salesHiringRequired } from './sales-hiring-required.ts'
+import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
 import { parseWindowDays } from './window.ts'
@@ -57,9 +57,10 @@ function dated(ok: boolean, date: string | null, days: number | null, now: numbe
 }
 
 // The sales-hiring gate's durable pass proves only what that gate checked, with ITS window and stage: a condition with a narrower clock,
-// another stage or a clock relative to another event is not proven by it.
+// another stage or a clock relative to another event is not proven by it. Under an OR request (salesGateOr) the gate passes a lead on ONE
+// branch, so its pass record proves neither branch in particular: each condition then needs its own verified fact.
 function gateCovers(c: Condition, ctx: ProofContext): boolean {
-  if (!ctx.salesGatePassed || !salesHiringRequired(ctx.query, ctx.icp) || c.relative_to) return false
+  if (!ctx.salesGatePassed || !salesHiringRequired(ctx.query, ctx.icp) || c.relative_to || salesGateOr(ctx.query, ctx.icp)) return false
   const gateDays = parseWindowDays(ctx.query ?? '') ?? 90
   const clockOk = c.within_days === null || c.within_days >= gateDays
   let signals: string[] = []
