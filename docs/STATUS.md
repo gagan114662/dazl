@@ -45,6 +45,12 @@ Updated by the builder on every branch. Newest first.
   prospect -> qualified conversation -> signup -> usable result -> repeat -> paid -> retained funnel from recorded events
   (no analytics vendor, no migration); Stripe `charge.refunded` now lands in the audit trail. Off until
   `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost prices recorded model tokens (scans, drafting, qualification) and stays a lower bound (enrichment credits are not converted).
+- b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
+  threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
+  `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
+  at most `SCAN_PER_TENANT_MAX` (1) claimed per tenant, kicked every tick; a restart hands queue claims back. Tick-level
+  multi-tenant load test with a default-off control. Migration 0047 (Instinct's order: this PR keeps 0047, #600
+  renumbers).
 
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
