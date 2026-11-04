@@ -280,3 +280,31 @@ test('sequence step: a conversion proven DURING the token refresh stops the step
   assert.equal((db.prepare('SELECT status FROM sequences WHERE id = ?').get(seqId) as { status: string }).status, 'stopped', 'sequence terminated')
   assert.deepEqual(db.prepare('SELECT status, claimed_at FROM sequence_steps WHERE sequence_id = ? AND step = 2').get(seqId), { status: 'approved', claimed_at: null }, 'step released inert, never sent')
 })
+
+test('the conversion is a transition: only a seller with an opted-in policy and stopped work enrolls; pending enrolls nothing', async () => {
+  const { optInOnboarding, withdrawOnboarding, onboardingSendAllowed } = await import('../lib/outreach/onboarding-policy.ts')
+  const db = base()
+  const held = (id: string, tenant: string, email: string) => {
+    const lead = mkLead(db, tenant, email)
+    db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until) VALUES (?, ?, ?, ?, 'hi', ?, 'draft', 'warmup_manual', ?)").run(id, tenant, lead, email, BODY, NOW + 100)
+  }
+  optInOnboarding(db, 'A', 'owner-a', NOW) // A: opted in, has queued work
+  optInOnboarding(db, 'C', 'owner-c', NOW) // C: opted in, but never prospected this address
+  optInOnboarding(db, 'D', 'owner-d', NOW); withdrawOnboarding(db, 'D', 'owner-d', NOW + 1) // D: withdrew
+  held('ma', 'A', 'cust@corp.example'); held('mb', 'B', 'cust@corp.example'); held('md', 'D', 'cust@corp.example')
+  const enrolled = () => (db.prepare('SELECT tenant_id, source FROM onboarding_enrollments ORDER BY tenant_id').all() as { tenant_id: string; source: string }[])
+  // Pending (unverified) conversion: no stop, no transition.
+  queuePendingLifecycle(db, 'signup', 'cust@corp.example', 'u', NOW)
+  assert.deepEqual(enrolled(), [])
+  // Ownership proven: the stop and the transition land together.
+  assert.equal(activateLifecycleFor(db, 'cust@corp.example', NOW + 5), 3)
+  assert.deepEqual(enrolled(), [{ tenant_id: 'A', source: 'conversion:signup' }], 'A only: B has no policy, C never prospected, D withdrew')
+  assert.equal(onboardingSendAllowed(db, 'A', 'cust@corp.example'), true)
+  assert.equal(onboardingSendAllowed(db, 'B', 'cust@corp.example'), false)
+  // A later payment conversion of the same customer, and replays, add nothing.
+  assert.equal(recordLifecycleEvent(db, 'payment', 'cust@corp.example', 'u', NOW + 9), 0)
+  assert.equal(activateLifecycleFor(db, 'cust@corp.example', NOW + 10), 0)
+  assert.deepEqual(enrolled(), [{ tenant_id: 'A', source: 'conversion:signup' }])
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM onboarding_audit WHERE action = 'enrolled'").get() as { n: number }).n, 1)
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM suppressions').get() as { n: number }).n, 0, 'not a marketing suppression')
+})

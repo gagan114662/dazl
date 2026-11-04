@@ -76,18 +76,20 @@ export function migrateHiringFeed(db: Database.Database): void {
 }
 
 interface CrawlTarget { id: string; company: string; source_url: string; job_id: string; claim: string }
-const auditCount = (db: Database.Database, jobId: string) => (db.prepare('SELECT count(*) c FROM connector_audit WHERE scan_job_id = ?').get(jobId) as { c: number }).c
+// The crawl's own per-site row ('sitecrawl'), never the #389 technology ledger ('sitecrawl:tech'), which is written before the crawl's row:
+// a crawl that failed after the ledger row must still read as failed, not finished.
+export const crawlAuditCount = (db: Database.Database, jobId: string) => (db.prepare("SELECT count(*) c FROM connector_audit WHERE scan_job_id = ? AND connector = 'sitecrawl'").get(jobId) as { c: number }).c
 
 // Reads each company's own site one at a time, each with its own deadline. The outcome is recorded per company:
 // finished = the read ran to an answer (found or none published), cut_off = the deadline hit, failed = it stopped without any answer.
 async function runCrawls(db: Database.Database, tenant: string, targets: CrawlTarget[], deps: FeedIntakeDeps): Promise<void> {
   for (const t of targets) {
     const signal = AbortSignal.timeout(deps.deadlineMs ?? CRAWL_DEADLINE_MS)
-    const before = auditCount(db, t.job_id)
+    const before = crawlAuditCount(db, t.job_id)
     let status: 'finished' | 'cut_off' | 'failed' = 'failed'
     try {
       await crawlJob(db, tenant, t.job_id, { get: deps.get ?? (url => rawGet(url, 0, 10_000, guardedLookup, signal)), gapMs: deps.gapMs, env: deps.env, signal, leads: [{ id: t.id, company: t.company, source_url: t.source_url }] })
-      status = signal.aborted ? 'cut_off' : auditCount(db, t.job_id) > before ? 'finished' : 'failed'
+      status = signal.aborted ? 'cut_off' : crawlAuditCount(db, t.job_id) > before ? 'finished' : 'failed'
     } catch { status = 'failed' }
     // Only the read that still holds this company's claim may record its outcome. A stale worker finishing after a retry took over changes nothing.
     db.prepare("UPDATE hiring_feed_crawl SET status = ?, finished_at = ? WHERE lead_id = ? AND tenant_id = ? AND status = 'reading' AND claim = ?").run(status, Math.floor(Date.now() / 1000), t.id, tenant, t.claim)

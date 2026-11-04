@@ -69,6 +69,34 @@ function* reapIn(t: Tx, now: number, backoff: BackoffPolicy, rng: () => number):
   return n
 }
 
+// complete()/fail() inside a caller's transaction, so a store that owns domain rows for the item (lib/workers/runtime.ts)
+// commits them in the same transaction as the queue transition: both happen, or neither. Same rules as complete/fail.
+export function* settleIn(t: Tx, token: number, result: { ok: true } | { ok: false; error?: string; retryable?: boolean }, now: number,
+  backoff: BackoffPolicy = DEFAULT_BACKOFF, rng: () => number = Math.random): TxBody<'done' | FailOutcome> {
+  const r = yield* t.get<Row>("SELECT * FROM work_queue WHERE claim_token = ? AND status = 'claimed'", [token])
+  if (!r) return 'stale'
+  if (result.ok) return (yield* release(t, r.id, token, 'done', null)) ? 'done' : 'stale'
+  const error = (result.error ?? 'failed').slice(0, MAX_ERROR)
+  const attempts = Number(r.attempts)
+  if (result.retryable === false || attempts >= Number(r.max_attempts)) return (yield* release(t, r.id, token, 'failed', error)) ? 'failed' : 'stale'
+  return (yield* release(t, r.id, token, 'pending', error, now + backoffSeconds(attempts, backoff, rng))) ? 'retry' : 'stale'
+}
+
+// Fence every live claim of one kind (lib/workers: a stopped, restarted or rolled-back worker): each goes back to
+// pending, claimable now, and its token stops owning it, so the old holder's complete/fail answers 'stale'. The attempt
+// it used stays counted, so fencing cannot loop an item past maxAttempts.
+export function* fenceKindIn(t: Tx, kind: string, now: number): TxBody<number> {
+  return (yield* t.run(
+    "UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE kind = ? AND status = 'claimed'",
+    [now, kind])).changes
+}
+
+// The same for one claim whose owner learned it is fenced: back to pending if the token still owns it.
+export function* requeueIn(t: Tx, token: number, now: number): TxBody<boolean> {
+  return (yield* t.run(
+    "UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE claim_token = ? AND status = 'claimed'",
+    [now, token])).changes === 1
+}
 
 export class DbQueue {
   private db: Db
@@ -148,22 +176,14 @@ export class DbQueue {
   }
 
   async complete(token: number): Promise<boolean> {
-    return this.db.tx(function* (t): TxBody<boolean> {
-      const r = yield* t.get<Row>("SELECT * FROM work_queue WHERE claim_token = ? AND status = 'claimed'", [token])
-      return r ? yield* release(t, r.id, token, 'done', null) : false
-    })
+    return (await this.db.tx(function* (t) { return yield* settleIn(t, token, { ok: true }, nowS()) })) === 'done'
   }
 
   async fail(token: number, opts?: FailOptions): Promise<FailOutcome> {
     const now = opts?.now ?? nowS()
     const { backoff, rng } = this
     return this.db.tx(function* (t): TxBody<FailOutcome> {
-      const r = yield* t.get<Row>("SELECT * FROM work_queue WHERE claim_token = ? AND status = 'claimed'", [token])
-      if (!r) return 'stale'
-      const error = (opts?.error ?? 'failed').slice(0, MAX_ERROR)
-      const attempts = Number(r.attempts)
-      if (opts?.retryable === false || attempts >= Number(r.max_attempts)) return (yield* release(t, r.id, token, 'failed', error)) ? 'failed' : 'stale'
-      return (yield* release(t, r.id, token, 'pending', error, now + backoffSeconds(attempts, backoff, rng))) ? 'retry' : 'stale'
+      return (yield* settleIn(t, token, { ok: false, error: opts?.error, retryable: opts?.retryable }, now, backoff, rng)) as FailOutcome
     })
   }
 
