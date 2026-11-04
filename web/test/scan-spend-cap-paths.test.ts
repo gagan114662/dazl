@@ -18,7 +18,7 @@ import { tfFetch, tfSearch, resetTinyfishState } from '../lib/search/tinyfish.ts
 import { apolloOrgEnrich, apolloPeopleSearch } from '../lib/enrich/apollo.ts'
 import { pdlPeopleSearch } from '../lib/enrich/pdl.ts'
 import { renderViaService } from '../lib/scan/fetch-page.ts'
-import { runWithScanSpend, scanCapConfig, scanSpendCalls, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
+import { outsideScanSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendContext, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 // PAID: endpoint -> the only module that may call it, and the kind it reserves.
@@ -65,7 +65,9 @@ const FREE: Record<string, string> = {
   'https://www.googleapis.com/auth/gmail.send': 'an OAuth scope name, not a request',
   'https://www.googleapis.com/oauth2/v3/certs': 'Google OAuth keys: free',
   'env:CRAWL4AI_URL': 'the operator-run crawler container: no per-call charge',
+  'env:ADVANCED_WORKER_URL': "the operator-run advanced-sources worker, carrying the tenant's own session: no per-call charge",
   'env:DATABASE_URL': 'the store, not a provider',
+  'env:SYSTEM_MAIL_SMTP_URL': "dazl's own account mail (SMTP), not a scan path",
   'env:JINA_READER_URL': 'Jina Reader endpoint override: free reader',
   'env:PUBLIC_BASE_URL': "dazl's own public URL, not a provider",
 }
@@ -79,7 +81,7 @@ function files(dir: string): string[] {
 }
 const SOURCES = [...files(join(ROOT, 'lib')), ...files(join(ROOT, 'app'))].map(p => ({ rel: relative(ROOT, p).split('\\').join('/'), text: readFileSync(p, 'utf8') }))
 const ENDPOINT = /https:\/\/[a-z0-9.-]*(?:api[a-z0-9.-]*|googleapis\.com|r\.jina\.ai)[^'"`\s?$)]*/g
-const ENV_ENDPOINT = /process\.env\.([A-Z0-9_]*(?:URL|ENDPOINT|BASE|HOST)[A-Z0-9_]*)/g
+const ENV_ENDPOINT = /\benv\.([A-Z0-9_]*(?:URL|ENDPOINT|BASE|HOST)[A-Z0-9_]*)/g
 
 test('inventory: every API endpoint and env-configured endpoint in lib/ and app/ is classified as paid (gated) or free', () => {
   const unknown: string[] = []
@@ -105,6 +107,18 @@ test('inventory: each gated module reserves its kind before its request, and daz
   }
   assert.deepEqual(SOURCES.filter(s => s.rel !== 'lib/scan/spend-cap.ts' && /cache_control/.test(s.text)).map(s => s.rel), [], 'a cache write would be billed above the reserved input price')
   assert.deepEqual([...new Set(Object.values(PAID).flatMap(p => p.kind))].sort(), [...SPEND_KINDS].sort(), 'every spend kind has a transport')
+  // the runner opens the scan's context around the whole attempt, and autopilot (outreach, own guards) runs outside it
+  const runner = SOURCES.find(s => s.rel === 'lib/scan/runner.ts')!.text
+  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  assert.equal([...runner.matchAll(/\(deps\.autopilot \?\? runAutopilot\)\(/g)].length, 1)
+  assert.match(runner, /outsideScanSpend\(\(\) => \(deps\.autopilot \?\? runAutopilot\)\(/)
+  assert.match(SOURCES.find(s => s.rel === 'lib/enrich/index.ts')!.text, /runWithJobSpend\(db, tenantId, lead\.scan_job_id, \(\) => enrichLeadContacts\(/, 'the owner retry draws on its scan')
+})
+
+test("outsideScanSpend: work started inside a scan but not the scan's spend sees no scan context", async () => {
+  const s = scan()
+  const seen = await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => [scanSpendContext()?.jobId, await outsideScanSpend(async () => scanSpendContext()?.jobId ?? null)])
+  assert.deepEqual(seen, ['j1', null])
 })
 
 // ---- behaviour: each paid transport inside a scan ----

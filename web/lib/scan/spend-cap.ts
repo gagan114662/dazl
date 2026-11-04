@@ -182,6 +182,9 @@ const store = new AsyncLocalStorage<ScanSpendCtx>()
 // Runs fn with the scan's spend context: every gated paid call inside it (awaited or not) reserves on this scan.
 export function runWithScanSpend<T>(ctx: ScanSpendCtx, fn: () => Promise<T>): Promise<T> { return store.run(ctx, fn) }
 export function scanSpendContext(): ScanSpendCtx | undefined { return store.getStore() }
+// Work a scan starts that is not the scan's own spend (autopilot's outreach drafting, under its own guards) runs outside
+// the scan's context: the cap neither counts nor refuses it.
+export function outsideScanSpend<T>(fn: () => T): T { return store.exit(fn) }
 
 // A paid step a scan's owner runs on that scan outside its runner (the owner retry of a held enrichment lookup,
 // lib/enrich/index.ts retryHeldEnrichment) draws on the same scan's ledger, at the scan's current attempt, under the
