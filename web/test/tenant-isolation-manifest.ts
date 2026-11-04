@@ -102,6 +102,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'preview/[token]/google', method: 'GET', auth: 'public', note: 'continue-with-Google for a preview claim: a validated, live one-time claim token gates the handoff; foreign, expired or unknown tokens redirect, never reach Google, and no input URL is redirected to' },
   { path: 'preview/claim', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'preview/claim', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/preview-claim-route-runtime.mts' }, role: 'read' },
+  { path: 'preview/issue', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'preview/issue', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/preview-claim-route-runtime.mts' }, role: 'read' },
   { path: 'monitors', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'onboarding/policy', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
@@ -114,6 +115,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach/followups', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/inbox', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/inbox', method: 'POST', auth: 'session', crossTenant: { covered: 'inbox-route.test.ts' }, role: 'operate' },
+  { path: 'outreach/inbox/fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'owners' },
+  { path: 'outreach/inbox/fixture', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'owners' },
 
   { path: 'outreach/polish', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'outreach/reopen', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },

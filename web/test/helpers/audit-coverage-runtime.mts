@@ -41,6 +41,8 @@ globalThis.fetch = (async (u: unknown) => {
   if (url === 'https://oauth2.googleapis.com/revoke') return json({})
   if (url === 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send') return stub.gmail === 200 ? json({ id: `gm${randomBytes(6).toString('hex')}`, threadId: 'th1' }) : json({ error: 'backend' }, stub.gmail)
   if (url === 'https://api.hubapi.com/crm/v3/objects/contacts' && stub.hubspot.length) return stub.hubspot.shift()!
+  // pushLead reads a created contact back (#569): the stub holds what it created (lead 0's email)
+  if (url === 'https://api.hubapi.com/crm/v3/objects/contacts/9001?properties=email,company') return json({ id: '9001', properties: { email: 'info@lead0.example', company: 'Lead Co 0' }, archived: false })
   if (url === 'https://api.stripe.com/v1/billing_portal/sessions') return json({ id: 'bps_synthetic', url: 'https://billing.stripe.test/p/session/bps_synthetic' })
   throw new Error(`Unexpected network call ${url}`)
 }) as typeof fetch
