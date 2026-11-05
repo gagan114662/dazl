@@ -13,6 +13,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { poolRows } from '../lib/llm/spend-pool.ts'
 import { scanSpendCalls, scanSpendRow, HARD_CAP_USD } from '../lib/scan/spend-cap.ts'
 
 const master = randomBytes(32)
@@ -40,6 +41,7 @@ async function run(env: Record<string, string | undefined>, usage: boolean) {
     }
     if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: 200 })
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
+    if (u === 'https://api.anthropic.com/v1/messages/count_tokens') return new Response(JSON.stringify({ input_tokens: 400 }), { status: 200 }) // free token counter used by guarded runs
     if (u === 'https://api.anthropic.com/v1/messages') {
       const b = JSON.parse(String(init?.body ?? '{}')) as { max_tokens: number }
       const text = b.max_tokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead])
@@ -56,7 +58,7 @@ async function run(env: Record<string, string | undefined>, usage: boolean) {
   try {
     const r = await runJob(db, job, { master, fetchPage: page, fetchImpl, score: false, judge: null })
     const row = db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null }
-    return { r, row, paid, calls: await scanSpendCalls(db, job.id, 'A'), ledger: (await scanSpendRow(db, job.id, 'A'))!,
+    return { db, r, row, paid, calls: await scanSpendCalls(db, job.id, 'A'), ledger: (await scanSpendRow(db, job.id, 'A'))!,
       inOrder: db.prepare('SELECT kind, status, reason, reserve_usd FROM scan_spend_calls WHERE scan_job_id = ? ORDER BY rowid').all(job.id) as { kind: string; status: string; reason: string | null; reserve_usd: number }[] }
   } finally {
     globalThis.fetch = realFetch
@@ -104,4 +106,17 @@ test('runner: a malformed cap setting refuses the first paid call; the scan stop
   assert.deepEqual(x.paid, [], 'no paid request at all')
   assert.ok(x.calls.length >= 1 && x.calls.every(c => c.status === 'refused' && c.reason === 'cap_config_invalid'))
   assert.deepEqual([x.row.status, x.row.error], ['failed', 'budget_stopped'])
+})
+
+// #363 runner settle: a scan under an owner pool (or a run budget) used to keep every model call's WORST-CASE reservation even
+// though the vendor reported what the call really used. Now the pool and the job's reservation move to the reported cost.
+test('runner under an owner pool: model calls settle to the vendor-reported usage, not their worst case', async () => {
+  const x = await run({ DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_OWNER_MONTH_MAX_USD_USERS: 'A:20' }, true)
+  const models = x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length
+  assert.ok(models >= 2, JSON.stringify({ r: x.r, row: x.row, paid: x.paid.map(p => p.url), calls: x.inOrder }))
+  const perCall = (400 * 3 + 60 * 15) / 1e6 // reported usage 400 in / 60 out at 3 / 15 USD per M
+  const pool = (await poolRows(x.db, 'A')).filter(r => r.period.startsWith('m:'))
+  assert.equal(pool.length, 1)
+  assert.ok(Math.abs(pool[0].reserved_usd - models * perCall) < 1e-6, `reserved ${pool[0].reserved_usd} = reported ${models * perCall}`)
+  assert.ok(Math.abs(pool[0].reported_usd - models * perCall) < 1e-6, 'the reported total is recorded')
 })

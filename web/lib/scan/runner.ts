@@ -1018,7 +1018,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
     // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
     // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
-    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined) }
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
