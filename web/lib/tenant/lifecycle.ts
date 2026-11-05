@@ -34,7 +34,7 @@ import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/clien
 import { classify, type Scope } from './scope.ts'
 import { foreignKeys, tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
 import { recordTx } from '../audit.ts'
-import { displayAuditDetail } from '../outreach/lifecycle.ts'
+import { displayAuditDetail } from '../outreach/stop-reason.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']

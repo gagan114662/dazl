@@ -11,7 +11,7 @@ import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
 import { getState } from '@/lib/outreach/autopilot'
-import { displayStopReason } from '@/lib/outreach/lifecycle.ts'
+import { displayStopReason } from '@/lib/outreach/lifecycle'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
