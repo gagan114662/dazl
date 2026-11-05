@@ -85,17 +85,19 @@ export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; tra
 // `observed` (context only) and `date` stays null. via marks which index surfaced the hit (attribution).
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null; observed?: string | null; via?: 'gdelt' }
 
-async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail }> {
+async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail; maybeBilled?: boolean }> {
+  // maybeBilled (#363): the request may have been processed (timeout/dropped connection, 5xx, 402, unlisted status, unreadable body). The caller then
+  // leaves its spend row 'reserved' so no automatic retry re-sends it. 401/403/429 are documented rejections (assumption, see lib/llm/provider.ts).
   try {
     const res = await f(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'X-API-Key': key }, redirect: 'error', signal: AbortSignal.timeout(20_000) })
     if (res.status === 401 || res.status === 403) { await block(db, now + 600); return { ok: false, reason: 'auth' } }
-    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota' } }
+    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota', maybeBilled: true } }
     if (res.status === 429) { await block(db, now + 60); return { ok: false, reason: 'rate' } }
-    if (!res.ok) return { ok: false, reason: 'unavailable' }
+    if (!res.ok) return { ok: false, reason: 'unavailable', maybeBilled: true }
     const text = await res.text()
-    if (text.length > 3_000_000) return { ok: false, reason: 'unavailable' }
+    if (text.length > 3_000_000) return { ok: false, reason: 'unavailable', maybeBilled: true }
     return { ok: true, json: JSON.parse(text) }
-  } catch { return { ok: false, reason: 'unavailable' } }
+  } catch { return { ok: false, reason: 'unavailable', maybeBilled: true } }
 }
 
 export async function tfSearch(db: DbLike, tenant: string, query: string, opts: { afterDate?: string; location?: string; language?: string }, spent: { searches: number }, d: TfDeps = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail }> {
@@ -119,8 +121,8 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) await hold.settle(r.ok ? hold.usd : null)
-  if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
+  if (hold && !(!r.ok && r.maybeBilled)) await hold.settle(r.ok ? hold.usd : null) // maybe billed: stays 'reserved'
+  if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return { ok: false, reason: r.reason } }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
   if (!Array.isArray(arr)) { d.trace?.search({ query, attempted: true, outcome: 'unavailable', hits: null }); return { ok: false, reason: 'unavailable' } }
@@ -157,8 +159,8 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
     d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' }
   }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) await hold.settle(r.ok ? hold.usd : null)
-  if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r }
+  if (hold && !(!r.ok && r.maybeBilled)) await hold.settle(r.ok ? hold.usd : null) // maybe billed: stays 'reserved'
+  if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return { ok: false, reason: r.reason } }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []
   for (const x of Array.isArray(arr) ? arr : []) {

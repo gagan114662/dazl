@@ -174,4 +174,10 @@ Afterwards the row is settled to the vendor-reported cost. The failure classes a
 | Process died before the request was sent | 'reserved' | Indistinguishable from the line above, so it is treated the same: a conservative false positive. The copy says "may have been billed", never "was billed". |
 
 The worst-case reservation of an uncertain call stays counted in every window (no automatic release). The owner starts a new scan on purpose.
-Not covered: non-model paid steps (TinyFish, Apollo, PDL, render) that fail after send keep their own settle rules; unknown errors default to 'uncertain'.
+Every paid vendor path follows the same rule (model, TinyFish search/fetch, Apollo org/people, PDL, render): a timeout/dropped connection after send, a 5xx, an unlisted
+status or an unreadable answer leaves the row 'reserved' (maybe billed; any later retry, reap or re-claim of that scan fails closed). Only the statuses
+the vendors document as rejections (400, 401, 403, 404, 413, 429; PDL 404 = no match, not billed) settle as 'kept'. That list is a reviewed ASSUMPTION: the
+Anthropic (https://docs.anthropic.com/en/api/errors) and OpenAI (https://developers.openai.com/api/docs/guides/error-codes) pages name these as rejected-request
+errors but state no billing guarantee. A scan that carries on after a swallowed non-model failure still finishes normally; its 'reserved' row only matters if it is later retried.
+Trade-off: a transient TinyFish timeout followed by a worker restart now ends the scan accounting_uncertain instead of re-running it. That is the intended fail-closed price.
+Apollo/PDL credit holds have their own durable replay rule (enrich-credit-pool C6d) and are unchanged.
