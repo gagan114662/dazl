@@ -58,7 +58,7 @@ export async function creditLimits(d: DbLike, tenantId: string, p: CreditProvide
 // pairs for a moment, it can never admit or refuse wrongly.
 export const creditLockKey = (tenantId: string, p: CreditProvider) => `credit:${tenantId}:${p}`
 function* lockPair(t: Tx, tenantId: string, p: CreditProvider): TxBody<void> {
-  if (t.kind === 'pg' && false) yield* t.get('SELECT pg_advisory_xact_lock(hashtext(?)) AS locked', [creditLockKey(tenantId, p)])
+  if (t.kind === 'pg') yield* t.get('SELECT pg_advisory_xact_lock(hashtext(?)) AS locked', [creditLockKey(tenantId, p)])
 }
 export async function setCreditLimit(d: DbLike, tenantId: string, p: CreditProvider, w: 'day' | 'month', limit: number | null): Promise<void> {
   if (limit !== null && !(Number.isInteger(limit) && limit > 0 && limit <= 1_000_000)) throw new Error('credit limit must be a whole number from 1 to 1000000, or null to clear')
