@@ -199,7 +199,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
    advantages, start once 1-7 ship.
    #387 in review: b/387-event-detection (monitor runs alert only on novel, dated, in-window, verified events: new company /
    new signal / now reachable, deduped across plays, per-monitor alert policy, latency and missed-run report).
-9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
+9. #386 real lookalikes, #388 tested source coverage (in review: b/388-source-adapters, Norway business register adapter for new businesses and new locations; other regions and procurement evaluated and blocked, see the capability matrix), #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
    multilingual, #392 API/MCP — by measured marginal yield, lowest priority. #386 in review: b/386-outcome-lookalikes (supplied customers +
    negatives -> held-out-checked features -> scan profile; supplied accounts never returned; docs/design/lookalike-discovery.md).
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)

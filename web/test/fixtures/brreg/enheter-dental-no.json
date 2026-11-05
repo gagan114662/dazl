@@ -1,0 +1,1391 @@
+{
+ "_embedded": {
+  "enheter": [
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938784884"
+     }
+    },
+    "aktivitet": [
+     "Tannlegetjenester."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Luramyrveien 19"
+     ],
+     "kommune": "SANDNES",
+     "kommunenummer": "1108",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "4313",
+     "poststed": "SANDNES"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-18",
+    "fravalgRevisjonDato": "2026-10-30",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 1000,
+     "belop": 100000,
+     "innfortDato": "2026-10-30",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNADI DRIFT AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938784884",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-30",
+    "registreringsdatoForetaksregisteret": "2026-10-30",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-18",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-18",
+    "vedtektsfestetFormaal": [
+     "Tjene mest mulig penger på tannlege- og tilhørende virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938756112"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Cecilie Tvedts gate 6"
+     ],
+     "kommune": "STAVANGER",
+     "kommunenummer": "1103",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "4016",
+     "poststed": "STAVANGER"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-07",
+    "fravalgRevisjonDato": "2026-10-27",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-27",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "NORWEGIAN SPEARO AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938756112",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registreringsdatoForetaksregisteret": "2026-10-27",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-07",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-07",
+    "vedtektsfestetFormaal": [
+     "Tannlegevirksomhet og hva hermed står i forbindelse.",
+     "Konsulenttjenester og instruktørtjeneste i dykking, samt investere i",
+     "andre selskap, fast eiendom, kjøp og salg av båter og kjøretøy."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838756042"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Guttorms gate 1"
+     ],
+     "kommune": "TRONDHEIM",
+     "kommunenummer": "5001",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7030",
+     "poststed": "TRONDHEIM"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-02",
+    "fravalgRevisjonDato": "2026-10-27",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 1000,
+     "belop": 30000,
+     "innfortDato": "2026-10-27",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TRONDHEIM TANNREGULERING KLINIKK AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "838756042",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registreringsdatoForetaksregisteret": "2026-10-27",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-02",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-02",
+    "vedtektsfestetFormaal": [
+     "Drift av tannhelsetjenester, herunder kjeveortopedisk behandling,",
+     "investering i fast eiendom, kjøp og salg av aksjer og andre",
+     "verdipapirer, deltakelse i andre selskaper, samt annen virksomhet som",
+     "naturlig hører sammen med dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938739544"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Issa Hansens vei 12"
+     ],
+     "kommune": "BALSFJORD",
+     "kommunenummer": "5532",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "9050",
+     "poststed": "STORSTEINNES"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-05",
+    "fravalgRevisjonDato": "2026-10-23",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-23",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "BALSFJORD TANNKLINIKK AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938739544",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-23",
+    "registreringsdatoForetaksregisteret": "2026-10-23",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-05",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-05",
+    "vedtektsfestetFormaal": [
+     "Drift av tannlegepraksis samt det som naturlig faller sammen med",
+     "dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938738734"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Sandakerveien 105"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0483",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-21",
+    "fravalgRevisjonDato": "2026-10-23",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 1000,
+     "belop": 30000,
+     "innfortDato": "2026-10-23",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE LEHNER AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938738734",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-23",
+    "registreringsdatoForetaksregisteret": "2026-10-23",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-21",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-21",
+    "vedtektsfestetFormaal": [
+     "Tannlegetjenester og virksomhet som naturlig står i forbindelse med",
+     "dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938719411"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Prost Bangs vei 24"
+     ],
+     "kommune": "SARPSBORG",
+     "kommunenummer": "3105",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1710",
+     "poststed": "SARPSBORG"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 100,
+     "belop": 30000,
+     "innfortDato": "2026-10-21",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "PØW TANNLEGESENTER AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938719411",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-21",
+    "registreringsdatoForetaksregisteret": "2026-10-21",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-03",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-03",
+    "vedtektsfestetFormaal": [
+     "Drive tannlege virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938700400"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Spireaveien 16B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0580",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-11",
+    "fravalgRevisjonDato": "2026-10-19",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-19",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "GSK TANN AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938700400",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-19",
+    "registreringsdatoForetaksregisteret": "2026-10-19",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-11",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-11",
+    "vedtektsfestetFormaal": [
+     "Selge varer og tjenester innen tannlegearbeid - og annet som naturlig",
+     "sammenfaller med dette - samt deltakelse i andre selskaper,",
+     "investeringer og nærliggende virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938690227"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "C/O Silje Thorvaldsen",
+      "Strindvegen 47A"
+     ],
+     "kommune": "TRONDHEIM",
+     "kommunenummer": "5001",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7052",
+     "poststed": "TRONDHEIM"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-09-23",
+    "fravalgRevisjonDato": "2026-10-16",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-16",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE THORVALDSEN AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938690227",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-16",
+    "registreringsdatoForetaksregisteret": "2026-10-16",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-23",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-23",
+    "vedtektsfestetFormaal": [
+     "Tannhelsetjenester, herunder utleie av tannlegetjenester, samt",
+     "investeringer og annen virksomhet som naturlig står i forbindelse med",
+     "dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938681279"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Torget 3"
+     ],
+     "kommune": "LARVIK",
+     "kommunenummer": "3909",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3256",
+     "poststed": "LARVIK"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 300,
+     "belop": 30000,
+     "innfortDato": "2026-10-15",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "LTK AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938681279",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-15",
+    "registreringsdatoForetaksregisteret": "2026-10-15",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-18",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-18",
+    "vedtektsfestetFormaal": [
+     "Drift av tannlegepraksis samt kjeveortopedi, handel i henhold til",
+     "selskapets driftskonsept, og det som naturlig hører inn under dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938654867"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Storgata 41"
+     ],
+     "kommune": "MOSS",
+     "kommunenummer": "3103",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1531",
+     "poststed": "MOSS"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 100,
+     "belop": 30000,
+     "innfortDato": "2026-10-14",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "NYE TANNVERKET MOSS AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938654867",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-14",
+    "registreringsdatoForetaksregisteret": "2026-10-14",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-15",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-15",
+    "vedtektsfestetFormaal": [
+     "Tannlegevirksomhet og alt som står i naturlig sammenheng med dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938678979"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Gildevangen 10A"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0585",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-09-13",
+    "fravalgRevisjonDato": "2026-10-14",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-14",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE KANO AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938678979",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-14",
+    "registreringsdatoForetaksregisteret": "2026-10-14",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-13",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-13",
+    "vedtektsfestetFormaal": [
+     "Selge varer og tjenester innen tannlegearbeid og annet som naturlig",
+     "sammenfaller med dette, samt deltakelse i andre selskaper,",
+     "investeringer og nærliggende virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938533857"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Stjerneveien øvre 3A"
+     ],
+     "kommune": "DRAMMEN",
+     "kommunenummer": "3301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3023",
+     "poststed": "DRAMMEN"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-08-20",
+    "fravalgRevisjonDato": "2026-10-05",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-05",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE SELLIAH AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938533857",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-05",
+    "registreringsdatoForetaksregisteret": "2026-10-05",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-08-20",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-08-20",
+    "vedtektsfestetFormaal": [
+     "Selge varer og tjenester innen tannlegearbeid og annet som naturlig",
+     "sammenfaller med dette samt deltakelse i andre selskaper,",
+     "investeringer og nærliggende virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938593213"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Vollane 7"
+     ],
+     "kommune": "ULSTEIN",
+     "kommunenummer": "1516",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "6065",
+     "poststed": "ULSTEINVIK"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-09-01",
+    "fravalgRevisjonDato": "2026-09-30",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 3000,
+     "belop": 30000,
+     "innfortDato": "2026-09-30",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE EIKAASEN AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938593213",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-30",
+    "registreringsdatoForetaksregisteret": "2026-09-30",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-01",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-01",
+    "vedtektsfestetFormaal": [
+     "Levering av tannlegetjenester og alt som kan settes i forbindelse med",
+     "dette Herunder deltagelse i andre selskaper med økonomisk vinst som",
+     "formål."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938584877"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Øystein Møylas veg 27"
+     ],
+     "kommune": "TRONDHEIM",
+     "kommunenummer": "5001",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7031",
+     "poststed": "TRONDHEIM"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-08-09",
+    "fravalgRevisjonDato": "2026-09-29",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-09-29",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "MAXFAC AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938584877",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-29",
+    "registreringsdatoForetaksregisteret": "2026-09-29",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-08-09",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-08-09",
+    "vedtektsfestetFormaal": [
+     "Tannlege virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938563128"
+     }
+    },
+    "aktivitet": [
+     "Tannlege.",
+     "Tannpleier."
+    ],
+    "erIKonsern": true,
+    "forretningsadresse": {
+     "adresse": [
+      "Sorenskriverveien 11"
+     ],
+     "kommune": "ALTA",
+     "kommunenummer": "5601",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "9513",
+     "poststed": "ALTA"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-09-07",
+    "fravalgRevisjonDato": "2026-09-28",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30,
+     "belop": 30000,
+     "innfortDato": "2026-09-28",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "ALTA SMIL TANNKLINIKK AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938563128",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-28",
+    "registreringsdatoForetaksregisteret": "2026-09-28",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-07",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-07",
+    "vedtektsfestetFormaal": [
+     "Drift av tannklinikk / tannhelsetjenester (inkl. tannpleie) samt",
+     "virksomhet som står i naturlig tilknytning til dette, herunder",
+     "deltakelse i andre selskaper med tilsvarende virksomhet, investering i",
+     "aksjer og andre finansielle instrumenter, samt kjøp, utvikling og",
+     "drift av fast eiendom."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938578737"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Dampskipsbrygga 10"
+     ],
+     "kommune": "FREDRIKSTAD",
+     "kommunenummer": "3107",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1607",
+     "poststed": "FREDRIKSTAD"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Personlig næringsdrivende",
+     "kode": "8200"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "RASHDAN",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+      }
+     },
+     "beskrivelse": "Enkeltpersonforetak",
+     "kode": "ENK"
+    },
+    "organisasjonsnummer": "938578737",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-28",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938464936"
+     }
+    },
+    "aktivitet": [
+     "Tannlege.",
+     "Tannpleier."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Storgata 86"
+     ],
+     "kommune": "LILLEHAMMER",
+     "kommunenummer": "3405",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "2615",
+     "poststed": "LILLEHAMMER"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-08-23",
+    "fravalgRevisjonDato": "2026-09-24",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 100,
+     "belop": 1000000,
+     "innfortDato": "2026-09-24",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "FANG TANNHELSE AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938464936",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-24",
+    "registreringsdatoForetaksregisteret": "2026-09-24",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-08-23",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-08-23",
+    "vedtektsfestetFormaal": [
+     "Selskapets virksomhet er drift av tannklinikk og ytelse av",
+     "tannhelsetjenester, herunder virksomhet som naturlig står i",
+     "forbindelse med dette. Selskapet kan eie og leie utstyr og andre",
+     "driftsmidler som benyttes i virksomheten, samt foreta investeringer",
+     "som har naturlig tilknytning til selskapets formål."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938533350"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Hamang terrasse 55"
+     ],
+     "kommune": "BÆRUM",
+     "kommunenummer": "3201",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1336",
+     "poststed": "SANDVIKA"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Personlig næringsdrivende",
+     "kode": "8200"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "NESSRIN ISMAIL DENTAL",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+      }
+     },
+     "beskrivelse": "Enkeltpersonforetak",
+     "kode": "ENK"
+    },
+    "organisasjonsnummer": "938533350",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-22",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838543162"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "c/o Caroline O. D. Pederssen",
+      "Nilsemarka 7"
+     ],
+     "kommune": "ASKER",
+     "kommunenummer": "3203",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3470",
+     "poststed": "SLEMMESTAD"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Personlig næringsdrivende",
+     "kode": "8200"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "TANNLEGE CAROLINE O. D. PEDERSSEN",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+      }
+     },
+     "beskrivelse": "Enkeltpersonforetak",
+     "kode": "ENK"
+    },
+    "organisasjonsnummer": "838543162",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-22",
+    "registreringsdatoForetaksregisteret": "2026-09-22",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938530831"
+     }
+    },
+    "aktivitet": [
+     "Tannlege."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Stokmovegen 2"
+     ],
+     "kommune": "STJØRDAL",
+     "kommunenummer": "5035",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "7500",
+     "poststed": "STJØRDAL"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Personlig næringsdrivende",
+     "kode": "8200"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Tannlegetjenester",
+     "kode": "86.230"
+    },
+    "navn": "MALMELÖV",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+      }
+     },
+     "beskrivelse": "Enkeltpersonforetak",
+     "kode": "ENK"
+    },
+    "organisasjonsnummer": "938530831",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-09-21",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   }
+  ]
+ },
+ "_links": {
+  "first": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=0&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "self": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "next": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=1&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "last": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=1&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  }
+ },
+ "page": {
+  "number": 0,
+  "size": 20,
+  "totalElements": 36,
+  "totalPages": 2
+ }
+}
