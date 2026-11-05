@@ -240,7 +240,7 @@ export const TERMS: Section[] = [
     'Autopilot, if you turn it on, sends first-touch emails from your Gmail without asking you each time, within the daily limits you set and only after your first sends were approved by you. You can pause it at any time, and pausing stops sends before the next send; a send already handed to Gmail cannot be recalled. [NEEDS OWNER: the autopilot consent text users accepted still says \'Pausing stops sends immediately\' - an overpromise next to this behavior; changing an accepted consent text is a consent-version decision, not copy repair.]',
   ] },
   { heading: 'AI-generated content', paragraphs: [
-    'Lead scores, summaries and drafts are produced by AI models and can be wrong. Check the cited source and the draft before you send. A message to a prospect carries no label saying it was written with AI: dazl adds your name, your mailing address and an unsubscribe link to your draft. [NEEDS COUNSEL: whether any recipient jurisdiction requires such a disclosure.]',
+    'Lead scores, summaries and drafts are produced by AI models and can be wrong. Check the cited source and the draft before you send. dazl does not add an AI-generated label to prospect messages: dazl adds your name, your mailing address and an unsubscribe link to your draft. [NEEDS COUNSEL: whether any recipient jurisdiction requires such a disclosure.]',
   ] },
   { heading: 'Acceptable use', paragraphs: [
     'No spam, no purchased lists, no messages to people who asked to stop, no illegal or deceptive content. You must comply with the anti-spam and privacy laws that apply to you and your recipients, for example CASL in Canada, CAN-SPAM in the US, and PECR and GDPR in the UK and EU.',

@@ -291,7 +291,7 @@ test('outbound mail carries the sender name, mailing address and an unsubscribe 
   assert.equal(body.slice('Hello there, a short note about your hiring.'.length).match(/\bAI\b|artificial intelligence/i), null)
   for (const f of ['lib/outreach/service.ts', 'lib/outreach/followups.ts', 'lib/outreach/sequences.ts'])
     assert.match(read(f), /const raw = toBase64Url\(buildMime\(/, `${f} must build the MIME with buildMime`)
-  assert.match(terms, /A message to a prospect carries no label saying it was written with AI/)
+  assert.match(terms, /dazl does not add an AI-generated label to prospect messages/)
 })
 
 test('the message handed to Gmail carries no AI label and only the expected headers (functional)', async () => {
