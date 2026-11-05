@@ -15,9 +15,10 @@ import { migrateSequences, setTestAddresses } from '../lib/outreach/sequences.ts
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { approve, createDraft, recipientAllowed, saveSettings, sendBlockReason, sendMessage, TEST_INBOX, type Deps } from '../lib/outreach/service.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
+import { ATTESTATIONS, CONSENT_VERSION, enable, migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { acceptReadConsent, migrateReplies } from '../lib/outreach/replies.ts'
+import { runFollowups } from '../lib/outreach/followups.ts'
 import { approveSequence, createSequence, runSequences } from '../lib/outreach/sequences.ts'
 import { runCalibration } from '../lib/outreach/calibration.ts'
 import { acceptLaunchPolicy, LAUNCH_POLICY_VERSION } from '../lib/outreach/launch-policy.ts'
@@ -196,33 +197,63 @@ test('sequence step: allowlist revocation during the token await stops the step 
 })
 
 // The launch calibration integration check is a send too: for the designated tenant it may
-// address only the approved test inbox, whatever mailbox is connected.
-test('calibration: the designated tenant integration check is gated to the approved test inbox', async () => {
+// address only the approved test inbox, whatever mailbox is connected. These fixtures REACH the
+// send branch: accepted policy, autopilot enabled under the current consent, connected mailbox
+// exactly the policy sender. The non-designated positive control proves the branch is reached;
+// the designated cases prove the gate.
+async function calibrationFixture(mailbox: string) {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateReplies(db); migrateSequences(db); seedOffers(db, [T])
   db.exec('DROP TRIGGER IF EXISTS leads_only_while_running')
   const state = new URL(startOAuth(db, T, { env: oauthEnv, now: NOW })).searchParams.get('state')!
-  const idToken = 'x.' + Buffer.from(JSON.stringify({ email: 'me@acme.example', email_verified: true })).toString('base64url') + '.y'
-  await completeOAuth(db, T, 'c', state, { env: oauthEnv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: 'https://www.googleapis.com/auth/gmail.send', id_token: idToken })) as unknown as typeof fetch })
+  const idToken = 'x.' + Buffer.from(JSON.stringify({ email: mailbox, email_verified: true })).toString('base64url') + '.y'
+  await completeOAuth(db, T, 'c', state, { env: oauthEnv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken })) as unknown as typeof fetch })
   saveSettings(db, T, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
+  enable(db, T, { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 20 })
   const job = createJob(db, T, { business_name: 'Acme', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
-  for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) {
-    const lead = randomBytes(12).toString('hex')
-    db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run(lead, job, 'Co', c, 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, 80)
-    db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE id = ?").run(lead)
-  }
-  // policy sender and test inbox are the tenant's own mailbox - not the approved test inbox
-  const pol = { version: LAUNCH_POLICY_VERSION, sender: 'me@acme.example', audience: { playIds: [job] }, exclusions: { domains: ['customer.example'], emails: [] }, dailyCap: 20, spendCapUsd: 25, claims: { mayStatePrice: true, benchmarkUrls: [] }, stops: { pauseOnAnyReply: true, maxBounceRate: 0.05 }, testInbox: 'me@acme.example' }
-  acceptLaunchPolicy(db, T, pol as never, NOW)
+  // policy sender and test inbox are the connected mailbox (the only inbox a policy accepts)
+  const pol = { version: LAUNCH_POLICY_VERSION, sender: mailbox, audience: { playIds: [job] }, exclusions: { domains: ['customer.example'], emails: [] }, dailyCap: 20, spendCapUsd: 25, claims: { mayStatePrice: true, benchmarkUrls: [] }, stops: { pauseOnAnyReply: true, maxBounceRate: 0.05 }, testInbox: mailbox }
+  assert.deepEqual(acceptLaunchPolicy(db, T, pol as never, NOW), { ok: true })
   const sent: string[] = []
+  const to = () => sent.map(r => /^To: (.*)$/m.exec(Buffer.from(r, 'base64url').toString())?.[1])
   const fetchImpl = (async (u: unknown) => (String(u).includes('oauth2') || String(u).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
-  const d = { flags: { AUTOPILOT_ENABLED: '1' }, env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g1' } }) as never }
+  const d = { flags: { AUTOPILOT_ENABLED: '1' }, env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' + sent.length } }) as never }
+  return { db, sent, to, d }
+}
+
+test('calibration: a non-designated tenant integration check sends exactly one launch check (positive control)', async () => {
+  const { db, sent, to, d } = await calibrationFixture('me@acme.example')
+  await runCalibration(db, T, 'Acme', d as never)
+  assert.equal(sent.length, 1, 'the fixture must reach the integration-check send branch')
+  assert.deepEqual(to(), ['me@acme.example'])
+})
+
+test('calibration: the designated tenant integration check is gated to the approved test inbox', async () => {
+  const { db, sent, d } = await calibrationFixture('me@acme.example')
   await designatedAsync(async () => {
     setTestAddresses(db, T, [TEST_INBOX])
     await runCalibration(db, T, 'Acme', d as never)
     assert.equal(sent.length, 0, 'the integration check may not send to a non-approved inbox for the designated tenant')
+  })
+})
+
+test('calibration: the designated tenant with the approved self-inbox policy sends exactly one launch check', async () => {
+  const { db, sent, to, d } = await calibrationFixture(TEST_INBOX)
+  await designatedAsync(async () => {
+    setTestAddresses(db, T, [TEST_INBOX])
+    await runCalibration(db, T, 'Acme', d as never)
+    assert.equal(sent.length, 1)
+    assert.deepEqual(to(), [TEST_INBOX])
+  })
+})
+
+test('calibration: a missing allowlist row holds the designated tenant launch check, fail closed', async () => {
+  const { db, sent, d } = await calibrationFixture(TEST_INBOX)
+  await designatedAsync(async () => {
+    await runCalibration(db, T, 'Acme', d as never)
+    assert.equal(sent.length, 0)
   })
 })
 
@@ -242,5 +273,37 @@ test('designated tenant: evidence withdrawal still refuses an approved self-inbo
     db.prepare('UPDATE leads SET human_confirmed_at = NULL, confidence = NULL WHERE id = ?').run(lead)
     const reason = sendBlockReason(db, T, id, { skipAccount: true })
     assert.ok(reason === 'lead_evidence_withdrawn' || reason === 'lead_currentness_unconfirmed', `expected the evidence/currentness guard, got ${reason}`)
+  })
+})
+
+// The same revocation during a follow-up's token await: the follow-up is unclaimed (its claim
+// row is deleted, nothing stuck in 'sending') and Gmail is never called.
+test('follow-up: allowlist revocation during the token await stops the send and cleans the claim', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateReplies(db); migrateSequences(db); migrateLedger(db); seedOffers(db, [T])
+  await connect(db, T)
+  saveSettings(db, T, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
+  enable(db, T, { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 20 })
+  db.prepare('UPDATE autopilot_settings SET followups_enabled = 1 WHERE tenant_id = ?').run(T)
+  const sent: string[] = []
+  const fetchImpl = (async (u: unknown) => {
+    if (String(u).includes('oauth2') || String(u).includes('token')) {
+      // the operator narrows the allowlist while the send path waits on the token
+      db.prepare('DELETE FROM sequence_settings WHERE tenant_id = ?').run(T)
+      return json({ access_token: 'at' })
+    }
+    return json({}, 404)
+  }) as unknown as typeof fetch
+  const d = { flags: { AUTOPILOT_ENABLED: '1' }, env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'gm1', threadId: 'th1' } }) as never }
+  await designatedAsync(async () => {
+    setTestAddresses(db, T, [TEST_INBOX])
+    const lead = addLead(db, T, TEST_INBOX)
+    db.prepare("INSERT INTO outreach_messages (id,tenant_id,lead_id,to_email,subject,body,test) VALUES ('m1',?,?,?,'A quick question','This is the original first-touch message body.',1)").run(T, lead, TEST_INBOX)
+    db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent) VALUES (?, 'th1', ?, ?, 'root', ?, ?, 0)").run(T, lead, TEST_INBOX, NOW - 30 * 86400, NOW - 30 * 86400)
+    db.prepare("INSERT INTO consent_ledger (id, tenant_id, contact, channel, scope, basis, evidence_ref, granted_at, expires_at) VALUES ('c1', ?, ?, 'email', 'followup', 'reply_interest', 'gmail:x', ?, ?)").run(T, TEST_INBOX, NOW - 86400, NOW + 90 * 86400)
+    const r = await runFollowups(db, T, 'Acme', d as never)
+    assert.equal(r.sent, 0)
+    assert.equal(sent.length, 0, 'the follow-up after the revocation must never reach Gmail')
+    assert.equal((db.prepare('SELECT count(*) AS n FROM followup_messages WHERE tenant_id = ?').get(T) as { n: number }).n, 0, 'the claim row is cleaned up, nothing stuck sending')
   })
 })
