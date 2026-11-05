@@ -215,7 +215,7 @@ const uncertainAttempts = new WeakSet<ScanSpendCtx>() // one entry per attempt: 
 // A vendor answered a request with a documented rejection (429, 400, ...): counted, never retried, and no further paid request of ANY vendor in this attempt.
 const rejectedAttempts = new WeakMap<ScanSpendCtx, number>()
 export function spendAttemptRejected(): number | null { const c = store.getStore(); return c && rejectedAttempts.has(c) ? rejectedAttempts.get(c)! : null }
-export function spendAttemptUncertain(_jobId?: string, _attempt?: number): boolean { const c = store.getStore(); return !!c && uncertainAttempts.has(c) }
+export function spendAttemptUncertain(): boolean { const c = store.getStore(); return !!c && uncertainAttempts.has(c) }
 export interface SpendHold {
   id: string
   kind: SpendKind
