@@ -40,6 +40,13 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   const cause = uncheckableCause(l.review_reason)
   if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
   if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
+  // #390: a first-party signal has no third-party source to check (it is the tenant's own signed, consented event) and
+  // no stored contact (the submitter's email is never kept). Confirming keeps it in the list; it does not identify a
+  // person and promises no draft.
+  if (l.review_reason === 'first_party_signal') return {
+    label: 'Keep this signal',
+    hint: 'Keeps it in your list as confirmed by you. It came from your own site or form (signed, consent recorded); an account-level visit does not identify a person, and no contact is stored with it, so this signal alone cannot be drafted.',
+  }
   if (DATE.has(l.review_reason ?? '')) return {
     label: 'I checked the date - use it',
     hint: 'Moves it to your list as confirmed by you, and it can be drafted. dazl has not verified the date or current need; you are vouching for it.',
