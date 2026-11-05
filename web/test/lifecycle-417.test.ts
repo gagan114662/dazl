@@ -63,13 +63,13 @@ test('signup while a follow-up is queued cancels it atomically with a terminal r
   assert.ok(stopped >= 3, `sequence + thread + held draft stopped (got ${stopped})`)
 
   const seq = db.prepare('SELECT status, stop_reason FROM sequences WHERE id = ?').get('sq1') as { status: string; stop_reason: string }
-  assert.deepEqual(seq, { status: 'stopped', stop_reason: 'converted_signup' }, 'terminal conversion reason on the sequence')
+  assert.deepEqual(seq, { status: 'stopped', stop_reason: 'policy_stop' }, 'terminal conversion reason on the sequence')
   const held = db.prepare('SELECT status, error, hold_reason, hold_until FROM outreach_messages WHERE id = ?').get('m2') as { status: string; error: string; hold_reason: string | null; hold_until: number | null }
-  assert.deepEqual(held, { status: 'skipped', error: 'converted_signup', hold_reason: null, hold_until: null }, 'the queued first touch is terminally skipped, never drained later')
+  assert.deepEqual(held, { status: 'skipped', error: 'policy_stop', hold_reason: null, hold_until: null }, 'the queued first touch is terminally skipped, never drained later')
   const manual = db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get('m3') as { status: string }
   assert.equal(manual.status, 'draft', "the tenant's own manual draft is untouched")
   const thread = db.prepare('SELECT stopped FROM followup_threads WHERE thread_id = ?').get('t1') as { stopped: string }
-  assert.equal(thread.stopped, 'converted_signup')
+  assert.equal(thread.stopped, 'policy_stop')
   const sentRow = db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get('m1') as { status: string }
   assert.equal(sentRow.status, 'sent', 'history is preserved, never rewritten')
   // Experiment attribution snapshots survive (none deleted by the cancel).

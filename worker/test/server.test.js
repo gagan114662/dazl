@@ -25,6 +25,6 @@ test('health is open; fetch needs the bearer token; bad bodies are 400s; unknown
 
     const unknown = await fetch(`http://127.0.0.1:${PORT}/fetch`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ platform: 'instagram', query: 'hiring founders', session: 'a'.repeat(20) }) })
     assert.equal(unknown.status, 200)
-    assert.deepEqual(await unknown.json(), { items: [] })
+    assert.equal((await unknown.json()).outcome, 'unsupported') // #436: an unknown platform is never an empty search
   })
 })

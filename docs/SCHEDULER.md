@@ -38,13 +38,34 @@ The workers report ordinary refusals as a result (`stopped`), not an exception. 
 | both | `uncertain_send`, `gmail_unavailable`, `gmail_or_identity` | failure (an uncertain send outranks earlier progress in the same tick) |
 | `runFollowups` | `not_available` (operator switch off or kill switch, while the tenant has follow-ups on) | failure |
 | `runSequences` | `sequences_disabled` (operator switch off or kill switch, while the tenant has approved or active sequences), `reading_not_enabled`, `reply_sync_failed` | failure |
-| `syncReplies` | `error` (`gmail_unavailable`, `reply_sync_failed`) | failure; follow-ups are not attempted that tick |
+| `syncReplies` | `error` (`gmail_unavailable`, `reply_sync_failed`, `reply_sync_incomplete`) | failure; follow-ups are not attempted that tick |
+| `syncReplies` | no error, but a thread in scope never read yet (`neverRead`) | hold `reply_sync_partial` (#355); with every thread read at least once it is a success as of the oldest read |
 | `syncReplies` | `error` = `reading_not_enabled` | hold: the tenant's own consent/mailbox state, never a provider call that failed. Active work blocked by it fails under `followups`/`sequences` (their selectors pick tenants with work), so an idle tenant does not count as failing |
 | any | a thrown error, or a `stopped` reason the tick does not know | failure (an unknown refusal is never read as progress) |
 
 An operator switch that is off while tenants have work is deliberate, and still a failure here: the tick is running and refusing the work, and the alert after three ticks is the reminder. A tenant's own pause, cap or withdrawn consent is a hold: it is not progress, but nothing is failing. A hold after failures means the tenant is not currently failing - the state shows held, not blocked - but it does not resolve the failures either: the count stands, a failure after the hold re-blocks immediately, and only a success clears the count.
 
 A run is `partial` when some work failed; holds alone leave it `ok`. The tick's response carries `tenant_failures` and `tenant_holds`.
+
+## Bounded, checkpointed reply reading (#355)
+
+`syncReplies` no longer re-reads a tenant's whole 120-day sent history on every call, so one tenant with a long history cannot hold the serial tick before the next tenant's reply checks:
+
+- **Scope is unchanged.** The set of messages read is exactly the old one: sent in the last 120 days, or the step-1 message of an approved or active sequence (any age). Only the order and the cap are new.
+- **Due threads** are read on every call, first: the step-1 message of an approved or active sequence (whatever its age), and, inside the 120-day window, every thread with a lead reply that follow-ups may answer (`followup_threads`, not stopped). A warm thread sent more than 120 days ago is not read, as before. If the time budget runs out before all of them are read, the call fails closed (`reply_sync_incomplete`): a failure, so the tick sends nothing for that tenant.
+- **Background threads** are the other messages sent in the last 120 days. At most `REPLY_SYNC_MAX_THREADS` of them are read per call (default 50, from 1 to 1000), never-read ones first and then the oldest check, so each is read within `ceil(n / cap)` calls.
+- **Time budget.** A call stops after `REPLY_SYNC_BUDGET_MS` (default 120000, from 1000 to 600000). A malformed or out-of-range value means the default, never an unbounded or zero limit.
+- **Checkpoint.** `outreach_messages.reply_checked_at` is stamped only after a thread was read and processed without error. A failed read keeps its old stamp, so it is first in line next time.
+- **Freshness.** While some thread in scope has never been read, the outcome is a hold (`reply_sync_partial`). Otherwise it is a success **as of the oldest thread read** (`freshAsOf`), which `recordProgress` stores as `last_success_at`. So `replySafetyStale` (2 h) and `reply sync stale` keep their old meaning: every thread was read within the window. A partial read is never recorded as "now".
+- **Sizing.** With 5-minute ticks and a cap of 50, a tenant gets up to 600 background threads read per hour. Above about 1200 background threads, its sends to recipients it has already contacted hold, and the alerts say `reply sync stale`, until `REPLY_SYNC_MAX_THREADS` is raised. This is the honest state; such a tenant is not starved silently.
+
+## Scans on durable workers, fair across tenants (#355)
+
+With `DAZL_SCAN_SHARED_QUEUE=1` (default OFF; switching it on is a deploy-time step, `docs/PLATFORM.md`) scans are claimed through the shared work queue (`work_queue`, `lib/queue/scan-claimer.ts`). Off, nothing below applies and the tick kicks the runner only when watches or monitors queued scans. With it on:
+
+- **The tick kicks the scan runner every time**, after its response, outside its lease. A scan whose worker died (lease expired) or whose retry backoff has passed is claimed again within one tick.
+- **Fair service.** Claims go round-robin across tenants, and one tenant has at most `SCAN_PER_TENANT_MAX` scans claimed at once (default 1). A tenant with a long backlog or a provider that never answers holds one run slot; every other tenant's scan takes the next free one. Reply checks do not wait for scans at all: they run in the tick's own loop, while scans run in the runner's slots.
+- **Proof.** `test/tenant-load-tick.test.ts` runs the real tick route and the real runner: tenant A with a 300-thread history on a slow Gmail and 40 queued scans on a provider that never answers, tenants B and C with one of each. One tick reads B's and C's threads (B's opt-out applied) and runs their scans to done while A holds one slot; the next tick does it again. With the flag unset (the control), the tick kicks no scan, and the next status-poll kick goes to the in-process claimer: A takes every slot and B's and C's scans wait.
 
 ## States and thresholds
 
@@ -65,7 +86,8 @@ A tenant is:
 - **stale** in any of these cases:
   - its reply sync has had no success for `REPLY_SYNC_STALE_S` = 2 h while still being attempted;
   - a due step is more than `OVERDUE_ALERT_S` = 1 h overdue;
-  - the scheduler itself is stale, crashed or never ran while the tenant has work.
+  - the scheduler itself is stale, crashed or never ran while the tenant has work;
+  - the scheduler has an `unresolved_failure` (reason `scheduler_failed` or `scheduler_lease_lost`) while the tenant has work: a tick that threw or lost its lease is not healthy for the tenant either, even while an earlier success keeps the state `fresh`.
 
 - **held** when nothing is failing or stale and the last attempt at some kind of work was a hold: neither progress nor a problem. `holds` names them as `kind:reason` (for example `sequences:paused`).
 

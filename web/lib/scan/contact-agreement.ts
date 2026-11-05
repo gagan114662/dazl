@@ -181,13 +181,14 @@ export function firstPlaceLabel(rawText: string, opts: { structured?: boolean } 
 // ---- the refusal is recorded on the lead, and the lead is regraded from the evidence actually kept ----
 export const REJECTED_KIND = 'contact_rejected'
 // The structured marker stored beside a refusal (the enrichment's label): why the record was not attached.
-export type RejectionCode = 'contact_address_mismatch' | 'contact_location_mismatch' | 'contact_location_unconfirmed' | 'contact_domain_mismatch' | 'contact_role_mismatch' | 'contact_unconfirmed'
+export type RejectionCode = 'contact_address_mismatch' | 'contact_location_mismatch' | 'contact_location_unconfirmed' | 'contact_domain_mismatch' | 'contact_org_mismatch' | 'contact_role_mismatch' | 'contact_unconfirmed'
 export function contactRejectionCode(reason: string): RejectionCode {
   if (/contradicts the reviewed buyer role/i.test(reason)) return 'contact_role_mismatch'
   if (/address mismatch/i.test(reason)) return 'contact_address_mismatch'
   if (/location mismatch/i.test(reason)) return 'contact_location_mismatch'
   if (/location unconfirmed/i.test(reason)) return 'contact_location_unconfirmed'
-  if (/domain mismatch|organization mismatch/i.test(reason)) return 'contact_domain_mismatch'
+  if (/organization mismatch/i.test(reason)) return 'contact_org_mismatch' // per-person: the consequence of a company-level refusal, never cited first (#639 CI flake class)
+  if (/domain mismatch/i.test(reason)) return 'contact_domain_mismatch'
   return 'contact_unconfirmed'
 }
 const KEPT_KINDS = ['contact', 'person', 'email', 'phone']
@@ -228,10 +229,13 @@ export function enforceContactSource(db: Database.Database, tenantId: string, jo
 // wrong domain) and nothing else reaches it, reachability is unconfirmed: the grade is capped at 2 (it only ever goes DOWN) and the card says why.
 // The list is ranked by fit, then action, so the lead drops below leads that do have a contact. Idempotent.
 export const UNCONFIRMED_ACTION_CAP = 2
+// The refusal the card cites: the company-level root cause first (a per-person 'organization mismatch' is the
+// consequence of it), then the most recent, then the earliest written - one deterministic answer on both engines
+// (insert_seq is the audited insertion order), whatever second boundary the writes straddled (#639 CI flake class).
 export function regradeFromKeptContacts(db: Database.Database, tenantId: string, jobId: string): number {
   const rows = db.prepare(
     `SELECT l.id, l.action, l.why, l.contact,
-            (SELECT e.value FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.kind = '${REJECTED_KIND}' ORDER BY e.retrieved_at DESC LIMIT 1) AS rejected,
+            (SELECT e.value FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.kind = '${REJECTED_KIND}' ORDER BY CASE e.label WHEN 'contact_org_mismatch' THEN 1 ELSE 0 END, e.retrieved_at DESC, e.insert_seq ASC LIMIT 1) AS rejected,
             (SELECT count(*) FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.kind IN (${KEPT_KINDS.map(k => `'${k}'`).join(',')})) AS kept
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ? AND l.action IS NOT NULL AND l.action > ${UNCONFIRMED_ACTION_CAP}`,
   ).all(tenantId, tenantId, jobId, tenantId) as { id: string; action: number; why: string | null; contact: string | null; rejected: string | null; kept: number }[]

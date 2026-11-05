@@ -13,7 +13,7 @@ export function resetGithubState() { calls.length = 0; cache.clear() }
 export const githubAdapter: SourceAdapter = {
   id: 'github',
   label: 'GitHub (public repositories)',
-  async collect({ keywords, http }) {
+  async collect({ keywords, http, note }) {
     const terms = keywords.slice(0, 4)
     if (terms.length === 0) return []
     const q = terms.join(' ')
@@ -21,12 +21,14 @@ export const githubAdapter: SourceAdapter = {
     if (hit && Date.now() - hit.at < 15 * 60 * 1000) return hit.items
     const now = Date.now()
     while (calls.length && now - calls[0] > WINDOW_MS) calls.shift()
-    if (calls.length >= MAX_CALLS) return []
+    if (calls.length >= MAX_CALLS) { note?.('budget'); return [] }
     calls.push(now)
     const r = await http(`https://api.github.com/search/repositories?q=${encodeURIComponent(`${q} in:description,readme`)}&sort=updated&order=desc&per_page=15`, { accept: 'application/vnd.github+json', headers: { 'x-github-api-version': '2022-11-28' } })
-    if (!r || r.status !== 200) return []
+    if (!r) { note?.('unreachable'); return [] }
+    if (r.status !== 200) { note?.('http_error'); return [] }
+    if (r.truncated) { note?.('oversize'); return [] } // never parse a prefix
     let json: { items?: Record<string, unknown>[] }
-    try { json = JSON.parse(r.body) } catch { return [] }
+    try { json = JSON.parse(r.body) } catch { note?.('unparseable'); return [] }
     const out: Evidence[] = []
     for (const it of json.items ?? []) {
       const desc = typeof it.description === 'string' ? it.description.replace(/\s+/g, ' ').trim() : ''

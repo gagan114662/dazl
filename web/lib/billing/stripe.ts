@@ -46,6 +46,8 @@ interface StripeObject {
   status?: string
   mode?: string
   metadata?: { tenant_id?: string }
+  // charges: true once the whole amount is refunded
+  refunded?: boolean
   // invoices: the subscription id moved under parent.subscription_details in API version 2025-03-31
   parent?: { subscription_details?: { subscription?: string } }
 }
@@ -169,6 +171,9 @@ export async function applyStripeEvent(db: Db, event: StripeEvent, deps: StripeD
     if (o.customer && t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('stripe_customer:' || ?, 0)) AS x", [o.customer])
     if (o.customer && (yield* t.get('SELECT 1 AS x FROM tenant_plans WHERE stripe_customer_id = ? AND tenant_id <> ?', [o.customer, tenantId]))) { ignoredWhy = 'customer_conflict'; return 'ignored' }
     if (event.type === 'invoice.payment_failed') return yield* paymentFailed(t, tenantId, o.subscription ?? o.parent?.subscription_details?.subscription, created, event.id)
+    // charge.refunded (#404): recorded for the acquisition report, never a plan change (the subscription events decide
+    // the plan). The tenant is resolved like every event's (normally the charge's customer, linked at checkout).
+    if (event.type === 'charge.refunded') { yield* planEvent(t, tenantId, event, 'billing.refunded', { full: o.refunded === true }); return 'applied' }
     if (!eventFx) return 'ignored'
     yield* t.run('INSERT INTO tenant_plans (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING', [tenantId])
     const row = (yield* t.get<PlanRow>(

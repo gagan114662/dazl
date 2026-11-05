@@ -14,6 +14,7 @@ import { ENRICH_STALE_S } from '../scan/enrichment.ts'
 import { polishDraft, type LlmDeps } from './draft-llm.ts'
 import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, withdrawLaunchPolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
 import { providers as defaultProviders } from '../llm/provider.ts'
+import { displayAuditDetail } from './stop-reason.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -24,6 +25,10 @@ export const CONSENT_TEXT = [
   'You are the sender and you are legally responsible for these emails under the laws that apply to you and your recipients (for example CASL in Canada, CAN-SPAM in the US, PECR and GDPR in the UK and EU).',
   'You will only target businesses and business roles, where the recipient published the address for business use and your message is relevant to their role.',
   'Every email carries your name, your mailing address and an unsubscribe link. Anyone who unsubscribes or bounces is never emailed again.',
+  // "stops sends immediately" overpromises: the code re-checks pause before each send (live() below),
+  // so sends stop before the next one and a send already handed to Gmail cannot be recalled. The Terms
+  // carry the accurate wording. Correcting this accepted text is a consent-version decision (the audit
+  // proof stores CONSENT_VERSION, one version must name one text); left to the owner (#652 review).
   'You can pause or turn off autopilot at any time. Pausing stops sends immediately.',
 ]
 export const ATTESTATIONS = ['business_published', 'relevant_to_role', 'responsible_sender'] as const
@@ -96,7 +101,8 @@ export function getState(db: Database.Database, tenantId: string): AutopilotStat
   return { enabled: r?.enabled === 1, paused: r?.paused === 1, pause_reason: r?.pause_reason ?? null, consent_current: r?.consent_version === CONSENT_VERSION, daily_cap: r?.daily_cap ?? DEFAULT_DAILY }
 }
 export const recentAutopilotAudit = (db: Database.Database, tenantId: string, limit = 50) =>
-  db.prepare('SELECT lead_id, message_id, action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(tenantId, limit) as { lead_id: string | null; message_id: string | null; action: string; detail: string | null; created_at: number }[]
+  (db.prepare('SELECT id, lead_id, message_id, action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(tenantId, limit) as { id: string; lead_id: string | null; message_id: string | null; action: string; detail: string | null; created_at: number }[])
+    .map(r => ({ ...r, detail: displayAuditDetail(r.detail) }))
 
 // Turning on needs the current consent text, all three attestations, a connected Gmail and a sender identity.
 export function enable(db: Database.Database, tenantId: string, input: { version: string; attestations: string[]; daily_cap?: number }): void {
@@ -360,15 +366,20 @@ export function newLeadsSql(scope = ''): string {
        AND ${LIFECYCLE_NOT_CONVERTED}
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
-         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+         AND ((a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+             AND NOT EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = a.tenant_id AND e.connector = 'sitecrawl' AND e.kind = 'email' AND e.retrieved_at > a.created_at))
            OR (a.detail IN ('error','offer_unreadable') AND a.created_at > ?)
            OR (a.detail NOT IN ('error','offer_unreadable') AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
      ORDER BY l.score DESC LIMIT 25`
   return scope ? base.replace('ORDER BY l.score DESC LIMIT 25', `${scope}
      ORDER BY l.score DESC LIMIT 25`) : base
 }
-// Refusals of the draft path that never change for a lead (createDraft's draftChecks: a personal address, not a sales
-// contact, suppressed, no address): recorded once, the lead is the user's from then on. Every other refusal (currentness
+// Refusals of the draft path on the lead's recipient route (createDraft's draftChecks: a personal address, not a sales
+// contact, suppressed, no address): recorded once, the lead is the user's from then on - until the crawl records an
+// email after that refusal (the on-request company-site search, a re-crawl). The route draftChecks would pick may then
+// differ, so the lead is judged again by the same draft gate (#412: autopilot eligibility follows manual readiness,
+// whatever row the address is stored in); refused again for the same reason, the one skipped row's time moves past
+// the crawl record and the refusal stands. Every other refusal (currentness
 // or domain to confirm, ungraded, a sales/hiring gate not passed yet (held-state.ts: a held lead clears when the gate
 // runs again and passes), evidence the user can confirm, an offer conflict) is tried again: after SKIP_RETRY_S, or at
 // once when the lead was confirmed by the user at or after the refusal; a store error ('error') or an unreadable offer
@@ -767,7 +778,7 @@ export interface DrainResult { sent: number; held: number; skipped: number; stop
 // warmup already cleared, the hold recorded under this consent version, and the offer inputs unchanged (changed words
 // or offer invalidate the authority; the draft is skipped, never sent). Warmup-manual drafts and drafts with no hold
 // record are never touched. Caps are re-checked at send time; an over-cap tenant is re-held, not sent.
-export async function drainFirstTouch(db: Database.Database, tenantId: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<DrainResult> {
+export async function drainFirstTouch(db: Database.Database, tenantId: string, d: Deps & { flags?: Record<string, string | undefined>; businessName?: string } = {}): Promise<DrainResult> {
   const out: DrainResult = { sent: 0, held: 0, skipped: 0 }
   const env = d.flags ?? process.env
   const now = d.now ?? Math.floor(Date.now() / 1000)
@@ -855,7 +866,13 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
     try {
       if (m.status === 'draft') approve(db, tenantId, m.id) // a released retry is already approved; approve() is draft-only
       const r = await sendMessage(db, tenantId, m.id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: drainAuthorize(m.lead_id, m.id, domain) })
-      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id) }
+      if (r === 'sent') {
+        out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id)
+        // #414: a first touch this drain proves sent enrolls exactly as one runAutopilot sends does (policy-gated,
+        // best-effort: a failure is audited and never touches the send or the tenant).
+        try { (await import('./sequences.ts')).enrollColdSequence(db, tenantId, m.id, { businessName: d.businessName }) }
+        catch (e) { audit(db, tenantId, 'sequence_enroll_failed', e instanceof Error ? e.message.slice(0, 40) : 'error', m.lead_id, m.id) }
+      }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', m.lead_id, m.id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
       if (!(e instanceof OutreachError)) throw e // DB/runtime faults are scheduler failures, never retry-classified

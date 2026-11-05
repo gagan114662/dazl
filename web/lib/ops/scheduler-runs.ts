@@ -107,12 +107,14 @@ export function migrateSchedulerRuns(db: Database.Database): void {
 const KIND_CHECKED = new WeakSet<Database.Database>()
 
 // What the tick records for one tenant and kind of work, from what the worker returned.
-export type Outcome = { outcome: 'success' } | { outcome: 'hold'; reason: string } | { outcome: 'failure'; error: unknown }
+// success.freshAsOf (#355, reply_sync): the work is known done as of this earlier time, not as of now (a bounded reply
+// read whose oldest thread was read then); recorded as last_success_at, never later than now.
+export type Outcome = { outcome: 'success'; freshAsOf?: number } | { outcome: 'hold'; reason: string } | { outcome: 'failure'; error: unknown }
 // Stop reasons runFollowups and runSequences return that are legitimate holds: the tenant's own configuration or an
 // idle state, not something failing. Every other stop (and any reason the tick does not know) is a failure: the
 // scheduler must never read an unknown refusal as progress.
 export const HOLD_REASONS: ReadonlySet<string> = new Set(['autopilot_off', 'followups_off', 'paused', 'daily_cap', 'changed_since_approval', 'off', 'consent_required', 'warmup'])
-export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'uncertain_send', 'gmail_or_identity'])
+export const FAILURE_REASONS: ReadonlySet<string> = new Set(['not_available', 'sequences_disabled', 'reading_not_enabled', 'gmail_unavailable', 'reply_sync_failed', 'reply_sync_incomplete', 'uncertain_send', 'gmail_or_identity'])
 // The autopilot drain's own holds (lib/outreach/autopilot.ts stop reasons that are the tenant's state, not a failure):
 // off or consent to renew (the tenant's switch), Gmail to reconnect or connect (the tenant's mailbox). Its uncertain send,
 // unreadable authority, lost reservation and the operator switch are failures, as for the other kinds.
@@ -128,9 +130,13 @@ export function classifyWork(r: { stopped?: string; sent?: number; started?: num
 // not enabled WHILE THERE IS ACTIVE WORK - is recorded by the followups/sequences kinds themselves: their
 // selectors pick tenants with work and their refusal stays a failure there. Every other sync error
 // (gmail_unavailable, reply_sync_failed) is a genuine provider/store failure and stays a failure.
-export function classifySync(r: { error?: string }): Outcome {
+export function classifySync(r: { error?: string; neverRead?: number; freshAsOf?: number }): Outcome {
   if (r.error === 'reading_not_enabled') return { outcome: 'hold', reason: 'reading_not_enabled' }
-  return r.error ? { outcome: 'failure', error: new Error(r.error) } : { outcome: 'success' }
+  if (r.error) return { outcome: 'failure', error: new Error(r.error) }
+  // #355: every due thread was read, but some background thread has never been read: no freshness exists yet
+  if (typeof r.neverRead === 'number' && r.neverRead > 0) return { outcome: 'hold', reason: 'reply_sync_partial' }
+  // a bounded read is a success only as of its oldest thread read, never "now"
+  return typeof r.freshAsOf === 'number' && Number.isFinite(r.freshAsOf) ? { outcome: 'success', freshAsOf: r.freshAsOf } : { outcome: 'success' }
 }
 
 // A failure reason safe to store and show: the error's class and the first line of its message, without anything that
@@ -163,7 +169,7 @@ export async function recordProgress(d: DbLike, runId: string, tenantId: string,
                 last_hold = excluded.last_hold,
                 consecutive_failures = CASE excluded.last_outcome WHEN 'success' THEN 0 WHEN 'hold' THEN scheduler_progress.consecutive_failures ELSE scheduler_progress.consecutive_failures + 1 END,
                 last_run_id = excluded.last_run_id`,
-    [tenantId, kind, now, o.outcome === 'success' ? now : null, err, o.outcome, held, o.outcome === 'failure' ? 1 : 0, runId])
+    [tenantId, kind, now, o.outcome === 'success' ? (typeof o.freshAsOf === 'number' && Number.isFinite(o.freshAsOf) ? Math.min(now, Math.floor(o.freshAsOf)) : now) : null, err, o.outcome, held, o.outcome === 'failure' ? 1 : 0, runId])
   await db.run(`UPDATE scheduler_runs SET tenants_attempted = (SELECT count(DISTINCT tenant_id) FROM scheduler_progress WHERE last_run_id = ?),
               tenants_failed = (SELECT count(DISTINCT tenant_id) FROM scheduler_progress WHERE last_run_id = ? AND last_outcome = 'failure') WHERE id = ?`, [runId, runId, runId])
 }
@@ -250,6 +256,9 @@ export async function tenantFreshness(d: DbLike, tenantId: string, now = nowS(),
   const due = await oldestDue(db, tenantId, now)
   const reasons: string[] = []
   if ((op.state === 'stale' || op.state === 'crashed' || op.state === 'never_ran') && (work.length || due)) reasons.push(`scheduler_${op.state}`)
+  // The latest finished tick failed or lost its lease and none has succeeded since: the operator's health is 503 for it
+  // (schedulerHealth), so a tenant with work does not read healthy either, even while an earlier success is still recent.
+  else if (op.unresolved_failure && (work.length || due)) reasons.push(`scheduler_${op.unresolved_failure.status}`)
   for (const w of work) {
     if (w.consecutive_failures >= BLOCKED_AFTER_FAILURES && w.last_outcome === 'failure') reasons.push(`${w.kind}_failing`) // still failing: a later hold means the tenant is not currently failing, not that the failures resolved (only a success clears the count)
     else if (w.kind === 'reply_sync' && w.last_attempt_at > (w.last_success_at ?? 0) && now - (w.last_success_at ?? w.last_attempt_at) > REPLY_SYNC_STALE_S) reasons.push('reply_sync_stale')

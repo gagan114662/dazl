@@ -188,8 +188,89 @@ function dsnFromNotice(g: GMsg): DsnReport {
   return { recipient, status, failed: action === 'failed', messageRef }
 }
 
-export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch }
-export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; error?: string }
+// One delivery notice from the daemon-notice listing, judged and turned into the inbound_messages row it is stored as.
+// Pure: the caller looks up the exact recorded send (NOTICE_SEND_SQL) and writes the row. The reply sync below and the
+// test-only inbox fixture (lib/outreach/inbox-fixture.ts, #369) store notices through this one judgement, so a fixture
+// bounce_review row is exactly what a real notice of that shape would produce.
+export type NoticeMsg = GMsg
+export interface NoticeSend { id: string; lead_id: string; to_email: string }
+export interface NoticeRow { gmail_id: string; thread_id: string; lead_id: string | null; from_email: string; excerpt: string; classification: 'bounce_unmatched' | 'bounce_review' | 'soft_bounce'; received_at: number; outreach_message_id: string | null }
+export interface NoticeVerdict { row: NoticeRow; unmatched: 'not_daemon' | 'no_correlation' | null; send: NoticeSend | null; status: string | null }
+export const NOTICE_SEND_SQL = "SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')"
+export const NOTICE_INSERT = '(gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+export const noticeParams = (tenantId: string, r: NoticeRow): (string | number | null)[] =>
+  [r.gmail_id, tenantId, r.thread_id, r.lead_id, r.from_email, r.excerpt, r.classification, r.received_at, r.outreach_message_id]
+export function judgeDeliveryNotice(hitId: string, g: NoticeMsg, now: number, findSend: (refId: string) => NoticeSend | undefined): NoticeVerdict {
+  const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
+  const from = addr(header(g, 'from'))
+  // Retention minimum for anything that does not correlate to an exact recorded send: the opaque id (for
+  // one-time accounting), the time and the classification. No sender, recipient or content of mail that may
+  // not be ours - the read consent covers replies and delivery notices FOR OUR THREADS only.
+  const unmatched = (why: 'not_daemon' | 'no_correlation'): NoticeVerdict => ({
+    row: { gmail_id: hitId, thread_id: g.threadId ?? '', lead_id: null, from_email: '', excerpt: '', classification: 'bounce_unmatched', received_at: at, outreach_message_id: null },
+    unmatched: why, send: null, status: null,
+  })
+  if (!/^(mailer-daemon|postmaster)@/.test(from)) return unmatched('not_daemon')
+  const dsn = dsnFromNotice(g)
+  // Correlate to the exact recorded send: the notice must reference our Message-ID AND name the recipient we
+  // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
+  // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
+  // stop a thread or end a sequence. They are counted unmatched and left for review.
+  // An exact Message-ID ref is CORRELATION, never authentication: a party who saw the send's headers could
+  // quote it. Correlation alone therefore never suppresses and never stops anything: a 5.x.x that correlates
+  // but cannot be PROVEN to come from the recipient's own mail infrastructure is classified bounce_review and
+  // left for a human. Automatic suppression exists only behind authenticated DSN provenance.
+  const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
+  let m: NoticeSend | undefined
+  if (refId && dsn.recipient) m = findSend(refId) ?? undefined
+  if (m && norm(m.to_email) !== dsn.recipient) m = undefined // the notice must name who we actually wrote to
+  if (!m || !dsn.failed || !dsn.status) return unmatched('no_correlation')
+  // A permanent failure WITHOUT authenticated provenance: review, never an automatic action. The notice
+  // correlates to our send (exact ref + recipient), so it is not noise - but nothing about it proves the
+  // recipient's mail infrastructure issued it, and unauthenticated mail must never suppress a contact or
+  // stop a thread. 4.x.x and anything non-permanent: soft_bounce, never a suppression.
+  const classification = /^5\.\d{1,3}\.\d{1,3}$/.test(dsn.status) ? 'bounce_review' : 'soft_bounce'
+  return {
+    row: { gmail_id: hitId, thread_id: g.threadId ?? '', lead_id: m.lead_id, from_email: from, excerpt: `dsn status ${dsn.status}`, classification, received_at: at, outreach_message_id: m.id },
+    unmatched: null, send: m, status: dsn.status,
+  }
+}
+
+export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number }
+// remaining: background threads (no automated send can reach them) not read this call because of the per-call cap or
+// the time budget; they are read on later calls, oldest check first. neverRead: those of them never read at all (no
+// freshness exists yet: the tick records a hold). freshAsOf: the OLDEST last-read time over every thread in scope after
+// this call (a thread read now counts as now), i.e. the mailbox is known to be read as of then and no later; the tick
+// records it as the reply-sync success time, so the 2-hour send-side gate (replySafetyStale) keeps meaning "every
+// thread read within the last 2 hours", exactly as when every call read everything.
+export interface SyncResult { threads: number; replies: number; optOuts: number; bounces: number; consents: number; reviews: number; remaining?: number; neverRead?: number; freshAsOf?: number; error?: string }
+
+// #355: bounded, checkpointed reply reading. A tenant with a long sent history must not consume the serial tick before
+// the next tenant gets its reply checks, and must not re-read its whole 120-day history every tick.
+//   - SCOPE is the pre-#355 set, unchanged: sent in the last 120 days, or the step-1 message of an approved/active
+//     sequence (any age). Pacing only changes the order and the cap, never which mailbox threads may be read.
+//   - DUE threads are the ones an automated send can still reach: a step-1 message of an approved/active sequence (any
+//     age), or, inside the 120-day window, a thread with a lead reply that follow-ups may answer (followup_threads not
+//     stopped). They are ALWAYS read on every call, before anything else and outside the cap; if the time budget runs
+//     out before every due thread is read, the call fails closed (error reply_sync_incomplete) and the caller sends
+//     nothing for this tenant.
+//   - BACKGROUND threads (sent in the last 120 days, no automated send pending) are read at most REPLY_SYNC_MAX_THREADS
+//     per call (default 50, 1..1000), never-read first, then the oldest check first, so every one of them is read within
+//     ceil(n / cap) calls. The rest are reported as `remaining`; while any thread in scope has never been read the tick
+//     records a 'hold'; otherwise a success as of `freshAsOf`, the oldest read time (never "now" after a partial read).
+//   - The whole call is bounded by REPLY_SYNC_BUDGET_MS (default 120000, 1000..600000); anything else is the default.
+//   - outreach_messages.reply_checked_at is stamped only after a thread was read and processed without error; a failed
+//     read keeps its old stamp, so it is first in line next time.
+export const REPLY_SYNC_DEFAULT_MAX_THREADS = 50
+export const REPLY_SYNC_DEFAULT_BUDGET_MS = 120_000
+const boundedInt = (raw: unknown, def: number, min: number, max: number) => {
+  if (typeof raw !== 'string' || !/^\d{1,7}$/.test(raw.trim())) return def
+  const v = Number(raw.trim())
+  return v >= min && v <= max ? v : def
+}
+export function replySyncLimits(env: Record<string, string | undefined> = process.env): { maxThreads: number; budgetMs: number } {
+  return { maxThreads: boundedInt(env.REPLY_SYNC_MAX_THREADS, REPLY_SYNC_DEFAULT_MAX_THREADS, 1, 1000), budgetMs: boundedInt(env.REPLY_SYNC_BUDGET_MS, REPLY_SYNC_DEFAULT_BUDGET_MS, 1000, 600_000) }
+}
 
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
   const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
@@ -202,9 +283,24 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   if (isStaging((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
   const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
 
-  const seqPriority = tableExists(db, 'sequences') ? " OR id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : ''
-  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at FROM outreach_messages WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? ${seqPriority}) ORDER BY sent_at DESC`).all(tenantId, now - 120 * 86400,...(seqPriority ? [tenantId] : [])) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number }[]
+  const seq = tableExists(db, 'sequences') ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : '0'
+  const warm = tableExists(db, 'followup_threads') ? '(thread_id IS NOT NULL AND thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND stopped IS NULL AND last_lead_reply_at IS NOT NULL))' : '0'
+  const seqArgs = seq !== '0' ? [tenantId] : [], warmArgs = warm !== '0' ? [tenantId] : []
+  const windowStart = now - 120 * 86400
+  // The WHERE clause is the old selection (window OR approved/active sequence); the warm clause only orders threads
+  // inside the window, so it can never pull an older thread into the read.
+  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at, reply_checked_at, CASE WHEN ${seq} OR (sent_at >= ? AND ${warm}) THEN 1 ELSE 0 END AS due FROM outreach_messages
+    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? OR ${seq})
+    ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`).all(...seqArgs, windowStart, ...warmArgs, tenantId, windowStart, ...seqArgs) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number; reply_checked_at: number | null; due: number }[]
+  const { maxThreads, budgetMs } = replySyncLimits((d.env ?? process.env) as Record<string, string | undefined>)
+  const clock = d.clockMs ?? Date.now
+  const t0 = clock()
+  let background = 0, remaining = 0, dueUnread = 0
+  const skipBackground = () => { remaining++ }
+  const readNow = new Set<string>()
   for (const m of sent) {
+    if (clock() - t0 > budgetMs) { if (m.due) dueUnread++; else skipBackground(); continue }
+    if (!m.due) { if (background >= maxThreads) { skipBackground(); continue } background++ }
     try {
       let thread = m.thread_id
       if (!thread) { thread = ((await get(`messages/${m.gmail_id}?format=minimal`)) as GMsg).threadId; db.prepare('UPDATE outreach_messages SET thread_id = ? WHERE id = ?').run(thread, m.id) }
@@ -250,11 +346,22 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }
+      db.prepare('UPDATE outreach_messages SET reply_checked_at = ? WHERE id = ? AND tenant_id = ?').run(now, m.id, tenantId) // read and processed: checkpoint
+      readNow.add(m.id)
     } catch (e) {
       out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
   }
+  if (remaining) out.remaining = remaining
+  {
+    let never = 0, oldest = now
+    for (const m of sent) { const t = readNow.has(m.id) ? now : m.reply_checked_at; if (t === null) never++; else if (t < oldest) oldest = t }
+    if (never) out.neverRead = never
+    else if (oldest < now) out.freshAsOf = oldest // a full read is fresh as of now: the result is unchanged for it
+  }
+  // a thread an automated send can reach was not read: nothing may be sent on the strength of this call
+  if (dueUnread && !out.error) { out.error = 'reply_sync_incomplete'; auditAt(db, tenantId, 'sync_error', `budget ${budgetMs} ms ran out with ${dueUnread} due thread(s) unread`, undefined, undefined, now) }
   // Phase 2 (#415): daemon notices on their own threads, correlated to the exact recorded send before anything is
   // suppressed. Window: since the last successful sync, never wider than 7 days (first sync: 2 days).
   try {
@@ -265,43 +372,19 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
     for (const hit of list.messages ?? []) {
       if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, hit.id)) continue // increments once: seen notices are never reprocessed
       const g = (await get(`messages/${hit.id}?format=full`)) as GMsg
-      const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
-      const from = addr(header(g, 'from'))
-      // Retention minimum for anything that does not correlate to an exact recorded send: the opaque id (for
-      // one-time accounting), the time and the classification. No sender, recipient or content of mail that may
-      // not be ours - the read consent covers replies and delivery notices FOR OUR THREADS only.
-      const logUnmatched = () => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL)').run(hit.id, tenantId, g.threadId ?? '', '', '', 'bounce_unmatched', at)
-      if (!/^(mailer-daemon|postmaster)@/.test(from)) { logUnmatched(); continue }
-      const dsn = dsnFromNotice(g)
-      // Correlate to the exact recorded send: the notice must reference our Message-ID AND name the recipient we
-      // wrote to. BOTH, always: a From line matching mailer-daemon is not authentication (anyone can set it), so
-      // no-reference notices - even genuine-looking 5.x.x ones naming a real sole recipient - can never suppress,
-      // stop a thread or end a sequence. They are counted unmatched and left for review.
-      // An exact Message-ID ref is CORRELATION, never authentication: a party who saw the send's headers could
-      // quote it. Correlation alone therefore never suppresses and never stops anything: a 5.x.x that correlates
-      // but cannot be PROVEN to come from the recipient's own mail infrastructure is classified bounce_review and
-      // left for a human. Automatic suppression exists only behind authenticated DSN provenance.
-      const refId = dsn.messageRef ? /dazl\.([a-z0-9]+)@/i.exec(dsn.messageRef)?.[1] ?? null : null
-      let m: { id: string; lead_id: string; to_email: string } | undefined
-      if (refId && dsn.recipient) m = (db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')").get(tenantId, refId) as typeof m) ?? undefined
-      if (m && norm(m.to_email) !== dsn.recipient) m = undefined // the notice must name who we actually wrote to
-      const log = (cls: string, mid: string | null, leadId: string | null) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(hit.id, tenantId, g.threadId ?? '', leadId, from, `dsn status ${dsn.status ?? 'none'}`, cls, at, mid)
-      if (!m || !dsn.failed || !dsn.status) {
-        logUnmatched()
-        auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
+      const v = judgeDeliveryNotice(hit.id, g, now, refId => db.prepare(NOTICE_SEND_SQL).get(tenantId, refId) as NoticeSend | undefined)
+      const store = () => db.prepare(`INSERT OR IGNORE INTO inbound_messages ${NOTICE_INSERT}`).run(...noticeParams(tenantId, v.row))
+      if (v.unmatched) {
+        store()
+        if (v.unmatched === 'no_correlation') auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
         continue
       }
-      if (/^5\.\d{1,3}\.\d{1,3}$/.test(dsn.status)) {
-        // A permanent failure WITHOUT authenticated provenance: review, never an automatic action. The notice
-        // correlates to our send (exact ref + recipient), so it is not noise - but nothing about it proves the
-        // recipient's mail infrastructure issued it, and unauthenticated mail must never suppress a contact or
-        // stop a thread. Counted once per send; the classification carries the correlation.
-        if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, m.id)) {
-          auditAt(db, tenantId, 'bounce_review', `dsn ${dsn.status} correlated, provenance unverified`, m.lead_id, m.id, now)
-          out.reviews++
-        }
-        log('bounce_review', m.id, m.lead_id)
-      } else log('soft_bounce', m.id, m.lead_id) // 4.x.x and anything non-permanent: never a suppression
+      // Counted once per send; the classification carries the correlation.
+      if (v.row.classification === 'bounce_review' && !db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, v.send!.id)) {
+        auditAt(db, tenantId, 'bounce_review', `dsn ${v.status} correlated, provenance unverified`, v.send!.lead_id, v.send!.id, now)
+        out.reviews++
+      }
+      store()
     }
   } catch (e) {
     out.error = 'reply_sync_failed' // fail closed, same contract as the thread loop

@@ -29,6 +29,7 @@ export const JOBS: JobEntry[] = [
   { id: 'queue:scan', worker: 'runJob', isolation: { covered: 'runner.test.ts' } },
   // Global maintenance: no tenant id is taken; the deletion scope is the risk, so the reason and test are required.
   { id: 'tick:sessions_reap', worker: 'reapAccountHistory', isolation: { global: 'deletes only expired or long-revoked sessions, regardless of tenant; a live session of any tenant never matches', test: 'account-retention.test.ts' } },
+  { id: 'tick:first_party_retention', worker: 'purgeFirstPartyRetention', isolation: { global: 'per tenant with a recorded first-party config, deletes only that tenant\x27s first-party rows past its own retention; fenced like every tick writer', test: 'first-party-signals.test.ts' } },
   { id: 'tick:trace_purge', worker: 'purgeExpiredTraces', isolation: { global: 'deletes only rows older than an explicit owner-set retention, bounded per tick; capture on alone purges nothing', test: 'trace-purge-tick.test.ts' } },
   { id: 'tick:audit_purge', worker: 'purgeAudit', isolation: { global: 'off unless AUDIT_RETENTION_DAYS is explicitly valid; then deletes only events older than it, bounded per tick', test: 'audit-retention-tick.test.ts', via: 'AUDIT_RETENTION_DAYS' } },
   { id: 'tick:onboarding_redact', worker: 'redactOnboardingAuditDetails', isolation: { global: 'redacts only content-free onboarding_audit rows past the retention after a tenant erasure completed; live tenants never match', test: 'onboarding-policy.test.ts' } },
@@ -38,7 +39,7 @@ export const JOBS: JobEntry[] = [
 // Tick-route lib imports that are not tenant work: scheduler bookkeeping, lease fencing, error capture. A new lib
 // import into the tick route that is not listed here or in JOBS fails the manifest test.
 export const TICK_INFRA = new Set([
-  'getScanDb', 'getDb', 'kickRunner', 'tryLease', 'dueTenants', 'captureError', 'requestIdOf',
+  'getScanDb', 'getDb', 'kickRunner', 'sharedScanQueue', 'tryLease', 'dueTenants', 'captureError', 'requestIdOf',
   'classifySync', 'classifyWork', 'finishRun', 'migrateSchedulerRuns', 'recordProgress', 'startRun',
   'auditRetention', 'READ_CONSENT_VERSION', 'DRAIN_HOLD_REASONS',
 ])

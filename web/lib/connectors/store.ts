@@ -95,9 +95,9 @@ export async function writeCredential(db: Db, tenantId: string, connector: strin
 
 // Safe for the browser: never includes the credential or ciphertext. By connector, the order SQLite's primary-key
 // index gave; Postgres has no implicit order. The secret-less 'enrich:fallback' opt-in flag row is not a connector
-// and never surfaces here (connectors list, scan estimate vendors).
+// and never surfaces here (connectors list, scan estimate vendors); nor does the 'first_party' signal config (#390, lib/signals/first-party.ts).
 export async function connectorStatus(db: Db, tenantId: string) {
-  return (await db.all<{ connector: string; last4: string; enabled: number }>("SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ? AND connector != 'enrich:fallback' ORDER BY connector", [tenantId]))
+  return (await db.all<{ connector: string; last4: string; enabled: number }>("SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ? AND connector != 'enrich:fallback' AND connector != 'first_party' ORDER BY connector", [tenantId]))
     .map(r => ({ connector: r.connector, last4: r.last4, enabled: Number(r.enabled) === 1 }))
 }
 
@@ -321,7 +321,7 @@ export function latestAuditStatus(db: Database.Database, a: { tenantId: string; 
 
 // Newest first; same-second rows newest-inserted first (insert_seq: the order rowid gave). Sync for the pipeline's
 // tests and tools on the raw handle; readRecentAudit for the settings routes.
-const RECENT_AUDIT_SQL = "SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? AND connector NOT LIKE 'check:%' ORDER BY created_at DESC, insert_seq DESC LIMIT ?" // 'check:%' rows (per-lead board-check history, #533) would flood the settings status list and displace real connector audits; they stay DB/support-readable, never displayed here
+const RECENT_AUDIT_SQL = "SELECT connector, scan_job_id, lookup, status, results, created_at FROM connector_audit WHERE tenant_id = ? AND connector NOT LIKE 'check:%' AND connector <> 'sitecrawl:tech' ORDER BY created_at DESC, insert_seq DESC LIMIT ?" // 'check:%' rows (per-lead board-check history, #533) and 'sitecrawl:tech' rows (the #389 technology-branch ledger, one per crawled site, read by the run report's 'tech' stage) would flood the settings status list and displace real connector audits; they stay DB/support-readable, never displayed here
 export function recentAudit(db: Database.Database, tenantId: string, limit = 20) {
   return db.prepare(RECENT_AUDIT_SQL).all(tenantId, limit)
 }

@@ -7,10 +7,11 @@
 //     as current (window-notice.ts: "a new scan uses your usual scan budget");
 //   - held but the date facts are not known here: safe common wording, no claimed cure.
 // A hold no check can change (someone else's customer, a different place, a closed opening - uncheckableCause in lib/lead-state.ts) is research only too, the same
-// classification the home journey shows (#352): confirming keeps it for reading and the draft gate keeps it out of drafting.
+// classification the home journey shows (#352): confirming keeps it for reading and the draft gate keeps it out of drafting. So is a REQUIRED check that could
+// not run (sales_hiring_check_failed): requiredGateHeld (lib/scan/held-state.ts) holds it whatever the user confirms, until the check runs again and passes.
 // Pure and client-safe.
 import { windowStatus } from './window.ts'
-import { uncheckableCause, CAUSE_TEXT } from '../lead-state.ts'
+import { uncheckableCause, CAUSE_TEXT, REQUIRED_GATE_REASONS } from '../lead-state.ts'
 
 const DATE = new Set(['event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date'])
 
@@ -38,6 +39,14 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   if (kind === 'unknown') return { label: 'Keep as research', hint: `${RESEARCH}: it is outside the time window you asked for, so it stays out of drafting.` }
   const cause = uncheckableCause(l.review_reason)
   if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
+  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
+  // #390: a first-party signal has no third-party source to check (it is the tenant's own signed, consented event) and
+  // no stored contact (the submitter's email is never kept). Confirming keeps it in the list; it does not identify a
+  // person and promises no draft.
+  if (l.review_reason === 'first_party_signal') return {
+    label: 'Keep this signal',
+    hint: 'Keeps it in your list as confirmed by you. It came from your own site or form (signed, consent recorded); an account-level visit does not identify a person, and no contact is stored with it, so this signal alone cannot be drafted.',
+  }
   if (DATE.has(l.review_reason ?? '')) return {
     label: 'I checked the date - use it',
     hint: 'Moves it to your list as confirmed by you, and it can be drafted. dazl has not verified the date or current need; you are vouching for it.',
