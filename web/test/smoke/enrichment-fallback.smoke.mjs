@@ -165,7 +165,7 @@ try {
     } finally { d.close() }
   }
   for (const [error, shot, text] of [
-    ['accounting_failed', 'stop-accounting-failed', /the cost of one paid step could not be recorded/],
+    ['accounting_failed', 'stop-accounting-failed', /did not retry it automatically[\s\S]*may be charged again/],
     ['accounting_uncertain', 'stop-accounting-uncertain', /may be charged again/],
     ['provider_rate_limited', 'stop-provider-rate-limited', /rate-limited a request in this run[\s\S]*may be charged again/],
     ['provider_rejected', 'stop-provider-rejected', /refused a request in this run[\s\S]*may be charged again/],

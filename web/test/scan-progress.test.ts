@@ -90,9 +90,10 @@ test('runJob: ZERO-MATCH — the search returned nothing and no source failed', 
   assert.match(e.outcome.label, /sources returned nothing/)
 })
 
-test('runJob: FAILED — the search source answers 500: the outcome names the source and is not "zero-match"', async () => {
+test('runJob: a search source answering 500 after the request was sent is a stopped, possibly-billed outcome, never "zero-match"', async () => {
   const e = await ending(base({ hits: [], tfPages: {}, own: {}, extraction: [], searchStatus: 500 }))
-  assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows])); assert.match(e.outcome.label, /^Failed - search:tinyfish had an error/)
+  // Behavior change (#594): a 5xx after send is "uncertain" (it may have been billed), so the run stops and says so instead of naming a plain failure.
+  assert.equal(e.outcome.kind, 'stopped', JSON.stringify([e.outcome, e.job, e.rows])); assert.match(e.outcome.label, /^Stopped after an interruption - a paid step may already have been billed/)
   assert.notEqual(e.outcome.kind, 'zero_match')
 })
 

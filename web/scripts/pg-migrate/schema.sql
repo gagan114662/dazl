@@ -168,3 +168,18 @@ CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
+
+CREATE TABLE scan_spend_calls (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  scan_job_id TEXT NOT NULL,
+  attempt     BIGINT NOT NULL,
+  kind        TEXT NOT NULL CHECK (char_length(kind) <= 32),
+  reserve_usd DOUBLE PRECISION NOT NULL CHECK (reserve_usd >= 0),
+  actual_usd  DOUBLE PRECISION CHECK (actual_usd IS NULL OR actual_usd >= 0),
+  status      TEXT NOT NULL CHECK (status IN ('reserved','settled','kept','refused')),
+  reason      TEXT CHECK (reason IS NULL OR char_length(reason) <= 80),
+  created_at  BIGINT NOT NULL,
+  settled_at  BIGINT
+);
+CREATE INDEX scan_spend_calls_job ON scan_spend_calls (user_id, scan_job_id);

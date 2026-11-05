@@ -82,6 +82,7 @@ export const NON_REQUEST_HOSTS: Record<string, string> = {
   'staging.dazl.ai': 'own domain',
   'docs.github.com': 'documentation link',
   'docs.anthropic.com': 'documentation link',
+  'developers.openai.com': 'documentation link in a comment',
   'docs.tinyfish.ai': 'documentation link',
   'docs.peopledatalabs.com': 'documentation link',
   'docs.apollo.io': 'documentation link',
