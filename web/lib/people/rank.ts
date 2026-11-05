@@ -11,9 +11,15 @@ export interface PersonContact {
   connector: string
   source?: string // page the person was found on, when it is not a profile
   historical?: boolean // named only in a past filing (SEC Form D): visible history, never ranked for action, never recommended
+  // #383 criterion 4 (lib/people/currency.ts): verified current on dated first-party or provider-record evidence, else
+  // search result only. Set by contactsFromEnrichments; absent means search result only.
+  currency?: Currency
+  verified?: ContactCurrency
 }
 
 // Connectors whose people are history, not current buyers. An SEC Form D names officers AS OF the filing: that is research, not an outreach target.
+import { contactCurrency, type ContactCurrency, type Currency } from './currency.ts'
+
 export const HISTORICAL_CONNECTORS = new Set(['signals:sec-form-d'])
 
 export type MatchTier = 'strong' | 'weak' | 'none'
@@ -90,6 +96,7 @@ export interface ContactEnrichment {
   label: string | null
   source_url: string
   connector?: string
+  retrieved_at?: unknown // seconds; the crawl's reading time of a first-party page (#383 criterion 4)
 }
 
 // Where a listed person came from, in words (leads page and CSV export). Unknown connectors show their id.
@@ -99,15 +106,21 @@ export const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company w
 // belong in the same "right people" list as paid-enrichment contacts, not in the generic enrichment list. Their
 // profile link is source_url only when it IS a public profile; a company page stays a plain source link.
 const PROFILE_URL = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\//
-export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: string): RankedPerson[] {
+// Each contact also carries its currency class (verified current / search result only, lib/people/currency.ts) at nowMs.
+export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: string, nowMs: number = Date.now()): RankedPerson[] {
   const contacts: PersonContact[] = rows
     .filter(r => r.kind === 'contact' || r.kind === 'person')
     .map(r => {
       const sep = r.kind === 'person' ? ', ' : ' - '
       const i = r.value.indexOf(sep)
+      const title = i === -1 ? null : r.value.slice(i + sep.length).trim()
+      const historical = !!(r.connector && HISTORICAL_CONNECTORS.has(r.connector))
+      const verified = contactCurrency(r, !!title && !historical && !roleContradicted(title, icpText), nowMs)
       return {
         name: (i === -1 ? r.value : r.value.slice(0, i)).trim(),
-        title: i === -1 ? null : r.value.slice(i + sep.length).trim(),
+        title,
+        currency: verified.currency,
+        verified,
         linkedin: r.kind === 'contact' ? r.source_url || null : PROFILE_URL.test(r.source_url) ? r.source_url : null,
         connector: r.connector ?? r.label ?? 'enrichment',
         ...(r.connector && HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}),

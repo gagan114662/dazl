@@ -14,6 +14,7 @@ import { getMasterKey } from '../secrets.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection } from '../scan/contact-agreement.ts'
 import { roleContradicted } from '../people/rank.ts'
+import { providerContactLabel } from '../people/currency.ts'
 import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
 import { norm } from '../scan/evidence.ts'
 
@@ -396,7 +397,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
     audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: why, results: 0 })
     recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: why, sourceUrl: src })
   }
-  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
+  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:apollo', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
   const out = people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty')
   auditSettleClaim(db, { ...peopleClaim, status: out, results: people.length }, pgate.id, out, people.length)
   return { kind: 'ran', n: people.length, verdict: people.length ? 'attached' : found.length ? 'rejected' : 'empty' }
@@ -421,7 +422,7 @@ async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: n
     const why = a.ok ? roleRejection(p.title, c.buyerTitles.join('; ')) : a.reason
     if (!why) people.push(p); else { audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: why, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_PDL, reason: why, sourceUrl: src }) }
   }
-  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
+  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:pdl', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
   auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), results: people.length }, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), people.length)
   return { n: people.length, verdict: people.length ? 'attached' : found.length ? 'rejected' : 'empty' }
 }
