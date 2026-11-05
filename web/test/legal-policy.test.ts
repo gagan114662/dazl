@@ -134,14 +134,15 @@ test('trace capture is off unless its flag is set', () => {
 test('what survives account deletion is exactly the always-retained set', () => {
   assert.deepEqual([...FACTS.retainedAfterDeletion].sort(), Object.keys(ALWAYS_RETAINED).sort())
   assert.match(privacy, /the audit trail, the record of evidence purges, and consent records/)
-  assert.match(privacy, /the deletion does not complete until the note is blank/, 'the retention copy states the synchronous completion redaction')
   assert.match(privacy, /Records from before this safeguard are blanked by a scheduled cleanup job when it runs/, 'and the legacy tick backstop, without promising it')
   assert.match(privacy, /no guaranteed moment by which it is gone/, 'and promises no guaranteed timing')
   // "removes credentials and sign-in state first" and "never included in a data export"
   for (const t of ['sessions', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']) assert.ok(CREDENTIAL_TABLES.includes(t), t)
   for (const c of ['password_hash', 'salt', 'ciphertext', 'refresh_ct']) assert.ok(REDACTED_COLUMN.test(c), c)
   assert.ok('sessions' in EXPORT_EXCLUDED)
-  assert.match(privacy, /There is no self-service deletion button yet/)
+  assert.match(privacy, /You can export or delete your data yourself in Settings/, 'self-service deletion exists (Settings lifecycle panel, /api/tenant/lifecycle/delete)')
+  assert.match(privacy, /the deletion is not marked complete until the note is blank/, 'completion redaction is synchronous')
+  assert.match(privacy, /the earlier erasure is not undone and completion must be retried/, 'failed completion does not undo the erasure; retry is not promised to succeed')
   assert.match(privacy, /stored Gmail tokens; the grant in your Google account is separate/)
   assert.match(read('lib/tenant/lifecycle.ts'), /Gmail tokens/)
 })
@@ -294,7 +295,7 @@ test('outbound mail carries the sender name, mailing address and an unsubscribe 
   assert.throws(() => saveSettings(new Database(':memory:'), 't1', { sender_name: 'Ana', postal_address: '' }), (e: unknown) => e instanceof OutreachError && e.message.includes('bad_postal_address'))
   assert.match(privacy, /ends with the sender's name, a mailing address and an unsubscribe link/)
   assert.match(privacy, /Every outreach message dazl sends to a prospect \(first touch, sequence step, follow-up or re-open\)/)
-  assert.match(privacy, /then the rest of your workspace data, except what a deletion request names to keep \(never credentials\) and the records listed below/)
+  assert.match(privacy, /then the rest of your workspace data, except what you choose to keep \(never credentials\) and the records listed below/)
   // the Terms say messages carry no AI label: the send path adds only the footer above
   assert.equal(body.slice('Hello there, a short note about your hiring.'.length).match(/\bAI\b|artificial intelligence/i), null)
   for (const f of ['lib/outreach/service.ts', 'lib/outreach/followups.ts', 'lib/outreach/sequences.ts'])
