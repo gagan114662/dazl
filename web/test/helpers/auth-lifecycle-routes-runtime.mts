@@ -69,7 +69,7 @@ test('unverified signup queues a PENDING conversion only; the verification link 
   // the tenant-visible reason is the generic policy stop; the kind ('signup' here) stays server-side in lifecycle_events (asserted above)
   assert.equal((raw.prepare('SELECT error FROM outreach_messages WHERE id = ?').get(m) as { error: string }).error, 'policy_stop')
   assert.equal((raw.prepare("SELECT status FROM sequences WHERE id = 'sq-a'").get() as { status: string }).status, 'stopped')
-  assert.deepEqual(events('newprospect@example.test').map(e => e.activated_at !== null), [true])
+  assert.deepEqual(events('newprospect@example.test').map(e => [e.kind, e.activated_at !== null]), [['signup', true]], 'post-verification: the kind stays server-side in lifecycle_events, activated')
   // The verification is also the transition: seller T opted in, so the new customer is on T's onboarding path.
   assert.deepEqual(enrollments('newprospect@example.test'), [{ tenant_id: 'T', source: 'conversion:signup' }])
   // The link is spent: a replay cannot re-run anything.
