@@ -28,6 +28,7 @@ const MODEL_Q = ['small company hiring payroll specialist', 'complaints about pa
 type Opts = {
   fundedByTrial?: boolean
   seedReservedUsd?: number
+  runBudget?: string
   onAdaptiveSearch?: (db: Database.Database, jobId: string) => void
   signals?: string[]; aVerifies?: boolean; deps?: Partial<RunDeps> }
 async function scan(o: Opts = {}) {
@@ -36,7 +37,7 @@ async function scan(o: Opts = {}) {
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
-  const jid = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp) })
+  const jid = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp), ...(o.runBudget ? { runBudget: o.runBudget } : {}) })
   if (o.fundedByTrial) db.prepare("UPDATE scan_jobs SET funded_by = 'trial', spend_reserved_usd = ? WHERE id = ?").run(o.seedReservedUsd ?? 0, jid)
   const job = claimKeyedJob(db)!
   const searched: string[] = [], fetchBatches: string[][] = [], extractions: string[] = []
@@ -50,6 +51,7 @@ async function scan(o: Opts = {}) {
       const hits = /front desk/i.test(q) ? [B, A] : [A]
       return new Response(JSON.stringify({ results: hits.map(h => ({ url: h.url, title: 'Job', snippet: h.quote, date: recent })) }), { status: 200 })
     }
+    if (u.includes('/count_tokens')) return new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 }) // the budget guard's token counter
     if (u.startsWith('https://api.fetch.tinyfish.ai')) {
       const urls = (JSON.parse(String(init?.body ?? '{}')) as { urls?: string[] }).urls ?? []
       fetchBatches.push(urls)
@@ -122,7 +124,10 @@ test('#381 bounds: a run that disabled paid steps, or with too little of its tim
   assert.equal(s.adaptive?.status, 'skipped:time_budget'); assert.ok(!s.searched.some(q => /front desk/i.test(q)))
 })
 
-test('#381 trial scan at its reserve ceiling: the adaptive round runs on the trial reserve, and the call that would pass $0.30 is refused before it is sent (budget_stopped, never empty)', async () => {
+test('#381 policy lock: a trial scan near its reserve ceiling never enters the paid adaptive round (skipped:paid_steps_off, no adaptive call, never empty)', async () => {
+  // Trial policy (runner: a trial gets paidFallback=false) keeps the paid adaptive round OFF for trial scans;
+  // the reserve is a reservation ledger, not a proven vendor-invoice cap. The re-review's trial-refusal scenario
+  // cannot occur under this policy: the round is skipped before any call exists to refuse. This test locks that.
   const saved = { ...process.env }
   Object.assign(process.env, {
     DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
@@ -130,15 +135,34 @@ test('#381 trial scan at its reserve ceiling: the adaptive round runs on the tri
   })
   try {
     // Round one (4 searches, 1 fetched page, the guarded model calls) reserves about $0.27; the $0.015 prior
-    // reservation leaves less than one $0.05 adaptive search inside the $0.30 per-scan trial reserve.
+    // reservation leaves less than one $0.05 search inside the $0.30 reserve - and still no adaptive call is made.
     const s = await scan({ fundedByTrial: true, seedReservedUsd: 0.015 })
     assert.equal(s.r, 'done')
-    assert.equal(s.adaptive?.status, 'budget_stopped', JSON.stringify(s.adaptive))
-    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `the refused search was never sent: ${JSON.stringify(s.searched)}`)
-    assert.deepEqual(s.fetchBatches, [[A.url]], 'no adaptive fetch after the refusal')
-    assert.equal(s.extractions.length, 1, 'no adaptive extraction after the refusal')
+    assert.equal(s.adaptive?.status, 'skipped:paid_steps_off', JSON.stringify(s.adaptive))
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `no adaptive search was sent: ${JSON.stringify(s.searched)}`)
+    assert.deepEqual(s.fetchBatches, [[A.url]], 'no adaptive fetch')
+    assert.equal(s.extractions.length, 1, 'no adaptive extraction')
     const reserved = (s.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs WHERE id = ?').get(s.jobId) as { s: number }).s
     assert.ok(reserved <= 0.30 + 1e-9, `reserved ${reserved} stays within the $0.30 trial reserve`)
+    assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from a round that never ran is kept')
+  } finally { process.env = saved }
+})
+
+test('#381 budget near-exhausted (non-trial, own max_usd): the adaptive round\'s first search is refused before it is sent (visible status, never empty)', async () => {
+  // The non-trial funded path for the re-review's refusal scenario: the scan's own run_budget.max_usd lowers the
+  // per-scan spend cap (lib/scan/spend-cap.ts); every TinyFish call reserves against it before it is sent.
+  const saved = { ...process.env }
+  Object.assign(process.env, { DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.05', DAZL_SCAN_PRICE_TINYFISH_FETCH_USD: '0.01' })
+  try {
+    // Round one: 4 searches + 1 fetched page = $0.21 of the $0.25 budget; the first $0.05 adaptive search would pass it.
+    const s = await scan({ runBudget: '{"max_usd":0.25}' })
+    assert.equal(s.r, 'done')
+    assert.equal(s.adaptive?.status, 'search_cap', JSON.stringify(s.adaptive))
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `the refused search was never sent: ${JSON.stringify(s.searched)}`)
+    assert.ok(!s.fetchBatches.some(b => b.includes(B.url)), 'no adaptive fetch after the refusal')
+    assert.ok(!s.extractions.some(p => p.includes(B.url)), 'no adaptive extraction after the refusal')
+    const refusals = (s.db.prepare('SELECT spend_cap_refusals AS n FROM scan_jobs WHERE id = ?').get(s.jobId) as { n: number }).n
+    assert.ok(refusals >= 1, 'the refusal is recorded on the scan spend ledger (a budget refusal, not a count cap)')
     assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from a round that never ran is kept')
   } finally { process.env = saved }
 })
