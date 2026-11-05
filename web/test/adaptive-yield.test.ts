@@ -239,12 +239,16 @@ test('#381 D3 round equivalence: a lead of the same shape persists the same gate
   const row2 = r2.db.prepare('SELECT * FROM leads WHERE scan_job_id = ?').get(r2.jobId) as Record<string, unknown>
   assert.ok(row1 && row2, 'both scans persisted their lead')
   // identity and content-derived columns legitimately differ; every gate-derived column must match exactly
-  const exempt = new Set(['id', 'scan_job_id', 'company', 'dedup_key', 'source_url', 'created_at', 'retrieved_at', 'evidence_excerpt', 'evidence_copy_sha256', 'evidence_copy_id']) // identity or content-derived
+  const exempt = new Set(['id', 'scan_job_id', 'company', 'dedup_key', 'source_url', 'created_at', 'evidence_excerpt']) // only genuinely varying identity; timing, copy/origin and every gate column are compared
   const diffs: string[] = []
   for (const c of cols) {
     if (exempt.has(c)) continue
     if (String(row1[c] ?? null) !== String(row2[c] ?? null)) diffs.push(`${c}: round1=${JSON.stringify(row1[c] ?? null)} round2=${JSON.stringify(row2[c] ?? null)}`)
   }
+  assert.ok(Math.abs(Number(row1.retrieved_at) - Number(row2.retrieved_at)) <= 5, 'retrieved_at semantics: both are a fresh read time')
+  assert.equal(row1.evidence_excerpt, A.quote); assert.equal(row2.evidence_excerpt, B.quote) // each excerpt is its own page's quote
+  assert.equal(row1.source_url, A.url); assert.equal(row2.source_url, B.url) // attribution to the page that was read
+  assert.equal(r1.pageReads.includes(A.url) && r2.pageReads.includes(B.url), true, 'own fetch succeeded in both: no held-copy fallback (copy/origin columns null in both, compared above)')
   assert.deepEqual(diffs, [], `gate-derived columns differ between rounds:\n${diffs.join('\n')}`)
   // the evidence excerpt (what the verifier read) is present in both; a held-copy hash exists only on the
   // blocked-own-fetch fallback path, which neither lead took here - so presence of the excerpt, not the copy, is the invariant
@@ -254,4 +258,16 @@ test('#381 D3 round equivalence: a lead of the same shape persists the same gate
   const src1 = r1.db.prepare("SELECT status, candidate_count, verified_count FROM scan_source_runs WHERE collector = 'search:tinyfish'").get() as { status: string; candidate_count: number; verified_count: number }
   const src2 = r2.db.prepare("SELECT status, candidate_count, verified_count FROM scan_source_runs WHERE collector = 'search:adaptive'").get() as { status: string; candidate_count: number; verified_count: number }
   assert.deepEqual(src2, src1, 'the round-two source row records the same shape of stats as round one')
+})
+
+test('#381 D3 provenance: round-two TinyFish text URLs reach the end-of-run verify_provenance summary', async () => {
+  const lines: string[] = []
+  const orig = console.error
+  console.error = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); }
+  let s
+  try { s = await scan() } finally { console.error = orig }
+  assert.equal(s.r, 'done')
+  const prov = lines.map(l => { try { return JSON.parse(l) as { verify_provenance?: { verifier_ok_tinyfish_had_text: number; candidates: number } } } catch { return null } }).find(x => x?.verify_provenance)?.verify_provenance
+  assert.ok(prov, 'verify_provenance was emitted')
+  assert.ok(prov.verifier_ok_tinyfish_had_text >= 1, `round two's page (B) counted as TinyFish-had-text: ${JSON.stringify(prov)}`)
 })
