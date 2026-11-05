@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { rateLimit } from '@/lib/rate-limit'
-import { ingest, MAX_BODY, readConfig, verifyRequest } from '@/lib/signals/first-party'
+import { firstPartyAvailable, ingest, MAX_BODY, readConfig, verifyRequest } from '@/lib/signals/first-party'
 
 // #390 first-party signal receiver: the tenant's own server posts its consented form submissions, demo requests and
 // company-level visit/product events here. No session: the tenant id in the URL (?u=) picks the config, and
@@ -35,6 +35,11 @@ async function readBodyBounded(req: NextRequest, max: number): Promise<string | 
 }
 
 export async function POST(req: NextRequest) {
+  // Deployment gate (#390): first-party collection is unavailable unless this process is explicitly started with
+  // DAZL_FIRST_PARTY_ENABLED=1. OFF answers exactly like the unknown-tenant/no-config case, checked FIRST - before
+  // the tenant check, rate limit, body read, DB read or signature work - so nothing about the feature or its state
+  // is observable and nothing is read or written. Read per request, never cached.
+  if (!firstPartyAvailable()) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const tenantId = req.nextUrl.searchParams.get('u') ?? ''
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(tenantId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (!(await rateLimit(`first-party:${tenantId}`, 120, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
