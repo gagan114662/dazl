@@ -22,8 +22,12 @@ worker holds no database, no tenant id and no keys of its own.
 
 `POST /fetch` with `Authorization: Bearer $ADVANCED_WORKER_TOKEN` and body
 `{platform, query, session}` returns `{items:[{url,title,quote,date,login_walled}]}`
-(max 20 items). `GET /health` returns `{ok:true, platforms:["reddit","x"]}`.
-Platforms with no fetcher yet return `{items:[]}` (audited as `empty`, not an error).
+(max 20 items). `GET /health` returns `{ok:true, platforms:["reddit","x"], version:...}`.
+Platforms with no fetcher yet return `200 {items:[], outcome:"unsupported", reason:...}`
+(audited as `unsupported`, never as a zero-result search). A platform whose fetch FAILED
+returns a non-200 with a typed outcome - `429 {"outcome":"throttled"}` or
+`502 {"outcome":"auth_failed"|"schema_error"|"upstream_error"}` - which the app audits as
+that failure (#436). The only empty 200 is a search that genuinely found nothing.
 
 ## Deploy on EC2 (Docker, ~5 minutes)
 
