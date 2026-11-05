@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { bothEngines } from './helpers/engines.ts'
-import { parseRefusalLookup, creditLimits, setCreditLimit, operatorCreditLimits, creditPeriod, creditUse, reserveCredits, settleCredits, refundCredits, CreditRefused } from '../lib/enrich/credit-pool.ts'
+import { creditLockKey, parseRefusalLookup, creditLimits, setCreditLimit, operatorCreditLimits, creditPeriod, creditUse, reserveCredits, settleCredits, refundCredits, CreditRefused } from '../lib/enrich/credit-pool.ts'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, recentAudit, setEnrichFallback } from '../lib/connectors/store.ts'
@@ -381,3 +381,49 @@ test('C6d Apollo: a failed or unanswered org lookup keeps its credit (the vendor
   assert.equal(c2.org, 0, 'a held lookup is never paid twice')
   assert.deepEqual(await use(a.db, 'u1', e, now()), { [creditPeriod('apollo', 'day', now())]: [1, 0], [creditPeriod('apollo', 'month', now())]: [1, 0] }, 'the replay released nothing and reserved nothing')
 })
+
+bothEngines('C6 holds are bound to their own row: tenant, provider, original window and units survive tampering, and an id collision fails closed', async ({ db }) => {
+  const e = env({})
+  const nextMonth = T0 + 40 * 86400
+  const h = await reserveCredits(db, 'A', 'pdl', 5, { env: e, now: T0, holdId: 'aaaa0001' })
+  // an id collision cannot overwrite or reuse the open hold: the reservation is refused whole and no window is raised
+  await assert.rejects(reserveCredits(db, 'A', 'pdl', 2, { env: e, now: T0, holdId: 'aaaa0001' }), refused('credit_reservation_not_saved'))
+  assert.deepEqual(await use(db, 'A', e), { 'cpd:20261102': [5, 0], 'cpm:202611': [5, 0] }, 'the colliding reservation rolled back')
+  // tampered provider / units / window time on the object: the row decides, so the PDL Nov windows get exactly the 5 back
+  await refundCredits(db, { ...h, provider: 'apollo', units: 1, at: nextMonth })
+  assert.deepEqual(await use(db, 'A', e), {}, 'released the stored 5 from the stored provider and the ORIGINAL day and month')
+  assert.deepEqual(await use(db, 'A', e, nextMonth), {}, 'the tampered month was never touched')
+  // another tenant's id space: the same id under another tenant is not this hold
+  const hb = await reserveCredits(db, 'B', 'apollo', 1, { env: e, now: T0, holdId: 'aaaa0001' })
+  await assert.rejects(refundCredits(db, { ...hb, tenantId: 'A' }), /already settled/, 'a hold cannot be released under another tenant')
+  await refundCredits(db, hb)
+  // rollover: reserved late on one UTC day, settled on the next day: the original day/month windows move, not today's
+  const late = Date.UTC(2026, 10, 30, 23, 59, 0) / 1000
+  const h2 = await reserveCredits(db, 'A', 'apollo', 2, { env: e, now: late })
+  await settleCredits(db, h2, 1)
+  assert.deepEqual(await use(db, 'A', e, late), { 'cad:20261130': [1, 1], 'cam:202611': [1, 1] }, 'settled into the windows it was reserved in')
+  assert.deepEqual(await use(db, 'A', e, late + 3600), {}, 'December / the next day gained nothing')
+})
+
+bothEngines('C5 PG commit order: a reserve and a set/clear both wait on the same per-pair lock and then complete', async ({ db, kind }) => {
+  if (kind !== 'pg') return // SQLite transactions are exclusive by construction; this proves the PG advisory lock
+  const pool = (db as unknown as { pool: { connect(): Promise<{ query(q: string, p?: unknown[]): Promise<unknown>; release(): void }> } }).pool
+  const holder = await pool.connect()
+  const key = creditLockKey('A', 'apollo')
+  await holder.query('SELECT pg_advisory_lock(hashtext($1))', [key])
+  let reserved = false, setDone = false, otherPairDone = false
+  const r = reserveCredits(db, 'A', 'apollo', 1, { env: {}, now: T0 }).then(() => { reserved = true })
+  const s = setCreditLimit(db, 'A', 'apollo', 'day', 1).then(() => { setDone = true })
+  const o = reserveCredits(db, 'A', 'pdl', 1, { env: {}, now: T0 }).then(() => { otherPairDone = true }) // another provider is not blocked
+  await new Promise(res => setTimeout(res, 400))
+  assert.equal(reserved, false, 'reserve waits for the pair lock')
+  assert.equal(setDone, false, 'set waits for the same pair lock')
+  assert.equal(otherPairDone, true, 'a different provider is not serialized behind it')
+  await holder.query('SELECT pg_advisory_unlock(hashtext($1))', [key]); holder.release()
+  await Promise.all([r.catch(() => {}), s, o])
+  assert.equal((await creditLimits(db, 'A', 'apollo', {})).day, 1, 'the set landed')
+  const more = await reserveCredits(db, 'A', 'apollo', 1, { env: {}, now: T0 }).then(() => 'admitted', () => 'refused')
+  const u = (await creditUse(db, 'A', { env: {}, now: T0 })).find(x => x.provider === 'apollo' && x.window === 'day')!
+  assert.ok(u.reserved >= 1, 'first reserve was admitted in one order or the other')
+  assert.equal(more, 'refused', `after both commit, the limit of 1 binds (reserved ${u.reserved})`)
+}, { pgMax: 8 })

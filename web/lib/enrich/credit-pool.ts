@@ -56,8 +56,9 @@ export async function creditLimits(d: DbLike, tenantId: string, p: CreditProvide
 // decided in commit order, including unset -> set, where no limit row exists to lock). SQLite: the transaction is already
 // exclusive. Postgres: a transaction-scoped advisory lock keyed on the pair; a hash collision only serializes two unrelated
 // pairs for a moment, it can never admit or refuse wrongly.
+export const creditLockKey = (tenantId: string, p: CreditProvider) => `credit:${tenantId}:${p}`
 function* lockPair(t: Tx, tenantId: string, p: CreditProvider): TxBody<void> {
-  if (t.kind === 'pg') yield* t.get('SELECT pg_advisory_xact_lock(hashtext(?)) AS locked', [`credit:${tenantId}:${p}`])
+  if (t.kind === 'pg') yield* t.get('SELECT pg_advisory_xact_lock(hashtext(?)) AS locked', [creditLockKey(tenantId, p)])
 }
 export async function setCreditLimit(d: DbLike, tenantId: string, p: CreditProvider, w: 'day' | 'month', limit: number | null): Promise<void> {
   if (limit !== null && !(Number.isInteger(limit) && limit > 0 && limit <= 1_000_000)) throw new Error('credit limit must be a whole number from 1 to 1000000, or null to clear')
@@ -101,7 +102,7 @@ export const creditRefused = (e: unknown): e is CreditRefused => e instanceof Cr
 export interface CreditHold { tenantId: string; provider: CreditProvider; units: number; at: number; open: boolean; id: string }
 const holdPeriod = (id: string) => `ch:${id}`
 
-export async function reserveCredits(d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: { env?: Env; now?: number; /** test seam: runs after the limit decision inputs are read, before the reservation commits */ beforeReserve?: () => Promise<void> } = {}): Promise<CreditHold> {
+export async function reserveCredits(d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: { env?: Env; now?: number; /** test seam: force the hold id (collision test) */ holdId?: string; /** test seam: runs after the limit decision inputs are read, before the reservation commits */ beforeReserve?: () => Promise<void> } = {}): Promise<CreditHold> {
   if (!(Number.isInteger(units) && units > 0)) throw new Error('credit reservation must be a positive whole number')
   const at = opts.now ?? Math.floor(Date.now() / 1000)
   // The limit is decided INSIDE the reserving statement, never from an earlier read: a tenant limit row (set, lowered,
@@ -109,7 +110,7 @@ export async function reserveCredits(d: DbLike, tenantId: string, provider: Cred
   // cannot admit a reservation past a newer limit. Operator env is the fallback per window; neither = unenforced.
   const op = operatorCreditLimits(provider, opts.env)
   await opts.beforeReserve?.()
-  const id = randomBytes(4).toString('hex') // period is capped at 12 chars: 'ch:' + 8 hex; a primary-key collision fails the insert, which refuses the reservation (fail closed)
+  const id = opts.holdId ?? randomBytes(4).toString('hex') // period is capped at 12 chars: 'ch:' + 8 hex; a primary-key collision fails the insert, which refuses the reservation (fail closed)
   try {
     await asDb(d).tx(function* (t: Tx): TxBody<void> {
       yield* lockPair(t, tenantId, provider)
@@ -128,7 +129,7 @@ export async function reserveCredits(d: DbLike, tenantId: string, provider: Cred
           throw new CreditRefused('credit_cap', w, { window: w, used: Number(cur?.reserved_usd ?? 0), limit: limit!, requested: units })
         }
       }
-      yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)', [tenantId, holdPeriod(id), units, at])
+      yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [tenantId, holdPeriod(id), units, at, provider === 'pdl' ? 1 : 0, at])
     })
   } catch (e) {
     if (e instanceof CreditRefused) throw e
@@ -141,17 +142,20 @@ async function move(d: DbLike, h: CreditHold, charged: number | 'refund'): Promi
   if (!h.open) throw new Error('credit hold already settled')
   const nowS = Math.floor(Date.now() / 1000)
   await asDb(d).tx(function* (t: Tx): TxBody<void> {
-    yield* lockPair(t, h.tenantId, h.provider)
     // The durable hold row is the single source of truth for what this hold is worth and whether it is still open.
-    const row = yield* t.get<{ reserved_usd: number }>('SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [h.tenantId, holdPeriod(h.id)])
+    // The row, not the object, decides units, provider and the ORIGINAL window time: reserved_usd = units, reported_usd = the
+    // reservation's epoch second (its day/month windows), calls = provider (0 apollo, 1 pdl). A tampered or stale object
+    // cannot move another amount, another provider's pool or another month's window.
+    const row = yield* t.get<{ reserved_usd: number; reported_usd: number; calls: number }>('SELECT reserved_usd, reported_usd, calls FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [h.tenantId, holdPeriod(h.id)])
     if (!row) throw new Error('credit hold already settled')
+    yield* lockPair(t, h.tenantId, Number(row.calls) === 1 ? 'pdl' : 'apollo') // the row's provider, never the object's
     if ((yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [h.tenantId, holdPeriod(h.id)])).changes !== 1) throw new Error('credit hold already settled')
-    const units = Number(row.reserved_usd)
+    const units = Number(row.reserved_usd), at = Number(row.reported_usd), prov: CreditProvider = Number(row.calls) === 1 ? 'pdl' : 'apollo'
     const reported = charged === 'refund' ? 0 : charged
     const delta = (charged === 'refund' ? 0 : charged) - units
     for (const w of ['day', 'month'] as const) {
       const r = yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?',
-        [delta, delta, reported, nowS, h.tenantId, creditPeriod(h.provider, w, h.at)])
+        [delta, delta, reported, nowS, h.tenantId, creditPeriod(prov, w, at)])
       if (r.changes !== 1) throw new Error('credit pool settle: window row missing')
     }
   })
