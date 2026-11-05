@@ -105,6 +105,20 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
     onboarding_audit: new Set(['detail']),
     autopilot_audit: new Set(['detail']),
   }
+  // Workspace credit records share tenant_spend_pools with the USD pools (lib/enrich/credit-pool.ts). Their columns are
+  // overloaded (reserved_usd = credits or a limit; on a hold row reported_usd = the reservation's epoch second and calls =
+  // provider 0/1), so a raw export would show credits as dollars, an epoch as dollars and a provider as a call count.
+  // They are exported as labelled credit records instead; every value is kept, nothing is dropped, and the columns are
+  // listed in redacted_columns because the rows are not verbatim. The stored rows are never rewritten.
+  const creditRecord = (r: Record<string, unknown>): Record<string, unknown> | null => {
+    const period = String(r.period ?? ''), num = (v: unknown) => typeof v === 'bigint' ? Number(v) : Number(v ?? 0)
+    const prov = (c: string) => c === 'a' ? 'apollo' : 'pdl', win = (c: string) => c === 'd' ? 'day' : 'month'
+    let m: RegExpMatchArray | null
+    if ((m = period.match(/^cl([ap])([dm])$/))) return { tenant_id: r.tenant_id, record: 'credit_limit', provider: prov(m[1]), window: win(m[2]), limit_credits: num(r.reserved_usd), updated_at: r.updated_at }
+    if ((m = period.match(/^c([ap])([dm]):(\d+)$/))) return { tenant_id: r.tenant_id, record: 'credit_usage', provider: prov(m[1]), window: win(m[2]), window_start: m[3], reserved_credits: num(r.reserved_usd), charged_credits: num(r.reported_usd), lookups: num(r.calls), updated_at: r.updated_at }
+    if (period.startsWith('ch:')) return { tenant_id: r.tenant_id, record: 'credit_hold', hold_id: period.slice(3), status: 'unsettled (counted in the usage windows until settled)', provider: num(r.calls) === 1 ? 'pdl' : 'apollo', reserved_credits: num(r.reserved_usd), reserved_at: new Date(num(r.reported_usd) * 1000).toISOString(), updated_at: r.updated_at }
+    return null
+  }
   const clean = (t: string, r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).map(([k, v]) => {
     if (REDACTED_COLUMN.test(k) && v != null) { redacted.add(`${t}.${k}`); return [k, '[redacted: stored credential]'] }
     if (CONVERSION_TEXT_COLUMNS[t]?.has(k) && typeof v === 'string') {
@@ -122,7 +136,11 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
     if (EXPORT_EXCLUDED[t]) continue
     const w = owned(scope, t, tenant)
     const rows = await db.all<Record<string, unknown>>(`SELECT * FROM "${t}" WHERE ${w.sql}`, w.params)
-    if (rows.length) tables[t] = rows.map(r => clean(t, r))
+    if (rows.length) tables[t] = rows.map(r => {
+      const c = t === 'tenant_spend_pools' ? creditRecord(r) : null
+      if (c) { for (const k of ['reserved_usd', 'reported_usd', 'calls', 'period']) redacted.add(`${t}.${k}`); return clean(t, c) }
+      return clean(t, r)
+    })
   }
   return { format: 'dazl-tenant-export', version: 1, tenant, exported_at: now.toISOString(), tables, excluded: EXPORT_EXCLUDED, redacted_columns: [...redacted].sort() }
 }
