@@ -14,6 +14,7 @@ import { ENRICH_STALE_S } from '../scan/enrichment.ts'
 import { polishDraft, type LlmDeps } from './draft-llm.ts'
 import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, withdrawLaunchPolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
 import { providers as defaultProviders } from '../llm/provider.ts'
+import { displayAuditDetail } from './stop-reason.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -24,6 +25,10 @@ export const CONSENT_TEXT = [
   'You are the sender and you are legally responsible for these emails under the laws that apply to you and your recipients (for example CASL in Canada, CAN-SPAM in the US, PECR and GDPR in the UK and EU).',
   'You will only target businesses and business roles, where the recipient published the address for business use and your message is relevant to their role.',
   'Every email carries your name, your mailing address and an unsubscribe link. Anyone who unsubscribes or bounces is never emailed again.',
+  // "stops sends immediately" overpromises: the code re-checks pause before each send (live() below),
+  // so sends stop before the next one and a send already handed to Gmail cannot be recalled. The Terms
+  // carry the accurate wording. Correcting this accepted text is a consent-version decision (the audit
+  // proof stores CONSENT_VERSION, one version must name one text); left to the owner (#652 review).
   'You can pause or turn off autopilot at any time. Pausing stops sends immediately.',
 ]
 export const ATTESTATIONS = ['business_published', 'relevant_to_role', 'responsible_sender'] as const
@@ -96,7 +101,8 @@ export function getState(db: Database.Database, tenantId: string): AutopilotStat
   return { enabled: r?.enabled === 1, paused: r?.paused === 1, pause_reason: r?.pause_reason ?? null, consent_current: r?.consent_version === CONSENT_VERSION, daily_cap: r?.daily_cap ?? DEFAULT_DAILY }
 }
 export const recentAutopilotAudit = (db: Database.Database, tenantId: string, limit = 50) =>
-  db.prepare('SELECT lead_id, message_id, action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(tenantId, limit) as { lead_id: string | null; message_id: string | null; action: string; detail: string | null; created_at: number }[]
+  (db.prepare('SELECT id, lead_id, message_id, action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(tenantId, limit) as { id: string; lead_id: string | null; message_id: string | null; action: string; detail: string | null; created_at: number }[])
+    .map(r => ({ ...r, detail: displayAuditDetail(r.detail) }))
 
 // Turning on needs the current consent text, all three attestations, a connected Gmail and a sender identity.
 export function enable(db: Database.Database, tenantId: string, input: { version: string; attestations: string[]; daily_cap?: number }): void {

@@ -57,8 +57,10 @@ const BASIS_TEXT: Record<DomainBasisKind, string> = {
   unrecorded: 'how this site was chosen was not recorded',
   cited_page: 'the cited page',
 }
-type Identity = { text: string; state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null }
-function identityOf(l: CardLead, rows: NonNullable<CardLead['enrichments']>): Identity | null {
+export type Identity = { text: string; state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null }
+// The lead facts identity needs: which websites the crawl recorded, how each was chosen, and any user review. Shared
+// with the contact route (outreach/contact-route.ts), which must agree with the card's identity line.
+export function identityOf(l: { id?: string; contact: string | null }, rows: { connector: string; kind: string; value: string; label?: string | null; source_url?: string | null }[]): Identity | null {
   const sites = [...new Set(rows.filter(r => r.connector === 'sitecrawl' && r.kind === 'domain').map(r => r.value.toLowerCase().split('|')[0]).filter(Boolean))]
   if (sites.length === 0) return null
   if (sites.length > 1) return { text: `several websites recorded (${sites.join(', ')}); which one is theirs is not settled`, state: 'conflict', site: null }

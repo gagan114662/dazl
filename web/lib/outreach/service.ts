@@ -5,7 +5,7 @@ import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
-import { conversionBlockedNow } from './lifecycle.ts'
+import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -40,8 +40,18 @@ export const isInboxFixtureAddress = (email: string): boolean => {
   const d = norm(email).split('@').pop() ?? ''
   return d === INBOX_FIXTURE_DOMAIN || d.endsWith(`.${INBOX_FIXTURE_DOMAIN}`)
 }
-export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
-  !isInboxFixtureAddress(email) && (!CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email))
+// The env-designated test tenant may address only the approved test inbox. Every send path
+// (draft, manual and autopilot send, follow-up, sequence step, re-open) runs this gate
+// synchronously before a send, so the restriction holds at each authoritative send boundary,
+// not only in the UI. A missing or malformed allowlist fails closed via testRecipientApproved:
+// nothing is addressable for that tenant. Other tenants are unaffected. Code gate only.
+const isDesignatedTestTenant = (tenantId: string): boolean =>
+  !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
+export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean => {
+  if (isInboxFixtureAddress(email)) return false
+  if (isDesignatedTestTenant(tenantId)) return testRecipientApproved(db, tenantId, email)
+  return !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
+}
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -350,7 +360,7 @@ export function listMessages(db: Database.Database, tenantId: string, d: Deps = 
   // The draft list carries the evidence basis so the approval UI can label a human
   // confirmation (never presented as dazl's verification) or a withdrawn one.
   const sender = getSettings(db, tenantId)
-  return rows.map(r => ({ ...r, send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
+  return rows.map(r => ({ ...r, error: displayStopReason(r.error), send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
