@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { bothEngines } from './helpers/engines.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { finishRun, schedulerHealth, schedulerHealthResponse, startRun, type SchedulerHealth } from '../lib/ops/scheduler-runs.ts'
+import { finishRun, recordProgress, schedulerHealth, schedulerHealthResponse, startRun, tenantFreshness, type SchedulerHealth } from '../lib/ops/scheduler-runs.ts'
 import type { DbLike } from '../lib/db/client.ts'
 
 const N = 1_900_000_000
@@ -40,6 +40,31 @@ for (const status of ['failed', 'lease_lost'] as const) {
     const ok = await schedulerHealth(db, N + 60)
     assert.equal(ok.ok, true, JSON.stringify(ok)); assert.equal(ok.operational.unresolved_failure, null); assert.deepEqual(ok.problems, [])
     assert.equal((await schedulerHealthResponse(db, N + 60)).status, 200)
+  })
+}
+
+// The tenant's own view (#361): a crashed tick (an exception, or the lease lost mid-run) after an earlier recent success
+// is not "healthy" for a tenant with tracked work, while the operator health is 503 for it. A tenant with no work stays
+// idle and sees nothing of another tenant. A newer successful run restores healthy.
+for (const status of ['failed', 'lease_lost'] as const) {
+  bothEngines(`tenant freshness: ${status} tick after a recent ok reads stale for a tenant with work, idle for one without, healthy after recovery`, async ({ db }) => {
+    const first = await startRun(db, lease, N - 900)
+    await recordProgress(db, first, 'tenant-a', 'reply_sync', { outcome: 'success' }, N - 890)
+    await finishRun(db, first, 'ok', undefined, N - 850)
+    assert.equal((await tenantFreshness(db, 'tenant-a', N - 800)).state, 'healthy', 'control: before the failed tick')
+    await run(db, -60, -30, status, status === 'failed' ? new Error('tick_store_failure for tenant-a') : undefined)
+    const a = await tenantFreshness(db, 'tenant-a', N)
+    assert.equal(a.scheduler, 'fresh', 'the last completion is still recent')
+    assert.equal(a.state, 'stale', JSON.stringify(a))
+    assert.deepEqual(a.reasons, [`scheduler_${status}`])
+    assert.ok(!JSON.stringify(a).includes('tick_store_failure'), 'the run error text is not in the tenant view')
+    const b = await tenantFreshness(db, 'tenant-b', N)
+    assert.equal(b.state, 'idle'); assert.deepEqual(b.reasons, []); assert.deepEqual(b.work, [])
+    const again = await startRun(db, lease, N + 10)
+    await recordProgress(db, again, 'tenant-a', 'reply_sync', { outcome: 'success' }, N + 20)
+    await finishRun(db, again, 'ok', undefined, N + 40)
+    const r = await tenantFreshness(db, 'tenant-a', N + 60)
+    assert.equal(r.state, 'healthy', JSON.stringify(r)); assert.deepEqual(r.reasons, [])
   })
 }
 

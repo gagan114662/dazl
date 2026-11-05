@@ -30,6 +30,7 @@ export interface Fixture {
   modelIcp: object                         // SYNTHETIC profile-generation reply (real normalisation and funding-stage guard run on it)
   modelQueries: string[]                   // SYNTHETIC query-writing reply
   hits: Hit[]                              // SYNTHETIC search results (returned for every query)
+  hitsFor?: (n: number) => Hit[]           // SYNTHETIC results for the n-th search of the scan (0-based; replaces `hits` when set)
   tfPages: Record<string, { title: string; text: string }>   // SYNTHETIC TinyFish fetch results
   own: Record<string, { title: string; text: string; published?: string; structured?: string[] } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
@@ -63,7 +64,7 @@ export async function runFixture(f: Fixture) {
       if (q.startsWith('site:linkedin.com/in ')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
       calls.searches.push(q); calls.afters.push(new URL(u).searchParams.get('after_date'))
       if (f.searchStatus) return new Response('{}', { status: f.searchStatus })
-      return new Response(JSON.stringify({ results: f.hits.map(h => ({ url: h.url, title: h.title, snippet: h.snippet, ...(h.date ? { date: h.date } : {}) })) }), { status: 200 })
+      return new Response(JSON.stringify({ results: (f.hitsFor ? f.hitsFor(calls.searches.length - 1) : f.hits).map(h => ({ url: h.url, title: h.title, snippet: h.snippet, ...(h.date ? { date: h.date } : {}) })) }), { status: 200 })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) {
       const urls = (JSON.parse(String(init?.body ?? '{}')) as { urls?: string[] }).urls ?? []
