@@ -208,3 +208,25 @@ bothEngines('(c2) a retention raise after purge does not reopen already-expired 
   assert.notEqual(r.results[0].outcome, 'created', 'an already-expired event must stay expired across a retention raise')
   assert.equal(await leadCount(db, 'A'), 0)
 })
+
+// (e) The acceptance floor is monotonic under CONCURRENT and STALE config writes: two re-records racing (the higher
+// candidate must survive regardless of commit order) and a re-record with a stale `now` (floor never moves back).
+// Red pre-fix: recordConfig reads the previous config OUTSIDE its transaction, so the loser of the race can write
+// the smaller floor last.
+bothEngines('(e) concurrent and stale config writes keep the acceptance floor monotonic', async ({ db }) => {
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW) // 90d, no floor yet
+  const floorOf = async () => (await readConfig(db, 'A'))!.config.accept_floor ?? 0
+  const raise = recordConfig(db, 'A', { ...CFG, retention_days: 180 }, 'actor-a', NOW + 20_000)
+  const lower = recordConfig(db, 'A', { ...CFG, retention_days: 30 }, 'actor-a', NOW + 10_000)
+  await Promise.all([raise, lower]) // started in this order: pre-fix the smaller floor (lower's) lands last
+  const want = NOW + 20_000 - 90 * d // the higher candidate, from the previous 90d window edge
+  assert.equal(await floorOf(), want, 'the smaller racing candidate must never overwrite the larger floor')
+  // stale execution: a re-record whose clock is behind moves nothing BACK - it can only keep or advance the floor
+  // (the floor never drops below any previously committed value, so non-resurrection boundaries never reopen)
+  await recordConfig(db, 'A', { ...CFG, retention_days: 30 }, 'actor-a', NOW + 5_000)
+  const afterStale = Math.max(want, NOW + 5_000 - 30 * d)
+  assert.equal(await floorOf(), afterStale, 'a stale now never lowers the floor')
+  // and the floor still moves forward honestly when a later re-record's own window edge is ahead
+  await recordConfig(db, 'A', { ...CFG, retention_days: 60 }, 'actor-a', NOW + 40 * d)
+  assert.equal(await floorOf(), Math.max(afterStale, NOW + 40 * d - 30 * d)) // prev period is the stale write's 30d
+})

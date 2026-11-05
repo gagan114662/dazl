@@ -98,17 +98,23 @@ const auditRow = (tenantId: string, lookup: string, status: string, results: num
 // Records (or replaces) the tenant's config with a NEW signing secret, collection on. The secret is returned once.
 export async function recordConfig(db: Db, tenantId: string, input: FpConfigInput, actorId: string, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<string> {
   const secret = randomBytes(32).toString('base64url')
-  // Prospective acceptance: events already expired under the PREVIOUS recorded period stay expired (floor moves only forward).
-  const prev = await readConfig(db, tenantId, master)
-  const floor = Math.max(prev?.config.accept_floor ?? 0, prev ? now - prev.config.retention_days * 86400 : 0)
-  const cfg: FpConfig = { v: 1, secret, ...input, recorded_at: now, recorded_by: actorId.slice(0, 80), policy: FP_POLICY_VERSION, ...(floor > 0 ? { accept_floor: floor } : {}) }
-  const blob = encryptSecret(JSON.stringify(cfg), ctx(tenantId), master)
-  await db.tx(function* (t) {
+  return db.tx(function* (t) {
+    // The previous config is read INSIDE the transaction, behind the per-tenant advisory lock on Postgres (SQLite
+    // runs the whole tx synchronously): two racing re-records serialize, so the monotonic acceptance floor cannot be
+    // overwritten by the smaller candidate, whatever the commit order or clock skew.
+    if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('fp_config:' || ?, 0)) AS x", [tenantId])
+    // Prospective acceptance: events already expired under the PREVIOUS recorded period stay expired (floor moves only forward).
+    const prevRow = yield* t.get<{ ciphertext: string }>('SELECT ciphertext FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
+    let prev: FpConfig | null = null
+    if (prevRow?.ciphertext) { try { const c = JSON.parse(decryptSecret(prevRow.ciphertext, ctx(tenantId), master)) as FpConfig; if (c?.v === 1) prev = c } catch { /* an unreadable config protects nothing */ } }
+    const floor = Math.max(prev?.accept_floor ?? 0, prev ? now - prev.retention_days * 86400 : 0)
+    const cfg: FpConfig = { v: 1, secret, ...input, recorded_at: now, recorded_by: actorId.slice(0, 80), policy: FP_POLICY_VERSION, ...(floor > 0 ? { accept_floor: floor } : {}) }
+    const blob = encryptSecret(JSON.stringify(cfg), ctx(tenantId), master)
     yield* t.run(`INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, ?, ?, 1)
       ON CONFLICT (tenant_id, connector) DO UPDATE SET ciphertext = excluded.ciphertext, last4 = excluded.last4, enabled = 1`, [tenantId, FP_CONNECTOR, blob, secret.slice(-4)])
     yield* t.run(AUDIT_SQL, auditRow(tenantId, `config:${FP_POLICY_VERSION};basis=${input.basis};domain=${input.site_domain};retention=${input.retention_days}d;privacy=${input.privacy_url}`, 'recorded', 0))
+    return secret
   })
-  return secret
 }
 
 export async function readConfig(db: Db, tenantId: string, master?: Buffer): Promise<{ config: FpConfig; enabled: boolean } | null> {
