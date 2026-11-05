@@ -148,6 +148,7 @@ claim), on both engines, including two SQLite connections to one file as two ins
   tenant) is persistent and atomic. Each workspace sets its own day/month limits in Settings > Enrichment (an
   operator env value is the fallback per window); #363 is only PART done: scan-runner settle, per-play caps, the
   cost-disclosure threshold and live acceptance of reserve-before-call on real paid paths remain.
+- **Credit holds** are rows in `tenant_spend_pools` (period `ch:<9 base36>`, units/time/provider stored on the row). Settled or refunded holds are deleted in the same transaction as the pool move. A hold whose charge is unknown (crash, failed or unanswered call) KEEPS its row and its reservation: those rows are never pruned automatically. Growth is one small row per unknown-charge lookup; any later cleanup needs explicit retention authority and must not release an unsettled reservation.
 - **Disclosure:** the prelaunch estimate (lib/scan/estimate-request.ts) reads the owner pool rows.
   - Proved: a stale or failed pending marker blocks the estimate with the reason (`accounting_unsettled`), and
     `POST /api/scan` refuses with 409 and creates no job, the same rule the pool enforces. A fresh marker does not block.

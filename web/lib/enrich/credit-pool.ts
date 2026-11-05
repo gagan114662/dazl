@@ -102,7 +102,7 @@ export const creditRefused = (e: unknown): e is CreditRefused => e instanceof Cr
 export interface CreditHold { tenantId: string; provider: CreditProvider; units: number; at: number; open: boolean; id: string }
 const holdPeriod = (id: string) => `ch:${id}`
 
-export async function reserveCredits(d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: { env?: Env; now?: number; /** test seam: force the hold id (collision test) */ holdId?: string; /** test seam: runs after the limit decision inputs are read, before the reservation commits */ beforeReserve?: () => Promise<void> } = {}): Promise<CreditHold> {
+async function reserveOnce(id: string, d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: { env?: Env; now?: number; /** test seam: force the hold id (collision test) */ holdId?: string; /** test seam: runs after the limit decision inputs are read, before the reservation commits */ beforeReserve?: () => Promise<void> } = {}): Promise<CreditHold> {
   if (!(Number.isInteger(units) && units > 0)) throw new Error('credit reservation must be a positive whole number')
   const at = opts.now ?? Math.floor(Date.now() / 1000)
   // The limit is decided INSIDE the reserving statement, never from an earlier read: a tenant limit row (set, lowered,
@@ -110,7 +110,6 @@ export async function reserveCredits(d: DbLike, tenantId: string, provider: Cred
   // cannot admit a reservation past a newer limit. Operator env is the fallback per window; neither = unenforced.
   const op = operatorCreditLimits(provider, opts.env)
   await opts.beforeReserve?.()
-  const id = opts.holdId ?? randomBytes(4).toString('hex') // period is capped at 12 chars: 'ch:' + 8 hex; a primary-key collision fails the insert, which refuses the reservation (fail closed)
   try {
     await asDb(d).tx(function* (t: Tx): TxBody<void> {
       yield* lockPair(t, tenantId, provider)
@@ -136,6 +135,21 @@ export async function reserveCredits(d: DbLike, tenantId: string, provider: Cred
     throw new CreditRefused('credit_reservation_not_saved')
   }
   return { tenantId, provider, units, at, open: true, id }
+}
+
+// period is capped at 12 chars: 'ch:' + 9 base-36 chars (~46 bits). A primary-key collision fails the unique INSERT, which rolls
+// the whole reservation back; a bounded retry picks a fresh id, then the reservation is refused (fail closed). Never overwrites.
+const newHoldId = () => Array.from(randomBytes(9), b => (b % 36).toString(36)).join('') // 36^9 ids; the modulo bias is irrelevant for uniqueness
+export async function reserveCredits(d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: Parameters<typeof reserveOnce>[5] = {}): Promise<CreditHold> {
+  if (opts.holdId) return reserveOnce(opts.holdId, d, tenantId, provider, units, opts)
+  let last: unknown
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await reserveOnce(newHoldId(), d, tenantId, provider, units, opts) } catch (e) {
+      if (!(e instanceof CreditRefused) || e.reason !== 'credit_reservation_not_saved') throw e // a cap refusal is final, only an unsaved reservation retries
+      last = e
+    }
+  }
+  throw last
 }
 
 async function move(d: DbLike, h: CreditHold, charged: number | 'refund'): Promise<void> {
