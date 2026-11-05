@@ -159,10 +159,21 @@ export function verifyRequest(secret: string, tsHeader: string | null, sigHeader
 
 // A consent withdrawal is REMEMBERED: erasing the subject's leads is not enough, because an older-dated granted event
 // that arrives after the withdrawal (a retry, a delayed queue, a backfill) would recreate the lead. The tombstone is
-// the minimum that prevents resurrection: the tenant's salted fp:p: hash and the withdrawal time. Never the email,
-// never a name. Bounded by the tenant's recorded retention (purged in the tick) and removed by eraseFirstParty and
-// tenant deletion (tenant-scoped, so the 0039 tomb guards and lifecycle erasure apply). A grant dated AFTER the
-// withdrawal is a new consent and is allowed.
+// the minimum that prevents resurrection: the tenant's keyed fp:p: hash and the withdrawal time. Never the email,
+// never a name.
+//
+// Privacy facts, stated plainly: person_key is sha256(tenantId|email) truncated - a DETERMINISTIC keyed hash, not a
+// secret salt. Anyone who knows the tenant id and guesses the email can verify the pair by hashing, so the tombstone
+// is personal data and is treated as such: it lives at most the tenant's recorded retention period (purged in the
+// same tick as the events), is removed by eraseFirstParty and tenant deletion, and is justified only as the minimum
+// record needed to honor the withdrawal the consent flow already promised. Retention interaction that makes the bound
+// sound: a grant older than retention_days is rejected:bad_time, so once a tombstone has aged out, every grant dated
+// at/before the withdrawal is too old to be accepted anyway - expiry cannot reopen resurrection. The one boundary to
+// name: a FULL erase (eraseFirstParty or tenant deletion) forgets the withdrawal with everything else, so a grant
+// replayed after the tenant re-records a config is evaluated against the new config alone. That is the existing erase
+// semantics, unchanged.
+//
+// A grant dated AFTER the withdrawal is a new consent and is allowed.
 export const FP_WITHDRAWALS_DDL = `
   CREATE TABLE IF NOT EXISTS first_party_withdrawals (
     tenant_id    TEXT NOT NULL,
@@ -292,7 +303,7 @@ export async function ingest(db: Db, tenantId: string, rawBody: string, receipt:
       if (k.withdrawnKey) {
         // Remember the withdrawal (latest one wins), then erase. The exclusive lock serializes with a concurrent
         // grant for the same person on Postgres; SQLite is single-writer.
-        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('fp_withdraw:' || ?, 0)) AS x", [k.withdrawnKey])
+        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('fp_withdraw:' || ? || ':' || ?, 0)) AS x", [tenantId, k.withdrawnKey])
         yield* t.run(`INSERT INTO first_party_withdrawals (tenant_id, person_key, withdrawn_at, recorded_at) VALUES (?, ?, ?, ?)
           ON CONFLICT (tenant_id, person_key) DO UPDATE SET withdrawn_at = MAX(first_party_withdrawals.withdrawn_at, excluded.withdrawn_at), recorded_at = excluded.recorded_at`,
           [tenantId, k.withdrawnKey, k.withdrawnAt ?? now, now])
@@ -302,7 +313,7 @@ export async function ingest(db: Db, tenantId: string, rawBody: string, receipt:
       const e = k.event
       if (e.dedupKey.startsWith('fp:p:')) {
         // A grant for a tombstoned person dated at/before the withdrawal is a late retry, not a consent.
-        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock_shared(hashtextextended('fp_withdraw:' || ?, 0)) AS x", [e.dedupKey])
+        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock_shared(hashtextextended('fp_withdraw:' || ? || ':' || ?, 0)) AS x", [tenantId, e.dedupKey])
         const tomb = yield* t.get<{ withdrawn_at: number }>('SELECT withdrawn_at FROM first_party_withdrawals WHERE tenant_id = ? AND person_key = ?', [tenantId, e.dedupKey])
         if (tomb && e.at <= Number(tomb.withdrawn_at)) { results[i].outcome = 'not_consented'; continue }
       }
