@@ -88,7 +88,7 @@ test('retention periods match the code constants', () => {
   assert.ok(privacy.includes(`kept for ${FACTS.revokedSessionRetainDays} days`))
   assert.ok(privacy.includes(`deleted after ${FACTS.systemMailOutboxRetainHours} hours`))
   assert.ok(privacy.includes(`expires after ${FACTS.evidenceCopyRetainDays} days`))
-  assert.ok(privacy.includes(`deleted ${FACTS.consentProofRetainYears} years after the deletion completed`))
+  assert.ok(privacy.includes(`Once ${FACTS.consentProofRetainYears} years have passed since the deletion completed`), 'the 2-year purge is qualified: batched, on successful cleanup runs, so records can go later')
   // the consent period is calendar years from the completed deletion (Feb 29 rolls forward, never early)
   const now = Date.UTC(2030, 5, 15) / 1000
   assert.equal(onboardingAuditCutoff(now), Date.UTC(2030 - FACTS.consentProofRetainYears, 5, 15) / 1000)
