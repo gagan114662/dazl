@@ -2,7 +2,11 @@
 
 Runs the session-cookie platforms (X and Reddit today) for dazl scans. The dazl app
 calls this worker over HTTP with one tenant's own session cookie per request; the
-worker holds no database, no tenant id and no keys of its own.
+worker holds no database, no tenant id and no persisted tenant credentials. It does
+hold its own configured secrets: the ADVANCED_WORKER_TOKEN bearer the app
+authenticates with, and any operator throwaway session cookies
+(X_SESSION_COOKIE, REDDIT_SESSION_COOKIE, LINKEDIN_SESSION_COOKIE) that are used
+only when a request carries no tenant session (see Operator sessions below).
 
 ## Account-ban and platform-terms risk (read before enabling)
 
@@ -22,8 +26,12 @@ worker holds no database, no tenant id and no keys of its own.
 
 `POST /fetch` with `Authorization: Bearer $ADVANCED_WORKER_TOKEN` and body
 `{platform, query, session}` returns `{items:[{url,title,quote,date,login_walled}]}`
-(max 20 items). `GET /health` returns `{ok:true, platforms:["reddit","x"]}`.
-Platforms with no fetcher yet return `{items:[]}` (audited as `empty`, not an error).
+(max 20 items). `GET /health` returns `{ok:true, platforms:["reddit","x"], version:...}`.
+Platforms with no fetcher yet return `200 {items:[], outcome:"unsupported", reason:...}`
+(audited as `unsupported`, never as a zero-result search). A platform whose fetch FAILED
+returns a non-200 with a typed outcome - `429 {"outcome":"throttled"}` or
+`502 {"outcome":"auth_failed"|"schema_error"|"upstream_error"}` - which the app audits as
+that failure (#436). For a supported platform, the only empty 200 is a search that genuinely found nothing.
 
 ## Deploy on EC2 (Docker, ~5 minutes)
 
