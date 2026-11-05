@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
+import { migrateScan, createQueryJob, cancelJob } from '../lib/scan/store.ts'
 import { migratePlans } from '../lib/plans.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
@@ -25,14 +25,19 @@ const A = { url: 'https://jobs.example/a', company: 'Harbor Freight Supply', quo
 const B = { url: 'https://jobs.example/b', company: 'Lakeview Dental Group', quote: 'Lakeview Dental Group in Dayton Ohio is hiring an office manager to run the front desk and billing' }
 const MODEL_Q = ['small company hiring payroll specialist', 'complaints about payroll software small business']
 
-type Opts = { signals?: string[]; aVerifies?: boolean; deps?: Partial<RunDeps> }
+type Opts = {
+  fundedByTrial?: boolean
+  seedReservedUsd?: number
+  onAdaptiveSearch?: (db: Database.Database, jobId: string) => void
+  signals?: string[]; aVerifies?: boolean; deps?: Partial<RunDeps> }
 async function scan(o: Opts = {}) {
   resetTinyfishState()
   const icp = { summary: 'Ohio SMBs hiring', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: o.signals ?? ['payroll job', 'new front desk coordinator position posted'], exclude: [] }
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
-  createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp) })
+  const jid = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp) })
+  if (o.fundedByTrial) db.prepare("UPDATE scan_jobs SET funded_by = 'trial', spend_reserved_usd = ? WHERE id = ?").run(o.seedReservedUsd ?? 0, jid)
   const job = claimKeyedJob(db)!
   const searched: string[] = [], fetchBatches: string[][] = [], extractions: string[] = []
   const fetchImpl = (async (u: string, init?: RequestInit) => {
@@ -41,6 +46,7 @@ async function scan(o: Opts = {}) {
       if (q.startsWith('site:linkedin.com/in ')) return new Response(JSON.stringify({ results: [] }), { status: 200 }) // post-scan people search: not discovery
       searched.push(q)
       // round one's queries find page A; the front-desk query finds B (and A again, which must not be re-read)
+      if (/front desk/i.test(q)) o.onAdaptiveSearch?.(db, job.id)
       const hits = /front desk/i.test(q) ? [B, A] : [A]
       return new Response(JSON.stringify({ results: hits.map(h => ({ url: h.url, title: 'Job', snippet: h.quote, date: recent })) }), { status: 200 })
     }
@@ -54,6 +60,7 @@ async function scan(o: Opts = {}) {
   const draft = (h: typeof A) => ({ name: '', company: h.company, contact: null, signal: 'Hiring for the role', source_url: h.url, score: 80, excerpt: h.quote, event_date: recent })
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
+      configuredModel: () => 'claude-sonnet-4-5',
       research: async () => ({ text: '', citedUrls: [] }),
       complete: async (_k: string, prompt: string, _f?: typeof fetch, maxTokens?: number) => {
         if (maxTokens === 300) return JSON.stringify(MODEL_Q)
@@ -73,7 +80,7 @@ async function scan(o: Opts = {}) {
     const runs = db.prepare('SELECT collector, status, candidate_count, verified_count FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string; candidate_count: number | null; verified_count: number | null }[]
     const leads = db.prepare("SELECT company, source_url, review_reason FROM leads WHERE scan_job_id = ? ORDER BY rowid").all(job.id) as { company: string; source_url: string; review_reason: string | null }[]
     const jobRow = db.prepare('SELECT status, error, verified FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null; verified: number }
-    return { r, searched, fetchBatches, extractions, runs, leads, jobRow, adaptive: runs.find(x => x.collector === 'search:adaptive') }
+    return { db, jobId: job.id, r, searched, fetchBatches, extractions, runs, leads, jobRow, adaptive: runs.find(x => x.collector === 'search:adaptive') }
   } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
 }
 
@@ -113,4 +120,55 @@ test('#381 bounds: a run that disabled paid steps, or with too little of its tim
   let calls = 0
   s = await scan({ deps: { jobBudgetMs: 200_000, clock: () => (calls++ === 0 ? 0 : 100_000) } })
   assert.equal(s.adaptive?.status, 'skipped:time_budget'); assert.ok(!s.searched.some(q => /front desk/i.test(q)))
+})
+
+test('#381 trial scan at its reserve ceiling: the adaptive round runs on the trial reserve, and the call that would pass $0.30 is refused before it is sent (budget_stopped, never empty)', async () => {
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
+    DAZL_TRIAL_GLOBAL_DAILY_USD: '10', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.05', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.01',
+  })
+  try {
+    // Round one (4 searches, 1 fetched page, the guarded model calls) reserves about $0.27; the $0.015 prior
+    // reservation leaves less than one $0.05 adaptive search inside the $0.30 per-scan trial reserve.
+    const s = await scan({ fundedByTrial: true, seedReservedUsd: 0.015 })
+    assert.equal(s.r, 'done')
+    assert.equal(s.adaptive?.status, 'budget_stopped', JSON.stringify(s.adaptive))
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `the refused search was never sent: ${JSON.stringify(s.searched)}`)
+    assert.deepEqual(s.fetchBatches, [[A.url]], 'no adaptive fetch after the refusal')
+    assert.equal(s.extractions.length, 1, 'no adaptive extraction after the refusal')
+    const reserved = (s.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs WHERE id = ?').get(s.jobId) as { s: number }).s
+    assert.ok(reserved <= 0.30 + 1e-9, `reserved ${reserved} stays within the $0.30 trial reserve`)
+    assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from a round that never ran is kept')
+  } finally { process.env = saved }
+})
+
+test('#381 tenant daily cap exhausted by round one: the adaptive round stops with a visible status and makes no provider call', async () => {
+  const saved = process.env.TINYFISH_TENANT_DAILY
+  process.env.TINYFISH_TENANT_DAILY = '4' // exactly round one's four searches
+  try {
+    const s = await scan()
+    assert.equal(s.r, 'done')
+    assert.equal(s.searched.length, 4, `round one used the whole tenant/day cap: ${JSON.stringify(s.searched)}`)
+    assert.equal(s.adaptive?.status, 'search_cap', JSON.stringify(s.adaptive))
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), 'the capped search was never sent')
+    assert.ok(!s.fetchBatches.some(b => b.includes(B.url)), 'no adaptive fetch batch')
+    assert.ok(!s.extractions.some(p => p.includes(B.url)), 'no adaptive extraction')
+    assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from the capped round is kept')
+  } finally { if (saved === undefined) delete process.env.TINYFISH_TENANT_DAILY; else process.env.TINYFISH_TENANT_DAILY = saved }
+})
+
+test('#381 cancellation inside the adaptive round: ScanStopped and ScanTimedOut propagate, and no ok is recorded', async () => {
+  // a stop requested while the adaptive round's search is in flight
+  let s = await scan({ onAdaptiveSearch: (db, id) => { cancelJob(db, 'A', id) } })
+  assert.equal(s.r, 'done', 'ScanStopped: the stop owns the row')
+  assert.equal(s.jobRow.status, 'failed'); assert.equal(s.jobRow.error, 'cancelled')
+  assert.notEqual(s.adaptive?.status, 'ok', `never ok: ${JSON.stringify(s.adaptive)}`)
+  assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from the interrupted round is kept')
+  // the run's deadline passes while the adaptive round's search is in flight
+  let t = 0
+  s = await scan({ deps: { jobBudgetMs: 200_000, clock: () => t }, onAdaptiveSearch: () => { t = 250_000 } })
+  assert.equal(s.r, 'failed'); assert.equal(s.jobRow.error, 'scan_timeout')
+  assert.notEqual(s.adaptive?.status, 'ok', `never ok: ${JSON.stringify(s.adaptive)}`)
+  assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from the timed-out round is kept')
 })

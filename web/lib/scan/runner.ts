@@ -1286,7 +1286,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const stop = (status: string) => ledger.record('search:adaptive', status)
       const left = jobDeadlines.get(job)
       const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())
-      if (deps.paidFallback === false) stop('skipped:paid_steps_off')
+      // A trial's paidFallback=false blocks the paid surfaces its charge cannot see (the model's own web search,
+      // people search, advanced sources). This round's searches, fetches and extraction all reserve against the
+      // trial's own per-scan ceiling before they are sent, so a trial runs it: a first scan that found nothing is
+      // exactly the scan the round exists for. A job's OWN budget narrowing (paid_fallback=false / first5) still
+      // skips it, trial or not.
+      const ownNarrowing = parseRunBudget(job.run_budget)
+      if (deps.paidFallback === false && (job.funded_by !== 'trial' || ownNarrowing?.paid_fallback === false || ownNarrowing?.first5 === true)) stop('skipped:paid_steps_off')
       else if (budgetRefused) stop('budget_stopped')
       else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
       else if (!plan.retry) stop(`skipped:${plan.why.split(':')[0]}`)
