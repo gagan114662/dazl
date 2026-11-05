@@ -5,12 +5,13 @@ import { rssAdapter } from './rss.ts'
 import { jinaAdapter } from './jina.ts'
 import { v2exAdapter } from './v2ex.ts'
 import { youtubeAdapter } from './youtube.ts'
+import { brregAdapter } from './brreg.ts'
 import { safeGet } from './http.ts'
 import { isAdvPlatform } from '../advanced/config.ts'
 import { compoundHalves, halvesBlock } from '../scan/halves.ts'
 import { flatProfile } from '../scan/icp.ts'
 
-export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter, jobboards: jobBoardsAdapter }
+export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter, jobboards: jobBoardsAdapter, brreg: brregAdapter }
 export const isAdapterId = (v: unknown): v is string => typeof v === 'string' && Object.hasOwn(ADAPTERS, v)
 
 export interface SourceSelection { adapters: string[]; feeds: string[]; pages?: string[]; advanced?: string[] }
@@ -36,7 +37,7 @@ export function keywordsFor(query: string): string[] {
 }
 
 // Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.
-export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout' | 'partial' | `partial:${string}`; evidence: number | null; notes?: Record<string, number> } // partial: the source answered but some of it could not be read; never the same as a healthy empty
+export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout' | 'partial' | `partial:${string}` | 'skipped_out_of_coverage'; evidence: number | null; notes?: Record<string, number> } // partial: the source answered but some of it could not be read; never the same as a healthy empty
 export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000, discovered: string[] = [], page?: AdapterInput['page'], companies: AdapterInput['companies'] = []): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
   const results = new Map<string, Evidence[]>()
   const runs = new Map<string, AdapterRun>()
@@ -49,8 +50,10 @@ export async function collectEvidenceReport(sel: SourceSelection, query: string,
     const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
     try {
       const items = await ADAPTERS[id].collect(input)
-      const partial = Object.keys(notes).length > 0
-      if (!settled) { results.set(id, items); runs.set(id, { collector: `adapter:${id}`, status: partial ? 'partial' : items.length ? 'ok' : 'empty', evidence: items.length, ...(partial ? { notes } : {}) }) }
+      const partial = Object.keys(notes).some(k => k !== 'out_of_coverage')
+      // A source that cannot answer this request at all (outside its markets / industries) was not asked: skipped, never an empty market.
+      const outOfCoverage = !!notes.out_of_coverage && !partial && items.length === 0
+      if (!settled) { results.set(id, items); runs.set(id, { collector: `adapter:${id}`, status: outOfCoverage ? 'skipped_out_of_coverage' : partial ? 'partial' : items.length ? 'ok' : 'empty', evidence: outOfCoverage ? null : items.length, ...(partial ? { notes } : {}) }) }
     } catch { if (!settled) runs.set(id, { collector: `adapter:${id}`, status: 'error', evidence: null }) }
   }))
   let timer: ReturnType<typeof setTimeout> | undefined
