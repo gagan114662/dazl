@@ -235,6 +235,21 @@ CREATE TABLE evidence_purge_audit (
 
 CREATE TABLE evidence_purge_gate (tenant_id TEXT PRIMARY KEY);
 
+CREATE TABLE first_party_config_meta (
+    tenant_id      TEXT PRIMARY KEY,
+    retention_days INTEGER NOT NULL,
+    recorded_at    INTEGER NOT NULL,
+    last_purge_at  INTEGER
+  );
+
+CREATE TABLE first_party_withdrawals (
+    tenant_id    TEXT NOT NULL,
+    person_key   TEXT NOT NULL,
+    withdrawn_at INTEGER NOT NULL,
+    recorded_at  INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, person_key)
+  );
+
 CREATE TABLE followup_messages (
       tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL, step INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('sending','sent','uncertain')),
       gmail_id TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, thread_id, step)
@@ -1382,6 +1397,10 @@ CREATE TRIGGER tomb_email_tokens BEFORE INSERT ON email_tokens BEGIN SELECT NEW.
 
 CREATE TRIGGER tomb_evidence_purge_audit BEFORE INSERT ON evidence_purge_audit BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_first_party_config_meta BEFORE INSERT ON first_party_config_meta BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_first_party_withdrawals BEFORE INSERT ON first_party_withdrawals BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_followup_messages BEFORE INSERT ON followup_messages BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_followup_threads BEFORE INSERT ON followup_threads BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1569,6 +1588,10 @@ CREATE TRIGGER tomb_upd_email_patterns BEFORE UPDATE OF tenant_id ON email_patte
 CREATE TRIGGER tomb_upd_email_tokens BEFORE UPDATE OF user_id ON email_tokens BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_evidence_purge_audit BEFORE UPDATE OF tenant_id ON evidence_purge_audit BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_first_party_config_meta BEFORE UPDATE OF tenant_id ON first_party_config_meta BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_first_party_withdrawals BEFORE UPDATE OF tenant_id ON first_party_withdrawals BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_followup_messages BEFORE UPDATE OF tenant_id ON followup_messages BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
