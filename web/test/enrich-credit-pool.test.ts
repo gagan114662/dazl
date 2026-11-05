@@ -415,12 +415,18 @@ bothEngines('C5 PG commit order: a reserve and a set/clear both wait on the same
   const r = reserveCredits(db, 'A', 'apollo', 1, { env: {}, now: T0 }).then(() => { reserved = true })
   const s = setCreditLimit(db, 'A', 'apollo', 'day', 1).then(() => { setDone = true })
   const o = reserveCredits(db, 'A', 'pdl', 1, { env: {}, now: T0 }).then(() => { otherPairDone = true }) // another provider is not blocked
-  await new Promise(res => setTimeout(res, 400))
-  assert.equal(reserved, false, 'reserve waits for the pair lock')
-  assert.equal(setDone, false, 'set waits for the same pair lock')
-  assert.equal(otherPairDone, true, 'a different provider is not serialized behind it')
-  await holder.query('SELECT pg_advisory_unlock(hashtext($1))', [key]); holder.release()
-  await Promise.all([r.catch(() => {}), s, o])
+  // A failed assertion must be a real red, never a hang: the external advisory lock and its connection are always released, and every wait is bounded.
+  const bounded = <T,>(p: Promise<T>, what: string) => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`timed out waiting for ${what}`)), 20_000).unref())])
+  let released = false
+  const release = async () => { if (released) return; released = true; await holder.query('SELECT pg_advisory_unlock(hashtext($1))', [key]).catch(() => {}); holder.release() }
+  try {
+    await new Promise(res => setTimeout(res, 400))
+    assert.equal(reserved, false, 'reserve waits for the pair lock')
+    assert.equal(setDone, false, 'set waits for the same pair lock')
+    assert.equal(otherPairDone, true, 'a different provider is not serialized behind it')
+    await release()
+  } finally { await release() }
+  await bounded(Promise.all([r.catch(() => {}), s, o]), 'the waiting reserve/set after the lock was released')
   assert.equal((await creditLimits(db, 'A', 'apollo', {})).day, 1, 'the set landed')
   const more = await reserveCredits(db, 'A', 'apollo', 1, { env: {}, now: T0 }).then(() => 'admitted', () => 'refused')
   const u = (await creditUse(db, 'A', { env: {}, now: T0 })).find(x => x.provider === 'apollo' && x.window === 'day')!
