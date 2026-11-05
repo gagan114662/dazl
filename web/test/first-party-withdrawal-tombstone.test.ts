@@ -5,7 +5,7 @@
 // eraseFirstParty. Red on 172aaa1d: R1 resurrects (1 lead); R2/R5 pass; R3/R4 pin the new store.
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { bothEngines, type EngineCtx } from './helpers/engines.ts'
+import { bothEngines } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
 import { ingest, recordConfig, eraseFirstParty, purgeFirstPartyRetention, signBody, readConfig, type FpConfigInput } from '../lib/signals/first-party.ts'
 import { encryptSecret } from '../lib/secrets.ts'
@@ -301,7 +301,7 @@ bothEngines('(h) a purge racing a retention raise cannot resurrect through the f
 // reopen expired windows. The row stays untouched and nothing is written. A genuinely absent config still records.
 // ctx() mirrors the module's encryption context for the tenant.
 const ctxOf = (tenant: string) => `connector:${tenant}:first_party` // mirrors ctx() in lib/signals/first-party.ts
-bothEngines('(f) recordConfig fails closed on an existing unreadable config; a genuinely absent config records', async ({ db, kind, raw }) => {
+bothEngines('(f) recordConfig fails closed on an existing unreadable config; a genuinely absent config records', async ({ db }) => {
   const master = Buffer.from(process.env.DAZL_MASTER_KEY!, 'base64')
   const plant = async (ciphertext: string) => {
     await db.run("INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES ('A', 'first_party', ?, 'xxxx', 1)", [ciphertext])
