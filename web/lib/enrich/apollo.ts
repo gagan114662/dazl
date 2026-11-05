@@ -14,7 +14,9 @@ export class EnrichError extends Error {
 
 const BASE = 'https://api.apollo.io'
 import { reserveScanSpend, unitCostUsd } from '../scan/spend-cap.ts'
-const TIMEOUT_MS = 15_000
+// The paid lookup request is given up on after this; exported for the stale-running lease floor (lib/scan/store.ts).
+export const APOLLO_TIMEOUT_MS = 15_000
+const TIMEOUT_MS = APOLLO_TIMEOUT_MS
 
 export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null; address?: string | null }
 export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; recordDay?: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)

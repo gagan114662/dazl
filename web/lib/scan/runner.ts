@@ -501,7 +501,9 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
       )
       .get(...(jobId ? [jobId] : []), ...(excludeTenants ?? [])) as Job | undefined
     if (!row) return null
-    const ch = db.prepare("UPDATE scan_jobs SET status='running', attempts = attempts + 1, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status='pending'").run(row.id)
+    // Never claim a pending row holding ANY attempt's reserved (possibly billed) call (pre-#594 shape): re-running it
+    // could bill twice. The reaper's pending+reserved step ends it accounting_uncertain instead.
+    const ch = db.prepare("UPDATE scan_jobs SET status='running', attempts = attempts + 1, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status='pending' AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')").run(row.id)
     return ch.changes === 1 ? { ...row, attempts: row.attempts + 1 } : null
   }).immediate()
 }
@@ -597,10 +599,23 @@ function flagAccounting(db: Database.Database, job: Job, p: Provider): Provider 
     research: (k, prompt, f) => seen(() => p.research(k, prompt, f)),
   }
 }
+// A hold-stopped partial carries the refusal's REASON: a spending-limit stop, an accounting stop (a request may have been
+// billed without a settled cost) and a provider rejection are different truths and the UI copy must name the right one.
+const partialHold = (e: unknown): string => 'partial_hold' + (e instanceof SpendRefused ? ':' + e.reason.replace(/[^a-z_0-9]/g, '').slice(0, 40) : '')
+// Records why a paid research call ended. A SpendRefused is thrown BEFORE the request (the spend hold): the source was never
+// called, so it did not "have an error" - it is marked skipped_hold. Any other failure means the request ran and may have been
+// billed: that IS this source's own error, and the source stays named for it.
+async function callResearch<T>(ledger: SourceRunLedger, source: string, f: () => Promise<T>): Promise<T> {
+  try { return await f() } catch (e) { ledger.record(source, e instanceof SpendRefused ? 'skipped_hold' : 'error'); throw e }
+}
+
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   else if (uncertainSpend.has(job) || spendAttemptUncertain()) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }
   else if (spendAttemptRejected() !== null && status === 'done') { status = 'failed'; error = rejectionCode(spendAttemptRejected()!); out = null; candidates = null }
+  // Provenance is recorded at each call site: a step refused BEFORE it ran (SpendRefused) reads skipped_hold; a step that
+  // ran and failed reads error. A row still 'started' here can only come from a rethrown stop/auth/accounting failure - it
+  // ran or was interrupted - and write() converts it to error. There is no finish-time blanket conversion.
   if (out) excludeSupplied(job, out)
   const leads = out?.leads ?? []
   const review = out?.review ?? []
@@ -674,7 +689,7 @@ Only include an item if the quote names that company. Skip anything older than 1
 // TinyFish pass for a CSV company job: three fixed queries (no LLM planning call), then
 // the tenant's own model turns the collected pages into candidates. All searches and
 // fetches count against the same per-scan and per-tenant TinyFish caps as a manual scan.
-async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch, flags?: { attempted: boolean; failed: boolean }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -687,12 +702,21 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const hits: import('../search/tinyfish.ts').SearchHit[] = []
   for (const { q, date } of queries) {
     const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent, { ...(fetchImpl ? { fetchImpl } : {}), charge: trialCharges.get(job) })
-    if (!r.ok) { if (hits.length === 0) return null; break }
+    if (flags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { flags.attempted = true; if (!r.ok) flags.failed = true }
+    if (!r.ok) {
+      // A sent request that may have been billed or was rejected ENDS the attempt's paid work: never send the fetch
+      // batch (or a later model call) on the strength of earlier hits. A local gate (cap/disabled, never sent) keeps
+      // the partial-results path.
+      if (spendAttemptUncertain() || spendAttemptRejected() !== null) return null
+      if (hits.length === 0) return null
+      break
+    }
     hits.push(...r.hits)
   }
   if (hits.length === 0) return null
   const urls = [...new Set(hits.map(h => h.url))].slice(0, 8)
   const f = await tfFetch(db, job.user_id, urls, spent, { ...(fetchImpl ? { fetchImpl } : {}), charge: trialCharges.get(job) })
+  if (flags && !f.ok && f.reason !== 'cap' && f.reason !== 'disabled') { flags.attempted = true; flags.failed = true } // a sent fetch batch that failed is this source's own error, same as a failed search
   const items = toEvidence(hits, f.ok ? f.pages : [])
   if (items.length === 0) return null
   const text = await complete.call(provider, key, buildSourcePrompt(`The company at https://${domain}`, { company_domain: domain }, items), fetchImpl, 3000)
@@ -716,18 +740,41 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     const complete = provider.complete
     let leads: LeadDraft[] | null = null
     if (complete && tinyfishEnabled()) {
+      const tfFlagsC = { attempted: false, failed: false }
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
-        leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl)
-        ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl, tfFlagsC)
+        // Same provenance as the query path: sent-and-failed is 'error' (partial results with a failed search are still an
+        // error, never 'ok'); attempted-empty 'unavailable' (a clean zero); never-sent 'skipped_hold'.
+        ledger.record('search:tinyfish', leads === null ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? 'unavailable' : 'skipped_hold') : tfFlagsC.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
+        // SpendRefused = the spend hold refused a call: skipped only when nothing was sent before it; a hold-stopped partial
+        // reads 'unavailable' (neither skipped nor a vendor error). Anything else = a paid request ran and failed (error).
+        ledger.record('search:tinyfish', e instanceof SpendRefused ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? partialHold(e) : 'skipped_hold') : 'error')
+        // A refused paid call STOPS the run (the query path's #594 contract): never fall through to the paid research
+        // fallback - after the first refusal there is no later reserve at all, refused or not. The terminal error names
+        // the truth: a maybe-billed call is accounting_uncertain, a documented rejection is its own status, else the
+        // hold stopped the run (budget_stopped) - never "nothing found".
+        if (e instanceof SpendRefused) {
+          const rej = spendAttemptRejected()
+          finish(db, job, 'failed', spendAttemptUncertain() ? 'accounting_uncertain' : rej !== null ? rejectionCode(rej) : 'budget_stopped', null, 0, ledger)
+          return 'failed'
+        }
         leads = null
       }
       if (leads && leads.length === 0) leads = null
+      // A sent request that may have been billed (5xx/timeout/unreadable/402) or was rejected (401/403/429) ENDS the run
+      // here - the query path's rule that a maybe-billed or rejected request stops all later paid work in the attempt
+      // applies to the company path too: never fall through to the paid research fallback (a later reserve).
+      if (leads === null && (spendAttemptUncertain() || spendAttemptRejected() !== null)) {
+        const rej = spendAttemptRejected()
+        finish(db, job, 'failed', spendAttemptUncertain() ? 'accounting_uncertain' : rejectionCode(rej!), null, 0, ledger)
+        return 'failed'
+      }
     }
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
@@ -737,7 +784,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
-      const res = await provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl)
+      const res = await callResearch(ledger, `search:${vendor}`, () => provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl))
       leads = parseLeads(res.text, res.citedUrls)
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
         assertOwned(db, job)
@@ -771,7 +818,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -808,7 +855,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
-  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) }); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) }); if (diag?.tfFlags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { diag.tfFlags.attempted = true; if (!r.ok) diag.tfFlags.failed = true } if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
   if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)).hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
@@ -1101,14 +1148,15 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const newsOn = !!deps.newsHttp || newsEnabled()
     // recordFetch: only while a trace is recorded (lib/evals/capture.ts) do the TinyFish search/fetch calls go through the
     // recorder; otherwise they keep using the global fetch exactly as before.
-    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: deps.trace ? deps.fetchImpl : undefined }
+    const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: deps.trace ? deps.fetchImpl : undefined, tfFlags: { attempted: false, failed: false } }
     if (job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) {   // first5: free sources only
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
         if (leads?.length) partial.candidates = leads
-        ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
+        // Provenance: a search request that was SENT and failed is this source's error (never 'skipped'); a refusal before any send (budget hold / daily cap) is skipped_hold; zero hits from searches that ran stays 'unavailable' (not proof of failure).
+        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? 'unavailable' : 'skipped_hold') : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
         if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
@@ -1116,6 +1164,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         if (e instanceof SpendAccountingFailed) throw e // a paid call whose cost was not recorded ends the scan, never an empty result
+        // A SpendRefused with NO prior sent request (tfFlags.attempted false) was refused before the source ran: skipped_hold.
+        // A SpendRefused AFTER searches/fetches ran is a hold-stopped partial: not "skipped" (work ran), not "error" (no vendor
+        // failure), not "unavailable" (not an outage) - 'partial_hold'. A PRIOR sent-and-failed request stays 'error': the
+        // refusal must not erase a known vendor failure. Anything else: a paid request ran and failed.
+        ledger.record('search:tinyfish', e instanceof SpendRefused ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? partialHold(e) : 'skipped_hold') : 'error')
         if (e instanceof SpendRefused) budgetRefused = true
         leads = null
       }
@@ -1133,18 +1186,22 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
     if (!leads && !budgetRefused && job.query && icpForSources && complete && newsOn) {
+      const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 } // hoisted: the catch reads it for hold-stopped-partial provenance
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
-        const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
         leads = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note)
         if (leads?.length) partial.candidates = leads
         // 'empty' only when the news search ran and returned zero hits; hits with no usable page evidence, or no query to run, stay 'unavailable' (unknown, never a zero).
         ledger.record('search:news', newsStatus(leads, note), note.searched ? note.hits : null)
         if (leads) { ledger.candidates('search:news', leads); ledger.candidates(NEWS_SOURCE, leads) }
       } catch (e) {
+        // SpendRefused: skipped only when the stage never ran; after the free search (and any paid page fetches) it is a
+        // hold-stopped partial -> 'unavailable', neither "skipped" nor "error".
+        if (e instanceof SpendRefused) ledger.record('search:news', note.searched ? partialHold(e) : 'skipped_hold')
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
+        ledger.record('search:news', 'error') // a request ran and failed
         leads = null
       }
       if (leads && leads.length === 0) leads = null
@@ -1156,7 +1213,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
-      const res = await providers_[vendor].research(key, prompt, deps.fetchImpl)
+      const res = await callResearch(ledger, `search:${vendor}`, () => providers_[vendor].research(key, prompt, deps.fetchImpl))
       leads = parseLeads(res.text, res.citedUrls)
       if (leads?.length) partial.candidates = leads
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
@@ -1205,9 +1262,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
           let found: LeadDraft[] | null = null
+          let caught = false
           try { found = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, withGeography(targets.map(t => t.query), icpForSources.where)) }
-          catch (e) { if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e }
-          ledger.record('corroborate:news', newsStatus(found, note), note.searched ? note.hits : null)
+          catch (e) { caught = true; if (e instanceof SpendRefused) ledger.record('corroborate:news', note.searched ? partialHold(e) : 'skipped_hold'); else if (!(e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendAccountingFailed) && !(e instanceof ProviderError && e.kind === 'auth')) ledger.record('corroborate:news', 'error'); if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e }
+          if (!caught) ledger.record('corroborate:news', newsStatus(found, note), note.searched ? note.hits : null) // never overwrite the catch's provenance
           if (found?.length) { ledger.candidates('corroborate:news', found); for (const l of found) leads.push(l) }
         }
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
@@ -1290,6 +1348,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
+        if (e instanceof SpendRefused) ledger.record('fallback:news', note.searched ? partialHold(e) : 'skipped_hold') // hold-stopped partial is neither "skipped" nor an outage
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         ledger.record('fallback:news', 'error')
@@ -1585,7 +1644,7 @@ export function trackInFlight(job: Job, queueToken?: number): () => void { const
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0
-  const upd = db.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ? AND status = 'running' AND attempts = ? AND attempts < ? AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved')") // a call reserved and not settled may be billed: not handed back (the lease reaper fails it closed, never a silent rebill)
+  const upd = db.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ? AND status = 'running' AND attempts = ? AND attempts < ? AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')") // ANY attempt's reserved (unsettled, possibly billed) call blocks the hand-back: the lease reaper fails it closed, never a silent rebill
   const queueHere = !process.env.DATABASE_URL
   for (const [job, token] of inFlightSet()) {
     try {

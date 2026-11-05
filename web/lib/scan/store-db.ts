@@ -46,15 +46,29 @@ export function latestQueryJob(db: Db, userId: string): Promise<{ query: string 
   return db.get(`SELECT query, icp, icp_inferred FROM scan_jobs WHERE user_id = ? AND query IS NOT NULL ORDER BY created_at DESC, insert_seq DESC LIMIT 1`, [userId])
 }
 
-// Jobs stuck in 'running' past the timeout go back to 'pending', or to 'failed' ('timeout') after MAX_ATTEMPTS.
-export async function reapStaleJobs(db: Db, now = nowS()): Promise<number> {
+const RESERVED_CALL = "EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')"
+// Exported so tests build the parked shape through the PRODUCTION step (a hand-seeded row proves nothing about this code).
+export async function parkPendingReservedJobs(db: Db): Promise<void> {
+  // A PENDING row with a reserved (possibly billed) call (pre-#594 shape) takes the legal pending->running step first
+  // (claimed_at = 0 is older than any cutoff, attempts unchanged: no executor ever runs) and reapStaleRunningJobs below
+  // ends it the same way.
+  await db.run(`UPDATE scan_jobs SET status = 'running', claimed_at = 0 WHERE status = 'pending' AND ${RESERVED_CALL}`)
+}
+// Jobs stuck in 'running' past the timeout go back to 'pending', or to 'failed' ('timeout') after MAX_ATTEMPTS. ANY
+// attempt's reserved (sent, unsettled, possibly billed) call ends the job closed - an unsettled call of a dead EARLIER
+// attempt is exactly the maybe-billed case (attempt correlation would re-queue it to be billed twice).
+export async function reapStaleRunningJobs(db: Db, now = nowS()): Promise<number> {
   return (await db.run(
-    `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
-       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
-       finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN ? ELSE finished_at END,
+    `UPDATE scan_jobs SET status = CASE WHEN ${RESERVED_CALL} OR attempts >= ? THEN 'failed' ELSE 'pending' END,
+       error = CASE WHEN ${RESERVED_CALL} THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
+       finished_at = CASE WHEN ${RESERVED_CALL} OR attempts >= ? THEN ? ELSE finished_at END,
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
     [MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, now, now - STALE_RUNNING_S])).changes
+}
+export async function reapStaleJobs(db: Db, now = nowS()): Promise<number> {
+  await parkPendingReservedJobs(db)
+  return reapStaleRunningJobs(db, now)
 }
 
 export type JobRow = { id: string; status: string; error: string | null; query: string | null; icp: string | null; icp_inferred: number | null; created_at: number; claimed_at: number | null; attempts: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; drop_reasons: string | null; industry: string | null; location: string | null; enrich_started_at: number | null; enrich_finished_at: number | null; lead_count: number }

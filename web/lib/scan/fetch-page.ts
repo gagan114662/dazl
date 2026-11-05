@@ -44,6 +44,9 @@ export function guardedLookup(hostname: string, options: { all?: boolean }, cb: 
 const MAX_BYTES = 1_500_000
 const MAX_REDIRECTS = 3
 const TIMEOUT_MS = Number(process.env.SCAN_PAGE_TIMEOUT_MS || 10_000)
+// The PAID render request (reserved 'render' on the scan's spend cap) is given up on after this; exported for the
+// stale-running lease floor (lib/scan/store.ts MIN_STALE_RUNNING_S takes the max over the paid call paths).
+export const RENDER_TIMEOUT_MS = 35_000
 
 // timeoutMs/lookup are injectable for tests only. The socket 'timeout' below is INACTIVITY-based, so a
 // slow-drip server that sends a byte every few seconds never trips it: the absolute timer is what bounds
@@ -179,7 +182,7 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ url: u.toString(), gotoOptions: { waitUntil: 'networkidle2', timeout: 20_000 } }),
-        signal: AbortSignal.timeout(35_000),
+        signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
       })
     } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
     if (hold) { if (res.ok || [400, 401, 403, 404, 413, 429].includes(res.status)) { await hold.settle(res.ok ? hold.usd : null); if (!res.ok) hold.rejected(res.status) } else hold.uncertain() }

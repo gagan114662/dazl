@@ -177,7 +177,8 @@ for (const t of TRANSPORTS) {
       try { out = await runWithScanSpend({ db: s2.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => callAtCap(f2, s2.raw)) } catch (e) { threw = e }
       assert.deepEqual(sent, [], 'no request at the cap')
       if (t.kind === 'render') assert.equal(out, null, 'a refused render renders nothing')
-      else if (t.kind.startsWith('tinyfish')) assert.deepEqual(out, { ok: false, reason: 'cap' })
+      // TinyFish included: the SCAN'S OWN budget refusal now propagates as SpendRefused (it used to be swallowed into a
+      // fake daily-allowance { ok: false, reason: 'cap' }, which made a hold-stopped source read as "no results").
       else assert.ok(threw instanceof SpendRefused && threw.reason === 'over_cap', String(threw))
       assert.deepEqual((await scanSpendCalls(s2.db, 'j1', A)).map(c => [c.kind, c.status, c.reason]), [[t.kind, 'refused', 'over_cap']])
     } finally { delete process.env.SCAN_RENDER_URL }

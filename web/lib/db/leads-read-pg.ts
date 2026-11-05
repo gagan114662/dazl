@@ -43,12 +43,24 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
   return {
     async getJob(userId, id) {
       const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
-      // A stale running job whose current attempt holds a reserved (sent, unsettled) paid call may have been billed: it ends
-      // accounting_uncertain and is never re-queued. Two statements (uncorrelated subquery) so the pg-mem emulation can run the same SQL.
+      // A stale running job holding ANY reserved (sent, unsettled) paid call may have been billed, whichever attempt sent it: it ends
+      // accounting_uncertain and is never re-queued. Any-attempt rows count: an unsettled call of a dead earlier attempt is exactly the
+      // maybe-billed case, and an exact IN / NOT IN partition over the same subquery leaves no job stuck 'running' (bounded finalization).
+      // Two statements with uncorrelated subqueries so the pg-mem emulation can run the same SQL; scan_spend_calls.scan_job_id is NOT NULL
+      // (migration 0048), so NOT IN is NULL-safe. A call reserved between the statements is excluded by statement 2's own snapshot and
+      // finalized uncertain by the next read. Real-PG two-connection interleave proof: test/leads-read-pg-live.test.ts.
+      // A PENDING row with a reserved call (the pre-#594 shape) takes the legal pending->running step first - claimed_at = 0 is
+      // older than any cutoff and attempts is NOT bumped, so no executor ever runs it; statement 1 below ends it accounting_uncertain,
+      // exactly like the store.ts / store-db.ts reapers. The whole claim class closes on the read path too.
+      await pg.query(
+        `UPDATE scan_jobs SET status = 'running', claimed_at = 0
+         WHERE status = 'pending'
+           AND id IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`,
+      )
       await pg.query(
         `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', finished_at = CAST(floor(extract(epoch from now())) AS BIGINT), claimed_at = NULL
          WHERE status = 'running' AND claimed_at < $1
-           AND id IN (SELECT j.id FROM scan_jobs j JOIN scan_spend_calls c ON c.scan_job_id = j.id AND c.attempt = j.attempts AND c.status = 'reserved' WHERE j.status = 'running' AND j.claimed_at < $1)`,
+           AND id IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`,
         [cutoff],
       )
       await pg.query(

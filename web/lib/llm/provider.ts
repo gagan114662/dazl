@@ -58,7 +58,11 @@ export interface Provider {
   configuredModel?(): string
 }
 
-const TIMEOUT_MS = Number(process.env.SCAN_LLM_TIMEOUT_MS || 150_000)
+// The longest a single paid vendor call can run: one completion request, no retries (a retried PAID request could be
+// billed twice, so a failure is thrown, never resent). Exported for the stale-running lease floor (lib/scan/store.ts):
+// the reaper/queue lease must outlive this or a live paid call could be reaped and re-run.
+// Validated finite positive (lib/llm/timeout-env.ts): a NaN/Infinity/0/negative override would make the lease floor NaN.
+export const LLM_TIMEOUT_MS = configuredTimeoutMs(process.env.SCAN_LLM_TIMEOUT_MS, 150_000, 'SCAN_LLM_TIMEOUT_MS')
 
 // Statuses the vendors document as REJECTED requests: Anthropic https://docs.anthropic.com/en/api/errors (400 invalid_request_error, 401
 // authentication_error, 403 permission_error, 404 not_found_error, 413 request_too_large, 429 rate_limit_error) and OpenAI
@@ -69,7 +73,7 @@ const DECLINED_STATUS: ReadonlySet<number> = new Set([400, 401, 403, 404, 413, 4
 async function post(url: string, headers: Record<string, string>, body: unknown, fetchImpl: typeof fetch) {
   let res: Response
   try {
-    res = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(TIMEOUT_MS) })
+    res = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(LLM_TIMEOUT_MS) })
   } catch {
     throw new ProviderError('retry', 'network_or_timeout')
   }
@@ -83,6 +87,7 @@ async function post(url: string, headers: Record<string, string>, body: unknown,
 }
 
 import { SpendRefused } from './spend-guard.ts'
+import { configuredTimeoutMs } from './timeout-env.ts'
 import { modelCostUsd, reserveScanSpend, servedCostUsd, type SpendHold } from '../scan/spend-cap.ts'
 
 // Inside a scan (lib/scan/spend-cap.ts): the completion's worst case is reserved on the scan's ledger before the request,

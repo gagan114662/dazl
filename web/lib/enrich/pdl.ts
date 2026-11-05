@@ -5,7 +5,9 @@ import { EnrichError, type ApolloPerson } from './apollo.ts'
 
 const BASE = 'https://api.peopledatalabs.com'
 import { reserveScanSpend, unitCostUsd } from '../scan/spend-cap.ts'
-const TIMEOUT_MS = 15_000
+// The paid lookup request is given up on after this; exported for the stale-running lease floor (lib/scan/store.ts).
+export const PDL_TIMEOUT_MS = 15_000
+const TIMEOUT_MS = PDL_TIMEOUT_MS
 
 // 1 credit per profile returned. Names/titles only - emails/phones are never read.
 import { formatPlace } from '../scan/contact-agreement.ts'

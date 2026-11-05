@@ -261,9 +261,19 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
     refused = await db.tx(function* (t: Tx): TxBody<string | null> {
       let why = early
       if (!why) {
+        // claimed_at is refreshed with the reservation FROM THE DATABASE CLOCK inside the statement: a live attempt holding a
+        // reserved (possibly billed) call must not be reapable. PG clock_timestamp() (NOT now(), which is the transaction's
+        // start) is evaluated when the SET clause runs - AFTER this statement's row-lock wait - so a long wait cannot write a
+        // pre-wait (already stale) time, and no app/DB clock skew exists. A reaper statement blocked on this row lock re-checks
+        // the NEW row version after commit (EPQ): the fresh claimed_at excludes it from BOTH reaper statements - never
+        // re-queued pending with a reserved call, never finalized while live. Invariant (enforced in store.ts, not just stated):
+        // the reaper's stale cutoff and the queue lease are floored above the longest vendor call; settle refreshes again after
+        // a REAL transition so a settled call never leaves the row stale. The settle refresh does NOT protect a call that
+        // outlives the lease - only the floor does.
+        const dbClock = t.kind === 'pg' ? "CAST(floor(extract(epoch from clock_timestamp())) AS BIGINT)" : "CAST(strftime('%s','now') AS INTEGER)"
         const r = yield* t.run(
           `UPDATE scan_jobs SET spend_cap_usd = CASE WHEN spend_cap_usd IS NOT NULL AND spend_cap_usd < ? THEN spend_cap_usd ELSE ? END,
-             spend_cap_reserved_usd = spend_cap_reserved_usd + ?
+             spend_cap_reserved_usd = spend_cap_reserved_usd + ?, claimed_at = ${dbClock}
            WHERE id = ? AND user_id = ? AND attempts = ? AND status IN ('running', 'done')
              AND spend_cap_reserved_usd + ? <= (CASE WHEN spend_cap_usd IS NOT NULL AND spend_cap_usd < ? THEN spend_cap_usd ELSE ? END) + ?`,
           [cap!, cap!, usd, ctx.jobId, ctx.tenantId, attempt, usd, cap!, cap!, EPS])
@@ -299,6 +309,15 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
       const write = () => db.tx(function* (t: Tx): TxBody<void> {
         const r = yield* t.run('UPDATE scan_spend_calls SET status = ?, actual_usd = ?, settled_at = ? WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = \'reserved\'',
           [actual === null ? 'kept' : 'settled', actual, now(), id, ctx.tenantId, ctx.jobId])
+        if (r.changes === 1) {
+          // A REAL reserved->settled/kept transition proves this hold's attempt was alive when its vendor call ended: refresh
+          // its claim (DB clock at statement time) so a long call is not reaped mid-settle. A REPLAYED settle changes no spend
+          // row, so it refreshes nothing - an old hold must never extend a NEWER attempt's lease (the attempts fence), nor a
+          // job it no longer owns.
+          const dbClock = t.kind === 'pg' ? "CAST(floor(extract(epoch from clock_timestamp())) AS BIGINT)" : "CAST(strftime('%s','now') AS INTEGER)"
+          yield* t.run(`UPDATE scan_jobs SET claimed_at = ${dbClock} WHERE id = ? AND user_id = ? AND attempts = ? AND status = 'running'`,
+            [ctx.jobId, ctx.tenantId, attempt])
+        }
         if (r.changes !== 1 || actual === null) return // a replay, or nothing to move: the worst case stands
         const delta = actual - usd
         if (delta !== 0) yield* t.run('UPDATE scan_jobs SET spend_cap_reserved_usd = CASE WHEN spend_cap_reserved_usd + ? < 0 THEN 0 ELSE spend_cap_reserved_usd + ? END WHERE id = ? AND user_id = ?',

@@ -27,6 +27,7 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import type { RunDeps, Job } from './runner.ts'
 import { failCrashedJob } from './crash.ts'
+import { staleRunningSeconds } from './store.ts'
 
 export type ScanExecutor = (db: Database.Database, job: Job, deps: RunDeps) => Promise<'done' | 'failed' | 'retry'>
 
@@ -111,7 +112,7 @@ export function queueTenants(env: Record<string, string | undefined> = process.e
 // Passing a different leaseSeconds to a kick (tests aside) would let a job be
 // re-claimed while the legacy reaper still considers it fresh (or vice versa)
 // and can double-run provider calls. Do not configure them apart.
-const QUEUE_LEASE_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
+const QUEUE_LEASE_S = staleRunningSeconds()
 // One queue-mode kick: claim via SqliteQueue, bind the domain row in the same
 // transaction, run the executor, map the domain outcome back by token.
 export async function kickQueueRunner(
@@ -135,23 +136,37 @@ export async function kickQueueRunner(
     // older than that lease belongs to the dead attempt and is safe to take.
     // A FRESH running row is a live attempt - binding it would double-run,
     // so the bind fails and the queue claim is released instead.
+    // The NOT EXISTS reserved guard covers BOTH branches: a 'pending' row with an unsettled reserved call exists in
+    // pre-#594 data (the old reaper reset to pending regardless of reservations); binding it would re-run paid calls
+    // while the old call may have been billed. Any-attempt, matching the reaper's NOT IN partition.
     const lease = claim.leaseExpiresAt - (claim.item.claimedAt ?? claim.leaseExpiresAt)
     const ch = db.prepare(
       `UPDATE scan_jobs SET status='running', attempts = attempts + 1,
          claimed_at = CAST(strftime('%s','now') AS INTEGER)
-       WHERE id = ? AND (status='pending'
-         OR (status='running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?
-             AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved')))`, // a dead attempt with a call that may have been billed is never re-run (the reaper fails it closed)
+       WHERE id = ? AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')
+         AND (status='pending'
+         OR (status='running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?))`,
     ).run(claim.item.id, lease)
     if (ch.changes !== 1) {
       // A dead attempt (lease expired) that left a paid call reserved and unsettled may have been billed: end it closed instead of
       // re-running it, and retire the queue item. Queue mode never calls the legacy reaper, so this is where it is decided.
       const nowS = Math.floor(Date.now() / 1000)
+      // A pending row with a reserved call (pre-#594 reaper history) cannot go pending->failed directly (the
+      // transition guard forbids it): park it as a stale running row first - claimed_at = 0 is older than any lease,
+      // attempts unchanged (no executor ever runs), so a crash between the two updates is still finalized by the next
+      // pass or the legacy reaper's IN partition.
+      db.prepare(
+        `UPDATE scan_jobs SET status = 'running', claimed_at = 0
+         WHERE id = ? AND status = 'pending'
+           AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')`,
+      ).run(claim.item.id)
       const uncertain = db.prepare(
-        // Epoch seconds are bound as parameters (not SQLite strftime) so this statement stays portable SQL.
+        // Epoch seconds are bound as parameters (not SQLite strftime) so this statement stays portable SQL. A stale
+        // running row with a reserved call ends closed: the unsettled call may have been billed, so the scan is
+        // never re-run.
         `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', claimed_at = NULL, finished_at = ?
          WHERE id = ? AND status = 'running' AND claimed_at <= ?
-           AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved')`,
+           AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')`,
       ).run(nowS, claim.item.id, nowS - lease).changes === 1
       if (uncertain) { q.complete(claim.token); continue }
       q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' })
