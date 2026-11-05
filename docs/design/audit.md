@@ -96,6 +96,7 @@ identifiers and redacted scalars today, so the guard is defence in depth.
 | export | lead export (rows, whether fixtures were included); audit export |
 | deletion | warm connections deleted (rows) |
 | policy | refused audit reads |
+| team and devices | member role changed, removed, left, joined (via invitation accept); invitation created, revoked; session revoked, all sessions revoked (count, whether the current one was kept) |
 
 Every route row above is tested through its real route (`test/audit-routes.test.ts`, `test/audit-coverage.test.ts`):
 each test names the exact events one request adds, and fails if that route's audit call is removed. Stripe's rows are
@@ -118,8 +119,9 @@ checkout while already on Pro): each has a route-level negative.
   owner decision; it is a behaviour change for every audited route.
 - **Refusals other than the audit read leave no event.** Role refusals (`denied()`, 403) and policy refusals of a
   send or approve (suppressed address, held lead, uncertain-send gate) answer as before, without a `denied` event.
-- **Member, role, invitation and session actions** (#437, #358, now on main) are not recorded yet: this PR keeps to
-  the action list above; wiring the Team and Devices routes is the next increment of #371.
+- **Member, role, invitation and session actions** (#437, #358, now on main) are recorded (see "team and devices"
+  above). Not covered: workspace switching (`POST /api/workspace/switch`) is navigation between workspaces a
+  member already belongs to, not an access-control action, so it stays unaudited like other reads.
 - **The retention period itself.** Nothing is deleted until the owner chooses one and sets `AUDIT_RETENTION_DAYS`
   explicitly; the 30-day floor and the 1000-per-tick batch are the only bounds built in.
 - **Time-bounded support access** is not built (below), so this PR is part of #371, not its close.

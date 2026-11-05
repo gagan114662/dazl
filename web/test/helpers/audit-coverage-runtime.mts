@@ -60,9 +60,11 @@ const raw = new Database(':memory:')
 migrateAllSqlite(raw)
 setScanDb(raw)
 const route = async (p: string) => await import(`../../app/api/${p}/route.ts`)
-const [message, autopilot, sequences, replies, advanced, gmailCallback, crm, portal, confirm, monitor, auditRoute] = await Promise.all(
+const [message, autopilot, sequences, replies, advanced, gmailCallback, crm, portal, confirm, monitor, auditRoute,
+  members, invitations, invitationsAccept, leaveRoute, sessionsRoute, sessionsRevokeAll] = await Promise.all(
   ['outreach/[id]', 'outreach/autopilot', 'outreach/sequences', 'outreach/replies', 'settings/advanced', 'gmail/callback', 'crm', 'billing/portal',
-    'leads/[lead]/confirm', 'monitors/[id]', 'workspace/audit'].map(route))
+    'leads/[lead]/confirm', 'monitors/[id]', 'workspace/audit',
+    'workspace/members', 'workspace/invitations', 'workspace/invitations/accept', 'workspace/leave', 'auth/sessions', 'auth/sessions/revoke-all'].map(route))
 
 const lastId: { v: string } = { v: '' }
 const req = (path: string, method: string, body?: unknown) => {
@@ -281,6 +283,71 @@ test('every audited route in the Covered table records its event, with the redac
   await step('monitor resumed', t.O, pm(true), [['O', 'monitor.enabled', 'monitor', mon, {}]])
   await step('monitor resumed again: already running, nothing recorded', t.O, pm(true), [])
 
+  // ---- team: members, invitations, sessions (#371 next increment: wiring Team and Devices routes)
+  const rawEvent = (before: number) => raw.prepare('SELECT * FROM audit_events WHERE rowid > ? ORDER BY rowid').all(before) as (Ev & { tenant_id: string; summary: string })[]
+  const assertDyn = async (name: string, before: number, want: Want[], expectTenant = 'A') => {
+    const rows = rawEvent(before)
+    assert.deepEqual(rows.map(e => [e.actor_id, e.action, e.resource_type, e.resource_id, JSON.parse(e.summary)]), want, name)
+    for (const e of rows) { assert.equal(e.tenant_id, expectTenant, name); assert.equal(e.decision, 'allowed', name); assert.equal(e.actor_kind, 'user', name); assert.equal(e.correlation_id, lastId.v, `${name}: correlation id`) }
+    all.push(...want)
+  }
+
+  // sessions: a second session for O, revoked by its public id; then two more, revoked together (current kept)
+  await createSession('O')
+  {
+    const before = top()
+    const listed = await as(t.O, () => sessionsRoute.GET() as Promise<Response>)
+    const { sessions } = (await listed.json()) as { sessions: { public_id: string; current: boolean }[] }
+    const other = sessions.find(s => !s.current)
+    assert.ok(other, 'a second session exists for O')
+    const r = await as(t.O, () => sessionsRoute.DELETE(req('/api/auth/sessions', 'DELETE', { id: other!.public_id })) as Promise<Response>)
+    assert.equal(r.status, 200, await r.clone().text())
+    await assertDyn('session revoked', before, [['O', 'session.revoked', 'session', other!.public_id, {}]])
+  }
+  await createSession('O'); await createSession('O')
+  await step('sessions revoked all, current kept', t.O, () => sessionsRevokeAll.POST(post('/api/auth/sessions/revoke-all', {})),
+    [['O', 'session.revoked_all', 'session', null, { revoked: 2, keep_current: true }]])
+
+  // member role changed, then removed (admin acting on operator)
+  await step('member role changed', t.D, () => members.PATCH(post('/api/workspace/members', { member_id: 'O', role: 'admin' })),
+    [['D', 'member.role_changed', 'member', 'O', { role: 'admin' }]])
+  await step('member removed', t.D, () => members.DELETE(post('/api/workspace/members', { member_id: 'O' })), [['D', 'member.removed', 'member', 'O', {}]])
+
+  // invitation created and revoked (a cancelled invite)
+  let cancelId = ''
+  {
+    const before = top()
+    const r = await as(t.D, () => invitations.POST(post('/api/workspace/invitations', { email: 'cancelled@example.test', role: 'operator' })) as Promise<Response>)
+    assert.equal(r.status, 200, await r.clone().text())
+    cancelId = ((await r.json()) as { id: string }).id
+    await assertDyn('invitation created (cancelled)', before, [['D', 'invitation.created', 'invitation', cancelId, { role: 'operator' }]])
+  }
+  await step('invitation revoked', t.D, () => invitations.DELETE(post('/api/workspace/invitations', { id: cancelId })), [['D', 'invitation.revoked', 'invitation', cancelId, {}]])
+
+  // invitation created for a new person, who accepts: member.joined, recorded in workspace A (not their own personal workspace)
+  const E = user('E')
+  await createPasswordUser(E)
+  raw.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'E'").run()
+  const tE = await createSession('E')
+  let eToken = ''
+  {
+    const before = top()
+    const r = await as(t.D, () => invitations.POST(post('/api/workspace/invitations', { email: E.email, role: 'operator' })) as Promise<Response>)
+    assert.equal(r.status, 200, await r.clone().text())
+    const body = (await r.json()) as { id: string; link: string }
+    eToken = body.link.split('#t=')[1]
+    await assertDyn('invitation created (for E)', before, [['D', 'invitation.created', 'invitation', body.id, { role: 'operator' }]])
+  }
+  {
+    const before = top()
+    const r = await as(tE, () => invitationsAccept.POST(post('/api/workspace/invitations/accept', { token: eToken })) as Promise<Response>)
+    assert.equal(r.status, 200, await r.clone().text())
+    await assertDyn('invitation accepted (member joined)', before, [['E', 'member.joined', 'member', 'E', { role: 'operator' }]])
+  }
+
+  // the admin leaves on their own (member.left); nothing after this needs t.D
+  await step('member left', t.D, () => leaveRoute.POST(post('/api/workspace/leave', {})), [['D', 'member.left', 'member', 'D', {}]])
+
   // only the stubbed services were called
   assert.deepEqual([...new Set(fetched.map(u => new URL(u).host))].sort(), ['api.hubapi.com', 'api.stripe.com', 'gmail.googleapis.com', 'oauth2.googleapis.com'])
 
@@ -297,12 +364,14 @@ test('every audited route in the Covered table records its event, with the redac
     'followups.enabled followups', 'followups.disabled followups', 'consent.accepted reply_reading', 'consent.revoked reply_reading',
     'consent.accepted social', 'consent.revoked social', 'connector.enabled social', 'connector.disabled social', 'credential.saved social', 'credential.removed social',
     'credential.saved crm', 'credential.removed crm', 'crm.pushed lead', 'crm.resolved lead', 'billing.portal_opened plan',
-    'pipeline.confirmed lead', 'pipeline.unconfirmed lead', 'monitor.enabled monitor', 'monitor.disabled monitor']) assert.ok(seen.has(a), a)
+    'pipeline.confirmed lead', 'pipeline.unconfirmed lead', 'monitor.enabled monitor', 'monitor.disabled monitor',
+    'session.revoked session', 'session.revoked_all session', 'member.role_changed member', 'member.removed member',
+    'invitation.created invitation', 'invitation.revoked invitation', 'member.joined member', 'member.left member']) assert.ok(seen.has(a), a)
   assert.deepEqual(new Set(events.filter(e => e.action === 'crm.pushed').map(e => e.summary.outcome)), new Set(['failed', 'ok', 'unknown']))
 
   // nothing secret, typed or addressed in the trail
   const table = JSON.stringify(raw.prepare('SELECT * FROM audit_events').all())
   for (const [k, v] of Object.entries(MARK)) assert.ok(!table.includes(v), `${k} is not in the trail`)
-  for (const v of ['info@lead', 'synthetic monitor query', 'Hiring five roofers']) assert.ok(!table.includes(v), `${v} is not in the trail`)
+  for (const v of ['info@lead', 'synthetic monitor query', 'Hiring five roofers', 'cancelled@example.test', E.email]) assert.ok(!table.includes(v), `${v} is not in the trail`)
   console.log('AUDIT COVERAGE ok')
 })
