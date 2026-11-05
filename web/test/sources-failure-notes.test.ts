@@ -184,3 +184,205 @@ test('run contract: a failing source reports partial, never the false zero of a 
   assert.equal(run.status, 'partial')
   assert.deepEqual(run.notes, { http_error: 1 })
 })
+
+// Downstream acceptance: the note must travel truthfully through the run rows and the outcome the customer reads,
+// including a partial MIXED success - never 'ok' hiding a failure, never 'empty' inventing a zero.
+
+test('run contract: a partial mixed success is partial with its evidence, never ok and never empty', async () => {
+  const saved = process.env.YOUTUBE_API_KEY
+  delete process.env.YOUTUBE_API_KEY
+  try {
+    resetYoutubeState()
+    const sel = normalizeSources({ adapters: ['youtube'], feeds: [] })!
+    let n = 0
+    const mixed = (async () => {
+      n++
+      if (n === 1) return { status: 500, body: '' }
+      return { status: 200, body: JSON.stringify({ items: [PIPED_ITEM] }) }
+    }) as Http
+    const { items, runs } = await collectEvidenceReport(sel, 'warehouse robotics', mixed)
+    assert.equal(items.length, 1)
+    const run = runs.find(x => x.collector === 'adapter:youtube')!
+    assert.equal(run.status, 'partial')
+    assert.equal(run.evidence, 1)
+    assert.deepEqual(run.notes, { http_error: 1 })
+  } finally {
+    if (saved === undefined) delete process.env.YOUTUBE_API_KEY
+    else process.env.YOUTUBE_API_KEY = saved
+    resetYoutubeState()
+  }
+})
+
+test('run rows to progress: a failing source reads partial with its note; a healthy empty stays a stated zero', async () => {
+  resetGithubState()
+  const sel = normalizeSources({ adapters: ['github', 'rss'], feeds: ['https://a.example/feed'] })!
+  const http = (async (url: string) => url.includes('api.github.com')
+    ? { status: 503, body: '' }
+    : { status: 200, body: '<?xml version="1.0"?><rss><channel></channel></rss>' }) as Http
+  const { runs } = await collectEvidenceReport(sel, 'warehouse robotics', http)
+  // exactly what the runner records (runner.ts: one ledger row per adapter run, status verbatim)
+  const rows = runs.map(r => ({ collector: r.collector, status: r.status, evidence_count: r.evidence }))
+  const { progressOf, sourceFindings } = await import('../lib/scan/progress.ts')
+  const prog = progressOf(rows, 'finished')
+  const gh = prog.find(p => p.source === 'adapter:github')!
+  assert.equal(gh.status, 'partial')
+  assert.equal(gh.state, 'done')
+  assert.equal(gh.note, 'some of its answer could not be read')
+  const rss = prog.find(p => p.source === 'adapter:rss')!
+  assert.equal(rss.status, 'empty')
+  const findings = sourceFindings(rows, 'finished', false)
+  assert.deepEqual(findings.unknown_sources, ['adapter:github'])   // unknown, never a zero
+  assert.deepEqual(findings.evidence_sources, [])
+  assert.ok(!findings.unknown_sources.includes('adapter:rss'))     // a genuine nothing is stated, not unknown
+})
+
+test('outcome: a partial source can never leave an empty result reading as "the sources returned nothing"', async () => {
+  const { scanOutcome } = await import('../lib/scan/scan-outcome.ts')
+  const base = { id: 'j1', status: 'failed', error: 'no_candidates', candidates: 0, verified: 0, needs_review: 0, dropped: 0, lead_count: 0, search_hits: 0, failed_sources: [] as string[], evidence_sources: [] as { source: string; evidence: number }[], unknown_sources: [] as string[] }
+  const withPartial = scanOutcome({ ...base, partial_sources: ['adapter:github (some of its answer could not be read)'] })
+  assert.equal(withPartial.kind, 'none_extracted')
+  assert.match(withPartial.label, /only in part/)
+  assert.match(withPartial.detail ?? '', /does not show that no company matches/)
+  assert.notEqual(withPartial.kind, 'zero_match')
+  const clean = scanOutcome({ ...base, partial_sources: [] })
+  assert.equal(clean.kind, 'zero_match')   // a genuine all-empty scan still says so: no spurious unknown either
+})
+
+// Cache failure class (reviewer blocker on e7c2c448): a result during which any failure was noted must never be
+// cached - a cache hit replays the items with no note, so a repeat call inside the 15-minute window reads 'empty',
+// the same false zero. These tests call twice WITHOUT resetting state.
+
+test('youtube (Piped): a failed fetch is not cached - the repeat call still notes', async () => {
+  const saved = process.env.YOUTUBE_API_KEY
+  delete process.env.YOUTUBE_API_KEY
+  try {
+    resetYoutubeState()
+    const r = rec()
+    const failing = (async () => null) as Http
+    await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+    assert.deepEqual(r.codes, ['unreachable', 'unreachable', 'unreachable'])
+    await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+    assert.deepEqual(r.codes, ['unreachable', 'unreachable', 'unreachable', 'unreachable', 'unreachable', 'unreachable'])
+  } finally {
+    if (saved === undefined) delete process.env.YOUTUBE_API_KEY
+    else process.env.YOUTUBE_API_KEY = saved
+    resetYoutubeState()
+  }
+})
+
+test('youtube (Data API): a failed fetch is not cached - the repeat call still notes', async () => {
+  const saved = process.env.YOUTUBE_API_KEY
+  process.env.YOUTUBE_API_KEY = 'test-key'
+  try {
+    resetYoutubeState()
+    const r = rec()
+    const failing = (async () => ({ status: 500, body: '' })) as Http
+    await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+    await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+    assert.deepEqual(r.codes, ['http_error', 'http_error'])
+  } finally {
+    if (saved === undefined) delete process.env.YOUTUBE_API_KEY
+    else process.env.YOUTUBE_API_KEY = saved
+    resetYoutubeState()
+  }
+})
+
+test('youtube (Piped) mixed success: evidence with its note, and the repeat call is still partial, never a cached healthy ok', async () => {
+  const saved = process.env.YOUTUBE_API_KEY
+  delete process.env.YOUTUBE_API_KEY
+  try {
+    resetYoutubeState()
+    const r = rec()
+    const mixed = (async (url: string) => url.includes('api.piped.private.coffee')   // the first instance fails every round
+      ? { status: 500, body: '' }
+      : { status: 200, body: JSON.stringify({ items: [PIPED_ITEM] }) }) as Http
+    const first = await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: mixed, note: r.note })
+    assert.equal(first.length, 1)
+    assert.deepEqual(r.codes, ['http_error'])
+    const second = await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: mixed, note: r.note })
+    assert.equal(second.length, 1)
+    assert.deepEqual(r.codes, ['http_error', 'http_error'])
+  } finally {
+    if (saved === undefined) delete process.env.YOUTUBE_API_KEY
+    else process.env.YOUTUBE_API_KEY = saved
+    resetYoutubeState()
+  }
+})
+
+test('youtube (Piped): a genuine empty stays silent across repeat calls (cached healthy empty is truthful)', async () => {
+  const saved = process.env.YOUTUBE_API_KEY
+  delete process.env.YOUTUBE_API_KEY
+  try {
+    resetYoutubeState()
+    const r = rec()
+    const empty = (async () => ({ status: 200, body: '{"items":[]}' })) as Http
+    await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: empty, note: r.note })
+    await youtubeAdapter.collect({ query: '', keywords: KW, feeds: [], http: empty, note: r.note })
+    assert.deepEqual(r.codes, [])
+  } finally {
+    if (saved === undefined) delete process.env.YOUTUBE_API_KEY
+    else process.env.YOUTUBE_API_KEY = saved
+    resetYoutubeState()
+  }
+})
+
+test('v2ex: a failed fetch is not cached - the repeat call still notes (both search and fallback)', async () => {
+  resetV2exState()
+  const r = rec()
+  const failing = (async () => null) as Http
+  await v2exAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+  assert.deepEqual(r.codes, ['unreachable', 'unreachable'])
+  await v2exAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+  assert.deepEqual(r.codes, ['unreachable', 'unreachable', 'unreachable', 'unreachable'])
+})
+
+test('v2ex: search fails but the hot fallback answers - evidence with its note, repeat call still notes', async () => {
+  resetV2exState()
+  const r = rec()
+  const hotTopic = { id: 123, title: 'Hiring a senior warehouse robotics engineer this quarter', content: 'robotics', created: 1730000000 }
+  const dispatch = (async (url: string) => url.includes('sov2ex') ? { status: 500, body: '' } : { status: 200, body: JSON.stringify([hotTopic]) }) as Http
+  const first = await v2exAdapter.collect({ query: '', keywords: KW, feeds: [], http: dispatch, note: r.note })
+  assert.equal(first.length, 1)
+  assert.deepEqual(r.codes, ['http_error'])
+  const second = await v2exAdapter.collect({ query: '', keywords: KW, feeds: [], http: dispatch, note: r.note })
+  assert.equal(second.length, 1)
+  assert.deepEqual(r.codes, ['http_error', 'http_error'])
+})
+
+test('github: a failed fetch is not cached - the repeat call still notes', async () => {
+  resetGithubState()
+  const r = rec()
+  const failing = (async () => ({ status: 503, body: '' })) as Http
+  await githubAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+  await githubAdapter.collect({ query: '', keywords: KW, feeds: [], http: failing, note: r.note })
+  assert.deepEqual(r.codes, ['http_error', 'http_error'])
+})
+
+test('jina: a failed page read is not cached - the repeat call still notes', async () => {
+  resetJinaState()
+  const r = rec()
+  const failing = (async () => null) as Http
+  await jinaAdapter.collect({ query: '', keywords: KW, feeds: [], pages: ['https://a.example/x'], http: failing, note: r.note })
+  await jinaAdapter.collect({ query: '', keywords: KW, feeds: [], pages: ['https://a.example/x'], http: failing, note: r.note })
+  assert.deepEqual(r.codes, ['unreachable', 'unreachable'])
+})
+
+test('run contract on repeat: a second scan of the same keywords during an outage still reads partial, never a cached false empty', async () => {
+  const saved = process.env.YOUTUBE_API_KEY
+  delete process.env.YOUTUBE_API_KEY
+  try {
+    resetYoutubeState()
+    const sel = normalizeSources({ adapters: ['youtube'], feeds: [] })!
+    const failing = (async () => null) as Http
+    for (let i = 0; i < 2; i++) {
+      const { runs } = await collectEvidenceReport(sel, 'warehouse robotics', failing)
+      const run = runs.find(x => x.collector === 'adapter:youtube')!
+      assert.equal(run.status, 'partial')
+      assert.deepEqual(run.notes, { unreachable: 3 })
+    }
+  } finally {
+    if (saved === undefined) delete process.env.YOUTUBE_API_KEY
+    else process.env.YOUTUBE_API_KEY = saved
+    resetYoutubeState()
+  }
+})

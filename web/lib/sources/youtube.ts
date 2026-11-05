@@ -71,9 +71,13 @@ export const youtubeAdapter: SourceAdapter = {
     while (calls.length && now - calls[0] > WINDOW_MS) calls.shift()
     if (calls.length >= MAX_CALLS) { note?.('budget'); return [] }
     calls.push(now)
+    // A fetch during which any failure was noted is never cached: a cache hit replays the items with no note,
+    // so a repeat call inside the window would read a cached failure as a healthy empty/ok - a false zero.
+    let noted = false
+    const noting = (code: string) => { noted = true; note?.(code) }
     const key = process.env.YOUTUBE_API_KEY ?? ''
-    const items = key ? await viaDataApi(q, key, http, note) : await viaPiped(q, http, note)
-    cache.set(q, { at: now, items })
+    const items = key ? await viaDataApi(q, key, http, noting) : await viaPiped(q, http, noting)
+    if (!noted) cache.set(q, { at: now, items })
     return items
   },
 }
