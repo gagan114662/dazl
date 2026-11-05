@@ -14,6 +14,7 @@ import { ENRICH_STALE_S } from '../scan/enrichment.ts'
 import { polishDraft, type LlmDeps } from './draft-llm.ts'
 import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, withdrawLaunchPolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
 import { providers as defaultProviders } from '../llm/provider.ts'
+import { displayAuditDetail } from './stop-reason.ts'
 
 // Autopilot sends first-touch email to verified, business-published addresses through the user's own Gmail,
 // inside hard limits. It never sends follow-ups, never re-contacts, and never touches suppressed addresses.
@@ -100,7 +101,8 @@ export function getState(db: Database.Database, tenantId: string): AutopilotStat
   return { enabled: r?.enabled === 1, paused: r?.paused === 1, pause_reason: r?.pause_reason ?? null, consent_current: r?.consent_version === CONSENT_VERSION, daily_cap: r?.daily_cap ?? DEFAULT_DAILY }
 }
 export const recentAutopilotAudit = (db: Database.Database, tenantId: string, limit = 50) =>
-  db.prepare('SELECT lead_id, message_id, action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(tenantId, limit) as { lead_id: string | null; message_id: string | null; action: string; detail: string | null; created_at: number }[]
+  (db.prepare('SELECT id, lead_id, message_id, action, detail, created_at FROM autopilot_audit WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(tenantId, limit) as { id: string; lead_id: string | null; message_id: string | null; action: string; detail: string | null; created_at: number }[])
+    .map(r => ({ ...r, detail: displayAuditDetail(r.detail) }))
 
 // Turning on needs the current consent text, all three attestations, a connected Gmail and a sender identity.
 export function enable(db: Database.Database, tenantId: string, input: { version: string; attestations: string[]; daily_cap?: number }): void {

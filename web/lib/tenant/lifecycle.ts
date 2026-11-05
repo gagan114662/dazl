@@ -34,6 +34,7 @@ import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/clien
 import { classify, type Scope } from './scope.ts'
 import { foreignKeys, tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
 import { recordTx } from '../audit.ts'
+import { displayAuditDetail } from '../outreach/stop-reason.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
@@ -92,8 +93,24 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   const tables: TenantExport['tables'] = {}
   const redacted = new Set<string>()
+  // Conversion-kind-bearing text at tenant-readable columns. Values are generalized at export
+  // (converted_<kind> -> policy_stop, conversion:<kind> -> conversion) and the column is listed in
+  // redacted_columns, so the export discloses the redaction instead of claiming to be verbatim.
+  // The stored rows are internal evidence and are never rewritten.
+  const CONVERSION_TEXT_COLUMNS: Record<string, Set<string>> = {
+    sequences: new Set(['stop_reason']),
+    followup_threads: new Set(['stopped']),
+    outreach_messages: new Set(['error']),
+    onboarding_enrollments: new Set(['source']),
+    onboarding_audit: new Set(['detail']),
+    autopilot_audit: new Set(['detail']),
+  }
   const clean = (t: string, r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).map(([k, v]) => {
     if (REDACTED_COLUMN.test(k) && v != null) { redacted.add(`${t}.${k}`); return [k, '[redacted: stored credential]'] }
+    if (CONVERSION_TEXT_COLUMNS[t]?.has(k) && typeof v === 'string') {
+      const mapped = displayAuditDetail(v)
+      if (mapped !== v) { redacted.add(`${t}.${k}`); v = mapped }
+    }
     return [k, v instanceof Uint8Array ? { base64: Buffer.from(v).toString('base64') } : typeof v === 'bigint' ? Number(v) : v]
   }))
   const profile = await db.get<Record<string, unknown>>('SELECT * FROM users WHERE id = ?', [tenant])

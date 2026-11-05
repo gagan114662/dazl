@@ -5,7 +5,7 @@ import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
-import { conversionBlockedNow } from './lifecycle.ts'
+import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -360,7 +360,7 @@ export function listMessages(db: Database.Database, tenantId: string, d: Deps = 
   // The draft list carries the evidence basis so the approval UI can label a human
   // confirmation (never presented as dazl's verification) or a withdrawn one.
   const sender = getSettings(db, tenantId)
-  return rows.map(r => ({ ...r, send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
+  return rows.map(r => ({ ...r, error: displayStopReason(r.error), send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()

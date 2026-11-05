@@ -11,6 +11,7 @@
 // from leads joined through the tenant's own scan_jobs, so another tenant's lead id never labels or filters a row.
 import { asDb, type DbLike, type Param } from '../db/client.ts'
 import { NEEDS_OWNER_CLASSES, NOT_A_PERSON, SETTLED_STOPS, sqlList } from './needs-owner.ts'
+import { displayStopReason } from './lifecycle.ts'
 
 // Owner-facing states. needs_owner is the one rule in lib/outreach/needs-owner.ts, shared with lib/outcomes.ts.
 const MACHINE = sqlList(NOT_A_PERSON)
@@ -80,7 +81,7 @@ export async function inboxPage(d: DbLike, tenantId: string, q: InboxQuery = {})
   params.push(limit + 1)
   const rows = await db.all<Omit<InboxThread, 'unread' | 'needs_owner'> & { unread: number; needs_owner: number }>(
     `SELECT * FROM (${sql}) x${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY received_at DESC, thread_id DESC LIMIT ?`, params)
-  const page = rows.slice(0, limit).map(r => ({ ...r, unread: r.unread === 1, needs_owner: r.needs_owner === 1 }))
+  const page = rows.slice(0, limit).map(r => ({ ...r, stopped: displayStopReason(r.stopped), unread: r.unread === 1, needs_owner: r.needs_owner === 1 }))
   const last = page[page.length - 1]
   const c = await db.get<{ threads: number | null; needs_owner: number | null; unread: number | null; unread_needs_owner: number | null }>(
     `SELECT COUNT(*) AS threads, SUM(needs_owner) AS needs_owner, SUM(unread) AS unread, SUM(unread * needs_owner) AS unread_needs_owner FROM (${sql}) x`, base)
