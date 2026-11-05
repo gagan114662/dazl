@@ -5,13 +5,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createElement as h } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { DeleteControls, OWNER_ONLY_DELETE_MESSAGE } from '../../app/app/settings/lifecycle-delete-controls.tsx'
+import { DeleteControls, OWNER_ONLY_DELETE_MESSAGE, type LifecycleStatus } from '../../app/app/settings/lifecycle-delete-controls.tsx'
 
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call: ${u}`) }) as typeof fetch
 
-const base = { tenant: 'tenant-a', always_retained: ['audit_events'], deletion: null }
+const base: LifecycleStatus = { tenant: 'tenant-a', tables: {}, always_retained: ['audit_events'], deletion: null }
 const noop = () => {}
-const props = (s: Record<string, unknown>) => ({ s, sup: 'retain' as const, setSup: noop, confirm: '', setConfirm: noop, onDelete: noop })
+const props = (s: LifecycleStatus) => ({ s, sup: 'retain' as const, setSup: noop, confirm: '', setConfirm: noop, onDelete: noop })
 const deleting = { state: 'leads', requested_at: 1_700_000_000, requested_by: 'actor', policy: { suppressions: 'retain' as const }, retained: null, completed_at: null }
 
 test('a non-owner sees no destructive control, only the owner-only note', () => {
