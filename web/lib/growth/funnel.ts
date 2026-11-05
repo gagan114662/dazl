@@ -19,7 +19,8 @@
 //   repeat use   a second usable own play finished at least REPEAT_GAP_S after the activating one, within the window.
 //   paid         the first Stripe-applied plan change to Pro on a workspace the account owns (audit trail, actor
 //                'stripe'), else the verified checkout conversion (lifecycle_events 'payment') when no audit row exists.
-//   payment states (distinct): payment_failed (invoice.payment_failed seen), refunded (charge.refunded seen),
+//   payment states (distinct): payment_failed (invoice.payment_failed seen), refunded (charge.refunded seen with the whole charge refunded; a partial refund is counted apart as partial_refunds and never
+//                lowers retention: a goodwill credit is not a lost customer),
 //                churned (subscription ended), lapsed (downgraded to Free without ending: unpaid/paused/incomplete).
 //   retained@N   paid, and on Pro with no refund N days after the first payment. Only accounts whose N days have
 //                fully elapsed are counted (eligible); the rest are immature, never counted as lost or kept.
@@ -55,7 +56,7 @@ export interface FunnelReport {
   totals: CohortRow
   cohorts: CohortRow[]
   cost: { components: CostComponent[]; model_spend: { token_priced_usd: number; pool_reported_usd: number; counted_usd: number; rule: string }; recorded_usd: number; complete: false; per_activated_paying: { customers: number; usd_lower_bound: number | null }; per_retained_paying: { window_days: number; customers: number; usd_lower_bound: number | null } }
-  coverage: { attribution_known: number; payment_timeline: { audit: number; lifecycle_fallback: number }; retention_unknown: number; refund_events: number; unmatched_paid_workspaces: number; unsettled_trial_reservations: number; notes: string[] }
+  coverage: { attribution_known: number; payment_timeline: { audit: number; lifecycle_fallback: number }; retention_unknown: number; refund_events: number; partial_refund_events: number; unmatched_paid_workspaces: number; unsettled_trial_reservations: number; notes: string[] }
   excluded: { staging_environment: boolean; synthetic_accounts: number; internal_accounts: number; invited_members: number; test_runs: number; test_messages: number }
 }
 
@@ -74,6 +75,7 @@ export interface CohortRow {
   activated_paying: number
   payment_failed: number
   refunded: number
+  partial_refunds: number
   churned: number
   lapsed: number
   retained: Record<string, Windowed> // 'd30', 'd90', among paying
@@ -218,7 +220,7 @@ interface Customer {
   email: string; signup_at: number; cohort: string; attribution: Attribution; tenants: Set<string>
   setup: SetupState; activated_at: number | null; repeat_at: number | null
   paid_at: number | null; paid_source: 'audit' | 'lifecycle_fallback' | null
-  payment_failed: boolean; refunded_at: number | null; churned_at: number | null; lapsed_at: number | null
+  payment_failed: boolean; refunded_at: number | null; partial_refund: boolean; churned_at: number | null; lapsed_at: number | null
   proAt: ((t: number) => boolean | null) | null
 }
 
@@ -251,7 +253,7 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
     if (opts.staging || syntheticEmail(u.email)) { excluded.synthetic_accounts++; continue }
     if (d.invited.has(u.id)) { excluded.invited_members++; continue }
     customers.set(u.id, { email: u.email, signup_at: u.created_at, cohort: month(u.created_at), attribution: 'unattributed', tenants: new Set([u.id]),
-      setup: 'abandoned_setup', activated_at: null, repeat_at: null, paid_at: null, paid_source: null, payment_failed: false, refunded_at: null, churned_at: null, lapsed_at: null, proAt: null })
+      setup: 'abandoned_setup', activated_at: null, repeat_at: null, paid_at: null, paid_source: null, payment_failed: false, refunded_at: null, partial_refund: false, churned_at: null, lapsed_at: null, proAt: null })
   }
   for (const t of ownersOf.keys()) { const a = accountOf(t); if (a && customers.has(a)) customers.get(a)!.tenants.add(t) }
   const byTenant = (t: string) => { const a = accountOf(t); return a ? customers.get(a) ?? null : null }
@@ -290,7 +292,9 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
     if (!c) { if (e.action === 'billing.plan_changed' && parse(e.summary).plan === 'pro' && !growthMembers.has(e.tenant_id)) unmatchedPaid.add(e.tenant_id); continue }
     const s = parse(e.summary)
     if (e.action === 'billing.payment_failed') c.payment_failed = true
-    else if (e.action === 'billing.refunded') { if (c.refunded_at === null) c.refunded_at = e.at }
+    // stripe.ts stores full:true only when Stripe says the whole charge is refunded; anything else (false, missing, malformed) is
+    // treated as partial, so a doubtful row can never drop a paying customer from retention.
+    else if (e.action === 'billing.refunded') { if (s.full === true) { if (c.refunded_at === null) c.refunded_at = e.at } else c.partial_refund = true }
     else {
       const pro = s.plan === 'pro'
       timeline.set(c, [...(timeline.get(c) ?? []), { at: e.at, pro }])
@@ -354,7 +358,7 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
       cohort, signups: cs.length, attribution: att, setup,
       activated: win(actElig.length, activated.length), repeat_use: win(repElig.length, repeat.length),
       paid: paying.length, activated_paying: paying.filter(activatedInWindow).length,
-      payment_failed: cs.filter(c => c.payment_failed).length, refunded: cs.filter(c => c.refunded_at !== null).length,
+      payment_failed: cs.filter(c => c.payment_failed).length, refunded: cs.filter(c => c.refunded_at !== null).length, partial_refunds: cs.filter(c => c.partial_refund).length,
       churned: cs.filter(c => c.churned_at !== null).length, lapsed: cs.filter(c => c.lapsed_at !== null && c.churned_at === null).length,
       retained, mature: cs.every(c => c.signup_at + (ACTIVATION_DAYS + REPEAT_DAYS) * DAY <= now),
     }
@@ -406,7 +410,7 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
       activation: `first own play finished with >= 1 source-checked lead and >= 1 lead not rejected, not in review, with a verified event date; within ${ACTIVATION_DAYS} days of signup`,
       repeat_use: `a second usable own play finished >= ${REPEAT_GAP_S / 3600} h after activation, within ${REPEAT_DAYS} days`,
       paid: 'first Stripe-applied plan change to Pro on an owned workspace (audit trail); verified checkout conversion when no audit row exists',
-      retained: `on Pro without a refund N days after first payment; N in ${RETENTION_DAYS.join(', ')}; only fully elapsed windows count`,
+      retained: `on Pro without a full refund N days after first payment (a partial refund does not count against retention); N in ${RETENTION_DAYS.join(', ')}; only fully elapsed windows count`,
       attribution: 'direct = claimed a preview from the growth workspace; assisted = exact address contacted before signup; never causal',
       qualified_conversation: 'a rule-classified positive reply to the growth workspace (only while reply reading is on) or a Cal.com booking from that exact address',
     },
@@ -434,6 +438,7 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
       payment_timeline: { audit: all.filter(c => c.paid_source === 'audit').length, lifecycle_fallback: all.filter(c => c.paid_source === 'lifecycle_fallback').length },
       retention_unknown: all.filter(c => c.paid_at !== null && c.proAt === null).length,
       refund_events: d.billing.filter(e => e.action === 'billing.refunded').length,
+      partial_refund_events: d.billing.filter(e => e.action === 'billing.refunded' && parse(e.summary).full !== true).length,
       unmatched_paid_workspaces: unmatchedPaid.size,
       unsettled_trial_reservations: trialRows.filter(t => t.settled_at === null).length,
       notes: [

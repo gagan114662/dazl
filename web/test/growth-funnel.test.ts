@@ -225,6 +225,26 @@ bothEngines('funnel: a lapse to Free without an end, and a fallback payment with
   assert.equal(r.coverage.retention_unknown, 1)
 })
 
+bothEngines('funnel: a partial refund stays retained and is reported as partial; a full refund (or a refund after the window) is the only one that costs retention', async ({ db }) => {
+  await user(db, G, 'founder@growth.dazl-fixture.co', T0 - DAY)
+  const pay = async (id: string, email: string) => {
+    await user(db, id, email, T0)
+    await plan(db, id, T0 + DAY, 'billing.plan_changed', { plan: 'pro', previous: 'free', ends: false })
+  }
+  await pay('RP', 'rp@marblecove.co'); await plan(db, 'RP', T0 + 5 * DAY, 'billing.refunded', { full: false }) // goodwill credit: kept
+  await pay('RF', 'rf@marblecove.co'); await plan(db, 'RF', T0 + 5 * DAY, 'billing.refunded', { full: true }) // whole charge back: lost
+  await pay('RM', 'rm@marblecove.co'); await plan(db, 'RM', T0 + 5 * DAY, 'billing.refunded', {}) // doubtful row (no flag): never counted as a full refund
+  await pay('RS', 'rs@marblecove.co'); await plan(db, 'RS', T0 + 5 * DAY, 'billing.refunded', { full: 'true' }) // wrong type: not a full refund either
+  const r = await funnelReport(db, G, { now: NOW, env: ENV })
+  assert.deepEqual(r.totals.retained.d30, { eligible: 4, count: 3, rate: 0.75 }) // only RF drops out
+  assert.equal(r.totals.refunded, 1)
+  assert.equal(r.totals.partial_refunds, 3)
+  assert.equal(r.coverage.refund_events, 4)
+  assert.equal(r.coverage.partial_refund_events, 3)
+  assert.match(r.definitions.retained, /without a full refund/)
+  assert.equal(r.cost.per_retained_paying.customers, 3)
+})
+
 bothEngines('charge.refunded is recorded for the report and changes no plan; a replay records nothing twice', async ({ db }) => {
   const checkout = { id: 'evt_c1', type: 'checkout.session.completed', created: T0, data: { object: { mode: 'subscription', client_reference_id: 'R', customer: 'cus_r', subscription: 'sub_r' } } }
   assert.equal(await applyStripeEvent(db, checkout), 'applied')
