@@ -1302,6 +1302,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
           const st = summarizeTrace(diag2.trace)
           ledger.stats('search:adaptive', { ...st, ...diag2.info })
+          diag.tfTextUrls.push(...diag2.tfTextUrls) // verify_provenance at the end of the run counts round-two pages too (D3)
           const seen = new Set(leads.map(l => `${l.source_url}|${companyKey(l.company)}`))
           const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
           if (fresh.length === 0) stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : st.searches_not_attempted.cap ? 'search_cap' : 'empty') // money vs count: a budget refusal is never the search-cap status (D1)

@@ -230,3 +230,28 @@ test('#381 D2 feedback before fetch: a company in feedback memory returned by ro
   assert.ok(!s.leads.some(l => l.company === B.company), 'the rejected company is never a lead')
   assert.equal(s.adaptive?.status, 'empty', `round two ran, found only a rejected company, and says so: ${JSON.stringify(s.adaptive)}`)
 })
+
+test('#381 D3 round equivalence: a lead of the same shape persists the same gate-derived fields whether it came through round one or round two', async () => {
+  const r1 = await scan({ aVerifies: true }) // A verified in round one
+  const r2 = await scan() // A refused in round one, B verified in round two
+  const cols = (r1.db.prepare("SELECT name FROM pragma_table_info('leads')").all() as { name: string }[]).map(c => c.name)
+  const row1 = r1.db.prepare('SELECT * FROM leads WHERE scan_job_id = ?').get(r1.jobId) as Record<string, unknown>
+  const row2 = r2.db.prepare('SELECT * FROM leads WHERE scan_job_id = ?').get(r2.jobId) as Record<string, unknown>
+  assert.ok(row1 && row2, 'both scans persisted their lead')
+  // identity and content-derived columns legitimately differ; every gate-derived column must match exactly
+  const exempt = new Set(['id', 'scan_job_id', 'company', 'dedup_key', 'source_url', 'created_at', 'retrieved_at', 'evidence_excerpt', 'evidence_copy_sha256', 'evidence_copy_id']) // identity or content-derived
+  const diffs: string[] = []
+  for (const c of cols) {
+    if (exempt.has(c)) continue
+    if (String(row1[c] ?? null) !== String(row2[c] ?? null)) diffs.push(`${c}: round1=${JSON.stringify(row1[c] ?? null)} round2=${JSON.stringify(row2[c] ?? null)}`)
+  }
+  assert.deepEqual(diffs, [], `gate-derived columns differ between rounds:\n${diffs.join('\n')}`)
+  // the evidence excerpt (what the verifier read) is present in both; a held-copy hash exists only on the
+  // blocked-own-fetch fallback path, which neither lead took here - so presence of the excerpt, not the copy, is the invariant
+  for (const [tag, row] of [['round1', row1], ['round2', row2]] as const) {
+    assert.ok(typeof row.evidence_excerpt === 'string' && row.evidence_excerpt.length > 0, `${tag} lead carries its evidence excerpt`)
+  }
+  const src1 = r1.db.prepare("SELECT status, candidate_count, verified_count FROM scan_source_runs WHERE collector = 'search:tinyfish'").get() as { status: string; candidate_count: number; verified_count: number }
+  const src2 = r2.db.prepare("SELECT status, candidate_count, verified_count FROM scan_source_runs WHERE collector = 'search:adaptive'").get() as { status: string; candidate_count: number; verified_count: number }
+  assert.deepEqual(src2, src1, 'the round-two source row records the same shape of stats as round one')
+})
