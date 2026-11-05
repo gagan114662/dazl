@@ -3,6 +3,7 @@
 // found person gets empty fields.
 import type { Db } from '../db/client.ts'
 import { contactsFromEnrichments, PEOPLE_SOURCE, roleContradicted } from './rank.ts'
+import { currencyText } from './currency.ts'
 
 export interface BestPerson { best_person: string; best_person_title: string; best_person_link: string; best_person_found_via: string }
 const EMPTY: BestPerson = { best_person: '', best_person_title: '', best_person_link: '', best_person_found_via: '' }
@@ -32,13 +33,13 @@ export async function bestPeople(db: Db, tenantId: string, rows: { lead_id: stri
   const hasTable = await db.get('SELECT 1 AS x FROM lead_enrichments LIMIT 0').then(() => true, () => false)
   for (const r of rows) {
     if (!rolesByJob.has(r.job_id)) rolesByJob.set(r.job_id, await buyerRoles(db, r.job_id))
-    const enr = !hasTable ? [] : await db.all<{ kind: string; value: string; label: string | null; source_url: string; connector: string }>(
-      `SELECT e.kind, e.value, e.label, e.source_url, e.connector FROM lead_enrichments e
+    const enr = !hasTable ? [] : await db.all<{ kind: string; value: string; label: string | null; source_url: string; connector: string; retrieved_at: unknown }>(
+      `SELECT e.kind, e.value, e.label, e.source_url, e.connector, e.retrieved_at FROM lead_enrichments e
        JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE e.lead_id = ? AND e.tenant_id = ? AND j.user_id = ? AND l.quarantined_at IS NULL AND e.kind IN ('contact', 'person')
        ORDER BY e.insert_seq`, [r.lead_id, tenantId, tenantId])
     const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!).find(c => !c.historical && (!c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!)))
-    out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: PEOPLE_SOURCE[top.connector] ?? top.connector } : EMPTY)
+    out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: top.currency === 'verified_current' && top.verified ? `${PEOPLE_SOURCE[top.connector] ?? top.connector}; ${currencyText(top.verified, top.connector)}` : PEOPLE_SOURCE[top.connector] ?? top.connector } : EMPTY)
   }
   return out
 }

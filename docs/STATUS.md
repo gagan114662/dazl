@@ -204,7 +204,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 2. #380 explicit AND/OR/NOT targeting with per-condition proof.
 3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
 4. #382 real Apollo-to-PDL enrichment fallback waterfall (per-lead per-provider outcomes, timeout/skip notices in the scan view: PR on `b/382-enrich-waterfall`, in review; stubbed providers only, not run live).
-5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
+5. #383 buyer-role contact filtering before result truncation (in review: PR #566, b/383-buyer-role-acceptance — role filter before the page cap, former/assistant-to rejected, no person from a generic inbox, and verified-current vs search-result-only contacts on the owner definition, each pinned by the acceptance harness).
 6. #384 separate published provenance from deliverability/person-route status.
 7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
    currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).

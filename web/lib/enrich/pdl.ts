@@ -9,6 +9,8 @@ const TIMEOUT_MS = 15_000
 
 // 1 credit per profile returned. Names/titles only - emails/phones are never read.
 import { formatPlace } from '../scan/contact-agreement.ts'
+import { isMailboxShaped } from './person-name.ts'
+import { latestDay } from '../people/currency.ts'
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : null)
 export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5): Promise<ApolloPerson[]> {
   // Inside a scan: PDL bills per profile returned, so the worst case is the size asked for, reserved on the scan's
@@ -35,7 +37,9 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
     let j: { data?: Record<string, unknown>[] }
     try { j = await r.json() as { data?: Record<string, unknown>[] } } catch (e) { await hold?.settle(null); throw e }
     if (hold) await hold.settle(Array.isArray(j?.data) ? (hold.usd / max) * j.data.length : null)
-    return (j.data ?? []).slice(0, max).map(p => ({
+    // Filter mailbox/team labels BEFORE the clamp, same as Apollo, so they cannot consume the row budget. The settle
+    // above stays on the raw profiles PDL RETURNED (that is what it bills), never on the filtered count.
+    return (j.data ?? []).map(p => ({
       name: (typeof p.full_name === 'string' ? p.full_name : '').slice(0, 120),
       title: typeof p.job_title === 'string' ? p.job_title.slice(0, 120) : null,
       linkedin: typeof p.linkedin_url === 'string' ? p.linkedin_url.slice(0, 200) : null,
@@ -44,6 +48,8 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
       place: formatPlace(str(p.job_company_location_locality), str(p.job_company_location_region), str(p.job_company_location_country)),
       address: str(p.job_company_location_street_address),
       domain: str(p.job_company_website),
-    })).filter(p => p.name)
+      // The record's own job last-verified / last-changed date (#383 criterion 4); any other shape is null.
+      recordDay: latestDay(p.job_last_verified, p.job_last_changed),
+    })).filter(p => p.name && !isMailboxShaped(p.name)).slice(0, max)
   } finally { clearTimeout(t) }
 }
