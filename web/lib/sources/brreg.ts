@@ -105,6 +105,11 @@ export function brregList(v: unknown, k: 'enheter' | 'underenheter'): { rows: Br
   if (v._embedded === undefined) return isObj(v.page) && v.page.totalElements === 0 ? { rows: [], invalid: 0 } : null
   const a = isObj(v._embedded) ? v._embedded[k] : undefined
   if (!Array.isArray(a)) return null
+  // The query asks for the FIRST page only (size=, sort=, no page=), so the envelope must agree with it: an empty
+  // array is a real empty market only when the total vouches for it, and rows can never outnumber a numeric total.
+  const total = isObj(v.page) ? v.page.totalElements : undefined
+  if (a.length === 0 && total !== 0) return null
+  if (typeof total === 'number' && a.length > total) return null
   const rows = a.filter(isBrregEntity)
   return { rows, invalid: a.length - rows.length }
 }

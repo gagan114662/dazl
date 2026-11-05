@@ -202,12 +202,31 @@ test('#615: the wrong endpoint\'s collection is not this endpoint\'s answer', as
 
 test('#615: documented empty pages stay a healthy empty (no notes)', async () => {
   const halEmpty = '{"_links":{"self":{"href":"https://data.brreg.no/enhetsregisteret/api/enheter"}},"page":{"size":20,"totalElements":0,"totalPages":0,"number":0}}'
-  for (const [e, u] of [[halEmpty, halEmpty], ['{"_embedded":{"enheter":[]},"page":{"totalElements":0}}', '{"_embedded":{"underenheter":[]},"page":{"totalElements":0}}'], ['{"_embedded":{"enheter":[]}}', '{"_embedded":{"underenheter":[]}}']]) {
+  for (const [e, u] of [[halEmpty, halEmpty], ['{"_embedded":{"enheter":[]},"page":{"totalElements":0}}', '{"_embedded":{"underenheter":[]},"page":{"totalElements":0}}']]) {
     const out = await report('new restaurants in Oslo', recorded([], bodyFor(e, u)))
     assert.deepEqual(out.runs, [{ collector: 'adapter:brreg', status: 'empty', evidence: 0 }], e)
   }
   // extra keys beside a documented envelope are tolerated
   assert.deepEqual(brregList({ _embedded: { enheter: [] }, page: { totalElements: 0 }, _links: {}, extra: [1, 2] }, 'enheter'), { rows: [], invalid: 0 })
+})
+
+test('#615: a first page that contradicts its total is a schema failure, not an empty market', async () => {
+  // this adapter only ever reads the FIRST page (the query has size= and sort= but no page=), so the envelope must agree with it
+  const good = list('enheter-restaurant-oslo.json', 'enheter').find(e => e.navn === 'PUNJABI MASALA AS')!
+  assert.equal(brregList({ _embedded: { enheter: [] }, page: { totalElements: 50 } }, 'enheter'), null, 'empty array, positive total')
+  assert.equal(brregList({ _embedded: { enheter: [] } }, 'enheter'), null, 'empty array, no page at all')
+  assert.equal(brregList({ _embedded: { enheter: [good, good] }, page: { totalElements: 1 } }, 'enheter'), null, 'rows outnumber the total')
+  assert.deepEqual(brregList({ _embedded: { enheter: [] }, page: { totalElements: 0 } }, 'enheter'), { rows: [], invalid: 0 }, 'a total of 0 still vouches for the empty page')
+  for (const [e, u] of [
+    ['{"_embedded":{"enheter":[]},"page":{"totalElements":50}}', '{"_embedded":{"underenheter":[]},"page":{"totalElements":50}}'],
+    ['{"_embedded":{"enheter":[]}}', '{"_embedded":{"underenheter":[]}}'],
+    [JSON.stringify({ _embedded: { enheter: [good, good] }, page: { totalElements: 1 } }), JSON.stringify({ _embedded: { underenheter: [good, good] }, page: { totalElements: 1 } })],
+  ]) {
+    const out = await report('new restaurants in Oslo', recorded([], bodyFor(e, u)))
+    assert.equal(out.runs[0].status, 'partial', `${e}: not "empty"`)
+    assert.equal(out.runs[0].notes?.schema_invalid, 2, `${e}: both endpoints reported`)
+    assert.equal(out.items.length, 0, e)
+  }
 })
 
 test('#615: one good endpoint plus one malformed endpoint keeps the good evidence and reports the failure', async () => {
