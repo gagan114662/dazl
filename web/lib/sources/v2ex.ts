@@ -44,32 +44,38 @@ export function toEvidence(topics: Topic[], keywords: string[]): Evidence[] {
 export const v2exAdapter: SourceAdapter = {
   id: 'v2ex',
   label: 'V2EX (public topics)',
-  async collect({ keywords, http }) {
+  async collect({ keywords, http, note }) {
     if (keywords.length === 0) return []
     const q = keywords.slice(0, 4).join(' ')
     const hit = cache.get(q)
     if (hit && Date.now() - hit.at < 15 * 60 * 1000) return hit.items
     const now = Date.now()
     while (calls.length && now - calls[0] > WINDOW_MS) calls.shift()
-    if (calls.length >= MAX_CALLS) return []
+    if (calls.length >= MAX_CALLS) { note?.('budget'); return [] }
     calls.push(now)
     let items: Evidence[] = []
     const r = await http(`https://www.sov2ex.com/api/search?q=${encodeURIComponent(q)}&size=15&sort=created`)
-    if (r && r.status === 200) {
+    if (!r) note?.('unreachable')
+    else if (r.status !== 200) note?.('http_error')
+    else if (r.truncated) note?.('oversize') // never parse a prefix
+    else {
       try {
         const json = JSON.parse(r.body) as { hits?: { _id: string; _source?: { title?: string; content?: string; created?: string } }[] }
         const topics = (json.hits ?? []).map(h => ({ id: Number(h._id), title: h._source?.title ?? '', content: h._source?.content ?? '', created: Math.floor(new Date(h._source?.created ?? '').getTime() / 1000) })).filter(t => t.id > 0)
         items = toEvidence(topics, keywords)
-      } catch { items = [] }
+      } catch { note?.('unparseable'); items = [] }
     }
     if (items.length === 0) {
       const hot = await http('https://www.v2ex.com/api/topics/hot.json', { accept: 'application/json' })
-      if (hot && hot.status === 200) {
+      if (!hot) note?.('unreachable')
+      else if (hot.status !== 200) note?.('http_error')
+      else if (hot.truncated) note?.('oversize') // never parse a prefix
+      else {
         try {
           const topics = (JSON.parse(hot.body) as { id: number; title?: string; content?: string; created?: number }[]).map(t => ({ id: t.id, title: t.title ?? '', content: t.content ?? '', created: t.created ?? 0 }))
           const kws = keywords.map(k => k.toLowerCase())
           items = toEvidence(topics.filter(t => kws.some(k => `${t.title} ${t.content}`.toLowerCase().includes(k))), keywords)
-        } catch { items = [] }
+        } catch { note?.('unparseable'); items = [] }
       }
     }
     cache.set(q, { at: now, items })
