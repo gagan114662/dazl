@@ -39,7 +39,7 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
-import { spendAttemptUncertain } from './spend-cap.ts'
+import { spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
@@ -577,17 +577,15 @@ const accountingFailed = new WeakSet<Job>()
 const uncertainSpend = new WeakSet<Job>()
 // A model request the vendor answered with a documented rejection (429, 400, ...): not retried, no further model request in this attempt,
 // and the scan ends with its own status. dazl does not claim the rejected request was uncharged.
-const rejectedSpend = new WeakMap<Job, ProviderError>()
-const rejectionCode = (e: ProviderError) => e.status === 429 ? 'provider_rate_limited' : 'provider_rejected'
+const rejectionCode = (status: number | undefined) => status === 429 ? 'provider_rate_limited' : 'provider_rejected'
 function flagAccounting(db: Database.Database, job: Job, p: Provider): Provider {
   // A request that may have been billed (ProviderError charge 'uncertain') ends the scan accounting_uncertain and no further model request is
   // made: stages that swallow errors cannot carry on and pay again. A vendor-declined (4xx) failure keeps the ordinary retry.
   const seen = async <T>(f: () => Promise<T>): Promise<T> => {
-    if (uncertainSpend.has(job) || spendAttemptUncertain(job.id, job.attempts) || rejectedSpend.has(job)) throw new SpendRefused('accounting_uncertain')
+    if (uncertainSpend.has(job) || spendAttemptUncertain(job.id, job.attempts) || spendAttemptRejected() !== null) throw new SpendRefused('accounting_uncertain')
     try { return await f() } catch (e) {
       if (e instanceof SpendAccountingFailed) accountingFailed.add(job)
       if (e instanceof ProviderError && e.kind === 'retry' && e.charge === 'uncertain') uncertainSpend.add(job)
-      else if (e instanceof ProviderError && e.kind === 'retry' && e.charge === 'rejected') rejectedSpend.set(job, e)
       else if (!(e instanceof ProviderError) && hasUnsettledCall(db, job)) uncertainSpend.add(job) // an unclassified failure with a request reserved and never settled: maybe billed
       throw e
     }
@@ -602,7 +600,7 @@ function flagAccounting(db: Database.Database, job: Job, p: Provider): Provider 
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   else if (uncertainSpend.has(job) || spendAttemptUncertain(job.id, job.attempts)) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }
-  else if (rejectedSpend.has(job) && status === 'done') { status = 'failed'; error = rejectionCode(rejectedSpend.get(job)!); out = null; candidates = null }
+  else if (spendAttemptRejected() !== null && status === 'done') { status = 'failed'; error = rejectionCode(spendAttemptRejected()!); out = null; candidates = null }
   if (out) excludeSupplied(job, out)
   const leads = out?.leads ?? []
   const review = out?.review ?? []
@@ -639,11 +637,11 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
   if (e instanceof ScanStopped) return 'done' // nothing to retry or fail: the stop/re-claim owns the row; queue completion or a stale token is a no-op
   // A paid call answered but its cost could not be saved: the scan ends with its own status, never retried (a retry would pay again) and never reported as an empty search.
   if (e instanceof SpendAccountingFailed) { finish(db, job, 'failed', 'accounting_failed', null, null, ledger); return 'failed' }
-  if (e instanceof SpendRefused && rejectedSpend.has(job) && !uncertainSpend.has(job) && !spendAttemptUncertain(job.id, job.attempts)) { finish(db, job, 'failed', rejectionCode(rejectedSpend.get(job)!), null, null, ledger); return 'failed' }
+  if (e instanceof SpendRefused && spendAttemptRejected() !== null && !uncertainSpend.has(job) && !spendAttemptUncertain(job.id, job.attempts)) { finish(db, job, 'failed', rejectionCode(spendAttemptRejected()!), null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused) { finish(db, job, 'failed', 'budget_stopped', null, null, ledger); return 'failed' } // a refused call is never retried: attempts must not multiply spend
   const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error', 'uncertain')
   // A documented vendor rejection (dazl does not claim it was uncharged): the scan ends with its own status and the owner retries on purpose.
-  if (err.kind !== 'auth' && err.charge === 'rejected' && !(uncertainSpend.has(job) || spendAttemptUncertain(job.id, job.attempts) || hasUnsettledCall(db, job))) { finish(db, job, 'failed', rejectionCode(err), null, null, ledger); return 'failed' }
+  if (err.kind !== 'auth' && err.charge === 'rejected' && !(uncertainSpend.has(job) || spendAttemptUncertain(job.id, job.attempts) || hasUnsettledCall(db, job))) { finish(db, job, 'failed', rejectionCode(err.status), null, null, ledger); return 'failed' }
   // A paid request that may have been billed (timeout/5xx/unreadable answer, or any row of this attempt still unsettled) is not re-run: the
   // owner starts a new scan on purpose. A vendor-declined (4xx) or never-sent failure keeps the ordinary retry.
   if (err.kind !== 'auth' && (uncertainSpend.has(job) || spendAttemptUncertain(job.id, job.attempts) || hasUnsettledCall(db, job))) { finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }

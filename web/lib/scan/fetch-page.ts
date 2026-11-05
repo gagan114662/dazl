@@ -182,7 +182,7 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
         signal: AbortSignal.timeout(35_000),
       })
     } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
-    if (hold) { if (res.ok || [400, 401, 403, 404, 413, 429].includes(res.status)) await hold.settle(res.ok ? hold.usd : null); else hold.uncertain() }
+    if (hold) { if (res.ok || [400, 401, 403, 404, 413, 429].includes(res.status)) { await hold.settle(res.ok ? hold.usd : null); if (!res.ok && res.status !== 404) hold.rejected(res.status) } else hold.uncertain() }
     if (!res.ok) return null
     const html = await res.text()
     return html.length > 0 && html.length <= MAX_BYTES ? html : null

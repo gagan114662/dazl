@@ -27,7 +27,7 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
-async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { tfAnswer?: (u: string) => Response; served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
+async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { tfFetchAnswer?: (u: string) => Response; tfAnswer?: (u: string) => Response; served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master)
@@ -44,6 +44,7 @@ async function run(env: Record<string, string | undefined>, usage: boolean | Rec
     }
     if (x.tfAnswer && u.startsWith('https://api.search.tinyfish.ai')) return x.tfAnswer(u)
     if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: 200 })
+    if (x.tfFetchAnswer && u.startsWith('https://api.fetch.tinyfish.ai')) return x.tfFetchAnswer(u)
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
     if (u === 'https://api.anthropic.com/v1/messages/count_tokens') return new Response(JSON.stringify({ input_tokens: 400 }), { status: 200 }) // free token counter used by guarded runs
     if (u === 'https://api.anthropic.com/v1/messages' && x.modelAnswer) return x.modelAnswer()
@@ -207,14 +208,29 @@ for (const [name, ans, status, error] of answers) {
   })
 }
 
-test('runner in-attempt stop: a TinyFish search that may have been billed (timeout) stops EVERY later paid request of the attempt and the job never ends done', async () => {
-  const twoQueries = () => new Response(JSON.stringify({ id: 'msg', model: 'claude-sonnet-4-5-20250929', content: [{ type: 'text', text: JSON.stringify(['payroll specialist hiring Ohio', 'controller job posting Ohio', 'payroll manager opening Columbus']) }], usage: { input_tokens: 400, output_tokens: 60 } }), { status: 200 })
-  const x = await run(OWNER, true, { modelAnswer: twoQueries, tfAnswer: () => { throw new TypeError('socket hang up') } })
-  assert.ok(x.paid.some(p => p.url.startsWith('https://api.search.tinyfish.ai')), 'the TinyFish search was actually attempted')
-  const after = x.paid.slice(x.paid.findIndex(p => p.url.startsWith('https://api.search.tinyfish.ai')) + 1)
-  assert.equal(after.length, 0, 'zero paid requests (any vendor, model included) after the maybe-billed one')
-  assert.deepEqual([x.row.status, x.row.error], ['failed', 'accounting_uncertain'])
-})
+// The swallowing case (#363 review): 12 search hits are fetched in two batches. Batch 1 answers, batch 2 fails (timeout / 5xx / documented rejection); tfFetchMany
+// swallows that and the stage carries on with the first pages, which would then pay for a MODEL extraction. With the central attempt flag nothing is paid after
+// the failed batch and the scan never ends done.
+let searchN = 0 // each search answers 10 hits on new hosts (a search returns at most 10), so the pages to fetch exceed one batch of 10
+const twelveHits = () => new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${searchN * 10 + i}.example/hf`, title: 'Payroll specialist', snippet: QUOTE, date: recent })) }), { status: 200 })
+const answerSearch = () => { const r = twelveHits(); searchN++; return r }
+const fetchFailures: [string, () => Response, string][] = [
+  ['timeout', () => { throw new TypeError('socket hang up') }, 'accounting_uncertain'],
+  ['503', () => new Response('{}', { status: 503 }), 'accounting_uncertain'],
+  ['429', () => new Response('{}', { status: 429 }), 'provider_rate_limited'],
+  ['403', () => new Response('{}', { status: 403 }), 'provider_rejected'],
+]
+for (const [name, ans, code] of fetchFailures) {
+  test(`runner in-attempt stop: the 2nd TinyFish fetch batch ${name} (swallowed by the fetch loop) stops every later paid request; job failed/${code}, never done`, async () => {
+    let batch = 0; searchN = 0
+    const x = await run(OWNER, true, { tfAnswer: answerSearch, tfFetchAnswer: () => (++batch === 1 ? new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${i}.example/hf`, title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` })) }), { status: 200 }) : ans()) })
+    const fetches = x.paid.filter(p => p.url.startsWith('https://api.fetch.tinyfish.ai'))
+    assert.equal(fetches.length, 2, 'positive control: batch 1 answered and batch 2 was attempted')
+    const last = x.paid.map(p => p.url).lastIndexOf(fetches[1]!.url)
+    assert.equal(x.paid.slice(last + 1).length, 0, 'zero paid requests of any vendor (model included) after the failed batch')
+    assert.deepEqual([x.row.status, x.row.error], ['failed', code])
+  })
+}
 
 test('runner failure class: an unclassified (non-ProviderError) exception after a paid request was reserved ends accounting_uncertain, one request, never retried', async () => {
   let calls = 0

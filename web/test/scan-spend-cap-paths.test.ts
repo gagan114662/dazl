@@ -218,14 +218,14 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
     assert.deepEqual(calls.map(x => x.status), [want], `${c.name} / ${what}`)
   }
   // In-attempt stop (#363): once ANY vendor request of an attempt may have been billed, no later paid request of ANY vendor is sent in that attempt.
-  for (const first of cases) {
+  for (const first of cases) for (const [how, firstAnswer] of [['maybe-billed (timeout)', async () => { throw new TypeError('aborted') }], ['documented rejection (429)', async () => new Response('{}', { status: 429 })]] as const) {
     const s = scan()
     let later = 0
     await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => {
-      await first.call((async () => { throw new TypeError('aborted') }) as unknown as typeof fetch).catch(() => null)
+      await first.call(firstAnswer as unknown as typeof fetch).catch(() => null)
       for (const c of cases) await c.call((async () => { later++; return new Response('{}', { status: 200 }) }) as unknown as typeof fetch).catch(() => null)
     })
-    assert.equal(later, 0, `after a maybe-billed ${first.name} no later vendor request is sent`)
+    assert.equal(later, 0, `after a ${how} ${first.name} no later vendor request of any vendor is sent`)
   }
 })
 

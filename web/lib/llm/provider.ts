@@ -117,7 +117,7 @@ export const anthropicProvider: Provider = {
         { model: requested, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
         fetchImpl,
       )
-    } catch (e) { if (e instanceof ProviderError && e.charge !== 'uncertain') await hold?.settle(null); else hold?.uncertain(); throw e } // an uncertain failure leaves its row 'reserved': maybe billed, never re-run automatically
+    } catch (e) { if (e instanceof ProviderError && e.charge !== 'uncertain') { await hold?.settle(null); if (e.charge === 'rejected') hold?.rejected(e.status ?? 0) } else hold?.uncertain(); throw e } // an uncertain failure leaves its row 'reserved': maybe billed, never re-run automatically
     const u = (json.usage ?? {}) as Obj
     const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
     const out: DetailedCompletion = {
@@ -151,7 +151,7 @@ export const openaiProvider: Provider = {
     const hold = await reserveScanSpend('llm.openai', () => modelCostUsd(requested, prompt, maxTokens))
     let json: Record<string, unknown>
     try { json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: requested, input: prompt, max_output_tokens: maxTokens }, fetchImpl) }
-    catch (e) { if (e instanceof ProviderError && e.charge !== 'uncertain') await hold?.settle(null); else hold?.uncertain(); throw e }
+    catch (e) { if (e instanceof ProviderError && e.charge !== 'uncertain') { await hold?.settle(null); if (e.charge === 'rejected') hold?.rejected(e.status ?? 0) } else hold?.uncertain(); throw e }
     let text = ''
     for (const item of arr(json.output)) if (item.type === 'message') for (const part of arr(item.content)) if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
     const u = (json.usage ?? {}) as Obj

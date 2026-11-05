@@ -121,7 +121,7 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else await hold.settle(r.ok ? hold.usd : null) } // maybe billed: stays 'reserved', the attempt stops paying
+  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.reason === 'rate' ? 429 : 401) } } // maybe billed: stays 'reserved', the attempt stops paying
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return { ok: false, reason: r.reason } }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
@@ -159,7 +159,7 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
     d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' }
   }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else await hold.settle(r.ok ? hold.usd : null) } // maybe billed: stays 'reserved', the attempt stops paying
+  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.reason === 'rate' ? 429 : 401) } } // maybe billed: stays 'reserved', the attempt stops paying
   if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return { ok: false, reason: r.reason } }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []

@@ -158,7 +158,7 @@ try {
   const seedJob = error => {
     const d = new (require('better-sqlite3'))(dbPath)
     try {
-      const id = createQueryJob(d, 'smoke-user', { query: `Smoke stop status ${error}` })
+      const id = createQueryJob(d, 'smoke-user', { query: `Smoke stop status ${error}. Find founders of small Ohio payroll and HR software companies that recently hired a controller, opened a second office, or posted three or more finance roles in the last ninety days, and show the evidence for each one` })
       d.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?").run(Math.floor(Date.now() / 1000), id)
       d.prepare("UPDATE scan_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?").run(error, Math.floor(Date.now() / 1000), id)
       return id
@@ -166,7 +166,9 @@ try {
   }
   for (const [error, shot, text] of [
     ['accounting_failed', 'stop-accounting-failed', /the cost of one paid step could not be recorded/],
-    ['accounting_uncertain', 'stop-accounting-uncertain', /did not run it again automatically/],
+    ['accounting_uncertain', 'stop-accounting-uncertain', /may be charged again/],
+    ['provider_rate_limited', 'stop-provider-rate-limited', /rate-limited a request in this run[\s\S]*may be charged again/],
+    ['provider_rejected', 'stop-provider-rejected', /refused a request in this run[\s\S]*may be charged again/],
   ]) {
     const id = seedJob(error)
     await page.setViewportSize({ width: 1280, height: 900 })
@@ -176,6 +178,7 @@ try {
       await page.setViewportSize({ width: w, height: 900 })
       p = path.join(out, `${shot}-${tag}.png`); await page.screenshot({ path: p, fullPage: true }); shots.push(p)
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${error}: no horizontal overflow at ${w}px`)
+      assert.ok(await page.evaluate(() => { const t = document.getElementById('play'); return !!t && t.scrollHeight <= t.clientHeight + 1 }), `${error}: the long play text is not clipped in its box at ${w}px`)
     }
     assert.equal(await page.getByText(/nothing found/i).count(), 0, `${error} is not reported as an empty search`)
   }

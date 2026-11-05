@@ -212,6 +212,9 @@ export function effectiveCapUsd(ctx: ScanSpendCtx): number | null {
 // further paid request of ANY vendor is made in this attempt, so a stage that swallows the failure cannot pay for a fallback before the
 // scan ends. Process-local; across a restart the reaper/bind rules read the durable 'reserved' row instead.
 const uncertainAttempts = new WeakSet<ScanSpendCtx>() // one entry per attempt: the context is opened once around the whole attempt
+// A vendor answered a request with a documented rejection (429, 400, ...): counted, never retried, and no further paid request of ANY vendor in this attempt.
+const rejectedAttempts = new WeakMap<ScanSpendCtx, number>()
+export function spendAttemptRejected(): number | null { const c = store.getStore(); return c && rejectedAttempts.has(c) ? rejectedAttempts.get(c)! : null }
 export function spendAttemptUncertain(_jobId?: string, _attempt?: number): boolean { const c = store.getStore(); return !!c && uncertainAttempts.has(c) }
 export interface SpendHold {
   id: string
@@ -223,6 +226,8 @@ export interface SpendHold {
   settle(actualUsd: number | null): Promise<void>
   // The request may have been billed and its outcome is unknown: the row stays 'reserved' and this attempt makes no further paid request.
   uncertain(): void
+  // The vendor refused the request (documented rejection status); call after settle(). The attempt stops paying and the scan ends with its own status.
+  rejected(status: number): void
 }
 
 const reasonOf = (e: unknown): string => (e instanceof SpendRefused ? e.reason : 'cost_invalid').slice(0, 80)
@@ -236,6 +241,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   const ctx = store.getStore()
   if (!ctx) return null
   if (uncertainAttempts.has(ctx)) throw new SpendRefused('accounting_uncertain')
+  if (rejectedAttempts.has(ctx)) throw new SpendRefused('provider_rejected')
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()
@@ -285,6 +291,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   return {
     id, kind, usd,
     uncertain() { done = true; uncertainAttempts.add(ctx) },
+    rejected(status) { if (!rejectedAttempts.has(ctx)) rejectedAttempts.set(ctx, status) },
     async settle(actualUsd) {
       if (done) return
       done = true

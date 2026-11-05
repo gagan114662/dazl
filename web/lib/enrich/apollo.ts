@@ -35,7 +35,7 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
         signal: ctrl.signal,
       })
     } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
-    if (hold) { if (r.ok || [400, 401, 403, 404, 413, 429].includes(r.status)) await hold.settle(r.ok ? hold.usd : null); else hold.uncertain() } // a documented rejection is counted (kept) but never claimed uncharged; any other status: maybe billed
+    if (hold) { if (r.ok || [400, 401, 403, 404, 413, 429].includes(r.status)) { await hold.settle(r.ok ? hold.usd : null); if (!r.ok && r.status !== 404) hold.rejected(r.status) } else hold.uncertain() } // a documented rejection is counted (kept) but never claimed uncharged; any other status: maybe billed
     if (r.status === 429) throw new EnrichError('rate_limited', 'Apollo rate limit reached')
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'Apollo rejected the key')
     if (!r.ok) throw new EnrichError('upstream', `Apollo returned ${r.status}`)

@@ -30,7 +30,7 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
     } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
     // PDL bills per profile RETURNED: the reservation (the size asked for) moves to what came back. A 404 is PDL's "no
     // match", which it does not bill; any other failure, or a body that cannot be read, keeps the full reservation.
-    if (!r.ok) { if (r.status === 404 || [400, 401, 403, 413, 429].includes(r.status)) await hold?.settle(r.status === 404 ? 0 : null); else hold?.uncertain() } // 404 no match is not billed (existing rule); other documented rejections are counted (kept), never claimed uncharged; any other failure: maybe billed
+    if (!r.ok) { if (r.status === 404 || [400, 401, 403, 413, 429].includes(r.status)) { await hold?.settle(r.status === 404 ? 0 : null); if (r.status !== 404) hold?.rejected(r.status) } else hold?.uncertain() } // 404 no match is not billed: https://docs.peopledatalabs.com/support/troubleshooting/no-results-found (not for the Person Identify API, unused here); other documented rejections are counted (kept), never claimed uncharged; any other failure: maybe billed
     if (r.status === 429) throw new EnrichError('rate_limited', 'PDL rate limit reached')
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'PDL rejected the key')
     if (!r.ok) throw new EnrichError('upstream', `PDL returned ${r.status}`)
