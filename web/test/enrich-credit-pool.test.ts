@@ -260,3 +260,16 @@ test('commenter import: PDL reserves before the call and stops the batch at the 
   assert.equal(c2.pdl, 1, 'a failed search keeps its 5; the next would pass 7 and is never sent')
   assert.deepEqual(await use(failing.db, 'A', e, now), { [creditPeriod('pdl', 'day', now)]: [5, 0], [creditPeriod('pdl', 'month', now)]: [5, 0] })
 })
+
+bothEngines('C5: a limit lowered between the read and the reservation is honored (limit decided inside the same statement), a limit raised is honored too', async ({ db }) => {
+  await setCreditLimit(db, 'A', 'apollo', 'day', 10)
+  await reserveCredits(db, 'A', 'apollo', 3, { env: {}, now: T0 })
+  // lowered to 3 while a reservation of 1 is in flight: must refuse (3 + 1 > 3), never pass against the stale 10
+  await assert.rejects(reserveCredits(db, 'A', 'apollo', 1, { env: {}, now: T0, beforeReserve: () => setCreditLimit(db, 'A', 'apollo', 'day', 3) }), refused('credit_cap'))
+  assert.deepEqual(await use(db, 'A', {}), { 'cad:20261102': [3, 0], 'cam:202611': [3, 0] }, 'the refused reservation raised no window')
+  // raised to 10 while in flight: must pass against the new limit, not be refused against the stale 3
+  await reserveCredits(db, 'A', 'apollo', 1, { env: {}, now: T0, beforeReserve: () => setCreditLimit(db, 'A', 'apollo', 'day', 10) })
+  assert.deepEqual(await use(db, 'A', {}), { 'cad:20261102': [4, 0], 'cam:202611': [4, 0] })
+  // cleared while in flight with an operator fallback of 4: the operator limit binds (4 + 1 > 4)
+  await assert.rejects(reserveCredits(db, 'A', 'apollo', 1, { env: { DAZL_APOLLO_CREDITS_DAY: '4' }, now: T0, beforeReserve: () => setCreditLimit(db, 'A', 'apollo', 'day', null) }), refused('credit_cap'))
+})

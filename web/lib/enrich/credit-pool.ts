@@ -72,20 +72,25 @@ export const creditRefused = (e: unknown): e is CreditRefused => e instanceof Cr
 
 export interface CreditHold { tenantId: string; provider: CreditProvider; units: number; at: number; open: boolean }
 
-export async function reserveCredits(d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: { env?: Env; now?: number } = {}): Promise<CreditHold> {
+export async function reserveCredits(d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: { env?: Env; now?: number; /** test seam: runs after the limit decision inputs are read, before the reservation commits */ beforeReserve?: () => Promise<void> } = {}): Promise<CreditHold> {
   if (!(Number.isInteger(units) && units > 0)) throw new Error('credit reservation must be a positive whole number')
   const at = opts.now ?? Math.floor(Date.now() / 1000)
-  let L: CreditCaps
-  try { L = await creditLimits(d, tenantId, provider, opts.env) } catch { throw new CreditRefused('credit_reservation_not_saved') }
+  // The limit is decided INSIDE the reserving statement, never from an earlier read: a tenant limit row (set, lowered,
+  // raised or cleared by a concurrent save) is compared in the same UPDATE that raises the window, so a stale read
+  // cannot admit a reservation past a newer limit. Operator env is the fallback per window; neither = unenforced.
+  const op = operatorCreditLimits(provider, opts.env)
+  await opts.beforeReserve?.()
   try {
     await asDb(d).tx(function* (t: Tx): TxBody<void> {
-      for (const [w, limit] of [['day', L.day], ['month', L.month]] as const) {
+      for (const w of ['day', 'month'] as const) {
         const period = creditPeriod(provider, w, at)
         yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [tenantId, period, at])
+        const own = yield* t.get<{ reserved_usd: number }>('SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [tenantId, limitPeriod(provider, w)])
+        const limit = posInt(own?.reserved_usd) ?? op[w]
         // Unset limit: count the usage, enforce nothing. Set limit: raise only WHERE it still fits.
         const r = limit === null
           ? yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ?', [units, at, tenantId, period])
-          : yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ? AND reserved_usd + ? <= ?', [units, at, tenantId, period, units, limit])
+          : yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ? AND reserved_usd + ? <= COALESCE((SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?), ?)', [units, at, tenantId, period, units, tenantId, limitPeriod(provider, w), limit])
         // A window that does not fit rolls back every window already raised.
         if (r.changes !== 1) throw new CreditRefused('credit_cap', w)
       }
