@@ -34,7 +34,12 @@ export async function POST(req: NextRequest) {
   if (body?.action === 'record') {
     const input = parseConfigInput(body)
     if ('error' in input) return NextResponse.json({ error: input.error }, { status: 400 })
-    const secret = await recordConfig(db, user.tenantId, input, user.actorId)
+    let secret: string
+    try { secret = await recordConfig(db, user.tenantId, input, user.actorId) } catch {
+      // Fail closed: an existing config that cannot be decrypted/validated is never overwritten (it would reset the
+      // consent acceptance floor). The tenant can still `erase` and record fresh.
+      return NextResponse.json({ error: 'Your existing first-party configuration cannot be read safely, so it was left untouched. Use erase to clear it, then record again.' }, { status: 409 })
+    }
     await audit(user, req, { action: 'consent.accepted', resource: 'first_party', summary: { basis: input.basis, site_domain: input.site_domain, retention_days: input.retention_days } })
     return NextResponse.json({ ok: true, secret, ...(await configStatus(db, user.tenantId)) })
   }

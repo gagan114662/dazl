@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto'
 import { bothEngines, type EngineCtx } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
 import { ingest, recordConfig, eraseFirstParty, purgeFirstPartyRetention, signBody, readConfig, type FpConfigInput } from '../lib/signals/first-party.ts'
+import { encryptSecret } from '../lib/secrets.ts'
 
 process.env.DAZL_MASTER_KEY ??= randomBytes(32).toString('base64')
 const NOW = 1_793_000_000
@@ -215,18 +216,112 @@ bothEngines('(c2) a retention raise after purge does not reopen already-expired 
 // the smaller floor last.
 bothEngines('(e) concurrent and stale config writes keep the acceptance floor monotonic', async ({ db }) => {
   await recordConfig(db, 'A', CFG, 'actor-a', NOW) // 90d, no floor yet
-  const floorOf = async () => (await readConfig(db, 'A'))!.config.accept_floor ?? 0
+  const state = async () => (await readConfig(db, 'A'))!.config
+  const floorOf = async () => (await state()).accept_floor ?? 0
   const raise = recordConfig(db, 'A', { ...CFG, retention_days: 180 }, 'actor-a', NOW + 20_000)
   const lower = recordConfig(db, 'A', { ...CFG, retention_days: 30 }, 'actor-a', NOW + 10_000)
-  await Promise.all([raise, lower]) // started in this order: pre-fix the smaller floor (lower's) lands last
-  const want = NOW + 20_000 - 90 * d // the higher candidate, from the previous 90d window edge
-  assert.equal(await floorOf(), want, 'the smaller racing candidate must never overwrite the larger floor')
-  // stale execution: a re-record whose clock is behind moves nothing BACK - it can only keep or advance the floor
-  // (the floor never drops below any previously committed value, so non-resurrection boundaries never reopen)
+  await Promise.all([raise, lower])
+  // Serialization order is the engine's choice, so assert the VALID OUTCOME SET, not one order: each write computed
+  // its candidate from the previous committed config behind the lock, and the max won. Either `raise` serialized
+  // first (floor from the initial 90d window edge) or `lower` did (its smaller floor, then `raise` maxed over it).
+  const raiseFirst = NOW + 20_000 - 90 * d
+  const lowerFirst = NOW + 20_000 - 30 * d
+  const f0 = await floorOf()
+  assert.ok(f0 === raiseFirst || f0 === lowerFirst, `floor ${f0} must be one of the two serialized outcomes`)
+  // Invariant either way: the floor is never below any committed candidate, so no committed boundary ever reopens.
+  assert.ok(f0 >= raiseFirst, 'the floor never drops below any committed candidate')
+  // Stale execution: a re-record whose clock is behind can only keep or advance the floor. Exact expectation derived
+  // from the committed state (retention R, floor F): the new floor is max(F, now - R) - order-independent.
+  const s1 = await state()
   await recordConfig(db, 'A', { ...CFG, retention_days: 30 }, 'actor-a', NOW + 5_000)
-  const afterStale = Math.max(want, NOW + 5_000 - 30 * d)
-  assert.equal(await floorOf(), afterStale, 'a stale now never lowers the floor')
-  // and the floor still moves forward honestly when a later re-record's own window edge is ahead
+  const wantStale = Math.max(f0, NOW + 5_000 - s1.retention_days * d)
+  assert.equal(await floorOf(), wantStale, 'a stale now never lowers the floor')
+  // And the floor still moves forward honestly when a later re-record's own window edge is ahead.
+  const s2 = await state()
   await recordConfig(db, 'A', { ...CFG, retention_days: 60 }, 'actor-a', NOW + 40 * d)
-  assert.equal(await floorOf(), Math.max(afterStale, NOW + 40 * d - 30 * d)) // prev period is the stale write's 30d
+  assert.equal(await floorOf(), Math.max(wantStale, NOW + 40 * d - s2.retention_days * d))
+})
+
+// (g) Bounded retention truth when the encrypted config is unreadable: the plaintext first_party_config_meta row,
+// written atomically with every recordConfig, still bounds the purge - the tenant is NOT skipped (events and
+// tombstones would otherwise live until erase). No period anywhere -> skipped, never an inferred period.
+bothEngines('(g) an unreadable config still purges by the last recorded retention (meta sidecar); no sidecar means skip, never infer', async ({ db }) => {
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW) // 90d; meta row written in the same tx
+  await run(db, 'A', grant('g1', 'amy@acme.io', NOW - 50 * d)) // an event that outlives the period
+  await run(db, 'A', withdraw('w1', 'jane@acme.io', NOW - 50 * d + 60)) // a tombstone that outlives it too
+  assert.equal((await tombstones(db, 'A')).length, 1)
+  assert.equal((await db.all("SELECT 1 FROM lead_enrichments WHERE tenant_id = 'A' AND connector = 'first_party'")).length, 1)
+  const corrupt = async () => db.run("UPDATE tenant_connectors SET ciphertext = 'corrupt-not-decryptable' WHERE tenant_id = 'A' AND connector = 'first_party'")
+  await corrupt()
+  assert.equal(await readConfig(db, 'A'), null, 'config is unreadable')
+  const purged = await purgeFirstPartyRetention(db, { now: NOW + 91 * d })
+  assert.ok(purged > 0, 'the purge still ran, bounded by the last recorded 90d period')
+  assert.equal((await db.all("SELECT 1 FROM lead_enrichments WHERE tenant_id = 'A' AND connector = 'first_party'")).length, 0)
+  assert.equal((await tombstones(db, 'A')).length, 0, 'the tombstone aged out on the recorded schedule, not on erase')
+  // eraseFirstParty removes the sidecar with everything else
+  await eraseFirstParty(db, 'A')
+  assert.equal((await db.all("SELECT 1 FROM first_party_config_meta WHERE tenant_id = 'A'")).length, 0)
+  // No readable config AND no sidecar: the tenant is skipped (nothing is inferred) and its rows survive the tick.
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW)
+  await run(db, 'A', grant('g2', 'bob@acme.io', NOW - 50 * d))
+  await corrupt()
+  await db.run("DELETE FROM first_party_config_meta WHERE tenant_id = 'A'")
+  await purgeFirstPartyRetention(db, { now: NOW + 91 * d })
+  assert.equal((await db.all("SELECT 1 FROM lead_enrichments WHERE tenant_id = 'A' AND connector = 'first_party'")).length, 1, 'no period anywhere: skipped, rows retained')
+})
+
+// (h) Adversarial purge vs retention raise: the purge must never delete tombstones against a stale, shorter period
+// while a raise commits. Pre-fix the purge read the config OUTSIDE its transaction: its (stale) short period deletes
+// the withdrawal after the raise's floor, and a grant in the floor gap resurrects. Post-fix the config is read
+// inside the transaction behind the shared fp_config lock, so the purge either sees the raised period or waits.
+// On SQLite the interleave is deterministic: the purge's awaited reads yield, the raise commits first.
+bothEngines('(h) a purge racing a retention raise cannot resurrect through the floor gap', async ({ db }) => {
+  await recordConfig(db, 'A', { ...CFG, retention_days: 30 }, 'actor-a', NOW - 10 * d)
+  // Grant at G, withdrawal one second later. G sits INSIDE the raise's naive floor (raise_now - 30d) but the purge
+  // clock runs a day AHEAD of the raise: the purge's cutoff is now+1d-30d, past G and W. Pre-fix the purge reads the
+  // stale 30d config outside its transaction, deletes W after the raise committed, and the replayed G passes the
+  // floor -> resurrected. Post-fix the floor base is the latest purge clock (and the purge reads the config inside
+  // its locked transaction), so every interleaving rejects G: raise first (180d visible, W survives) or purge first
+  // (W legitimately expired, floor = purge_now - 30d > G).
+  const G = NOW - 30 * d + 3600
+  await run(db, 'A', grant('g1', 'jane@acme.io', G), withdraw('w1', 'jane@acme.io', G + 1))
+  assert.equal((await tombstones(db, 'A')).length, 1)
+  await Promise.all([
+    purgeFirstPartyRetention(db, { now: NOW + d }),
+    recordConfig(db, 'A', { ...CFG, retention_days: 180 }, 'actor-a', NOW),
+  ])
+  const raw = JSON.stringify({ events: [grant('g2', 'jane@acme.io', G)] })
+  const r = await ingest(db, 'A', raw, signBody('s', NOW + 2 * d, raw), NOW + 2 * d)
+  assert.notEqual(r.results[0].outcome, 'created', 'no interleaving may resurrect the withdrawn subject')
+  assert.equal(await leadCount(db, 'A'), 0)
+})
+
+// (f) Fail closed on an EXISTING but unreadable config: a corrupt ciphertext, an invalid stored floor, or the wrong
+// master key must NOT be treated as "no config" - otherwise a re-record would reset the acceptance floor to zero and
+// reopen expired windows. The row stays untouched and nothing is written. A genuinely absent config still records.
+// ctx() mirrors the module's encryption context for the tenant.
+const ctxOf = (tenant: string) => `connector:${tenant}:first_party` // mirrors ctx() in lib/signals/first-party.ts
+bothEngines('(f) recordConfig fails closed on an existing unreadable config; a genuinely absent config records', async ({ db, kind, raw }) => {
+  const master = Buffer.from(process.env.DAZL_MASTER_KEY!, 'base64')
+  const plant = async (ciphertext: string) => {
+    await db.run("INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES ('A', 'first_party', ?, 'xxxx', 1)", [ciphertext])
+    await assert.rejects(recordConfig(db, 'A', CFG, 'actor-a', NOW), /unreadable/)
+    const row = await db.get<{ ciphertext: string }>("SELECT ciphertext FROM tenant_connectors WHERE tenant_id = 'A' AND connector = 'first_party'")
+    assert.equal(row!.ciphertext, ciphertext, 'the unreadable row is never overwritten')
+    await db.run("DELETE FROM tenant_connectors WHERE tenant_id = 'A' AND connector = 'first_party'")
+  }
+  await plant('not-a-valid-ciphertext') // undecryptable
+  const badFloor = JSON.stringify({ v: 1, secret: 's', site_domain: 'seller.test', basis: 'consent', privacy_url: 'https://seller.test/privacy', retention_days: 90, recorded_at: NOW, recorded_by: 'u', policy: 'fp-v1', accept_floor: -5 })
+  await plant(encryptSecret(badFloor, ctxOf('A'), master)) // parses but the stored floor is invalid
+  // a genuinely absent config records with no floor
+  const secret = await recordConfig(db, 'A', CFG, 'actor-a', NOW)
+  assert.ok(secret.length > 0)
+  assert.equal((await readConfig(db, 'A'))!.config.accept_floor, undefined)
+  // wrong master on re-record: the existing config is unreadable -> fail closed, config and floor preserved
+  await recordConfig(db, 'A', { ...CFG, retention_days: 60 }, 'actor-a', NOW + 100)
+  const before = await readConfig(db, 'A')
+  await assert.rejects(recordConfig(db, 'A', { ...CFG, retention_days: 180 }, 'actor-a', NOW + 200, randomBytes(32)), /unreadable/)
+  const after = await readConfig(db, 'A')
+  assert.equal(after!.config.retention_days, before!.config.retention_days, 'config unchanged')
+  assert.equal(after!.config.accept_floor, before!.config.accept_floor, 'floor unchanged')
 })

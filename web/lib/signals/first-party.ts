@@ -95,6 +95,32 @@ const AUDIT_SQL = 'INSERT INTO connector_audit (id, tenant_id, connector, scan_j
 const auditRow = (tenantId: string, lookup: string, status: string, results: number, jobId: string | null = null) =>
   [randomBytes(12).toString('hex'), tenantId, FP_CONNECTOR, jobId, lookup.slice(0, 200), status, results]
 
+// Advisory lock keys (Postgres; SQLite transactions are synchronous so they are skipped there). Ordering rule
+// everywhere: fp_config first, then the sorted fp_withdraw person keys - no cycle is possible.
+const FP_CONFIG_LOCK = 'fp_config:'
+function* lockConfig(t: Tx, tenantId: string, exclusive: boolean): TxBody<void> {
+  if (t.kind !== 'pg') return
+  if (exclusive) yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended(? || ?, 0)) AS x", [FP_CONFIG_LOCK, tenantId])
+  else yield* t.get("SELECT pg_advisory_xact_lock_shared(hashtextextended(? || ?, 0)) AS x", [FP_CONFIG_LOCK, tenantId])
+}
+
+// The tenant's config read inside a transaction (fresh under concurrent re-records).
+function* readConfigTx(t: Tx, tenantId: string, master?: Buffer): TxBody<{ config: FpConfig; enabled: boolean } | null> {
+  const r = yield* t.get<{ ciphertext: string; enabled: number }>('SELECT ciphertext, enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
+  if (!r?.ciphertext) return null
+  try {
+    const c = JSON.parse(decryptSecret(r.ciphertext, ctx(tenantId), master)) as FpConfig
+    if (!validConfig(c)) return null
+    return { config: c, enabled: Number(r.enabled) === 1 }
+  } catch { return null }
+}
+
+function validConfig(c: FpConfig): boolean {
+  if (c?.v !== 1 || typeof c.secret !== 'string' || !isSiteDomain(c.site_domain) || !FP_BASES.includes(c.basis)) return false
+  if (c.accept_floor !== undefined && !(typeof c.accept_floor === 'number' && Number.isInteger(c.accept_floor) && c.accept_floor > 0)) return false
+  return true
+}
+
 // Records (or replaces) the tenant's config with a NEW signing secret, collection on. The secret is returned once.
 export async function recordConfig(db: Db, tenantId: string, input: FpConfigInput, actorId: string, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<string> {
   const secret = randomBytes(32).toString('base64url')
@@ -102,16 +128,29 @@ export async function recordConfig(db: Db, tenantId: string, input: FpConfigInpu
     // The previous config is read INSIDE the transaction, behind the per-tenant advisory lock on Postgres (SQLite
     // runs the whole tx synchronously): two racing re-records serialize, so the monotonic acceptance floor cannot be
     // overwritten by the smaller candidate, whatever the commit order or clock skew.
-    if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('fp_config:' || ?, 0)) AS x", [tenantId])
+    yield* lockConfig(t, tenantId, true)
     // Prospective acceptance: events already expired under the PREVIOUS recorded period stay expired (floor moves only forward).
     const prevRow = yield* t.get<{ ciphertext: string }>('SELECT ciphertext FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
     let prev: FpConfig | null = null
-    if (prevRow?.ciphertext) { try { const c = JSON.parse(decryptSecret(prevRow.ciphertext, ctx(tenantId), master)) as FpConfig; if (c?.v === 1) prev = c } catch { /* an unreadable config protects nothing */ } }
-    const floor = Math.max(prev?.accept_floor ?? 0, prev ? now - prev.retention_days * 86400 : 0)
+    if (prevRow?.ciphertext) {
+      // FAIL CLOSED: an existing row that cannot be decrypted and validated (corrupt, wrong key, invalid floor) is
+      // NOT "no config" - overwriting it would reset the acceptance floor and reopen expired windows. Refuse; the
+      // transaction writes nothing. Only a genuinely absent row records fresh.
+      try {
+        const c = JSON.parse(decryptSecret(prevRow.ciphertext, ctx(tenantId), master)) as FpConfig
+        if (!validConfig(c)) throw new Error('invalid')
+        prev = c
+      } catch { throw new Error('first-party config exists but is unreadable; refusing to overwrite (fail closed)') }
+    }
+    // Floor base is the LATEST retention clock: this re-record's own now and any purge tick that already enforced
+    // the previous period (a purge whose clock was ahead deleted tombstones/events up to its own cutoff).
+    const lastPurge = (yield* t.get<{ last_purge_at: number | null }>('SELECT last_purge_at FROM first_party_config_meta WHERE tenant_id = ?', [tenantId]))?.last_purge_at ?? 0
+    const floor = Math.max(prev?.accept_floor ?? 0, prev ? Math.max(now, lastPurge) - prev.retention_days * 86400 : 0)
     const cfg: FpConfig = { v: 1, secret, ...input, recorded_at: now, recorded_by: actorId.slice(0, 80), policy: FP_POLICY_VERSION, ...(floor > 0 ? { accept_floor: floor } : {}) }
     const blob = encryptSecret(JSON.stringify(cfg), ctx(tenantId), master)
     yield* t.run(`INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, ?, ?, 1)
       ON CONFLICT (tenant_id, connector) DO UPDATE SET ciphertext = excluded.ciphertext, last4 = excluded.last4, enabled = 1`, [tenantId, FP_CONNECTOR, blob, secret.slice(-4)])
+    yield* t.run('INSERT INTO first_party_config_meta (tenant_id, retention_days, recorded_at) VALUES (?, ?, ?) ON CONFLICT (tenant_id) DO UPDATE SET retention_days = excluded.retention_days, recorded_at = excluded.recorded_at', [tenantId, input.retention_days, now])
     yield* t.run(AUDIT_SQL, auditRow(tenantId, `config:${FP_POLICY_VERSION};basis=${input.basis};domain=${input.site_domain};retention=${input.retention_days}d;privacy=${input.privacy_url}`, 'recorded', 0))
     return secret
   })
@@ -122,8 +161,7 @@ export async function readConfig(db: Db, tenantId: string, master?: Buffer): Pro
   if (!r?.ciphertext) return null
   try {
     const c = JSON.parse(decryptSecret(r.ciphertext, ctx(tenantId), master)) as FpConfig
-    if (c?.v !== 1 || typeof c.secret !== 'string' || !isSiteDomain(c.site_domain) || !FP_BASES.includes(c.basis)) return null
-    if (c.accept_floor !== undefined && !(typeof c.accept_floor === 'number' && Number.isInteger(c.accept_floor) && c.accept_floor > 0)) return null
+    if (!validConfig(c)) return null
     return { config: c, enabled: Number(r.enabled) === 1 }
   } catch { return null } // unreadable config collects nothing
 }
@@ -131,6 +169,7 @@ export async function readConfig(db: Db, tenantId: string, master?: Buffer): Pro
 // Opt-out / opt back in. Turning collection off keeps stored events until their retention ends or the tenant erases them.
 export async function setCollection(db: Db, tenantId: string, on: boolean): Promise<boolean> {
   return db.tx(function* (t) {
+    yield* lockConfig(t, tenantId, true)
     const r = yield* t.run('UPDATE tenant_connectors SET enabled = ? WHERE tenant_id = ? AND connector = ? AND enabled <> ?', [on ? 1 : 0, tenantId, FP_CONNECTOR, on ? 1 : 0])
     if (r.changes === 1) yield* t.run(AUDIT_SQL, auditRow(tenantId, `collection:${on ? 'on' : 'off'}`, on ? 'enabled' : 'disabled', 0))
     return r.changes === 1
@@ -192,6 +231,15 @@ export const FP_WITHDRAWALS_DDL = `
     withdrawn_at INTEGER NOT NULL,
     recorded_at  INTEGER NOT NULL,
     PRIMARY KEY (tenant_id, person_key)
+  );
+  -- Plaintext retention metadata, written in the same transaction as every config record: when the encrypted config
+  -- cannot be read (corrupt, wrong key), the retention tick still has a BOUNDED period to enforce - the last recorded
+  -- one - instead of skipping the tenant and letting events and tombstones live until erase. No secret material here.
+  CREATE TABLE IF NOT EXISTS first_party_config_meta (
+    tenant_id      TEXT PRIMARY KEY,
+    retention_days INTEGER NOT NULL,
+    recorded_at    INTEGER NOT NULL,
+    last_purge_at  INTEGER
   );
 `
 export function migrateFirstParty(db: import('better-sqlite3').Database): void { db.exec(FP_WITHDRAWALS_DDL) }
@@ -282,8 +330,11 @@ function* eraseLeads(t: Tx, tenantId: string, where: string, params: (string | n
 }
 
 // Retention: events older than the tenant's recorded period are deleted, then first-party leads left without any event.
+// Every enforcement stamps the sidecar's last_purge_at: a later re-record bases its acceptance floor on the latest
+// purge clock, not only on its own, so a purge whose clock ran ahead of the re-record cannot leave a floor gap.
 function* purgeTx(t: Tx, tenantId: string, retentionDays: number, now: number): TxBody<number> {
   const cutoff = day(now - retentionDays * 86400)
+  yield* t.run('UPDATE first_party_config_meta SET last_purge_at = CASE WHEN last_purge_at IS NULL OR last_purge_at < ? THEN ? ELSE last_purge_at END WHERE tenant_id = ?', [now, now, tenantId])
   yield* t.run('DELETE FROM first_party_withdrawals WHERE tenant_id = ? AND withdrawn_at < ?', [tenantId, now - retentionDays * 86400])
   const gone = (yield* t.run('DELETE FROM lead_enrichments WHERE tenant_id = ? AND connector = ? AND kind = ? AND source_date < ?', [tenantId, FP_CONNECTOR, FP_EVENT_KIND, cutoff])).changes
   yield* eraseLeads(t, tenantId, 'AND NOT EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.connector = ? AND e.kind = ?)', [tenantId, FP_CONNECTOR, FP_EVENT_KIND])
@@ -295,21 +346,24 @@ export interface IngestResult { status: 'ok' | 'off' | 'not_configured' | 'bad_b
 // Ingest one verified request body for the tenant. The caller has already checked the signature with this config's secret.
 export async function ingest(db: Db, tenantId: string, rawBody: string, receipt: string, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<IngestResult> {
   const empty = (status: IngestResult['status']): IngestResult => ({ status, results: [], counts: {} })
-  const c = await readConfig(db, tenantId, master)
-  if (!c) return empty('not_configured')
-  if (!c.enabled) return empty('off')
   let body: { events?: unknown }
   try { body = JSON.parse(rawBody) } catch { return empty('bad_body') }
   if (!body || !Array.isArray(body.events) || body.events.length === 0 || body.events.length > MAX_EVENTS) return empty('bad_body')
-  const cfg = c.config
-  const classified = body.events.map(e => classifyEvent(e, cfg, tenantId, now))
+  const events: unknown[] = body.events
   const digest = sha(receipt).slice(0, 16)
-  // Per-event results start from the classification; the transaction refines created -> attached / duplicate.
-  const results = classified.map((k, index) => ({ index, outcome: k.outcome }))
   return db.tx(function* (t) {
-    // Re-check inside the transaction: an opt-out that landed after the read above wins.
-    const on = yield* t.get<{ enabled: number }>('SELECT enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
-    if (Number(on?.enabled) !== 1) return empty('off')
+    // The config is read INSIDE the transaction behind a shared config lock: a concurrent re-record (a new secret, a
+    // retention change, a new acceptance floor) either lands entirely before this ingest or waits for it - no batch
+    // is classified or purged against a config that is mid-replacement. Lock order: fp_config, then the sorted
+    // fp_withdraw person keys below.
+    yield* lockConfig(t, tenantId, false)
+    const c = yield* readConfigTx(t, tenantId, master)
+    if (!c) return empty('not_configured')
+    if (!c.enabled) return empty('off')
+    const cfg = c.config
+    const classified = events.map(e => classifyEvent(e, cfg, tenantId, now))
+    // Per-event results start from the classification; the transaction refines created -> attached / duplicate.
+    const results = classified.map((k, index) => ({ index, outcome: k.outcome }))
     yield* purgeTx(t, tenantId, cfg.retention_days, now)
     // Deadlock-free locking (Postgres): every key this batch will touch, acquired once up front in deterministic
     // sorted order - a withdrawal takes the exclusive lock, a grant the shared one, a key used by both takes the
@@ -376,13 +430,23 @@ export async function ingest(db: Db, tenantId: string, rawBody: string, receipt:
 }
 
 // Tick: retention for every tenant with a recorded config, collecting or not (opting out does not stop the clock).
+// The config is read inside the per-tenant transaction behind the shared config lock, so a concurrent re-record is
+// never raced with a stale (shorter) period. When the encrypted config cannot be read at all, the plaintext
+// first_party_config_meta row - written in the same transaction as every record - still bounds retention by the last
+// recorded period; only a tenant with NO readable period anywhere is skipped (nothing is inferred).
 export async function purgeFirstPartyRetention(db: Db, o: { now?: number; fence?: (t: Tx) => TxBody<void>; master?: Buffer } = {}): Promise<number> {
   const now = o.now ?? Math.floor(Date.now() / 1000)
   let purged = 0
   for (const r of await db.all<{ tenant_id: string }>('SELECT tenant_id FROM tenant_connectors WHERE connector = ? ORDER BY tenant_id', [FP_CONNECTOR])) {
-    const c = await readConfig(db, r.tenant_id, o.master)
-    if (!c) continue
-    purged += await db.tx(function* (t) { if (o.fence) yield* o.fence(t); return yield* purgeTx(t, r.tenant_id, c.config.retention_days, now) })
+    purged += await db.tx(function* (t) {
+      if (o.fence) yield* o.fence(t)
+      yield* lockConfig(t, r.tenant_id, false)
+      const c = yield* readConfigTx(t, r.tenant_id, o.master)
+      let days = c?.config.retention_days
+      if (days === undefined) days = (yield* t.get<{ retention_days: number }>('SELECT retention_days FROM first_party_config_meta WHERE tenant_id = ?', [r.tenant_id]))?.retention_days
+      if (days === undefined) return 0
+      return yield* purgeTx(t, r.tenant_id, days, now)
+    })
   }
   return purged
 }
@@ -390,8 +454,10 @@ export async function purgeFirstPartyRetention(db: Db, o: { now?: number; fence?
 // The tenant's erase: every first-party lead and event, and the config (secret included). Collection stays off until recorded again.
 export async function eraseFirstParty(db: Db, tenantId: string): Promise<number> {
   return db.tx(function* (t) {
+    yield* lockConfig(t, tenantId, true)
     const n = yield* eraseLeads(t, tenantId, '', [])
     yield* t.run('DELETE FROM first_party_withdrawals WHERE tenant_id = ?', [tenantId])
+    yield* t.run('DELETE FROM first_party_config_meta WHERE tenant_id = ?', [tenantId])
     yield* t.run('DELETE FROM lead_enrichments WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
     yield* t.run('DELETE FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
     yield* t.run(AUDIT_SQL, auditRow(tenantId, 'erase:all', 'erased', n))

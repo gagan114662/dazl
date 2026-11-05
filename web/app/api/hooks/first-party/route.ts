@@ -8,18 +8,46 @@ import { ingest, MAX_BODY, readConfig, verifyRequest } from '@/lib/signals/first
 // X-Dazl-Signature = HMAC-SHA256(secret, `${X-Dazl-Timestamp}.${body}`) with a timestamp inside the replay window
 // authenticates it. The secret belongs on the tenant's server, never in a browser page. Collection off (the tenant's
 // opt-out) stores nothing.
+// Read at most max+1 bytes of the request body; null when it is larger. The bound holds BEFORE the body is
+// materialized in memory - a declared or streamed oversize body is rejected without an unbounded read.
+async function readBodyBounded(req: NextRequest, max: number): Promise<string | null> {
+  const declared = Number(req.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > max) return null
+  if (!req.body) return ''
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > max) return null
+      chunks.push(value)
+    }
+  } finally {
+    if (total > max) await reader.cancel().catch(() => undefined)
+  }
+  const buf = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) { buf.set(c, off); off += c.byteLength }
+  return new TextDecoder().decode(buf)
+}
+
 export async function POST(req: NextRequest) {
   const tenantId = req.nextUrl.searchParams.get('u') ?? ''
   if (!/^[A-Za-z0-9_-]{1,80}$/.test(tenantId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (!(await rateLimit(`first-party:${tenantId}`, 120, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  const raw = await readBodyBounded(req, MAX_BODY)
+  if (raw === null) return NextResponse.json({ error: 'Too large' }, { status: 413 })
   const db = await getDb()
   const c = await readConfig(db, tenantId)
+  // Unknown tenant, no recorded config, and every authentication failure all answer the same 404: the endpoint does
+  // not reveal which tenant ids have a first-party config to anyone without a valid signature.
   if (!c) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  const raw = await req.text()
-  if (raw.length > MAX_BODY) return NextResponse.json({ error: 'Too large' }, { status: 413 })
   const sig = req.headers.get('x-dazl-signature')
   const check = verifyRequest(c.config.secret, req.headers.get('x-dazl-timestamp'), sig, raw)
-  if (check !== 'ok') return NextResponse.json({ error: check === 'stale' ? 'Stale timestamp' : 'Bad signature' }, { status: 401 })
+  if (check !== 'ok') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (!c.enabled) return NextResponse.json({ error: 'Collection is off for this workspace' }, { status: 403 })
   const r = await ingest(db, tenantId, raw, sig ?? '')
   if (r.status === 'off') return NextResponse.json({ error: 'Collection is off for this workspace' }, { status: 403 })

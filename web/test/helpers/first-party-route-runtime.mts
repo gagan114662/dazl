@@ -27,9 +27,15 @@ test('signed first-party hook: authenticates, honours opt-out, dedupes replays',
   const body = JSON.stringify({ events: [{ id: 'evt-1', type: 'demo_request', occurred_at: new Date().toISOString(), page_url: 'https://seller.test/demo', consent: 'granted', person: { email: 'pat@acme.io', name: 'Pat' } }] })
 
   assert.equal((await post('nobody', body, signed(secret, body))).status, 404)
-  assert.equal((await post('tenantA', body, signed('wrong-secret', body))).status, 401)
-  assert.equal((await post('tenantA', body, signed(secret, body, now() - 3600))).status, 401) // outside the replay window
-  assert.equal((await post('tenantA', body, {})).status, 401)
+  // Uniform 404 for every authentication failure: no config-existence oracle (#618 review).
+  assert.equal((await post('tenantA', body, signed('wrong-secret', body))).status, 404)
+  assert.equal((await post('tenantA', body, signed(secret, body, now() - 3600))).status, 404) // outside the replay window
+  assert.equal((await post('tenantA', body, {})).status, 404)
+  assert.equal(count(), 0)
+  // The body bound holds before materialization: over the cap is 413 whether the size is declared up front or not.
+  const big = '{"events":[{"pad":"' + 'x'.repeat(70_000) + '"}]}'
+  assert.equal((await post('tenantA', big, signed(secret, big))).status, 413)
+  assert.equal((await post('nobody', big, {})).status, 413) // unknown tenant gets the same 413: still no oracle
   assert.equal(count(), 0)
 
   await setCollection(db, 'tenantA', false)
