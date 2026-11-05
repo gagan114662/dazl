@@ -44,6 +44,13 @@ export const RETENTION_MAX_DAYS = 730
 export const FP_EVENT_TYPES = ['form_submission', 'demo_request', 'site_visit', 'product_event'] as const
 export type FpEventType = (typeof FP_EVENT_TYPES)[number]
 // The lawful basis a tenant can record today. Only opt-in consent: anything else (legitimate interest) is an owner decision.
+// Deployment gate (#390): first-party collection is available only when this process was explicitly started with
+// DAZL_FIRST_PARTY_ENABLED=1 - the exact literal; '0', 'true', '', ' 1' and unset are all OFF. Read per request,
+// never cached at import, so a test or a process manager change is seen immediately. OFF, the public hook answers
+// exactly like an unknown tenant and the settings route refuses record/enable; disable, erase, status and the
+// retention purge keep working regardless (privacy cleanup never depends on the gate).
+export const firstPartyAvailable = (): boolean => process.env.DAZL_FIRST_PARTY_ENABLED === '1'
+
 export const FP_BASES = ['consent'] as const
 export type FpBasis = (typeof FP_BASES)[number]
 // First-party ways an account can be known. A product sign-in, or the visitor identified themselves to the tenant earlier.
