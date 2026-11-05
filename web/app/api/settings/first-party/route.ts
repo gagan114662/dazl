@@ -5,7 +5,9 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
-import { configStatus, eraseFirstParty, parseConfigInput, recordConfig, setCollection } from '@/lib/signals/first-party'
+
+const FP_UNAVAILABLE = 'First-party collection is not available on this deployment.'
+import { configStatus, eraseFirstParty, firstPartyAvailable, parseConfigInput, recordConfig, setCollection } from '@/lib/signals/first-party'
 
 // #390: the tenant's first-party signal setup. GET: status (never the secret). POST actions:
 //   record  {site_domain, basis: 'consent', privacy_url, retention_days} - records the consent basis and turns collection on
@@ -17,6 +19,7 @@ export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   return NextResponse.json({
+    available: firstPartyAvailable(), // the deployment gate (#390): false when this process was not started with DAZL_FIRST_PARTY_ENABLED=1
     ...(await configStatus(await getDb(), user.tenantId)),
     endpoint: `${(process.env.PUBLIC_BASE_URL || req.nextUrl.origin).replace(/\/$/, '')}/api/hooks/first-party?u=${encodeURIComponent(user.tenantId)}`,
   })
@@ -32,6 +35,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null) as { action?: unknown } | null
   const db = await getDb()
   if (body?.action === 'record') {
+    // Deployment gate (#390): recording a config turns collection on, so it is refused while the process was not
+    // started with DAZL_FIRST_PARTY_ENABLED=1. No write, no audit row claiming consent. disable and erase stay
+    // available regardless: an owner can always stop and erase.
+    if (!firstPartyAvailable()) return NextResponse.json({ error: FP_UNAVAILABLE }, { status: 403 })
     const input = parseConfigInput(body)
     if ('error' in input) return NextResponse.json({ error: input.error }, { status: 400 })
     let secret: string
@@ -44,6 +51,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, secret, ...(await configStatus(db, user.tenantId)) })
   }
   if (body?.action === 'disable' || body?.action === 'enable') {
+    if (body.action === 'enable' && !firstPartyAvailable()) return NextResponse.json({ error: FP_UNAVAILABLE }, { status: 403 }) // the deployment gate (#390)
     const on = body.action === 'enable'
     const changed = await setCollection(db, user.tenantId, on)
     if (changed) await audit(user, req, { action: on ? 'connector.enabled' : 'connector.disabled', resource: 'first_party' })

@@ -202,3 +202,19 @@ test('[sqlite] a confirmed first-party lead with no contact is not draftable: on
     assert.equal(draftBlockReason(raw, 'B', ids[0]), 'not_found')
   } finally { await db.close() }
 })
+
+bothEngines('the deployment gate never weakens retention: the tick purge still deletes expired events with the flag OFF (#390)', async ({ db }) => {
+  // The OFF gate stops NEW record/enable/ingest; it must not stop privacy cleanup for an already-recorded config.
+  const prev = process.env.DAZL_FIRST_PARTY_ENABLED
+  delete process.env.DAZL_FIRST_PARTY_ENABLED
+  try {
+    const secret = await recordConfig(db, 'tenantA', { ...CFG, retention_days: 30 }, 'actor', NOW)
+    const r = await ingest(db, 'tenantA', body(form('old-1', 'old@acme.io')), signBody(secret, NOW, body(form('old-1', 'old@acme.io'))), NOW)
+    assert.equal(r.status, 'ok')
+    assert.equal((await fpEvents(db, 'tenantA')).length, 1)
+    const purged = await purgeFirstPartyRetention(db, { now: NOW + 31 * 86400 }) // past the recorded 30 days, flag OFF
+    assert.equal(purged, 1)
+    assert.equal((await fpEvents(db, 'tenantA')).length, 0)
+    assert.equal((await fpLeads(db, 'tenantA')).length, 0)
+  } finally { if (prev === undefined) delete process.env.DAZL_FIRST_PARTY_ENABLED; else process.env.DAZL_FIRST_PARTY_ENABLED = prev }
+})
