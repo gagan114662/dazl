@@ -95,9 +95,9 @@ async function call(db: DbLike, url: string, init: RequestInit, key: string, f: 
   try {
     const res = await f(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'X-API-Key': key }, redirect: 'error', signal: AbortSignal.timeout(TINYFISH_TIMEOUT_MS) })
     if (res.status === 401 || res.status === 403) { await block(db, now + 600); return { ok: false, reason: 'auth', status: res.status } }
-    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota', maybeBilled: true } }
+    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota', maybeBilled: true, status: res.status } }
     if (res.status === 429) { await block(db, now + 60); return { ok: false, reason: 'rate', status: 429 } }
-    if (!res.ok) return { ok: false, reason: 'unavailable', maybeBilled: true }
+    if (!res.ok) return { ok: false, reason: 'unavailable', maybeBilled: true, status: res.status }
     const text = await res.text()
     if (text.length > 3_000_000) return { ok: false, reason: 'unavailable', maybeBilled: true }
     return { ok: true, json: JSON.parse(text) }
@@ -129,7 +129,7 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
-  if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return { ok: false, reason: r.reason, status: r.status } }
+  if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
   if (!Array.isArray(arr)) { d.trace?.search({ query, attempted: true, outcome: 'unavailable', hits: null }); return { ok: false, reason: 'unavailable' } }
@@ -168,7 +168,7 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
-  if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return { ok: false, reason: r.reason, status: r.status } }
+  if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []
   for (const x of Array.isArray(arr) ? arr : []) {
@@ -241,7 +241,7 @@ export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], sp
     if (!r.ok) { first = first ?? r.reason; firstStatus = firstStatus ?? r.status; break }
     anyOk = true; pages.push(...r.pages)
   }
-  if (!anyOk) return { ok: false, reason: first ?? 'cap', status: firstStatus }
+  if (!anyOk) return firstStatus === undefined ? { ok: false, reason: first ?? 'cap' } : { ok: false, reason: first ?? 'cap', status: firstStatus }
   return { ok: true, pages }
 }
 
