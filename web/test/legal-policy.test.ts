@@ -259,7 +259,7 @@ test('prospect rows are tenant-scoped; the only global address-based processing 
   assert.match(read('app/api/outreach/sequences/route.ts'), /stop_reason/)
   assert.match(privacy, /tenant scoping/)
   assert.match(privacy, /stops that address's pending automated sequences, follow-ups and held first touches/)
-  assert.match(privacy, /converted signup, activation or payment/)
+  assert.match(privacy, /generic policy stop in their own sequence list; the conversion kind \(signup, activation or payment\) is never disclosed/)
   assert.match(privacy, /bound to the recipient address until claimed/)
 })
 
