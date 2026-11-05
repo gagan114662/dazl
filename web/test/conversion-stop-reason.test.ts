@@ -21,6 +21,10 @@ import { sequenceStatusByLead } from '../lib/outreach/sequences.ts'
 import { followupOverview } from '../lib/outreach/followups.ts'
 import { exportTenant } from '../lib/tenant/lifecycle.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { displayAuditDetail } from '../lib/outreach/lifecycle.ts'
+import { listMessages } from '../lib/outreach/service.ts'
+import { recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
+import { optInOnboarding, onboardingSendAllowed } from '../lib/outreach/onboarding-policy.ts'
 
 const KINDS: LifecycleKind[] = ['signup', 'activation', 'payment']
 const CONVERTED_TERMS = /converted_|signup|activation|payment/i
@@ -111,4 +115,71 @@ test('unrelated stop reasons pass through untouched; other tenants are unaffecte
   assert.equal(displayStopReason(null), null)
   assert.equal(displayStopReason('converted_payment'), POLICY_STOP)
   void a
+})
+
+test('legacy converted_* error on a held draft is mapped in the Outreach drafts list (listMessages)', () => {
+  const db = setup()
+  const p = pending(db, 'A', 'legacy2@prospect.example', 'lm')
+  db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'converted_activation' WHERE id = ?").run(p.mid)
+  const rows = listMessages(db, 'A')
+  const row = rows.find(r => r.id === p.mid)
+  assert.ok(row, 'the draft is listed')
+  assert.equal(row.error, POLICY_STOP, 'the drafts list must not render the conversion kind')
+  // the stored row is untouched: read-time mapping only, no rewrite
+  assert.equal((db.prepare('SELECT error FROM outreach_messages WHERE id = ?').get(p.mid) as { error: string }).error, 'converted_activation')
+})
+
+test('legacy converted_* detail in the autopilot activity feed (GET /api/outreach/autopilot audit) is mapped', () => {
+  const db = setup()
+  db.prepare("INSERT INTO autopilot_audit (id, tenant_id, action, detail, created_at) VALUES ('au1', 'A', 'sequence_stopped', 'converted_payment', 1700000000)").run()
+  db.prepare("INSERT INTO autopilot_audit (id, tenant_id, action, detail, created_at) VALUES ('au2', 'A', 'sequence_stopped', 'user_stopped', 1700000001)").run()
+  const feed = recentAutopilotAudit(db, 'A')
+  assert.equal(feed.find(r => r.id === 'au1')?.detail, POLICY_STOP)
+  assert.equal(feed.find(r => r.id === 'au2')?.detail, 'user_stopped', 'unrelated details pass through')
+  assert.equal((db.prepare("SELECT detail FROM autopilot_audit WHERE id = 'au1'").get() as { detail: string }).detail, 'converted_payment', 'the audit row itself is never rewritten')
+})
+
+for (const kind of KINDS) {
+  test(`export redacts the conversion kind from onboarding records and audit, honestly (${kind})`, async () => {
+    const db = setup()
+    db.exec("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT); INSERT OR IGNORE INTO users (id, email) VALUES ('A', 'owner@a.example')")
+    optInOnboarding(db, 'A', 'A')
+    // legacy/internal rows exactly as the writers store them
+    db.prepare('INSERT INTO onboarding_enrollments (tenant_id, email, source, enrolled_at) VALUES (?, ?, ?, ?)').run('A', 'lead@prospect.example', `conversion:${kind}`, 1700000000)
+    db.prepare("INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES ('oa1', 'A', 'enrolled', ?, 1700000000)").run(`conversion:${kind}`)
+    db.prepare("INSERT INTO autopilot_audit (id, tenant_id, action, detail, created_at) VALUES ('aa1', 'A', 'sequence_stopped', ?, 1700000000)").run(`converted_${kind}`)
+    const ex = await exportTenant(sqliteDb(db), 'A')
+    const enr = ex.tables.onboarding_enrollments?.[0] as { source: string }
+    const oa = ex.tables.onboarding_audit?.find(r => (r as { id: string }).id === 'oa1') as { detail: string }
+    const aa = ex.tables.autopilot_audit?.find(r => (r as { id: string }).id === 'aa1') as { detail: string }
+    assert.equal(enr.source, 'conversion', 'enrollment source generalized in the export')
+    assert.equal(oa.detail, 'conversion', 'onboarding audit detail generalized in the export')
+    assert.equal(aa.detail, POLICY_STOP, 'autopilot audit detail generalized in the export')
+    for (const col of ['onboarding_enrollments.source', 'onboarding_audit.detail', 'autopilot_audit.detail'])
+      assert.ok(ex.redacted_columns.includes(col), `export must disclose the redaction of ${col}, got ${JSON.stringify(ex.redacted_columns)}`)
+    // no rewrite: the stored rows still hold the internal kind
+    assert.equal((db.prepare('SELECT source FROM onboarding_enrollments WHERE tenant_id = ?').get('A') as { source: string }).source, `conversion:${kind}`)
+    assert.equal((db.prepare("SELECT detail FROM onboarding_audit WHERE id = 'oa1'").get() as { detail: string }).detail, `conversion:${kind}`)
+  })
+}
+
+test('the onboarding gate reads lifecycle_events, not any mapped tenant column', () => {
+  const db = setup()
+  pending(db, 'A', 'gate@prospect.example', 'gate')
+  optInOnboarding(db, 'A', 'A')
+  assert.equal(onboardingSendAllowed(db, 'A', 'gate@prospect.example'), false, 'no conversion, no onboarding sends')
+  recordLifecycleEvent(db, 'payment', 'gate@prospect.example', 'B')
+  assert.equal(onboardingSendAllowed(db, 'A', 'gate@prospect.example'), true, 'activated conversion + enrollment opens the gate')
+  assert.equal((db.prepare('SELECT kind FROM lifecycle_events WHERE email = ?').get('gate@prospect.example') as { kind: string }).kind, 'payment')
+})
+
+test('displayAuditDetail generalizes only conversion-bearing values', () => {
+  for (const kind of KINDS) {
+    assert.equal(displayAuditDetail(`converted_${kind}`), POLICY_STOP)
+    assert.equal(displayAuditDetail(`conversion:${kind}`), 'conversion')
+  }
+  assert.equal(displayAuditDetail('user_stopped'), 'user_stopped')
+  assert.equal(displayAuditDetail('policy v1'), 'policy v1')
+  assert.equal(displayAuditDetail('replied'), 'replied')
+  assert.equal(displayAuditDetail(null), null)
 })

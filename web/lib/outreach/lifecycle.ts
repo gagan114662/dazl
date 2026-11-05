@@ -31,21 +31,13 @@ import type { Db, Tx, TxBody } from '../db/client.ts'
 import { stopSequenceForThread } from './sequences.ts'
 import { tableExists } from './send-budget.ts'
 import { transitionToOnboarding, transitionToOnboardingTx } from './onboarding-policy.ts'
+import { POLICY_STOP, displayStopReason, displayAuditDetail } from './stop-reason.ts'
+export { POLICY_STOP, displayStopReason, displayAuditDetail }
 
 export type LifecycleKind = 'signup' | 'activation' | 'payment'
 
-// The generic tenant-visible reason when a conversion (signup/activation/payment) stops
-// pending acquisition work. The conversion kind is the seller's own business state - never
-// written where the contacting customer could read it (lead cards, follow-ups, inbox, export).
-// The kind itself lives server-side in lifecycle_events and the onboarding transition.
-export const POLICY_STOP = 'policy_stop'
-// Read-time mapping for legacy rows written before the generic reason shipped (converted_signup,
-// converted_activation, converted_payment). Call at every tenant-readable boundary; never persist
-// the result back (no protected-data rewrite).
-export function displayStopReason(reason: string | null | undefined): string | null {
-  if (reason && reason.startsWith('converted_')) return POLICY_STOP
-  return reason ?? null
-}
+// Tenant-facing stop/audit rendering lives in stop-reason.ts (standalone: autopilot.ts must not
+// import this module, it would cycle through sequences.ts). Re-exported here for existing callers.
 
 
 export function migrateLifecycle(db: Database.Database): void {
