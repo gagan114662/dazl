@@ -218,7 +218,8 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
     assert.deepEqual(calls.map(x => x.status), [want], `${c.name} / ${what}`)
   }
   // In-attempt stop (#363): once ANY vendor request of an attempt may have been billed, no later paid request of ANY vendor is sent in that attempt.
-  for (const first of cases) for (const [how, firstAnswer] of [['maybe-billed (timeout)', async () => { throw new TypeError('aborted') }], ['documented rejection (429)', async () => new Response('{}', { status: 429 })]] as const) {
+  for (const first of cases) for (const [how, firstAnswer] of [['maybe-billed (timeout)', async () => { throw new TypeError('aborted') }], ['documented rejection (429)', async () => new Response('{}', { status: 429 })], ['404 (no source shows a not-found is unbilled or harmless)', async () => new Response('{}', { status: 404 })]] as const) {
+    if (how.startsWith('404') && first.name === 'pdl') continue // PDL documents a 404 no-match as unbilled (https://docs.peopledatalabs.com/support/troubleshooting/no-results-found): it does not stop the scan
     const s = scan()
     let later = 0
     await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => {
