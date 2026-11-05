@@ -200,7 +200,7 @@ export async function enrichCommenters(db: Database.Database, tenantId: string, 
 // and is audited once; a refund or settle that cannot be saved keeps the full reservation (an over-count, never under).
 async function holdCredits(db: Database.Database, tenantId: string, provider: 'apollo' | 'pdl', units: number, jobId: string, env?: Record<string, string | undefined>): Promise<CreditHold | null> {
   try { return await reserveCredits(db, tenantId, provider, units, { env }) } catch (e) {
-    const why = e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap: workspace credit limit reached' : 'credit_unsaved: credit reservation could not be saved'
+    const why = e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap' : 'credit_unsaved'
     audit(db, { tenantId, connector: `enrich:${provider}`, jobId, lookup: 'workspace credits', status: why, results: 0 })
     return null
   }

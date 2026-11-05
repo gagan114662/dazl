@@ -13,6 +13,7 @@ import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES } from './provider-issu
 import type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus } from './provider-issue-text.ts'
 export type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus }
 import { getDb } from '../db/client.ts'
+import { creditUse } from '../enrich/credit-pool.ts'
 
 // null = the audit table could not be read (older DB without it, or any read failure): the scan
 // view renders an explicit "provider record not available, not an all-clear" notice for it (see
@@ -29,7 +30,18 @@ export async function providerIssues(tenantId: string, jobId: string): Promise<P
        GROUP BY connector, status ORDER BY latest DESC`,
       [tenantId, jobId, ...PROVIDER_FAILURE_STATUSES, ...ENRICH_SKIP_STATUSES],
     )
-    return rows.map(r => ({ connector: r.connector, status: r.status, lookups_affected: Number(r.n), latest_at: Number(r.latest) }))
+    const issues: ProviderIssue[] = rows.map(r => ({ connector: r.connector, status: r.status, lookups_affected: Number(r.n), latest_at: Number(r.latest) }))
+    // A credit_cap names the window that is full and the credits used against it, read now from the pool (best effort:
+    // the sentence still says the limit was reached without the numbers if the read fails).
+    for (const i of issues) {
+      if (i.status !== 'credit_cap') continue
+      try {
+        const prov = i.connector === 'enrich:pdl' ? 'pdl' : 'apollo'
+        const full = (await creditUse(db, tenantId)).filter(u => u.provider === prov && u.limit !== null && u.reserved >= u.limit)
+        const u = full[0]; if (u) i.credit = { window: u.window, used: u.reserved, limit: u.limit! }
+      } catch { /* numbers omitted */ }
+    }
+    return issues
   } catch {
     return null
   }

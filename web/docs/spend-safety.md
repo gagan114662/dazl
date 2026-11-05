@@ -22,7 +22,7 @@ says what that code does. It is not a pricing page and makes no billing claim.
 | Trial account total, global daily | `DAZL_TRIAL_ACCOUNT_TOTAL_USD`, `DAZL_TRIAL_GLOBAL_DAILY_USD` | trial admission | hard dollars, checked at admission |
 | TinyFish counts | `searchesPerScan`, per tenant per day, global per day, per minute (lib/search/tinyfish.ts) | every TinyFish search/fetch | **count caps, not dollars** (priced only for trial scans) |
 | Apollo / PDL counts | `MAX_LEADS = 5`, `MAX_CONTACTS = 5` per scan (lib/enrich/index.ts); 50 companies per commenter batch | BYOK enrichment, one pass | **count caps, not dollars** |
-| Workspace enrichment credits | `DAZL_APOLLO_CREDITS_DAY` / `_MONTH` (default 100 / 1000), `DAZL_PDL_CREDITS_DAY` / `_MONTH` (default 25 / 100), every tenant | every Apollo org lookup and PDL person search, any pass, job, retry, restart or instance | **credits (counts), not dollars**, shared store (`tenant_spend_pools`, periods `cad:`/`cam:`/`cpd:`/`cpm:`; lib/enrich/credit-pool.ts) |
+| Workspace enrichment credits | **no default limit**; per-workspace explicit limit (Settings > Enrichment, `tenant_spend_pools` periods `cla|clp` + `d|m`), else an operator-wide `DAZL_APOLLO_CREDITS_DAY` / `_MONTH`, `DAZL_PDL_CREDITS_DAY` / `_MONTH`, else unset = only the per-scan caps bind (usage still counted) | every Apollo org lookup and PDL person search, any pass, job, retry, restart or instance | **credits (counts), not dollars**, shared store (`tenant_spend_pools`, periods `cad:`/`cam:`/`cpd:`/`cpm:`; lib/enrich/credit-pool.ts) |
 
 With no owner limit set, `ownerGuarded` returns the provider unchanged: the owner paths are then bounded only by
 the vendor and the tenant's own key.

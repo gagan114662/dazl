@@ -10,9 +10,10 @@ const SLOTS = [
 ]
 
 export default function EnrichmentPanel() {
-  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean } | null>(null)
+  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean; credits?: { provider: 'apollo' | 'pdl'; window: 'day' | 'month'; reserved: number; charged: number; limit: number | null; source: 'tenant' | 'operator' | null }[] | null } | null>(null)
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState('')
+  const [limits, setLimits] = useState<Record<string, string>>({})
   async function load() { const r = await fetch('/api/settings/enrichment'); if (r.ok) setData(await r.json()) }
   useEffect(() => { void load() }, [])
   async function act(body: Record<string, unknown>) {
@@ -61,6 +62,24 @@ export default function EnrichmentPanel() {
             <span className="text-[#777] text-xs block">Off by default. Each fallback profile returned can use 1 PDL credit (up to 5 per scan - documented terms; the cost on your account is not verified).</span>
           </span>
         </label>
+      )}
+      {data.credits && (
+        <div className="mt-4 text-xs text-[#555]" data-testid="credit-limits">
+          <div className="font-medium text-sm mb-1">Credit limits (this workspace)</div>
+          <p className="mb-1">Optional. With no limit set, only the per-scan caps apply. When a limit is reached, paid lookups for that provider are skipped, and the scan says so.</p>
+          {data.credits.map(u => (
+            <div key={u.provider + u.window} className="flex gap-2 items-center mb-1">
+              <span className="w-40">{u.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} per {u.window}</span>
+              <span>{u.reserved} credits used{u.limit === null ? ', no limit set' : ` of ${u.limit}${u.source === 'operator' ? ' (set by the operator)' : ''}`}</span>
+              {u.source !== 'operator' && (
+                <>
+                  <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-1 w-20" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? ''} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
+                  <button className="underline" onClick={() => { const v = (limits[u.provider + u.window] ?? '').trim(); void act({ credit_limit: { provider: u.provider, window: u.window, limit: v === '' ? null : Number(v) } }) }}>Save</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
       )}
       {data.audit.length > 0 && (
         <div className="mt-4 text-xs text-[#555]">

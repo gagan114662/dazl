@@ -6,12 +6,14 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { bothEngines } from './helpers/engines.ts'
-import { creditLimits, creditPeriod, creditUse, reserveCredits, settleCredits, refundCredits, CreditRefused, DEFAULT_CREDIT_LIMITS } from '../lib/enrich/credit-pool.ts'
+import { creditLimits, setCreditLimit, operatorCreditLimits, creditPeriod, creditUse, reserveCredits, settleCredits, refundCredits, CreditRefused } from '../lib/enrich/credit-pool.ts'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, recentAudit, setEnrichFallback } from '../lib/connectors/store.ts'
 import { migrateCommenterImport, enrichCommenters } from '../lib/scan/commenter-import.ts'
 import { poolRows, periodOf, sharedPool } from '../lib/llm/spend-pool.ts'
+import { providerIssueText } from '../lib/scan/provider-issue-text.ts'
+import { PG_URL } from './helpers/pg-test.ts'
 import { runWithJobSpend } from '../lib/scan/spend-cap.ts'
 
 const T0 = Date.UTC(2026, 10, 2, 12) / 1000 // 2026-11-02 12:00 UTC
@@ -20,15 +22,45 @@ const env = (o: Record<string, string>) => o
 const use = async (db: Parameters<typeof creditUse>[0], t: string, e: Record<string, string> = {}, now = T0) =>
   Object.fromEntries((await creditUse(db, t, { env: e, now })).filter(u => u.reserved || u.charged).map(u => [u.period, [u.reserved, u.charged]]))
 
-test('limits: defaults, operator overrides, and anything that is not a positive whole number keeps the default', () => {
-  assert.deepEqual(creditLimits('apollo', {}), DEFAULT_CREDIT_LIMITS.apollo)
-  assert.deepEqual(creditLimits('pdl', {}), { day: 25, month: 100 })
-  assert.deepEqual(creditLimits('apollo', env({ DAZL_APOLLO_CREDITS_DAY: '3', DAZL_APOLLO_CREDITS_MONTH: '9' })), { day: 3, month: 9 })
-  for (const bad of ['0', '-1', '2.5', 'off', '', 'Infinity']) assert.deepEqual(creditLimits('pdl', env({ DAZL_PDL_CREDITS_DAY: bad })), { day: 25, month: 100 }, bad)
+test('operator limits: only a positive whole number counts; anything else is UNSET, never unlimited-by-typo and never a default', () => {
+  assert.deepEqual(operatorCreditLimits('apollo', {}), { day: null, month: null })
+  assert.deepEqual(operatorCreditLimits('pdl', {}), { day: null, month: null }) // no 100/month free-tier default
+  assert.deepEqual(operatorCreditLimits('apollo', env({ DAZL_APOLLO_CREDITS_DAY: '3', DAZL_APOLLO_CREDITS_MONTH: '9' })), { day: 3, month: 9 })
+  for (const bad of ['0', '-1', '2.5', 'off', '', 'Infinity']) assert.deepEqual(operatorCreditLimits('pdl', env({ DAZL_PDL_CREDITS_DAY: bad })), { day: null, month: null }, bad)
   assert.equal(creditPeriod('apollo', 'day', T0), 'cad:20261102')
   assert.equal(creditPeriod('pdl', 'month', T0), 'cpm:202611')
   // Never the owner LLM pool's periods (d:, m:, p:, l:).
   for (const p of [creditPeriod('apollo', 'day', T0), creditPeriod('pdl', 'month', T0)]) assert.ok(p.length <= 12 && !/^[dmpl]:/.test(p), p)
+})
+
+bothEngines('UNSET limit: a paid service is not tightened - 500 reservations pass, usage is still counted; a tenant limit then binds only that tenant', async ({ db }) => {
+  assert.deepEqual(await creditLimits(db, 'A', 'pdl', {}), { day: null, month: null, source: { day: null, month: null } })
+  for (let i = 0; i < 500; i++) await reserveCredits(db, 'A', 'pdl', 1, { env: {}, now: T0 })
+  assert.deepEqual(await use(db, 'A', {}), { 'cpd:20261102': [500, 0], 'cpm:202611': [500, 0] })
+  // The tenant sets its own limit (operator env says 800/day; the tenant's own value wins, per window).
+  const e = env({ DAZL_APOLLO_CREDITS_DAY: '800', DAZL_APOLLO_CREDITS_MONTH: '900' })
+  await setCreditLimit(db, 'A', 'apollo', 'day', 2)
+  assert.deepEqual(await creditLimits(db, 'A', 'apollo', e), { day: 2, month: 900, source: { day: 'tenant', month: 'operator' } })
+  await reserveCredits(db, 'A', 'apollo', 2, { env: e, now: T0 })
+  await assert.rejects(reserveCredits(db, 'A', 'apollo', 1, { env: e, now: T0 }), (x: unknown) => refused('credit_cap')(x) && (x as CreditRefused).window === 'day')
+  await reserveCredits(db, 'B', 'apollo', 50, { env: e, now: T0 }) // another tenant: untouched
+  // Cleared: back to unset (operator value for the month, none for the day).
+  await setCreditLimit(db, 'A', 'apollo', 'day', null)
+  await reserveCredits(db, 'A', 'apollo', 1, { env: {}, now: T0 })
+  for (const bad of [0, -1, 2.5, 1_000_001]) await assert.rejects(setCreditLimit(db, 'A', 'apollo', 'day', bad), /whole number/)
+})
+
+test('the refusal a user reads names the provider, window, credits used against the limit, and where to change it', () => {
+  const msg = providerIssueText({ connector: 'enrich:pdl', status: 'credit_cap', lookups_affected: 3, latest_at: 1, credit: { window: 'month', used: 100, limit: 100 } })
+  assert.match(msg, /People Data Labs enrichment was skipped/)
+  assert.match(msg, /monthly People Data Labs credit limit \(100 of 100 credits used this UTC month\)/)
+  assert.match(msg, /no paid lookup was made/)
+  assert.match(msg, /Settings > Enrichment/)
+  assert.match(providerIssueText({ connector: 'enrich:apollo', status: 'credit_unsaved', lookups_affected: 1, latest_at: 1 }), /Apollo enrichment was skipped.*could not be saved.*Nothing was charged/)
+})
+
+test('CI Postgres leg cannot silently skip the PG twins (DAZL_REQUIRE_PG=1 requires DAZL_TEST_PG_URL)', () => {
+  if (process.env.DAZL_REQUIRE_PG === '1') assert.ok(PG_URL, 'PG twins must run in this job')
 })
 
 bothEngines('a reservation fits in both windows or is refused whole; another tenant and the LLM pool are untouched', async ({ db }) => {

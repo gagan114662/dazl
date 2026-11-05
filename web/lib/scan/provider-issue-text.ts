@@ -8,7 +8,7 @@ export const PROVIDER_FAILURE_STATUSES = ['auth', 'rate_limited', 'upstream', 't
 export type ProviderFailureStatus = (typeof PROVIDER_FAILURE_STATUSES)[number]
 // Enrichment waterfall skips (#382): not provider failures, but lookups that did NOT happen for some leads of this
 // scan. Each is audited once per provider per pass (lib/enrich/index.ts), so these carry no per-lookup count.
-export const ENRICH_SKIP_STATUSES = ['budget_exhausted', 'circuit_open', 'uncertain', 'fallback_off'] as const
+export const ENRICH_SKIP_STATUSES = ['budget_exhausted', 'circuit_open', 'uncertain', 'fallback_off', 'credit_cap', 'credit_unsaved'] as const
 export type EnrichSkipStatus = (typeof ENRICH_SKIP_STATUSES)[number]
 
 export interface ProviderIssue {
@@ -16,6 +16,8 @@ export interface ProviderIssue {
   status: ProviderFailureStatus | EnrichSkipStatus
   lookups_affected: number
   latest_at: number
+  // credit_cap only, read from the credit pool when the issue is listed: which window, credits used against the limit.
+  credit?: { window: 'day' | 'month'; used: number; limit: number }
 }
 
 export function providerIssueText(issue: ProviderIssue): string {
@@ -31,6 +33,12 @@ export function providerIssueText(issue: ProviderIssue): string {
     case 'circuit_open': return `${who} was skipped for the remaining leads in this scan after repeated failures.`
     case 'uncertain': return `${who}: an earlier lookup for a lead in this scan may have been billed but its result was not recorded, so it is held and was not repeated.`
     case 'fallback_off': return `People Data Labs was not tried for leads Apollo could not enrich: a key is saved, but the Apollo-to-PDL fallback is off (Settings > Enrichment).`
+    case 'credit_cap': {
+      const c = issue.credit
+      const where = c ? `your workspace's ${c.window === 'day' ? 'daily' : 'monthly'} ${who} credit limit (${c.used} of ${c.limit} credits used this UTC ${c.window})` : `your workspace's ${who} credit limit`
+      return `${who} enrichment was skipped for the remaining leads in this scan: ${where} was reached, so no paid lookup was made. Raise or clear the limit in Settings > Enrichment.`
+    }
+    case 'credit_unsaved': return `${who} enrichment was skipped for the remaining leads in this scan: the workspace credit reservation could not be saved, so no paid lookup was made (it fails closed). Nothing was charged; run the scan again, and contact support if it repeats.`
     default: return `${who} could not be used in this scan (${affected}).`
   }
 }
