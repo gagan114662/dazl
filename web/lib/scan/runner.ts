@@ -1325,7 +1325,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
             } catch { /* memory table may predate this deploy: hold everything, the post-verify gate still applies */ }
             if (gated.length === 0) stop('empty') // the round's candidates were all gated out before any fetch
             else {
-              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, diag2.held && evidenceCopyRoom(db, job.user_id) >= diag2.held.size ? { text: diag2.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+              // D3: a round-two lead may cite a page only round one fetched (or vice versa for a later re-check);
+              // both were read within this one attempt, so the verifier gets the union, not round two's pages alone.
+              const held = HeldText.merge(diag.held, diag2.held)
+              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
               const seenKeys = new Set(outcome.leads.map(dedupKey))
               for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
               const seenReview = new Set(outcome.review.map(dedupKey))
