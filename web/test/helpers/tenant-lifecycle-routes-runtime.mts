@@ -52,6 +52,7 @@ test('tenant lifecycle routes: request flow, gates, and isolation', async () => 
   assert.equal(gj.tenant, A); assert.ok(gj.tables.leads > 0, 'A has leads'); assert.equal(gj.deletion, null)
   assert.ok(gj.always_retained.includes('audit_events'))
   assert.equal(gj.can_delete, true, 'the owner is offered account deletion')
+  assert.equal(gj.deletion_available, false, 'the panel learns deletion is unavailable while no ledger is configured')
 
   // export: fresh auth required, then the full export downloads and is audited
   setUser({ id: A, business_name: 'Acme', authedAt: Math.floor(Date.now() / 1000) - 7200 })
@@ -80,6 +81,7 @@ test('tenant lifecycle routes: request flow, gates, and isolation', async () => 
   assert.equal(await tombstone(sqliteDb(db), A), undefined, 'no tombstone without the ledger')
   assert.ok(gj.tables.leads === (await (await lifecycle.GET()).json()).tables.leads, 'nothing of A was touched')
   process.env.DAZL_TOMBSTONE_LEDGER = LEDGER
+  assert.equal((await (await lifecycle.GET()).json()).deletion_available, true, 'the panel learns deletion is available once the ledger is configured')
   const backup = db.serialize() // a backup taken before the deletion
   const del = await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A, suppressions: 'retain' }))
   const dj = await del.json()

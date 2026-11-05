@@ -17,7 +17,8 @@ export async function fetchReddit({ query, session }) {
 
 export function parseRedditListing(data) {
   const children = data?.data?.children
-  if (!Array.isArray(children)) return []
+  // #436: a malformed listing envelope is a schema failure; only children: [] is a genuine empty search.
+  if (!Array.isArray(children)) throw new Error('reddit schema: listing envelope missing children array')
   const out = []
   for (const c of children) {
     const d = c?.data

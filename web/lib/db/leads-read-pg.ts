@@ -14,6 +14,7 @@ import type { LeadPriority } from '../events/prioritize.ts'
 import { tokens, MIN_COHORT } from '../scan/lookalike.ts'
 import type { LookalikeSignal } from '../scan/lookalike.ts'
 import { sameAccount, type FeedbackRow } from '../scan/feedback.ts'
+import { displayStopReason } from '../outreach/lifecycle.ts'
 
 type CohortRow = { id: string; signal: string; industry: string | null; location: string | null }
 
@@ -116,7 +117,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
           const gaps = testList.includes(norm(r.to_email)) ? TEST_GAPS_S : GAPS_S
           nextDue = step1Sent + gaps[stepsSent]
         }
-        out.set(r.lead_id, { status: r.status, step: stepsSent, next_due_at: nextDue, stop_reason: r.stop_reason })
+        out.set(r.lead_id, { status: r.status, step: stepsSent, next_due_at: nextDue, stop_reason: displayStopReason(r.stop_reason) })
       }
       return out as never
     },

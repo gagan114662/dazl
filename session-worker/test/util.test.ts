@@ -25,6 +25,6 @@ test('fetchers: a throttled or rejected platform call rejects instead of returni
   assert.equal(await kind(FETCHERS.bilibili('q', 'SESSDATA=1', {})), 'auth_failed')
   assert.equal(await kind(FETCHERS.x('q', 'no-cookies', {})), 'auth_failed')
   assert.equal(await kind(FETCHERS.linkedin('q', 'no-cookies', {})), 'auth_failed')
-  stub(200, '{"data":{"children":[]}}')
+  stub(200, '{"kind":"Listing","data":{"children":[]}}')
   assert.deepEqual(await FETCHERS.reddit('q', 'cookie=1', {}), [], 'a genuine empty search still resolves []')
 })

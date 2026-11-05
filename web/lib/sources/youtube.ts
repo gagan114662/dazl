@@ -29,19 +29,23 @@ export function toEvidence(videos: Video[]): Evidence[] {
   return out.slice(0, 10)
 }
 
-async function viaDataApi(q: string, key: string, http: Parameters<SourceAdapter['collect']>[0]['http']): Promise<Evidence[]> {
+async function viaDataApi(q: string, key: string, http: Parameters<SourceAdapter['collect']>[0]['http'], note?: (code: string) => void): Promise<Evidence[]> {
   const r = await http(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&order=date&maxResults=15&q=${encodeURIComponent(q)}&key=${encodeURIComponent(key)}`, { accept: 'application/json' })
-  if (!r || r.status !== 200) return []
+  if (!r) { note?.('unreachable'); return [] }
+  if (r.status !== 200) { note?.('http_error'); return [] }
+  if (r.truncated) { note?.('oversize'); return [] } // never parse a prefix
   try {
     const json = JSON.parse(r.body) as { items?: { id?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string } }[] }
     return toEvidence((json.items ?? []).map(it => ({ id: it.id?.videoId ?? '', title: it.snippet?.title ?? '', published: (it.snippet?.publishedAt ?? '').slice(0, 10) || null })))
-  } catch { return [] }
+  } catch { note?.('unparseable'); return [] }
 }
 
-async function viaPiped(q: string, http: Parameters<SourceAdapter['collect']>[0]['http']): Promise<Evidence[]> {
+async function viaPiped(q: string, http: Parameters<SourceAdapter['collect']>[0]['http'], note?: (code: string) => void): Promise<Evidence[]> {
   for (const inst of PIPED) {
     const r = await http(`https://${inst}/search?q=${encodeURIComponent(q)}&filter=videos`, { accept: 'application/json' })
-    if (!r || r.status !== 200) continue
+    if (!r) { note?.('unreachable'); continue }
+    if (r.status !== 200) { note?.('http_error'); continue }
+    if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
     try {
       const json = JSON.parse(r.body) as { items?: { type?: string; url?: string; title?: string; uploaded?: number; uploadDate?: string }[] }
       const items = toEvidence((json.items ?? []).filter(it => (it.type ?? 'stream') === 'stream').map(it => {
@@ -50,7 +54,7 @@ async function viaPiped(q: string, http: Parameters<SourceAdapter['collect']>[0]
         return { id, title: it.title ?? '', published: uploaded ?? (it.uploadDate ?? null) }
       }))
       if (items.length > 0) return items
-    } catch { /* try the next instance */ }
+    } catch { note?.('unparseable') /* try the next instance */ }
   }
   return []
 }
@@ -58,18 +62,22 @@ async function viaPiped(q: string, http: Parameters<SourceAdapter['collect']>[0]
 export const youtubeAdapter: SourceAdapter = {
   id: 'youtube',
   label: 'YouTube (public videos)',
-  async collect({ keywords, http }) {
+  async collect({ keywords, http, note }) {
     if (keywords.length === 0) return []
     const q = keywords.slice(0, 4).join(' ')
     const hit = cache.get(q)
     if (hit && Date.now() - hit.at < 15 * 60 * 1000) return hit.items
     const now = Date.now()
     while (calls.length && now - calls[0] > WINDOW_MS) calls.shift()
-    if (calls.length >= MAX_CALLS) return []
+    if (calls.length >= MAX_CALLS) { note?.('budget'); return [] }
     calls.push(now)
+    // A fetch during which any failure was noted is never cached: a cache hit replays the items with no note,
+    // so a repeat call inside the window would read a cached failure as a healthy empty/ok - a false zero.
+    let noted = false
+    const noting = (code: string) => { noted = true; note?.(code) }
     const key = process.env.YOUTUBE_API_KEY ?? ''
-    const items = key ? await viaDataApi(q, key, http) : await viaPiped(q, http)
-    cache.set(q, { at: now, items })
+    const items = key ? await viaDataApi(q, key, http, noting) : await viaPiped(q, http, noting)
+    if (!noted) cache.set(q, { at: now, items })
     return items
   },
 }

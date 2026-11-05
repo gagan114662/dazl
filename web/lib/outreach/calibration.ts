@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, gmailSend, gmailStatus, confirmedSendResult } from '../gmail/oauth.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { approveBlockReason, createDraft, getSettings, OutreachError, type Deps } from './service.ts'
+import { approveBlockReason, createDraft, getSettings, OutreachError, testRecipientApproved, type Deps } from './service.ts'
 import { getState, liftLaunchPause, MIN_CONFIDENCE } from './autopilot.ts'
 import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, REQUIRED_STOPS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
 import { PUBLISHED_RECIPIENT_CANDIDATE_SQL, publishedContact, draftEvidenceUrls } from './published-email.ts'
@@ -102,13 +102,24 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
     samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }))))
   }
 
-  // integration check: only when the connected mailbox is the policy's sender, and only to the owned test inbox
+  // integration check: only when the connected mailbox is the policy's sender, and only to the owned test inbox.
+  // The env-designated test tenant's check is a send like any other: it may address only the approved test inbox
+  // (testRecipientApproved), whatever mailbox is connected; anything else holds the launch, fail closed.
+  const integrationRecipientOk = !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
+    ? testRecipientApproved(db, tenantId, policy.testInbox)
+    : true
   let testInboxDelivered = false
   const settings = getSettings(db, tenantId) as { sender_name?: string } | undefined
-  if (connected && connected === policy.sender && settings) {
+  if (connected && connected === policy.sender && settings && integrationRecipientOk) {
     const messageId = `dazl.launchcheck.${now}.${randomBytes(6).toString('hex')}@${connected.split('@')[1]}`
     try {
       const token = await getAccessToken(db, tenantId, d)
+      // Re-proved after the token await (TOCTOU, same class as every other send path): an allowlist
+      // narrowed while the check waited on the token stops it here, before anything reaches Gmail.
+      if (process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId && !testRecipientApproved(db, tenantId, policy.testInbox)) {
+        testInboxDelivered = false
+        return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
+      }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name ?? businessName, fromEmail: connected, to: policy.testInbox,
         subject: 'dazl launch check', body: 'This message checks that autopilot can send from this mailbox. No action needed.',

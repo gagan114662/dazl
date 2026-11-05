@@ -48,5 +48,12 @@ test('x adaptive.json payload parses to the same worker item contract', () => {
   assert.equal(items.length, 1)
   assert.equal(items[0].url, 'https://x.com/acme/status/999')
   assert.equal(items[0].date, '2026-10-20')
-  assert.deepEqual(parseAdaptiveTweets({}), [])
+  // #436: a malformed adaptive.json envelope is a schema failure, not a zero-result search
+  assert.throws(() => parseAdaptiveTweets({}), /x schema/)
+})
+
+test('a malformed reddit listing envelope is a schema failure, not a zero-result search', () => {
+  assert.throws(() => parseRedditListing({}), /reddit schema/)
+  assert.throws(() => parseRedditListing({ data: {} }), /reddit schema/)
+  assert.deepEqual(parseRedditListing({ data: { children: [] } }), [], 'a genuine empty search stays an empty list')
 })
