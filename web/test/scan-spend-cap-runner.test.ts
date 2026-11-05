@@ -158,6 +158,14 @@ test('runner settle: a settle that cannot be saved withholds the result, makes n
   assert.ok((await monthRow(x)).reserved_usd > 0.005, 'the worst-case reservation stays counted')
 })
 
+test('runner settle: a LATER stage whose own handler swallows model errors still ends the job as accounting_failed (flag wrapper, not the stage, decides)', async () => {
+  // The first call settles; every later settle fails. Whatever stage makes the second call, the job must not finish as done.
+  const x = await run(OWNER, true, { setup: db => db.exec("CREATE TRIGGER fail_later_settle BEFORE UPDATE ON tenant_spend_pools WHEN NEW.reported_usd <> OLD.reported_usd AND OLD.reported_usd > 0 BEGIN SELECT RAISE(ABORT, 'simulated store failure'); END") })
+  assert.ok(modelCalls(x) >= 2, `control: a second paid call was made (${modelCalls(x)}), so the failing settle was reached`)
+  assert.equal(x.row.status, 'failed'); assert.equal(x.row.error, 'accounting_failed')
+  assert.equal(x.db.prepare('SELECT count(*) AS n FROM leads').get().n, 0, 'no leads saved from a run whose cost was not recorded')
+})
+
 // Pricing coverage (review of 97988fd5): the default Anthropic model is priced; anything else the runner could be
 // configured with is NOT assumed priced - it is refused at reservation (visible stop), never settled as free.
 test('pricing table: configured defaults and overrides', async () => {
@@ -191,6 +199,18 @@ test('runner settle: a crash after the vendor answered leaves its reservation co
   const m = await monthRow(x), d = await rowOf(x, 'd:')
   const own = modelCalls(x) * ((400 * 3 + 60 * 15) / 1e6)
   assert.ok(Math.abs(m.reserved_usd - (0.5 + own)) < 1e-6 && Math.abs(d.reserved_usd - (0.5 + own)) < 1e-6, `earlier unsettled 0.5 kept + this run's ${own}`)
+})
+
+// Boundary (#363 reviewer): attempt 1 crashed after its vendor answer, so its worst-case reservation stays counted. Attempt 2 over the
+// same scan must be refused when cap - reserved is below its next worst case (0.00894 per model call), and allowed when it is not.
+const seedReserved = (usd: number) => (db: Database.Database) => db.exec(`INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES ('A', 'd:' || strftime('%Y-%m-%d','now'), ${usd}, 0, 1, strftime('%s','now')), ('A', 'm:' || strftime('%Y-%m','now'), ${usd}, 0, 1, strftime('%s','now'))`)
+test('runner boundary: attempt 2 is refused when cap minus the unsettled earlier reservation is below its next worst case', async () => {
+  const room = await run({ ...OWNER, DAZL_RUN_MAX_USD_USERS: 'A:5' }, true, { setup: seedReserved(4.98) }) // 0.02 left > 0.00894: control, must run
+  assert.ok(modelCalls(room) >= 1, 'control: with room for one call the model call is made (the refusal below is not vacuous)')
+  const tight = await run(OWNER, true, { setup: seedReserved(4.995) }) // 0.005 left < 0.00894
+  assert.equal(modelCalls(tight), 0, 'no model request when the remaining room is below the worst case')
+  assert.equal(tight.row.error, 'budget_stopped')
+  assert.ok((await rowOf(tight, 'd:')).reserved_usd <= 5, 'the window never exceeds its limit')
 })
 
 test('settleAll: a second settle and a retry with different amounts are refused (idempotent)', async () => {
