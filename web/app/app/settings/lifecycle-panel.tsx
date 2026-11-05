@@ -1,9 +1,9 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { DeleteControls, type LifecycleStatus } from './lifecycle-delete-controls'
 
-type Deletion = { state: string; requested_at: number; requested_by: string; policy: { suppressions: 'retain' | 'erase' }; retained: Record<string, number> | null; completed_at: number | null }
-type Status = { tenant: string; tables: Record<string, number>; always_retained: string[]; deletion: Deletion | null }
+type Status = LifecycleStatus
 
 // Your data: what the account holds, a full export, and deleting the account. Deleting asks for the workspace id
 // as confirmation and a decision on the opt-out list; the record of what was kept (retention exceptions) stays
@@ -69,27 +69,7 @@ export default function LifecyclePanel() {
           const blob = await r.blob(); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'dazl-export.json'; a.click(); URL.revokeObjectURL(a.href)
         }) }}>Download my data</button>
       </div>
-      {s.deletion ? (
-        <div className="mt-4 text-sm">
-          <p>Deletion requested {new Date(s.deletion.requested_at * 1000).toLocaleString()} - {s.deletion.state === 'completed' ? 'completed' : `at "${s.deletion.state}"`}.</p>
-          {s.deletion.retained && <p className="text-xs text-[#777] mt-1">Kept after deletion: {Object.entries(s.deletion.retained).map(([t, n]) => `${t} (${n})`).join(', ')}. The opt-out list was {s.deletion.policy.suppressions === 'retain' ? 'kept, and stays suppressed if this workspace id is ever restored' : 'erased with everything else'}.</p>}
-          {s.deletion.state !== 'completed' && <button className="btn-primary mt-2" onClick={() => void del()}>Resume deletion</button>}
-        </div>
-      ) : (
-        <div className="mt-4 text-sm border-t border-[#e5e2dc] pt-3">
-          <p className="font-medium">Delete this account</p>
-          <p className="text-xs text-[#777] mt-1">This deletes the records this workspace holds. Kept after deletion: the append-only audit records {s.always_retained.join(', ')} - plus the opt-out list if you choose to keep it below. This cannot be undone.</p>
-          <p className="text-xs text-[#777] mt-1">Workspace id: <code>{s.tenant}</code></p>
-          <div className="flex flex-wrap items-center gap-2 mt-2">
-            <label className="text-xs"><input type="radio" name="sup" checked={sup === 'retain'} onChange={() => setSup('retain')} /> Keep the opt-out list (stays suppressed if this workspace id is ever restored)</label>
-            <label className="text-xs"><input type="radio" name="sup" checked={sup === 'erase'} onChange={() => setSup('erase')} /> Erase the opt-out list too</label>
-          </div>
-          <div className="flex flex-col sm:flex-row gap-2 mt-2">
-            <input className="field flex-1 min-w-0 w-full" placeholder="Type the workspace id to confirm" value={confirm} onChange={e => setConfirm(e.target.value)} />
-            <button className="btn-primary" disabled={!confirm.trim()} onClick={() => void del()}>Delete this account</button>
-          </div>
-        </div>
-      )}
+      <DeleteControls s={s} sup={sup} setSup={setSup} confirm={confirm} setConfirm={setConfirm} onDelete={() => void del()} />
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
     </div>
   )
