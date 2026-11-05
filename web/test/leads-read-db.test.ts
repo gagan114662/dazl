@@ -132,3 +132,34 @@ test('pg-mem implementation matches sqlite adapter on identical synthetic rows',
   const lookInput = leadsL.map(l => ({ id: l.id, signal: l.signal, industry: 'software', location: 'Toronto' }))
   assert.deepEqual(await pg.lookalikeSignals(T, lookInput), await lite.lookalikeSignals(T, lookInput))
 })
+
+// #594 reaper (pg-mem emulation of the Postgres adapter): a stale running job whose current attempt holds a reserved (sent, unsettled)
+// paid call ends accounting_uncertain and is never re-queued, even when the reservation lands BETWEEN the reaper's two statements.
+test('pg reaper: stale running job with a reserved call is finalized uncertain, never re-queued (incl. reservation between statements)', async () => {
+  const { newDb, DataType } = await import('pg-mem')
+  const { readFileSync } = await import('node:fs')
+  const mem = newDb()
+  mem.public.registerFunction({ name: 'char_length', args: [DataType.text], returns: DataType.integer, implementation: (x: string) => x.length, impure: false })
+  mem.public.registerFunction({ name: 'btrim', args: [DataType.text], returns: DataType.text, implementation: (x: string) => x.trim(), impure: false })
+  mem.public.registerFunction({ name: 'floor', args: [DataType.float], returns: DataType.float, implementation: (x: number) => Math.floor(x), impure: false })
+  mem.public.none(readFileSync(new URL('../scripts/pg-migrate/schema.sql', import.meta.url), 'utf8'))
+  const { Pool } = mem.adapters.createPg()
+  const pool = new Pool()
+  const old = Math.floor(Date.now() / 1000) - 100000
+  const job = async (id: string) => pool.query("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, attempts, claimed_at) VALUES ($1, 'u1', 'running', 'B', 'i', 'l', $2, 1, $2)", [id, old])
+  const reserve = (id: string) => pool.query("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ($1, 'u1', $2, 1, 'search', 0.05, 'reserved', $3)", ['c-' + id, id, old])
+  await job('jA'); await reserve('jA')       // reserved before the reaper runs
+  await job('jB')                             // no reserved call: ordinary requeue
+  await job('jC')                             // gets its reservation between the two statements
+  let injected = false
+  const wrapped = { query: async (t: string, p?: unknown[]) => { const r = await pool.query(t, p as never); if (!injected && t.includes("'accounting_uncertain'")) { injected = true; await reserve('jC') } return r } }
+  const { pgLeadsRead } = await import('../lib/db/leads-read-pg.ts')
+  const pg = pgLeadsRead(wrapped as never)
+  const st = async (id: string) => (await pool.query('SELECT status, error FROM scan_jobs WHERE id = $1', [id])).rows[0] as { status: string; error: string | null }
+  await pg.getJob('u1', 'jA'); await pg.getJob('u1', 'jB'); await pg.getJob('u1', 'jC')
+  assert.deepEqual(await st('jA'), { status: 'failed', error: 'accounting_uncertain' })
+  assert.equal((await st('jB')).status, 'pending')
+  assert.notEqual((await st('jC')).status, 'pending', 'a job reserved between the statements is never re-queued')
+  await pg.getJob('u1', 'jC')
+  assert.deepEqual(await st('jC'), { status: 'failed', error: 'accounting_uncertain' }, 'the next read finalizes it uncertain')
+})

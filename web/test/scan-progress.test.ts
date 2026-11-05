@@ -90,10 +90,11 @@ test('runJob: ZERO-MATCH — the search returned nothing and no source failed', 
   assert.match(e.outcome.label, /sources returned nothing/)
 })
 
-test('runJob: a search source answering 500 after the request was sent is a stopped, possibly-billed outcome, never "zero-match"', async () => {
+test('runJob: FAILED — the search source answers 500: the outcome names the source, says a paid step may have been billed, and is not "zero-match"', async () => {
   const e = await ending(base({ hits: [], tfPages: {}, own: {}, extraction: [], searchStatus: 500 }))
-  // Behavior change (#594): a 5xx after send is "uncertain" (it may have been billed), so the run stops and says so instead of naming a plain failure.
-  assert.equal(e.outcome.kind, 'stopped', JSON.stringify([e.outcome, e.job, e.rows])); assert.match(e.outcome.label, /^Stopped after an interruption - a paid step may already have been billed/)
+  assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows])); assert.match(e.outcome.label, /^Failed - .*search:tinyfish had an error; a paid step may already have been billed/) // the source is named (search:anthropic is listed too: the model search is refused once the vendor request is uncertain)
+  // #594: a 5xx after send may have been billed, so the job error is accounting_uncertain and the outcome says so while still naming the source.
+  assert.equal(e.job.error, 'accounting_uncertain'); assert.match(e.outcome.label, /a paid step may already have been billed/); assert.match(e.outcome.detail ?? '', /dazl did not run it again automatically: that could bill the same step twice/); assert.doesNotMatch(`${e.outcome.label} ${e.outcome.detail}`, /zero|no compan|nothing matches|sources returned nothing/i)
   assert.notEqual(e.outcome.kind, 'zero_match')
 })
 

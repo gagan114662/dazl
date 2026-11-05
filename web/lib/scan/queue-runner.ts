@@ -146,11 +146,13 @@ export async function kickQueueRunner(
     if (ch.changes !== 1) {
       // A dead attempt (lease expired) that left a paid call reserved and unsettled may have been billed: end it closed instead of
       // re-running it, and retire the queue item. Queue mode never calls the legacy reaper, so this is where it is decided.
+      const nowS = Math.floor(Date.now() / 1000)
       const uncertain = db.prepare(
-        `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', claimed_at = NULL, finished_at = CAST(strftime('%s','now') AS INTEGER)
-         WHERE id = ? AND status = 'running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?
+        // Epoch seconds are bound as parameters (not SQLite strftime) so this statement stays portable SQL.
+        `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', claimed_at = NULL, finished_at = ?
+         WHERE id = ? AND status = 'running' AND claimed_at <= ?
            AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved')`,
-      ).run(claim.item.id, lease).changes === 1
+      ).run(nowS, claim.item.id, nowS - lease).changes === 1
       if (uncertain) { q.complete(claim.token); continue }
       q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' })
       continue

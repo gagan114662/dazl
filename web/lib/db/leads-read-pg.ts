@@ -56,7 +56,8 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
            error = CASE WHEN attempts >= $1 THEN 'timeout' ELSE error END,
            finished_at = CASE WHEN attempts >= $1 THEN CAST(floor(extract(epoch from now())) AS BIGINT) ELSE finished_at END,
            claimed_at = NULL
-         WHERE status = 'running' AND claimed_at < $2`,
+         WHERE status = 'running' AND claimed_at < $2
+           AND id NOT IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`, // never re-queue a job holding a reserved (possibly billed) call, even one reserved after statement 1
         [MAX_ATTEMPTS, cutoff],
       )
       const { rows } = await pg.query(
