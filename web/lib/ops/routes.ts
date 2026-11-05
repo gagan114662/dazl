@@ -25,6 +25,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/gmail/callback',
   '/api/gmail/connect',
   '/api/gmail/disconnect',
+  '/api/growth/funnel',
   '/api/health',
   '/api/health/live',
   '/api/health/ready',
