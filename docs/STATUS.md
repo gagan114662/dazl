@@ -52,6 +52,9 @@ Updated by the builder on every branch. Newest first.
   (no analytics vendor, no migration); Stripe `charge.refunded` now lands in the audit trail. Off until
   `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost prices recorded model tokens (scans, drafting, qualification) and stays a lower bound (enrichment credits are not converted).
 
+- b/535-legal-policies (#535): Terms and Privacy pages render one checked text (`web/lib/legal/policy.ts`), still
+  DRAFT; `test/legal-policy.test.ts` fails if a stated retention, provider, API host or opt-out behaviour drifts from
+  the code. Owner/counsel items stay bracketed on the pages (NEEDS GAGAN list in the PR). Sign-up links both pages.
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
