@@ -134,7 +134,8 @@ test('trace capture is off unless its flag is set', () => {
 test('what survives account deletion is exactly the always-retained set', () => {
   assert.deepEqual([...FACTS.retainedAfterDeletion].sort(), Object.keys(ALWAYS_RETAINED).sort())
   assert.match(privacy, /the audit trail, the record of evidence purges, and consent records/)
-  assert.match(privacy, /periodic cleanup blanks that note/, 'the retention copy honestly describes the asynchronous post-deletion blanking')
+  assert.match(privacy, /scheduled cleanup job blanks that note when it runs/, 'the retention copy honestly describes the asynchronous post-deletion blanking')
+  assert.match(privacy, /no guaranteed moment by which it is gone/, 'and promises no guaranteed timing')
   // "removes credentials and sign-in state first" and "never included in a data export"
   for (const t of ['sessions', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']) assert.ok(CREDENTIAL_TABLES.includes(t), t)
   for (const c of ['password_hash', 'salt', 'ciphertext', 'refresh_ct']) assert.ok(REDACTED_COLUMN.test(c), c)
@@ -259,7 +260,7 @@ test('prospect rows are tenant-scoped; the only global address-based processing 
   assert.match(read('app/api/outreach/sequences/route.ts'), /stop_reason/)
   assert.match(privacy, /tenant scoping/)
   assert.match(privacy, /stops that address's pending automated sequences, follow-ups and held first touches/)
-  assert.match(privacy, /generic policy stop in their own sequence list; the conversion kind \(signup, activation or payment\) is never disclosed/)
+  assert.match(privacy, /generic policy stop: the conversion kind \(signup, activation or payment\) does not appear in their stop reasons, lists or data exports/)
   assert.match(privacy, /bound to the recipient address until claimed/)
 })
 
