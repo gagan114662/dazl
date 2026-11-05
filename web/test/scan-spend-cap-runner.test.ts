@@ -25,7 +25,7 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
-async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void; runBudget?: string } = {}) {
+async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master)
@@ -43,6 +43,7 @@ async function run(env: Record<string, string | undefined>, usage: boolean | Rec
     if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: 200 })
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
     if (u === 'https://api.anthropic.com/v1/messages/count_tokens') return new Response(JSON.stringify({ input_tokens: 400 }), { status: 200 }) // free token counter used by guarded runs
+    if (u === 'https://api.anthropic.com/v1/messages' && x.modelAnswer) return x.modelAnswer()
     if (u === 'https://api.anthropic.com/v1/messages') {
       const b = JSON.parse(String(init?.body ?? '{}')) as { max_tokens: number }
       const text = b.max_tokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead])
@@ -180,6 +181,24 @@ test('runner (owner pool + job budget path): every model request is preceded by 
   reapStaleJobs(x.db)
   assert.deepEqual(x.db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id), { status: 'failed', error: 'accounting_uncertain' })
 })
+
+// Crash/timeout class (#363): a request that may have been billed is never re-run automatically; a vendor-declined one keeps the ordinary retry.
+const answers: [string, () => Response, string, string | null][] = [
+  ['timeout after send (connection dropped)', () => { throw new TypeError('socket hang up') }, 'failed', 'accounting_uncertain'],
+  ['5xx (may have been processed)', () => new Response('{}', { status: 503 }), 'failed', 'accounting_uncertain'],
+  ['200 with an unreadable body (answered, so billed)', () => new Response('not json', { status: 200 }), 'failed', 'accounting_uncertain'],
+  ['429 (vendor declined, nothing ran)', () => new Response('{}', { status: 429 }), 'pending', null],
+  ['400 (vendor declined)', () => new Response('{}', { status: 400 }), 'pending', null],
+]
+for (const [name, ans, status, error] of answers) {
+  test(`runner failure class: ${name} -> ${error ? status + '/' + error + ', exactly one model request' : 'not uncertain, nothing left unsettled'}`, async () => {
+    const x = await run(OWNER, true, { modelAnswer: ans })
+    if (error) { assert.equal(modelCalls(x), 1, 'no second vendor request in this attempt'); assert.equal(x.row.status, status); assert.equal(x.row.error, error) }
+    else { assert.ok(modelCalls(x) >= 1); assert.notEqual(x.row.error, 'accounting_uncertain', 'a vendor-declined request is not treated as maybe-billed') }
+    const reserved = x.db.prepare("SELECT count(*) AS n FROM scan_spend_calls WHERE status = 'reserved'").get() as { n: number }
+    assert.equal(reserved.n, error ? 1 : 0, error ? 'the maybe-billed call stays reserved (every reclaim path reads it)' : 'a declined call leaves nothing unsettled')
+  })
+}
 
 // Pricing coverage (review of 97988fd5): the default Anthropic model is priced; anything else the runner could be
 // configured with is NOT assumed priced - it is refused at reservation (visible stop), never settled as free.

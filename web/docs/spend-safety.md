@@ -160,3 +160,18 @@ claim), on both engines, including two SQLite connections to one file as two ins
     - the "estimate" vs "reported" labels;
     - that the threshold/stop events a user sees match this enforcement.
 - **Operator removal of a failed or stale marker** is a manual store edit today.
+
+## A request that may have been billed is never re-run automatically (#363)
+
+Each paid model request writes a durable `scan_spend_calls` row ('reserved') BEFORE it is sent, on every path (hard cap, owner pool, job budget).
+Afterwards the row is settled to the vendor-reported cost. The failure classes are:
+
+| Outcome of the request | Row | What happens |
+| --- | --- | --- |
+| Vendor answered 4xx (400, 401/403, 429...) | settled/kept | The vendor did not run it. Ordinary retry. |
+| Timeout or dropped connection after send, 5xx, an unreadable 200 | stays 'reserved' | May have been billed. The scan ends `accounting_uncertain`; no further model request in that attempt; no automatic retry. |
+| Process died (crash, restart, shutdown) with a row still 'reserved' | 'reserved' | Every re-claim path (stale reaper on both engines, queue-mode reaper, queue bind, PG status read, shutdown handoff) ends the job `accounting_uncertain` instead of re-running it. |
+| Process died before the request was sent | 'reserved' | Indistinguishable from the line above, so it is treated the same: a conservative false positive. The copy says "may have been billed", never "was billed". |
+
+The worst-case reservation of an uncertain call stays counted in every window (no automatic release). The owner starts a new scan on purpose.
+Not covered: non-model paid steps (TinyFish, Apollo, PDL, render) that fail after send keep their own settle rules; unknown errors default to 'uncertain'.

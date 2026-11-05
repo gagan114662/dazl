@@ -573,8 +573,18 @@ function excludeSupplied(job: Job, out: VerifyOutcome): void {
 // with less, so the error alone could be swallowed: the job remembers it, and finish() then ends the job as accounting_failed whatever
 // the stage said (never done/empty, never re-pended: a retry would pay again). The result of that run is not saved.
 const accountingFailed = new WeakSet<Job>()
+const uncertainSpend = new WeakSet<Job>()
 function flagAccounting(job: Job, p: Provider): Provider {
-  const seen = async <T>(f: () => Promise<T>): Promise<T> => { try { return await f() } catch (e) { if (e instanceof SpendAccountingFailed) accountingFailed.add(job); throw e } }
+  // A request that may have been billed (ProviderError charge 'uncertain') ends the scan accounting_uncertain and no further model request is
+  // made: stages that swallow errors cannot carry on and pay again. A vendor-declined (4xx) failure keeps the ordinary retry.
+  const seen = async <T>(f: () => Promise<T>): Promise<T> => {
+    if (uncertainSpend.has(job)) throw new SpendRefused('accounting_uncertain')
+    try { return await f() } catch (e) {
+      if (e instanceof SpendAccountingFailed) accountingFailed.add(job)
+      if (e instanceof ProviderError && e.kind === 'retry' && e.charge === 'uncertain') uncertainSpend.add(job)
+      throw e
+    }
+  }
   return {
     ...p,
     ...(p.complete ? { complete: (k, prompt, f, max) => seen(() => p.complete!(k, prompt, f, max)) } : {}),
@@ -584,6 +594,7 @@ function flagAccounting(job: Job, p: Provider): Provider {
 }
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
+  else if (uncertainSpend.has(job)) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }
   if (out) excludeSupplied(job, out)
   const leads = out?.leads ?? []
   const review = out?.review ?? []
@@ -612,13 +623,19 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
 
 // Shared failure handling: a rejected key fails the job outright; anything else retries
 // until MAX_ATTEMPTS, then fails. Returns the run outcome.
+function hasUnsettledCall(db: Database.Database, job: Job): boolean {
+  try { return !!db.prepare("SELECT 1 FROM scan_spend_calls WHERE scan_job_id = ? AND attempt = ? AND status = 'reserved' LIMIT 1").get(job.id, job.attempts) } catch { return false }
+}
 function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'done' | 'failed' | 'retry' {
   if (e instanceof ScanTimedOut) { finish(db, job, 'failed', 'scan_timeout', null, null, ledger); return 'failed' }
   if (e instanceof ScanStopped) return 'done' // nothing to retry or fail: the stop/re-claim owns the row; queue completion or a stale token is a no-op
   // A paid call answered but its cost could not be saved: the scan ends with its own status, never retried (a retry would pay again) and never reported as an empty search.
   if (e instanceof SpendAccountingFailed) { finish(db, job, 'failed', 'accounting_failed', null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused) { finish(db, job, 'failed', 'budget_stopped', null, null, ledger); return 'failed' } // a refused call is never retried: attempts must not multiply spend
-  const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')
+  const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error', 'declined')
+  // A paid request that may have been billed (timeout/5xx/unreadable answer, or any row of this attempt still unsettled) is not re-run: the
+  // owner starts a new scan on purpose. A vendor-declined (4xx) or never-sent failure keeps the ordinary retry.
+  if (err.kind !== 'auth' && (uncertainSpend.has(job) || hasUnsettledCall(db, job))) { finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }
   if (err.kind === 'auth') {
     finish(db, job, 'failed', 'key_rejected', null, null, ledger)
     return 'failed'
@@ -1034,7 +1051,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
     // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
     // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
-    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: flagAccounting(job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial)) }
+    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: flagAccounting(job, baseProviders[vendor]) } : { ...baseProviders, [vendor]: flagAccounting(job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial)) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
