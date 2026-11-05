@@ -47,6 +47,11 @@ Updated by the builder on every branch. Newest first.
   (dry-run default), and the off-database tombstone ledger writer (DAZL_TOMBSTONE_LEDGER; deletion refused while
   unset) with the RECOVERY.md re-apply step. Real-route tests through the session loader; B byte-equivalent; a
   restored pre-deletion copy re-applied from the route-written ledger. No live run yet.
+- b/404-acquisition-metrics (#404): owner-only `GET /api/growth/funnel` (`lib/growth/funnel.ts`) reports dazl's own
+  prospect -> qualified conversation -> signup -> usable result -> repeat -> paid -> retained funnel from recorded events
+  (no analytics vendor, no migration); Stripe `charge.refunded` now lands in the audit trail. Off until
+  `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost prices recorded model tokens (scans, drafting, qualification) and stays a lower bound (enrichment credits are not converted).
+
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
@@ -57,6 +62,10 @@ Updated by the builder on every branch. Newest first.
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
   Outcomes tile and Inbox "Needs you" total disagreed. Synthetic fixtures only; #369 stays open for the deployed check.
+  b/369-test-fixture-harness: a test-only, NO-SEND Inbox fixture (POST/DELETE `/api/outreach/inbox/fixture`, owners of
+  the `OUTREACH_TEST_TENANT_ID` tenant only, OFF unless `OUTREACH_INBOX_FIXTURE=1`) seeds 120 labelled threads plus one
+  bounce_review notice so pagination and bounce_review can be checked live; cleanup removes only those rows
+  (web/docs/inbox-fixture.md).
 
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
@@ -149,7 +158,8 @@ Updated by the builder on every branch. Newest first.
   membership tables, backfill, server-side resolution, role table) increment 2 (routes use tenantId, role check
   on every non-read handler) and increment 3 (invitations, members, switching, Settings > Team) in review; then
   #358 increment 1 (session inventory, revoke one/all, bounded reaper; docs/design/sessions.md) and
-  increment 2 (fresh authentication for secrets, billing and member changes) in review;
+  increment 2 (fresh authentication for secrets, billing and member changes) in review; increment 3 (offboarding:
+  removal revokes the member's sessions acting in that workspace and their pending invitations) in review (b/358-offboarding);
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review; next: #371.
@@ -200,7 +210,8 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
    #387 in review: b/387-event-detection (monitor runs alert only on novel, dated, in-window, verified events: new company /
    new signal / now reachable, deduped across plays, per-monitor alert policy, latency and missed-run report).
 9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
-   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority. #386 in review: b/386-outcome-lookalikes (supplied customers +
+   negatives -> held-out-checked features -> scan profile; supplied accounts never returned; docs/design/lookalike-discovery.md).
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
     as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
 

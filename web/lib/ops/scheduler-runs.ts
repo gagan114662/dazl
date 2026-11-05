@@ -256,6 +256,9 @@ export async function tenantFreshness(d: DbLike, tenantId: string, now = nowS(),
   const due = await oldestDue(db, tenantId, now)
   const reasons: string[] = []
   if ((op.state === 'stale' || op.state === 'crashed' || op.state === 'never_ran') && (work.length || due)) reasons.push(`scheduler_${op.state}`)
+  // The latest finished tick failed or lost its lease and none has succeeded since: the operator's health is 503 for it
+  // (schedulerHealth), so a tenant with work does not read healthy either, even while an earlier success is still recent.
+  else if (op.unresolved_failure && (work.length || due)) reasons.push(`scheduler_${op.unresolved_failure.status}`)
   for (const w of work) {
     if (w.consecutive_failures >= BLOCKED_AFTER_FAILURES && w.last_outcome === 'failure') reasons.push(`${w.kind}_failing`) // still failing: a later hold means the tenant is not currently failing, not that the failures resolved (only a success clears the count)
     else if (w.kind === 'reply_sync' && w.last_attempt_at > (w.last_success_at ?? 0) && now - (w.last_success_at ?? w.last_attempt_at) > REPLY_SYNC_STALE_S) reasons.push('reply_sync_stale')
