@@ -105,7 +105,7 @@ try {
 
   // Workspace credit limits through the real UI (#363): set, used-of-N, clear. The controls are per provider+window.
   const monthRow = card.locator('div.flex', { hasText: 'Apollo per month' })
-  const monthInput = card.getByLabel('apollo month credit limit')
+  const monthInput = card.getByRole('textbox', { name: 'apollo month credit limit' }) // role-scoped: the Save button's accessible name contains the input's label, so a bare getByLabel matches both (#594 CI red)
   const [limResp] = await Promise.all([
     page.waitForResponse(r => r.url().includes('/api/settings/enrichment') && r.request().method() === 'POST' && (r.request().postData() || '').includes('credit_limit')),
     (async () => { await monthInput.fill('5'); await card.getByRole('button', { name: 'Save apollo month credit limit' }).click() })(),
