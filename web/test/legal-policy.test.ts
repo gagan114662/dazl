@@ -134,7 +134,8 @@ test('trace capture is off unless its flag is set', () => {
 test('what survives account deletion is exactly the always-retained set', () => {
   assert.deepEqual([...FACTS.retainedAfterDeletion].sort(), Object.keys(ALWAYS_RETAINED).sort())
   assert.match(privacy, /the audit trail, the record of evidence purges, and consent records/)
-  assert.match(privacy, /scheduled cleanup job blanks that note when it runs/, 'the retention copy honestly describes the asynchronous post-deletion blanking')
+  assert.match(privacy, /the deletion does not complete until the note is blank/, 'the retention copy states the synchronous completion redaction')
+  assert.match(privacy, /Records from before this safeguard are blanked by a scheduled cleanup job when it runs/, 'and the legacy tick backstop, without promising it')
   assert.match(privacy, /no guaranteed moment by which it is gone/, 'and promises no guaranteed timing')
   // "removes credentials and sign-in state first" and "never included in a data export"
   for (const t of ['sessions', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']) assert.ok(CREDENTIAL_TABLES.includes(t), t)
