@@ -180,7 +180,6 @@ test('runner (owner pool + job budget path): every model request is preceded by 
   reapStaleJobs(x.db)
   assert.deepEqual(x.db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id), { status: 'failed', error: 'accounting_uncertain' })
 })
-})
 
 // Pricing coverage (review of 97988fd5): the default Anthropic model is priced; anything else the runner could be
 // configured with is NOT assumed priced - it is refused at reservation (visible stop), never settled as free.
