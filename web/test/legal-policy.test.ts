@@ -10,7 +10,7 @@ import Database from 'better-sqlite3'
 import { API_HOSTS, DRAFT_NOTICE, FACTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, TERMS } from '../lib/legal/policy.ts'
 import { PLAN_LIMITS } from '../lib/plans.ts'
 import { SESSION_RETAIN_S } from '../lib/sessions.ts'
-import { OUTBOX_RETAIN_S } from '../lib/system-mail.ts'
+import { OUTBOX_RETAIN_S, OUTBOX_DDL, sendSystemMail, systemMailAvailable } from '../lib/system-mail.ts'
 import { reapAccountHistory } from '../lib/account-retention.ts'
 import { RETENTION_DAYS as EVIDENCE_COPY_DAYS } from '../lib/scan/evidence-copies.ts'
 import { ONBOARDING_AUDIT_RETAIN_YEARS, onboardingAuditCutoff } from '../lib/outreach/onboarding-policy.ts'
@@ -24,6 +24,7 @@ import { emailGuessEnabled } from '../lib/people/email-pattern.ts'
 import { CONSENT_TEXT } from '../lib/outreach/autopilot.ts'
 import { composeBody, isSuppressed, OutreachError, saveSettings, suppress } from '../lib/outreach/service.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { buildMime } from '../lib/gmail/mime.ts'
 import { outboundRecord, toRecord } from '../lib/ops/errors.ts'
 
@@ -90,6 +91,18 @@ test('no audit record is purged until a period is chosen, as the policy says', (
   assert.match(privacy, /no audit record is deleted automatically today/)
 })
 
+test('account email is held on the host while no system provider is configured, as the policy states', async () => {
+  // current production state (#613 review, verified on the live process 2026-11-04): SMTP is not configured, so
+  // account emails are kept in system_mail_outbox (operators read them on the host) and reaped after 24 hours.
+  assert.equal(systemMailAvailable({}), false)
+  const db = new Database(':memory:')
+  db.exec(OUTBOX_DDL)
+  const r = await sendSystemMail(sqliteDb(db), { userId: 'u1', to: 'a@b.test', subject: 'Reset', text: 'link' }, {})
+  assert.equal(r, 'outbox')
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM system_mail_outbox').get() as { n: number }).n, 1)
+  assert.match(privacy, /no system email provider is configured: sending is off, and those messages are held on the host/)
+})
+
 test('trace capture is off unless its flag is set', () => {
   assert.equal(traceCaptureConfig({}).enabled, false)
   assert.equal(traceCaptureConfig({ [FACTS.traceCaptureFlag]: '1' }).enabled, true)
@@ -129,13 +142,43 @@ test('every third-party API host the code calls is disclosed, and no disclosed h
   }
   walk('lib'); walk('app')
   const found = new Map<string, string>()
+  const keep = (host: string | undefined, f: string) => {
+    if (!host) return
+    if (/^(docs|console|platform)\./.test(host) || /\.(example|invalid|test)$/.test(host)) return // docs links and example hosts
+    if (host === 'dazl.ai') return // own domain (user-agent string, not a third party)
+    if (!found.has(host)) found.set(host, relative(ROOT, join(ROOT, f)))
+  }
   for (const f of files) {
-    for (const m of read(f).matchAll(/https:\/\/([a-z0-9.-]+\.[a-z]{2,})/g)) {
-      const host = m[1]
-      // api-style hosts (data is sent, not just linked); docs/console links and example hosts are not calls
-      if (!/(^|[.-])api([.-])|googleapis\.com$|^accounts\.google\.com$|^r\.jina\.ai$|^hn\.algolia\.com$|^efts\.sec\.gov$/.test(host)) continue
-      if (/^(docs|console|platform)\./.test(host) || /\.(example|invalid|test)$/.test(host)) continue
-      if (!found.has(host)) found.set(host, relative(ROOT, join(ROOT, f)))
+    const src = read(f)
+    // api-style URL literals (data is sent, not just linked)
+    for (const m of src.matchAll(/https:\/\/([a-z0-9.-]+\.[a-z]{2,})/g)) {
+      if (/(^|[.-])api([.-])|googleapis\.com$|^accounts\.google\.com$|^r\.jina\.ai$|^hn\.algolia\.com$|^efts\.sec\.gov$/.test(m[1])) keep(m[1], f)
+    }
+    // ANY host the code REQUESTS, whatever the URL looks like: the first argument of fetch(...) / http(...) as a
+    // literal, a template, a same-file const, or a template starting with one. Non-api hosts (a public register, a
+    // community site) are exactly the hosts the shape rule above cannot see (#388 data.brreg.no, #613 review).
+    const consts = new Map<string, string>()
+    for (const m of src.matchAll(/const (\w+) = ['`]([^'`]+)['`]/g)) consts.set(m[1], m[2])
+    const resolve = (a: string): string => { // identifiers and ${CONST} templates, a few levels deep
+      for (let i = 0; i < 4; i++) {
+        const id = /^\w+$/.test(a) ? a : /^\$\{(\w+)\}/.exec(a)?.[1]
+        if (!id || !consts.has(id)) return a
+        a = consts.get(id)!
+      }
+      return a
+    }
+    for (const m of src.matchAll(/(?:\bfetch|\bhttp)\(\s*(`[^`]*`|'[^']*'|"[^"]*"|\w+)/g)) {
+      const a = /^\w+$/.test(m[1]) ? resolve(m[1]) : resolve(m[1].slice(1))
+      keep(/^https:\/\/([a-z0-9.-]+\.[a-z]{2,})/.exec(a)?.[1], f)
+    }
+    // Source adapters can wrap the getter (a local json() helper, a page reader): a URL constant in lib/sources
+    // that the file actually uses is a request target even when no fetch(/http( call names it directly.
+    if (f.startsWith('lib/sources/')) {
+      for (const [name, u] of consts) {
+        if (new RegExp(`\\b${name}\\b`, 'g').exec(src)?.index !== src.lastIndexOf(name)) {
+          keep(/^https:\/\/([a-z0-9.-]+\.[a-z]{2,})/.exec(resolve(u))?.[1], f)
+        }
+      }
     }
   }
   const missing = [...found].filter(([h]) => !(h in API_HOSTS)).map(([h, f]) => `${h} (${f})`)

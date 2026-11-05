@@ -18,7 +18,6 @@ export const OWNER_PLACEHOLDERS = {
   legalName: '[COMPANY LEGAL NAME - NEEDS OWNER]',
   lastUpdated: '[DATE - set when the owner approves this text]',
   privacyContact: '[PRIVACY CONTACT EMAIL - NEEDS OWNER]',
-  hostingProvider: '[HOSTING PROVIDER AND REGION - NEEDS OWNER]',
   systemMailProvider: '[SYSTEM EMAIL PROVIDER - NEEDS OWNER]',
 } as const
 
@@ -41,6 +40,7 @@ export const FACTS = {
   gmailSendScope: 'https://www.googleapis.com/auth/gmail.send',     // lib/gmail/oauth.ts GMAIL_SEND_SCOPE
   gmailReadScope: 'https://www.googleapis.com/auth/gmail.readonly', // lib/gmail/oauth.ts GMAIL_READ_SCOPE (optional)
   emailGuessFlag: 'EMAIL_GUESS_ENABLED', // lib/people/email-pattern.ts: off unless '1'; candidates stay 'unverified', unread by outreach
+  hostingProvider: 'AWS (EC2, region us-east-2)', // reviewer-verified production instance metadata, 2026-11-04 (#613)
 } as const
 
 // Every third-party API host the code calls (test/legal-policy.test.ts scans lib/ and app/ for api-style hosts and
@@ -66,6 +66,10 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'api.lever.co': { name: 'Lever job boards', role: 'public_source' },
   'api.ashbyhq.com': { name: 'Ashby job boards', role: 'public_source' },
   'api.gdeltproject.org': { name: 'GDELT news index', role: 'public_source' },
+  'data.brreg.no': { name: 'Brønnøysundregistrene (Norway business register API)', role: 'public_source' },
+  'virksomhet.brreg.no': { name: 'Brønnøysundregistrene (Norway business register entity pages)', role: 'public_source' },
+  'www.sov2ex.com': { name: 'sov2ex (V2EX topic search)', role: 'public_source' },
+  'www.v2ex.com': { name: 'V2EX', role: 'public_source' },
   'hn.algolia.com': { name: 'Hacker News search', role: 'public_source' },
   'efts.sec.gov': { name: 'SEC EDGAR', role: 'public_source' },
 }
@@ -89,7 +93,7 @@ export const PRIVACY: Section[] = [
     'Your business profile, the prospects your searches find, the drafts and messages you send, and replies dazl reads (see Gmail below).',
   ] },
   { heading: 'What we hold about prospects', paragraphs: [
-    'dazl finds businesses and business contacts from public sources: company websites, job boards, SEC filings, GitHub, news and community sites. Each lead keeps the link to the page it came from.',
+    'dazl finds businesses and business contacts from public sources: company websites, job boards, SEC filings, official business registers, GitHub, news and community sites. Each lead keeps the link to the page it came from.',
     `Where you connect your own ${enrich} account, contact details those providers return under your key are added to your leads. With the optional advanced connector, LinkedIn results come through your own signed-in session.`,
     `When ${FACTS.emailGuessFlag} is turned on, dazl works out a company's address format from personal addresses it publishes on its own site and prepares candidate addresses for people listed there. Those candidates are stored apart from your leads, marked unverified, and are never shown to you or emailed. [NEEDS OWNER: update this text before mailbox-verified guessed addresses ship (DECISIONS.md 2026-10-26: US recipients only).]`,
     'When dazl could not read a page itself and verified a lead against a copy of its text, that copy is kept with the lead and expires after ' + `${FACTS.evidenceCopyRetainDays} days.`,
@@ -104,9 +108,9 @@ export const PRIVACY: Section[] = [
     'Reading replies is a separate, optional grant (gmail.readonly). With it, dazl opens the threads of the messages it sent and looks for delivery-failure notices about them. [NEEDS OWNER: Google API Services User Data Policy / Limited Use statement wording.]',
   ] },
   { heading: 'Service providers', paragraphs: [
-    `Google (sign-in and Gmail), Stripe (payments; card details are entered at Stripe, not on dazl), Anthropic (AI models, including the free trial), TinyFish (web search and page fetching), and Jina AI Reader (reading public pages). Hosting: ${P.hostingProvider}. Account emails such as password resets: ${P.systemMailProvider}.`,
+    `Google (sign-in and Gmail), Stripe (payments; card details are entered at Stripe, not on dazl), Anthropic (AI models, including the free trial), TinyFish (web search and page fetching), and Jina AI Reader (reading public pages). Hosting: ${FACTS.hostingProvider}. Account emails such as password resets: ${P.systemMailProvider}. Today no system email provider is configured: sending is off, and those messages are held on the host, then deleted after ${FACTS.systemMailOutboxRetainHours} hours (see Retention). [NEEDS OWNER: choose the provider before account emails are enabled; re-check at launch.]`,
     `Providers you choose and connect with your own account or key: ${ai} (AI models), ${enrich} (contact enrichment), and ${crm} (lead export to your CRM). Their use of the data is governed by your agreement with them.`,
-    'Public sources dazl queries with search terms such as a company name receive no account data: GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search and SEC EDGAR.',
+    'Public sources dazl queries with search terms such as a company name receive no account data: GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, the Norwegian business register (Brønnøysundregistrene), and V2EX topics (read directly and through the sov2ex search service).',
     'Error reports, if an error-monitoring service is configured, carry only the error type, code locations and a request id: never messages, account identifiers, request bodies or personal data.',
     'We do not sell personal information.',
   ] },
