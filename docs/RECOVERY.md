@@ -152,9 +152,10 @@ Each step's time is recorded in the report to measure the RTO.
 3. Fetch the newest off-host copy, decrypt it with the `age` identity from its offline store, and check its sidecar.
 4. Restore the env file from its secure store: master key, Stripe keys, webhook secret, OAuth clients. Restore the Caddyfile and the service unit from the repo (`ops/`) and from the owner's notes.
 5. Run `recovery-drill.mts` with `--app`. The drill must pass before anything else.
-6. **Sending stays disabled.** Start the service with `AUTOPILOT_KILL=1` and no `AUTOPILOT_TICK_SECRET`. Reconcile every unresolved send from step 3 of the drill: an operator decides each uncertain message (`mark_sent` or `retry` in the app, `resolveUncertain`). Wait for every old lease to expire, which is at most 30 minutes for the tick lease. Then compare against the Gmail Sent folder of each connected account where the owner has access.
-7. Switch Caddy and DNS to the new host. Check `/api/ready`, then run `node ops/release-manifest.mjs check release.json https://dazl.ai`.
-8. Only then remove `AUTOPILOT_KILL` and restore the tick secret.
+6. **Re-apply tenant deletions (#359) before the store serves.** Fetch the newest tombstone ledger copy from the off-host destination (`dazl-ledger-<utc>.jsonl.age`, copied by `ops/backup/offhost-copy.sh` right after each backup copy; its manifest names the backup it went with) and decrypt it with the same `age` identity, or use the live `DAZL_TOMBSTONE_LEDGER` file if the host survived, whichever is newer, and run `DAZL_DB_PATH=<restored db> node --experimental-strip-types scripts/tenant-lifecycle.mts --reapply --ledger <file>` (dry run: prints the line count), then again with `--execute`. Any refused line is printed with its reason and the command exits 1: do not continue until each is resolved (docs/TENANT-LIFECYCLE.md, "Restored backups").
+7. **Sending stays disabled.** Start the service with `AUTOPILOT_KILL=1` and no `AUTOPILOT_TICK_SECRET`. Reconcile every unresolved send from step 3 of the drill: an operator decides each uncertain message (`mark_sent` or `retry` in the app, `resolveUncertain`). Wait for every old lease to expire, which is at most 30 minutes for the tick lease. Then compare against the Gmail Sent folder of each connected account where the owner has access.
+8. Switch Caddy and DNS to the new host. Check `/api/ready`, then run `node ops/release-manifest.mjs check release.json https://dazl.ai`.
+9. Only then remove `AUTOPILOT_KILL` and restore the tick secret.
 
 ## Postgres cutover (when authorized; docs/PLATFORM.md)
 

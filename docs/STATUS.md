@@ -41,10 +41,17 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- PR #568 b/359-lifecycle-flow (#359 part 2): authenticated, audited request flow for tenant export/deletion
+  (session-scoped routes, owner+fresh-auth delete with explicit opt-out policy and resume, viewer+fresh-auth
+  export), the settings completion UI reporting retained exceptions, and operator list/resume/reapply controls
+  (dry-run default), and the off-database tombstone ledger writer (DAZL_TOMBSTONE_LEDGER; deletion refused while
+  unset) with the RECOVERY.md re-apply step. Real-route tests through the session loader; B byte-equivalent; a
+  restored pre-deletion copy re-applied from the route-written ledger. No live run yet.
 - b/404-acquisition-metrics (#404): owner-only `GET /api/growth/funnel` (`lib/growth/funnel.ts`) reports dazl's own
   prospect -> qualified conversation -> signup -> usable result -> repeat -> paid -> retained funnel from recorded events
   (no analytics vendor, no migration); Stripe `charge.refunded` now lands in the audit trail. Off until
   `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost prices recorded model tokens (scans, drafting, qualification) and stays a lower bound (enrichment credits are not converted).
+
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
@@ -166,8 +173,11 @@ Updated by the builder on every branch. Newest first.
 closed, their code shipped via #554/#552/#553/#556/#557, but none of the five issues below is fully verified
 complete — do not start new issues until each is closed or explicitly re-queued with what's still missing)
 
-1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Missing: the
-   customer-facing request flow, the completion UI, and operator controls.
+1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Part 2 in
+   review (PR #568, b/359-lifecycle-flow): the request flow (GET scope inventory, POST export, POST delete with
+   policy choice + resume), the settings completion UI with retention exceptions, and operator controls
+   (scripts/tenant-lifecycle.mts list/resume/reapply), the tombstone ledger writer. Missing: live acceptance on a
+   disposable tenant, DAZL_TOMBSTONE_LEDGER set on the host (ops/backup now copies it off-host), the owner's retention decisions.
 2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
    default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
    holds.
