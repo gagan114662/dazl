@@ -10,6 +10,7 @@ import EnrichmentPanel from './enrichment-panel'
 import CompetitorsPanel from './competitors-panel'
 import MemoryPanel from './memory-panel'
 import UsagePanel from './usage-panel'
+import LifecyclePanel from './lifecycle-panel'
 import TeamPanel from './team-panel'
 import SessionsPanel from './sessions-panel'
 import ReauthGate from './reauth-gate'
@@ -38,6 +39,7 @@ export default async function Settings() {
       <div id="memory" className="scroll-mt-6"><MemoryPanel /></div>
       <div id="model-key" className="scroll-mt-6"><LlmKeyPanel /></div>
       <UsagePanel />
+      <LifecyclePanel />
       <CompetitorsPanel />
       <div id="social" className="scroll-mt-6"><AdvancedPanel /></div>
       <div id="gmail" className="scroll-mt-6"><GmailPanel /></div>
