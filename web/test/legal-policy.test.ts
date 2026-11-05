@@ -140,7 +140,7 @@ test('what survives account deletion is exactly the always-retained set', () => 
   for (const t of ['sessions', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']) assert.ok(CREDENTIAL_TABLES.includes(t), t)
   for (const c of ['password_hash', 'salt', 'ciphertext', 'refresh_ct']) assert.ok(REDACTED_COLUMN.test(c), c)
   assert.ok('sessions' in EXPORT_EXCLUDED)
-  assert.match(privacy, /You can download everything your workspace holds yourself in Settings/, 'self-service export exists and has no config gate (Settings lifecycle panel, /api/tenant/lifecycle/export)')
+  assert.match(privacy, /You can download an export of your workspace data in Settings/, 'self-service export exists with no config gate; the export excludes sessions/oauth_states and redacts credentials and conversion kinds, so never claim it is everything')
   assert.match(privacy, /self-service deletion is not switched on in the current service configuration/, 'delete route 503s while DAZL_TOMBSTONE_LEDGER is unset (production today): no working-feature claim from a button alone')
   assert.match(privacy, /the deletion is not marked complete until the note is blank/, 'completion redaction is synchronous')
   assert.match(privacy, /the earlier erasure is not undone and completion must be retried/, 'failed completion does not undo the erasure; retry is not promised to succeed')
