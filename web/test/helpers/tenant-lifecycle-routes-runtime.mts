@@ -51,12 +51,14 @@ test('tenant lifecycle routes: request flow, gates, and isolation', async () => 
   const gj = await g.json()
   assert.equal(gj.tenant, A); assert.ok(gj.tables.leads > 0, 'A has leads'); assert.equal(gj.deletion, null)
   assert.ok(gj.always_retained.includes('audit_events'))
+  assert.equal(gj.can_delete, true, 'the owner is offered account deletion')
 
   // export: fresh auth required, then the full export downloads and is audited
   setUser({ id: A, business_name: 'Acme', authedAt: Math.floor(Date.now() / 1000) - 7200 })
   assert.equal((await exportRoute.POST(req('/api/tenant/lifecycle/export', 'POST', {}))).status, 403, 'stale session must re-authenticate')
   setUser({ id: A, business_name: 'Acme' })
   setUser({ id: A, business_name: 'Acme', role: 'viewer' })
+  assert.equal((await (await lifecycle.GET()).json()).can_delete, false, 'a viewer is not offered account deletion')
   const ev = await exportRoute.POST(req('/api/tenant/lifecycle/export', 'POST', {})) // export is a viewer action, fresh session
   assert.equal(ev.status, 200)
   const ex = JSON.parse(await ev.text())
@@ -65,6 +67,7 @@ test('tenant lifecycle routes: request flow, gates, and isolation', async () => 
 
   // delete: owner-only, fresh, exact confirmation, explicit policy
   setUser({ id: A, business_name: 'Acme', role: 'admin' })
+  assert.equal((await (await lifecycle.GET()).json()).can_delete, false, 'an admin is not offered account deletion')
   assert.equal((await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A, suppressions: 'retain' }))).status, 403, 'admins do not delete the workspace')
   setUser({ id: A, business_name: 'Acme', authedAt: Math.floor(Date.now() / 1000) - 7200 })
   assert.equal((await deleteRoute.POST(req('/api/tenant/lifecycle/delete', 'POST', { confirm_tenant: A, suppressions: 'retain' }))).status, 403, 'stale session must re-authenticate')
