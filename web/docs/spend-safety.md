@@ -140,7 +140,8 @@ claim), on both engines, including two SQLite connections to one file as two ins
 
 ## Not covered yet (#363 stays open)
 
-- **Scan runner completions** keep their worst-case reservation instead of settling to reported usage.
+- **Scan runner completions** now settle to the vendor-reported usage (owner pool and job run budget; trial scans unchanged and OFF). A call whose cost could not be saved ends the scan as `accounting_failed` (never retried, never an empty result). The runner writes no pending marker, so a crash leaves its worst-case reservation counted and a later attempt only adds to it.
+- **OpenAI is not supported under an owner pool or run budget**: no OpenAI model is in the price table (`PRICES_USD_PER_M` holds only `claude-sonnet-4-5`), so every reservation is refused `model_unpriced`. The default `gpt-4.1` is listed at $2 / $8 per 1M input / output tokens on https://developers.openai.com/api/docs/models/gpt-4.1 (marked Deprecated there); it was NOT added, because OpenAI usage counts cached input inside prompt tokens and the settle math was written for Anthropic's usage fields.
 - **Per-play limits** exist only for scans (`run_budget.max_usd`). Polish, follow-ups and qualification for a play
   count against the owner pool, not a per-play limit.
 - **TinyFish and Apollo/PDL** are bounded by counts, not dollars, outside a scan (inside one, the hard per-scan cap

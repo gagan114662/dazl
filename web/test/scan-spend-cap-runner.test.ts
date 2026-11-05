@@ -25,11 +25,11 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
-async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void } = {}) {
+async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void; runBudget?: string } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master)
-  createQueryJob(db, 'A', { query: 'Find Ohio companies with 10 to 100 employees that recently posted a payroll job', icp: JSON.stringify(ICP) })
+  createQueryJob(db, 'A', { query: 'Find Ohio companies with 10 to 100 employees that recently posted a payroll job', icp: JSON.stringify(ICP), ...(x.runBudget ? { runBudget: x.runBudget } : {}) })
   const job = claimKeyedJob(db)!
   x.setup?.(db)
   const lead = { company: 'Harbor Freight Supply', name: 'Pat Lee', signal: 'Hiring a payroll specialist', excerpt: QUOTE, source_url: 'https://jobs.example/hf', event_date: recent }
@@ -120,6 +120,8 @@ test('runner under an owner pool: model calls settle to the vendor-reported usag
   assert.equal(pool.length, 1)
   assert.ok(Math.abs(pool[0].reserved_usd - models * perCall) < 1e-6, `reserved ${pool[0].reserved_usd} = reported ${models * perCall}`)
   assert.ok(Math.abs(pool[0].reported_usd - models * perCall) < 1e-6, 'the reported total is recorded')
+  assert.equal(pool[0].calls, models, 'one pool move per model call')
+  assert.ok(!(await poolRows(x.db, 'A')).some(r => r.period.startsWith('p:')), 'no residual pending markers')
 })
 
 const OWNER = { DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_OWNER_MONTH_MAX_USD_USERS: 'A:20' }
@@ -152,7 +154,7 @@ test('runner settle: invalid usage is unknown cost, not zero', async () => {
 test('runner settle: a settle that cannot be saved withholds the result, makes no further paid request, and the job does not finish as done', async () => {
   const x = await run(OWNER, true, { setup: db => db.exec("CREATE TRIGGER fail_settle BEFORE UPDATE ON tenant_spend_pools WHEN NEW.reported_usd <> OLD.reported_usd BEGIN SELECT RAISE(ABORT, 'simulated store failure'); END") })
   assert.equal(modelCalls(x), 1, 'exactly one vendor request')
-  assert.equal(x.row.status, 'failed'); assert.equal(x.row.error, 'budget_stopped', 'truthful stop, never done/empty')
+  assert.equal(x.row.status, 'failed'); assert.equal(x.row.error, 'accounting_failed', 'its own status: not an empty search, not a generic budget stop')
   assert.ok((await monthRow(x)).reserved_usd > 0.005, 'the worst-case reservation stays counted')
 })
 
@@ -174,4 +176,32 @@ test('pricing table: configured defaults and overrides', async () => {
     if (saved.a === undefined) delete process.env.DAZL_ANTHROPIC_MODEL; else process.env.DAZL_ANTHROPIC_MODEL = saved.a
     if (saved.o === undefined) delete process.env.DAZL_OPENAI_MODEL; else process.env.DAZL_OPENAI_MODEL = saved.o
   }
+})
+
+test('runner settle: the job run-budget guard leg settles to the reported usage too (saved on the job row)', async () => {
+  const x = await run({}, true, { runBudget: JSON.stringify({ max_usd: 1 }) })
+  const models = modelCalls(x)
+  assert.ok(models >= 2, JSON.stringify(x.row))
+  const job = x.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number }
+  assert.ok(Math.abs(job.s - models * ((400 * 3 + 60 * 15) / 1e6)) < 1e-6, `job reservation ${job.s} = reported usage of ${models} calls`)
+})
+test('runner settle: a crash after the vendor answered leaves its reservation counted; a later attempt only adds, nothing is released', async () => {
+  // The runner writes no pending marker (PooledGuard without trackPending), so there is nothing to clear: the unsettled worst case stays in both windows.
+  const x = await run(OWNER, true, { setup: db => db.exec("INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES ('A', 'd:' || strftime('%Y-%m-%d','now'), 0.5, 0, 1, strftime('%s','now')), ('A', 'm:' || strftime('%Y-%m','now'), 0.5, 0, 1, strftime('%s','now'))") })
+  const m = await monthRow(x), d = await rowOf(x, 'd:')
+  const own = modelCalls(x) * ((400 * 3 + 60 * 15) / 1e6)
+  assert.ok(Math.abs(m.reserved_usd - (0.5 + own)) < 1e-6 && Math.abs(d.reserved_usd - (0.5 + own)) < 1e-6, `earlier unsettled 0.5 kept + this run's ${own}`)
+})
+
+test('settleAll: a second settle and a retry with different amounts are refused (idempotent)', async () => {
+  const { SpendGuard, reserveAllUsd, settleAll } = await import('../lib/llm/spend-guard.ts')
+  const g = new SpendGuard(10)
+  const r = await reserveAllUsd([g], 2)
+  await settleAll([g], -1, 1, r)
+  assert.equal(g.reservedUsd, 1)
+  await assert.rejects(settleAll([g], -1, 1, r), /already settled/)
+  assert.equal(g.reservedUsd, 1, 'moved once')
+  const r2 = await reserveAllUsd([g], 2)
+  r2.settlement = { deltaUsd: -1, reportedUsd: 1 }
+  await assert.rejects(settleAll([g], -2, 0, r2), /different amounts/)
 })

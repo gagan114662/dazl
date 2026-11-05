@@ -39,7 +39,7 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
-import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
@@ -569,7 +569,21 @@ function excludeSupplied(job: Job, out: VerifyOutcome): void {
 
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
 // has a higher attempts number), so a slow old run cannot clobber a newer one.
+// A paid model call answered but its cost could not be saved (SpendAccountingFailed). Many stages catch a failed model call and carry on
+// with less, so the error alone could be swallowed: the job remembers it, and finish() then ends the job as accounting_failed whatever
+// the stage said (never done/empty, never re-pended: a retry would pay again). The result of that run is not saved.
+const accountingFailed = new WeakSet<Job>()
+function flagAccounting(job: Job, p: Provider): Provider {
+  const seen = async <T>(f: () => Promise<T>): Promise<T> => { try { return await f() } catch (e) { if (e instanceof SpendAccountingFailed) accountingFailed.add(job); throw e } }
+  return {
+    ...p,
+    ...(p.complete ? { complete: (k, prompt, f, max) => seen(() => p.complete!(k, prompt, f, max)) } : {}),
+    ...(p.completeDetailed ? { completeDetailed: (k, prompt, f, max) => seen(() => p.completeDetailed!(k, prompt, f, max)) } : {}),
+    research: (k, prompt, f) => seen(() => p.research(k, prompt, f)),
+  }
+}
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
+  if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   if (out) excludeSupplied(job, out)
   const leads = out?.leads ?? []
   const review = out?.review ?? []
@@ -601,6 +615,8 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
 function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'done' | 'failed' | 'retry' {
   if (e instanceof ScanTimedOut) { finish(db, job, 'failed', 'scan_timeout', null, null, ledger); return 'failed' }
   if (e instanceof ScanStopped) return 'done' // nothing to retry or fail: the stop/re-claim owns the row; queue completion or a stale token is a no-op
+  // A paid call answered but its cost could not be saved: the scan ends with its own status, never retried (a retry would pay again) and never reported as an empty search.
+  if (e instanceof SpendAccountingFailed) { finish(db, job, 'failed', 'accounting_failed', null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused) { finish(db, job, 'failed', 'budget_stopped', null, null, ledger); return 'failed' } // a refused call is never retried: attempts must not multiply spend
   const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error')
   if (err.kind === 'auth') {
@@ -759,7 +775,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
   const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, tfLimits().searchesPerScan - direct.length - 2))
   const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
-  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, modelQueries)
+  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof SpendAccountingFailed || (e instanceof ProviderError && e.kind === 'auth')) throw e; return '' }), job.query!, modelQueries)
   if (diag) diag.info.query_source = plan.source
   const q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
@@ -838,7 +854,7 @@ export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean;
 async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   // `queries` (the corroboration search) replaces the model's query planning: they name the companies whose second half is missing.
-  const plan = queries ? { queries, source: 'model' as const } : queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
+  const plan = queries ? { queries, source: 'model' as const } : queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof SpendAccountingFailed) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
@@ -1018,7 +1034,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
     // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
     // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
-    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial) }
+    const providers_ = spendLimit === null ? baseProviders : { ...baseProviders, [vendor]: flagAccounting(job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial)) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
@@ -1073,6 +1089,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
+        if (e instanceof SpendAccountingFailed) throw e // a paid call whose cost was not recorded ends the scan, never an empty result
         if (e instanceof SpendRefused) budgetRefused = true
         leads = null
       }
@@ -1100,7 +1117,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         ledger.record('search:news', newsStatus(leads, note), note.searched ? note.hits : null)
         if (leads) { ledger.candidates('search:news', leads); ledger.candidates(NEWS_SOURCE, leads) }
       } catch (e) {
-        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         leads = null
       }
@@ -1163,7 +1180,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           ledger.record('corroborate:news', 'started')
           let found: LeadDraft[] | null = null
           try { found = await newsLeads(job, icpForSources, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, withGeography(targets.map(t => t.query), icpForSources.where)) }
-          catch (e) { if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e }
+          catch (e) { if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e }
           ledger.record('corroborate:news', newsStatus(found, note), note.searched ? note.hits : null)
           if (found?.length) { ledger.candidates('corroborate:news', found); for (const l of found) leads.push(l) }
         }
@@ -1247,7 +1264,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
-        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused) throw e
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         ledger.record('fallback:news', 'error')
       }
