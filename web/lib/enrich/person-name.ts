@@ -6,7 +6,7 @@
 //
 // Contract and residual limits: this is a bounded lexicon, not an identity proof. ROLE/DEPT/TITLE/FILLER list
 // generic role-mailbox, department/team-function and job-title words that providers put in the name field when they
-// have no person - mailbox words ("Info", "Sales Team"), department and function labels ("Administration", "Orders",
+// have no person - mailbox words ("Info", "Sales Team"), department and function labels ("Administration", "Orders", "Board of Directors", "Bookkeeping",
 // "Engineering Team", "Lead Generation", "Public Relations"), and job titles ("Sales Representative", "Team Lead",
 // "Chief Executive Officer", "Managing Director", "COO", "VP Sales", "Project Manager", "Support Specialist",
 // "Executive Assistant", "Staff"). A title or the team's own label is not a person either. The every-word rule
@@ -24,7 +24,7 @@ import { ROLE } from '../connectors/sitecrawl.ts'
 
 // Department words a provider puts in the name field when it has no person: the "name" is the team. Kept out of
 // ROLE (the crawl's mailbox list) so this guard can grow without changing what the crawl treats as a role inbox.
-const DEPT = /^(customer|success|careers?|hiring|manager|marketing|reps?|hr|dev|service|desk|human|resources|recruiting|recruitment|talent|acquisition|billing|accounts?|payable|reception|dept|no|reply|development|front|finance|department|operations?|procurement|legal|it|technical|account|management|dispatch|accounting|payroll|care|receptionist|orders?|store|production|purchasing|logistics|shipping|warehouse|claims|quotes|webmaster|helpdesk|experience|client|services|administration|inside|generation|leadership|growth|events|community|content|design|product|engineering|data|security|compliance|projects?|programs?|programmes?|communications?|pr|public|relations|strategy|research|creative|revenue|members?|tech|shift)$/i
+const DEPT = /^(customer|success|careers?|hiring|manager|marketing|reps?|hr|dev|service|desk|human|resources|recruiting|recruitment|talent|acquisition|billing|accounts?|payable|reception|dept|no|reply|development|front|finance|department|operations?|procurement|legal|it|technical|account|management|dispatch|accounting|payroll|care|receptionist|orders?|store|production|purchasing|logistics|shipping|warehouse|claims|quotes|webmaster|helpdesk|experience|client|services|administration|inside|generation|leadership|growth|events|community|content|design|product|engineering|data|security|compliance|projects?|programs?|programmes?|communications?|pr|public|relations|strategy|research|creative|revenue|members?|tech|shift|boards?|bookkeeping)$/i
 // Job-title words a provider puts in the name field when it has no person: the "name" is the role ("Sales
 // Representative", "Team Lead", "Head of Sales", "Chief Executive Officer", "Managing Director", "Owner",
 // "Founder", "Co-Founder", "Senior Vice President of Sales"). Same every-word rule, so a name carrying a title
