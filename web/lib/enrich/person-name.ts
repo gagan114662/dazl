@@ -7,7 +7,7 @@ import { ROLE } from '../connectors/sitecrawl.ts'
 
 // Department words a provider puts in the name field when it has no person: the "name" is the team. Kept out of
 // ROLE (the crawl's mailbox list) so this guard can grow without changing what the crawl treats as a role inbox.
-const DEPT = /^(customer|success|careers?|hiring|manager|marketing|rep|hr|dev)$/i
+const DEPT = /^(customer|success|careers?|hiring|manager|marketing|rep|hr|dev|service|desk|human|resources|recruiting|recruitment|talent|acquisition|billing|accounts|payable|reception|dept|no|reply|development)$/i
 // Neutral filler that never turns words into a person ("Contact Us"). It only counts alongside at least one real
 // role/department word, so filler alone is not a verdict either way.
 const FILLER = /^(us|the|at)$/i
