@@ -34,6 +34,7 @@ import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/clien
 import { classify, type Scope } from './scope.ts'
 import { foreignKeys, tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
 import { recordTx } from '../audit.ts'
+import { displayStopReason } from '../outreach/lifecycle.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
@@ -92,8 +93,11 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   const tables: TenantExport['tables'] = {}
   const redacted = new Set<string>()
+  const STOP_REASON_COLUMNS: Record<string, Set<string>> = { sequences: new Set(['stop_reason']), followup_threads: new Set(['stopped']), outreach_messages: new Set(['error']) }
   const clean = (t: string, r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).map(([k, v]) => {
     if (REDACTED_COLUMN.test(k) && v != null) { redacted.add(`${t}.${k}`); return [k, '[redacted: stored credential]'] }
+    // Never export a conversion kind: legacy converted_* reasons read as the generic policy stop.
+    if (STOP_REASON_COLUMNS[t]?.has(k) && typeof v === 'string') v = displayStopReason(v)
     return [k, v instanceof Uint8Array ? { base64: Buffer.from(v).toString('base64') } : typeof v === 'bigint' ? Number(v) : v]
   }))
   const profile = await db.get<Record<string, unknown>>('SELECT * FROM users WHERE id = ?', [tenant])

@@ -2,7 +2,7 @@ import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { ownerGuarded } from '../llm/owner-guard.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
-import { conversionBlockedNow, drainVerifiedPendingLifecycle } from './lifecycle.ts'
+import { conversionBlockedNow, displayStopReason, drainVerifiedPendingLifecycle } from './lifecycle.ts'
 import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -358,7 +358,7 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
       const gaps = isTestRecipient(db, tenantId, r.to_email) ? TEST_GAPS_S : GAPS_S
       nextDue = r.step1_sent + gaps[r.steps_sent] // steps_sent counts step 1: index of the NEXT step
     }
-    out.set(r.lead_id, { status: r.status, step: r.steps_sent, next_due_at: nextDue, stop_reason: r.stop_reason })
+    out.set(r.lead_id, { status: r.status, step: r.steps_sent, next_due_at: nextDue, stop_reason: displayStopReason(r.stop_reason) })
   }
   return out
 }

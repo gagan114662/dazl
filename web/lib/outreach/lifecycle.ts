@@ -34,6 +34,20 @@ import { transitionToOnboarding, transitionToOnboardingTx } from './onboarding-p
 
 export type LifecycleKind = 'signup' | 'activation' | 'payment'
 
+// The generic tenant-visible reason when a conversion (signup/activation/payment) stops
+// pending acquisition work. The conversion kind is the seller's own business state - never
+// written where the contacting customer could read it (lead cards, follow-ups, inbox, export).
+// The kind itself lives server-side in lifecycle_events and the onboarding transition.
+export const POLICY_STOP = 'policy_stop'
+// Read-time mapping for legacy rows written before the generic reason shipped (converted_signup,
+// converted_activation, converted_payment). Call at every tenant-readable boundary; never persist
+// the result back (no protected-data rewrite).
+export function displayStopReason(reason: string | null | undefined): string | null {
+  if (reason && reason.startsWith('converted_')) return POLICY_STOP
+  return reason ?? null
+}
+
+
 export function migrateLifecycle(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS lifecycle_events (
@@ -60,7 +74,7 @@ export const LIFECYCLE_NOT_CONVERTED = `NOT EXISTS (SELECT 1 FROM lifecycle_even
 // Stops every automated pending acquisition step addressed to that exact email across tenants. Runs inside
 // the caller's transaction. Returns the number of rows stopped.
 function cancelPendingFor(db: Database.Database, email: string, kind: LifecycleKind, now: number): number {
-  const reason = `converted_${kind}`
+  const reason = POLICY_STOP
   let stopped = 0
   const tenants = new Set<string>() // tenants whose acquisition work this conversion stopped
   // Approved/active cold sequences: the audited stop path, per owning tenant.
@@ -184,7 +198,7 @@ export function conversionEventFor(db: Database.Database, rawEmail: string): { k
 // migrations (sqlite-migrations.ts / pg 0029), as for every ported module.
 
 function* cancelPendingForTx(t: Tx, email: string, kind: LifecycleKind, now: number): TxBody<number> {
-  const reason = `converted_${kind}`
+  const reason = POLICY_STOP
   let stopped = 0
   const tenants = new Set<string>()
   const seqs = yield* t.all<{ tenant_id: string; lead_id: string }>("SELECT tenant_id, lead_id FROM sequences WHERE status IN ('approved','active') AND lower(trim(to_email)) = ?", [email])
