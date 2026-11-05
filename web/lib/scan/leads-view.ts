@@ -25,7 +25,7 @@ export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCo
 // grading said there was no reason to contact now (intent 0). A graded lead now shows its grade - fit, and whether a
 // live trigger was confirmed - and the raw relevance score is only shown, labelled as such, for ungraded leads.
 export function scoreLabel(score: number, fit: number | null, intent?: number | null, sourceKind?: string | null): string {
-  if (fit == null && (sourceKind === 'hiring_feed' || sourceKind === 'manual_source')) return 'not graded'
+  if (fit == null && (sourceKind === 'hiring_feed' || sourceKind === 'manual_source' || sourceKind === 'first_party')) return 'not graded'
   if (fit === 0) return intent == null ? 'scoring failed' : 'not a fit'
   if (fit == null) return `relevance ${score} (not graded)`
   return `fit ${fit}/5${intent == null ? '' : intent === 0 ? ', no live trigger confirmed' : `, timing ${intent}/5`}`

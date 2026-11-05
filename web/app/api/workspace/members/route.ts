@@ -29,7 +29,8 @@ export async function PATCH(req: NextRequest) {
   } catch (e) { return memberFail(e) }
 }
 
-// Remove another member; access ends on their next request. Leaving yourself is POST /api/workspace/leave.
+// Remove another member; their devices acting in this workspace are signed out (offboarding, docs/design/sessions.md).
+// Leaving yourself is POST /api/workspace/leave.
 export async function DELETE(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })

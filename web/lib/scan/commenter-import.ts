@@ -17,6 +17,7 @@ import { addEnrichment, audit, auditSettleClaim, auditTryReserve, getEnabledCred
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
 import { CreditRefused, refundCredits, reserveCredits, settleCredits, type CreditHold } from '../enrich/credit-pool.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
+import { providerContactLabel } from '../people/currency.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection, regradeFromKeptContacts } from './contact-agreement.ts'
 import { getMasterKey } from '../secrets.ts'
 
@@ -278,7 +279,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
           audit(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: why, results: 0 })
           for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:apollo', reason: why, sourceUrl: `https://${orgDomain}/` })
         }
-        for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
+        for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:apollo', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : 'empty', results: people.length }, peopleGate.id, people.length ? 'ok' : 'empty', people.length)
       } catch (e) {
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, peopleGate.id, e instanceof EnrichError ? e.code : 'error', 0)
@@ -304,7 +305,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
           audit(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: reason, results: 0 })
           for (const leadId of g.leadIds) recordContactRejection(db, tenantId, leadId, { connector: 'enrich:pdl', reason, sourceUrl: `https://www.linkedin.com/company/${encodeURIComponent(g.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}` })
         }
-        for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:pdl', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
+        for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:pdl', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:pdl', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), results: people.length }, pdlGate.id, people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), people.length)
       } catch (e) {
         auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, pdlGate.id, e instanceof EnrichError ? e.code : 'error', 0)

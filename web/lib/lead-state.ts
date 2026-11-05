@@ -18,7 +18,8 @@ export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed
 // Under a time window none of them is reviewable: the window hold survives confirmation (researchCause gives undated / older).
 export const REVIEWABLE: ReadonlySet<string> = new Set(['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'location_unconfirmed',
   'no_event_evidence', 'no_sales_hiring_evidence', 'source_review_required', 'self_description', 'trial_budget_reached', 'legacy_currentness_review',
-  'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_future_date', 'event_date_stale'])
+  'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_future_date', 'event_date_stale',
+  'first_party_signal']) // #390: the tenant's own signed, consented event; the owner reviews it like any held lead (other gates still apply)
 // A REQUIRED check that could not run (lib/scan/held-state.ts requiredGateHeld): no confirmation clears it, only the check running again and passing.
 export const REQUIRED_GATE_REASONS: ReadonlySet<string> = new Set(['sales_hiring_check_failed'])
 const CAUSE: Record<string, ResearchCause> = {

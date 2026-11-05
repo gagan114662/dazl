@@ -1,0 +1,1399 @@
+{
+ "_embedded": {
+  "enheter": [
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838791352"
+     }
+    },
+    "aktivitet": [
+     "Drift av restaurant/kafe."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Veksthusfløtten 55"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0594",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-06",
+    "fravalgRevisjonDato": "2026-10-31",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-31",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "PUNJABI MASALA AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "838791352",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-31",
+    "registreringsdatoForetaksregisteret": "2026-10-31",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-06",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-06",
+    "vedtektsfestetFormaal": [
+     "Restaurantdrift og virksomhet som naturlig står i forbindelse med",
+     "dette, herunder deltakelse i andre selskaper."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938786658"
+     }
+    },
+    "aktivitet": [
+     "Tvangsavviklingsbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Grønland 30"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0188",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "CHICKEN HOUSE AS TVANGSAVVIKLINGSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938786658",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Stephan Didrich Eid",
+      "Parkveien 43"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0258",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-30",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-11-02",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-30",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938780129"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Fridtjof Nansens plass 8"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0160",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av barer",
+     "kode": "56.300"
+    },
+    "navn": "MIAMI OSLO AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938780129",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Kristoffer Aasebø",
+      "Postboks 6604 St. Olavs plass"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0129",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-29",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-10-31",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-29",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938766126"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Hegdehaugsveien 36A"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0352",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "AKKA ARABISK ESPRESSO AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938766126",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Kristoffer Aasebø",
+      "Postboks 6604 St. Olavs plass"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0129",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-28",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-28",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938767068"
+     }
+    },
+    "aktivitet": [
+     "Drift av pub."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Rådhusgata 2"
+     ],
+     "kommune": "SKIEN",
+     "kommunenummer": "4003",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3724",
+     "poststed": "SKIEN"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-08",
+    "fravalgRevisjonDato": "2026-10-28",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-28",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av barer",
+     "kode": "56.300"
+    },
+    "navn": "SKIEN BARDRIFT AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938767068",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "Pilestredet 15B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0164",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-28",
+    "registreringsdatoForetaksregisteret": "2026-10-28",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-08",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-08",
+    "vedtektsfestetFormaal": [
+     "Drift av bar og serveringssted med salg av mat og drikke, og annen",
+     "virksomhet som naturlig henger sammen med dette, herunder deltakelse i",
+     "andre selskaper med tilsvarende virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938757038"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Bernt Ankers gate 27"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0183",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "ANCHAU AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938757038",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Håvard Wiker",
+      "Postboks 1983 Vika"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0125",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-10-28",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-27",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938758042"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Jerikoveien 23A"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1067",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "CAZANEGRA AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938758042",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Håvard Wiker",
+      "Postboks 1983 Vika"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0125",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-10-28",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-27",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938762767"
+     }
+    },
+    "aktivitet": [
+     "Drift av gatekjøkken."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Ragnhild Schibbyes vei 31"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0968",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-08",
+    "fravalgRevisjonDato": "2026-10-27",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-27",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "SMASH MAT AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938762767",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registreringsdatoForetaksregisteret": "2026-10-27",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-08",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-08",
+    "vedtektsfestetFormaal": [
+     "Selge varer og tjenester innen gatekjøkkendrift og annet som",
+     "naturlig sammenfaller med dette, samt deltakelse i andre selskaper,",
+     "investeringer og nærliggende virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938750386"
+     }
+    },
+    "aktivitet": [
+     "Drift av restaurant/kafe."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Mandalls gate 10"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0190",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-20",
+    "fravalgRevisjonDato": "2026-10-26",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 300,
+     "belop": 30000,
+     "innfortDato": "2026-10-26",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "LOS CUATES AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938750386",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-26",
+    "registreringsdatoForetaksregisteret": "2026-10-26",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-20",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-20",
+    "vedtektsfestetFormaal": [
+     "Selskapet skal drive en meksikansk taqueria i Grønland i Oslo under",
+     "navnet El Trompo. Selskapet skal tjene penger på salg av mat og drikke",
+     "til gjester i restauranten, takeaway og catering. Selskapet kan også",
+     "drive annen virksomhet som er naturlig knyttet til dette, og delta i",
+     "andre selskaper med tilsvarende formål."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938747784"
+     }
+    },
+    "aktivitet": [
+     "Catering."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Anton Tschudis vei 29B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0583",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Personlig næringsdrivende",
+     "kode": "8200"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "FREDRIK STRØM-LARSEN",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+      }
+     },
+     "beskrivelse": "Enkeltpersonforetak",
+     "kode": "ENK"
+    },
+    "organisasjonsnummer": "938747784",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-26",
+    "registreringsdatoForetaksregisteret": "2026-10-26",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938733910"
+     }
+    },
+    "aktivitet": [
+     "Drift av pub."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Helgesens gate 8A"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0553",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-12",
+    "fravalgRevisjonDato": "2026-10-22",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-22",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av barer",
+     "kode": "56.300"
+    },
+    "navn": "KCCS AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938733910",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-22",
+    "registreringsdatoForetaksregisteret": "2026-10-22",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-12",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-12",
+    "vedtektsfestetFormaal": [
+     "Selge varer og tjenester innen pubdrift og annet som naturlig",
+     "sammenfaller med dette, samt deltakelse i andre selskaper,",
+     "investeringer og nærliggende virksomhet."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938724792"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Smalgangen 24"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0188",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "V GROUP AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938724792",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Viggo Scherger",
+      "Postboks 394 Sentrum"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0103",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-21",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-10-22",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-21",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938715688"
+     }
+    },
+    "aktivitet": [
+     "Drift av restaurant/kafe."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Vestlisvingen 188"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0969",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-07",
+    "fravalgRevisjonDato": "2026-10-20",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-20",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "MUNCH. AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938715688",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-20",
+    "registreringsdatoForetaksregisteret": "2026-10-20",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-07",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-07",
+    "vedtektsfestetFormaal": [
+     "Videre salg kiosk varer"
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938715637"
+     }
+    },
+    "aktivitet": [
+     "Drift av restaurant/kafe."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Helgesens gate 90"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0563",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-10-16",
+    "fravalgRevisjonDato": "2026-10-20",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-20",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "TØYENBADET KAFE AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938715637",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-20",
+    "registreringsdatoForetaksregisteret": "2026-10-20",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-16",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-10-16",
+    "vedtektsfestetFormaal": [
+     "Kafe med salg av mat og drikke"
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838707742"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Bakketoppen 3D"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1165",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "NAZDAR AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "838707742",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Egil Hatling",
+      "Postboks 1364 Vika"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0114",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-20",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-10-21",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-20",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938671419"
+     }
+    },
+    "aktivitet": [
+     "Restaurant."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Nebbejordet 29"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1266",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Personlig næringsdrivende",
+     "kode": "8200"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "FAMOUS LJAJIC RESTAURANT",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+      }
+     },
+     "beskrivelse": "Enkeltpersonforetak",
+     "kode": "ENK"
+    },
+    "organisasjonsnummer": "938671419",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-19",
+    "registreringsdatoForetaksregisteret": "2026-10-19",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938700931"
+     }
+    },
+    "aktivitet": [
+     "Drift av restaurant/kafe."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Kongens gate 6"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0153",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-09-15",
+    "fravalgRevisjonDato": "2026-10-19",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 100,
+     "belop": 30000,
+     "innfortDato": "2026-10-19",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "CAFÉ SERINE AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938700931",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "c/o Etna AS",
+      "Postboks 392 Sentrum"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0103",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-19",
+    "registreringsdatoForetaksregisteret": "2026-10-19",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-15",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-15",
+    "vedtektsfestetFormaal": [
+     "Serveringsvirksomhet og annen virksomhet som står i forbindelse med",
+     "dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938701695"
+     }
+    },
+    "aktivitet": [
+     "Drift av restaurant/kafe."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "c/o Jonas Faye-Schjøll Thommessen",
+      "Grefsenveien 5C"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0482",
+     "poststed": "OSLO"
+    },
+    "fravalgRevisjonBeslutningsDato": "2026-09-11",
+    "fravalgRevisjonDato": "2026-10-19",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "institusjonellSektorkode": {
+     "beskrivelse": "Private aksjeselskaper mv.",
+     "kode": "2100"
+    },
+    "kapital": {
+     "antallAksjer": 30000,
+     "belop": 30000,
+     "innfortDato": "2026-10-19",
+     "type": "Aksjekapital",
+     "valuta": "NOK"
+    },
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "ST. JUDES AS",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+      }
+     },
+     "beskrivelse": "Aksjeselskap",
+     "kode": "AS"
+    },
+    "organisasjonsnummer": "938701695",
+    "paategninger": [],
+    "registreringsdatoEnhetsregisteret": "2026-10-19",
+    "registreringsdatoForetaksregisteret": "2026-10-19",
+    "registrertIForetaksregisteret": true,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": false,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-09-11",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false,
+    "vedtektsdato": "2026-09-11",
+    "vedtektsfestetFormaal": [
+     "Drive med matservering, catering, take away og andre produkter som",
+     "naturlig faller sammen med dette, herunder å delta i andre selskaper",
+     "med lignende virksomhet. Servering av alkoholholdig drikke og drifting",
+     "av restaurant og annen aktivitet som naturlig er knyttet til dette."
+    ]
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938702861"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Bygdøy allé 1"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0257",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "FROGNER PUBDRIFT AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938702861",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Thomas Piro",
+      "Postboks 1752 Vika"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0122",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-19",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-10-20",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-19",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938692157"
+     }
+    },
+    "aktivitet": [
+     "Konkursbo."
+    ],
+    "erIKonsern": false,
+    "forretningsadresse": {
+     "adresse": [
+      "Drammensveien 164"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0277",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "konkurs": false,
+    "maalform": "Bokmål",
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "OM MAT AS KONKURSBO",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/KBO"
+      }
+     },
+     "beskrivelse": "Konkursbo",
+     "kode": "KBO"
+    },
+    "organisasjonsnummer": "938692157",
+    "paategninger": [],
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Morten Haugen",
+      "Postboks 394 Sentrum"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0103",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-16",
+    "registreringsdatoMerverdiavgiftsregisteret": "2026-09-01",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "2026-10-19",
+    "registrertIForetaksregisteret": false,
+    "registrertIFrivillighetsregisteret": false,
+    "registrertIMvaregisteret": true,
+    "registrertIPartiregisteret": false,
+    "registrertIStiftelsesregisteret": false,
+    "respons_klasse": "Enhet",
+    "stiftelsesdato": "2026-10-16",
+    "underAvvikling": false,
+    "underTvangsavviklingEllerTvangsopplosning": false
+   }
+  ]
+ },
+ "_links": {
+  "first": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=0&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "self": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "next": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=1&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "last": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=3&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  }
+ },
+ "page": {
+  "number": 0,
+  "size": 20,
+  "totalElements": 69,
+  "totalPages": 4
+ }
+}

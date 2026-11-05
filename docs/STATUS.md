@@ -44,6 +44,17 @@ Updated by the builder on every branch. Newest first.
 - b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
   (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:
   scan-runner settle, per-play caps outside scans, cost disclosure UI and threshold/stop events (web/docs/spend-safety.md).
+- PR #568 b/359-lifecycle-flow (#359 part 2): authenticated, audited request flow for tenant export/deletion
+  (session-scoped routes, owner+fresh-auth delete with explicit opt-out policy and resume, viewer+fresh-auth
+  export), the settings completion UI reporting retained exceptions, and operator list/resume/reapply controls
+  (dry-run default), and the off-database tombstone ledger writer (DAZL_TOMBSTONE_LEDGER; deletion refused while
+  unset) with the RECOVERY.md re-apply step. Real-route tests through the session loader; B byte-equivalent; a
+  restored pre-deletion copy re-applied from the route-written ledger. No live run yet.
+- b/404-acquisition-metrics (#404): owner-only `GET /api/growth/funnel` (`lib/growth/funnel.ts`) reports dazl's own
+  prospect -> qualified conversation -> signup -> usable result -> repeat -> paid -> retained funnel from recorded events
+  (no analytics vendor, no migration); Stripe `charge.refunded` now lands in the audit trail. Off until
+  `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost prices recorded model tokens (scans, drafting, qualification) and stays a lower bound (enrichment credits are not converted).
+
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
@@ -150,7 +161,8 @@ Updated by the builder on every branch. Newest first.
   membership tables, backfill, server-side resolution, role table) increment 2 (routes use tenantId, role check
   on every non-read handler) and increment 3 (invitations, members, switching, Settings > Team) in review; then
   #358 increment 1 (session inventory, revoke one/all, bounded reaper; docs/design/sessions.md) and
-  increment 2 (fresh authentication for secrets, billing and member changes) in review;
+  increment 2 (fresh authentication for secrets, billing and member changes) in review; increment 3 (offboarding:
+  removal revokes the member's sessions acting in that workspace and their pending invitations) in review (b/358-offboarding);
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review; next: #371.
@@ -164,8 +176,11 @@ Updated by the builder on every branch. Newest first.
 closed, their code shipped via #554/#552/#553/#556/#557, but none of the five issues below is fully verified
 complete — do not start new issues until each is closed or explicitly re-queued with what's still missing)
 
-1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Missing: the
-   customer-facing request flow, the completion UI, and operator controls.
+1. #359 (tenant export/deletion lifecycle): export/deletion code shipped (part 1, ex-#455/#554). Part 2 in
+   review (PR #568, b/359-lifecycle-flow): the request flow (GET scope inventory, POST export, POST delete with
+   policy choice + resume), the settings completion UI with retention exceptions, and operator controls
+   (scripts/tenant-lifecycle.mts list/resume/reapply), the tombstone ledger writer. Missing: live acceptance on a
+   disposable tenant, DAZL_TOMBSTONE_LEDGER set on the host (ops/backup now copies it off-host), the owner's retention decisions.
 2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
    default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
    holds.
@@ -189,7 +204,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 2. #380 explicit AND/OR/NOT targeting with per-condition proof.
 3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
 4. #382 real Apollo-to-PDL enrichment fallback waterfall (per-lead per-provider outcomes, timeout/skip notices in the scan view: PR on `b/382-enrich-waterfall`, in review; stubbed providers only, not run live).
-5. #383 buyer-role contact filtering before result truncation (only a fixture harness exists so far — PR #566).
+5. #383 buyer-role contact filtering before result truncation (in review: PR #566, b/383-buyer-role-acceptance — role filter before the page cap, former/assistant-to rejected, no person from a generic inbox, and verified-current vs search-result-only contacts on the owner definition, each pinned by the acceptance harness).
 6. #384 separate published provenance from deliverability/person-route status.
 7. #377 fit rationale separated from proof-backed timing (closes the ranking-quality loop). In review: b/377-fit-rationale-timing (durable versioned timing proof lifts the
    currentness hold only for proven event + confirmed domain + named person/published route; fit rationale on the card).
@@ -197,8 +212,9 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
    advantages, start once 1-7 ship.
    #387 in review: b/387-event-detection (monitor runs alert only on novel, dated, in-window, verified events: new company /
    new signal / now reachable, deduped across plays, per-monitor alert policy, latency and missed-run report).
-9. #386 real lookalikes, #388 tested source coverage, #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
-   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+9. #386 real lookalikes, #388 tested source coverage (in review: b/388-source-adapters, Norway business register adapter for new businesses and new locations; other regions and procurement evaluated and blocked, see the capability matrix), #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals (in review: b/390-first-party-signals, signed consent-gated endpoint for the tenant's own form/demo/account-level visit events as dated, deduped first-party leads; no IP resolution), #391
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority. #386 in review: b/386-outcome-lookalikes (supplied customers +
+   negatives -> held-out-checked features -> scan profile; supplied accounts never returned; docs/design/lookalike-discovery.md).
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
     as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
 

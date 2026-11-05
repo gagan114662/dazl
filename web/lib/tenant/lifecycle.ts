@@ -25,8 +25,8 @@
 //
 // Backups: a restore brings back rows deleted after the backup was taken, and loses tombstones written since.
 // tombstoneLedgerEntry() is the off-database record of a deletion and reapplyTombstones() re-runs every ledgered
-// deletion on a restored store; both are library functions in this part: nothing writes the line or calls the
-// re-application yet (the request flow and the recovery runbook of part 2 do; docs/TENANT-LIFECYCLE.md).
+// deletion on a restored store. The request flow writes the line (lib/tenant/ledger.ts) before any data step, and the
+// recovery plan re-applies it (scripts/tenant-lifecycle.mts --reapply; docs/TENANT-LIFECYCLE.md, docs/RECOVERY.md).
 //
 // No retention policy is decided here: deleteTenant() takes the policy as an argument and refuses to run without an
 // explicit decision on opt-outs (suppressions). The owner's decisions are listed in docs/TENANT-LIFECYCLE.md.
@@ -48,6 +48,20 @@ export const ALWAYS_RETAINED: Record<string, string> = {
   evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content',
   audit_events: 'append-only audit trail (lib/audit.ts); redacted at the source, and its delete trigger would refuse the erase anyway',
   onboarding_audit: 'append-only opt-in/withdrawal/enrollment evidence (lib/outreach/onboarding-policy.ts); content-free at the source (no emails), and its delete trigger would refuse the erase anyway',
+}
+
+// Row counts per tenant-owned table for one tenant: the request UI's scope inventory (what an export or a
+// deletion covers), same ownership resolution the deletion itself uses.
+export async function tenantTableCounts(d: DbLike, tenant: string): Promise<Record<string, number>> {
+  const db = asDb(d)
+  const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
+  const counts: Record<string, number> = {}
+  for (const t of [...scope.keys()].sort()) {
+    const w = owned(scope, t, tenant)
+    const n = Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM "${t}" WHERE ${w.sql}`, w.params))?.n ?? 0)
+    if (n > 0) counts[t] = n
+  }
+  return counts
 }
 
 export interface DeletionPolicy {
