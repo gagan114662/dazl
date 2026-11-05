@@ -41,6 +41,10 @@ Updated by the builder on every branch. Newest first.
 
 ## In review (code fixes only)
 
+- b/404-acquisition-metrics (#404): owner-only `GET /api/growth/funnel` (`lib/growth/funnel.ts`) reports dazl's own
+  prospect -> qualified conversation -> signup -> usable result -> repeat -> paid -> retained funnel from recorded events
+  (no analytics vendor, no migration); Stripe `charge.refunded` now lands in the audit trail. Off until
+  `DAZL_GROWTH_TENANT_ID` names the growth workspace. Synthetic cohorts only; cost prices recorded model tokens (scans, drafting, qualification) and stays a lower bound (enrichment credits are not converted).
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
@@ -196,7 +200,8 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
    #387 in review: b/387-event-detection (monitor runs alert only on novel, dated, in-window, verified events: new company /
    new signal / now reachable, deduped across plays, per-monitor alert policy, latency and missed-run report).
 9. #386 real lookalikes, #388 tested source coverage (in review: b/388-source-adapters, Norway business register adapter for new businesses and new locations; other regions and procurement evaluated and blocked, see the capability matrix), #389 technographics (in review: b/389-technographics, crawl-detected tech as an explicit targeting filter + dated added/removed change signal), #390 first-party signals, #391
-   multilingual, #392 API/MCP — by measured marginal yield, lowest priority.
+   multilingual, #392 API/MCP — by measured marginal yield, lowest priority. #386 in review: b/386-outcome-lookalikes (supplied customers +
+   negatives -> held-out-checked features -> scan profile; supplied accounts never returned; docs/design/lookalike-discovery.md).
 10. #372 run the actual benchmark (dazl vs Pancake vs Gojiberry vs plain ChatGPT, blind-reviewed, precision@5/@10)
     as soon as enough of 1-7 ships to make the comparison meaningful — not before, and not skipped after.
 
