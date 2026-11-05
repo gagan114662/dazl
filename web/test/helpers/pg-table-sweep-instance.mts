@@ -161,6 +161,7 @@ const leak = async (text: string, sent: string | null) => {
   if (!plain.includes(otherTag)) return false
   const scopes = tagScopes(plain)
   if (scopes === null) { const tok = tokensOf(plain).find(t => !(sent ?? '').includes(t)); if (tok) leakWhy = `branch=unstructured token=${tok}`; return !!tok }   // no row structure: echo only
+  const covered = new Set<string>()
   for (const obj of scopes) {
     // the identity rows (users, organizations) carry the tenant as their own `id`: such a row self-identifies only
     // when that id is this caller's (any other id is not an identity, so the row stays unidentified)
@@ -168,13 +169,19 @@ const leak = async (text: string, sent: string | null) => {
     for (const [k, v] of Object.entries(obj)) {
       if (typeof v !== 'string') continue
       for (const tok of tokensOf(v)) {
-        if ((sent ?? '').includes(tok)) continue                    // (a) this very call's echo
-        if (id === me && (await own()).includes(tok)) continue     // (b) the row self-identifies as the caller's AND the value is in its rows
+        if ((sent ?? '').includes(tok)) { covered.add(tok); continue }                    // (a) this very call's echo
+        if (id === me && (await own()).includes(tok)) { covered.add(tok); continue }     // (b) the row self-identifies as the caller's AND the value is in its rows
         leakWhy = `branch=row token=${tok} key=${k} rowIdentity=${id ?? 'NONE'} rowKeys=${Object.keys(obj).join(',')} row=${JSON.stringify(obj).slice(0, 300)} inOwnRows=${id === me ? (await own()).includes(tok) : 'n/a'}`
         return true                                                 // (c) foreign or unidentified row: leak
       }
     }
   }
+  // Every OTHER token occurrence must still be accounted for. tagScopes only collects objects that hold the token as
+  // a DIRECT string value, so a token inside an array of strings ("ids": ["TAG~x"]), a bare array, or an array of
+  // arrays collects no scope and the loop above never judges it. Any token not sent by this call and not covered by a
+  // judged scope is a leak no per-object rule examined - fail closed, never a silent pass.
+  const unscoped = tokensOf(plain).find(t => !covered.has(t) && !(sent ?? '').includes(t))
+  if (unscoped) { leakWhy = `branch=unscoped token=${unscoped}`; return true }
   return false
 }
 const watch = async () => snapshot(db, me)
@@ -216,6 +223,12 @@ await phase(!first, 2)
     // R5: once the value has left the caller's rows it is foreign again
     if (!(await leak(JSON.stringify({ tenant: me, tables: { [t]: [{ [tenantCol]: me, [textCol]: planted }] } }), null))) violations.push(`detector provenance wrong: value excused after it left the caller's rows`)
   }
+  // R7: a foreign token inside an array of strings collects no row scope
+  if (!(await leak(JSON.stringify({ ids: [`${otherTag}~x`] }), null))) violations.push(`detector red plant NOT caught: foreign token in an array of strings excused`)
+  // R8: a bare array carrying a foreign token collects no row scope either
+  if (!(await leak(JSON.stringify([`${otherTag}~x`]), null))) violations.push(`detector red plant NOT caught: foreign token in a bare array excused`)
+  // R9: an array of arrays inside an own-identity export
+  if (!(await leak(JSON.stringify({ tenant: me, tables: { t: [[`${otherTag}~x`, 1]] } }), null))) violations.push(`detector red plant NOT caught: foreign token in nested arrays inside an own-identity export excused`)
   // identity rows: the caller's own users row (its id is the tenant) carrying a value the caller stored there is NOT a
   // leak (L2); the same row shape under another id is unidentified, so the token is a leak (R6)
   const prevName = (await db.get<{ v: string | null }>('SELECT business_name AS v FROM users WHERE id = ?', [me]))?.v ?? null
