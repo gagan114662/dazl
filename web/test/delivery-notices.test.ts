@@ -220,6 +220,35 @@ test('a follow-up step id (dazl.s1.<send>@) in References correlates to the orig
   assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), true)
 })
 
+test('DNS failure during the MX lookup (reviewer-required negative): suppresses nobody, never crashes the sync', async () => {
+  const db = await setup(); seedSend(db)
+  // Same shape as the MX-resolved case above (SPF passes for a hosted MX, so provenance can only align through the
+  // recipient domain's DNS MX set) except the DNS lookup itself fails.
+  const n = withAuth(dsnNotice('dsn-dns-fail', { ref: '<dazl.s1.MID@acme.example>' }), 'mx.google.com; spf=pass smtp.mailfrom=mx1.mailhost.example')
+  const r = await syncReplies(db, 'A', { ...syncDeps(gmailStub([n])), resolveMxFor: async () => { throw new Error('DNS lookup failed') } })
+  assert.equal(r.error, undefined, 'a DNS failure never fails the whole sync')
+  assert.equal(r.bounces, 0)
+  assert.equal(r.reviews, 1, 'correlates (exact ref + recipient) but unverified provenance: review, not silently dropped')
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
+  assert.deepEqual(db.prepare("SELECT status FROM sequences WHERE id = 'seq1'").get(), { status: 'active' })
+  assert.equal((db.prepare("SELECT classification FROM inbound_messages WHERE gmail_id = 'dsn-dns-fail'").get() as { classification: string }).classification, 'bounce_review')
+})
+
+test('two sends referenced in one notice (reviewer-required negative): ambiguous, correlates to neither, suppresses nobody', async () => {
+  const db = await setup(); seedSend(db)
+  // A second recorded send to a different recipient, same tenant.
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url) VALUES ('L2', (SELECT scan_job_id FROM leads WHERE id = 'L1'), 'Pat', 'Other Co', 'pat@other.example', 's', 'https://n.example/b')").run()
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id) VALUES ('MID2', 'A', 'L2', 'pat@other.example', 'Intro', 'Hi Pat, thought you might find this interesting too.', 'sent', ?, 'g-sent-2', 'th-2')").run(NOW - 86400)
+  // A notice naming sam@buyer.example's recipient block but referencing BOTH MID and MID2 in its headers (two
+  // different valid dazl ids): referencedSendIds returns 2 ids, so nothing correlates to a single exact send.
+  const n = withAuth(withHeaders(dsnNotice('dsn-ambig', {}), { name: 'References', value: '<dazl.MID@acme.example> <dazl.MID2@acme.example>' }), GOOGLE_AR)
+  const r = await syncReplies(db, 'A', syncDeps(gmailStub([n])))
+  assert.equal(r.bounces, 0); assert.equal(r.reviews, 0, 'ambiguous correlation is unmatched, not a review item')
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
+  assert.equal(isSuppressed(db, 'A', 'pat@other.example'), false)
+  assert.equal((db.prepare("SELECT classification FROM inbound_messages WHERE gmail_id = 'dsn-ambig'").get() as { classification: string }).classification, 'bounce_unmatched')
+})
+
 test('in-thread and separate-thread notices for the same send share one ledger: one suppression, one count', async () => {
   const db = await setup(); seedSend(db)
   const inThread = { id: 'g-in', threadId: 'th-1', internalDate: String((NOW - 7200) * 1000), payload: { headers: [{ name: 'From', value: 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>' }], mimeType: 'text/plain', body: { data: b64('Delivery to sam@buyer.example failed permanently: 550 5.1.1 no such user') } } }
