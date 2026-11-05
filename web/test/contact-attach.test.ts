@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { enrichCommenters, migrateCommenterImport } from '../lib/scan/commenter-import.ts'
-import { contactAgreement, contactRejectionCode, recordContactRejection } from '../lib/scan/contact-agreement.ts'
+import { contactAgreement, contactRejectionCode, recordContactRejection, regradeFromKeptContacts } from '../lib/scan/contact-agreement.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, enrichmentsForLeads } from '../lib/connectors/store.ts'
 
@@ -17,7 +17,7 @@ test('markers: every refusal carries a structured contact_* code beside its reas
   assert.equal(contactRejectionCode('contact rejected: location mismatch Pico Rivera, CA vs New York, NY'), 'contact_location_mismatch')
   assert.equal(contactRejectionCode('contact rejected: location unconfirmed United States vs New York, NY'), 'contact_location_unconfirmed')
   assert.equal(contactRejectionCode('contact rejected: domain mismatch acme.io vs acme.com'), 'contact_domain_mismatch')
-  assert.equal(contactRejectionCode('contact rejected: organization mismatch other.com vs acme.com'), 'contact_domain_mismatch')
+  assert.equal(contactRejectionCode('contact rejected: organization mismatch other.com vs acme.com'), 'contact_org_mismatch') // the per-person consequence, distinct from the company-level refusal
   assert.equal(contactRejectionCode('contact rejected: no domain or location to confirm the company'), 'contact_unconfirmed')
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' }); db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
@@ -118,4 +118,22 @@ test('a no-domain NYC lead + Apollo returns a plausible same-name company in Pic
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l1'").get() as { company_domain: string | null }).company_domain, null, 'the lead’s identity was not set from the name match')
   const g = db.prepare("SELECT fit, intent, action, why FROM leads WHERE id = 'l1'").get() as { fit: number; intent: number; action: number; why: string }
   assert.deepEqual([g.fit, g.intent, g.action], [4, 3, 2]); assert.match(g.why, /^Contact unconfirmed: no domain to confirm the company\./)
+})
+
+// ---- the cited refusal is deterministic across a wall-clock boundary (CI flake class on 02c6c842: a loaded run ----
+// ---- crosses the second between the company-level and the per-person write, and time-first selection flips) ----
+test('regrade cites the company-level refusal even when the consequential per-person one is stamped a second later', () => {
+  const db = importDb('smileavenue.com'); db.prepare("UPDATE leads SET fit = 4, intent = 3, action = 4, why = 'Dental group, reachable VP.' WHERE id = 'l1'").run()
+  recordContactRejection(db, 'A', 'l1', { connector: 'enrich:apollo', reason: 'contact rejected: domain mismatch smileavenue-pr.com vs smileavenue.com', sourceUrl: 'https://smileavenue-pr.com/' })
+  recordContactRejection(db, 'A', 'l1', { connector: 'enrich:apollo', reason: 'contact rejected: organization mismatch smileavenue-pr.com vs smileavenue.com', sourceUrl: 'https://smileavenue.com/' })
+  // Force the loaded-run shape: the per-person (consequential) refusal is stamped strictly LATER than the
+  // company-level (root-cause) one. The cited reason must still be the company-level refusal, deterministically.
+  const t = Math.floor(Date.now() / 1000)
+  db.prepare("UPDATE lead_enrichments SET retrieved_at = ? WHERE kind = 'contact_rejected' AND value LIKE 'contact rejected: domain mismatch%'").run(t)
+  db.prepare("UPDATE lead_enrichments SET retrieved_at = ? WHERE kind = 'contact_rejected' AND value LIKE 'contact rejected: organization mismatch%'").run(t + 1)
+  const jobId = (db.prepare("SELECT scan_job_id AS j FROM leads WHERE id = 'l1'").get() as { j: string }).j
+  assert.equal(regradeFromKeptContacts(db, 'A', jobId), 1)
+  const g = db.prepare("SELECT action, why FROM leads WHERE id = 'l1'").get() as { action: number; why: string }
+  assert.equal(g.action, 2)
+  assert.match(g.why, /^Contact unconfirmed: domain mismatch smileavenue-pr\.com vs smileavenue\.com\. /)
 })
