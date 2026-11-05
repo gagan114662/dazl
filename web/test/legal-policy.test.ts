@@ -142,6 +142,8 @@ test('what survives account deletion is exactly the always-retained set', () => 
   assert.ok('sessions' in EXPORT_EXCLUDED)
   assert.match(privacy, /You can download an export of your workspace data in Settings/, 'self-service export exists with no config gate; the export excludes sessions/oauth_states and redacts credentials and conversion kinds, so never claim it is everything')
   assert.match(privacy, /self-service deletion is not switched on in the current service configuration/, 'delete route 503s while DAZL_TOMBSTONE_LEDGER is unset (production today): no working-feature claim from a button alone')
+  assert.match(privacy, /The Settings page shows whether deletion is available/, 'the panel surfaces availability (#665); the copy must not claim a delete control that is hidden while unavailable')
+  assert.ok(!/the Settings page also has a delete control/.test(privacy), 'no claim of a visible delete control: hidden whenever the ledger is unset')
   assert.match(privacy, /the deletion is not marked complete until the note is blank/, 'completion redaction is synchronous')
   assert.match(privacy, /the earlier erasure is not undone and completion must be retried/, 'failed completion does not undo the erasure; retry is not promised to succeed')
   assert.match(privacy, /stored Gmail tokens; the grant in your Google account is separate/)
