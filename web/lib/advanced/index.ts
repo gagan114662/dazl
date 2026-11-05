@@ -67,8 +67,15 @@ export function httpWorker(env: Record<string, string | undefined> = process.env
       })
       const text = await res.text()
       if (text.length > 1_000_000) return null
-      if (!res.ok) return parseWorkerFailure(JSON.parse(text))
-      return parseWorkerReply(JSON.parse(text))
+      const body: unknown = JSON.parse(text)
+      if (!res.ok) return parseWorkerFailure(body)
+      // A 200 that names a failure outcome is that failure; one with an error field or without an item list is not a
+      // search result (worker_error). Neither is ever a zero-result search (#436, #632 review).
+      const failed = parseWorkerFailure(body)
+      if (failed) return failed
+      const o = body !== null && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+      if (!o || (o.error !== undefined && o.error !== null) || !Array.isArray(o.items)) return null
+      return parseWorkerReply(body)
     } catch { return null }
   }
 }
