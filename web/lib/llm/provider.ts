@@ -54,6 +54,12 @@ export interface Provider {
 
 const TIMEOUT_MS = Number(process.env.SCAN_LLM_TIMEOUT_MS || 150_000)
 
+// Statuses the vendors document as REJECTED requests: Anthropic https://docs.anthropic.com/en/api/errors (400 invalid_request_error, 401
+// authentication_error, 403 permission_error, 404 not_found_error, 413 request_too_large, 429 rate_limit_error) and OpenAI
+// https://developers.openai.com/api/docs/guides/error-codes (400, 401, 403, 404, 429). Neither page states that a rejected request is not billed,
+// so this list is a reviewed ASSUMPTION about what a rejection means, not a vendor guarantee. Everything else (402, 408, 409, 422, 425, 499,
+// any 5xx, any unlisted 4xx) is uncertain and fails the scan closed.
+const DECLINED_STATUS: ReadonlySet<number> = new Set([400, 401, 403, 404, 413, 429])
 async function post(url: string, headers: Record<string, string>, body: unknown, fetchImpl: typeof fetch) {
   let res: Response
   try {
@@ -62,7 +68,7 @@ async function post(url: string, headers: Record<string, string>, body: unknown,
     throw new ProviderError('retry', 'network_or_timeout')
   }
   if (res.status === 401 || res.status === 403) throw new ProviderError('auth', 'key_rejected', 'declined')
-  if (!res.ok) throw new ProviderError('retry', `provider_${res.status}`, res.status >= 400 && res.status < 500 ? 'declined' : 'uncertain')
+  if (!res.ok) throw new ProviderError('retry', `provider_${res.status}`, DECLINED_STATUS.has(res.status) ? 'declined' : 'uncertain')
   try {
     return (await res.json()) as Record<string, unknown>
   } catch {

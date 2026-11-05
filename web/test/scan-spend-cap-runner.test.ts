@@ -13,6 +13,8 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import type { Provider } from '../lib/llm/provider.ts'
+import { reserveScanSpend } from '../lib/scan/spend-cap.ts'
 import { poolRows } from '../lib/llm/spend-pool.ts'
 import { scanSpendCalls, scanSpendRow, HARD_CAP_USD } from '../lib/scan/spend-cap.ts'
 
@@ -25,7 +27,7 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
-async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response } = {}) {
+async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master)
@@ -58,7 +60,7 @@ async function run(env: Record<string, string | undefined>, usage: boolean | Rec
   for (const [k, v] of Object.entries(all)) { saved[k] = process.env[k]; if (v === undefined) delete process.env[k]; else process.env[k] = v }
   globalThis.fetch = fetchImpl
   try {
-    const r = await runJob(db, job, { master, fetchPage: page, fetchImpl, score: false, judge: null })
+    const r = await runJob(db, job, { master, fetchPage: page, fetchImpl, score: false, judge: null, ...(x.providers ? { providers: x.providers } : {}) })
     const row = db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null }
     return { db, r, row, paid, calls: await scanSpendCalls(db, job.id, 'A'), ledger: (await scanSpendRow(db, job.id, 'A'))!,
       inOrder: db.prepare('SELECT kind, status, reason, reserve_usd FROM scan_spend_calls WHERE scan_job_id = ? ORDER BY rowid').all(job.id) as { kind: string; status: string; reason: string | null; reserve_usd: number }[] }
@@ -187,6 +189,9 @@ const answers: [string, () => Response, string, string | null][] = [
   ['timeout after send (connection dropped)', () => { throw new TypeError('socket hang up') }, 'failed', 'accounting_uncertain'],
   ['5xx (may have been processed)', () => new Response('{}', { status: 503 }), 'failed', 'accounting_uncertain'],
   ['200 with an unreadable body (answered, so billed)', () => new Response('not json', { status: 200 }), 'failed', 'accounting_uncertain'],
+  ['402 billing error (not in the reviewed rejection list)', () => new Response('{}', { status: 402 }), 'failed', 'accounting_uncertain'],
+  ['409 conflict (unlisted 4xx)', () => new Response('{}', { status: 409 }), 'failed', 'accounting_uncertain'],
+  ['408 (unlisted 4xx)', () => new Response('{}', { status: 408 }), 'failed', 'accounting_uncertain'],
   ['429 (vendor declined, nothing ran)', () => new Response('{}', { status: 429 }), 'pending', null],
   ['400 (vendor declined)', () => new Response('{}', { status: 400 }), 'pending', null],
 ]
@@ -199,6 +204,17 @@ for (const [name, ans, status, error] of answers) {
     assert.equal(reserved.n, error ? 1 : 0, error ? 'the maybe-billed call stays reserved (every reclaim path reads it)' : 'a declined call leaves nothing unsettled')
   })
 }
+
+test('runner failure class: an unclassified (non-ProviderError) exception after a paid request was reserved ends accounting_uncertain, one request, never retried', async () => {
+  let calls = 0
+  const boom: Provider = {
+    research: async () => { throw new Error('unused') }, configuredModel: () => 'claude-sonnet-4-5',
+    complete: async () => { calls++; await reserveScanSpend('llm.anthropic', () => 0.01); throw new TypeError('bug after the vendor answered') },
+  }
+  const x = await run(OWNER, true, { providers: { anthropic: boom, openai: boom } })
+  assert.equal(calls, 1, 'one request, no second attempt')
+  assert.deepEqual([x.row.status, x.row.error], ['failed', 'accounting_uncertain'])
+})
 
 // Pricing coverage (review of 97988fd5): the default Anthropic model is priced; anything else the runner could be
 // configured with is NOT assumed priced - it is refused at reservation (visible stop), never settled as free.
