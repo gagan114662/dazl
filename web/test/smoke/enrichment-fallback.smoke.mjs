@@ -68,7 +68,7 @@ try {
 
   // Save both keys through the real UI (values are invented; the net fence blocks any real provider call).
   await card.getByPlaceholder('Paste your Apollo.io API key').fill('smoke-apollo-key-0000000000000000')
-  await card.getByRole('button', { name: 'Save', exact: true }).first().click() // both slots render Save until Apollo shows Connected; PDL's is unique after
+  await card.getByRole('button', { name: 'Save Apollo.io key' }).click() // every Save in this card has its own accessible name (#594)
   try {
     await card.getByText(/Connected \(key ending 0000\)/).first().waitFor()
   } catch (e) {
@@ -77,7 +77,7 @@ try {
     throw e
   }
   await card.getByPlaceholder('Paste your People Data Labs API key').fill('smoke-pdl-key-00000000000000000000')
-  await card.getByRole('button', { name: 'Save', exact: true }).click()
+  await card.getByRole('button', { name: 'Save People Data Labs key' }).click()
   await card.getByText(/Connected \(key ending 0000\)/).nth(1).waitFor()
 
   // Both keys connected: the opt-in renders, OFF by default, with the paid-credit wording at the control.
@@ -102,6 +102,26 @@ try {
   await toggle2.waitFor()
   assert.equal(await toggle2.isChecked(), true, 'the opt-in survives a reload')
   p = path.join(out, 'fallback-on.png'); await card.screenshot({ path: p }); shots.push(p)
+
+  // Workspace credit limits through the real UI (#363): set, used-of-N, clear. The controls are per provider+window.
+  const monthRow = card.locator('div.flex', { hasText: 'Apollo per month' })
+  const monthInput = card.getByLabel('apollo month credit limit')
+  const [limResp] = await Promise.all([
+    page.waitForResponse(r => r.url().includes('/api/settings/enrichment') && r.request().method() === 'POST' && (r.request().postData() || '').includes('credit_limit')),
+    (async () => { await monthInput.fill('5'); await card.getByRole('button', { name: 'Save apollo month credit limit' }).click() })(),
+  ])
+  assert.ok(limResp.ok(), 'credit limit save accepted')
+  await monthRow.getByText('0 credits used of 5').waitFor()
+  let st = await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))
+  assert.equal(st.credits.find(c => c.provider === 'apollo' && c.window === 'month').limit, 5, 'GET reports the saved limit')
+  const [clrResp] = await Promise.all([
+    page.waitForResponse(r => r.url().includes('/api/settings/enrichment') && r.request().method() === 'POST' && (r.request().postData() || '').includes('credit_limit')),
+    (async () => { await monthInput.fill(''); await card.getByRole('button', { name: 'Save apollo month credit limit' }).click() })(),
+  ])
+  assert.ok(clrResp.ok(), 'credit limit clear accepted')
+  await monthRow.getByText('0 credits used, no limit set').waitFor()
+  st = await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))
+  assert.equal(st.credits.find(c => c.provider === 'apollo' && c.window === 'month').limit, null, 'GET reports the cleared limit')
 
   // The flag never surfaces as a connector, and GET reports it under its own field.
   const status = await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))

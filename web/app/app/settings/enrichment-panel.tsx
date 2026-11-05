@@ -47,7 +47,7 @@ export default function EnrichmentPanel() {
               ) : (
                 <div className="flex gap-2">
                   <input className="field flex-1" type="password" placeholder={`Paste your ${s.name} API key`} value={keys[s.id] ?? ''} onChange={e => setKeys({ ...keys, [s.id]: e.target.value })} />
-                  <button className="btn-primary" disabled={!(keys[s.id] ?? '').trim()} onClick={() => act({ connector: s.id, key: (keys[s.id] ?? '').trim() })}>Save</button>
+                  <button aria-label={`Save ${s.name} key`} className="btn-primary" disabled={!(keys[s.id] ?? '').trim()} onClick={() => act({ connector: s.id, key: (keys[s.id] ?? '').trim() })}>Save</button>
                 </div>
               )}
             </div>
@@ -74,7 +74,7 @@ export default function EnrichmentPanel() {
               {u.source !== 'operator' && (
                 <>
                   <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-1 w-20" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? ''} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
-                  <button className="underline" onClick={() => { const v = (limits[u.provider + u.window] ?? '').trim(); void act({ credit_limit: { provider: u.provider, window: u.window, limit: v === '' ? null : Number(v) } }) }}>Save</button>
+                  <button aria-label={`Save ${u.provider} ${u.window} credit limit`} className="underline" onClick={() => { const v = (limits[u.provider + u.window] ?? '').trim(); void act({ credit_limit: { provider: u.provider, window: u.window, limit: v === '' ? null : Number(v) } }) }}>Save</button>
                 </>
               )}
             </div>
