@@ -51,7 +51,7 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
   }) as unknown as typeof fetch
   const anth: Provider = {
     research: async () => { calls.research++; return { text: '', citedUrls: [] } },
-    complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { calls.complete++; calls.maxTokens.push(maxTokens ?? 0); calls.promptBytes += Buffer.byteLength(p); if ((failExtraction && maxTokens !== 300) || (noIcp && failExtraction)) throw new ProviderError('retry', 'provider_429', 'declined'); return maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead]) },
+    complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { calls.complete++; calls.maxTokens.push(maxTokens ?? 0); calls.promptBytes += Buffer.byteLength(p); if ((failExtraction && maxTokens !== 300) || (noIcp && failExtraction)) throw new ProviderError('retry', 'provider_429', 'rejected'); return maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead]) },
     // A real provider returns its usage; the runner settles each call to it (#363). Without usage the worst case stays reserved and the scan stops after one call.
     completeDetailed: async (k: string, p: string, f?: typeof fetch, maxTokens?: number) => ({ text: await anth.complete!(k, p, f, maxTokens), model: model ?? null, usage: { input_tokens: USAGE_IN, output_tokens: USAGE_OUT } }) as never,
     ...(model ? { configuredModel: () => model } : {}),

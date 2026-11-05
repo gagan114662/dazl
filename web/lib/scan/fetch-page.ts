@@ -181,8 +181,8 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
         body: JSON.stringify({ url: u.toString(), gotoOptions: { waitUntil: 'networkidle2', timeout: 20_000 } }),
         signal: AbortSignal.timeout(35_000),
       })
-    } catch (e) { throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' (#363)
-    if (hold && (res.ok || [400, 401, 403, 404, 413, 429].includes(res.status))) await hold.settle(res.ok ? hold.usd : null)
+    } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
+    if (hold) { if (res.ok || [400, 401, 403, 404, 413, 429].includes(res.status)) await hold.settle(res.ok ? hold.usd : null); else hold.uncertain() }
     if (!res.ok) return null
     const html = await res.text()
     return html.length > 0 && html.length <= MAX_BYTES ? html : null

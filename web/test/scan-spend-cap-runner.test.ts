@@ -27,7 +27,7 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
-async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
+async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { tfAnswer?: (u: string) => Response; served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master)
@@ -42,6 +42,7 @@ async function run(env: Record<string, string | undefined>, usage: boolean | Rec
       const q = (s: string) => (db.prepare(`SELECT count(*) AS n FROM scan_spend_calls WHERE scan_job_id = ? AND ${s}`).get(job.id) as { n: number }).n
       paid.push({ url: u, liveReservations: q("status = 'reserved'"), nonRefused: q("status <> 'refused'") })
     }
+    if (x.tfAnswer && u.startsWith('https://api.search.tinyfish.ai')) return x.tfAnswer(u)
     if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', snippet: QUOTE, date: recent }] }), { status: 200 })
     if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://jobs.example/hf', title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` }] }), { status: 200 })
     if (u === 'https://api.anthropic.com/v1/messages/count_tokens') return new Response(JSON.stringify({ input_tokens: 400 }), { status: 200 }) // free token counter used by guarded runs
@@ -192,18 +193,28 @@ const answers: [string, () => Response, string, string | null][] = [
   ['402 billing error (not in the reviewed rejection list)', () => new Response('{}', { status: 402 }), 'failed', 'accounting_uncertain'],
   ['409 conflict (unlisted 4xx)', () => new Response('{}', { status: 409 }), 'failed', 'accounting_uncertain'],
   ['408 (unlisted 4xx)', () => new Response('{}', { status: 408 }), 'failed', 'accounting_uncertain'],
-  ['429 (vendor declined, nothing ran)', () => new Response('{}', { status: 429 }), 'pending', null],
-  ['400 (vendor declined)', () => new Response('{}', { status: 400 }), 'pending', null],
+  ['429 (documented rejection)', () => new Response('{}', { status: 429 }), 'failed', 'provider_rate_limited'],
+  ['400 (documented rejection)', () => new Response('{}', { status: 400 }), 'failed', 'provider_rejected'],
 ]
 for (const [name, ans, status, error] of answers) {
-  test(`runner failure class: ${name} -> ${error ? status + '/' + error + ', exactly one model request' : 'not uncertain, nothing left unsettled'}`, async () => {
+  test(`runner failure class: ${name} -> ${status}/${error}, exactly one model request, never retried`, async () => {
     const x = await run(OWNER, true, { modelAnswer: ans })
-    if (error) { assert.equal(modelCalls(x), 1, 'no second vendor request in this attempt'); assert.equal(x.row.status, status); assert.equal(x.row.error, error) }
-    else { assert.ok(modelCalls(x) >= 1); assert.notEqual(x.row.error, 'accounting_uncertain', 'a vendor-declined request is not treated as maybe-billed') }
+    assert.equal(modelCalls(x), 1, 'no second vendor request in this attempt')
+    assert.equal(x.row.status, status); assert.equal(x.row.error, error)
     const reserved = x.db.prepare("SELECT count(*) AS n FROM scan_spend_calls WHERE status = 'reserved'").get() as { n: number }
-    assert.equal(reserved.n, error ? 1 : 0, error ? 'the maybe-billed call stays reserved (every reclaim path reads it)' : 'a declined call leaves nothing unsettled')
+    // a documented rejection is counted (kept) and never claimed uncharged; only a maybe-billed call stays reserved
+    assert.equal(reserved.n, error === 'accounting_uncertain' ? 1 : 0)
   })
 }
+
+test('runner in-attempt stop: a TinyFish search that may have been billed (timeout) stops EVERY later paid request of the attempt and the job never ends done', async () => {
+  const twoQueries = () => new Response(JSON.stringify({ id: 'msg', model: 'claude-sonnet-4-5-20250929', content: [{ type: 'text', text: JSON.stringify(['payroll specialist hiring Ohio', 'controller job posting Ohio', 'payroll manager opening Columbus']) }], usage: { input_tokens: 400, output_tokens: 60 } }), { status: 200 })
+  const x = await run(OWNER, true, { modelAnswer: twoQueries, tfAnswer: () => { throw new TypeError('socket hang up') } })
+  assert.ok(x.paid.some(p => p.url.startsWith('https://api.search.tinyfish.ai')), 'the TinyFish search was actually attempted')
+  const after = x.paid.slice(x.paid.findIndex(p => p.url.startsWith('https://api.search.tinyfish.ai')) + 1)
+  assert.equal(after.length, 0, 'zero paid requests (any vendor, model included) after the maybe-billed one')
+  assert.deepEqual([x.row.status, x.row.error], ['failed', 'accounting_uncertain'])
+})
 
 test('runner failure class: an unclassified (non-ProviderError) exception after a paid request was reserved ends accounting_uncertain, one request, never retried', async () => {
   let calls = 0

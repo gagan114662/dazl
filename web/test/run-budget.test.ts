@@ -220,7 +220,7 @@ test('RESTRICTED flags: a failed extraction stops the run as budget_stopped - ze
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async () => { researchCalls++; return { text: '', citedUrls: [] } },
-      complete: async () => { completeCalls++; throw new ProviderError('retry', 'boom', 'declined') },
+      complete: async () => { completeCalls++; throw new ProviderError('retry', 'boom', 'none') },
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
@@ -245,7 +245,7 @@ test('DEFAULT budget state: a retry re-runs the whole attempt including both pai
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async () => { researchCalls++; return { text: '', citedUrls: [] } },
-      complete: async () => { completeCalls++; throw new ProviderError('retry', 'boom', 'declined') },
+      complete: async () => { completeCalls++; throw new ProviderError('retry', 'boom', 'none') },
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }

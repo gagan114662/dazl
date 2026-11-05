@@ -14,14 +14,20 @@ export interface ResearchResult {
 export class ProviderError extends Error {
   // 'auth': key rejected (do not retry). 'retry': timeout, 429, 5xx, bad output.
   kind: 'auth' | 'retry'
-  // Whether the vendor may have billed the request that failed (#363): 'declined' = the vendor answered with a 4xx, it did not run the
-  // request; 'uncertain' = the request may have been processed (timeout or dropped connection after send, 5xx, an unreadable 200).
-  // An uncertain failure keeps its reservation unsettled and is never retried automatically.
-  charge: 'declined' | 'uncertain'
-  constructor(kind: 'auth' | 'retry', message: string, charge: 'declined' | 'uncertain' = 'uncertain') {
+  // What the failed request may have cost (#363):
+  //  'uncertain' = it may have been processed and billed (timeout or dropped connection after send, 5xx, an unlisted status, an unreadable answer,
+  //                anything unclassified). Its reservation stays unsettled; the scan ends accounting_uncertain; nothing retries it.
+  //  'rejected'  = the vendor answered with a documented rejection status (see DECLINED_STATUS). dazl does NOT claim it was uncharged, so it is
+  //                never retried automatically either: the scan ends 'provider_rejected' / 'provider_rate_limited' and the owner retries on purpose.
+  //  'none'      = no vendor request is outstanding (an answer already settled and then judged unusable, or a failure before anything was sent):
+  //                the ordinary retry applies.
+  charge: 'uncertain' | 'rejected' | 'none'
+  status?: number
+  constructor(kind: 'auth' | 'retry', message: string, charge: 'uncertain' | 'rejected' | 'none' = 'uncertain', status?: number) {
     super(message)
     this.kind = kind
     this.charge = charge
+    if (status !== undefined) this.status = status
   }
 }
 
@@ -67,8 +73,8 @@ async function post(url: string, headers: Record<string, string>, body: unknown,
   } catch {
     throw new ProviderError('retry', 'network_or_timeout')
   }
-  if (res.status === 401 || res.status === 403) throw new ProviderError('auth', 'key_rejected', 'declined')
-  if (!res.ok) throw new ProviderError('retry', `provider_${res.status}`, DECLINED_STATUS.has(res.status) ? 'declined' : 'uncertain')
+  if (res.status === 401 || res.status === 403) throw new ProviderError('auth', 'key_rejected', 'rejected', res.status)
+  if (!res.ok) throw new ProviderError('retry', `provider_${res.status}`, DECLINED_STATUS.has(res.status) ? 'rejected' : 'uncertain', res.status)
   try {
     return (await res.json()) as Record<string, unknown>
   } catch {
@@ -111,7 +117,7 @@ export const anthropicProvider: Provider = {
         { model: requested, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
         fetchImpl,
       )
-    } catch (e) { if (!(e instanceof ProviderError && e.charge === 'uncertain')) await hold?.settle(null); throw e } // an uncertain failure leaves its row 'reserved': maybe billed, never re-run automatically
+    } catch (e) { if (e instanceof ProviderError && e.charge !== 'uncertain') await hold?.settle(null); else hold?.uncertain(); throw e } // an uncertain failure leaves its row 'reserved': maybe billed, never re-run automatically
     const u = (json.usage ?? {}) as Obj
     const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
     const out: DetailedCompletion = {
@@ -145,7 +151,7 @@ export const openaiProvider: Provider = {
     const hold = await reserveScanSpend('llm.openai', () => modelCostUsd(requested, prompt, maxTokens))
     let json: Record<string, unknown>
     try { json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: requested, input: prompt, max_output_tokens: maxTokens }, fetchImpl) }
-    catch (e) { if (!(e instanceof ProviderError && e.charge === 'uncertain')) await hold?.settle(null); throw e }
+    catch (e) { if (e instanceof ProviderError && e.charge !== 'uncertain') await hold?.settle(null); else hold?.uncertain(); throw e }
     let text = ''
     for (const item of arr(json.output)) if (item.type === 'message') for (const part of arr(item.content)) if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
     const u = (json.usage ?? {}) as Obj

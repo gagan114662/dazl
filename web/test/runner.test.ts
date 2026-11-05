@@ -112,7 +112,7 @@ test('rejected key fails at once without retry; vendor-declined (429) failures r
   assert.equal(getJob(db, 'A', a)?.error, 'key_rejected')
 
   const b = createJob(db, 'B', input)
-  const boom = fake(async () => { throw new ProviderError('retry', 'provider_429', 'declined') })
+  const boom = fake(async () => { throw new ProviderError('retry', 'provider_429', 'none') })
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: boom, master }), 'retry')
   assert.equal(getJob(db, 'B', b)?.status, 'pending')
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: boom, master }), 'retry')

@@ -208,6 +208,11 @@ export function effectiveCapUsd(ctx: ScanSpendCtx): number | null {
   return Math.min(c, HARD_CAP_USD)
 }
 
+// A paid request of this attempt may have been billed and was left 'reserved' (a timeout, 5xx, unlisted status, unreadable answer): no
+// further paid request of ANY vendor is made in this attempt, so a stage that swallows the failure cannot pay for a fallback before the
+// scan ends. Process-local; across a restart the reaper/bind rules read the durable 'reserved' row instead.
+const uncertainAttempts = new WeakSet<ScanSpendCtx>() // one entry per attempt: the context is opened once around the whole attempt
+export function spendAttemptUncertain(_jobId?: string, _attempt?: number): boolean { const c = store.getStore(); return !!c && uncertainAttempts.has(c) }
 export interface SpendHold {
   id: string
   kind: SpendKind
@@ -216,6 +221,8 @@ export interface SpendHold {
   // call failed, or reported nothing usable). Once only; never throws (a settle that cannot be saved keeps the worst
   // case, which only over-counts).
   settle(actualUsd: number | null): Promise<void>
+  // The request may have been billed and its outcome is unknown: the row stays 'reserved' and this attempt makes no further paid request.
+  uncertain(): void
 }
 
 const reasonOf = (e: unknown): string => (e instanceof SpendRefused ? e.reason : 'cost_invalid').slice(0, 80)
@@ -228,6 +235,7 @@ const newId = () => randomBytes(10).toString('hex')
 export async function reserveScanSpend(kind: SpendKind, cost: () => number): Promise<SpendHold | null> {
   const ctx = store.getStore()
   if (!ctx) return null
+  if (uncertainAttempts.has(ctx)) throw new SpendRefused('accounting_uncertain')
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()
@@ -276,6 +284,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   let done = false
   return {
     id, kind, usd,
+    uncertain() { done = true; uncertainAttempts.add(ctx) },
     async settle(actualUsd) {
       if (done) return
       done = true
