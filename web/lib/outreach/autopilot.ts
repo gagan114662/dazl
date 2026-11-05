@@ -24,7 +24,7 @@ export const CONSENT_TEXT = [
   'You are the sender and you are legally responsible for these emails under the laws that apply to you and your recipients (for example CASL in Canada, CAN-SPAM in the US, PECR and GDPR in the UK and EU).',
   'You will only target businesses and business roles, where the recipient published the address for business use and your message is relevant to their role.',
   'Every email carries your name, your mailing address and an unsubscribe link. Anyone who unsubscribes or bounces is never emailed again.',
-  'You can pause or turn off autopilot at any time. Pausing stops sends immediately.',
+  'You can pause or turn off autopilot at any time. Pausing stops sends before the next send.',
 ]
 export const ATTESTATIONS = ['business_published', 'relevant_to_role', 'responsible_sender'] as const
 

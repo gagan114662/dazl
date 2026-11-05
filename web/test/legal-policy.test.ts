@@ -28,6 +28,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { buildMime } from '../lib/gmail/mime.ts'
 import { outboundRecord, toRecord } from '../lib/ops/errors.ts'
+import { NOT_DIRECT } from '../lib/tenant/scope.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8')
@@ -106,7 +107,8 @@ test('account email is held on the host while no system provider is configured, 
   const untouchable = new Proxy({}, { get() { throw new Error('reaper ran while the flag is unset') } }) as never
   assert.deepEqual(await reapAccountHistory(untouchable, {}, {}), { sessions: 0, outbox: 0 })
   // ...and the policy says deletion applies only once the setting is on, not that it runs today
-  assert.match(privacy, /held on the host\. The 24-hour deletion under Retention applies only once that retention setting is turned on, and it is not on today/)
+  assert.match(privacy, /account emails are not sent and are held on the host/)
+  assert.match(privacy, /deletion under Retention applies only once ACCOUNT_RETENTION_ENABLED is turned on \(off by default\)/)
 })
 
 test('trace capture is off unless its flag is set', () => {
@@ -122,6 +124,8 @@ test('what survives account deletion is exactly the always-retained set', () => 
   for (const c of ['password_hash', 'salt', 'ciphertext', 'refresh_ct']) assert.ok(REDACTED_COLUMN.test(c), c)
   assert.ok('sessions' in EXPORT_EXCLUDED)
   assert.match(privacy, /There is no self-service deletion button yet/)
+  assert.match(privacy, /stored Gmail tokens; the grant in your Google account is separate/)
+  assert.match(read('lib/tenant/lifecycle.ts'), /Gmail tokens/)
 })
 
 test('AI, enrichment and CRM providers named in the policy are the ones the code supports', () => {
@@ -135,6 +139,9 @@ test('AI, enrichment and CRM providers named in the policy are the ones the code
   }
   // the free trial runs on dazl's own Anthropic key
   assert.match(read('lib/scan/trial.ts'), /DAZL_TRIAL_ANTHROPIC_KEY/)
+  assert.match(read('lib/scan/trial.ts'), /Absent means the trial is off/)
+  assert.match(privacy, /trial scans run on dazl's own Anthropic key/)
+  assert.match(privacy, /the free trial when it is enabled/)
 })
 
 // Every https://host literal in lib/ and app/ is either a disclosed request target (API_HOSTS) or an explicitly
@@ -200,6 +207,38 @@ test('Gmail: send is the required grant and reading is separate and optional', (
   assert.match(privacy, /optional grant \(gmail\.readonly\)/)
 })
 
+test('the Gmail reading description matches the reply sync: what is read, classified, stored and for how long', () => {
+  const replies = read('lib/outreach/replies.ts')
+  assert.match(replies, /excerpt TEXT NOT NULL CHECK \(length\(excerpt\) <= 200\)/)
+  assert.match(replies, /text\.slice\(0, 200\)/)
+  assert.match(replies, /classification TEXT NOT NULL, received_at INTEGER NOT NULL/)
+  assert.match(replies, /bounded daemon-notice window beyond its own threads/)
+  assert.match(read('lib/outreach/read-consent.ts'), /bounded time window/)
+  assert.match(privacy, /classifies each reply by rules/)
+  assert.match(privacy, /200-character excerpt, the classification and the received time/)
+  assert.match(privacy, /delivery-failure notices beyond its own threads/)
+  assert.match(privacy, /kept until you delete your account/)
+  assert.match(privacy, /reads nothing without this consent/)
+})
+
+test('no categorical sale/share assertion is published: it stays a visible counsel marker', () => {
+  assert.doesNotMatch(privacy, /We do not sell personal information\./)
+  assert.match(privacy, /\[NEEDS COUNSEL: the sale\/share statement/)
+})
+
+test('prospect rows are tenant-scoped; the only global address-based processing is what the policy names', () => {
+  assert.deepEqual((NOT_DIRECT.leads as { via: [string, string] }).via, ['scan_job_id', 'scan_jobs'])
+  assert.ok('global' in NOT_DIRECT.lifecycle_events && 'global' in NOT_DIRECT.preview_claims)
+  const globals = Object.keys(NOT_DIRECT).filter(k => 'global' in NOT_DIRECT[k])
+  for (const t of ['leads', 'lead_enrichments', 'inbound_messages', 'outreach_messages', 'sequences', 'followup_threads'])
+    assert.ok(!globals.includes(t), `${t} must stay tenant-scoped`)
+  assert.match(read('app/api/outreach/sequences/route.ts'), /stop_reason/)
+  assert.match(privacy, /tenant scoping/)
+  assert.match(privacy, /stops that address's pending automated sequences, follow-ups and held first touches/)
+  assert.match(privacy, /converted signup, activation or payment/)
+  assert.match(privacy, /bound to the recipient address until claimed/)
+})
+
 test('guessed addresses are off by default, never leave the unverified state and are not read by outreach', () => {
   assert.equal(emailGuessEnabled({}), false)
   assert.equal(emailGuessEnabled({ [FACTS.emailGuessFlag]: '1' }), true)
@@ -230,6 +269,8 @@ test('outbound mail carries the sender name, mailing address and an unsubscribe 
   assert.match(privacy, /ends with the sender's name, a mailing address and an unsubscribe link/)
   // the Terms say messages carry no AI label: the send path adds only the footer above
   assert.equal(body.slice('Hello there, a short note about your hiring.'.length).match(/\bAI\b|artificial intelligence/i), null)
+  for (const f of ['lib/outreach/service.ts', 'lib/outreach/followups.ts', 'lib/outreach/sequences.ts'])
+    assert.match(read(f), /const raw = toBase64Url\(buildMime\(/, `${f} must build the MIME with buildMime`)
   assert.match(terms, /Messages do not carry a label saying they were written with AI/)
 })
 
@@ -255,9 +296,9 @@ test('an unsubscribe stops that sender at once: opt-out list, pending messages a
 test('autopilot terms match the consent text the user accepts', () => {
   const consent = CONSENT_TEXT.join(' ')
   assert.match(consent, /without asking you first, within the daily limits you set, after the first sends have been approved by you/)
-  assert.match(consent, /Pausing stops sends immediately/)
+  assert.match(consent, /Pausing stops sends before the next send/)
   assert.match(terms, /without asking you each time, within the daily limits you set and only after your first sends were approved by you/)
-  assert.match(terms, /pausing stops sends immediately/)
+  assert.match(terms, /pausing stops sends before the next send/)
 })
 
 test('error reports leaving the server carry no message, account id or personal data', () => {
@@ -265,6 +306,8 @@ test('error reports leaving the server carry no message, account id or personal 
   const out = JSON.stringify(outboundRecord(r, { environment: 'test' }))
   assert.doesNotMatch(out, /jane|north\.test|a{32}|failed for/)
   assert.match(privacy, /never messages, account identifiers, request bodies or personal data/)
+  assert.match(privacy, /server's own error log keeps the fuller scrubbed record/)
+  assert.match(read('lib/ops/errors.ts'), /full scrubbed record stays in the server's own log/)
 })
 
 test('the free plan allowance matches the plan limits', () => {
