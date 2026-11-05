@@ -7,7 +7,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
-import { API_HOSTS, DRAFT_NOTICE, FACTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, TERMS } from '../lib/legal/policy.ts'
+import { API_HOSTS, DRAFT_NOTICE, FACTS, NON_REQUEST_HOSTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, PUBLIC_SOURCES, TERMS } from '../lib/legal/policy.ts'
+import { MATRIX } from '../lib/sources/capability-matrix.ts'
 import { PLAN_LIMITS } from '../lib/plans.ts'
 import { SESSION_RETAIN_S } from '../lib/sessions.ts'
 import { OUTBOX_RETAIN_S, OUTBOX_DDL, sendSystemMail, systemMailAvailable } from '../lib/system-mail.ts'
@@ -91,16 +92,21 @@ test('no audit record is purged until a period is chosen, as the policy says', (
   assert.match(privacy, /no audit record is deleted automatically today/)
 })
 
-test('account email is held on the host while no system provider is configured, as the policy states', async () => {
+test('account email is held on the host while no system provider is configured, and the policy ties its 24-hour deletion to the retention flag', async () => {
   // current production state (#613 review, verified on the live process 2026-11-04): SMTP is not configured, so
-  // account emails are kept in system_mail_outbox (operators read them on the host) and reaped after 24 hours.
+  // account emails are kept in system_mail_outbox. ACCOUNT_RETENTION_ENABLED is also unset there, so the 24-hour
+  // reap does NOT run today - the text must not say it does.
   assert.equal(systemMailAvailable({}), false)
   const db = new Database(':memory:')
   db.exec(OUTBOX_DDL)
   const r = await sendSystemMail(sqliteDb(db), { userId: 'u1', to: 'a@b.test', subject: 'Reset', text: 'link' }, {})
   assert.equal(r, 'outbox')
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM system_mail_outbox').get() as { n: number }).n, 1)
-  assert.match(privacy, /no system email provider is configured: sending is off, and those messages are held on the host/)
+  // the claim and the flag default together: with the flag unset the reaper deletes nothing...
+  const untouchable = new Proxy({}, { get() { throw new Error('reaper ran while the flag is unset') } }) as never
+  assert.deepEqual(await reapAccountHistory(untouchable, {}, {}), { sessions: 0, outbox: 0 })
+  // ...and the policy says deletion applies only once the setting is on, not that it runs today
+  assert.match(privacy, /held on the host\. The 24-hour deletion under Retention applies only once that retention setting is turned on, and it is not on today/)
 })
 
 test('trace capture is off unless its flag is set', () => {
@@ -131,7 +137,20 @@ test('AI, enrichment and CRM providers named in the policy are the ones the code
   assert.match(read('lib/scan/trial.ts'), /DAZL_TRIAL_ANTHROPIC_KEY/)
 })
 
-test('every third-party API host the code calls is disclosed, and no disclosed host is stale', () => {
+// Every https://host literal in lib/ and app/ is either a disclosed request target (API_HOSTS) or an explicitly
+// listed non-request host (NON_REQUEST_HOSTS) - no URL-shape heuristics: a wrapper (getJson), a URL object or an
+// adapter-local helper cannot hide a call, and a new host literal fails here until it is classified one way or the
+// other (#613 review round 2).
+const collectHosts = (src: string): Set<string> => {
+  const out = new Set<string>()
+  for (const m of src.matchAll(/https:\/\/([a-zA-Z0-9.-]+\.[a-z]{2,})/g)) {
+    const h = m[1].toLowerCase()
+    if (!/\.(example|invalid|test)$/.test(h)) out.add(h) // reserved fixture TLDs are not real hosts
+  }
+  return out
+}
+
+test('every third-party host the code names is disclosed or explicitly not a request; no entry is stale', () => {
   const files: string[] = []
   const walk = (dir: string) => {
     for (const f of readdirSync(join(ROOT, dir))) {
@@ -142,49 +161,33 @@ test('every third-party API host the code calls is disclosed, and no disclosed h
   }
   walk('lib'); walk('app')
   const found = new Map<string, string>()
-  const keep = (host: string | undefined, f: string) => {
-    if (!host) return
-    if (/^(docs|console|platform)\./.test(host) || /\.(example|invalid|test)$/.test(host)) return // docs links and example hosts
-    if (host === 'dazl.ai') return // own domain (user-agent string, not a third party)
-    if (!found.has(host)) found.set(host, relative(ROOT, join(ROOT, f)))
-  }
-  for (const f of files) {
-    const src = read(f)
-    // api-style URL literals (data is sent, not just linked)
-    for (const m of src.matchAll(/https:\/\/([a-z0-9.-]+\.[a-z]{2,})/g)) {
-      if (/(^|[.-])api([.-])|googleapis\.com$|^accounts\.google\.com$|^r\.jina\.ai$|^hn\.algolia\.com$|^efts\.sec\.gov$/.test(m[1])) keep(m[1], f)
-    }
-    // ANY host the code REQUESTS, whatever the URL looks like: the first argument of fetch(...) / http(...) as a
-    // literal, a template, a same-file const, or a template starting with one. Non-api hosts (a public register, a
-    // community site) are exactly the hosts the shape rule above cannot see (#388 data.brreg.no, #613 review).
-    const consts = new Map<string, string>()
-    for (const m of src.matchAll(/const (\w+) = ['`]([^'`]+)['`]/g)) consts.set(m[1], m[2])
-    const resolve = (a: string): string => { // identifiers and ${CONST} templates, a few levels deep
-      for (let i = 0; i < 4; i++) {
-        const id = /^\w+$/.test(a) ? a : /^\$\{(\w+)\}/.exec(a)?.[1]
-        if (!id || !consts.has(id)) return a
-        a = consts.get(id)!
-      }
-      return a
-    }
-    for (const m of src.matchAll(/(?:\bfetch|\bhttp)\(\s*(`[^`]*`|'[^']*'|"[^"]*"|\w+)/g)) {
-      const a = /^\w+$/.test(m[1]) ? resolve(m[1]) : resolve(m[1].slice(1))
-      keep(/^https:\/\/([a-z0-9.-]+\.[a-z]{2,})/.exec(a)?.[1], f)
-    }
-    // Source adapters can wrap the getter (a local json() helper, a page reader): a URL constant in lib/sources
-    // that the file actually uses is a request target even when no fetch(/http( call names it directly.
-    if (f.startsWith('lib/sources/')) {
-      for (const [name, u] of consts) {
-        if (new RegExp(`\\b${name}\\b`, 'g').exec(src)?.index !== src.lastIndexOf(name)) {
-          keep(/^https:\/\/([a-z0-9.-]+\.[a-z]{2,})/.exec(resolve(u))?.[1], f)
-        }
-      }
-    }
-  }
-  const missing = [...found].filter(([h]) => !(h in API_HOSTS)).map(([h, f]) => `${h} (${f})`)
-  assert.deepEqual(missing, [], 'new third-party host: classify it in lib/legal/policy.ts API_HOSTS and the Privacy text')
-  assert.deepEqual(Object.keys(API_HOSTS).filter(h => !found.has(h)), [], 'API_HOSTS lists a host the code no longer calls')
+  for (const f of files) for (const h of collectHosts(read(f))) if (!found.has(h)) found.set(h, relative(ROOT, join(ROOT, f)))
+  const missing = [...found].filter(([h]) => !(h in API_HOSTS) && !(h in NON_REQUEST_HOSTS)).map(([h, f]) => `${h} (${f})`)
+  assert.deepEqual(missing, [], 'new host literal: disclose it in API_HOSTS or list it in NON_REQUEST_HOSTS with the reason it is never called')
+  assert.deepEqual(Object.keys(API_HOSTS).filter(h => !found.has(h)), [], 'API_HOSTS lists a host the code no longer names')
+  assert.deepEqual(Object.keys(NON_REQUEST_HOSTS).filter(h => !found.has(h)), [], 'NON_REQUEST_HOSTS lists a host the code no longer names')
   for (const { name } of Object.values(API_HOSTS)) assert.ok(privacy.includes(name.split(' ')[0]), `privacy policy does not name ${name}`)
+})
+
+// Regression for the reviewer's red plant: neither a wrapper helper nor a URL object may escape detection.
+test('host detection cannot be escaped by a wrapper or a URL object (red plant)', () => {
+  const plant = `
+    const getJson = (u: string) => fetch(u).then(r => r.json())
+    export const a = () => getJson('https://newvendor.example-corp.io/v1/data')
+    export const b = () => fetch(new URL('https://another-host.co/api'))`
+  const hosts = collectHosts(plant)
+  assert.ok(hosts.has('newvendor.example-corp.io'), 'wrapper-called literal missed')
+  assert.ok(hosts.has('another-host.co'), 'URL-object literal missed')
+  // ...and both would fail the classification above: neither is disclosed nor allowlisted
+  assert.ok(!('newvendor.example-corp.io' in API_HOSTS) && !('newvendor.example-corp.io' in NON_REQUEST_HOSTS))
+  assert.ok(!('another-host.co' in API_HOSTS) && !('another-host.co' in NON_REQUEST_HOSTS))
+})
+
+// Every source the capability matrix ships has a disclosure entry, and each entry is named in the policy text.
+test('every shipped source has a disclosure entry named in the policy', () => {
+  const shipped = MATRIX.filter(c => c.status === 'shipped').map(c => c.id).sort()
+  assert.deepEqual(shipped, Object.keys(PUBLIC_SOURCES).sort(), 'a shipped source without a disclosure entry, or a stale one')
+  for (const [id, name] of Object.entries(PUBLIC_SOURCES)) assert.ok(privacy.includes(name), `privacy policy does not name ${name} (${id})`)
 })
 
 test('Gmail: send is the required grant and reading is separate and optional', () => {
