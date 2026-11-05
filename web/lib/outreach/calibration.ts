@@ -114,6 +114,12 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
     const messageId = `dazl.launchcheck.${now}.${randomBytes(6).toString('hex')}@${connected.split('@')[1]}`
     try {
       const token = await getAccessToken(db, tenantId, d)
+      // Re-proved after the token await (TOCTOU, same class as every other send path): an allowlist
+      // narrowed while the check waited on the token stops it here, before anything reaches Gmail.
+      if (process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId && !testRecipientApproved(db, tenantId, policy.testInbox)) {
+        testInboxDelivered = false
+        return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
+      }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name ?? businessName, fromEmail: connected, to: policy.testInbox,
         subject: 'dazl launch check', body: 'This message checks that autopilot can send from this mailbox. No action needed.',

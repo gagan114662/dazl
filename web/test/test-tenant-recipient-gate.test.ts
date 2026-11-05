@@ -37,12 +37,14 @@ function setup() {
   return db
 }
 const designated = <R>(fn: () => R): R => {
+  const prior = process.env.OUTREACH_TEST_TENANT_ID
   process.env.OUTREACH_TEST_TENANT_ID = T
-  try { return fn() } finally { delete process.env.OUTREACH_TEST_TENANT_ID }
+  try { return fn() } finally { if (prior === undefined) delete process.env.OUTREACH_TEST_TENANT_ID; else process.env.OUTREACH_TEST_TENANT_ID = prior }
 }
 const designatedAsync = async (fn: () => Promise<void>): Promise<void> => {
+  const prior = process.env.OUTREACH_TEST_TENANT_ID
   process.env.OUTREACH_TEST_TENANT_ID = T
-  try { await fn() } finally { delete process.env.OUTREACH_TEST_TENANT_ID }
+  try { await fn() } finally { if (prior === undefined) delete process.env.OUTREACH_TEST_TENANT_ID; else process.env.OUTREACH_TEST_TENANT_ID = prior }
 }
 async function connect(db: Database.Database, tenant: string) {
   const state = new URL(startOAuth(db, tenant, { env: oauthEnv, now: NOW })).searchParams.get('state')!
@@ -254,6 +256,24 @@ test('calibration: a missing allowlist row holds the designated tenant launch ch
   await designatedAsync(async () => {
     await runCalibration(db, T, 'Acme', d as never)
     assert.equal(sent.length, 0)
+  })
+})
+
+// The calibration gate is re-proved after the token await too: an allowlist narrowed while the
+// check waits on the token stops it before Gmail, same TOCTOU class as the other send paths.
+test('calibration: allowlist revocation during the token await stops the launch check', async () => {
+  const { db, sent, d } = await calibrationFixture(TEST_INBOX)
+  const revokingFetch = (async (u: unknown) => {
+    if (String(u).includes('oauth2') || String(u).includes('token')) {
+      db.prepare('DELETE FROM sequence_settings WHERE tenant_id = ?').run(T)
+      return json({ access_token: 'at' })
+    }
+    return json({}, 404)
+  }) as unknown as typeof fetch
+  await designatedAsync(async () => {
+    setTestAddresses(db, T, [TEST_INBOX])
+    await runCalibration(db, T, 'Acme', { ...d, fetchImpl: revokingFetch } as never)
+    assert.equal(sent.length, 0, 'the launch check after the revocation must never reach Gmail')
   })
 })
 
