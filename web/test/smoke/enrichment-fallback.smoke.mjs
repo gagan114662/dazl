@@ -106,12 +106,14 @@ try {
   // Workspace credit limits through the real UI (#363): set, used-of-N, clear. The controls are per provider+window.
   const monthRow = card.locator('div.flex', { hasText: 'Apollo per month' })
   const monthInput = card.getByRole('textbox', { name: 'apollo month credit limit' }) // role-scoped: the Save button's accessible name contains the input's label, so a bare getByLabel matches both (#594 CI red)
+  p = path.join(out, 'credit-limit-unset.png'); await card.screenshot({ path: p }); shots.push(p)
   const [limResp] = await Promise.all([
     page.waitForResponse(r => r.url().includes('/api/settings/enrichment') && r.request().method() === 'POST' && (r.request().postData() || '').includes('credit_limit')),
     (async () => { await monthInput.fill('5'); await card.getByRole('button', { name: 'Save apollo month credit limit' }).click() })(),
   ])
   assert.ok(limResp.ok(), 'credit limit save accepted')
   await monthRow.getByText('0 credits used of 5').waitFor()
+  p = path.join(out, 'credit-limit-set.png'); await card.screenshot({ path: p }); shots.push(p)
   let st = await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))
   assert.equal(st.credits.find(c => c.provider === 'apollo' && c.window === 'month').limit, 5, 'GET reports the saved limit')
   const [clrResp] = await Promise.all([
@@ -120,6 +122,7 @@ try {
   ])
   assert.ok(clrResp.ok(), 'credit limit clear accepted')
   await monthRow.getByText('0 credits used, no limit set').waitFor()
+  p = path.join(out, 'credit-limit-cleared.png'); await card.screenshot({ path: p }); shots.push(p)
   st = await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))
   assert.equal(st.credits.find(c => c.provider === 'apollo' && c.window === 'month').limit, null, 'GET reports the cleared limit')
 
