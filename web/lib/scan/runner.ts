@@ -1282,7 +1282,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       for (const n of rescuedNotes(leads, u => verifierFetch.get(u) ?? verifierFetch.get(canonicalUrl(u) ?? u) ?? null, outcome.leads)) if (!seenKeys.has(n.key)) fallbackNotes.push(n)
     }
     // Adaptive discovery (#381; see ADAPTIVE_SEARCHES): round one ran, extracted candidates and verified none of them.
-    if (tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
+    // Gated OFF by default: one round costs up to ADAPTIVE_SEARCHES searches + ADAPTIVE_FETCHES fetches + 1 extraction
+    // on top of round one, for every paid non-trial scan that verified nothing, and that extra spend has no owner
+    // approval. DAZL_ADAPTIVE_DISCOVERY_ENABLED=1 opts in; OFF behaves exactly as without the feature (no round, no
+    // calls, no ledger row). Trial scans skip the round on their own policy (paidFallback=false) even when enabled.
+    if (process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED === '1' && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
       const stop = (status: string) => ledger.record('search:adaptive', status)
       const left = jobDeadlines.get(job)
       const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())

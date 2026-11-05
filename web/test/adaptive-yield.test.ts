@@ -29,6 +29,7 @@ type Opts = {
   fundedByTrial?: boolean
   seedReservedUsd?: number
   runBudget?: string
+  adaptiveOff?: boolean
   onAdaptiveSearch?: (db: Database.Database, jobId: string) => void
   signals?: string[]; aVerifies?: boolean; deps?: Partial<RunDeps> }
 async function scan(o: Opts = {}) {
@@ -77,13 +78,14 @@ async function scan(o: Opts = {}) {
   const realFetch = globalThis.fetch
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
+  if (o.adaptiveOff) delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED; else process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1'
   try {
     const r = await runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null, ...o.deps })
     const runs = db.prepare('SELECT collector, status, candidate_count, verified_count FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string; candidate_count: number | null; verified_count: number | null }[]
     const leads = db.prepare("SELECT company, source_url, review_reason FROM leads WHERE scan_job_id = ? ORDER BY rowid").all(job.id) as { company: string; source_url: string; review_reason: string | null }[]
     const jobRow = db.prepare('SELECT status, error, verified FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null; verified: number }
     return { db, jobId: job.id, r, searched, fetchBatches, extractions, runs, leads, jobRow, adaptive: runs.find(x => x.collector === 'search:adaptive') }
-  } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
+  } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED }
 }
 
 test('#381 zero actionable after round one: one different, bounded round on unseen pages finds a lead the same verifier accepts', async () => {
@@ -195,4 +197,14 @@ test('#381 cancellation inside the adaptive round: ScanStopped and ScanTimedOut 
   assert.equal(s.r, 'failed'); assert.equal(s.jobRow.error, 'scan_timeout')
   assert.notEqual(s.adaptive?.status, 'ok', `never ok: ${JSON.stringify(s.adaptive)}`)
   assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from the timed-out round is kept')
+})
+
+test('#381 gate: the adaptive round is OFF by default - a zero-verified scan behaves exactly as without the feature (no round, no calls, no row)', async () => {
+  const s = await scan({ adaptiveOff: true })
+  assert.equal(s.r, 'done')
+  assert.equal(s.adaptive, undefined, `no search:adaptive row at all: ${JSON.stringify(s.runs)}`)
+  assert.ok(!s.searched.some(q => /front desk/i.test(q)), `no adaptive search: ${JSON.stringify(s.searched)}`)
+  assert.deepEqual(s.fetchBatches, [[A.url]], 'no adaptive fetch')
+  assert.equal(s.extractions.length, 1, 'no adaptive extraction')
+  assert.equal(s.jobRow.status, 'done')
 })

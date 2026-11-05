@@ -118,7 +118,7 @@ test('gate: the case set itself is checked - a missing, unregistered or duplicat
 })
 
 const runCli = (dir: string) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/evals.mts', '--dir', dir],
-  { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0' } })
+  { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', DAZL_ADAPTIVE_DISCOVERY_ENABLED: '1' } }) // adaptive round gated on: the committed suite covers it
 // A temp copy of the committed suite, optionally with a second registered case (a copy of the London case under another id).
 function suiteCopy(opts: { second?: boolean } = {}): string {
   const tmp = mkdtempSync(join(tmpdir(), 'dazl-evals-'))
@@ -176,6 +176,8 @@ test('gate CLI: deleting one of several cases, or renaming its id, is red; an em
 })
 
 test('world_closed: a page the World does not have is a recorded miss, answered as a failed fetch, never fetched', async () => {
+  process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1' // the replay covers the gated-on adaptive round (#381); the flag is OFF by default
+  try {
   const { kase, world } = await base()
   delete world.pages['https://news.example/london/querix-seed']
   const r = await replayCase(kase, world)
@@ -190,6 +192,7 @@ test('world_closed: a page the World does not have is a recorded miss, answered 
   const r2 = await replayCase(kase, w2)
   assert.ok(r2.misses.some(m => m.kind === 'model' && m.key === 'extraction#0'))
   assert.equal(r2.leads.length, 0)
+  } finally { delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED }
 })
 
 test('event_date_in_window: impossible, future, out-of-window and missing dates never pass', async () => {
