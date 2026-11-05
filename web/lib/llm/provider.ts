@@ -66,6 +66,13 @@ async function post(url: string, headers: Record<string, string>, body: unknown,
 }
 
 import { SpendRefused } from './spend-guard.ts'
+import { modelCostUsd, reserveScanSpend, servedCostUsd, type SpendHold } from '../scan/spend-cap.ts'
+
+// Inside a scan (lib/scan/spend-cap.ts): the completion's worst case is reserved on the scan's ledger before the request,
+// and moved to the cost the vendor reported for the served model after it. A request that fails keeps its worst case.
+async function settleScanSpend(hold: SpendHold | null, d: DetailedCompletion): Promise<void> {
+  if (hold) await hold.settle(servedCostUsd(d.model, d.usage))
+}
 
 type Obj = Record<string, unknown>
 const arr = (v: unknown): Obj[] => (Array.isArray(v) ? (v as Obj[]) : [])
@@ -84,20 +91,26 @@ export const anthropicProvider: Provider = {
   },
   async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 10): Promise<DetailedCompletion> {
     const requested = anthropicProvider.configuredModel!()
-    const json = await post(
-      'https://api.anthropic.com/v1/messages',
-      { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      { model: requested, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
-      fetchImpl,
-    )
+    const hold = await reserveScanSpend('llm.anthropic', () => modelCostUsd(requested, prompt, maxTokens))
+    let json: Record<string, unknown>
+    try {
+      json = await post(
+        'https://api.anthropic.com/v1/messages',
+        { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        { model: requested, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] },
+        fetchImpl,
+      )
+    } catch (e) { await hold?.settle(null); throw e }
     const u = (json.usage ?? {}) as Obj
     const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
-    return {
+    const out: DetailedCompletion = {
       text: arr(json.content).map(b => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join(''),
       model: typeof json.model === 'string' ? json.model : null,
       request_id: typeof json.id === 'string' ? json.id : undefined,
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(u.cache_read_input_tokens), cache_creation_input_tokens: num(u.cache_creation_input_tokens) }),
     }
+    await settleScanSpend(hold, out)
+    return out
   },
   async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
     return (await anthropicProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
@@ -118,18 +131,23 @@ export const openaiProvider: Provider = {
   },
   async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 16): Promise<DetailedCompletion> {
     const requested = openaiProvider.configuredModel!()
-    const json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: requested, input: prompt, max_output_tokens: maxTokens }, fetchImpl)
+    const hold = await reserveScanSpend('llm.openai', () => modelCostUsd(requested, prompt, maxTokens))
+    let json: Record<string, unknown>
+    try { json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: requested, input: prompt, max_output_tokens: maxTokens }, fetchImpl) }
+    catch (e) { await hold?.settle(null); throw e }
     let text = ''
     for (const item of arr(json.output)) if (item.type === 'message') for (const part of arr(item.content)) if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
     const u = (json.usage ?? {}) as Obj
     const det = (u.input_tokens_details ?? {}) as Obj
     const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
-    return {
+    const out: DetailedCompletion = {
       text,
       model: typeof json.model === 'string' ? json.model : null,
       request_id: typeof json.id === 'string' ? json.id : undefined,
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(det.cached_tokens) }),
     }
+    await settleScanSpend(hold, out)
+    return out
   },
   async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 16) {
     return (await openaiProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text

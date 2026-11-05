@@ -56,6 +56,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'gmail/callback', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  // owner of the configured growth workspace only (DAZL_GROWTH_TENANT_ID); aggregate counts, no ids or emails
+  { path: 'growth/funnel', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'billing' },
 
   { path: 'health', method: 'GET', auth: 'public', note: 'no tenant data' },
   { path: 'health/live', method: 'GET', auth: 'public', note: 'liveness: no tenant data, touches no store' },
@@ -115,6 +117,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach/followups', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/inbox', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach/inbox', method: 'POST', auth: 'session', crossTenant: { covered: 'inbox-route.test.ts' }, role: 'operate' },
+  { path: 'outreach/inbox/fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'owners' },
+  { path: 'outreach/inbox/fixture', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'owners' },
 
   { path: 'outreach/polish', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'outreach/reopen', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
@@ -142,6 +146,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'scan/csv', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/icp-from-url', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/icp', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'scan/lookalike', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/jobs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'scan/latest', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'scan/estimate', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
@@ -182,6 +187,9 @@ export const ROUTES: RouteEntry[] = [
   { path: 'unsubscribe', method: 'GET', auth: 'public', note: "HMAC token; acts only on the token's own message" },
   { path: 'unsubscribe', method: 'POST', auth: 'public', note: "HMAC token; acts only on the token's own message" },
   { path: 'usage', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'tenant/lifecycle', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'tenant/lifecycle/export', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-lifecycle-routes-runtime.mts' }, role: 'export', fresh: true },
+  { path: 'tenant/lifecycle/delete', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'owners', fresh: true },
   { path: 'warm/connections', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'warm/connections', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'warm/connections', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'operate' },

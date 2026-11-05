@@ -1,4 +1,5 @@
 import type { Provider } from '../llm/provider.ts'
+import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
 import { quoteSupports } from './claim-quote.ts'
 
 // An ideal customer profile (ICP) inferred from a free-text "what are you looking for".
@@ -22,6 +23,10 @@ export interface Icp {
   // change); the total serialized size is bounded by ICP_JSON_BUDGET. Never trusted as fact: only sourced/reviewed
   // items may feed retrieval and ranking, and only for their own offer.
   research?: IcpResearch
+  // Lookalike discovery (#386, lib/scan/lookalike-discovery.ts): the validated discriminating features of the tenant's
+  // supplied customers and the hashed keys of every supplied account, so the run excludes them and labels each lead's
+  // lookalike fit. Persisted whole inside this JSON (no schema change) and never shown to a model.
+  lookalike?: LookalikeBlock
 }
 
 // Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
@@ -102,8 +107,9 @@ function fitResearch(r: IcpResearch, room: number): IcpResearch | undefined {
 // Model-facing prompts carry the canonical FLAT profile only: the research review block (sourced, unapproved or
 // rejected statements) is review provenance for the person and the store, never model targeting input (#379).
 export const flatProfile = (icp: unknown): unknown => {
-  if (!icp || typeof icp !== 'object' || !('research' in (icp as Record<string, unknown>))) return icp
-  const { research: _omit, ...flat } = icp as Record<string, unknown>
+  if (!icp || typeof icp !== 'object' || !('research' in (icp as Record<string, unknown>) || 'lookalike' in (icp as Record<string, unknown>))) return icp
+  const flat = { ...(icp as Record<string, unknown>) }
+  delete flat.research; delete flat.lookalike
   return flat
 }
 
@@ -153,7 +159,11 @@ export function normalizeIcp(raw: unknown): Icp | null {
   const language = typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()) ? r.language.trim().toLowerCase() : null
   const win = typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365 ? r.window_days : null
   const research = normalizeResearch(r.research)
-  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}) }
+  // A lookalike block that is present but malformed refuses the whole profile: a scan must never run without the
+  // supplied-account exclusions its profile claims to carry.
+  const lookalike = normalizeLookalike(r.lookalike === null ? undefined : r.lookalike)
+  if (lookalike === null) return null
+  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}) }
 }
 
 export function icpPrompt(query: string, seller?: string): string {

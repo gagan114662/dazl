@@ -13,8 +13,8 @@ import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverage
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
-import { salesHiringRequired } from './sales-hiring-required.ts'
-export { salesHiringRequired }
+import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
+export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
@@ -157,6 +157,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const eventRequired = needsEventBeyondHiring(signalTerms, job.query ?? '')
   const stage = requestedStage(job.query, job.icp)
   const windowDays = parseWindowDays(job.query ?? '') ?? 90
+  // #380 / #204: "seed funding OR first sales hire" compiled as one OR. Either branch, proven on its own clock, keeps the lead; with no such OR, both halves stay required.
+  const or = salesGateOr(job.query, job.icp)
+  const eventDays = or ? or.event.within_days ?? windowDays : windowDays, hireDays = or ? or.hiring.within_days ?? windowDays : windowDays
   const fundingAsked = requestAsksFunding(job.query, job.icp)
   const where = whereOf(job.icp)
   const now = Math.floor((opts.now ?? Date.now()) / 1000)
@@ -187,15 +190,22 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       const quotes: QuoteEvidence[] = [{ url: l.source_url, excerpt: l.evidence_excerpt ?? '', date: null }, ...others]
       // The EVENT half must stand on its own: the quote that shows the event agrees with the requested place, and (when it came from another candidate) carries its OWN date inside the window.
       // A current job in the right city never validates a funding quote from another place, and its date is never the funding event's date.
-      const eventQuotes = quotes.filter((q, i) => eventQuoteUsable(q, i === 0 ? l.event_date : q.date, l.company, where, windowDays, now, i === 0))
+      // Under an OR the event branch alone can keep the lead, so the lead's own quote must carry its own date inside the event branch's clock too.
+      const eventQuotes = quotes.filter((q, i) => eventQuoteUsable(q, i === 0 ? l.event_date : q.date, l.company, where, eventDays, now, i === 0 && !or))
       const demoteFor = (reason: string, why: string) => { if (demote.run(reason, (why + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason }) } }
       // The event half first: a hiring page alone (a job ad) does not show seed funding / an opening, whatever it says about the company.
-      if (eventRequired && !eventQuotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))) {
+      const eventShown = eventQuotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))
+      if (or && eventShown) { passed++; passedIds.push(l.id); continue }   // the OR's event branch is proven: the hiring branch is not needed (no board lookup)
+      // Under an OR, a hiring quote is proof only with its own date inside the hiring branch's clock (the lead's row date for its own quote).
+      const hireQuotes = or ? quotes.filter((q, i) => { const dt = i === 0 ? l.event_date : q.date, t = dt ? Date.parse(dt) : NaN; return Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000 }) : quotes
+      // Under an OR neither branch is proven when the lead is demoted below: the reason names both.
+      const neither = or ? `Neither branch proven (the request accepts either): no source quote dated in the last ${eventDays} days affirms this company ${stage && fundingAsked ? `raised a ${stage} round` : 'had the event the request names'} (a different stage, a negated or planned raise, or another company's raise does not count), and no sales-hiring evidence. ` : ''
+      if (!or && eventRequired && !eventShown) {
         demoteFor(NO_EVENT, stage && fundingAsked ? `No event evidence: no source quote affirms this company raised a ${stage} round (a different stage, a negated or planned raise, or another company's raise does not count). ` : `No event evidence: the source quote shows hiring but not the funding or event the request asks for. `)
         continue
       }
-      if (!roles.length && quotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {
-        const o = others.find(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))
+      if (!roles.length && hireQuotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {
+        const o = others.find(q => hireQuotes.includes(q) && quoteNamesSalesHiring(q.excerpt, l.signal, l.company))
         if (!quoteNamesSalesHiring(l.evidence_excerpt, l.signal, l.company) && o) {
           let host = ''; try { host = new URL(o.url).hostname.replace(/^www\./, '') } catch { /* keep blank */ }
           setWhy.run((`Hiring sales: named in a verified source${host ? ` (${host})` : ''}${o.date ? `, dated ${o.date}` : ''}. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id)
@@ -204,12 +214,12 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       }
       if (l.company_domain && lookups >= MAX_BOARD_LOOKUPS) {
         // A processing limit never lets a lead through unproven: it is held, and the card says it was not checked (unknown, not absent).
-        demoteFor(NO_SALES_HIRING, `No sales-hiring evidence: not checked - this scan had more leads than the job-board lookup limit (${MAX_BOARD_LOOKUPS}). `)
+        demoteFor(NO_SALES_HIRING, `${neither}No sales-hiring evidence: not checked - this scan had more leads than the job-board lookup limit (${MAX_BOARD_LOOKUPS}). `)
         continue
       }
       if (l.company_domain) lookups++
       let boardFetchThrew = false
-      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => { boardFetchThrew = true; return null }) : null
+      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays: hireDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => { boardFetchThrew = true; return null }) : null
       if (l.company_domain && !owned()) { stopped = true; break } // reclaimed DURING this lead's async fetch: the resolved result is this attempt's observation but must not be WRITTEN by it - the new owner re-runs
       const g = gbz?.hiring ?? null
       // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
@@ -268,9 +278,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         if (c.via === 'domain' && !heuristicC) {
           const checkedDay = new Date(now * 1000).toISOString().slice(0, 10)
           const existingEvidence = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
-          const checkedRows = withRepostHistory(checkedAuditRows(c, windowDays, now, checkedDay, null), c.board, existingEvidence)
+          const checkedRows = withRepostHistory(checkedAuditRows(c, hireDays, now, checkedDay, null), c.board, existingEvidence)
           for (const e of checkedRows) addEnrichment(db, job.user_id, l.id, e) // #533 F-B: zero-match audit trail
-          addEnrichment(db, job.user_id, l.id, checkedCoverageRow(c, windowDays, now, checkedDay))
+          addEnrichment(db, job.user_id, l.id, checkedCoverageRow(c, hireDays, now, checkedDay))
           { const covered = new Set(checkedRows.map(r => r.value.replace(/^Unconfirmed: /, '').trim().toLowerCase())) // titles the zero-match audit just stored, actual inserted shapes
             const coveredCount = c.allListed.filter(t => covered.has(t.trim().toLowerCase())).length
             const full = withRepostHistory(fullListingAuditRows(c.board, c.boardUrl, c.allListed, covered, now, checkedDay, null), c.board, existingEvidence)
@@ -301,7 +311,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
             // hiring (the lead is held, as a stale board posting is). No date supplied -> unchanged: date unknown, the retrieval day is only 'checked'.
             const posted = v.posted ?? null
             const pt = posted ? Date.parse(`${posted}T00:00:00Z`) : NaN
-            const longOpen = !!posted && !(Number.isFinite(pt) && pt <= (now + 86_400) * 1000 && now * 1000 - pt <= windowDays * 86_400_000)
+            const longOpen = !!posted && !(Number.isFinite(pt) && pt <= (now + 86_400) * 1000 && now * 1000 - pt <= hireDays * 86_400_000)
             const dated = posted ? ` - posted ${posted}` : ''
             const dateLabel = posted ? `${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} first-published date read from the linked posting; ` : ''
             const existingC = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
@@ -310,8 +320,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
             audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: `${roleMatch ? 'checked_vacancy_requested_role' : 'checked_vacancy'}${longOpen ? '_long_open' : ''}`, results: 1 })
             if (longOpen) {
               // Stored as an audit row (kind hiring-role, unscored), never as a hiring signal: a long-open posting is not renewed demand.
-              addEnrichment(db, job.user_id, l.id, careersRow('hiring-role', `Open ${roleMatch || roles.length ? '' : 'sales '}role on its careers page: ${v.title}${dated}`, `Long-open: first published ${posted}, older than the last ${windowDays} days (repost history unknown, not renewed demand)${roleMatch ? `; requested role: ${roleMatch.term}` : ''}; ${v.quote}`, null))
-              careersNote = `its careers page links ${v.title}${roleMatch ? ` (requested: ${roleMatch.term})` : ''}, but that ${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} posting was first published ${posted}, older than the last ${windowDays} days (long-open; repost history unknown) - not current hiring evidence. `
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring-role', `Open ${roleMatch || roles.length ? '' : 'sales '}role on its careers page: ${v.title}${dated}`, `Long-open: first published ${posted}, older than the last ${hireDays} days (repost history unknown, not renewed demand)${roleMatch ? `; requested role: ${roleMatch.term}` : ''}; ${v.quote}`, null))
+              careersNote = `its careers page links ${v.title}${roleMatch ? ` (requested: ${roleMatch.term})` : ''}, but that ${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} posting was first published ${posted}, older than the last ${hireDays} days (long-open; repost history unknown) - not current hiring evidence. `
             } else if (roleMatch) {
               setWhy.run((`Hiring for ${v.title} (requested: ${roleMatch.term}) on its careers page (${l.company_domain}), ${posted ? `posted ${posted}` : `checked ${day}`}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
               addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open role on its careers page: ${v.title}${dated}`, `Requested role: ${roleMatch.term}; ${dateLabel}${v.quote}`, 60))
@@ -338,8 +348,10 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       }
       const line = heuristic
         ? `No sales-hiring evidence: a job board was found only through ${l.company_domain}, a domain matched by company name, so it is not established as this company's board. `
-        : `No sales-hiring evidence: no ${roles.length ? `source-matched requested role (${roles.map(r => r.term).join(' or ')})` : 'sales or GTM posting'} dated in the last ${windowDays} days was found on a public job board tied to ${l.company_domain ?? 'a confirmed company domain (none found)'} (a board that could not be reached looks the same as none, so this is unconfirmed, not proof the company is not hiring). `
-      demoteFor(NO_SALES_HIRING, line + careersNote)
+        : `No sales-hiring evidence: no ${roles.length ? `source-matched requested role (${roles.map(r => r.term).join(' or ')})` : 'sales or GTM posting'} dated in the last ${hireDays} days was found on a public job board tied to ${l.company_domain ?? 'a confirmed company domain (none found)'} (a board that could not be reached looks the same as none, so this is unconfirmed, not proof the company is not hiring). `
+      // Under an OR a board that could not be read is said plainly: the hiring branch was not checked (held, never passed).
+      const notChecked = or && !!l.company_domain && (boardFetchThrew || (!!gbz && !g && !gbz.checked && !gbz.contradictory && (gbz.probeErrors.length > 0 || gbz.fetchAborted)))
+      demoteFor(NO_SALES_HIRING, neither + (notChecked ? `No sales-hiring evidence: not checked - the job-board lookup for ${l.company_domain} failed. ` : line) + careersNote)
     } catch (e) {
       // A required gate that errors on a lead is a FAIL, never a pass: the lead is held with the failure as its reason.
       if (demote.run(SALES_GATE_FAILED, `Sales-hiring check failed (${(e instanceof Error ? e.message : 'error').slice(0, 80)}): not verified. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason: SALES_GATE_FAILED }) }

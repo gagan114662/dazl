@@ -48,12 +48,18 @@ export async function POST(req: NextRequest) {
 }
 
 // Read-only confirmation details for the claim page (what am I about to claim?). Never consumes, never binds.
+// It returns the same stripped public artifact the token's own public page shows (offer + dated, sourced companies; no
+// contacts, no spend, no seller data), so the first screen after auth carries the prospect's proof, not a generic wizard.
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in', code: 'signed_out' }, { status: 401 })
   const token = req.nextUrl.searchParams.get('t') || req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value || ''
   if (!isClaimToken(token)) return NextResponse.json({ error: 'This preview link is not valid.', code: 'unknown' }, { status: 404 })
   const c = await readPublicClaim(await getDb(), getMasterKey(), token)
-  if (c.status === 'ok') return NextResponse.json({ ok: true, business: c.business, expiresAt: c.snapshot.expiresAt })
+  if (c.status === 'ok') {
+    const { offer, companies, disclaimer, expiresAt } = c.snapshot
+    return NextResponse.json({ ok: true, business: c.business, expiresAt, offer: { text: offer.text, sourceUrl: offer.sourceUrl },
+      companies: companies.map(co => ({ company: co.company, event: co.event, eventDate: co.eventDate, quote: co.quote, sourceUrl: co.sourceUrl })), disclaimer })
+  }
   return NextResponse.json({ error: 'This preview is no longer available.', code: c.status }, { status: c.status === 'unknown' ? 404 : 410 })
 }

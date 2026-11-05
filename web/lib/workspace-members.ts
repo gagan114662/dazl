@@ -5,6 +5,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { can, isRole } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
+import { revokeWorkspaceSessionsTx } from './sessions.ts'
 
 // SQLite: migrateAuth (lib/auth-db.ts); PG: 0020_invitations.sql. Only the token's SHA-256 is stored; the token itself
 // is shown once, to the inviter, inside the link they share.
@@ -74,6 +75,19 @@ function* owners(t: Tx, tenantId: string): TxBody<number> {
   return Number((yield* t.get<{ n: number }>("SELECT count(*) AS n FROM memberships WHERE tenant_id = ? AND role = 'owner'", [tenantId]))?.n ?? 0)
 }
 
+// Offboarding (#358), inside removeMember before the membership row goes: the member's sessions acting in this
+// workspace are revoked (reason 'offboarded', by the remover, now; their sessions acting in their other workspaces
+// stay), and so are the invitations they sent that are still pending.
+function* offboardTx(t: Tx, tenantId: string, memberId: string, by: string): TxBody<void> {
+  yield* revokeWorkspaceSessionsTx(t, memberId, tenantId, { by })
+  yield* revokeSentInvitesTx(t, tenantId, memberId)
+}
+// A pending invitation already adds nothing once its inviter is gone (acceptInvitation re-reads the inviter); revoking
+// it on removal or leaving keeps the Team list honest and frees its place under MAX_PENDING_INVITES.
+function* revokeSentInvitesTx(t: Tx, tenantId: string, memberId: string): TxBody<void> {
+  yield* t.run('UPDATE invitations SET revoked_at = ? WHERE tenant_id = ? AND invited_by = ? AND accepted_at IS NULL AND revoked_at IS NULL', [nowS(), tenantId, memberId])
+}
+
 // Granting or touching the owner role takes 'owners'; everything else 'members'.
 const mayManage = (who: Role, target: Role | null, next: Role | null) =>
   can(who, 'members') && (target !== 'owner' && next !== 'owner' || can(who, 'owners'))
@@ -113,6 +127,7 @@ export async function removeMember(db: Db, by: Acting, memberId: string): Promis
     if (!mayManage(me, current, null)) throw new MemberError('forbidden')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
     if(yield* lastWorkspace(t,memberId))throw new MemberError('only_workspace')
+    yield* offboardTx(t, by.tenantId, memberId, by.actorId)
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, memberId])
   })
 }
@@ -125,6 +140,7 @@ export async function leave(db: Db, by: Acting): Promise<void> {
     if (!current) throw new MemberError('not_found')
     if (current === 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
     if(yield* lastWorkspace(t,by.actorId))throw new MemberError('only_workspace')
+    yield* revokeSentInvitesTx(t, by.tenantId, by.actorId)
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, by.actorId])
     yield* t.run('UPDATE sessions SET active_tenant_id=NULL WHERE user_id=? AND active_tenant_id=?',[by.actorId,by.tenantId])
   })

@@ -2,11 +2,13 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
+import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
 
 export default function SignUp() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const claim = useClaimContext()
 
   useEffect(() => { keepInvite() }, [])
 
@@ -26,7 +28,7 @@ export default function SignUp() {
     })
     const data = await res.json()
     if (!res.ok) { setError(data.error || 'Signup failed'); setLoading(false); return }
-    router.push(afterSignIn())
+    router.push(afterSignIn(data.resume))
   }
 
   return (
@@ -35,7 +37,8 @@ export default function SignUp() {
         <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></a>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
         <p className="text-[#555] text-sm mb-6 text-center">Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first. Upgrade any time.</p>
-        <a href="/api/auth/google" className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
+        <ClaimContextBanner business={claim.business} action="Create your account" />
+        <a href={claim.googleHref} className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">
