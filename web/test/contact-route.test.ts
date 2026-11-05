@@ -10,7 +10,8 @@ import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { createDraft } from '../lib/outreach/service.ts'
 import { contactRoute, deliverabilityBlocked, emailDomainInvalid, type RouteLead, type RouteRow } from '../lib/outreach/contact-route.ts'
 import { approveState, leadCardSummary } from '../lib/scan/lead-card.ts'
-import type { CardLead } from '../lib/scan/opportunity.ts'
+import { contactIdentity, type CardLead } from '../lib/scan/opportunity.ts'
+import { domainReviewFor, REVIEW_PREFIX } from '../lib/outreach/domain-review.ts'
 
 const NOW_MS = Date.UTC(2026, 10, 2)
 const SEC = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 1000
@@ -36,14 +37,51 @@ test('a generic recruiting or support inbox never becomes the founder\'s address
 
 test('an address read years ago keeps its age and an unknown first-published date; it is never refreshed silently', () => {
   const r = contactRoute(lead({ contact: null, enrichments: [{ connector: 'sitecrawl', kind: 'email', value: 'hello@brightdental.example', label: 'contact page', source_url: 'https://brightdental.example/contact', retrieved_at: SEC(2023, 3, 1) }] }), null, NOW_MS)
-  assert.equal(r.provenance.state, 'company_site')
+  assert.equal(r.provenance.state, 'unrecorded_site')
   assert.equal(r.provenance.stale, true)
   assert.ok(r.provenance.ageDays! > 1000)
-  assert.match(r.provenance.text, /last read 1 Mar 2023 \(\d+ days ago, may be out of date\); when it was first published is unknown/)
+  assert.match(r.provenance.text, /not recorded as the company's own website, last read 1 Mar 2023 \(\d+ days ago, may be out of date\); when it was first published is unknown/)
   assert.equal(r.deliverability.state, 'not_checked', 'being published is not a deliverability check')
   const cited = contactRoute(lead(), null, NOW_MS)
   assert.equal(cited.provenance.state, 'cited_page')
   assert.match(cited.provenance.text, /printed on the cited page \(news\.example\), read when the scan ran; when it was first published is unknown/)
+})
+
+test('a crawled page is never called the company website unless the site identity is recorded as theirs', () => {
+  const emailRow = { connector: 'sitecrawl', kind: 'email', value: 'contact@kyro.ai', label: 'contact page', source_url: 'https://kyro.ai/contact', retrieved_at: SEC(2026, 10, 24) }
+  const dom = (token: string) => ({ connector: 'sitecrawl', kind: 'domain', value: `kyro.ai|${token}`, label: `domain-basis-v1:${token}`, source_url: 'https://kyro.ai/' })
+
+  // Kyro repro: an email row and NO domain row. The identity line says the own website was not identified;
+  // the provenance line must not call the same page "the company website".
+  const noDom = contactRoute(lead({ id: 'l-kyro', contact: null, enrichments: [emailRow] }), null, NOW_MS)
+  assert.equal(noDom.provenance.state, 'unrecorded_site')
+  assert.doesNotMatch(noDom.provenance.text, /company website/)
+  assert.match(noDom.provenance.text, /printed on a page at kyro\.ai, not recorded as the company's own website/)
+  const cardLead: CardLead = { id: 'l-kyro', company: 'Kyro AI', signal: 'hiring', source_url: 'https://weworkremotely.com/x', evidence_excerpt: null, event_date: null, date_status: null, review_reason: null, fit: null, intent: null, why: null, icp_match: null, company_domain: null, contact: null, enrichments: [emailRow] }
+  assert.equal(contactIdentity(cardLead).state, 'none')
+  assert.match(contactIdentity(cardLead).text, /own website was not identified/)
+
+  // A recorded website whose basis does not prove ownership: named, never called the company's own.
+  const weak = contactRoute(lead({ id: 'l-weak', contact: null, enrichments: [emailRow, dom('name_probe')] }), null, NOW_MS)
+  assert.equal(weak.provenance.state, 'unconfirmed_site')
+  assert.doesNotMatch(weak.provenance.text, /the company website/)
+  assert.match(weak.provenance.text, /printed on a page at kyro\.ai, a website not confirmed as the company's own/)
+
+  // The cited page on the company's own domain: the company website, as before.
+  const own = contactRoute(lead({ id: 'l-own', contact: null, enrichments: [emailRow, dom('evidence_own_domain')] }), null, NOW_MS)
+  assert.equal(own.provenance.state, 'company_site')
+  assert.match(own.provenance.text, /printed on the company website \(kyro\.ai\)/)
+
+  // A weaker basis the user confirmed themselves: the company website, as before.
+  const reviewRows = [emailRow, dom('name_probe')]
+  const decision = domainReviewFor({ id: 'l-user', contact: null }, reviewRows)
+  assert.equal(decision.state, 'required')
+  const confirmed = contactRoute(lead({ id: 'l-user', contact: null, enrichments: [...reviewRows, { connector: 'user', kind: 'domain_review', value: 'kyro.ai', label: REVIEW_PREFIX + decision.binding }] }), null, NOW_MS)
+  assert.equal(confirmed.provenance.state, 'company_site')
+
+  // The lead's own contact stays the cited page, whatever the crawl recorded.
+  const cited = contactRoute(lead({ id: 'l-cited', contact: 'dana@news.example', enrichments: [emailRow] }), null, NOW_MS)
+  assert.equal(cited.provenance.state, 'cited_page')
 })
 
 test('an invalid domain fails; a recorded failed check fails; catch-all and mail-server-found stay uncertain', () => {
