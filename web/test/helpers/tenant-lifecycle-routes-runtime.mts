@@ -51,6 +51,10 @@ test('tenant lifecycle routes: request flow, gates, and isolation', async () => 
   const gj = await g.json()
   assert.equal(gj.tenant, A); assert.ok(gj.tables.leads > 0, 'A has leads'); assert.equal(gj.deletion, null)
   assert.ok(gj.always_retained.includes('audit_events'))
+  assert.equal(gj.can_delete, true, 'the default test session is the owner')
+  setUser({ id: A, business_name: 'Acme', role: 'admin' })
+  assert.equal((await (await lifecycle.GET()).json()).can_delete, false, 'an admin is told up front that only owners delete')
+  setUser({ id: A, business_name: 'Acme' })
 
   // export: fresh auth required, then the full export downloads and is audited
   setUser({ id: A, business_name: 'Acme', authedAt: Math.floor(Date.now() / 1000) - 7200 })

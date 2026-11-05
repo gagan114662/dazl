@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
+import { can } from '@/lib/workspaces'
 import { getDb } from '@/lib/db/client'
 import { tenantTableCounts, tombstone, ALWAYS_RETAINED, type Tombstone } from '@/lib/tenant/lifecycle'
 
@@ -13,6 +14,8 @@ export async function GET() {
   const t: Tombstone | null = (await tombstone(db, user.tenantId)) ?? null
   return NextResponse.json({
     tenant: user.tenantId,
+    // Same rule the delete route enforces ('owners'); lets the panel hide a control that would only ever answer 403.
+    can_delete: can(user.role, 'owners'),
     tables: await tenantTableCounts(db, user.tenantId),
     always_retained: Object.keys(ALWAYS_RETAINED),
     deletion: t ? { state: t.state, requested_at: t.requested_at, requested_by: t.requested_by, policy: JSON.parse(t.policy), retained: t.retained ? JSON.parse(t.retained) : null, completed_at: t.completed_at } : null,

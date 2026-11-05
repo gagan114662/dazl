@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 type Deletion = { state: string; requested_at: number; requested_by: string; policy: { suppressions: 'retain' | 'erase' }; retained: Record<string, number> | null; completed_at: number | null }
-type Status = { tenant: string; tables: Record<string, number>; always_retained: string[]; deletion: Deletion | null }
+type Status = { tenant: string; can_delete?: boolean; tables: Record<string, number>; always_retained: string[]; deletion: Deletion | null }
 
 // Your data: what the account holds, a full export, and deleting the account. Deleting asks for the workspace id
 // as confirmation and a decision on the opt-out list; the record of what was kept (retention exceptions) stays
@@ -73,8 +73,10 @@ export default function LifecyclePanel() {
         <div className="mt-4 text-sm">
           <p>Deletion requested {new Date(s.deletion.requested_at * 1000).toLocaleString()} - {s.deletion.state === 'completed' ? 'completed' : `at "${s.deletion.state}"`}.</p>
           {s.deletion.retained && <p className="text-xs text-[#777] mt-1">Kept after deletion: {Object.entries(s.deletion.retained).map(([t, n]) => `${t} (${n})`).join(', ')}. The opt-out list was {s.deletion.policy.suppressions === 'retain' ? 'kept, and stays suppressed if this workspace id is ever restored' : 'erased with everything else'}.</p>}
-          {s.deletion.state !== 'completed' && <button className="btn-primary mt-2" onClick={() => void del()}>Resume deletion</button>}
+          {s.deletion.state !== 'completed' && s.can_delete !== false && <button className="btn-primary mt-2" onClick={() => void del()}>Resume deletion</button>}
         </div>
+      ) : s.can_delete === false ? (
+        <p className="mt-4 text-xs text-[#777] border-t border-[#e5e2dc] pt-3">Only a workspace owner can delete this account.</p>
       ) : (
         <div className="mt-4 text-sm border-t border-[#e5e2dc] pt-3">
           <p className="font-medium">Delete this account</p>
