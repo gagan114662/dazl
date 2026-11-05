@@ -115,7 +115,8 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   let hold: SpendHold | null
   try { hold = await reserveScanSpend('tinyfish.search', () => unitCostUsd('tinyfish.search', 1, env)) } catch (e) {
     if (!(e instanceof SpendRefused)) throw e
-    d.trace?.search({ query, attempted: false, outcome: 'cap', hits: null }); return { ok: false, reason: 'cap' }
+    // Money, not a count cap: the trace says spend_refused so a budget refusal is never reported as search_cap.
+    d.trace?.search({ query, attempted: false, outcome: 'spend_refused', hits: null }); return { ok: false, reason: 'cap' }
   }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
@@ -154,7 +155,8 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   let hold: SpendHold | null
   try { hold = await reserveScanSpend('tinyfish.fetch', () => unitCostUsd('tinyfish.fetch', batch.length, env)) } catch (e) {
     if (!(e instanceof SpendRefused)) throw e
-    d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' }
+    // Money, not a count cap: spend_refused, so a budget refusal is never reported as search_cap.
+    d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'spend_refused', pages: null }); return { ok: false, reason: 'cap' }
   }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
   if (hold) await hold.settle(r.ok ? hold.usd : null)

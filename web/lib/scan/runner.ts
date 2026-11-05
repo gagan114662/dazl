@@ -1304,19 +1304,35 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           ledger.stats('search:adaptive', { ...st, ...diag2.info })
           const seen = new Set(leads.map(l => `${l.source_url}|${companyKey(l.company)}`))
           const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
-          if (fresh.length === 0) stop(st.searches_not_attempted.cap ? 'search_cap' : 'empty')
+          if (fresh.length === 0) stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : st.searches_not_attempted.cap ? 'search_cap' : 'empty') // money vs count: a budget refusal is never the search-cap status (D1)
           else {
             ledger.candidates('search:adaptive', fresh)
             assertOwned(db, job)
             leads.push(...fresh); verifiedUrls.push(...fresh.map(l => l.source_url))
-            const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, diag2.held && evidenceCopyRoom(db, job.user_id) >= diag2.held.size ? { text: diag2.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
-            const seenKeys = new Set(outcome.leads.map(dedupKey))
-            for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
-            const seenReview = new Set(outcome.review.map(dedupKey))
-            for (const r of o2.review) { const k = dedupKey(r); if (!seenKeys.has(k) && !seenReview.has(k)) { seenReview.add(k); outcome.review.push(r) } }
-            for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
-            if (o2.quotes) { outcome.quotes ??= new Map(); for (const [k, v] of o2.quotes) outcome.quotes.set(k, [...(outcome.quotes.get(k) ?? []), ...v]) }
-            stop('ok')
+            // D2: round two passes the same pre-verify gates as round one before anything is fetched again:
+            // feedback memory first (a rejected company costs no fetch), then the memory exclusions, so an
+            // excluded or previously-rejected company is dropped and audited here instead of after cost.
+            let gated = await forget(fresh)
+            try {
+              const mem = deps.memory === undefined ? getMemory(db, job.user_id) : deps.memory
+              if (mem && mem.exclusions.length > 0) {
+                const kept = gated.filter(l => !isExcluded(mem, l))
+                const excl = gated.filter(l => isExcluded(mem, l))
+                if (excl.length > 0) { outcome.dropped['excluded'] = (outcome.dropped['excluded'] ?? 0) + excl.length; auditDrop(audit)(excl, 'excluded') }
+                gated = kept
+              }
+            } catch { /* memory table may predate this deploy: hold everything, the post-verify gate still applies */ }
+            if (gated.length === 0) stop('empty') // the round's candidates were all gated out before any fetch
+            else {
+              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, diag2.held && evidenceCopyRoom(db, job.user_id) >= diag2.held.size ? { text: diag2.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+              const seenKeys = new Set(outcome.leads.map(dedupKey))
+              for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
+              const seenReview = new Set(outcome.review.map(dedupKey))
+              for (const r of o2.review) { const k = dedupKey(r); if (!seenKeys.has(k) && !seenReview.has(k)) { seenReview.add(k); outcome.review.push(r) } }
+              for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
+              if (o2.quotes) { outcome.quotes ??= new Map(); for (const [k, v] of o2.quotes) outcome.quotes.set(k, [...(outcome.quotes.get(k) ?? []), ...v]) }
+              stop('ok')
+            }
           }
         } catch (e) {
           if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e

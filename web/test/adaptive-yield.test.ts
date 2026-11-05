@@ -12,6 +12,8 @@ import { migrateScan, createQueryJob, cancelJob } from '../lib/scan/store.ts'
 import { migratePlans } from '../lib/plans.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
+import { migrateFeedback } from '../lib/scan/feedback.ts'
+import { companyKey } from '../lib/scan/evidence.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, claimKeyedJob, runJob, type RunDeps } from '../lib/scan/runner.ts'
@@ -32,17 +34,18 @@ type Opts = {
   adaptiveOff?: boolean
   adaptiveFlag?: string
   onAdaptiveSearch?: (db: Database.Database, jobId: string) => void
-  signals?: string[]; aVerifies?: boolean; deps?: Partial<RunDeps> }
+  signals?: string[]; aVerifies?: boolean; rejectCompanyB?: boolean; deps?: Partial<RunDeps> }
 async function scan(o: Opts = {}) {
   resetTinyfishState()
   const icp = { summary: 'Ohio SMBs hiring', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: o.signals ?? ['payroll job', 'new front desk coordinator position posted'], exclude: [] }
   const db = new Database(':memory:')
-  migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateFeedback(db)
+  if (o.rejectCompanyB) db.prepare("INSERT INTO lead_feedback (id, tenant_id, version, verdict, level, reason, company_key, created_at) VALUES ('fb-b', 'A', 1, 'reject', 'account', 'not_useful', ?, ?)").run(companyKey(B.company), Date.now())
   saveKey(db, 'A', 'anthropic', KEY, master)
   const jid = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp), ...(o.runBudget ? { runBudget: o.runBudget } : {}) })
   if (o.fundedByTrial) db.prepare("UPDATE scan_jobs SET funded_by = 'trial', spend_reserved_usd = ? WHERE id = ?").run(o.seedReservedUsd ?? 0, jid)
   const job = claimKeyedJob(db)!
-  const searched: string[] = [], fetchBatches: string[][] = [], extractions: string[] = []
+  const searched: string[] = [], fetchBatches: string[][] = [], extractions: string[] = [], pageReads: string[] = []
   const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
       const q = new URL(u).searchParams.get('query') ?? ''
@@ -75,7 +78,7 @@ async function scan(o: Opts = {}) {
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   // the verifier's own read: page A no longer carries the quote (round one verifies nothing), page B does
-  const page = async (u: string) => ({ text: u === A.url && !o.aVerifies ? 'This position has been removed.' : `Posted ${recent}. ${(u === B.url ? B : A).quote}. Apply now.`, title: 'Job', retrievedAt: Math.floor(Date.now() / 1000) })
+  const page = async (u: string) => { pageReads.push(u); return { text: u === A.url && !o.aVerifies ? 'This position has been removed.' : `Posted ${recent}. ${(u === B.url ? B : A).quote}. Apply now.`, title: 'Job', retrievedAt: Math.floor(Date.now() / 1000) } }
   const realFetch = globalThis.fetch
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
@@ -85,7 +88,7 @@ async function scan(o: Opts = {}) {
     const runs = db.prepare('SELECT collector, status, candidate_count, verified_count FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string; candidate_count: number | null; verified_count: number | null }[]
     const leads = db.prepare("SELECT company, source_url, review_reason FROM leads WHERE scan_job_id = ? ORDER BY rowid").all(job.id) as { company: string; source_url: string; review_reason: string | null }[]
     const jobRow = db.prepare('SELECT status, error, verified FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null; verified: number }
-    return { db, jobId: job.id, r, searched, fetchBatches, extractions, runs, leads, jobRow, adaptive: runs.find(x => x.collector === 'search:adaptive') }
+    return { db, jobId: job.id, r, searched, fetchBatches, extractions, pageReads, runs, leads, jobRow, adaptive: runs.find(x => x.collector === 'search:adaptive') }
   } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED }
 }
 
@@ -160,7 +163,7 @@ test('#381 budget near-exhausted (non-trial, own max_usd): the adaptive round\'s
     // Round one: 4 searches + 1 fetched page = $0.21 of the $0.25 budget; the first $0.05 adaptive search would pass it.
     const s = await scan({ runBudget: '{"max_usd":0.25}' })
     assert.equal(s.r, 'done')
-    assert.equal(s.adaptive?.status, 'search_cap', JSON.stringify(s.adaptive))
+    assert.equal(s.adaptive?.status, 'budget_stopped', `a money refusal is budget_stopped, never the count-cap status: ${JSON.stringify(s.adaptive)}`)
     assert.ok(!s.searched.some(q => /front desk/i.test(q)), `the refused search was never sent: ${JSON.stringify(s.searched)}`)
     assert.ok(!s.fetchBatches.some(b => b.includes(B.url)), 'no adaptive fetch after the refusal')
     assert.ok(!s.extractions.some(p => p.includes(B.url)), 'no adaptive extraction after the refusal')
@@ -217,4 +220,13 @@ test('#381 gate: only the literal "1" enables the round - "0", "true", "" and " 
     assert.ok(!s.searched.some(q => /front desk/i.test(q)), `flag ${JSON.stringify(v)}: no adaptive search`)
     assert.equal(s.extractions.length, 1, `flag ${JSON.stringify(v)}: no adaptive extraction`)
   }
+})
+
+test('#381 D2 feedback before fetch: a company in feedback memory returned by round two costs no verification fetch and is dropped before verify', async () => {
+  const s = await scan({ rejectCompanyB: true })
+  assert.equal(s.r, 'done')
+  assert.ok(!s.pageReads.includes(B.url), `round two never re-read the rejected company's page: ${JSON.stringify(s.pageReads)}`)
+  assert.ok(s.pageReads.includes(A.url), 'round one still verified its own candidate')
+  assert.ok(!s.leads.some(l => l.company === B.company), 'the rejected company is never a lead')
+  assert.equal(s.adaptive?.status, 'empty', `round two ran, found only a rejected company, and says so: ${JSON.stringify(s.adaptive)}`)
 })
