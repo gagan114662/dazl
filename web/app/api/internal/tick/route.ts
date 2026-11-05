@@ -107,7 +107,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
         // verified leads (#448). Every send runs within every autopilot and send check; the lease is kept alive
         // between its messages.
         stage = 'first_touch'
-        const dr = classifyWork(await drainFirstTouch(db, tenantId))
+        const dr = classifyWork(await drainFirstTouch(db, tenantId, { businessName: firstTouchSet.get(tenantId) ?? '' }))
         await progress(tenantId, 'first_touch', dr)
         if (dr.outcome === 'failure') continue
         const ap = await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? '', { keep: () => lease.keep() })
@@ -119,9 +119,11 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
     } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
   }
   let sequences = 0
-  for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
+  // The account's business name, as runAutopilot is given it: an auto-enrolled set's claims fingerprint includes it
+  // (#414), so passing anything else would stop every such set as claims_changed before its first due step.
+  for (const t of db.prepare("SELECT DISTINCT s.tenant_id, u.business_name FROM sequences s LEFT JOIN users u ON u.id = s.tenant_id WHERE s.status IN ('approved','active')").all() as { tenant_id: string; business_name: string | null }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
+    try { const r = await runSequences(db,t.tenant_id,t.business_name ?? ''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.

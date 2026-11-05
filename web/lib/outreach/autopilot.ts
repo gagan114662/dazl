@@ -360,15 +360,20 @@ export function newLeadsSql(scope = ''): string {
        AND ${LIFECYCLE_NOT_CONVERTED}
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
-         AND (a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+         AND ((a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+             AND NOT EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = a.tenant_id AND e.connector = 'sitecrawl' AND e.kind = 'email' AND e.retrieved_at > a.created_at))
            OR (a.detail IN ('error','offer_unreadable') AND a.created_at > ?)
            OR (a.detail NOT IN ('error','offer_unreadable') AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))
      ORDER BY l.score DESC LIMIT 25`
   return scope ? base.replace('ORDER BY l.score DESC LIMIT 25', `${scope}
      ORDER BY l.score DESC LIMIT 25`) : base
 }
-// Refusals of the draft path that never change for a lead (createDraft's draftChecks: a personal address, not a sales
-// contact, suppressed, no address): recorded once, the lead is the user's from then on. Every other refusal (currentness
+// Refusals of the draft path on the lead's recipient route (createDraft's draftChecks: a personal address, not a sales
+// contact, suppressed, no address): recorded once, the lead is the user's from then on - until the crawl records an
+// email after that refusal (the on-request company-site search, a re-crawl). The route draftChecks would pick may then
+// differ, so the lead is judged again by the same draft gate (#412: autopilot eligibility follows manual readiness,
+// whatever row the address is stored in); refused again for the same reason, the one skipped row's time moves past
+// the crawl record and the refusal stands. Every other refusal (currentness
 // or domain to confirm, ungraded, a sales/hiring gate not passed yet (held-state.ts: a held lead clears when the gate
 // runs again and passes), evidence the user can confirm, an offer conflict) is tried again: after SKIP_RETRY_S, or at
 // once when the lead was confirmed by the user at or after the refusal; a store error ('error') or an unreadable offer
@@ -767,7 +772,7 @@ export interface DrainResult { sent: number; held: number; skipped: number; stop
 // warmup already cleared, the hold recorded under this consent version, and the offer inputs unchanged (changed words
 // or offer invalidate the authority; the draft is skipped, never sent). Warmup-manual drafts and drafts with no hold
 // record are never touched. Caps are re-checked at send time; an over-cap tenant is re-held, not sent.
-export async function drainFirstTouch(db: Database.Database, tenantId: string, d: Deps & { flags?: Record<string, string | undefined> } = {}): Promise<DrainResult> {
+export async function drainFirstTouch(db: Database.Database, tenantId: string, d: Deps & { flags?: Record<string, string | undefined>; businessName?: string } = {}): Promise<DrainResult> {
   const out: DrainResult = { sent: 0, held: 0, skipped: 0 }
   const env = d.flags ?? process.env
   const now = d.now ?? Math.floor(Date.now() / 1000)
@@ -855,7 +860,13 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
     try {
       if (m.status === 'draft') approve(db, tenantId, m.id) // a released retry is already approved; approve() is draft-only
       const r = await sendMessage(db, tenantId, m.id, { ...d, expectSender: gmailSender(db, tenantId) ?? '', authorize: drainAuthorize(m.lead_id, m.id, domain) })
-      if (r === 'sent') { out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id) }
+      if (r === 'sent') {
+        out.sent++; audit(db, tenantId, 'sent', undefined, m.lead_id, m.id)
+        // #414: a first touch this drain proves sent enrolls exactly as one runAutopilot sends does (policy-gated,
+        // best-effort: a failure is audited and never touches the send or the tenant).
+        try { (await import('./sequences.ts')).enrollColdSequence(db, tenantId, m.id, { businessName: d.businessName }) }
+        catch (e) { audit(db, tenantId, 'sequence_enroll_failed', e instanceof Error ? e.message.slice(0, 40) : 'error', m.lead_id, m.id) }
+      }
       else { audit(db, tenantId, 'uncertain', 'send outcome unknown', m.lead_id, m.id); pause(db, tenantId, 'uncertain_send'); return stop('uncertain_send') }
     } catch (e) {
       if (!(e instanceof OutreachError)) throw e // DB/runtime faults are scheduler failures, never retry-classified

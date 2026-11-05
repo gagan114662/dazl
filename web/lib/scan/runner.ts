@@ -27,6 +27,7 @@ import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '..
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
+import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
 import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
@@ -41,6 +42,7 @@ import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connector
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
@@ -71,6 +73,7 @@ import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
+import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export interface LeadDraft extends Candidate {}
@@ -535,9 +538,39 @@ function assertOwned(db: Database.Database, job: Job): void {
   if (d && d.now() > d.at) throw new ScanTimedOut()
 }
 
+// #386 lookalike scans (lib/scan/lookalike-discovery.ts lookalikeOf): the run never brings back an account the tenant
+// supplied (customer, won opportunity, competitor, negative example). A block that is present but unreadable is UNKNOWN,
+// never "nothing supplied": every candidate is then dropped as lookalike_unreadable.
+// Per attempt: the run's candidate audit (so a row dropped at finish() is explained there too) and the count dropped
+// before the verifier, merged into the job's drop reasons at finish().
+const lookalikeRuns = new WeakMap<Job, { audit: CandidateAudit[]; dropped: Record<string, number> }>()
+export function dropSupplied<T extends LeadDraft>(job: Job, list: T[], audit?: CandidateAudit[]): T[] {
+  const la = lookalikeOf(job)
+  if (!la || list.length === 0) return list
+  const run = lookalikeRuns.get(job) ?? { audit: audit ?? [], dropped: {} }
+  if (audit) run.audit = audit
+  lookalikeRuns.set(job, run)
+  const r = la === 'unreadable' ? { kept: [] as T[], dropped: list.map(row => ({ row, reason: 'lookalike_unreadable' })) } : dropKnown(la, list)
+  for (const d of r.dropped) {
+    run.dropped[d.reason] = (run.dropped[d.reason] ?? 0) + 1
+    const key = `${dedupKey(d.row)}|${d.row.source_url}`, e = run.audit.find(a => a.key === key)
+    if (e) { e.outcome = 'dropped'; e.reason = d.reason } else run.audit.push({ key, company: d.row.company, url: d.row.source_url, outcome: 'dropped', reason: d.reason })
+  }
+  return r.kept
+}
+// finish(): the authoritative pass over every row about to be stored (verified, review, walled, fallback), so no path
+// around the pre-verifier drop can store a supplied account.
+function excludeSupplied(job: Job, out: VerifyOutcome): void {
+  if (!lookalikeOf(job)) return
+  out.leads = dropSupplied(job, out.leads); out.review = dropSupplied(job, out.review)
+  for (const [k, n] of Object.entries(lookalikeRuns.get(job)?.dropped ?? {})) out.dropped[k] = (out.dropped[k] ?? 0) + n
+  lookalikeRuns.delete(job)
+}
+
 // Writes only if this attempt still owns the job (a reaped and re-claimed job
 // has a higher attempts number), so a slow old run cannot clobber a newer one.
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
+  if (out) excludeSupplied(job, out)
   const leads = out?.leads ?? []
   const review = out?.review ?? []
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
@@ -747,7 +780,8 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hitByUrl = new Map(hits.map(h => [h.url, h]))
   // A request that needs an event beyond hiring (seed funding, an opening) is not answered by job postings alone: within each window class
   // the pages that can carry the event come before job-board / careers pages, which only corroborate the hiring half. Nothing is excluded.
-  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '')
+  // #380 / #204 Test B: under an OR plan ("seed funding OR first sales hire") a job page can prove a branch on its own, so it is not ranked behind the event pages.
+  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '') && !salesGateOr(job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
@@ -917,7 +951,16 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
   try { const r = await runJobUntraced(db, job, capture.deps); outcome = r; return r } finally { await capture.finish(outcome) }
 }
 
+// The hard per-scan spend cap (lib/scan/spend-cap.ts, #377/#533): the whole attempt, post-finish enrichment included, runs
+// in this scan's spend context, so every paid provider call it makes reserves its worst case on this job's ledger row
+// before the request and is refused past the cap (CAD 5, DAZL_SCAN_CAP_CAD can only lower it; so can the request's own
+// run_budget.max_usd).
 async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
+  const requestMaxUsd = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd }, () => runJobCapped(db, job, deps))
+}
+
+async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
   let trialGuard: SpendGuard | null = null
   const ledger = new SourceRunLedger()
@@ -1114,7 +1157,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         }
         // Seed funding AND hiring sales: a board-sourced candidate proves the hiring half only. For the few such companies, search the news for their funding round; the results are ordinary
         // candidates (verified quote, identity, date window) that the sales-hiring gate later merges with the posting. A run that disabled the paid fallback makes no extra model call.
-        const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
+        const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })), leads.slice(0, leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
         if (targets.length > 0) {
           const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
@@ -1169,6 +1212,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
         // any other complaint-search failure only means no extra candidates
       }
     }
+    // #386: a lookalike scan drops the accounts the tenant supplied before any page is fetched for them.
+    for (const list of [leads, walledLeads, selfDescribedLeads]) { const kept = dropSupplied(job, list, audit); if (kept !== list) list.splice(0, list.length, ...kept) }
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,
     // so the user gets the slot back instead of a silent empty result.
     if (leads.length === 0 && walledLeads.length === 0 && selfDescribedLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
@@ -1400,7 +1445,9 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
-    if (jobStartsAutopilot(job) && !trial) try { await (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '') } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    // Autopilot's drafting and sends are outreach work under their own guards (docs/spend-safety.md), not this scan's
+    // spend: it runs outside the scan's spend context, so the hard per-scan cap neither counts nor refuses it.
+    if (jobStartsAutopilot(job) && !trial) try { await outsideScanSpend(() => (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '')) } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }

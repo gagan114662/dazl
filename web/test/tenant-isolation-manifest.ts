@@ -56,6 +56,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'gmail/callback', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'gmail/connect', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'gmail/disconnect', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  // owner of the configured growth workspace only (DAZL_GROWTH_TENANT_ID); aggregate counts, no ids or emails
+  { path: 'growth/funnel', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'billing' },
 
   { path: 'health', method: 'GET', auth: 'public', note: 'no tenant data' },
   { path: 'health/live', method: 'GET', auth: 'public', note: 'liveness: no tenant data, touches no store' },
@@ -145,6 +147,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'scan/csv', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/icp-from-url', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/icp', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'scan/lookalike', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'scan/jobs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'scan/latest', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'scan/estimate', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },

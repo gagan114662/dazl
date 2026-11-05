@@ -662,7 +662,7 @@ CREATE TABLE scan_jobs (
       created_at    INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       claimed_at    INTEGER,
       finished_at   INTEGER
-    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR length(offer) <= 150), offer_set_at INTEGER, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, run_budget TEXT, estimate TEXT, spend_reserved_usd REAL, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT, enrich_started_at INTEGER, enrich_finished_at INTEGER, insert_seq INTEGER);
+    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR length(offer) <= 150), offer_set_at INTEGER, watch_id TEXT, candidates INTEGER, needs_review INTEGER, dropped INTEGER, run_budget TEXT, estimate TEXT, spend_reserved_usd REAL, drop_reasons TEXT, verified INTEGER, query TEXT CHECK (query IS NULL OR length(query) <= 600), icp TEXT CHECK (icp IS NULL OR length(icp) <= 4000), icp_inferred INTEGER, sources TEXT CHECK (sources IS NULL OR length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR length(csv_domain) <= 253), batch_id TEXT, enrich_started_at INTEGER, enrich_finished_at INTEGER, insert_seq INTEGER, spend_cap_usd REAL CHECK (spend_cap_usd IS NULL OR (spend_cap_usd > 0 AND spend_cap_usd <= 3.3334)), spend_cap_reserved_usd REAL NOT NULL DEFAULT 0 CHECK (spend_cap_reserved_usd >= 0), spend_cap_refusals INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE scan_model_calls (
     tenant_id TEXT NOT NULL,
@@ -733,6 +733,20 @@ CREATE TABLE scan_source_stats (
     evidence_snippet_only INTEGER,
     PRIMARY KEY (job_id, attempt, collector)
   );
+
+CREATE TABLE scan_spend_calls (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      scan_job_id TEXT NOT NULL,
+      attempt     INTEGER NOT NULL,
+      kind        TEXT NOT NULL CHECK (length(kind) <= 32),
+      reserve_usd REAL NOT NULL CHECK (reserve_usd >= 0),
+      actual_usd  REAL CHECK (actual_usd IS NULL OR actual_usd >= 0),
+      status      TEXT NOT NULL CHECK (status IN ('reserved','settled','kept','refused')),
+      reason      TEXT CHECK (reason IS NULL OR length(reason) <= 80),
+      created_at  INTEGER NOT NULL,
+      settled_at  INTEGER
+    );
 
 CREATE TABLE scan_traces (
       id TEXT PRIMARY KEY,
@@ -1219,6 +1233,8 @@ CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
 
+CREATE INDEX scan_spend_calls_job ON scan_spend_calls (user_id, scan_job_id);
+
 CREATE INDEX scan_traces_created ON scan_traces (created_at);
 
 CREATE INDEX scan_traces_tenant ON scan_traces (tenant_id, created_at);
@@ -1464,6 +1480,8 @@ CREATE TRIGGER tomb_scan_source_runs BEFORE INSERT ON scan_source_runs BEGIN SEL
 
 CREATE TRIGGER tomb_scan_source_stats BEFORE INSERT ON scan_source_stats BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id); END;
 
+CREATE TRIGGER tomb_scan_spend_calls BEFORE INSERT ON scan_spend_calls BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
+
 CREATE TRIGGER tomb_scan_traces BEFORE INSERT ON scan_traces BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_scheduler_progress BEFORE INSERT ON scheduler_progress BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1651,6 +1669,8 @@ CREATE TRIGGER tomb_upd_scan_run_report BEFORE UPDATE OF job_id ON scan_run_repo
 CREATE TRIGGER tomb_upd_scan_source_runs BEFORE UPDATE OF job_id ON scan_source_runs BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT (SELECT user_id FROM scan_jobs WHERE id = OLD.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.job_id IS NOT OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id))); END;
 
 CREATE TRIGGER tomb_upd_scan_source_stats BEFORE UPDATE OF job_id ON scan_source_stats BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT (SELECT user_id FROM scan_jobs WHERE id = OLD.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.job_id IS NOT OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id))); END;
+
+CREATE TRIGGER tomb_upd_scan_spend_calls BEFORE UPDATE OF user_id ON scan_spend_calls BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_scan_traces BEFORE UPDATE OF tenant_id ON scan_traces BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

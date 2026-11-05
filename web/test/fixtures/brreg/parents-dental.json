@@ -1,0 +1,386 @@
+{
+ "938370621": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938370621"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Frudalen 56"
+   ],
+   "kommune": "ASKØY",
+   "kommunenummer": "4627",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "5306",
+   "poststed": "ERDAL"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-08-10",
+  "fravalgRevisjonDato": "2026-08-28",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 30000,
+   "belop": 30000,
+   "innfortDato": "2026-08-28",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Nynorsk",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "MARIHØNE PROTETIKK AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938370621",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-08-28",
+  "registreringsdatoForetaksregisteret": "2026-08-28",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-08-10",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-08-10",
+  "vedtektsfestetFormaal": [
+   "Selge varer og tjenester innen tannlegearbeid - og annet som naturlig",
+   "sammenfaller med dette - samt deltakelse i andre selskaper,",
+   "investeringer og nærliggende virksomhet."
+  ]
+ },
+ "938415803": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938415803"
+   }
+  },
+  "aktivitet": [
+   "Tannpleier.",
+   "Psykolog.",
+   "Blikkenslagertjenester (ventilasjon, kanaler).",
+   "Bensinstasjon, ubetjent."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Klæbuveien 155A"
+   ],
+   "kommune": "TRONDHEIM",
+   "kommunenummer": "5001",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "7031",
+   "poststed": "TRONDHEIM"
+  },
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Personlig næringsdrivende",
+   "kode": "8200"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "NORDLY TJENESTER",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+    }
+   },
+   "beskrivelse": "Enkeltpersonforetak",
+   "kode": "ENK"
+  },
+  "organisasjonsnummer": "938415803",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-09-14",
+  "registrertIForetaksregisteret": false,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false
+ },
+ "938425728": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938425728"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "c/o Elisabet Skrede",
+    "Storeåkeren 17"
+   ],
+   "kommune": "SOGNDAL",
+   "kommunenummer": "4640",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "6856",
+   "poststed": "SOGNDAL"
+  },
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Personlig næringsdrivende",
+   "kode": "8200"
+  },
+  "konkurs": false,
+  "maalform": "Nynorsk",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "TANNLEGE ELISABET SKREDE",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+    }
+   },
+   "beskrivelse": "Enkeltpersonforetak",
+   "kode": "ENK"
+  },
+  "organisasjonsnummer": "938425728",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-09-14",
+  "registrertIForetaksregisteret": false,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false
+ },
+ "938429200": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938429200"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Åsvegen 332"
+   ],
+   "kommune": "NANNESTAD",
+   "kommunenummer": "3238",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "2033",
+   "poststed": "ÅSGREINA"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-08-12",
+  "fravalgRevisjonDato": "2026-09-07",
+  "harRegistrertAntallAnsatte": true,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 100,
+   "belop": 30000,
+   "innfortDato": "2026-09-07",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "GENDERKA AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938429200",
+  "paategninger": [],
+  "registreringsdatoAntallAnsatteEnhetsregisteret": "2026-10-13",
+  "registreringsdatoAntallAnsatteNAVAaregisteret": "2026-10-10",
+  "registreringsdatoEnhetsregisteret": "2026-09-07",
+  "registreringsdatoForetaksregisteret": "2026-09-07",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-08-12",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-08-12",
+  "vedtektsfestetFormaal": [
+   "Tannlege."
+  ]
+ },
+ "938463077": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938463077"
+   }
+  },
+  "aktivitet": [
+   "Tannlege.",
+   "Kjøp og salg av egen fast eiendom."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Nansens vei 28"
+   ],
+   "kommune": "BERGEN",
+   "kommunenummer": "4601",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "5063",
+   "poststed": "BERGEN"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-09-09",
+  "fravalgRevisjonDato": "2026-09-15",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 30000,
+   "belop": 30000,
+   "innfortDato": "2026-09-15",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "BERGMANN HOLDING AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938463077",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-09-15",
+  "registreringsdatoForetaksregisteret": "2026-09-15",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-09-09",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-09-09",
+  "vedtektsfestetFormaal": [
+   "Kjøpe og eie 50% av tannlegepraksis, Morvik Tannlegesenter."
+  ]
+ },
+ "938513023": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938513023"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Capellaveien 9A"
+   ],
+   "kommune": "SANDEFJORD",
+   "kommunenummer": "3907",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "3234",
+   "poststed": "SANDEFJORD"
+  },
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Personlig næringsdrivende",
+   "kode": "8200"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "TANNLEGE CHRISTIAN RØSJORDE",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+    }
+   },
+   "beskrivelse": "Enkeltpersonforetak",
+   "kode": "ENK"
+  },
+  "organisasjonsnummer": "938513023",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-09-17",
+  "registrertIForetaksregisteret": false,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false
+ }
+}
