@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
 
 test('lifecycle panel: delete/resume controls follow the server can_delete flag (real component)', () => {
   const env = { ...process.env }
@@ -14,4 +15,10 @@ test('lifecycle panel: delete/resume controls follow the server can_delete flag 
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /LIFECYCLE DELETE CONTROLS ok/)
+})
+
+test('lifecycle panel export line names what is left out, redacted and generalized - never a complete-export claim', () => {
+  const src = readFileSync(fileURLToPath(new URL('../app/app/settings/lifecycle-panel.tsx', import.meta.url)), 'utf8')
+  assert.match(src, /sign-in records are left out, stored credentials are redacted, and internal conversion markers are generalized/, 'exportTenant excludes sessions/oauth_states, redacts REDACTED_COLUMN and generalizes conversion markers; the panel says so')
+  assert.ok(!src.includes('Everything this workspace holds'), 'no complete-export claim')
 })

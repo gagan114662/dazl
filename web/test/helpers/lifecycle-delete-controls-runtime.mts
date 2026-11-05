@@ -46,4 +46,40 @@ test('can_delete absent (an older server) keeps the old behavior', () => {
   assert.ok(html.includes('Delete this account</button>'), 'undefined can_delete does not hide the controls')
 })
 
+
+const UNAVAILABLE = 'Account deletion is not available yet. Contact support to delete this account.'
+
+test('an owner sees an unavailable note instead of the delete form when deletion is not enabled (no ledger)', () => {
+  const html = renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: true, deletion_available: false })))
+  assert.ok(!html.includes('Delete this account</button>'), 'no delete button the route would only 503')
+  assert.ok(!html.includes('Type the workspace id to confirm'), 'no confirmation input')
+  assert.ok(!html.includes('name="sup"'), 'no opt-out policy choice')
+  assert.ok(html.includes(UNAVAILABLE), 'the unavailable note matches the route 503 wording')
+})
+
+test('an owner with an in-progress deletion sees its state and the unavailable note, no resume control', () => {
+  const html = renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: true, deletion: deleting, deletion_available: false })))
+  assert.ok(html.includes('Deletion requested'), 'the deletion state stays visible')
+  assert.ok(!html.includes('Resume deletion'), 'a resume control that would only 503 is not shown')
+  assert.ok(html.includes(UNAVAILABLE), 'the unavailable note explains the missing resume control')
+})
+
+test('an owner sees the delete form when deletion is enabled', () => {
+  const html = renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: true, deletion_available: true })))
+  assert.ok(html.includes('Delete this account</button>'), 'the owner gets the delete button')
+  assert.ok(!html.includes(UNAVAILABLE))
+})
+
+test('a non-owner keeps the owner-only note when deletion is unavailable (role note takes precedence)', () => {
+  const html = renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: false, deletion_available: false })))
+  assert.ok(html.includes(OWNER_ONLY_DELETE_MESSAGE))
+  assert.ok(!html.includes(UNAVAILABLE), 'a non-owner is told about their role, not the service configuration')
+})
+
+test('deletion_available absent (an older server) keeps the old behavior', () => {
+  const html = renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: true })))
+  assert.ok(html.includes('Delete this account</button>'), 'undefined deletion_available does not hide the controls')
+  assert.ok(!html.includes(UNAVAILABLE))
+})
+
 console.log('LIFECYCLE DELETE CONTROLS ok')
