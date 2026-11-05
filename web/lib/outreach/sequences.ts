@@ -528,6 +528,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped','policy_revoked',now); out.skipped++; continue
       }
+      // The recipient gate is also re-proved at this send boundary (after the last await): an allowlist
+      // narrowed mid-tick - the designated test tenant may address only the approved test inbox - stops
+      // the step and the sequence here, never at Gmail.
+      if (!recipientAllowed(db, tenantId, s.to_email)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped','personal_email',now); out.skipped++; continue
+      }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name, fromEmail: acct.email, to: s.to_email, subject: stepRow.subject,
         body: composeBody(stepRow.body, settings, unsubUrl),
