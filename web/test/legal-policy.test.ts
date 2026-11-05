@@ -2,6 +2,7 @@
 // (lib/legal/policy.ts) to the code that implements it, so a change in behaviour fails here until the policy text is
 // changed too. These tests prove the text matches the code; they are not a legal-compliance claim.
 import { test } from 'node:test'
+import { randomBytes } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -23,7 +24,11 @@ import { ENRICH_APOLLO, ENRICH_PDL } from '../lib/enrich/index.ts'
 import { GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE } from '../lib/gmail/oauth.ts'
 import { emailGuessEnabled } from '../lib/people/email-pattern.ts'
 import { CONSENT_TEXT } from '../lib/outreach/autopilot.ts'
-import { composeBody, isSuppressed, OutreachError, saveSettings, suppress } from '../lib/outreach/service.ts'
+import { approve, composeBody, createDraft, isSuppressed, OutreachError, saveSettings, sendMessage, suppress } from '../lib/outreach/service.ts'
+import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
+import { migrateScan, createJob } from '../lib/scan/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { seedOffers } from './helpers/seed-offer.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { buildMime } from '../lib/gmail/mime.ts'
@@ -35,6 +40,9 @@ const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8')
 const all = (secs: { paragraphs: string[] }[]) => secs.flatMap(s => s.paragraphs).join('\n')
 const privacy = all(PRIVACY), terms = all(TERMS)
 const DAY = 24 * 60 * 60
+const MASTER = randomBytes(32)
+const OAUTH_ENV = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'csecret', PUBLIC_BASE_URL: 'https://app.test' }
+const NOW = 1_800_000_000
 
 test('the policies stay labelled DRAFT and keep their open decisions visible until the owner and counsel approve them', () => {
   assert.equal(POLICY_STATUS, 'draft')
@@ -215,9 +223,13 @@ test('the Gmail reading description matches the reply sync: what is read, classi
   assert.match(replies, /bounded daemon-notice window beyond its own threads/)
   assert.match(read('lib/outreach/read-consent.ts'), /bounded time window/)
   assert.match(privacy, /classifies each reply by rules/)
-  assert.match(privacy, /200-character excerpt, the classification and the received time/)
+  assert.match(privacy, /the Gmail message and thread identifiers, a 200-character excerpt, the classification and the received time/)
+  assert.match(replies, /gmail_id TEXT NOT NULL, tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL/)
   assert.match(privacy, /delivery-failure notices beyond its own threads/)
-  assert.match(privacy, /kept until you delete your account/)
+  assert.match(privacy, /not deleted automatically today/)
+  assert.match(privacy, /turning reading off stops future reads and follow-ups but does not delete what is already stored/)
+  assert.match(privacy, /deleting your account deletes them with your other workspace data/)
+  assert.match(privacy, /NEEDS OWNER: retention period for stored reply records/)
   assert.match(privacy, /reads nothing without this consent/)
 })
 
@@ -271,7 +283,32 @@ test('outbound mail carries the sender name, mailing address and an unsubscribe 
   assert.equal(body.slice('Hello there, a short note about your hiring.'.length).match(/\bAI\b|artificial intelligence/i), null)
   for (const f of ['lib/outreach/service.ts', 'lib/outreach/followups.ts', 'lib/outreach/sequences.ts'])
     assert.match(read(f), /const raw = toBase64Url\(buildMime\(/, `${f} must build the MIME with buildMime`)
-  assert.match(terms, /Messages do not carry a label saying they were written with AI/)
+  assert.match(terms, /dazl adds no label saying a message was written with AI/)
+})
+
+test('the message handed to Gmail carries no AI label and only the expected headers (functional)', async () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateOutreach(db); seedOffers(db, ['A']); migrateConnectors(db)
+  const state = new URL(startOAuth(db, 'A', { env: OAUTH_ENV, now: NOW })).searchParams.get('state')!
+  const idToken = 'x.' + Buffer.from(JSON.stringify({ email: 'me@acme.example', email_verified: true })).toString('base64url') + '.y'
+  await completeOAuth(db, 'A', 'code', state, { env: OAUTH_ENV, master: MASTER, now: NOW, fetchImpl: (async () => new Response(JSON.stringify({ refresh_token: 'rt', scope: 'openid email https://www.googleapis.com/auth/gmail.send', id_token: idToken }))) as unknown as typeof fetch })
+  saveSettings(db, 'A', { sender_name: 'Pat Smith', postal_address: '100 King St W, Toronto ON M5X 1A9' })
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'roofing', location: 'Toronto' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const lead = 'lead-func-1'
+  db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+    lead, job, 'Northside Builders', 'info@northside.example', 'Hiring five roofers', 'https://news.example/a', 'Northside Builders is hiring five roofers', 85)
+  db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = ?").run(lead)
+  const id = createDraft(db, 'A', lead, 'Acme')
+  approve(db, 'A', id)
+  let raw = ''
+  const tokenOk = (async (url: unknown) => (String(url).includes('token') ? new Response(JSON.stringify({ access_token: 'at-1' })) : new Response('{}', { status: 404 }))) as unknown as typeof fetch
+  const r = await sendMessage(db, 'A', id, { env: OAUTH_ENV, master: MASTER, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenOk, sendFn: (async (_t: string, mime: string) => { raw = mime; return { id: 'gm1' } }) as never })
+  assert.equal(r, 'sent')
+  const mime = Buffer.from(raw, 'base64url').toString('utf8')
+  assert.doesNotMatch(mime, /ai-generated|artificial intelligence|written with ai|generated by ai|x-ai/i)
+  const headers = mime.slice(0, mime.indexOf('\r\n\r\n')).split('\r\n').map(h => h.split(':')[0])
+  for (const h of headers) assert.ok(['From', 'To', 'Subject', 'Date', 'Message-ID', 'In-Reply-To', 'References', 'List-Unsubscribe', 'List-Unsubscribe-Post', 'MIME-Version', 'Content-Type', 'Content-Transfer-Encoding'].includes(h), `unexpected header ${h}`)
 })
 
 test('an unsubscribe stops that sender at once: opt-out list, pending messages and sequences, scoped to the sender', () => {
@@ -296,9 +333,11 @@ test('an unsubscribe stops that sender at once: opt-out list, pending messages a
 test('autopilot terms match the consent text the user accepts', () => {
   const consent = CONSENT_TEXT.join(' ')
   assert.match(consent, /without asking you first, within the daily limits you set, after the first sends have been approved by you/)
-  assert.match(consent, /Pausing stops sends before the next send/)
+  assert.match(consent, /Pausing stops sends immediately/)
   assert.match(terms, /without asking you each time, within the daily limits you set and only after your first sends were approved by you/)
   assert.match(terms, /pausing stops sends before the next send/)
+  assert.match(terms, /\[NEEDS OWNER: the autopilot consent text users accepted still says 'Pausing stops sends immediately'/)
+  assert.match(read('lib/outreach/autopilot.ts'), /overpromises: the code re-checks pause before each send/)
 })
 
 test('error reports leaving the server carry no message, account id or personal data', () => {
