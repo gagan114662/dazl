@@ -163,7 +163,23 @@ test('runner settle: a LATER stage whose own handler swallows model errors still
   const x = await run(OWNER, true, { setup: db => db.exec("CREATE TRIGGER fail_later_settle BEFORE UPDATE ON tenant_spend_pools WHEN NEW.reported_usd <> OLD.reported_usd AND OLD.reported_usd > 0 BEGIN SELECT RAISE(ABORT, 'simulated store failure'); END") })
   assert.ok(modelCalls(x) >= 2, `control: a second paid call was made (${modelCalls(x)}), so the failing settle was reached`)
   assert.equal(x.row.status, 'failed'); assert.equal(x.row.error, 'accounting_failed')
-  assert.equal(x.db.prepare('SELECT count(*) AS n FROM leads').get().n, 0, 'no leads saved from a run whose cost was not recorded')
+  assert.equal((x.db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n, 0, 'no leads saved from a run whose cost was not recorded')
+})
+
+test('runner (owner pool + job budget path): every model request is preceded by its durable maybe-sent row; a crash then fails closed with no second vendor request', async () => {
+  const x = await run(OWNER, true, { runBudget: '1' })
+  const model = x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages')
+  assert.ok(model.length >= 1, 'control: the model was called under the pool and the job budget')
+  assert.ok(model.every(p => p.liveReservations >= 1), 'a reserved scan_spend_calls row existed at the moment each model request was sent (pool-only path included)')
+  // The crash: a second attempt-state with the real row shape left 'reserved' (what a death after the vendor answered leaves), claim stale.
+  const real = x.db.prepare("SELECT kind, reserve_usd FROM scan_spend_calls WHERE kind = 'llm.anthropic' LIMIT 1").get() as { kind: string; reserve_usd: number }
+  const id = createQueryJob(x.db, 'A', { query: 'crashed scan' })
+  x.db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = 1 WHERE id = ?").run(id)
+  x.db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('crash1', 'A', ?, 1, ?, ?, 'reserved', 1)").run(id, real.kind, real.reserve_usd)
+  const { reapStaleJobs } = await import('../lib/scan/store.ts')
+  reapStaleJobs(x.db)
+  assert.deepEqual(x.db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id), { status: 'failed', error: 'accounting_uncertain' })
+})
 })
 
 // Pricing coverage (review of 97988fd5): the default Anthropic model is priced; anything else the runner could be

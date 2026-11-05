@@ -44,9 +44,9 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
     async getJob(userId, id) {
       const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
       await pg.query(
-        `UPDATE scan_jobs SET status = CASE WHEN attempts >= $1 THEN 'failed' ELSE 'pending' END,
-           error = CASE WHEN attempts >= $1 THEN 'timeout' ELSE error END,
-           finished_at = CASE WHEN attempts >= $1 THEN CAST(floor(extract(epoch from now())) AS BIGINT) ELSE finished_at END,
+        `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= $1 THEN 'failed' ELSE 'pending' END,
+           error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= $1 THEN 'timeout' ELSE error END,
+           finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= $1 THEN CAST(floor(extract(epoch from now())) AS BIGINT) ELSE finished_at END,
            claimed_at = NULL
          WHERE status = 'running' AND claimed_at < $2`,
         [MAX_ATTEMPTS, cutoff],

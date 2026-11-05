@@ -140,9 +140,18 @@ export async function kickQueueRunner(
       `UPDATE scan_jobs SET status='running', attempts = attempts + 1,
          claimed_at = CAST(strftime('%s','now') AS INTEGER)
        WHERE id = ? AND (status='pending'
-         OR (status='running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?))`,
+         OR (status='running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?
+             AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved')))`, // a dead attempt with a call that may have been billed is never re-run (the reaper fails it closed)
     ).run(claim.item.id, lease)
     if (ch.changes !== 1) {
+      // A dead attempt (lease expired) that left a paid call reserved and unsettled may have been billed: end it closed instead of
+      // re-running it, and retire the queue item. Queue mode never calls the legacy reaper, so this is where it is decided.
+      const uncertain = db.prepare(
+        `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', claimed_at = NULL, finished_at = CAST(strftime('%s','now') AS INTEGER)
+         WHERE id = ? AND status = 'running' AND claimed_at <= CAST(strftime('%s','now') AS INTEGER) - ?
+           AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved')`,
+      ).run(claim.item.id, lease).changes === 1
+      if (uncertain) { q.complete(claim.token); continue }
       q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' })
       continue
     }

@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import * as S from '../lib/scan/store-db.ts'
+import { reapStaleScans } from '../lib/queue/scan-claimer.ts'
 import * as Legacy from '../lib/scan/store.ts'
 import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
@@ -33,6 +34,15 @@ bothEngines('stale reaper: an unsettled call of the current attempt fails the jo
   assert.deepEqual(await row(db, earlier), { status: 'pending', error: null })
   assert.deepEqual(await row(db, none), { status: 'pending', error: null })
   assert.deepEqual(await row(db, exhausted), { status: 'failed', error: 'timeout' })
+})
+
+bothEngines('queue-mode scan reaper (scan-claimer): same rule as the legacy reaper', async ({ db }) => {
+  await db.run("INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'a@example.test', 'x', 'y') ON CONFLICT DO NOTHING", [A]).catch(() => {})
+  const uncertain = await stale(db, 1, [{ attempt: 1, status: 'reserved' }])
+  const ok = await stale(db, 1, [{ attempt: 1, status: 'settled' }])
+  await reapStaleScans(db, 60, T0 + 3600)
+  assert.deepEqual(await row(db, uncertain), { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(await row(db, ok), { status: 'pending', error: null })
 })
 
 test_sync()
