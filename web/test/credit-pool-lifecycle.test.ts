@@ -14,7 +14,7 @@ const T0 = Date.UTC(2026, 10, 2, 12) / 1000
 const num = (v: unknown) => Number(v)
 
 bothEngines('credit export: labelled credit units/provider/window/time, every value kept, USD pools untouched, other tenant absent', async c => {
-  const f = await tenantFixture(c, [[A, 'ca'], [B, 'cb']])
+  await tenantFixture(c, [[A, 'ca'], [B, 'cb']])
   await setCreditLimit(c.db, A, 'pdl', 'month', 40)
   const open = await reserveCredits(c.db, A, 'pdl', 3, { now: T0, env: {} })      // stays unsettled
   const done = await reserveCredits(c.db, A, 'apollo', 2, { now: T0, env: {} })
