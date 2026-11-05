@@ -155,6 +155,25 @@ export function verifyRequest(secret: string, tsHeader: string | null, sigHeader
   return Math.abs(now - Number(tsHeader)) <= REPLAY_WINDOW_S ? 'ok' : 'stale'
 }
 
+// ---- withdrawal tombstones ------------------------------------------------------------------------------------------------
+
+// A consent withdrawal is REMEMBERED: erasing the subject's leads is not enough, because an older-dated granted event
+// that arrives after the withdrawal (a retry, a delayed queue, a backfill) would recreate the lead. The tombstone is
+// the minimum that prevents resurrection: the tenant's salted fp:p: hash and the withdrawal time. Never the email,
+// never a name. Bounded by the tenant's recorded retention (purged in the tick) and removed by eraseFirstParty and
+// tenant deletion (tenant-scoped, so the 0039 tomb guards and lifecycle erasure apply). A grant dated AFTER the
+// withdrawal is a new consent and is allowed.
+export const FP_WITHDRAWALS_DDL = `
+  CREATE TABLE IF NOT EXISTS first_party_withdrawals (
+    tenant_id    TEXT NOT NULL,
+    person_key   TEXT NOT NULL,
+    withdrawn_at INTEGER NOT NULL,
+    recorded_at  INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, person_key)
+  );
+`
+export function migrateFirstParty(db: import('better-sqlite3').Database): void { db.exec(FP_WITHDRAWALS_DDL) }
+
 // ---- events ---------------------------------------------------------------------------------------------------------------
 
 export type Outcome = 'created' | 'attached' | 'duplicate' | 'unknown' | 'not_consented' | 'withdrawn' | `rejected:${string}`
@@ -171,7 +190,7 @@ function eventTime(v: unknown): number | null {
 }
 
 // One event against the tenant's config. Pure: no db. `tenantId` salts the hashes so no key is comparable across tenants.
-export function classifyEvent(raw: unknown, cfg: FpConfig, tenantId: string, now: number): { outcome: Outcome; event?: Accepted; withdrawnKey?: string } {
+export function classifyEvent(raw: unknown, cfg: FpConfig, tenantId: string, now: number): { outcome: Outcome; event?: Accepted; withdrawnKey?: string; withdrawnAt?: number } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { outcome: 'rejected:malformed' }
   const e = raw as Record<string, unknown>
   const id = text(e.id, 128)
@@ -183,7 +202,7 @@ export function classifyEvent(raw: unknown, cfg: FpConfig, tenantId: string, now
   const email = person && typeof person.email === 'string' ? person.email.trim().toLowerCase() : ''
   const personKey = (m: string) => `fp:p:${sha(`${tenantId}|${m}`).slice(0, 40)}`
   // Consent first: nothing but an explicit grant is collected, and an opt-out signal overrides a grant.
-  if (e.consent === 'withdrawn') return { outcome: 'withdrawn', ...(personal && EMAIL_RE.test(email) ? { withdrawnKey: personKey(email) } : {}) }
+  if (e.consent === 'withdrawn') return { outcome: 'withdrawn', ...(personal && EMAIL_RE.test(email) ? { withdrawnKey: personKey(email), withdrawnAt: eventTime(e.occurred_at) ?? now } : {}) }
   if (e.consent !== 'granted' || e.opt_out === true || e.gpc === true || e.dnt === true) return { outcome: 'not_consented' }
   const at = eventTime(e.occurred_at)
   if (at === null || at > now + REPLAY_WINDOW_S || at < now - cfg.retention_days * 86400) return { outcome: 'rejected:bad_time' }
@@ -240,6 +259,7 @@ function* eraseLeads(t: Tx, tenantId: string, where: string, params: (string | n
 // Retention: events older than the tenant's recorded period are deleted, then first-party leads left without any event.
 function* purgeTx(t: Tx, tenantId: string, retentionDays: number, now: number): TxBody<number> {
   const cutoff = day(now - retentionDays * 86400)
+  yield* t.run('DELETE FROM first_party_withdrawals WHERE tenant_id = ? AND withdrawn_at < ?', [tenantId, now - retentionDays * 86400])
   const gone = (yield* t.run('DELETE FROM lead_enrichments WHERE tenant_id = ? AND connector = ? AND kind = ? AND source_date < ?', [tenantId, FP_CONNECTOR, FP_EVENT_KIND, cutoff])).changes
   yield* eraseLeads(t, tenantId, 'AND NOT EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = ? AND e.connector = ? AND e.kind = ?)', [tenantId, FP_CONNECTOR, FP_EVENT_KIND])
   return gone
@@ -269,9 +289,23 @@ export async function ingest(db: Db, tenantId: string, rawBody: string, receipt:
     let jobId: string | null = null
     for (let i = 0; i < classified.length; i++) {
       const k = classified[i]
-      if (k.withdrawnKey) yield* eraseLeads(t, tenantId, 'AND l.dedup_key = ?', [k.withdrawnKey])
+      if (k.withdrawnKey) {
+        // Remember the withdrawal (latest one wins), then erase. The exclusive lock serializes with a concurrent
+        // grant for the same person on Postgres; SQLite is single-writer.
+        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('fp_withdraw:' || ?, 0)) AS x", [k.withdrawnKey])
+        yield* t.run(`INSERT INTO first_party_withdrawals (tenant_id, person_key, withdrawn_at, recorded_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT (tenant_id, person_key) DO UPDATE SET withdrawn_at = MAX(first_party_withdrawals.withdrawn_at, excluded.withdrawn_at), recorded_at = excluded.recorded_at`,
+          [tenantId, k.withdrawnKey, k.withdrawnAt ?? now, now])
+        yield* eraseLeads(t, tenantId, 'AND l.dedup_key = ?', [k.withdrawnKey])
+      }
       if (!k.event) continue
       const e = k.event
+      if (e.dedupKey.startsWith('fp:p:')) {
+        // A grant for a tombstoned person dated at/before the withdrawal is a late retry, not a consent.
+        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock_shared(hashtextextended('fp_withdraw:' || ?, 0)) AS x", [e.dedupKey])
+        const tomb = yield* t.get<{ withdrawn_at: number }>('SELECT withdrawn_at FROM first_party_withdrawals WHERE tenant_id = ? AND person_key = ?', [tenantId, e.dedupKey])
+        if (tomb && e.at <= Number(tomb.withdrawn_at)) { results[i].outcome = 'not_consented'; continue }
+      }
       const dup = yield* t.get('SELECT 1 AS x FROM lead_enrichments WHERE tenant_id = ? AND connector = ? AND kind = ? AND value = ?', [tenantId, FP_CONNECTOR, FP_EVENT_KIND, e.eventKey])
       if (dup) { results[i].outcome = 'duplicate'; continue }
       const existing = yield* t.get<{ id: string }>(`${FP_LEADS_SQL} AND l.dedup_key = ? ORDER BY l.created_at LIMIT 1`, [tenantId, FP_SOURCE_KIND, e.dedupKey])
@@ -321,6 +355,7 @@ export async function purgeFirstPartyRetention(db: Db, o: { now?: number; fence?
 export async function eraseFirstParty(db: Db, tenantId: string): Promise<number> {
   return db.tx(function* (t) {
     const n = yield* eraseLeads(t, tenantId, '', [])
+    yield* t.run('DELETE FROM first_party_withdrawals WHERE tenant_id = ?', [tenantId])
     yield* t.run('DELETE FROM lead_enrichments WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
     yield* t.run('DELETE FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
     yield* t.run(AUDIT_SQL, auditRow(tenantId, 'erase:all', 'erased', n))
