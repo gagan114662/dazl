@@ -172,6 +172,14 @@ export async function enrichLeadContacts(
         // The workspace credit pool first (#363): a PDL search can charge up to its size, so that many credits are
         // reserved before the claim and the call; refused = no call.
         const size = Math.max(1, Math.min(MAX_CONTACTS, budget.pdl - used.pdl))
+        // A lookup this job already has an outcome for is a replay: recognize it BEFORE reserving, so a full pool never
+        // turns a known replay into a credit_cap refusal (and never latches capped.pdl for the rest of the scan).
+        const known = readOutcome(db, { tenantId, connector: connector[prov], jobId, lookup: lookupKey('people', lead) })
+        if (known) {
+          if (known.prior === 'ok') { skip(prov, 'replayed', lead); stopped = true; break }
+          if (known.prior === 'empty' || known.prior === 'rejected') { skip(prov, 'replayed', lead); continue }
+          skip(prov, 'uncertain', lead); stopped = true; break
+        }
         let hold: CreditHold
         try { hold = await reserveCredits(db, tenantId, 'pdl', size, { env: deps.env, now }) }
         catch (e) { const why = creditWhy(e); capped.pdl = why; skip(prov, why, lead); continue }

@@ -273,3 +273,32 @@ bothEngines('C5: a limit lowered between the read and the reservation is honored
   // cleared while in flight with an operator fallback of 4: the operator limit binds (4 + 1 > 4)
   await assert.rejects(reserveCredits(db, 'A', 'apollo', 1, { env: { DAZL_APOLLO_CREDITS_DAY: '4' }, now: T0, beforeReserve: () => setCreditLimit(db, 'A', 'apollo', 'day', null) }), refused('credit_cap'))
 })
+
+test('C6a scan waterfall: a replay of a lookup already answered at a FULL pool is recognized as a replay (no call, no new reservation, not credit_cap)', async () => {
+  const e = env({})
+  const now = () => Math.floor(Date.now() / 1000)
+  const two = { data: [1, 2].map(i => ({ full_name: `Pdl Person ${i}`, job_title: 'Practice Manager', job_company_website: 'harbor1.example', job_company_location_locality: 'new york', job_company_location_region: 'new york', job_company_location_country: 'united states' })) }
+  const a = seed(1, { pdl: true }); const c1: Calls = { org: 0, people: 0, pdl: 0 }
+  await enrichLeadContacts(a.db, 'u1', a.jobId, a.leads, { fetchImpl: stub(c1, () => ok(two)), master, env: e })
+  assert.equal(c1.pdl, 1)
+  await setCreditLimit(a.db, 'u1', 'pdl', 'day', 2) // the pool is now exactly full (2 of 2 charged)
+  const before = await use(a.db, 'u1', e, now())
+  const r = await enrichLeadContacts(a.db, 'u1', a.jobId, a.leads, { fetchImpl: stub(c1, () => ok(two)), master, env: e })
+  assert.equal(c1.pdl, 1, 'the replay made no second paid call')
+  assert.deepEqual(r.skipped.map(s => `${s.provider}:${s.why}`), ['pdl:replayed'], 'a known replay is replayed, not refused as a cap')
+  assert.deepEqual(await use(a.db, 'u1', e, now()), before, 'the replay reserved and refunded nothing')
+})
+
+bothEngines('C6b/c/d holds: no double refund, a crashed reservation stays counted (over-count, never under), and the next pass cannot release it', async ({ db }) => {
+  const e = env({ DAZL_PDL_CREDITS_DAY: '5' })
+  const h = await reserveCredits(db, 'A', 'pdl', 5, { env: e, now: T0 })
+  await refundCredits(db, h)
+  await assert.rejects(refundCredits(db, h), /already settled/)
+  await assert.rejects(settleCredits(db, h, 1), /already settled/)
+  assert.deepEqual(await use(db, 'A', e), {}, 'one refund released exactly the reservation: no negative, no double release')
+  // crash after reserve (the hold object is lost with the process): the credits stay reserved, and a later pass at the
+  // limit is refused rather than admitted - the pool can only over-count a possible charge, never under-count it
+  await reserveCredits(db, 'A', 'pdl', 5, { env: e, now: T0 })
+  await assert.rejects(reserveCredits(db, 'A', 'pdl', 1, { env: e, now: T0 }), refused('credit_cap'))
+  assert.deepEqual(await use(db, 'A', e), { 'cpd:20261102': [5, 0], 'cpm:202611': [5, 0] }, 'the lost hold keeps its full reservation')
+})
