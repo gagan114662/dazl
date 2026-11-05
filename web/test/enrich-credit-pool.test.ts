@@ -302,3 +302,45 @@ bothEngines('C6b/c/d holds: no double refund, a crashed reservation stays counte
   await assert.rejects(reserveCredits(db, 'A', 'pdl', 1, { env: e, now: T0 }), refused('credit_cap'))
   assert.deepEqual(await use(db, 'A', e), { 'cpd:20261102': [5, 0], 'cpm:202611': [5, 0] }, 'the lost hold keeps its full reservation')
 })
+
+bothEngines('C6 durable idempotency: a cloned or tampered hold, a refund after settle and a concurrent settle+refund release exactly once and never touch another reservation', async ({ db }) => {
+  const e = env({})
+  const other = await reserveCredits(db, 'A', 'pdl', 3, { env: e, now: T0 }) // an unrelated open reservation that must survive everything below
+  const h = await reserveCredits(db, 'A', 'pdl', 5, { env: e, now: T0 })
+  const clone = { ...h }, inflated = { ...h, units: 99 }
+  await refundCredits(db, h)
+  assert.deepEqual(await use(db, 'A', e), { 'cpd:20261102': [3, 0], 'cpm:202611': [3, 0] }, 'exactly the 5 credits went back; the other 3 stay')
+  await assert.rejects(refundCredits(db, clone), /already settled/)
+  await assert.rejects(settleCredits(db, inflated, 0), /already settled/)
+  assert.deepEqual(await use(db, 'A', e), { 'cpd:20261102': [3, 0], 'cpm:202611': [3, 0] }, 'a cloned/replayed hold released nothing more')
+  // refund after settle, and a tampered `units` never changes what a settle moves (the durable row decides)
+  const h2 = await reserveCredits(db, 'A', 'pdl', 5, { env: e, now: T0 })
+  await settleCredits(db, { ...h2, units: 1 }, 2)
+  assert.deepEqual(await use(db, 'A', e), { 'cpd:20261102': [5, 2], 'cpm:202611': [5, 2] }, '5 reserved -> charged 2 releases 3, whatever units the object claimed')
+  await assert.rejects(refundCredits(db, { ...h2 }), /already settled/)
+  // concurrent settle + refund of one hold: exactly one wins
+  const h3 = await reserveCredits(db, 'A', 'pdl', 4, { env: e, now: T0 })
+  const res = await Promise.allSettled([settleCredits(db, { ...h3 }, 1), refundCredits(db, { ...h3 })])
+  assert.equal(res.filter(r => r.status === 'fulfilled').length, 1, 'one release wins')
+  const after = await use(db, 'A', e)
+  assert.ok(JSON.stringify(after) === JSON.stringify({ 'cpd:20261102': [6, 3], 'cpm:202611': [6, 3] }) || JSON.stringify(after) === JSON.stringify({ 'cpd:20261102': [5, 2], 'cpm:202611': [5, 2] }), JSON.stringify(after))
+  await refundCredits(db, other) // the unrelated reservation is still releasable, once
+  await assert.rejects(refundCredits(db, other), /already settled/)
+})
+
+bothEngines('C5 serialization: set, lower, clear and reserve interleave in commit order and no set is lost', async ({ db }) => {
+  const e = env({})
+  const ops: Promise<unknown>[] = []
+  for (let i = 0; i < 12; i++) ops.push(reserveCredits(db, 'A', 'apollo', 1, { env: e, now: T0 }).catch(x => x))
+  ops.push(setCreditLimit(db, 'A', 'apollo', 'day', 5))
+  for (let i = 0; i < 12; i++) ops.push(reserveCredits(db, 'A', 'apollo', 1, { env: e, now: T0 }).catch(x => x))
+  await Promise.all(ops)
+  assert.equal((await creditLimits(db, 'A', 'apollo', e)).day, 5, 'the concurrent set was not lost')
+  const u = (await creditUse(db, 'A', { env: e, now: T0 })).find(x => x.provider === 'apollo' && x.window === 'day')!
+  // Reservations admitted before the set committed may exceed 5 (they were authorized when unset); after it, none may.
+  const more = await reserveCredits(db, 'A', 'apollo', 1, { env: e, now: T0 }).then(() => 'admitted', () => 'refused')
+  assert.equal(more, u.reserved + 1 <= 5 ? 'admitted' : 'refused', `post-set reservation obeys the limit (reserved ${u.reserved})`)
+  await setCreditLimit(db, 'A', 'apollo', 'day', null)
+  assert.equal((await creditLimits(db, 'A', 'apollo', e)).day, null, 'clear sticks')
+  await reserveCredits(db, 'A', 'apollo', 1, { env: e, now: T0 }) // cleared: admitted
+}, { pgMax: 8 })
