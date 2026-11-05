@@ -51,6 +51,7 @@ import { migrateTenantLifecycle } from './tenant-guard.ts'
 import { migratePreviewClaim } from '../scan/preview-claim.ts'
 import { migrateTraceStore } from '../evals/trace-tables.ts'
 import { migrateWorkers } from '../workers/store.ts'
+import { migrateFirstParty } from '../signals/first-party.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
@@ -64,6 +65,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
     migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
     migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers,
+    migrateFirstParty,
   ]
   for (const m of migrates) m(db)
   // The queue adapter owns its tables and creates them in its constructor.
