@@ -58,7 +58,7 @@ export type IdentityBasis = keyof typeof IDENTITY_CONFIDENCE
 const TYPE_LABEL = FP_TYPE_LABEL as Record<FpEventType, string>
 const JOB_MARK = 'first_party' // industry and location of the scan jobs that hold first-party leads
 
-export interface FpConfig { v: 1; secret: string; site_domain: string; basis: FpBasis; privacy_url: string; retention_days: number; recorded_at: number; recorded_by: string; policy: string }
+export interface FpConfig { v: 1; secret: string; site_domain: string; basis: FpBasis; privacy_url: string; retention_days: number; recorded_at: number; recorded_by: string; policy: string; accept_floor?: number }
 export interface FpConfigInput { site_domain: string; basis: FpBasis; privacy_url: string; retention_days: number }
 
 const DOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/
@@ -98,7 +98,10 @@ const auditRow = (tenantId: string, lookup: string, status: string, results: num
 // Records (or replaces) the tenant's config with a NEW signing secret, collection on. The secret is returned once.
 export async function recordConfig(db: Db, tenantId: string, input: FpConfigInput, actorId: string, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<string> {
   const secret = randomBytes(32).toString('base64url')
-  const cfg: FpConfig = { v: 1, secret, ...input, recorded_at: now, recorded_by: actorId.slice(0, 80), policy: FP_POLICY_VERSION }
+  // Prospective acceptance: events already expired under the PREVIOUS recorded period stay expired (floor moves only forward).
+  const prev = await readConfig(db, tenantId, master)
+  const floor = Math.max(prev?.config.accept_floor ?? 0, prev ? now - prev.config.retention_days * 86400 : 0)
+  const cfg: FpConfig = { v: 1, secret, ...input, recorded_at: now, recorded_by: actorId.slice(0, 80), policy: FP_POLICY_VERSION, ...(floor > 0 ? { accept_floor: floor } : {}) }
   const blob = encryptSecret(JSON.stringify(cfg), ctx(tenantId), master)
   await db.tx(function* (t) {
     yield* t.run(`INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, ?, ?, 1)
@@ -114,6 +117,7 @@ export async function readConfig(db: Db, tenantId: string, master?: Buffer): Pro
   try {
     const c = JSON.parse(decryptSecret(r.ciphertext, ctx(tenantId), master)) as FpConfig
     if (c?.v !== 1 || typeof c.secret !== 'string' || !isSiteDomain(c.site_domain) || !FP_BASES.includes(c.basis)) return null
+    if (c.accept_floor !== undefined && !(typeof c.accept_floor === 'number' && Number.isInteger(c.accept_floor) && c.accept_floor > 0)) return null
     return { config: c, enabled: Number(r.enabled) === 1 }
   } catch { return null } // unreadable config collects nothing
 }
@@ -214,10 +218,13 @@ export function classifyEvent(raw: unknown, cfg: FpConfig, tenantId: string, now
   const email = person && typeof person.email === 'string' ? person.email.trim().toLowerCase() : ''
   const personKey = (m: string) => `fp:p:${sha(`${tenantId}|${m}`).slice(0, 40)}`
   // Consent first: nothing but an explicit grant is collected, and an opt-out signal overrides a grant.
-  if (e.consent === 'withdrawn') return { outcome: 'withdrawn', ...(personal && EMAIL_RE.test(email) ? { withdrawnKey: personKey(email), withdrawnAt: eventTime(e.occurred_at) ?? now } : {}) }
+  if (e.consent === 'withdrawn') return { outcome: 'withdrawn', ...(personal && EMAIL_RE.test(email) ? { withdrawnKey: personKey(email), withdrawnAt: Math.min(eventTime(e.occurred_at) ?? now, now) } : {}) } // clamped: a claimed future withdrawal cannot block or persist past now
   if (e.consent !== 'granted' || e.opt_out === true || e.gpc === true || e.dnt === true) return { outcome: 'not_consented' }
   const at = eventTime(e.occurred_at)
-  if (at === null || at > now + REPLAY_WINDOW_S || at < now - cfg.retention_days * 86400) return { outcome: 'rejected:bad_time' }
+  // accept_floor: retention changes are prospective. An event already expired under the period in force when a
+  // re-config was recorded stays expired even if the period is later raised - so a raise can never reopen a window
+  // in which a withdrawal tombstone has already aged out (non-resurrection holds across config changes).
+  if (at === null || at > now + REPLAY_WINDOW_S || at < now - cfg.retention_days * 86400 || (cfg.accept_floor !== undefined && at < cfg.accept_floor)) return { outcome: 'rejected:bad_time' }
   let page: URL
   try { page = new URL(typeof e.page_url === 'string' ? e.page_url : '') } catch { return { outcome: 'rejected:bad_page_url' } }
   if (page.protocol !== 'https:' || page.username || page.password || !onDomain(page.hostname, cfg.site_domain)) return { outcome: 'rejected:off_domain' }
@@ -298,15 +305,27 @@ export async function ingest(db: Db, tenantId: string, rawBody: string, receipt:
     const on = yield* t.get<{ enabled: number }>('SELECT enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, FP_CONNECTOR])
     if (Number(on?.enabled) !== 1) return empty('off')
     yield* purgeTx(t, tenantId, cfg.retention_days, now)
+    // Deadlock-free locking (Postgres): every key this batch will touch, acquired once up front in deterministic
+    // sorted order - a withdrawal takes the exclusive lock, a grant the shared one, a key used by both takes the
+    // exclusive. Two concurrent batches over the same people then serialize instead of meeting mid-loop A,B vs B,A.
+    if (t.kind === 'pg') {
+      const mode = new Map<string, 'x' | 's'>()
+      for (const k of classified) {
+        if (k.withdrawnKey) mode.set(k.withdrawnKey, 'x')
+        else if (k.event?.dedupKey.startsWith('fp:p:') && !mode.has(k.event.dedupKey)) mode.set(k.event.dedupKey, 's')
+      }
+      for (const key of [...mode.keys()].sort()) {
+        if (mode.get(key) === 'x') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('fp_withdraw:' || ? || ':' || ?, 0)) AS x", [tenantId, key])
+        else yield* t.get("SELECT pg_advisory_xact_lock_shared(hashtextextended('fp_withdraw:' || ? || ':' || ?, 0)) AS x", [tenantId, key])
+      }
+    }
     let jobId: string | null = null
     for (let i = 0; i < classified.length; i++) {
       const k = classified[i]
       if (k.withdrawnKey) {
-        // Remember the withdrawal (latest one wins), then erase. The exclusive lock serializes with a concurrent
-        // grant for the same person on Postgres; SQLite is single-writer.
-        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('fp_withdraw:' || ? || ':' || ?, 0)) AS x", [tenantId, k.withdrawnKey])
+        // Remember the withdrawal (latest one wins), then erase.
         yield* t.run(`INSERT INTO first_party_withdrawals (tenant_id, person_key, withdrawn_at, recorded_at) VALUES (?, ?, ?, ?)
-          ON CONFLICT (tenant_id, person_key) DO UPDATE SET withdrawn_at = MAX(first_party_withdrawals.withdrawn_at, excluded.withdrawn_at), recorded_at = excluded.recorded_at`,
+          ON CONFLICT (tenant_id, person_key) DO UPDATE SET withdrawn_at = CASE WHEN excluded.withdrawn_at > first_party_withdrawals.withdrawn_at THEN excluded.withdrawn_at ELSE first_party_withdrawals.withdrawn_at END, recorded_at = CASE WHEN excluded.withdrawn_at > first_party_withdrawals.withdrawn_at THEN excluded.recorded_at ELSE first_party_withdrawals.recorded_at END`,
           [tenantId, k.withdrawnKey, k.withdrawnAt ?? now, now])
         yield* eraseLeads(t, tenantId, 'AND l.dedup_key = ?', [k.withdrawnKey])
       }
@@ -314,7 +333,6 @@ export async function ingest(db: Db, tenantId: string, rawBody: string, receipt:
       const e = k.event
       if (e.dedupKey.startsWith('fp:p:')) {
         // A grant for a tombstoned person dated at/before the withdrawal is a late retry, not a consent.
-        if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock_shared(hashtextextended('fp_withdraw:' || ? || ':' || ?, 0)) AS x", [tenantId, e.dedupKey])
         const tomb = yield* t.get<{ withdrawn_at: number }>('SELECT withdrawn_at FROM first_party_withdrawals WHERE tenant_id = ? AND person_key = ?', [tenantId, e.dedupKey])
         if (tomb && e.at <= Number(tomb.withdrawn_at)) { results[i].outcome = 'not_consented'; continue }
       }

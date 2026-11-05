@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { bothEngines, type EngineCtx } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
-import { ingest, recordConfig, eraseFirstParty, purgeFirstPartyRetention, signBody, type FpConfigInput } from '../lib/signals/first-party.ts'
+import { ingest, recordConfig, eraseFirstParty, purgeFirstPartyRetention, signBody, readConfig, type FpConfigInput } from '../lib/signals/first-party.ts'
 
 process.env.DAZL_MASTER_KEY ??= randomBytes(32).toString('base64')
 const NOW = 1_793_000_000
@@ -133,4 +133,78 @@ bothEngines('R7: grant and withdrawal in ONE batch settle with no resurrection, 
   assert.deepEqual(r2.results.map(x => x.outcome), ['withdrawn', 'not_consented'])
   assert.equal(await leadCount(db, 'A'), 0)
   assert.equal((await db.all("SELECT 1 FROM lead_enrichments WHERE tenant_id = 'A' AND connector = 'first_party'")).length, 0)
+})
+
+const d = 86400
+
+// (a) A FUTURE-dated withdrawal is clamped to the receipt time: it must not block later-dated grants forever nor
+// outlive the retention purge. Red before the clamp: withdrawn_at stored as the claimed future time.
+bothEngines('(a) a future-dated withdrawal is clamped to now; a grant within the replay window after now still creates', async ({ db }) => {
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW)
+  const w = await run(db, 'A', withdraw('w1', 'jane@acme.io', NOW + 1000))
+  assert.deepEqual(w.results.map(r => r.outcome), ['withdrawn'])
+  const [t] = await tombstones(db, 'A')
+  assert.equal(Number(t.withdrawn_at), NOW, 'clamped to receipt time, not the claimed future')
+  const r = await run(db, 'A', grant('g1', 'jane@acme.io', NOW + 200))
+  assert.deepEqual(r.results.map(x => x.outcome), ['created'])
+  await purgeFirstPartyRetention(db, { now: NOW + 91 * d })
+  assert.equal((await tombstones(db, 'A')).length, 0)
+})
+
+// (b) Repeated withdrawals keep the LATEST withdrawal time; an older replay never moves it backwards (the upsert
+// must be portable SQL: two-argument MAX is SQLite-only; PG runs this in CI).
+bothEngines('(b) a repeated withdrawal keeps the latest time; an older replay is ignored', async ({ db }) => {
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW)
+  await run(db, 'A', withdraw('w1', 'jane@acme.io', NOW - 3600))
+  await run(db, 'A', withdraw('w2', 'jane@acme.io', NOW - 1800))
+  let [t] = await tombstones(db, 'A')
+  assert.equal(Number(t.withdrawn_at), NOW - 1800)
+  await run(db, 'A', withdraw('w3', 'jane@acme.io', NOW - 7000))
+  t = (await tombstones(db, 'A'))[0]
+  assert.equal(Number(t.withdrawn_at), NOW - 1800, 'an older-dated replay never moves the tombstone backwards')
+})
+
+// (c1) Retention RAISED before the tombstone purges: the tombstone must live by the highest retention the tenant has
+// recorded, or a grant dated inside the raised window resurrects the subject. Red without max-ever retention.
+bothEngines('(c1) a retention raise before purge does not resurrect: the tombstone lives by the highest recorded retention', async ({ db }) => {
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW) // 90d
+  await run(db, 'A', grant('g1', 'jane@acme.io', NOW - 50 * d))
+  await run(db, 'A', withdraw('w1', 'jane@acme.io', NOW))
+  await recordConfig(db, 'A', { ...CFG, retention_days: 180 }, 'actor-a', NOW + 50 * d) // raise before any purge
+  const later = NOW + 95 * d // past the OLD 90d purge horizon, inside the raised 180d
+  await purgeFirstPartyRetention(db, { now: later })
+  assert.equal((await tombstones(db, 'A')).length, 1, 'the raised retention still covers the withdrawal')
+  const raw = JSON.stringify({ events: [grant('g2', 'jane@acme.io', NOW - 50 * d)] })
+  const r = await ingest(db, 'A', raw, signBody('s', later, raw), later)
+  assert.notEqual(r.results[0].outcome, 'created')
+  assert.equal(await leadCount(db, 'A'), 0)
+})
+
+// (d) Multi-key batches in OPPOSITE key orders concurrently: deterministic sorted lock acquisition must serialize
+// them without deadlock. On SQLite the driver serializes; the real deadlock probe is the PG half in CI (pool >= 2).
+bothEngines('(d) concurrent multi-key batches in opposite orders settle without deadlock or resurrection', async ({ db }) => {
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW)
+  const b1 = run(db, 'A', withdraw('wa', 'a@x.io', NOW - 3600), grant('ga', 'a@x.io', NOW - 7000), withdraw('wb', 'b@y.io', NOW - 3600), grant('gb', 'b@y.io', NOW - 7000))
+  const b2 = run(db, 'A', grant('gb2', 'b@y.io', NOW - 7000), withdraw('wb2', 'b@y.io', NOW - 3600), grant('ga2', 'a@x.io', NOW - 7000), withdraw('wa2', 'a@x.io', NOW - 3600))
+  const [r1, r2] = await Promise.all([b1, b2])
+  for (const r of [r1, r2]) assert.equal(r.status, 'ok')
+  assert.equal(await leadCount(db, 'A'), 0)
+  assert.equal((await db.all("SELECT 1 FROM lead_enrichments WHERE tenant_id = 'A' AND connector = 'first_party'")).length, 0)
+}, { pgMax: 2 })
+
+// (c2) Retention RAISED AFTER the tombstone purged: without a prospective-acceptance floor the raised window reopens
+// already-expired events and a pre-withdrawal grant resurrects the subject. Red before the floor.
+bothEngines('(c2) a retention raise after purge does not reopen already-expired events: no resurrection', async ({ db }) => {
+  await recordConfig(db, 'A', CFG, 'actor-a', NOW) // 90d
+  await run(db, 'A', grant('g1', 'jane@acme.io', NOW - 50 * d))
+  await run(db, 'A', withdraw('w1', 'jane@acme.io', NOW))
+  const purged = NOW + 91 * d
+  await purgeFirstPartyRetention(db, { now: purged })
+  assert.equal((await tombstones(db, 'A')).length, 0, 'the tombstone aged out under the 90d period')
+  await recordConfig(db, 'A', { ...CFG, retention_days: 180 }, 'actor-a', purged + d) // raised after the purge
+  const arrive = purged + 2 * d
+  const raw = JSON.stringify({ events: [grant('g2', 'jane@acme.io', NOW - 50 * d)] }) // inside the raised 180d window
+  const r = await ingest(db, 'A', raw, signBody('s', arrive, raw), arrive)
+  assert.notEqual(r.results[0].outcome, 'created', 'an already-expired event must stay expired across a retention raise')
+  assert.equal(await leadCount(db, 'A'), 0)
 })
