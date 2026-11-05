@@ -68,6 +68,7 @@ import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts
 import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
+import { planRetry } from './retry-plan.ts'
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
@@ -729,7 +730,20 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
+// Adaptive discovery (#381): when round one verified no lead at all, ONE more TinyFish round with genuinely different
+// queries (lib/scan/retry-plan.ts: unused profile signals, hosts round one could not read excluded, nothing round one
+// already asked), on pages round one never saw. Bounded: ADAPTIVE_SEARCHES searches, ADAPTIVE_FETCHES pages and one
+// extraction call, all through the same per-tenant/day caps, trial charges and spend guards as round one; the request,
+// profile and geography never widen, and every candidate goes through the same verifier. It is skipped (and says why)
+// when the run disabled paid steps, a budget already refused a call, or too little of the scan's time budget is left.
+// Its outcome is the 'search:adaptive' source row: ok / empty / skipped:<why> / budget_stopped / search_cap, so a
+// bounded stop is never reported as an exhausted market.
+export const ADAPTIVE_SEARCHES = 3
+export const ADAPTIVE_FETCHES = 6
+export const ADAPTIVE_MIN_REMAINING_MS = 120_000
+interface AdaptiveRound { queries: string[]; skipUrls: ReadonlySet<string> }
+
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch }, newsHttp?: SafeGet, round?: AdaptiveRound): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -753,20 +767,28 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // Hiring-board queries are reserved first, but at most HALF the per-scan search budget: they target the public applicant
   // tracking hosts (Greenhouse, Ashby, Lever), which small local businesses (dental practices, shops) rarely use, and with
   // three places they used to take 6 of the 8 searches and leave the open searches 2.
-  const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(tfLimits().searchesPerScan / 2))
-  // #389: an explicit technology filter ("Shopify stores", "migrated from WordPress to Webflow") gets at most 2 announcement-style queries so
-  // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
-  // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
-  const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, tfLimits().searchesPerScan - direct.length - 2))
-  const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
-  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, modelQueries)
-  if (diag) diag.info.query_source = plan.source
-  const q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
+  // An adaptive round (#381) asks exactly the queries planRetry chose (already sanitized, geography named, never asked
+  // in round one): no query-planning model call.
+  let q: string[]
+  if (round) q = round.queries.slice(0, ADAPTIVE_SEARCHES)
+  else {
+    const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(tfLimits().searchesPerScan / 2))
+    // #389: an explicit technology filter ("Shopify stores", "migrated from WordPress to Webflow") gets at most 2 announcement-style queries so
+    // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
+    // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
+    const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, tfLimits().searchesPerScan - direct.length - 2))
+    const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
+    const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, modelQueries)
+    if (diag) diag.info.query_source = plan.source
+    q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
+  }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) }); if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  // An adaptive round reads only pages round one never saw: a page already read cannot change the result, and is not paid for twice.
+  if (round) { const seen = new Set([...round.skipUrls].map(u => canonicalUrl(u) ?? u)); for (let i = hits.length - 1; i >= 0; i--) if (seen.has(canonicalUrl(hits[i].url) ?? hits[i].url)) hits.splice(i, 1) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
   if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)).hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
@@ -783,7 +805,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // #380 / #204 Test B: under an OR plan ("seed funding OR first sales hire") a job page can prove a branch on its own, so it is not ranked behind the event pages.
   const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '') && !salesGateOr(job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
-  const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
+  const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   if (diag && f.ok) diag.held = HeldText.seal(`${job.id}:${job.attempts}`, urls, f.pages) // sealed for THIS attempt: only text already fetched, never re-fetched
@@ -1054,6 +1076,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
     let budgetRefused = false // the run budget refused a call in the TinyFish path
+    let tfCandidates = 0 // candidates TinyFish round one extracted (the adaptive round only follows a round that ran)
     // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
     const newsOn = !!deps.newsHttp || newsEnabled()
@@ -1066,6 +1089,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job)
         leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
         if (leads?.length) partial.candidates = leads
+        tfCandidates = leads?.length ?? 0
         ledger.record('search:tinyfish', leads === null ? 'unavailable' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
@@ -1256,6 +1280,47 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // For the record: every company whose own page blocked us and that now stands verified on another page (other press, a job-board posting, a merged quote), whichever fallback found it.
       const seenKeys = new Set(fallbackNotes.map(n => n.key))
       for (const n of rescuedNotes(leads, u => verifierFetch.get(u) ?? verifierFetch.get(canonicalUrl(u) ?? u) ?? null, outcome.leads)) if (!seenKeys.has(n.key)) fallbackNotes.push(n)
+    }
+    // Adaptive discovery (#381; see ADAPTIVE_SEARCHES): round one ran, extracted candidates and verified none of them.
+    if (tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
+      const stop = (status: string) => ledger.record('search:adaptive', status)
+      const left = jobDeadlines.get(job)
+      const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())
+      if (deps.paidFallback === false) stop('skipped:paid_steps_off')
+      else if (budgetRefused) stop('budget_stopped')
+      else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
+      else if (!plan.retry) stop(`skipped:${plan.why.split(':')[0]}`)
+      else {
+        const diag2 = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: diag.recordFetch }
+        try {
+          ledger.record('search:adaptive', 'started')
+          assertOwned(db, job)
+          const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
+          const st = summarizeTrace(diag2.trace)
+          ledger.stats('search:adaptive', { ...st, ...diag2.info })
+          const seen = new Set(leads.map(l => `${l.source_url}|${companyKey(l.company)}`))
+          const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
+          if (fresh.length === 0) stop(st.searches_not_attempted.cap ? 'search_cap' : 'empty')
+          else {
+            ledger.candidates('search:adaptive', fresh)
+            assertOwned(db, job)
+            leads.push(...fresh); verifiedUrls.push(...fresh.map(l => l.source_url))
+            const o2 = await verifyLeads(fresh, fetchP, deps.now, judge, null, diag2.held && evidenceCopyRoom(db, job.user_id) >= diag2.held.size ? { text: diag2.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+            const seenKeys = new Set(outcome.leads.map(dedupKey))
+            for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
+            const seenReview = new Set(outcome.review.map(dedupKey))
+            for (const r of o2.review) { const k = dedupKey(r); if (!seenKeys.has(k) && !seenReview.has(k)) { seenReview.add(k); outcome.review.push(r) } }
+            for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
+            if (o2.quotes) { outcome.quotes ??= new Map(); for (const [k, v] of o2.quotes) outcome.quotes.set(k, [...(outcome.quotes.get(k) ?? []), ...v]) }
+            stop('ok')
+          }
+        } catch (e) {
+          if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+          if (e instanceof ProviderError && e.kind === 'auth') throw e
+          if (e instanceof SpendRefused) { budgetRefused = true; stop('budget_stopped') } // a bounded stop: never "nothing found"
+          else stop('error')
+        }
+      }
     }
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
