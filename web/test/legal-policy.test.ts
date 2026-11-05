@@ -290,6 +290,8 @@ test('outbound mail carries the sender name, mailing address and an unsubscribe 
   assert.match(read('lib/outreach/service.ts'), /if \(!settings\) release\('sender_identity_missing'\)/)
   assert.throws(() => saveSettings(new Database(':memory:'), 't1', { sender_name: 'Ana', postal_address: '' }), (e: unknown) => e instanceof OutreachError && e.message.includes('bad_postal_address'))
   assert.match(privacy, /ends with the sender's name, a mailing address and an unsubscribe link/)
+  assert.match(privacy, /Every outreach message dazl sends to a prospect \(first touch, sequence step, follow-up or re-open\)/)
+  assert.match(privacy, /then the rest of your workspace data, except what a deletion request names to keep \(never credentials\) and the records listed below/)
   // the Terms say messages carry no AI label: the send path adds only the footer above
   assert.equal(body.slice('Hello there, a short note about your hiring.'.length).match(/\bAI\b|artificial intelligence/i), null)
   for (const f of ['lib/outreach/service.ts', 'lib/outreach/followups.ts', 'lib/outreach/sequences.ts'])

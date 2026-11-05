@@ -216,7 +216,7 @@ export const PRIVACY: Section[] = [
     'Other account and lead data is kept while your account exists. [NEEDS OWNER: retention for an active account\'s leads and messages, and for backups (not yet implemented).]',
   ] },
   { heading: 'Deleting your account', paragraphs: [
-    `You can ask us to export or delete your data at ${P.privacyContact}. There is no self-service deletion button yet; deletion is carried out by us. It removes credentials and sign-in state first, then queued work, then every row your workspace owns. It deletes dazl's stored Gmail tokens; the grant in your Google account is separate, and you can remove dazl's access there at any time.`,
+    `You can ask us to export or delete your data at ${P.privacyContact}. There is no self-service deletion button yet; deletion is carried out by us. It removes credentials and sign-in state first, then queued work, then the rest of your workspace data, except what a deletion request names to keep (never credentials) and the records listed below. It deletes dazl's stored Gmail tokens; the grant in your Google account is separate, and you can remove dazl's access there at any time.`,
     `Some records survive deletion because they contain no message content: the audit trail, the record of evidence purges, and content-free consent records (only the internal account ID, the action and its time). Consent records are deleted ${FACTS.consentProofRetainYears} years after the deletion completed. [NEEDS COUNSEL: confirm the ${FACTS.consentProofRetainYears}-year period, chosen by the owner as a practical window, not from a statute.]`,
     '[NEEDS OWNER: whether opt-out (unsubscribe) lists are kept or erased on deletion, billing-record retention, and a grace period before erasure (docs/TENANT-LIFECYCLE.md decisions 1, 2 and 5).]',
   ] },
@@ -224,7 +224,7 @@ export const PRIVACY: Section[] = [
     `You can ask to access, correct or delete your data at ${P.privacyContact}. [NEEDS COUNSEL: which rights apply by jurisdiction (GDPR, UK GDPR, CCPA/CPRA, PIPEDA) and response times.]`,
   ] },
   { heading: 'Outbound email and opting out', paragraphs: [
-    'Every message sent through dazl ends with the sender\'s name, a mailing address and an unsubscribe link, and carries a one-click List-Unsubscribe header. dazl refuses to send until the sender has saved a name and a mailing address.',
+    'Every outreach message dazl sends to a prospect (first touch, sequence step, follow-up or re-open) ends with the sender\'s name, a mailing address and an unsubscribe link, and carries a one-click List-Unsubscribe header. dazl refuses to send to a prospect until the sender has saved a name and a mailing address.',
     'An unsubscribe works at once, with no login: the address is added to that sender\'s opt-out list, any drafts or approved messages to it are skipped, and follow-up sequences to it stop. It is never emailed again by that sender through dazl. A bounce is handled the same way.',
     'If you received a message through dazl and want your data removed from the sender\'s workspace, ask the sender, or contact us at ' + `${P.privacyContact}.`,
     '[NEEDS COUNSEL: CASL / CAN-SPAM / PECR / GDPR applicability. These features are not a claim that any particular message complies.]',
