@@ -159,12 +159,13 @@ export function verifyRequest(secret: string, tsHeader: string | null, sigHeader
 
 // A consent withdrawal is REMEMBERED: erasing the subject's leads is not enough, because an older-dated granted event
 // that arrives after the withdrawal (a retry, a delayed queue, a backfill) would recreate the lead. The tombstone is
-// the minimum that prevents resurrection: the tenant's keyed fp:p: hash and the withdrawal time. Never the email,
+// the minimum that prevents resurrection: the tenant-namespaced fp:p: hash and the withdrawal time. Never the email,
 // never a name.
 //
-// Privacy facts, stated plainly: person_key is sha256(tenantId|email) truncated - a DETERMINISTIC keyed hash, not a
-// secret salt. Anyone who knows the tenant id and guesses the email can verify the pair by hashing, so the tombstone
-// is personal data and is treated as such: it lives at most the tenant's recorded retention period (purged in the
+// Privacy facts, stated plainly: person_key is sha256(tenantId|email) truncated - a deterministic tenant-namespaced
+// hash (NOT keyed: the tenant id is public, no secret enters the derivation). Anyone who knows the tenant id and
+// guesses the email can verify the pair by hashing, so the tombstone is pseudonymous personal data, still personal
+// data, and is treated as such: it lives at most the tenant's recorded retention period (purged in the
 // same tick as the events), is removed by eraseFirstParty and tenant deletion, and is justified only as the minimum
 // record needed to honor the withdrawal the consent flow already promised. Retention interaction that makes the bound
 // sound: a grant older than retention_days is rejected:bad_time, so once a tombstone has aged out, every grant dated
@@ -200,7 +201,7 @@ function eventTime(v: unknown): number | null {
   return null
 }
 
-// One event against the tenant's config. Pure: no db. `tenantId` salts the hashes so no key is comparable across tenants.
+// One event against the tenant's config. Pure: no db. `tenantId` namespaces the hashes (deterministic, no secret), so equal emails hash differently per tenant.
 export function classifyEvent(raw: unknown, cfg: FpConfig, tenantId: string, now: number): { outcome: Outcome; event?: Accepted; withdrawnKey?: string; withdrawnAt?: number } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { outcome: 'rejected:malformed' }
   const e = raw as Record<string, unknown>

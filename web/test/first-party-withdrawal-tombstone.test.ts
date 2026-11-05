@@ -1,6 +1,6 @@
 // #390 / #618 review: a consent withdrawal must be REMEMBERED. Erasing the subject's leads is not enough: an
 // older-dated `granted` event for the same person that arrives after the withdrawal (retry, delayed queue, backfill)
-// must not resurrect the lead. The fix keeps a minimal tombstone per tenant + person key (the salted fp:p: hash and
+// must not resurrect the lead. The fix keeps a minimal tombstone per tenant + person key (the tenant-namespaced fp:p: hash and
 // the withdrawal time - never the email or name), bounded by the tenant's recorded retention and erased by
 // eraseFirstParty. Red on 172aaa1d: R1 resurrects (1 lead); R2/R5 pass; R3/R4 pin the new store.
 import assert from 'node:assert/strict'
@@ -46,13 +46,13 @@ bothEngines('R2: a newer-dated grant after the withdrawal is a new consent and c
   assert.equal(await leadCount(db, 'A'), 1)
 })
 
-// R3: the tombstone holds no email and no name - only the tenant-salted hash and the withdrawal time.
-bothEngines('R3: the withdrawal tombstone holds no email or name, only the salted key and time', async ({ db, kind, raw }) => {
+// R3: the tombstone holds no email and no name - only the tenant-namespaced hash and the withdrawal time.
+bothEngines('R3: the withdrawal tombstone holds no email or name, only the namespaced key and time', async ({ db, kind, raw }) => {
   await recordConfig(db, 'A', CFG, 'actor-a', NOW)
   await run(db, 'A', grant('g1', 'jane@acme.io', NOW - 7200))
   await run(db, 'A', withdraw('w1', 'jane@acme.io', NOW - 3600))
-  // Column-bound: the tombstone carries exactly the keyed hash and two timestamps - no column can hold the email or
-  // a name. (Absence of a string in a dump is not a privacy proof; the keyed hash is itself personal data, bounded by
+  // Column-bound: the tombstone carries exactly the namespaced hash and two timestamps - no column can hold the email or
+  // a name. (Absence of a string in a dump is not a privacy proof; the hash is itself pseudonymous personal data, bounded by
   // retention and erase - see the module header.)
   const ts = await tombstones(db, 'A')
   assert.equal(ts.length, 1)
@@ -82,7 +82,7 @@ bothEngines('R4: eraseFirstParty and retention remove tombstones', async ({ db }
   assert.equal((await tombstones(db, 'A')).length, 0, 'retention purges the tombstone with the period')
 })
 
-// R5: tenant B's tombstone for the same email does not affect tenant A (the salt already differs; assert it).
+// R5: tenant B's tombstone for the same email does not affect tenant A (behavioral isolation; keys also differ by construction).
 bothEngines('R5: a tombstone in tenant B does not affect tenant A', async ({ db }) => {
   await recordConfig(db, 'A', CFG, 'actor-a', NOW)
   await recordConfig(db, 'B', { ...CFG, site_domain: 'other.test', privacy_url: 'https://other.test/p' }, 'actor-b', NOW)
@@ -93,7 +93,7 @@ bothEngines('R5: a tombstone in tenant B does not affect tenant A', async ({ db 
   assert.deepEqual(r.results.map(r => r.outcome), ['created'])
   assert.equal(await leadCount(db, 'A'), 1)
   const aKeys = (await tombstones(db, 'A')).map(t => t.person_key)
-  assert.ok(!aKeys.includes(bt.person_key), 'keys derive from the tenant id, so they differ; the isolation assertion above is behavioral, not this')
+  assert.ok(!aKeys.includes(bt.person_key), 'keys derive from the tenant id, so they differ by construction; the isolation assertion above is behavioral, not this')
 })
 
 // Concurrency (review clarification): a grant and a withdrawal for the same key in parallel requests settle to the
