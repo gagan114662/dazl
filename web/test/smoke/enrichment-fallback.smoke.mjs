@@ -152,6 +152,35 @@ try {
   assert.deepEqual(flagRow(), { enabled: 0, ciphertext: '' }, 'opt-out persisted')
   assert.equal((await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))).fallback, false)
 
+  // Scan stop statuses (#363): a scan that ended because a paid step's cost could not be recorded, or because it was interrupted while a
+  // paid step was in flight, says so on the real page (never "nothing found"), at desktop and 390px, with no horizontal overflow.
+  const { createQueryJob } = await import('../../lib/scan/store.ts')
+  const seedJob = error => {
+    const d = new (require('better-sqlite3'))(dbPath)
+    try {
+      const id = createQueryJob(d, 'smoke-user', { query: `Smoke stop status ${error}` })
+      d.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?").run(Math.floor(Date.now() / 1000), id)
+      d.prepare("UPDATE scan_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?").run(error, Math.floor(Date.now() / 1000), id)
+      return id
+    } finally { d.close() }
+  }
+  for (const [error, shot, text] of [
+    ['accounting_failed', 'stop-accounting-failed', /the cost of one paid step could not be recorded/],
+    ['accounting_uncertain', 'stop-accounting-uncertain', /did not run it again automatically/],
+  ]) {
+    const id = seedJob(error)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.goto(`${srv.base}/app/leads?job_id=${id}`)
+    await page.getByText(text).first().waitFor()
+    for (const [w, tag] of [[1280, 'desktop'], [390, 'mobile-390']]) {
+      await page.setViewportSize({ width: w, height: 900 })
+      p = path.join(out, `${shot}-${tag}.png`); await page.screenshot({ path: p, fullPage: true }); shots.push(p)
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${error}: no horizontal overflow at ${w}px`)
+    }
+    assert.equal(await page.getByText(/nothing found/i).count(), 0, `${error} is not reported as an empty search`)
+  }
+  await page.setViewportSize({ width: 1280, height: 900 })
+
   console.log('enrichment-fallback smoke OK')
   for (const s of shots) console.log('screenshot:', s)
 } finally {

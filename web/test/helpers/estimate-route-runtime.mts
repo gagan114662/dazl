@@ -252,3 +252,25 @@ test('own-key account: a failure while writing the estimate leaves no job either
   await assert.rejects(scan({ query: Q, budget: { max_usd: 1, judge: false } })); assert.equal(jobs(db).length, 0); assert.equal(claimKeyedJob(db), null)
   db.exec('DROP TRIGGER boom'); assert.equal((await scan({ query: Q, budget: { max_usd: 1, judge: false } })).status, 202); assert.equal(jobs(db).length, 1)
 })
+
+test('OpenAI key under a spending limit: the estimate and POST /api/scan refuse BEFORE launch (422 model_unpriced, no job); no limit, or an Anthropic key, is unaffected', async () => {
+  const db = setup(); const id = `E${++n}`
+  saveKey(db, id, 'openai', 'sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' })
+  const saved = process.env.DAZL_OPENAI_MODEL; delete process.env.DAZL_OPENAI_MODEL
+  try {
+    const limited = { query: Q, budget: { max_usd: 2, judge: false } }
+    const e = await (await est(limited)).json() as { estimate: { verdict: { ok: boolean; reason: string; message: string; change: string[] } } }
+    assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
+    assert.match(e.estimate.verdict.message, /no listed price/); assert.match(e.estimate.verdict.message, /Nothing was started or charged/)
+    assert.ok(e.estimate.verdict.change.length >= 2)
+    const r = await scan(limited); const j = await r.json() as { error: string; message: string }
+    assert.deepEqual([r.status, j.error], [422, 'model_unpriced']); assert.equal(jobs(db).length, 0, 'no job')
+    // Without a limit nothing is reserved, so nothing needs a price: not blocked.
+    const free = await (await est({ query: Q })).json() as { estimate: { verdict: { ok: boolean; reason: string | null } } }
+    assert.notEqual(free.estimate.verdict.reason, 'model_unpriced')
+    // An Anthropic key under the same limit is not blocked by this check.
+    const a = `E${++n}`; saveKey(db, a, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id: a, business_name: 'Acme' })
+    const ok = await (await est(limited)).json() as { estimate: { verdict: { reason: string | null } } }
+    assert.notEqual(ok.estimate.verdict.reason, 'model_unpriced')
+  } finally { if (saved === undefined) delete process.env.DAZL_OPENAI_MODEL; else process.env.DAZL_OPENAI_MODEL = saved }
+})

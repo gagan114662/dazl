@@ -244,13 +244,14 @@ export function latestQueryJob(db: Database.Database, userId: string): { query: 
 }
 
 // Jobs stuck in 'running' past the timeout go back to 'pending' for another
-// attempt, or to 'failed' after MAX_ATTEMPTS. Called on reads, so no cron needed.
+// attempt, or to 'failed' after MAX_ATTEMPTS. A job with a paid call of its current attempt still 'reserved' (reserved, never settled: the
+// vendor may have billed it) is NOT retried: it fails closed as 'accounting_uncertain' rather than bill the same calls again. Called on reads, so no cron needed.
 export function reapStaleJobs(db: Database.Database): void {
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(
-    `UPDATE scan_jobs SET status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'pending' END,
-       error = CASE WHEN attempts >= ? THEN 'timeout' ELSE error END,
-       finished_at = CASE WHEN attempts >= ? THEN CAST(strftime('%s','now') AS INTEGER) ELSE finished_at END,
+    `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
+       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
+       finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN CAST(strftime('%s','now') AS INTEGER) ELSE finished_at END,
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
