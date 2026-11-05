@@ -25,12 +25,13 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
-async function run(env: Record<string, string | undefined>, usage: boolean) {
+async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { served?: string; setup?: (db: Database.Database) => void } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master)
   createQueryJob(db, 'A', { query: 'Find Ohio companies with 10 to 100 employees that recently posted a payroll job', icp: JSON.stringify(ICP) })
   const job = claimKeyedJob(db)!
+  x.setup?.(db)
   const lead = { company: 'Harbor Freight Supply', name: 'Pat Lee', signal: 'Hiring a payroll specialist', excerpt: QUOTE, source_url: 'https://jobs.example/hf', event_date: recent }
   const paid: { url: string; liveReservations: number; nonRefused: number }[] = []
   const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
@@ -45,7 +46,7 @@ async function run(env: Record<string, string | undefined>, usage: boolean) {
     if (u === 'https://api.anthropic.com/v1/messages') {
       const b = JSON.parse(String(init?.body ?? '{}')) as { max_tokens: number }
       const text = b.max_tokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead])
-      return new Response(JSON.stringify({ id: 'msg', model: 'claude-sonnet-4-5-20250929', content: [{ type: 'text', text }], ...(usage ? { usage: { input_tokens: 400, output_tokens: 60 } } : {}) }), { status: 200 })
+      return new Response(JSON.stringify({ id: 'msg', model: x.served ?? 'claude-sonnet-4-5-20250929', content: [{ type: 'text', text }], ...(usage ? { usage: typeof usage === 'object' ? usage : { input_tokens: 400, output_tokens: 60 } } : {}) }), { status: 200 })
     }
     return new Response('{}', { status: 404 })
   }) as unknown as typeof fetch
@@ -119,4 +120,58 @@ test('runner under an owner pool: model calls settle to the vendor-reported usag
   assert.equal(pool.length, 1)
   assert.ok(Math.abs(pool[0].reserved_usd - models * perCall) < 1e-6, `reserved ${pool[0].reserved_usd} = reported ${models * perCall}`)
   assert.ok(Math.abs(pool[0].reported_usd - models * perCall) < 1e-6, 'the reported total is recorded')
+})
+
+const OWNER = { DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_OWNER_MONTH_MAX_USD_USERS: 'A:20' }
+const modelCalls = (x: Awaited<ReturnType<typeof run>>) => x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length
+const rowOf = async (x: Awaited<ReturnType<typeof run>>, k: 'm:' | 'd:') => (await poolRows(x.db, 'A')).find(r => r.period.startsWith(k))!
+const monthRow = (x: Awaited<ReturnType<typeof run>>) => rowOf(x, 'm:')
+
+// Failure classes of the settle (review of 97988fd5). Stubbed vendor, no network, no paid call.
+test('runner settle: a SERVED model with no price counts the rest of the window as spent and the scan stops visibly', async () => {
+  const x = await run(OWNER, true, { served: 'claude-unlisted-9' })
+  assert.equal(modelCalls(x), 1, 'no model call after the unpriced one')
+  assert.equal(x.row.error, 'budget_stopped', 'visible stop, not a silent empty result')
+  assert.equal((await rowOf(x, 'd:')).reserved_usd, 5, 'the shortest window (the day, limit 5) counts as fully spent')
+  assert.equal((await monthRow(x)).reserved_usd, 0.00894, 'the longer window keeps only the call worst case')
+})
+test('runner settle: a response with NO usage keeps the worst-case reservation and later calls are refused (budget_stopped)', async () => {
+  const x = await run(OWNER, false)
+  assert.equal(modelCalls(x), 1)
+  assert.equal(x.row.error, 'budget_stopped')
+  const m = await monthRow(x)
+  assert.ok(m.reserved_usd > 0.005, `worst case stays reserved (${m.reserved_usd})`)
+  assert.equal(m.reported_usd, 0, 'nothing is claimed as reported')
+})
+test('runner settle: invalid usage is unknown cost, not zero', async () => {
+  const x = await run(OWNER, { input_tokens: -5, output_tokens: 60 })
+  assert.equal(modelCalls(x), 1)
+  assert.equal(x.row.error, 'budget_stopped')
+  assert.equal((await rowOf(x, 'd:')).reserved_usd, 5, 'unknown cost: the shortest window counts as spent')
+})
+test('runner settle: a settle that cannot be saved withholds the result, makes no further paid request, and the job does not finish as done', async () => {
+  const x = await run(OWNER, true, { setup: db => db.exec("CREATE TRIGGER fail_settle BEFORE UPDATE ON tenant_spend_pools WHEN NEW.reported_usd <> OLD.reported_usd BEGIN SELECT RAISE(ABORT, 'simulated store failure'); END") })
+  assert.equal(modelCalls(x), 1, 'exactly one vendor request')
+  assert.equal(x.row.status, 'failed'); assert.equal(x.row.error, 'budget_stopped', 'truthful stop, never done/empty')
+  assert.ok((await monthRow(x)).reserved_usd > 0.005, 'the worst-case reservation stays counted')
+})
+
+// Pricing coverage (review of 97988fd5): the default Anthropic model is priced; anything else the runner could be
+// configured with is NOT assumed priced - it is refused at reservation (visible stop), never settled as free.
+test('pricing table: configured defaults and overrides', async () => {
+  const { anthropicProvider, openaiProvider } = await import('../lib/llm/provider.ts')
+  const { priceOf, callCostUsd, SpendRefused } = await import('../lib/llm/spend-guard.ts')
+  const saved = { a: process.env.DAZL_ANTHROPIC_MODEL, o: process.env.DAZL_OPENAI_MODEL }
+  try {
+    delete process.env.DAZL_ANTHROPIC_MODEL; delete process.env.DAZL_OPENAI_MODEL
+    assert.ok(priceOf(anthropicProvider.configuredModel!()), 'the default Anthropic model is priced')
+    assert.equal(priceOf(openaiProvider.configuredModel!()), null, 'the default OpenAI model has no price in the table')
+    assert.throws(() => callCostUsd(openaiProvider.configuredModel!(), 1000, 100), (e: unknown) => e instanceof SpendRefused && e.reason === 'model_unpriced')
+    process.env.DAZL_ANTHROPIC_MODEL = 'some-arbitrary-override'
+    assert.equal(priceOf(anthropicProvider.configuredModel!()), null, 'an arbitrary env override is not treated as priced')
+    assert.throws(() => callCostUsd(anthropicProvider.configuredModel!(), 1000, 100), (e: unknown) => e instanceof SpendRefused && e.reason === 'model_unpriced')
+  } finally {
+    if (saved.a === undefined) delete process.env.DAZL_ANTHROPIC_MODEL; else process.env.DAZL_ANTHROPIC_MODEL = saved.a
+    if (saved.o === undefined) delete process.env.DAZL_OPENAI_MODEL; else process.env.DAZL_OPENAI_MODEL = saved.o
+  }
 })
