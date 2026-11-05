@@ -145,8 +145,9 @@ claim), on both engines, including two SQLite connections to one file as two ins
   count against the owner pool, not a per-play limit.
 - **TinyFish and Apollo/PDL** are bounded by counts, not dollars, outside a scan (inside one, the hard per-scan cap
   also prices them). For BYOK enrichment that is the disclosed limit: the workspace credit pool (day/month credits per
-  tenant) is persistent and atomic, but its limits are operator-wide settings, not per-tenant choices, and no UI shows
-  them yet.
+  tenant) is persistent and atomic. Each workspace sets its own day/month limits in Settings > Enrichment (an
+  operator env value is the fallback per window); #363 is only PART done: scan-runner settle, per-play caps, the
+  cost-disclosure threshold and live acceptance of reserve-before-call on real paid paths remain.
 - **Disclosure:** the prelaunch estimate (lib/scan/estimate-request.ts) reads the owner pool rows.
   - Proved: a stale or failed pending marker blocks the estimate with the reason (`accounting_unsettled`), and
     `POST /api/scan` refuses with 409 and creates no job, the same rule the pool enforces. A fresh marker does not block.

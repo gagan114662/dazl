@@ -68,13 +68,24 @@ export default function EnrichmentPanel() {
           <div className="font-medium text-sm mb-1">Credit limits (this workspace)</div>
           <p className="mb-1">Optional. With no limit set, only the per-scan caps apply. When a limit is reached, paid lookups for that provider are skipped, and the scan says so.</p>
           {data.credits.map(u => (
-            <div key={u.provider + u.window} className="flex gap-2 items-center mb-1">
-              <span className="w-40">{u.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} per {u.window}</span>
+            <div key={u.provider + u.window} className="flex flex-wrap gap-x-2 gap-y-1 items-center mb-2">
+              <span className="w-40 shrink-0">{u.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} per {u.window}</span>
               <span>{u.reserved} credits used{u.limit === null ? ', no limit set' : ` of ${u.limit}${u.source === 'operator' ? ' (set by the operator)' : ''}`}</span>
               {u.source !== 'operator' && (
                 <>
-                  <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-1 w-20" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? ''} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
-                  <button aria-label={`Save ${u.provider} ${u.window} credit limit`} className="underline" onClick={() => { const v = (limits[u.provider + u.window] ?? '').trim(); void act({ credit_limit: { provider: u.provider, window: u.window, limit: v === '' ? null : Number(v) } }) }}>Save</button>
+                  <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-1 w-20 shrink-0" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? (u.source === 'tenant' && u.limit !== null ? String(u.limit) : '')} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
+                  {(() => {
+                    const key = u.provider + u.window, saved = u.source === 'tenant' && u.limit !== null ? String(u.limit) : ''
+                    const v = (limits[key] ?? saved).trim()
+                    // Save needs a whole number that differs from what is saved; a blank field never clears (the separate Clear does).
+                    const canSave = /^[0-9]+$/.test(v) && v !== saved
+                    return (
+                      <>
+                        <button aria-label={`Save ${u.provider} ${u.window} credit limit`} className="underline disabled:opacity-40 disabled:no-underline" disabled={!canSave} onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: Number(v) } }); setLimits(({ [key]: _drop, ...rest }) => rest) }}>Save</button>
+                        {u.limit !== null && <button aria-label={`Clear ${u.provider} ${u.window} credit limit`} className="underline" onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: null } }); setLimits(({ [key]: _drop, ...rest }) => rest) }}>Clear</button>}
+                      </>
+                    )
+                  })()}
                 </>
               )}
             </div>

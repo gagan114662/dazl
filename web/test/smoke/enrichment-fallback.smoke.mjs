@@ -116,9 +116,21 @@ try {
   p = path.join(out, 'credit-limit-set.png'); await card.screenshot({ path: p }); shots.push(p)
   let st = await page.evaluate(async () => (await (await fetch('/api/settings/enrichment')).json()))
   assert.equal(st.credits.find(c => c.provider === 'apollo' && c.window === 'month').limit, 5, 'GET reports the saved limit')
+  // Reload with an existing limit: the field shows it, an unchanged Save is disabled (never a silent clear), the limit survives.
+  await page.reload(); await page.getByText('Enrichment (bring your own key)', { exact: true }).waitFor()
+  await monthRow.getByText('0 credits used of 5').waitFor()
+  assert.equal(await monthInput.inputValue(), '5', 'the saved limit hydrates the field after a reload')
+  assert.equal(await card.getByRole('button', { name: 'Save apollo month credit limit' }).isDisabled(), true, 'unchanged Save is disabled')
+  await monthInput.fill('')
+  assert.equal(await card.getByRole('button', { name: 'Save apollo month credit limit' }).isDisabled(), true, 'blank Save is disabled: it never clears')
+  p = path.join(out, 'credit-limit-after-reload.png'); await card.screenshot({ path: p }); shots.push(p)
+  await page.setViewportSize({ width: 390, height: 900 }); p = path.join(out, 'credit-limit-mobile-390.png'); await card.screenshot({ path: p }); shots.push(p)
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no horizontal overflow at 390px')
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await monthInput.fill('5')
   const [clrResp] = await Promise.all([
     page.waitForResponse(r => r.url().includes('/api/settings/enrichment') && r.request().method() === 'POST' && (r.request().postData() || '').includes('credit_limit')),
-    (async () => { await monthInput.fill(''); await card.getByRole('button', { name: 'Save apollo month credit limit' }).click() })(),
+    (async () => { await card.getByRole('button', { name: 'Clear apollo month credit limit' }).click() })(),
   ])
   assert.ok(clrResp.ok(), 'credit limit clear accepted')
   await monthRow.getByText('0 credits used, no limit set').waitFor()

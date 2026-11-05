@@ -36,9 +36,9 @@ export function providerIssueText(issue: ProviderIssue): string {
     case 'credit_cap': {
       const c = issue.credit
       const where = c ? `your workspace's ${c.window === 'day' ? 'daily' : 'monthly'} ${who} credit limit (${c.used} of ${c.limit} credits used this UTC ${c.window})` : `your workspace's ${who} credit limit`
-      return `${who} enrichment was skipped for the remaining leads in this scan: ${where} was reached, so no paid lookup was made. Raise or clear the limit in Settings > Enrichment.`
+      return `${who} enrichment was skipped for the remaining leads in this scan: the next paid lookup would have gone over ${where}, so it was not made. Raise or clear the limit in Settings > Enrichment.`
     }
-    case 'credit_unsaved': return `${who} enrichment was skipped for the remaining leads in this scan: the workspace credit reservation could not be saved, so no paid lookup was made (it fails closed). Nothing was charged; run the scan again, and contact support if it repeats.`
+    case 'credit_unsaved': return `${who} enrichment was skipped for the remaining leads in this scan: the workspace credit reservation could not be saved, so this skipped lookup was not made (it fails closed) and nothing was charged for it. Lookups earlier in the scan keep their own charges; run the scan again, and contact support if it repeats.`
     default: return `${who} could not be used in this scan (${affected}).`
   }
 }

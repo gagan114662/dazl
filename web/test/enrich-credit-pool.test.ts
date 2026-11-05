@@ -54,9 +54,11 @@ test('the refusal a user reads names the provider, window, credits used against 
   const msg = providerIssueText({ connector: 'enrich:pdl', status: 'credit_cap', lookups_affected: 3, latest_at: 1, credit: { window: 'month', used: 100, limit: 100 } })
   assert.match(msg, /People Data Labs enrichment was skipped/)
   assert.match(msg, /monthly People Data Labs credit limit \(100 of 100 credits used this UTC month\)/)
-  assert.match(msg, /no paid lookup was made/)
+  assert.match(msg, /next paid lookup would have gone over/); assert.doesNotMatch(msg, /was reached/, 'a 5-credit batch is refused at 0 used of 4: never claim the limit was reached')
+  assert.match(providerIssueText({ connector: 'enrich:pdl', status: 'credit_cap', lookups_affected: 1, latest_at: 1, credit: { window: 'day', used: 0, limit: 4 } }), /\(0 of 4 credits used this UTC day\)/)
   assert.match(msg, /Settings > Enrichment/)
-  assert.match(providerIssueText({ connector: 'enrich:apollo', status: 'credit_unsaved', lookups_affected: 1, latest_at: 1 }), /Apollo enrichment was skipped.*could not be saved.*Nothing was charged/)
+  assert.match(providerIssueText({ connector: 'enrich:apollo', status: 'credit_unsaved', lookups_affected: 1, latest_at: 1 }), /Apollo enrichment was skipped.*could not be saved.*this skipped lookup was not made.*nothing was charged for it.*earlier in the scan keep their own charges/)
+  assert.doesNotMatch(providerIssueText({ connector: 'enrich:apollo', status: 'credit_unsaved', lookups_affected: 1, latest_at: 1 }), /Nothing was charged/)
 })
 
 test('CI Postgres leg cannot silently skip the PG twins (DAZL_REQUIRE_PG=1 requires DAZL_TEST_PG_URL)', () => {

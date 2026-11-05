@@ -37,8 +37,9 @@ export async function providerIssues(tenantId: string, jobId: string): Promise<P
       if (i.status !== 'credit_cap') continue
       try {
         const prov = i.connector === 'enrich:pdl' ? 'pdl' : 'apollo'
-        const full = (await creditUse(db, tenantId)).filter(u => u.provider === prov && u.limit !== null && u.reserved >= u.limit)
-        const u = full[0]; if (u) i.credit = { window: u.window, used: u.reserved, limit: u.limit! }
+        // The refused window is not always full: a 5-credit PDL batch is refused at 0 used of 4. Name the tightest limited window (least headroom).
+        const lim = (await creditUse(db, tenantId)).filter(u => u.provider === prov && u.limit !== null).sort((a, b) => (a.limit! - a.reserved) - (b.limit! - b.reserved))
+        const u = lim[0]; if (u) i.credit = { window: u.window, used: u.reserved, limit: u.limit! }
       } catch { /* numbers omitted */ }
     }
     return issues
