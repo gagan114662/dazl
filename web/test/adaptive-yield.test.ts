@@ -30,6 +30,7 @@ type Opts = {
   seedReservedUsd?: number
   runBudget?: string
   adaptiveOff?: boolean
+  adaptiveFlag?: string
   onAdaptiveSearch?: (db: Database.Database, jobId: string) => void
   signals?: string[]; aVerifies?: boolean; deps?: Partial<RunDeps> }
 async function scan(o: Opts = {}) {
@@ -78,7 +79,7 @@ async function scan(o: Opts = {}) {
   const realFetch = globalThis.fetch
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
-  if (o.adaptiveOff) delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED; else process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1'
+  if (o.adaptiveOff) delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED; else process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = o.adaptiveFlag ?? '1'
   try {
     const r = await runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null, ...o.deps })
     const runs = db.prepare('SELECT collector, status, candidate_count, verified_count FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string; candidate_count: number | null; verified_count: number | null }[]
@@ -207,4 +208,13 @@ test('#381 gate: the adaptive round is OFF by default - a zero-verified scan beh
   assert.deepEqual(s.fetchBatches, [[A.url]], 'no adaptive fetch')
   assert.equal(s.extractions.length, 1, 'no adaptive extraction')
   assert.equal(s.jobRow.status, 'done')
+})
+
+test('#381 gate: only the literal "1" enables the round - "0", "true", "" and " 1" all stay off', async () => {
+  for (const v of ['0', 'true', '', ' 1']) {
+    const s = await scan({ adaptiveFlag: v })
+    assert.equal(s.adaptive, undefined, `flag ${JSON.stringify(v)} must stay off: ${JSON.stringify(s.runs)}`)
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `flag ${JSON.stringify(v)}: no adaptive search`)
+    assert.equal(s.extractions.length, 1, `flag ${JSON.stringify(v)}: no adaptive extraction`)
+  }
 })

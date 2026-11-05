@@ -117,8 +117,12 @@ test('gate: the case set itself is checked - a missing, unregistered or duplicat
   assert.throws(() => { const f = join(mkdtempSync(join(tmpdir(), 'dazl-baseline-')), 'b.json'); writeFileSync(f, JSON.stringify({ ...b, min_cases: 0 })); loadBaseline(f) }, /min_cases/)
 })
 
-const runCli = (dir: string) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/evals.mts', '--dir', dir],
-  { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env: { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', DAZL_ADAPTIVE_DISCOVERY_ENABLED: '1' } }) // adaptive round gated on: the committed suite covers it
+const runCli = (dir: string, adaptive: 'on' | 'off' = 'on') => { // default ON: the committed suite covers the adaptive round (#381)
+  const env: NodeJS.ProcessEnv = { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0' }
+  if (adaptive === 'on') env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1'; else delete env.DAZL_ADAPTIVE_DISCOVERY_ENABLED // OFF = explicitly unset, never a shared process value
+  return spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/evals.mts', '--dir', dir],
+    { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env })
+}
 // A temp copy of the committed suite, optionally with a second registered case (a copy of the London case under another id).
 function suiteCopy(opts: { second?: boolean } = {}): string {
   const tmp = mkdtempSync(join(tmpdir(), 'dazl-evals-'))
@@ -175,23 +179,47 @@ test('gate CLI: deleting one of several cases, or renaming its id, is red; an em
   } finally { rmSync(empty, { recursive: true, force: true }) }
 })
 
-test('world_closed: a page the World does not have is a recorded miss, answered as a failed fetch, never fetched', async () => {
-  process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1' // the replay covers the gated-on adaptive round (#381); the flag is OFF by default
+
+test('#381 gate OFF/ON whole flow: the committed suite is green with the flag explicitly unset, and its output is the gated-on output minus the adaptive round', () => {
+  // The reviewer contract: the OFF replay of the committed suite (same cases, same frozen Worlds, same baseline from
+  // before the feature) must equal main's expected output; the ON replay keeps the feature's coverage. Both runs are
+  // offline (net fence, frozen synthetic Worlds, no keys, no real provider calls), flag set per spawn env only.
+  const tmp = suiteCopy()
   try {
+    const on = runCli(tmp, 'on'), off = runCli(tmp, 'off')
+    assert.equal(off.status, 0, off.stdout + off.stderr); assert.match(off.stdout, /eval gate: ok/)
+    assert.equal(on.status, 0, on.stdout + on.stderr); assert.match(on.stdout, /eval gate: ok/)
+    const row = (r: ReturnType<typeof runCli>) => {
+      const line = r.stdout.split('\n').find(l => l.startsWith('scan-london-seed-traps |'))
+      assert.ok(line, r.stdout)
+      return line.split('|').map(x => x.trim())
+    }
+    // The committed case verifies in round one, so the adaptive round never fires even ON: every scored and usage
+    // column is identical, and the OFF run (flag unset) matching the pre-feature baseline is the equivalence proof.
+    assert.deepEqual(row(off), row(on), `OFF\n${row(off).join(' | ')}\nON\n${row(on).join(' | ')}`)
+  } finally { rmSync(tmp, { recursive: true, force: true }) }
+})
+
+test('world_closed: a page the World does not have is a recorded miss, answered as a failed fetch, never fetched', async () => {
   const { kase, world } = await base()
   delete world.pages['https://news.example/london/querix-seed']
-  const r = await replayCase(kase, world)
-  assert.deepEqual(r.misses.filter(m => m.kind === 'page'), [{ kind: 'page', key: 'https://news.example/london/querix-seed' }])
-  // #381: with nothing verified, the adaptive round asks one unused profile signal; the frozen World has no answer for
-  // that search either, so it is a recorded miss too (never sent live), not a page and not a model reply
-  assert.ok(r.misses.filter(m => m.kind !== 'page').every(m => m.kind === 'search'), JSON.stringify(r.misses))
-  assert.equal(statuses(worldClosed, { kase, world, result: r }).run, 'fail')
-  assert.equal(r.leads.find(l => l.company === 'Querix')?.review_reason ?? 'absent', 'absent') // the verifier saw an error page, so Querix is not verified
-  // a model stage the World cannot answer is a miss too (and the scan fails rather than inventing a reply)
-  const w2 = clone(world); w2.model.extraction = []
-  const r2 = await replayCase(kase, w2)
-  assert.ok(r2.misses.some(m => m.kind === 'model' && m.key === 'extraction#0'))
-  assert.equal(r2.leads.length, 0)
+  delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED // the default: OFF. The pre-feature flow exactly - the missing page is the ONLY miss; no adaptive round runs, no search miss is recorded.
+  const r0 = await replayCase(kase, world)
+  assert.deepEqual(r0.misses, [{ kind: 'page', key: 'https://news.example/london/querix-seed' }])
+  process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1' // gated on (#381)
+  try {
+    const r = await replayCase(kase, world)
+    // with nothing verified, the adaptive round asks one unused profile signal; the frozen World has no answer for
+    // that search either, so it is a recorded miss too (never sent live), not a page and not a model reply
+    assert.deepEqual(r.misses.filter(m => m.kind === 'page'), [{ kind: 'page', key: 'https://news.example/london/querix-seed' }])
+    assert.ok(r.misses.filter(m => m.kind !== 'page').every(m => m.kind === 'search'), JSON.stringify(r.misses))
+    assert.equal(statuses(worldClosed, { kase, world, result: r }).run, 'fail')
+    assert.equal(r.leads.find(l => l.company === 'Querix')?.review_reason ?? 'absent', 'absent') // the verifier saw an error page, so Querix is not verified
+    // a model stage the World cannot answer is a miss too (and the scan fails rather than inventing a reply)
+    const w2 = clone(world); w2.model.extraction = []
+    const r2 = await replayCase(kase, w2)
+    assert.ok(r2.misses.some(m => m.kind === 'model' && m.key === 'extraction#0'))
+    assert.equal(r2.leads.length, 0)
   } finally { delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED }
 })
 
