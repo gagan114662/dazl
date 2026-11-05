@@ -74,10 +74,23 @@ export function creditPeriod(p: CreditProvider, w: 'day' | 'month', nowS: number
   return `c${p === 'apollo' ? 'a' : 'p'}${w === 'day' ? 'd' : 'm'}:${w === 'day' ? iso.slice(0, 10).replace(/-/g, '') : iso.slice(0, 7).replace('-', '')}`
 }
 
+// What the refused window looked like when it refused: credits already counted against it, its limit, and what the lookup asked for.
+export interface CreditRefusal { window: 'day' | 'month'; used: number; limit: number; requested: number }
+// The audit row for a refusal stores these numbers (no company text) so the scan view reports the moment of refusal, not a later re-read.
+export const refusalLookup = (r: CreditRefusal): string => `credit ${JSON.stringify(r)}`
+export function parseRefusalLookup(lookup: string): CreditRefusal | null {
+  if (!lookup.startsWith('credit {')) return null
+  try {
+    const o = JSON.parse(lookup.slice(7)) as Record<string, unknown>
+    const ok = (o.window === 'day' || o.window === 'month') && [o.used, o.limit, o.requested].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+    return ok ? { window: o.window as 'day' | 'month', used: o.used as number, limit: o.limit as number, requested: o.requested as number } : null
+  } catch { return null }
+}
 export class CreditRefused extends Error {
   reason: 'credit_cap' | 'credit_reservation_not_saved'
   window?: 'day' | 'month' // the window that did not fit (credit_cap only)
-  constructor(reason: CreditRefused['reason'], window?: 'day' | 'month') { super(`credit_refused:${reason}`); this.reason = reason; this.window = window }
+  detail?: CreditRefusal // the numbers at the moment of refusal (credit_cap only)
+  constructor(reason: CreditRefused['reason'], window?: 'day' | 'month', detail?: CreditRefusal) { super(`credit_refused:${reason}`); this.reason = reason; this.window = window; this.detail = detail }
 }
 export const creditRefused = (e: unknown): e is CreditRefused => e instanceof CreditRefused
 
@@ -110,7 +123,10 @@ export async function reserveCredits(d: DbLike, tenantId: string, provider: Cred
           ? yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ?', [units, at, tenantId, period])
           : yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ? AND reserved_usd + ? <= COALESCE((SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?), ?)', [units, at, tenantId, period, units, tenantId, limitPeriod(provider, w), limit])
         // A window that does not fit rolls back every window already raised.
-        if (r.changes !== 1) throw new CreditRefused('credit_cap', w)
+        if (r.changes !== 1) {
+          const cur = yield* t.get<{ reserved_usd: number }>('SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [tenantId, period])
+          throw new CreditRefused('credit_cap', w, { window: w, used: Number(cur?.reserved_usd ?? 0), limit: limit!, requested: units })
+        }
       }
       yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)', [tenantId, holdPeriod(id), units, at])
     })

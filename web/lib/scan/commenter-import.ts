@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
-import { CreditRefused, refundCredits, reserveCredits, settleCredits, type CreditHold } from '../enrich/credit-pool.ts'
+import { CreditRefused, refundCredits, refusalLookup, reserveCredits, settleCredits, type CreditHold } from '../enrich/credit-pool.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
 import { providerContactLabel } from '../people/currency.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection, regradeFromKeptContacts } from './contact-agreement.ts'
@@ -201,7 +201,7 @@ export async function enrichCommenters(db: Database.Database, tenantId: string, 
 async function holdCredits(db: Database.Database, tenantId: string, provider: 'apollo' | 'pdl', units: number, jobId: string, env?: Record<string, string | undefined>): Promise<CreditHold | null> {
   try { return await reserveCredits(db, tenantId, provider, units, { env }) } catch (e) {
     const why = e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap' : 'credit_unsaved'
-    audit(db, { tenantId, connector: `enrich:${provider}`, jobId, lookup: 'workspace credits', status: why, results: 0 })
+    audit(db, { tenantId, connector: `enrich:${provider}`, jobId, lookup: e instanceof CreditRefused && e.detail ? refusalLookup(e.detail) : 'workspace credits', status: why, results: 0 })
     return null
   }
 }

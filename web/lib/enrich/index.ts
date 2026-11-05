@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, latestAuditStatus, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
-import { refundCredits, reserveCredits, settleCredits, CreditRefused, type CreditHold } from './credit-pool.ts'
+import { refundCredits, reserveCredits, settleCredits, CreditRefused, refusalLookup, type CreditHold, type CreditRefusal } from './credit-pool.ts'
 import { runWithJobSpend } from '../scan/spend-cap.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -122,11 +122,11 @@ export async function enrichLeadContacts(
   // The workspace credit pool refused this provider (its day/month cap, or the store could not save the reservation):
   // no later lead of the pass reserves for it again.
   const capped: Record<Prov, 'credit_cap' | 'credit_unsaved' | null> = { apollo: null, pdl: null }
-  const skip = (prov: Prov, why: SkipWhy, lead: LeadRow) => {
+  const skip = (prov: Prov, why: SkipWhy, lead: LeadRow, refusal?: CreditRefusal) => {
     summary.skipped.push({ provider: prov, why })
     summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: why, attached: 0 })
     // visible once per provider and reason per pass
-    const k = `${prov}:${why}`; if (!told.has(k) && why !== 'replayed') { told.add(k); audit(db, { tenantId, connector: connector[prov], jobId, lookup: `people ${lead.company}`.slice(0, 200), status: why, results: 0 }) }
+    const k = `${prov}:${why}`; if (!told.has(k) && why !== 'replayed') { told.add(k); audit(db, { tenantId, connector: connector[prov], jobId, lookup: refusal ? refusalLookup(refusal) : `people ${lead.company}`.slice(0, 200), status: why, results: 0 }) }
   }
   const failed = (prov: Prov, e: unknown, lead: LeadRow) => {
     const code = failCode(e)
@@ -182,7 +182,7 @@ export async function enrichLeadContacts(
         }
         let hold: CreditHold
         try { hold = await reserveCredits(db, tenantId, 'pdl', size, { env: deps.env, now }) }
-        catch (e) { const why = creditWhy(e); capped.pdl = why; skip(prov, why, lead); continue }
+        catch (e) { const why = creditWhy(e); capped.pdl = why; skip(prov, why, lead, e instanceof CreditRefused ? e.detail : undefined); continue }
         const gate = auditTryReserve(db, { tenantId, connector: connector[prov], jobId, lookup: lookupKey('people', lead), status: 'reserved', results: 0 })
         if ('prior' in gate) {
           await releaseUnused(db, hold) // another pass holds this lookup: no call here, the credits go back
@@ -215,7 +215,7 @@ export async function enrichLeadContacts(
       if (out.kind === 'replayed-terminal') { skip(prov, 'replayed', lead); continue }
       if (out.kind === 'uncertain') { skip(prov, 'uncertain', lead); stopped = true; break }
       if (out.kind === 'budget') { skip(prov, 'budget_exhausted', lead); continue }
-      if (out.kind === 'credit') { capped.apollo = out.why; skip(prov, out.why, lead); continue }
+      if (out.kind === 'credit') { capped.apollo = out.why; skip(prov, out.why, lead, out.refusal); continue }
       summary.byProvider.apollo += out.n; summary.attached += out.n
       summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: out.verdict, attached: out.n })
       if (out.n > 0) { stopped = true; break }
@@ -284,7 +284,7 @@ type AttemptOutcome =
   | { kind: 'replayed-terminal' }  // known empty / terminally rejected: do not pay again, try the next provider
   | { kind: 'uncertain' }          // a held claim MAY have been charged: fail closed - owner resolution only
   | { kind: 'budget' }             // the next step would exceed the per-scan call budget
-  | { kind: 'credit'; why: 'credit_cap' | 'credit_unsaved' } // the workspace credit pool refused the paid org lookup: no call
+  | { kind: 'credit'; why: 'credit_cap' | 'credit_unsaved'; refusal?: CreditRefusal } // the workspace credit pool refused the paid org lookup: no call
 
 // The org claim's memo: everything the people step needs after the paid org lookup ran - the confirmed domain the
 // people search queries and the agreement basis bits the pass decided on. Written in the SAME transaction as the
@@ -340,7 +340,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
     // The workspace credit pool (#363): the org lookup's 1 credit is reserved before the claim and the call.
     let hold: CreditHold
     try { hold = await reserveCredits(db, tenantId, 'apollo', 1, { env: c.env, now }) }
-    catch (e) { return { kind: 'credit', why: creditWhy(e) } }
+    catch (e) { return { kind: 'credit', why: creditWhy(e), refusal: e instanceof CreditRefused ? e.detail : undefined } }
     spend.used.apollo += 1 // reserve the budget before spending it
     const gate = auditTryReserve(db, orgClaim)
     if ('prior' in gate) {

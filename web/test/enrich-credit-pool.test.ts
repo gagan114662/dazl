@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { bothEngines } from './helpers/engines.ts'
-import { creditLimits, setCreditLimit, operatorCreditLimits, creditPeriod, creditUse, reserveCredits, settleCredits, refundCredits, CreditRefused } from '../lib/enrich/credit-pool.ts'
+import { parseRefusalLookup, creditLimits, setCreditLimit, operatorCreditLimits, creditPeriod, creditUse, reserveCredits, settleCredits, refundCredits, CreditRefused } from '../lib/enrich/credit-pool.ts'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, recentAudit, setEnrichFallback } from '../lib/connectors/store.ts'
@@ -51,11 +51,11 @@ bothEngines('UNSET limit: a paid service is not tightened - 500 reservations pas
 })
 
 test('the refusal a user reads names the provider, window, credits used against the limit, and where to change it', () => {
-  const msg = providerIssueText({ connector: 'enrich:pdl', status: 'credit_cap', lookups_affected: 3, latest_at: 1, credit: { window: 'month', used: 100, limit: 100 } })
+  const msg = providerIssueText({ connector: 'enrich:pdl', status: 'credit_cap', lookups_affected: 3, latest_at: 1, credit: { window: 'month', used: 100, limit: 100, requested: 5 } })
   assert.match(msg, /People Data Labs enrichment was skipped/)
   assert.match(msg, /monthly People Data Labs credit limit \(100 of 100 credits used this UTC month\)/)
-  assert.match(msg, /next paid lookup would have gone over/); assert.doesNotMatch(msg, /was reached/, 'a 5-credit batch is refused at 0 used of 4: never claim the limit was reached')
-  assert.match(providerIssueText({ connector: 'enrich:pdl', status: 'credit_cap', lookups_affected: 1, latest_at: 1, credit: { window: 'day', used: 0, limit: 4 } }), /\(0 of 4 credits used this UTC day\)/)
+  assert.match(msg, /was reached/)
+  assert.match(providerIssueText({ connector: 'enrich:pdl', status: 'credit_cap', lookups_affected: 1, latest_at: 1, credit: { window: 'day', used: 0, limit: 4, requested: 5 } }), /the next lookup needed 5 credits and only 4 remained.*\(0 of 4 credits used this UTC day\)/)
   assert.match(msg, /Settings > Enrichment/)
   assert.match(providerIssueText({ connector: 'enrich:apollo', status: 'credit_unsaved', lookups_affected: 1, latest_at: 1 }), /Apollo enrichment was skipped.*could not be saved.*this skipped lookup was not made.*nothing was charged for it.*earlier in the scan keep their own charges/)
   assert.doesNotMatch(providerIssueText({ connector: 'enrich:apollo', status: 'credit_unsaved', lookups_affected: 1, latest_at: 1 }), /Nothing was charged/)
@@ -344,3 +344,40 @@ bothEngines('C5 serialization: set, lower, clear and reserve interleave in commi
   assert.equal((await creditLimits(db, 'A', 'apollo', e)).day, null, 'clear sticks')
   await reserveCredits(db, 'A', 'apollo', 1, { env: e, now: T0 }) // cleared: admitted
 }, { pgMax: 8 })
+
+test('C2 the refusal numbers are stored at the moment of refusal (PDL 5 vs limit 4 at 0 used) and survive later limit/usage changes', async () => {
+  const e = env({ DAZL_PDL_CREDITS_DAY: '4', DAZL_PDL_CREDITS_MONTH: '100' })
+  const { db, jobId, leads } = seed(1, { pdl: true }); const calls: Calls = { org: 0, people: 0, pdl: 0 }
+  await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: stub(calls), master, env: e })
+  assert.equal(calls.pdl, 0)
+  const rows = () => (db.prepare("SELECT lookup FROM connector_audit WHERE tenant_id = 'u1' AND status = 'credit_cap'").all() as { lookup: string }[])
+  assert.equal(rows().length, 1)
+  assert.deepEqual(parseRefusalLookup(rows()[0].lookup), { window: 'day', used: 0, limit: 4, requested: 5 }, 'the refusing window, its usage and limit, and the request - not the tightest-window guess')
+  assert.doesNotMatch(rows()[0].lookup, /harbor/i, 'no company text in the stored refusal')
+  // later changes: the limit is raised and credits are spent; the stored refusal still says what happened then
+  await setCreditLimit(db, 'u1', 'pdl', 'day', 50)
+  await reserveCredits(db, 'u1', 'pdl', 7, { env: e, now: Math.floor(Date.now() / 1000) })
+  assert.deepEqual(parseRefusalLookup(rows()[0].lookup), { window: 'day', used: 0, limit: 4, requested: 5 })
+  // the month window refusing instead (day fits): the month is the named window
+  const e2 = env({ DAZL_PDL_CREDITS_DAY: '50', DAZL_PDL_CREDITS_MONTH: '3' })
+  const b = seed(1, { pdl: true }); await enrichLeadContacts(b.db, 'u1', b.jobId, b.leads, { fetchImpl: stub({ org: 0, people: 0, pdl: 0 }), master, env: e2 })
+  const r2 = parseRefusalLookup((b.db.prepare("SELECT lookup FROM connector_audit WHERE status = 'credit_cap'").get() as { lookup: string }).lookup)
+  assert.equal(r2?.window, 'month'); assert.equal(r2?.limit, 3)
+  // used == limit reads as reached; used < limit reads as need/remain
+  assert.match(providerIssueText({ connector: 'enrich:apollo', status: 'credit_cap', lookups_affected: 1, latest_at: 1, credit: { window: 'month', used: 5, limit: 5, requested: 1 } }), /Apollo credit limit \(5 of 5 credits used this UTC month\) was reached/)
+  assert.equal(parseRefusalLookup('people Harbor 1'), null)
+})
+
+test('C6d Apollo: a failed or unanswered org lookup keeps its credit (the vendor may have billed it) and a replay of that held lookup is not paid again', async () => {
+  const e = env({})
+  const now = () => Math.floor(Date.now() / 1000)
+  const a = seed(1, { apollo: true }); const c1: Calls = { org: 0, people: 0, pdl: 0 }
+  await enrichLeadContacts(a.db, 'u1', a.jobId, a.leads, { fetchImpl: (async (u: RequestInfo | URL) => { if (String(u).includes('organizations/enrich')) { c1.org++; return new Response('x', { status: 503 }) } return stub(c1)(u) }) as typeof fetch, master, env: e })
+  assert.equal(c1.org, 1)
+  assert.deepEqual(await use(a.db, 'u1', e, now()), { [creditPeriod('apollo', 'day', now())]: [1, 0], [creditPeriod('apollo', 'month', now())]: [1, 0] }, 'unknown charge: the credit stays counted')
+  // the same job again (a retry or crash recovery): the claim is held/uncertain, no second paid call, no release of the credit
+  const c2: Calls = { org: 0, people: 0, pdl: 0 }
+  await enrichLeadContacts(a.db, 'u1', a.jobId, a.leads, { fetchImpl: stub(c2), master, env: e })
+  assert.equal(c2.org, 0, 'a held lookup is never paid twice')
+  assert.deepEqual(await use(a.db, 'u1', e, now()), { [creditPeriod('apollo', 'day', now())]: [1, 0], [creditPeriod('apollo', 'month', now())]: [1, 0] }, 'the replay released nothing and reserved nothing')
+})

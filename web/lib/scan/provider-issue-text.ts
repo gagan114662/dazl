@@ -17,7 +17,7 @@ export interface ProviderIssue {
   lookups_affected: number
   latest_at: number
   // credit_cap only, read from the credit pool when the issue is listed: which window, credits used against the limit.
-  credit?: { window: 'day' | 'month'; used: number; limit: number }
+  credit?: { window: 'day' | 'month'; used: number; limit: number; requested: number }
 }
 
 export function providerIssueText(issue: ProviderIssue): string {
@@ -35,8 +35,10 @@ export function providerIssueText(issue: ProviderIssue): string {
     case 'fallback_off': return `People Data Labs was not tried for leads Apollo could not enrich: a key is saved, but the Apollo-to-PDL fallback is off (Settings > Enrichment).`
     case 'credit_cap': {
       const c = issue.credit
-      const where = c ? `your workspace's ${c.window === 'day' ? 'daily' : 'monthly'} ${who} credit limit (${c.used} of ${c.limit} credits used this UTC ${c.window})` : `your workspace's ${who} credit limit`
-      return `${who} enrichment was skipped for the remaining leads in this scan: the next paid lookup would have gone over ${where}, so it was not made. Raise or clear the limit in Settings > Enrichment.`
+      if (!c) return `${who} enrichment was skipped for the remaining leads in this scan: a ${who} credit limit for your workspace stopped the next paid lookup, so it was not made. Raise or clear the limit in Settings > Enrichment.`
+      const win = `${c.window === 'day' ? 'daily' : 'monthly'} ${who} credit limit (${c.used} of ${c.limit} credits used this UTC ${c.window})`
+      const why = c.used >= c.limit ? `your workspace's ${win} was reached` : `the next lookup needed ${c.requested} credit${c.requested === 1 ? '' : 's'} and only ${c.limit - c.used} remained under your workspace's ${win}`
+      return `${who} enrichment was skipped for the remaining leads in this scan: ${why}, so no paid lookup was made. Raise or clear the limit in Settings > Enrichment.`
     }
     case 'credit_unsaved': return `${who} enrichment was skipped for the remaining leads in this scan: the workspace credit reservation could not be saved, so this skipped lookup was not made (it fails closed) and nothing was charged for it. Lookups earlier in the scan keep their own charges; run the scan again, and contact support if it repeats.`
     default: return `${who} could not be used in this scan (${affected}).`
