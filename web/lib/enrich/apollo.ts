@@ -81,7 +81,8 @@ export async function apolloPeopleSearch(apiKey: string, org: { domain?: string 
   if (org.domain) body.q_organization_domains = org.domain
   else body.q_organization_name = org.name
   const j = await call(apiKey, '/api/v1/mixed_people/api_search', body, fetchImpl) as { people?: Record<string, unknown>[] }
-  return (j.people ?? []).slice(0, max).map(p => ({
+  // Filter mailbox/team labels BEFORE the cap so department-labelled rows cannot displace real people within max.
+  return (j.people ?? []).map(p => ({
     name: clean(p.name, 120) ?? '',
     title: clean(p.title, 120),
     linkedin: clean(p.linkedin_url),
@@ -90,5 +91,5 @@ export async function apolloPeopleSearch(apiKey: string, org: { domain?: string 
     // only as a strict YYYY-MM-DD; any other shape is null, so the contact stays search-result-only.
     recordDay: latestDay(p.last_refreshed_at, p.updated_at),
     // p.email / p.phone_numbers deliberately never read
-  })).filter(p => p.name && !isMailboxShaped(p.name))
+  })).filter(p => p.name && !isMailboxShaped(p.name)).slice(0, max)
 }

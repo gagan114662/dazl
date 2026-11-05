@@ -1,5 +1,7 @@
 // #383 criterion 4: which found contacts are VERIFIED CURRENT and which are SEARCH RESULT ONLY.
-// Owner definition (Gagan, 2026-11-03, on PR #566). A contact is verified current only on dated evidence:
+// Builder-chosen definition: the 180/90-day windows were cited to the owner, but no owner message confirming
+// them is on record (Instinct check, 2026-11-04); treat them as builder-chosen and change them on the owner's word.
+// A contact is verified current only on dated evidence:
 //   (a) a first-party company page (the company's own site, read by dazl's crawl) names them in that role, and that
 //       reading is within FIRST_PARTY_DAYS (180) days;
 //   (b) the provider's own record (Apollo / People Data Labs) carries a last-confirmed or updated date within

@@ -25,7 +25,8 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'PDL rejected the key')
     if (!r.ok) throw new EnrichError('upstream', `PDL returned ${r.status}`)
     const j = await r.json() as { data?: Record<string, unknown>[] }
-    return (j.data ?? []).slice(0, max).map(p => ({
+    // Filter mailbox/team labels BEFORE the clamp, same as Apollo, so they cannot consume the row budget.
+    return (j.data ?? []).map(p => ({
       name: (typeof p.full_name === 'string' ? p.full_name : '').slice(0, 120),
       title: typeof p.job_title === 'string' ? p.job_title.slice(0, 120) : null,
       linkedin: typeof p.linkedin_url === 'string' ? p.linkedin_url.slice(0, 200) : null,
@@ -36,6 +37,6 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
       domain: str(p.job_company_website),
       // The record's own job last-verified / last-changed date (#383 criterion 4); any other shape is null.
       recordDay: latestDay(p.job_last_verified, p.job_last_changed),
-    })).filter(p => p.name && !isMailboxShaped(p.name))
+    })).filter(p => p.name && !isMailboxShaped(p.name)).slice(0, max)
   } finally { clearTimeout(t) }
 }

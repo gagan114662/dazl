@@ -6,8 +6,9 @@
 //   2. A former employee and an assistant-to-the-buyer are rejected, never attached.
 //   3. No person is inferred from a generic inbox (mailbox-shaped names never attach; a lead whose
 //      only contact is a generic inbox gets EMPTY best-person fields, never an invented person).
-//   4. "Show named verified-current versus search-result-only contacts separately", on the owner's definition
-//      (Gagan, 2026-11-03, PR #566): verified current = a first-party company page read within 180 days, or a
+//   4. "Show named verified-current versus search-result-only contacts separately". The 180/90-day windows are
+//      builder-chosen (no owner message on record; see lib/people/currency.ts): verified current = a first-party
+//      company page read within 180 days, or a
 //      provider record (Apollo/PDL) confirmed/updated within 90 days; everything else is search-result-only. The
 //      LinkedIn-session basis waits for #192's follow-up and is not counted. The leads page shows two sections.
 import test from 'node:test'
@@ -80,13 +81,13 @@ test('criterion 2: the former employee and the assistant-to-the-buyer are reject
 test('criterion 3a: a mailbox-shaped provider result is not a person (Apollo and PDL boundaries)', async () => {
   const apollo = await apolloPeopleSearch('k', { domain: 'acme.com', name: 'Acme' }, (async (_u: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body))
-    if (body.q_organization_domains) return ok({ people: [person('info@acme.com', 'VP Sales'), person('Info', 'VP Sales'), person('Sales Team', 'VP Sales'), person('Jane Buyer', 'VP Sales'), person('Ana Sales', 'VP Sales')] })
+    if (body.q_organization_domains) return ok({ people: [person('info@acme.com', 'VP Sales'), person('Info', 'VP Sales'), person('Sales Team', 'VP Sales'), person('Contact Us', 'VP Sales'), person('Customer Support', 'VP Sales'), person('Customer Success', 'VP Sales'), person('Careers', 'VP Sales'), person('Hiring Manager', 'VP Sales'), person('Marketing', 'VP Sales'), person('Sales Rep', 'VP Sales'), person('Hr', 'VP Sales'), person('Dev', 'VP Sales'), person('Jane Buyer', 'VP Sales'), person('Ana Sales', 'VP Sales')] })
     return ok({ people: [] })
   }) as never, 5, { titles: ['VP Sales'] })
-  assert.deepEqual(apollo.map(p => p.name), ['Jane Buyer', 'Ana Sales'], 'a generic inbox (address or bare inbox name) never becomes an Apollo person; a real name containing a role word is kept')
+  assert.deepEqual(apollo.map(p => p.name), ['Jane Buyer', 'Ana Sales'], 'a generic inbox, bare inbox name or department label never becomes an Apollo person; a real name containing a role word is kept')
   const pdlRow = (full_name: string) => ({ full_name, job_title: 'VP Sales', job_company_name: 'acme', job_company_website: 'acme.com' })
-  const pdl = await pdlPeopleSearch('k', 'Acme', (async () => ok({ data: [pdlRow('sales@acme.com'), pdlRow('support'), pdlRow('sales.support'), pdlRow('Jane Buyer')] })) as never, 5)
-  assert.deepEqual(pdl.map(p => p.name), ['Jane Buyer'], 'a generic inbox (address or bare inbox name) never becomes a PDL person')
+  const pdl = await pdlPeopleSearch('k', 'Acme', (async () => ok({ data: [pdlRow('sales@acme.com'), pdlRow('support'), pdlRow('sales.support'), pdlRow('Contact Us'), pdlRow('Customer Support'), pdlRow('Customer Success'), pdlRow('Careers'), pdlRow('Hiring Manager'), pdlRow('Marketing'), pdlRow('Sales Rep'), pdlRow('Hr'), pdlRow('Dev'), pdlRow('Jane Buyer')] })) as never, 5)
+  assert.deepEqual(pdl.map(p => p.name), ['Jane Buyer'], 'a generic inbox, bare inbox name or department label never becomes a PDL person')
 })
 
 test('criterion 3b: a lead whose only contact is a generic inbox gets EMPTY best-person fields, not an invented person', async () => {
