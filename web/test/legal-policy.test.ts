@@ -233,6 +233,9 @@ test('the Gmail reading description matches the reply sync: what is read, classi
   assert.match(privacy, /the Gmail message and thread identifiers, a 200-character excerpt, the classification and the received time/)
   assert.match(replies, /gmail_id TEXT NOT NULL, tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL/)
   assert.match(privacy, /delivery-failure notices beyond its own threads/)
+  assert.match(privacy, /an unmatched notice leaves only its message and thread identifiers, received time and classification/)
+  // the unmatched-notice row stores exactly those fields: gmail_id and thread_id, empty sender and excerpt
+  assert.match(replies, /row: \{ gmail_id: hitId, thread_id: g\.threadId \?\? '', lead_id: null, from_email: '', excerpt: '', classification: 'bounce_unmatched'/)
   assert.match(privacy, /not deleted automatically today/)
   assert.match(privacy, /turning reading off stops future reads and follow-ups but does not delete what is already stored/)
   assert.match(privacy, /deleting your account deletes them with your other workspace data/)
