@@ -20,6 +20,6 @@ jobs:
       # Node; npm test runs its node:test contract suites (test/*.test.js).
       # The previous tsc/vitest steps never ran: the lockfile carries no devDependencies,
       # so npx fetched the unrelated `tsc` package and the job failed before any test
-      # (worker-ci red on every run since 2026-10-21). The TS Cloudflare product under
-      # worker/src has no locked toolchain; restoring it is a separate change, not this one.
+      # (worker-ci red on every run since 2026-10-21). The legacy TS Cloudflare product
+      # under worker/src was removed in #895; worker/ is only the Node connector now.
       - run: npm test

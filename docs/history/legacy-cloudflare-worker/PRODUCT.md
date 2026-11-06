@@ -1,3 +1,5 @@
+> HISTORICAL: describes the removed Cloudflare/Clicky worker (#895). Not current instructions; the code it references no longer exists.
+
 # Product layer
 
 What a tenant can do today, how it is protected, and what you must configure.
