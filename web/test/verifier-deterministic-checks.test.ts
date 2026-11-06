@@ -24,7 +24,7 @@ const CLAIM: LeadClaim = {
   company: 'Harbor Ledger Analytics', domain: 'harborledger.example',
   place: { city: 'London', country: 'United Kingdom' },
   event: { date: '2026-10-20', source_url: OWN, corroborating_urls: [] },
-  quotes: [],
+  quotes: [], person: null, contact: null,
 }
 const GENUINE = page('<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>')
 
