@@ -36,11 +36,13 @@ export const DEGRADED: Record<string, Degraded> = {
   'settings:enrichment': 'closed', 'enrich-retry': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   workers: 'closed', // runtime worker runs (app/api/workers): shared host capacity, so no runs while limits cannot be counted
-  checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', 'first-party': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
+  checkout: 'closed', llmkey: 'closed',
+  // the scoped API (#392): token lookups, every API call, and API scan starts (each token's own daily reservation)
+  mcp: 'closed', 'mcp-ip': 'closed', 'api-scan': 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', 'first-party': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   // low risk: the app's own data, or must keep working
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'lead-feedback': 'local', 'domain-review': 'local',
   'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local', 'first-party-cfg': 'local',
-  invite: 'local', 'invite-accept': 'local', sessions: 'local',
+  invite: 'local', 'invite-accept': 'local', sessions: 'local', 'api-token': 'local',
   'scan-estimate': 'local',   // read-only price estimate: no provider call, queues and counts nothing
   lookalike: 'local',         // #386 lookalike features from a supplied cohort: pure computation, no provider call, nothing stored
   'audit-denied': 'local',    // only spaces out the audit trail's own refusal events; the refusal itself never waits on it
