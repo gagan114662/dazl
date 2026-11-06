@@ -4,6 +4,7 @@ import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
+import { migrateAdvBudget, reserveRequest } from './request-budget.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS advanced_consent (
@@ -11,6 +12,7 @@ export function migrateAdvanced(db: Database.Database): void {
     accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
     PRIMARY KEY (tenant_id, scope)
   );`)
+  migrateAdvBudget(db)
 }
 
 // Each consent read and write exists sync (the raw handle: the scan pipeline and its fixtures) and async on Db (the
@@ -110,9 +112,6 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
   return out
 }
 
-async function callsLastHour(db: Db, tenantId: string, platform: AdvPlatform, now: number): Promise<number> {
-  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','auth_failed','throttled','schema_error','upstream_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
-}
 
 // X search AND-matches every token, so a full natural-language scan sentence returns
 // nothing. Build a short keyword query from the scan's ICP instead: intent words first
@@ -147,7 +146,8 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // search. It never reaches consent, the rate limiter or the worker, and it burns no call budget.
     if (!PLATFORM_SUPPORT[p].supported) { await skip('unsupported'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
-    if (await callsLastHour(db, tenantId, p, deps.now ?? Math.floor(Date.now() / 1000)) >= maxCallsPerHour(p, env)) { await skip('rate_limited'); continue }
+    // Atomic: the reservation and the limit check are one step, shared with every other consumer of this connector (the LinkedIn people reader included), so concurrent scans cannot exceed the cap (#192).
+    if (!(await reserveRequest(db, tenantId, connectorId(p), maxCallsPerHour(p, env), 'advanced', deps.now ?? Math.floor(Date.now() / 1000)))) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped
     // per scan / tenant / day). No account session is used, so nothing here can get a
     // tenant's account banned. A search snippet is not the verbatim post text, so every
