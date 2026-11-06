@@ -337,3 +337,25 @@ test('staging sign-in client: a dedicated one passes; production\'s, the Gmail c
     for (const v of [SSEC, 'GOCSPX-production-secret', SID]) assert.ok(!r.out.includes(v), 'values are never printed')
   }
 })
+
+test('staging Gmail (#413): Gmail credentials need the flag and the full config; GOOGLE_CLIENT_* stays refused', () => {
+  const real = { DAZL_STAGING_REAL_GMAIL: '1', GMAIL_STAGING_CLIENT_ID: 'stg.apps.googleusercontent.com', GMAIL_STAGING_CLIENT_SECRET: 'stg-secret', DAZL_STAGING_GMAIL_ALLOWLIST: 'a@owner.example, b@owner.example' }
+  const withEnv = (kv: Record<string, string>) => good + '\n' + Object.entries(kv).map(([k, v]) => `${k}=${v}`).join('\n') + '\n'
+  assert.deepEqual(check(withEnv(real)), { ok: true, out: 'env ok\n' })
+  assert.equal(check(good).ok, true, 'stub default unchanged')
+  for (const [why, kv] of [
+    ['credentials without the flag', { GMAIL_STAGING_CLIENT_ID: real.GMAIL_STAGING_CLIENT_ID, GMAIL_STAGING_CLIENT_SECRET: 'x' }],
+    ['allowlist without the flag', { DAZL_STAGING_GMAIL_ALLOWLIST: 'a@owner.example' }],
+    ['flag without credentials', { DAZL_STAGING_REAL_GMAIL: '1', DAZL_STAGING_GMAIL_ALLOWLIST: 'a@owner.example' }],
+    ['flag without allowlist', { ...real, DAZL_STAGING_GMAIL_ALLOWLIST: '' }],
+    ['wildcard allowlist', { ...real, DAZL_STAGING_GMAIL_ALLOWLIST: '*@owner.example' }],
+    ['domain allowlist', { ...real, DAZL_STAGING_GMAIL_ALLOWLIST: 'owner.example' }],
+    ['not a google client id', { ...real, GMAIL_STAGING_CLIENT_ID: 'nope' }],
+    ['legacy GOOGLE_CLIENT_ID even with the flag', { ...real, GOOGLE_CLIENT_ID: 'x' }],
+    ['legacy GOOGLE_CLIENT_SECRET even with the flag', { ...real, GOOGLE_CLIENT_SECRET: 'x' }],
+    ['a flag value other than 1', { ...real, DAZL_STAGING_REAL_GMAIL: 'yes' }],
+  ] as const) assert.equal(check(withEnv(kv)).ok, false, why)
+  // production's Gmail client may not be reused on staging
+  const pe = path.join(dir, 'prod2.env'); writeFileSync(pe, `DB_PATH=${prodDb}\nGOOGLE_CLIENT_ID=stg.apps.googleusercontent.com\n`)
+  assert.match(check(withEnv(real), { PROD_ENV_FILE: pe }).out, /production's Google client/)
+})
