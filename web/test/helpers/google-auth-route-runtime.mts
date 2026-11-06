@@ -33,7 +33,7 @@ const setEnv = (e: Record<string, string>) => { for (const k of KEYS) delete pro
 setEnv({}) // the "build": nothing configured when the modules load
 const start = await import('../../app/api/auth/google/route.ts')
 const callback = await import('../../app/api/auth/callback/google/route.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 let ip = 0
 const req = (url: string, cookie?: string) => new NextRequest(url, { headers: { 'x-forwarded-for': `10.0.0.${++ip}`, ...(cookie ? { cookie } : {}) } })
 const STAGING = { DAZL_ENV: 'staging', PUBLIC_BASE_URL: 'https://staging.dazl.ai', GOOGLE_SIGNIN_CLIENT_ID: SID, GOOGLE_SIGNIN_CLIENT_SECRET: SSEC }

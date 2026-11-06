@@ -13,6 +13,8 @@ import { hasKey } from '@/lib/llm/key-store'
 import { icpFromWebsite } from '@/lib/scan/icp-from-site'
 import { latestQueryJob } from '@/lib/scan/store'
 import { denied } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
+import { SITE_READ_ACTION, siteReadOutcome } from '@/lib/scan/activation'
 
 // Turns the user's own homepage into an editable ICP draft (returned, never saved).
 // Tight rate limit: it fetches an arbitrary URL server-side and makes an LLM call. Without the user's own key the call
@@ -30,7 +32,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   let url = typeof body?.url === 'string' ? body.url.trim().slice(0, 300) : ''
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`
-  if (url.length < 5 || !siteKey(url)) return NextResponse.json({ error: 'invalid' }, { status: 400 })
+  // #409: a read that stops before the page is fetched is recorded too (path 'none'), so a bad address or unreadable saved
+  // targeting shows up as a drop-off with its reason. Only after the route's own 5-per-hour limit, so a looping client can
+  // never turn refusals into unbounded audit writes (a rate-limited press is not recorded).
+  const notRead = (reason: string) => audit(user, req, { action: SITE_READ_ACTION, resource: 'website', summary: { path: 'none', result: 'error', reason }, decision: 'denied' })
+  if (url.length < 5 || !siteKey(url)) { await notRead('invalid'); return NextResponse.json({ error: 'invalid' }, { status: 400 }) }
   // Prior research carries the answered-question binding and reviewed corrections into a recrawl (#379) - only for
   // the SAME site (double-guard on the submitted URL's host; buildResearch re-checks against the fetched final URL).
   let prior = null
@@ -48,9 +54,13 @@ export async function POST(req: NextRequest) {
   try { decisions = await recallSellerDecisions(sqliteDb(getScanDb()), user.tenantId, url) }
   catch (e) {
     captureError(e, { source: 'route', where: '/api/scan/icp-from-url', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
+    await notRead('intelligence_unavailable')
     return NextResponse.json({ error: 'intelligence_unavailable', message: 'Saved targeting decisions could not be read. Try again before generating a new profile.' }, { status: 503 })
   }
-  if (decisions.trace.truncated) return NextResponse.json({ error: 'intelligence_capacity', message: 'Saved targeting exceeds the safe recall window. No new profile was generated; use your existing reviewed profile.' }, { status: 409 })
+  if (decisions.trace.truncated) {
+    await notRead('intelligence_capacity')
+    return NextResponse.json({ error: 'intelligence_capacity', message: 'Saved targeting exceeds the safe recall window. No new profile was generated; use your existing reviewed profile.' }, { status: 409 })
+  }
   // Without a key of its own, the workspace's trial principal is read BEFORE any fetch (cheap, counts nothing): a member,
   // a team workspace or a workspace without its founder's row has no trial path, so the read is the free one. The
   // admission itself (eligibility, counters, wallet) still runs only after the page was fetched and found readable.
@@ -61,7 +71,14 @@ export async function POST(req: NextRequest) {
   // A member, a team workspace or a workspace without its founder's row has no trial path. The free read still
   // answers - it needs no key and no one's money - with the reason the funded read was never tried.
   const ineligible = !keyed && !principal
-  const out = await icpFromWebsite(db, user.tenantId, url, { prior, decisions, ...(trial ? { trial } : {}) })
+  // #409 time-to-value and drop-off (lib/scan/activation.ts): every read that got this far is recorded with the path it
+  // took, its result and its reason - a refusal or an error included - before the answer goes back. A failed record is
+  // reported (lib/audit-route.ts) and never changes the answer; a read that throws is recorded as an error and rethrown.
+  const recordRead = (o: unknown) => { const r = siteReadOutcome(o, { keyed, ineligible }); return audit(user, req, { action: SITE_READ_ACTION, resource: 'website', summary: { ...r }, decision: r.result === 'error' ? 'denied' : 'allowed' }) }
+  let out: Awaited<ReturnType<typeof icpFromWebsite>>
+  try { out = await icpFromWebsite(db, user.tenantId, url, { prior, decisions, ...(trial ? { trial } : {}) }) }
+  catch (e) { await recordRead({ error: 'exception' }); throw e }
+  await recordRead(out)
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     if (out.error === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.' }, { status: 503 })

@@ -81,9 +81,9 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
   // A sample draft is an ordinary draft the tenant owns: autopilot never re-drafts a lead that already has a message, so
   // these leads are sent by hand (or deleted) by the tenant, never by the launch; they appear as drafts in Outreach.
   const candidates = db.prepare(
-    `SELECT l.id, l.contact, l.source_url, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    `SELECT l.id, l.contact, l.source_url, l.signal, l.evidence_excerpt, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND ${PUBLISHED_RECIPIENT_CANDIDATE_SQL} AND l.quarantined_at IS NULL
-     ORDER BY l.score DESC LIMIT 200`).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string | null; source_url: string | null; play: string }[]
+     ORDER BY l.score DESC LIMIT 200`).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string | null; source_url: string | null; signal: string | null; evidence_excerpt: string | null; play: string }[]
   const crawlRows = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl'")
   const samples: SampleDraft[] = []
   for (const c of candidates) {
@@ -99,7 +99,7 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
     // a lead createDraft refuses (its own gate) is not a sample; a store fault is not "too few samples" and surfaces
     if (!id) { try { id = createDraft(db, tenantId, c.id, businessName) } catch (e) { if (e instanceof OutreachError) continue; throw e } }
     const body = (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(id) as { body: string }).body
-    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }))))
+    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }), [c.signal, c.evidence_excerpt].filter(Boolean).join('\n'))))
   }
 
   // integration check: only when the connected mailbox is the policy's sender, and only to the owned test inbox.

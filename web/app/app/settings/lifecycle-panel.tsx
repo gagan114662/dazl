@@ -48,7 +48,7 @@ export default function LifecyclePanel() {
         <div className="card p-6">
       <h2 className="font-semibold mb-1">Your data</h2>
       <p className="text-sm">This account is deleted.</p>
-      {done.retained && <p className="text-xs text-[#777] mt-1">Kept after deletion: {Object.entries(done.retained).map(([t, n]) => `${t} (${n})`).join(', ')}.{sup === 'retain' ? ' The opt-out list was kept, and stays suppressed if this workspace id is ever restored.' : ' The opt-out list was erased with everything else.'}</p>}
+      {done.retained && <p className="text-xs text-[#666] mt-1">Kept after deletion: {Object.entries(done.retained).map(([t, n]) => `${t} (${n})`).join(', ')}.{sup === 'retain' ? ' The opt-out list was kept, and stays suppressed if this workspace id is ever restored.' : ' The opt-out list was erased with everything else.'}</p>}
       <div className="flex flex-wrap gap-3 mt-3 text-sm">
         <button className="btn-primary" onClick={() => void signOut()}>Sign out</button>
       </div>
@@ -62,7 +62,7 @@ export default function LifecyclePanel() {
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Your data</h2>
       <p className="text-sm text-[#555]">An export of the data this workspace holds: sign-in records are left out, stored credentials are redacted, and internal conversion markers are generalized. Deleting removes it all except the records listed under what is kept.</p>
-      {rows.length > 0 && <p className="text-xs text-[#777] mt-2">{rows.length} kinds of records, {rows.reduce((a, [, n]) => a + n, 0).toLocaleString()} rows in all.</p>}
+      {rows.length > 0 && <p className="text-xs text-[#666] mt-2">{rows.length} kinds of records, {rows.reduce((a, [, n]) => a + n, 0).toLocaleString()} rows in all.</p>}
       <div className="flex flex-wrap gap-3 mt-3 text-sm">
         <button className="btn-primary" onClick={() => { setMsg(''); void fetch('/api/tenant/lifecycle/export', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then(async r => {
           if (!r.ok) { const j = await r.json().catch(() => ({})); setMsg(j.error === 'reauth_required' ? 'Confirm it is you first (top of this page).' : j.error || 'Export failed'); return }

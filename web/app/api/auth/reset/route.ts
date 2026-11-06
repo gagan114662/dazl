@@ -5,8 +5,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { validatePassword } from '@/lib/validate'
 import { isEmailToken, resetPassword, tokenOwner } from '@/lib/email-ownership'
-import { getScanDb } from '@/lib/scan/service'
-import { activateLifecycleFor, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
+import { activateLifecycleForDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -26,8 +25,9 @@ export async function POST(req: NextRequest) {
     // #417: a reset link also proves ownership of the address (resetPassword sets email_verified_at), so it is
     // the same conversion boundary as verification. Best-effort; pending rows are durable.
     try {
-      recordLifecycleEvent(getScanDb(), 'activation', owner.email, owner.user_id)
-      activateLifecycleFor(getScanDb(), owner.email)
+      const db = await getDb()
+      await recordLifecycleEventDb(db, 'activation', owner.email, owner.user_id)
+      await activateLifecycleForDb(db, owner.email)
     } catch (e) { captureError(e, { source: 'route', where: '/api/auth/reset:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
   }
   return ok ? NextResponse.json({ ok: true, redirect: '/sign-in?reset=1' }) : NextResponse.json({ error: 'invalid_link' }, { status: 410 })

@@ -153,8 +153,8 @@ test('what survives account deletion is exactly the always-retained set', () => 
 test('AI, enrichment and CRM providers named in the policy are the ones the code supports', () => {
   assert.deepEqual(Object.keys(FACTS.aiVendors).sort(), [...VENDORS].sort())
   assert.deepEqual(Object.keys(FACTS.enrichmentProviders).sort(), [ENRICH_APOLLO, ENRICH_PDL].sort())
-  const crm = /if \(!\[([^\]]+)\]\.includes\(c\.provider\)\)/.exec(read('lib/crm/index.ts'))
-  assert.ok(crm, 'CRM provider allowlist not found in lib/crm/index.ts')
+  const crm = /CRM_PROVIDERS[^=]*=\s*\[([^\]]+)\]/.exec(read('lib/crm/index.ts'))
+  assert.ok(crm, 'CRM provider allowlist (CRM_PROVIDERS) not found in lib/crm/index.ts')
   assert.deepEqual(crm[1].split(',').map(s => s.trim().replace(/'/g, '')).sort(), Object.keys(FACTS.crmProviders).sort())
   for (const name of [...Object.values(FACTS.aiVendors), ...Object.values(FACTS.enrichmentProviders), 'HubSpot', 'Pipedrive']) {
     assert.ok(privacy.includes(name), `privacy policy does not name ${name}`)

@@ -7,6 +7,11 @@ export const PLAN_LIMITS: Record<PlanId, { scansPerMonth: number | null }> = {
   free: { scansPerMonth: 50 },
   pro: { scansPerMonth: null }, // unlimited
 }
+// The published monthly price per plan (USD), and the cost disclosure that goes with any price (#402). The landing page
+// and the product truth record (lib/product-truth.ts) both read these, so a price is stated in one place only. The
+// charge itself is the Stripe price STRIPE_PRICE_PRO points at: change both together.
+export const PLAN_PRICE_USD_MONTHLY: Record<PlanId, number> = { free: 0, pro: 49 }
+export const PRICE_DISCLOSURE = 'Runs on your own AI key: your provider bills that usage separately.'
 
 export function migratePlans(db: Database.Database): void {
   db.exec(`
