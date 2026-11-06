@@ -119,7 +119,7 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart,
-      STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
+      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr }
   }
@@ -206,7 +206,7 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
-      STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
+      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
       ...over,
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr }
@@ -279,7 +279,7 @@ test('low disk after or near the end of a build: never put live; the reserve abo
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
-      STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(FLOOR),
+      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(FLOOR),
       STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`, STAGING_ALERT_EVERY_S: '0',
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr, ms: Date.now() - t0 }
@@ -358,4 +358,99 @@ test('staging Gmail (#413): Gmail credentials need the flag and the full config;
   // production's Gmail client may not be reused on staging
   const pe = path.join(dir, 'prod2.env'); writeFileSync(pe, `DB_PATH=${prodDb}\nGOOGLE_CLIENT_ID=stg.apps.googleusercontent.com\n`)
   assert.match(check(withEnv(real), { PROD_ENV_FILE: pe }).out, /production's Google client/)
+})
+
+// #908: the schema change happens only behind a verified pre-migration recovery point, with the service stopped, and every rollback
+// puts the matching database back BEFORE the old code starts. Real deploy.sh, scratch SQLite database, stub stop/restart/health.
+test('recovery point: migration failure, partial seed, failed new service, refused backup, failed stop and failed restore', async () => {
+  const { execFileSync, spawn } = await import('node:child_process')
+  const { existsSync, readlinkSync, rmSync } = await import('node:fs')
+  const net = await import('node:net')
+  const port = await new Promise<number>(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => r(p)) }) })
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-rp-'))
+  const root = path.join(T, 'root'), repo = path.join(T, 'repo'), sdir = path.join(T, 'sdata'), sdb = path.join(sdir, 'app.db'), log = path.join(T, 'order.log')
+  mkdirSync(sdir)
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
+  const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', ...a], { encoding: 'utf8', env: gitEnv }).trim()
+  mkdirSync(path.join(repo, 'web'), { recursive: true }); execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
+  writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}')
+  const commit = (n: string) => { writeFileSync(path.join(repo, 'README.md'), n); git('add', '-A'); git('commit', '-qm', n); return git('rev-parse', 'HEAD') }
+  const env = path.join(T, 'env'); writeFileSync(env, good.replace(`DB_PATH=${stagingDir}/app.db`, `DB_PATH=${sdb}`))
+  const served = path.join(T, 'served')
+  writeFileSync(path.join(T, 'health.mjs'), `import http from 'node:http'; import fs from 'node:fs'
+http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.stringify(served)}, 'utf8').trim() } catch {}
+  s.end(JSON.stringify({ ok: true, commit: c, checks: {} })) }).listen(${port}, '127.0.0.1')`)
+  const server = spawn(process.execPath, [path.join(T, 'health.mjs')], { stdio: 'ignore' })
+  const restart = path.join(T, 'restart.sh'), stop = path.join(T, 'stop.sh')
+  writeFileSync(restart, `#!/usr/bin/env bash
+sha=$(basename "$(readlink -f ${root}/current)"); echo "restart $sha" >> ${log}
+if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > ${served}; fi\n`)
+  writeFileSync(stop, `#!/usr/bin/env bash\necho stop >> ${log}; [ -e ${T}/fail-stop ] && exit 1; echo stopped > ${served}; exit 0\n`)
+  execFileSync('chmod', ['+x', restart, stop])
+  const sql = (q: string) => execFileSync('python3', ['-c', `import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(sys.argv[2]).fetchall(); c.commit(); print(r)`, sdb, q], { encoding: 'utf8' }).trim()
+  // the "migration": adds a column and a row (a partial seed when it then fails)
+  const MIGRATE = `echo migrate >> ${log}; python3 -c "import sqlite3; c=sqlite3.connect('${sdb}'); c.execute('CREATE TABLE IF NOT EXISTS t(v)'); c.execute('INSERT INTO t VALUES (\\'seeded\\')'); c.commit()" && { [ ! -e ${T}/fail-migrate ] || exit 7; } && python3 -c "import sqlite3; c=sqlite3.connect('${sdb}'); c.execute('ALTER TABLE t ADD COLUMN x'); c.commit()"`
+  const deploy = (extra: Record<string, string> = {}) => {
+    writeFileSync(log, '')
+    const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
+      STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart, STAGING_STOP: stop,
+      STAGING_BUILD: 'true', STAGING_MIGRATE: MIGRATE, STAGING_HEALTH_TRIES: '2', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1', ...extra,
+    } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr, order: readFileSync(log, 'utf8').trim().split('\n') }
+  }
+  const current = () => existsSync(path.join(root, 'current')) ? path.basename(readlinkSync(path.join(root, 'current'))) : null
+  const cols = () => sql('SELECT name FROM pragma_table_info(\'t\')')
+  try {
+    mkdirSync(root)
+    const s0 = commit('first')
+    let r = deploy(); assert.equal(r.code, 0, r.out)
+    assert.deepEqual(r.order, ['stop', 'migrate', `restart ${s0}`], 'stopped before the recovery point; migrated only after it')
+    assert.match(r.out, /recovery point for none verified before migrating/)
+    sql("DELETE FROM t"); sql("INSERT INTO t VALUES ('user-row', NULL)")
+    const base = [sql('SELECT v FROM t ORDER BY v'), cols()]
+    assert.deepEqual(base, ["[('user-row',)]", "[('v',), ('x',)]"])
+    // a no-op migration release becomes the baseline every case below must return to
+    const s0b = commit('baseline')
+    r = deploy({ STAGING_MIGRATE: `echo migrate >> ${log}` }); assert.equal(r.code, 0, r.out); assert.equal(current(), s0b)
+
+    // 1. migration fails after a partial seed: the database is restored, the previous release (unchanged) is live again
+    const s1 = commit('migration fails'); writeFileSync(path.join(T, 'fail-migrate'), '')
+    r = deploy({ STAGING_MIGRATE: `echo migrate >> ${log}; python3 -c "import sqlite3; c=sqlite3.connect('${sdb}'); c.execute('INSERT INTO t VALUES (\\'partial\\', 1)'); c.commit()"; exit 7` })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, new RegExp(`migration or seed of ${s1} failed \\(exit 7\\); database restored, ${s0b} is live again`))
+    assert.deepEqual([sql('SELECT v FROM t ORDER BY v'), cols(), current()], [base[0], base[1], s0b])
+    assert.deepEqual(r.order, ['stop', 'migrate', `restart ${s0b}`])
+    rmSync(path.join(T, 'fail-migrate'))
+
+    // 2. the migration succeeds but the new service never becomes ready: stop it, restore the pre-migration database, then old code
+    const s2 = commit('never ready'); writeFileSync(path.join(T, `unready-${s2}`), '')
+    r = deploy({ STAGING_MIGRATE: `echo migrate >> ${log}; python3 -c "import sqlite3; c=sqlite3.connect('${sdb}'); c.execute('CREATE TABLE new_schema(id)'); c.execute('INSERT INTO t VALUES (\\'by-new\\', 2)'); c.commit()"` })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, new RegExp(`rolled back: ${s0b} is live again`))
+    assert.deepEqual(r.order, ['stop', 'migrate', `restart ${s2}`, 'stop', `restart ${s0b}`], 'the restore happens between stopping the new release and starting the old one')
+    assert.deepEqual([sql('SELECT v FROM t ORDER BY v'), sql("SELECT count(*) FROM sqlite_master WHERE name = 'new_schema'"), current()], [base[0], '[(0,)]', s0b])
+
+    // 3. the recovery point cannot be made or verified: nothing migrated, the old release restarted unchanged
+    commit('backup refused')
+    r = deploy({ STAGING_RECOVERY: path.join(T, 'missing-recovery.py') })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, new RegExp(`no verified recovery point; nothing migrated, ${s0b} restarted unchanged`))
+    assert.ok(!r.order.includes('migrate')); assert.deepEqual([current(), sql('SELECT v FROM t ORDER BY v')], [s0b, base[0]])
+
+    // 4. the service cannot be stopped (writes could continue): fail closed, nothing migrated
+    writeFileSync(path.join(T, 'fail-stop'), '')
+    r = deploy(); assert.equal(r.code, 1, r.out); assert.match(r.out, /could not stop the service for a recovery point; nothing migrated/)
+    assert.ok(!r.order.includes('migrate')); assert.equal(current(), s0b)
+    rmSync(path.join(T, 'fail-stop'))
+
+    // 5. the restore itself fails: reported as no live service; old code is NOT started against the migrated database
+    const wrap = path.join(T, 'rp-wrap.py')
+    writeFileSync(wrap, `import sys, runpy\nif sys.argv[1] == 'restore': sys.exit(1)\nsys.argv[0] = ${JSON.stringify(path.resolve(path.dirname(script), 'recovery_point.py'))}\nrunpy.run_path(sys.argv[0], run_name='__main__')\n`)
+    r = deploy({ STAGING_RECOVERY: wrap, STAGING_MIGRATE: `echo migrate >> ${log}; exit 3` })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, /database restore failed: NO LIVE STAGING SERVICE/)
+    assert.ok(!r.order.some(l => l === `restart ${s0b}`), 'old code never restarted against an unrestored database')
+  } finally { server.kill() }
+})
+
+test('recovery_point.py scratch-database checks (WAL capture, absent database, tamper, wrong database, corrupt source)', () => {
+  const r = spawnSync('python3', ['-W', 'ignore', '-m', 'unittest', 'test_recovery_point'], { cwd: path.dirname(script), encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
 })

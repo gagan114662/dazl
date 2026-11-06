@@ -5,9 +5,15 @@
 #   2. checks the disk: a new release is started only if free space minus its estimated size stays above the floor
 #      (MIN_FREE_BYTES, 2 GiB by default), and the build is stopped if free space falls to the floor while it runs
 #   3. builds the commit in its own release directory as the service user, with the env file's values passed in by
-#      root (the file itself stays root-only, mode 600), seeds (idempotent), switches `current`, restarts the service
+#      root (the file itself stays root-only, mode 600); the build does NOT touch the database
+#   3b. (#908) stops the service (no writes from here), takes a verified WAL-safe recovery point of DB_PATH bound to the
+#      live release (ops/staging/recovery_point.py; fail closed: no recovery point, no migration, old release restarted),
+#      then migrates and seeds, switches `current`, restarts the service
 #   4. waits for /api/health to answer ok (every configured database reachable) with the new commit (the smoke check,
-#      ops/health-smoke.mjs); otherwise switches back and restarts the previous release
+#      ops/health-smoke.mjs); otherwise stops it, restores the recovery point (the matching pre-migration database) and
+#      only then switches back and restarts the previous release. A restore that cannot be verified leaves the service
+#      DOWN rather than running old code against a migrated database. Writes made by the failed release before it was
+#      rolled back are discarded with it; nothing else could write while the service was stopped.
 # A release that fails at any step is deleted at once. Complete releases are marked; the live one and the two before
 # it are kept, older ones are deleted. node_modules is hard-linked from the live release when package-lock.json is
 # unchanged, so a release then costs about the size of its build output.
@@ -33,7 +39,11 @@ FIRST_RELEASE_BYTES=${FIRST_RELEASE_BYTES:-1200000000}
 PROD_DB_PATH=${PROD_DB_PATH:-}
 PROD_ENV_FILE=${PROD_ENV_FILE:-}
 # The build, run in the release's web/ directory as the service user with the env file's values. Tests replace it.
-BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
+BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache'}
+# The schema change and seed (#908): run only after the service is stopped and a verified recovery point exists. Tests replace it.
+MIGRATE=${STAGING_MIGRATE:-'npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
+STOP=${STAGING_STOP:-systemctl stop $SERVICE}
+RECOVERY=${STAGING_RECOVERY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recovery_point.py}
 HEALTH_TRIES=${STAGING_HEALTH_TRIES:-60}
 # Low-disk alerts: OPS_ALERT_WEBHOOK_URL from the staging env file (https), or STAGING_ALERT_CMD (tests). One alert per
 # reason per STAGING_ALERT_EVERY_S while the condition lasts; every skip is still logged to the journal.
@@ -211,9 +221,6 @@ if [ "$after" -lt "$guard" ]; then
 fi
 trap - ERR
 
-# Cutover. From here until the new release is healthy, any failure (the switch, the restart command, readiness)
-# goes to cutover_fail, which puts the previous complete release back and checks it is really serving again.
-prev=$live
 # The smoke check: /api/health answers 200, ok, with commit $1, run with that release's own ops/health-smoke.mjs. A
 # release from before the smoke check existed (only ever a rollback target) is checked for its commit alone.
 healthy() {
@@ -226,10 +233,49 @@ healthy() {
   [ -f "$smoke" ] && node "$smoke" "http://127.0.0.1:$PORT" "$1" >&2 || true # the last reason, in the journal
   return 1
 }
+# Recovery point, then the schema change (#908). The live service is stopped first so nothing writes between the copy and
+# the migration; the copy is verified against its manifest before anything is migrated. No verified copy: no migration.
+prev=$live
+staging_db=$(val DB_PATH "$ENV_FILE")
+rp="$ROOT/recovery/$new"
+install -d -m 700 "$ROOT/recovery"; rm -rf "$rp"
+restart_prev() { # the previous release, unchanged code and database, back up after a refusal before any migration
+  [ -n "$prev" ] || return 0
+  ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$(basename "$prev")" > "$ROOT/release.env"
+  $RESTART 9>&- && healthy "$(basename "$prev")"
+}
+if ! $STOP 9>&-; then
+  cleanup; restart_prev || true
+  fail "could not stop the service for a recovery point; nothing migrated, release removed"
+fi
+if ! python3 "$RECOVERY" create --db "$staging_db" --dir "$rp" --commit "$(basename "${prev:-none}")"; then
+  rm -rf "$rp"; cleanup
+  restart_prev && fail "no verified recovery point; nothing migrated, $(basename "$prev") restarted unchanged"
+  fail "no verified recovery point; nothing migrated${prev:+, and $(basename "$prev") did not come back healthy}"
+fi
+log "recovery point for $(basename "${prev:-none}") verified before migrating"
+restore_db() { python3 "$RECOVERY" restore --db "$staging_db" --dir "$rp"; }
+mstatus=0
+( set -a; . "$ENV_FILE"; set +a
+  exec bash -c 'if [ "$(id -un)" = "$0" ]; then exec "$@"; else exec runuser -u "$0" -- "$@"; fi' "$RUN_AS" \
+    bash -c "cd '$rel/web' && $MIGRATE" ) || mstatus=$?
+if [ $mstatus != 0 ]; then
+  rm -rf "$rel"
+  restore_db || fail "migration of $new failed (exit $mstatus) and the database restore failed: NO LIVE STAGING SERVICE (recovery point kept at $rp)"
+  restart_prev && fail "migration or seed of $new failed (exit $mstatus); database restored, $(basename "$prev") is live again"
+  [ -n "$prev" ] || fail "migration or seed of $new failed (exit $mstatus) on a first deployment; database restored, NO LIVE STAGING SERVICE"
+  fail "migration of $new failed; database restored, but $(basename "$prev") did not come up healthy: NO LIVE STAGING SERVICE"
+fi
+
+# Cutover. From here until the new release is healthy, any failure (the switch, the restart command, readiness)
+# goes to cutover_fail, which puts the previous complete release back and checks it is really serving again.
 cutover_fail() {
   trap - ERR
   log "cutover of $new failed ($1); restoring the previous release"
   rm -rf "$rel"
+  # the pre-migration database goes back BEFORE the old code starts: old code never runs against a migrated schema
+  $STOP 9>&- || fail "could not stop the failed release to restore the database: NO VERIFIED STAGING STATE (recovery point kept at $rp)"
+  restore_db || fail "database restore failed: NO LIVE STAGING SERVICE (old code not started against a migrated database; recovery point kept at $rp)"
   if [ -n "$prev" ]; then
     local p; p=$(basename "$prev")
     ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$p" > "$ROOT/release.env"
@@ -238,7 +284,7 @@ cutover_fail() {
   fi
   # a first deployment has nothing to go back to: leave no pointer at the failed release
   rm -f "$ROOT/current" "$ROOT/release.env"
-  fail "first deployment failed: NO LIVE STAGING SERVICE"
+  fail "first deployment failed: NO LIVE STAGING SERVICE (database restored)"
 }
 trap 'cutover_fail "a cutover step failed"' ERR
 ln -sfn "$rel" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$new" > "$ROOT/release.env"
@@ -254,6 +300,8 @@ if [ -f "$rel/ops/release-manifest.mjs" ]; then
     log "release identity: $(node "$rel/ops/release-manifest.mjs" check "$rel/release.json" "http://127.0.0.1:$PORT" 2>&1 | tr '\n' ' ')"
   else log "release identity: not recorded (no build output to describe)"; fi
 fi
+# recovery points: the three newest are kept (the live release's is the newest)
+ls -1dt "$ROOT"/recovery/*/ 2>/dev/null | tail -n +4 | xargs -r rm -rf
 # keep the live release and the two complete ones before it
 ls -1dt "$ROOT"/releases/*/ | while read -r d; do [ -e "$d/.complete" ] && echo "$d"; done | tail -n +4 | xargs -r rm -rf
 exit 0
