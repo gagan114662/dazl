@@ -10,8 +10,6 @@ import { saveSettings, isSuppressed } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { hasConsent, migrateLedger } from '../lib/outreach/ledger.ts'
 import { acceptReadConsent, migrateReplies, syncReplies } from '../lib/outreach/replies.ts'
-import { setFollowups } from '../lib/outreach/followups.ts'
-import { inboxPage } from '../lib/outreach/inbox.ts'
 
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
