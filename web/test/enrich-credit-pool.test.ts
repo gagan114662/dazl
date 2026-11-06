@@ -405,6 +405,28 @@ bothEngines('C6 holds are bound to their own row: tenant, provider, original win
   assert.deepEqual(await use(db, 'A', e, late + 3600), {}, 'December / the next day gained nothing')
 })
 
+bothEngines('F4: a hold reconstructed from only {id, tenantId} after a restart settles off the durable row alone', async ({ db }) => {
+  const e = env({})
+  const h = await reserveCredits(db, 'A', 'apollo', 3, { env: e, now: T0, holdId: 'f4id0001' })
+  // A restarted process recovering a lost hold id (e.g. from a job record) has only the id, the tenant, and the
+  // knowledge that it was never settled - never the original provider/units/at the in-process object carried.
+  const restarted = { id: h.id, tenantId: h.tenantId, open: true } as unknown as typeof h
+  await settleCredits(db, restarted, 2)
+  assert.deepEqual(await use(db, 'A', e), { 'cad:20261102': [2, 2], 'cam:202611': [2, 2] }, 'settled the stored 3 units, provider and window - fields the reconstructed object never had')
+})
+
+bothEngines('F3: unsettled hold rows are pruned once their own window rolls past both current windows; the counters they raised never change', async ({ db }) => {
+  const e = env({})
+  const holdRows = async () => Number((await db.get<{ n: unknown }>("SELECT count(*) AS n FROM tenant_spend_pools WHERE tenant_id = 'A' AND period LIKE 'ch:%'"))!.n)
+  for (let i = 0; i < 5; i++) await reserveCredits(db, 'A', 'pdl', 1, { env: e, now: T0 }) // 5 crashed/lost holds: never settled or refunded
+  assert.equal(await holdRows(), 5, 'the 5 unsettled holds are kept while their window is current')
+  const before = await use(db, 'A', e, T0)
+  const nextMonth = T0 + 40 * 86400 // past both the day and the month window every one of the 5 was reserved in
+  await reserveCredits(db, 'A', 'pdl', 1, { env: e, now: nextMonth }) // a later reservation on the same tenant+provider pair prunes under its own lock
+  assert.equal(await holdRows(), 1, 'the 5 rolled-over holds are pruned; only the new, current-window hold remains')
+  assert.deepEqual(await use(db, 'A', e, T0), before, 'the counters the pruned holds raised are untouched by the prune')
+})
+
 bothEngines('C5 PG commit order: a reserve and a set/clear both wait on the same per-pair lock and then complete', async ({ db, kind }) => {
   if (kind !== 'pg') return // SQLite transactions are exclusive by construction; this proves the PG advisory lock
   const pool = (db as unknown as { pool: { connect(): Promise<{ query(q: string, p?: unknown[]): Promise<unknown>; release(): void }> } }).pool

@@ -102,6 +102,22 @@ export const creditRefused = (e: unknown): e is CreditRefused => e instanceof Cr
 export interface CreditHold { tenantId: string; provider: CreditProvider; units: number; at: number; open: boolean; id: string }
 const holdPeriod = (id: string) => `ch:${id}`
 
+// A hold whose own window (its reported_usd, the epoch second it was reserved at) has rolled past both the current day
+// and month window is abandoned: nobody still holding that id has a window left to settle or refund into, since the
+// counters for that window are frozen in the past regardless. Its 'ch:' marker row is pruned here, under the same
+// per-tenant+provider lock a new reservation already holds, so row count stays bounded by live + still-current-window
+// holds. This never touches the day/month counter rows: what was reserved/charged in a rolled-over window stays exactly
+// as it was (review of #594, F3).
+function* pruneStaleHolds(t: Tx, tenantId: string, provider: CreditProvider, at: number): TxBody<void> {
+  const curDay = creditPeriod(provider, 'day', at), curMonth = creditPeriod(provider, 'month', at)
+  const rows = yield* t.all<{ period: string; reported_usd: number }>('SELECT period, reported_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE ? AND calls = ?', [tenantId, 'ch:%', provider === 'pdl' ? 1 : 0])
+  for (const row of rows) {
+    const heldAt = Number(row.reported_usd)
+    if (creditPeriod(provider, 'day', heldAt) === curDay || creditPeriod(provider, 'month', heldAt) === curMonth) continue
+    yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [tenantId, row.period])
+  }
+}
+
 async function reserveOnce(id: string, d: DbLike, tenantId: string, provider: CreditProvider, units: number, opts: { env?: Env; now?: number; /** test seam: force the hold id (collision test) */ holdId?: string; /** test seam: runs after the limit decision inputs are read, before the reservation commits */ beforeReserve?: () => Promise<void> } = {}): Promise<CreditHold> {
   if (!(Number.isInteger(units) && units > 0)) throw new Error('credit reservation must be a positive whole number')
   const at = opts.now ?? Math.floor(Date.now() / 1000)
@@ -113,6 +129,7 @@ async function reserveOnce(id: string, d: DbLike, tenantId: string, provider: Cr
   try {
     await asDb(d).tx(function* (t: Tx): TxBody<void> {
       yield* lockPair(t, tenantId, provider)
+      yield* pruneStaleHolds(t, tenantId, provider, at)
       for (const w of ['day', 'month'] as const) {
         const period = creditPeriod(provider, w, at)
         yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [tenantId, period, at])
