@@ -364,3 +364,57 @@ test('two tenants: B cannot plan, see, release, resolve or send the answers of t
   // only A's own pass sends A's answer
   assert.equal((await send(db, g.sendFn)).sent, 1)
 })
+
+// #610 review (ordering on the rebased tree): main's reply sync has a second safety path - delivery notices on their own
+// threads (#415/#581: Message-ID + recipient correlation, authenticated DSN provenance, the shared bounce ledger). A
+// bounce recorded there must reach the answer path exactly like an in-thread one: a ready answer is cancelled, and a
+// question read in the same sync as the bounce is never made ready.
+const DSN_AR = 'mx.google.com; spf=pass (google.com: domain of postmaster@mx.buyer.example designates 192.0.2.7 as permitted sender) smtp.mailfrom=mx.buyer.example'
+const dsnFor = (id: string, mid: string) => ({ id, threadId: 'th-dsn-' + id, internalDate: String((NOW - 3600) * 1000), payload: {
+  mimeType: 'multipart/report',
+  headers: [{ name: 'Authentication-Results', value: DSN_AR }, { name: 'From', value: 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>' }],
+  parts: [
+    { mimeType: 'text/plain', body: { data: Buffer.from('Delivery to the following recipient failed permanently.').toString('base64url') } },
+    { mimeType: 'message/delivery-status', body: { data: Buffer.from(`Final-Recipient: rfc822; ${PROSPECT}\nAction: failed\nStatus: 5.1.1\n`).toString('base64url') } },
+    { mimeType: 'text/rfc822-headers', body: { data: Buffer.from(`From: ${MAILBOX}\nTo: ${PROSPECT}\nMessage-ID: <dazl.${mid}@acme.example>\nSubject: Quick question\n`).toString('base64url') } },
+  ],
+} })
+function gmailWithNotices(threads: Record<string, unknown[]>, notices: ReturnType<typeof dsnFor>[]) {
+  return (async (url: string) => {
+    const u = String(url)
+    if (u.includes('oauth2')) return json({ access_token: 'at' })
+    const t = u.match(/threads\/([^?]+)/); if (t) return json({ messages: threads[t[1]] ?? [] })
+    if (u.includes('messages?q=')) return json({ messages: notices.map(n => ({ id: n.id })) })
+    const m = /messages\/([^?/]+)\?format=full/.exec(u); if (m) { const n = notices.find(x => x.id === m[1]); if (n) return json(n) }
+    return json({}, 404)
+  }) as unknown as typeof fetch
+}
+const syncWithNotices = (db: Database.Database, threads: Record<string, unknown[]>, notices: ReturnType<typeof dsnFor>[], now = NOW) =>
+  syncReplies(db, 'A', { env: genv, master, now, fetchImpl: gmailWithNotices(threads, notices), flags, baseUrl: 'https://app.test', resolveMxFor: async d => d === 'buyer.example' ? ['mx.buyer.example'] : [] })
+
+test('a bounce recorded through the separate-thread DSN path cancels a ready answer; nothing is sent', async () => {
+  const { db, job } = await setup(); const s = sentLead(db, job)
+  const th = { [s.thread]: [ours(s.first), inbound('in-1', QUESTION)] }
+  await syncWithNotices(db, th, [])
+  assert.deepEqual(rows(db).map(r => [r.outcome, r.status]), [['send', 'ready']])
+  // the next sync reads only a delivery notice on its own thread, correlated and authenticated: the DSN path suppresses
+  const r = await syncWithNotices(db, th, [dsnFor('dsn-1', s.mid)], NOW + 60)
+  assert.equal(r.error, undefined); assert.equal(r.bounces, 1)
+  assert.equal(isSuppressed(db, 'A', PROSPECT), true)
+  assert.equal((db.prepare('SELECT stopped FROM followup_threads WHERE tenant_id = ? AND thread_id = ?').get('A', s.thread) as { stopped: string }).stopped, 'bounce')
+  const g = sender()
+  const out = await send(db, g.sendFn, NOW + 60)
+  assert.equal(g.sent.length, 0); assert.equal(out.sent, 0); assert.equal(out.cancelled, 1)
+  assert.deepEqual(db.prepare('SELECT status FROM buyer_answers').get(), { status: 'cancelled' })
+})
+
+test('a question and a DSN bounce read in the same sync: the planner runs after the DSN path and never makes it ready', async () => {
+  const { db, job } = await setup(); const s = sentLead(db, job)
+  const r = await syncWithNotices(db, { [s.thread]: [ours(s.first), inbound('in-1', QUESTION)] }, [dsnFor('dsn-1', s.mid)])
+  assert.equal(r.error, undefined); assert.equal(r.bounces, 1)
+  assert.equal(isSuppressed(db, 'A', PROSPECT), true)
+  // fails if the planner runs inside the thread loop (before the delivery-notice phase): the row would be 'ready'
+  assert.equal(rows(db).filter(x => x.status === 'ready').length, 0)
+  const g = sender(); await send(db, g.sendFn)
+  assert.equal(g.sent.length, 0)
+})
