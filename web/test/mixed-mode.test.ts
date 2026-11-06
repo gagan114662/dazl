@@ -12,6 +12,7 @@ import { applyStripeEvent } from '../lib/billing/stripe.ts'
 import { scanQuota } from '../lib/plans.ts'
 import { getPlan } from './helpers/plan-fixture.ts'
 import { createJob, listLeads } from '../lib/scan/store.ts'
+import { confirmEmail } from './helpers/confirmed.ts'
 
 test('mixed mode: concurrent ported transactions and raw requests on one SQLite connection', async () => {
   const raw = new Database(':memory:')
@@ -24,6 +25,7 @@ test('mixed mode: concurrent ported transactions and raw requests on one SQLite 
   const job: Record<string, string> = {}
   for (const t of tenants) {
     await createPasswordUser({ id: t, email: `${t}@x.com`, name: t, business_name: `Biz ${t}`, password_hash: 'h'.repeat(128), salt: 's'.repeat(32) }, db)
+    await confirmEmail(db, t)
     token[t] = await createSession(t, db)
     await writeSellerProfile(db, t, `sells ${t}`, `https://${t}.example`)
     job[t] = createJob(raw, t, { business_name: `Biz ${t}`, industry: 'software', location: 'Toronto' })

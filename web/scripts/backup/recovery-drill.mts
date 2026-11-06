@@ -100,12 +100,13 @@ if (contentOk && restored) {
   if (app) {
     await step('app readability (sending disabled)', async () => {
       const web = path.resolve(app)
-      // a session for the tenant with the most leads, in the restored COPY only
+      // a session for the tenant with the most leads, in the restored COPY only; only an account whose email is
+      // confirmed can hold a working session (#357)
       const db = new Database(restored!)
       let tenant: { id: string; leads: number } | undefined
       const token = randomBytes(32).toString('hex')
       try {
-        tenant = db.prepare('SELECT u.id, count(l.id) AS leads FROM users u JOIN scan_jobs j ON j.user_id = u.id LEFT JOIN leads l ON l.scan_job_id = j.id GROUP BY u.id ORDER BY leads DESC LIMIT 1').get() as typeof tenant
+        tenant = db.prepare('SELECT u.id, count(l.id) AS leads FROM users u JOIN scan_jobs j ON j.user_id = u.id LEFT JOIN leads l ON l.scan_job_id = j.id WHERE u.email_verified_at IS NOT NULL GROUP BY u.id ORDER BY leads DESC LIMIT 1').get() as typeof tenant
         if (tenant) db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), tenant.id, Math.floor(Date.now() / 1000) + 3600)
       } finally { db.close() }
       const port = await new Promise<number>(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => r(p)) }) })

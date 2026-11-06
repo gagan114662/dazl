@@ -33,6 +33,7 @@ const user = (id: string) => ({ id, email: `${id.toLowerCase()}@example.test`, n
 
 test("an account lists and revokes only its own sessions; revoked sessions fail at once; nothing secret is returned", async () => {
   await createPasswordUser(user('A')); await createPasswordUser(user('B'))
+  raw.prepare('UPDATE users SET email_verified_at = 1 WHERE id IN (?, ?)').run('A', 'B') // #357: confirmed accounts only have sessions
   const a1 = await createSession('A', undefined, { device: 'Chrome on macOS' }), a2 = await createSession('A', undefined, { device: 'Safari on iOS' }), a3 = await createSession('A')
   const b1 = await createSession('B', undefined, { device: 'Firefox on Linux' })
   const secrets = [a1, a2, a3, b1].flatMap(t => [t, hashToken(t)])
@@ -76,6 +77,7 @@ test("an account lists and revokes only its own sessions; revoked sessions fail 
 test('re-authentication: the right password makes only this session fresh; a wrong one changes nothing', async () => {
   const salt = 'ab'.repeat(16)
   await createPasswordUser({ ...user('P'), password_hash: scryptSync('correct horse battery', salt, 64).toString('hex'), salt })
+  raw.prepare('UPDATE users SET email_verified_at = 1 WHERE id IN (?)').run('P') // #357: confirmed accounts only have sessions
   const p1 = await createSession('P'), p2 = await createSession('P')
   const old = Math.floor(Date.now() / 1000) - 2 * 60 * 60
   raw.prepare("UPDATE sessions SET authed_at = ? WHERE user_id = 'P'").run(old)

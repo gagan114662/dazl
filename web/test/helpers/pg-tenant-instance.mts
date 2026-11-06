@@ -32,8 +32,13 @@ const tag = process.env.PT_TAG!, otherTag = process.env.PT_OTHER_TAG!
 const email = `${tag}@example.test`, password = `pw-${tag}-${process.env.PT_PW}`
 const now = Math.floor(Date.now() / 1000)
 
+// #357: sign-up needs mail delivery; a test transport keeps every message in the outbox (nothing leaves the process)
+process.env.SYSTEM_MAIL_SMTP_URL = 'smtp://fixture.invalid'; process.env.SYSTEM_MAIL_FROM = 'fixture@example.test'
+const { setTransportForTests } = await import('../../lib/system-mail.ts')
+setTransportForTests(async m => { await db.run('INSERT INTO system_mail_outbox (id, user_id, to_email, subject, body, created_at) VALUES (?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), 'fixture', m.to, m.subject, m.text, Math.floor(Date.now() / 1000)]) })
 const signup = await import('../../app/api/auth/signup/route.ts')
 const signin = await import('../../app/api/auth/signin/route.ts')
+const verify = await import('../../app/api/auth/verify/route.ts')
 const signout = await import('../../app/api/auth/signout/route.ts')
 const jobs = await import('../../app/api/scan/jobs/route.ts')
 const latest = await import('../../app/api/scan/latest/route.ts')
@@ -77,7 +82,17 @@ const leaks = (v: unknown, other: { tenant: string; job: string; query: string; 
 await barrier('start')
 const s1: Jar = new Map(), s2: Jar = new Map()
 const up = await call(s1, () => signup.POST(req('/api/auth/signup', 'POST', { email, password, name: tag, business_name: `Biz ${tag}` })))
-expect(up.status === 200 && s1.has('dazl_session'), `signup: ${up.status} ${up.text}`)
+expect(up.status === 200 && !s1.has('dazl_session') && (up.body as { check_email?: boolean }).check_email === true, `signup signs nobody in: ${up.status} ${up.text}`)
+// #357: no app access until the email is confirmed. The right password gets a 403 and a fresh link, no session.
+const unconfirmed = await call(s1, () => signin.POST(req('/api/auth/signin', 'POST', { email, password })))
+expect(unconfirmed.status === 403 && (unconfirmed.body as { code?: string }).code === 'email_unverified' && !s1.has('dazl_session'), `unconfirmed signin: ${unconfirmed.status} ${unconfirmed.text}`)
+// Of the links sent (sign-up, then the sign-in's fresh one) only the newest confirms; the superseded one is refused.
+const links = (await db.all<{ body: string }>('SELECT body FROM system_mail_outbox WHERE to_email = ?', [email])).map(r => /\/verify#t=([a-f0-9]{64})/.exec(r.body)?.[1]).filter(Boolean)
+const opened = [] as number[]
+for (const token of links) opened.push((await call(new Map(), () => verify.POST(req('/api/auth/verify', 'POST', { token })))).status)
+expect(links.length === 2 && opened.filter(s => s === 200).length === 1 && opened.filter(s => s === 410).length === 1, `verify links: ${JSON.stringify(opened)}`)
+const first = await call(s1, () => signin.POST(req('/api/auth/signin', 'POST', { email, password })))
+expect(first.status === 200 && s1.has('dazl_session'), `confirmed signin: ${first.status} ${first.text}`)
 const inn = await call(s2, () => signin.POST(req('/api/auth/signin', 'POST', { email, password })))
 expect(inn.status === 200 && s2.has('dazl_session') && s2.get('dazl_session') !== s1.get('dazl_session'), `signin: ${inn.status} ${inn.text}`)
 const me = (await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', [email]))!.id
