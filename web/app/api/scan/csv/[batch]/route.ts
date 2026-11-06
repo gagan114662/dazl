@@ -6,7 +6,7 @@ import { readPlan } from '@/lib/plans'
 import { getDb } from '@/lib/db/client'
 import { hasKey } from '@/lib/llm/key-store'
 import { kickRunner } from '@/lib/scan/runner'
-import { batchRunBudget, batchStatus, queuePendingRows } from '@/lib/scan/csv-import'
+import { BATCH_BUDGET_UNKNOWN, BATCH_BUDGET_UNKNOWN_MESSAGE, batchRunBudget, batchStatus, queuePendingRows } from '@/lib/scan/csv-import'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
@@ -40,8 +40,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ bat
   const db = getScanDb()
   if ((await readPlan(await getDb(), r.user.tenantId)) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
   if (!hasKey(db, r.user.tenantId)) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
-  // #916: resumed rows run under the batch's own recorded budget (a pre-#916 batch: every narrowing control off)
-  const { quotaStop } = queuePendingRows(db, r.user.tenantId, batch)
+  // #916: resumed rows run under the batch's own recorded budget. A batch without a usable recorded budget (imported
+  // before #916, or a stored value that no longer validates) is refused: nothing is queued, the owner re-imports.
+  const known = batchRunBudget(db, r.user.tenantId, batch)!
+  if (!known.known) return NextResponse.json({ error: BATCH_BUDGET_UNKNOWN, message: BATCH_BUDGET_UNKNOWN_MESSAGE, reimport: true }, { status: 409 })
+  const { quotaStop, budgetUnknown } = queuePendingRows(db, r.user.tenantId, batch)
+  if (budgetUnknown) return NextResponse.json({ error: BATCH_BUDGET_UNKNOWN, message: BATCH_BUDGET_UNKNOWN_MESSAGE, reimport: true }, { status: 409 })
   const rb = batchRunBudget(db, r.user.tenantId, batch)!
   after(() => kickRunner(db))
   return NextResponse.json({ ...batchStatus(db, r.user.tenantId, batch)!, quota_stop: quotaStop, budget: rb.budget ? JSON.parse(rb.budget) as Record<string, boolean> : null, budget_recorded: rb.recorded }, { status: 202 })

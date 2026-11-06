@@ -100,7 +100,7 @@ export function parseDomains(text: string, max = MAX_DOMAINS): ParsedCsv {
 export function createBatch(db: Database.Database, userId: string, domains: string[], runBudget: string | null = null): string {
   const id = randomBytes(12).toString('hex')
   const checked = storedBudget(runBudget, 1)
-  if (checked !== runBudget) throw new Error('createBatch: run budget must be a normalizeRunBudget value')
+  if (!checked.ok || checked.budget !== runBudget) throw new Error('createBatch: run budget must be a normalizeRunBudget value')
   db.transaction(() => {
     db.prepare('INSERT INTO csv_batches (id, user_id, total, run_budget, budget_recorded) VALUES (?, ?, ?, ?, 1)').run(id, userId, domains.length, runBudget)
     const ins = db.prepare('INSERT INTO csv_rows (id, batch_id, domain) VALUES (?, ?, ?)')
@@ -132,30 +132,35 @@ export function normalizeRunBudget(raw: unknown, supplied: boolean): { ok: true;
   return { ok: true, value: JSON.stringify(out) }
 }
 
-// Every narrowing control off: what a batch whose creation-time budget is unrecoverable (budget_recorded = 0) or whose
-// stored value no longer validates resumes under. Missing history is never read as unrestricted authorization (#916).
+// A batch whose creation-time budget is unrecoverable (budget_recorded = 0, i.e. imported before #916) or whose stored
+// value no longer validates is refused on resume: the owner re-imports the file. Missing history is never read as
+// unrestricted authorization, and it is not silently replaced by a guessed restriction either (#916, owner decision).
 class LinkLost extends Error {}
-export const BATCH_UNKNOWN_BUDGET = JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false })
-function storedBudget(raw: string | null, recorded: number): string | null {
-  if (Number(recorded) !== 1) return BATCH_UNKNOWN_BUDGET
-  if (raw === null) return null
+export const BATCH_BUDGET_UNKNOWN = 'batch_budget_unknown'
+export const BATCH_BUDGET_UNKNOWN_MESSAGE = 'This batch was imported before spending limits were saved with each batch, so it cannot be resumed. Re-import the file to run the remaining domains.'
+function storedBudget(raw: string | null, recorded: number): { ok: true; budget: string | null } | { ok: false } {
+  if (Number(recorded) !== 1) return { ok: false }
+  if (raw === null) return { ok: true, budget: null }
   let parsed: unknown
-  try { parsed = JSON.parse(raw) } catch { return BATCH_UNKNOWN_BUDGET }
+  try { parsed = JSON.parse(raw) } catch { return { ok: false } }
   const n = normalizeRunBudget(parsed, true)
-  return n.ok && n.value === raw ? raw : BATCH_UNKNOWN_BUDGET
+  return n.ok && n.value === raw ? { ok: true, budget: raw } : { ok: false }
 }
 // The budget every job of this batch runs under (the import and every resume): the stored creation-time value.
-export function batchRunBudget(db: Database.Database, userId: string, batchId: string): { budget: string | null; recorded: boolean } | undefined {
+// known = false means the batch must not queue anything until it is re-imported.
+export function batchRunBudget(db: Database.Database, userId: string, batchId: string): { known: boolean; budget: string | null; recorded: boolean } | undefined {
   const b = db.prepare('SELECT run_budget, budget_recorded FROM csv_batches WHERE id = ? AND user_id = ?').get(batchId, userId) as { run_budget: string | null; budget_recorded: number } | undefined
   if (!b) return undefined
-  return { budget: storedBudget(b.run_budget, b.budget_recorded), recorded: Number(b.budget_recorded) === 1 }
+  const s = storedBudget(b.run_budget, b.budget_recorded)
+  return { known: s.ok, budget: s.ok ? s.budget : null, recorded: Number(b.budget_recorded) === 1 }
 }
 
 // The run budget is the batch's own (batchRunBudget), never a caller argument: a resume cannot clear or widen it.
 // Each job insert and its row link commit together, so a failure leaves neither an orphan job nor a half-linked row.
-export function queuePendingRows(db: Database.Database, userId: string, batchId: string): { queued: number; quotaStop: boolean } {
+export function queuePendingRows(db: Database.Database, userId: string, batchId: string): { queued: number; quotaStop: boolean; budgetUnknown?: true } {
   const rb = batchRunBudget(db, userId, batchId)
   if (!rb) return { queued: 0, quotaStop: false }
+  if (!rb.known) return { queued: 0, quotaStop: false, budgetUnknown: true }   // refused: re-import the file
   const runBudget = rb.budget
   const rows = db.prepare("SELECT id, domain FROM csv_rows WHERE batch_id = ? AND state = 'pending' AND job_id IS NULL ORDER BY rowid").all(batchId) as { id: string; domain: string }[]
   let queued = 0

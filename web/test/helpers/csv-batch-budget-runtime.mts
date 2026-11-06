@@ -15,7 +15,7 @@ const { setDb, sqliteDb } = await import('../../lib/db/client.ts')
 const { migrateAllSqlite } = await import('../../lib/db/sqlite-migrations.ts')
 const { saveKey } = await import('../../lib/llm/key-store.ts')
 const { setPlan } = await import('./plan-fixture.ts')
-const { BATCH_UNKNOWN_BUDGET, createBatch, queuePendingRows } = await import('../../lib/scan/csv-import.ts')
+const { BATCH_BUDGET_UNKNOWN, createBatch, queuePendingRows } = await import('../../lib/scan/csv-import.ts')
 const csv = await import('../../app/api/scan/csv/route.ts')
 const resume = await import('../../app/api/scan/csv/[batch]/route.ts')
 
@@ -78,19 +78,30 @@ test('tenant isolation: another tenant cannot resume the batch, and its rows sta
   assert.equal(w.jobs().length, 1)
 })
 
-test('a pre-#916 batch (no recorded budget) resumes under every narrowing control, never unrestricted', async () => {
-  const w = world()
+test('a pre-#916 batch (no recorded budget) is refused on resume: nothing queued, owner told to re-import', async () => {
+  const w = world(); const before = fetches
   const b = createBatch(w.scan, w.T, ['old1.com', 'old2.com'])
   w.scan.prepare('UPDATE csv_batches SET budget_recorded = 0, run_budget = NULL WHERE id = ?').run(b)   // as migrated from before the column
   w.rollover()
   const r = await doResume(b)
-  assert.equal(r.status, 202); assert.equal(r.body.budget_recorded, false); assert.deepEqual(r.body.budget, JSON.parse(BATCH_UNKNOWN_BUDGET))
-  assert.ok(w.jobs().every(j => j.run_budget === BATCH_UNKNOWN_BUDGET))
-  // a stored value that no longer validates is treated the same way
+  assert.equal(r.status, 409); assert.equal(r.body.error, BATCH_BUDGET_UNKNOWN); assert.equal(r.body.reimport, true)
+  assert.match(String(r.body.message), /Re-import the file/)
+  assert.equal(w.jobs().length, 0, 'no job queued for an unknown-budget batch')
+  assert.equal((w.scan.prepare("SELECT count(*) n FROM csv_rows WHERE batch_id = ? AND state = 'pending' AND job_id IS NULL").get(b) as { n: number }).n, 2, 'rows stay pending')
+  // repeat resume stays refused
+  assert.equal((await doResume(b)).status, 409); assert.equal(w.jobs().length, 0)
+  assert.equal(fetches, before, 'no provider request')
+})
+
+test('a stored budget that no longer validates is refused the same way, at the route and in queuePendingRows', async () => {
+  const w = world()
+  w.rollover()
   const b2 = createBatch(w.scan, w.T, ['old3.com'], JSON.stringify({ judge: false }))
   w.scan.prepare(`UPDATE csv_batches SET run_budget = '{"judge":true}' WHERE id = ?`).run(b2)
-  queuePendingRows(w.scan, w.T, b2)
-  assert.equal((w.scan.prepare("SELECT run_budget FROM scan_jobs WHERE csv_domain = 'old3.com'").get() as { run_budget: string }).run_budget, BATCH_UNKNOWN_BUDGET)
+  assert.deepEqual(queuePendingRows(w.scan, w.T, b2), { queued: 0, quotaStop: false, budgetUnknown: true })
+  const r = await doResume(b2)
+  assert.equal(r.status, 409); assert.equal(r.body.error, BATCH_BUDGET_UNKNOWN)
+  assert.equal(w.jobs().length, 0)
 })
 
 test('a failed row link leaves no orphan job: insert and link commit together', async () => {
