@@ -39,11 +39,13 @@ export function parseFeed(xml: string, max = 30): Omit<Evidence, 'source'>[] {
 export const rssAdapter: SourceAdapter = {
   id: 'rss',
   label: 'RSS and Atom feeds',
-  async collect({ keywords, feeds, http }) {
+  async collect({ keywords, feeds, http, note }) {
     const out: Evidence[] = []
     for (const feed of feeds.slice(0, 5)) {
       const r = await http(feed, { accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9' })
-      if (!r || r.status !== 200) continue
+      if (!r) { note?.('unreachable'); continue }
+      if (r.status !== 200) { note?.('http_error'); continue }
+      if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
       for (const e of parseFeed(r.body)) {
         if (mentionsKeyword(e.title, keywords)) out.push({ source: 'rss', ...e }) // script-aware (#391): an Arabic or Hindi title is matched in its own script and by alias
       }

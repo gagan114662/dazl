@@ -10,6 +10,7 @@ import EnrichmentPanel from './enrichment-panel'
 import CompetitorsPanel from './competitors-panel'
 import MemoryPanel from './memory-panel'
 import UsagePanel from './usage-panel'
+import LifecyclePanel from './lifecycle-panel'
 import TeamPanel from './team-panel'
 import SessionsPanel from './sessions-panel'
 import ReauthGate from './reauth-gate'
@@ -28,7 +29,7 @@ export default async function Settings() {
       <h1 className="text-2xl font-semibold tracking-tight mb-1">Settings</h1>
       <p className="text-[#555] text-sm mb-4">Your plan, your team, your AI key and optional connectors.</p>
       <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 gap-y-1 mb-6 text-xs font-mono uppercase tracking-wider">
-        {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="underline underline-offset-4 text-[#111]">{label}</a>)}
+        {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="inline-block py-1 underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
       <ReauthGate />
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>
@@ -38,6 +39,7 @@ export default async function Settings() {
       <div id="memory" className="scroll-mt-6"><MemoryPanel /></div>
       <div id="model-key" className="scroll-mt-6"><LlmKeyPanel /></div>
       <UsagePanel />
+      <LifecyclePanel />
       <CompetitorsPanel />
       <div id="social" className="scroll-mt-6"><AdvancedPanel /></div>
       <div id="gmail" className="scroll-mt-6"><GmailPanel /></div>

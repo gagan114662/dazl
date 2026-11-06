@@ -1,3 +1,9 @@
+import { migrateScanSpendCap } from './spend-cap.ts'
+import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
+import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
+import { RENDER_TIMEOUT_MS } from './fetch-page.ts'
+import { APOLLO_TIMEOUT_MS } from '../enrich/apollo.ts'
+import { PDL_TIMEOUT_MS } from '../enrich/pdl.ts'
 import { SELLER_DECISION_INSERT, sellerDecisionArgs, type SellerDecision } from './intelligence.ts'
 import { migrateSellerDecisions } from './intelligence-schema.ts'
 import { randomBytes } from 'node:crypto'
@@ -10,7 +16,25 @@ import { migrateEvidenceCopies } from './evidence-copies.ts'
 import { migrateRunReport } from './run-report.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
 
-export const STALE_RUNNING_S = Number(process.env.SCAN_STALE_RUNNING_S || 20 * 60)
+// Floor for the stale-running window / queue lease: it must outlive the longest single paid vendor call (a model
+// completion: LLM_TIMEOUT_MS, no retries) or a LIVE attempt holding a reservation could be reaped and re-run while its
+// call is in flight - a double bill. The margin is one extra call length (clock skew, the settle write). claimed_at is
+// refreshed at reserve and at a real settle (spend-cap.ts), so the window only has to cover ONE call, not the scan.
+// The floor is computed from the ACTUAL configured timeout of every paid (reserved) call path: the longest a
+// reserve can stay open is its path's full timeout, so the max over paths (currently the 150s LLM call, vs 35s
+// render, 20s TinyFish, 15s enrich lookups) x2 is the bound + an equal margin. A new paid path with a longer
+// timeout RAISES the floor automatically once its constant is listed here.
+export const MAX_PAID_CALL_MS = Math.max(LLM_TIMEOUT_MS, RENDER_TIMEOUT_MS, TINYFISH_TIMEOUT_MS, APOLLO_TIMEOUT_MS, PDL_TIMEOUT_MS)
+export const MIN_STALE_RUNNING_S = Math.ceil(MAX_PAID_CALL_MS / 1000) * 2
+export function staleRunningSeconds(env: Record<string, string | undefined> = process.env): number {
+  const raw = Number(env.SCAN_STALE_RUNNING_S || 20 * 60)
+  if (!(Number.isFinite(raw) && raw >= MIN_STALE_RUNNING_S)) {
+    console.error(`SCAN_STALE_RUNNING_S=${env.SCAN_STALE_RUNNING_S} is below the floor ${MIN_STALE_RUNNING_S}s (2x the ${MAX_PAID_CALL_MS}ms max paid vendor call timeout) - clamped UP; a shorter window could reap a live paid call and re-run it (double bill)`)
+    return MIN_STALE_RUNNING_S
+  }
+  return raw
+}
+export const STALE_RUNNING_S = staleRunningSeconds()
 export const MAX_ATTEMPTS = 3
 export const CANCEL_HOLD_S = 5 * 60
 
@@ -86,6 +110,7 @@ export function migrateScan(db: Database.Database): void {
   migrateEvidenceCopies(db)
   migrateRunReport(db)
   migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
+  migrateScanSpendCap(db) // the per-scan hard spend cap's ledger columns and call rows (lib/scan/spend-cap.ts)
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
@@ -244,16 +269,29 @@ export function latestQueryJob(db: Database.Database, userId: string): { query: 
 }
 
 // Jobs stuck in 'running' past the timeout go back to 'pending' for another
-// attempt, or to 'failed' after MAX_ATTEMPTS. Called on reads, so no cron needed.
-export function reapStaleJobs(db: Database.Database): void {
+// attempt, or to 'failed' after MAX_ATTEMPTS. A job holding ANY paid call still 'reserved', from any attempt (reserved, never settled: the
+// vendor may have billed it) is NOT retried: it fails closed as 'accounting_uncertain' rather than bill the same calls again. Called on reads, so no cron needed.
+// Exported so tests build the parked shape through the PRODUCTION step (a hand-seeded row proves nothing about this code).
+export function parkPendingReservedJobs(db: Database.Database): void {
+  // A PENDING row with a reserved (possibly billed) call (pre-#594 shape): legal pending->running step first
+  // (claimed_at = 0, attempts unchanged: no executor ever runs); reapStaleRunningJobs below ends it accounting_uncertain.
+  db.prepare(
+    `UPDATE scan_jobs SET status = 'running', claimed_at = 0 WHERE status = 'pending' AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')`,
+  ).run()
+}
+export function reapStaleRunningJobs(db: Database.Database): void {
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(
-    `UPDATE scan_jobs SET status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'pending' END,
-       error = CASE WHEN attempts >= ? THEN 'timeout' ELSE error END,
-       finished_at = CASE WHEN attempts >= ? THEN CAST(strftime('%s','now') AS INTEGER) ELSE finished_at END,
+    `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
+       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
+       finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN CAST(strftime('%s','now') AS INTEGER) ELSE finished_at END,
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
+}
+export function reapStaleJobs(db: Database.Database): void {
+  parkPendingReservedJobs(db)
+  reapStaleRunningJobs(db)
 }
 
 // The price estimate saved when the scan was started, with the job's reservation; null estimate for a scan started before this existed.

@@ -21,7 +21,7 @@ process.env.PUBLIC_BASE_URL = 'https://dazl.test'
 
 const { getDb, setDb, pgDb } = await import('../../lib/db/client.ts')
 const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const stripe = await import('../../app/api/stripe/route.ts')
 const checkout = await import('../../app/api/billing/checkout/route.ts')
 const usage = await import('../../app/api/usage/route.ts')
@@ -133,7 +133,7 @@ async function scenario(engine: string) {
     .replace('"customer":', '"customer_details": { "email": "bystander@example.test" }, "customer":') // buyer-typed email names a bystander
   assert.deepEqual(await deliver(cEvent), { status: 200, result: 'applied' })
   assert.equal((await db.get<{ status: string }>("SELECT status FROM outreach_messages WHERE id = 'mc1'"))!.status, 'skipped', 'verified paying account: its queued work stops')
-  assert.equal((await db.get<{ error: string }>("SELECT status, error FROM outreach_messages WHERE id = 'mc1'"))!.error, 'converted_payment')
+  assert.equal((await db.get<{ error: string }>("SELECT status, error FROM outreach_messages WHERE id = 'mc1'"))!.error, 'policy_stop')
   assert.equal((await db.get<{ status: string }>("SELECT status FROM outreach_messages WHERE id = 'mc2'"))!.status, 'draft', 'the buyer-typed Stripe email is never used: the bystander keeps their queued work')
   assert.equal(await db.get("SELECT 1 AS x FROM lifecycle_events WHERE kind = 'payment' AND email = 'c-owner@example.test' AND activated_at IS NOT NULL") !== undefined, true)
 

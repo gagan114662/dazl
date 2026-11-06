@@ -108,12 +108,12 @@ export default function FollowupsClient() {
           <h2 className="text-sm font-semibold mb-2">Active sequences</h2>
           <div className="card divide-y divide-black/5 mb-8">
             {active.length === 0 ? (
-              <p className="p-6 text-center text-[#777] text-sm">No active sequences. A sequence starts when someone replies with interest to an outreach email.</p>
+              <p className="p-6 text-center text-[#666] text-sm">No active sequences. A sequence starts when someone replies with interest to an outreach email.</p>
             ) : active.map(t => (
               <div key={t.thread_id} data-testid="active-row" className={ROW}>
                 <div className={WHO}>
                   <div className="font-medium">{t.company || t.name || t.to_email}</div>
-                  <div className="text-[#777] text-xs">{t.to_email}{t.last_lead_reply_at ? ` · replied ${day(t.last_lead_reply_at)}` : ''}</div>
+                  <div className="text-[#666] text-xs">{t.to_email}{t.last_lead_reply_at ? ` · replied ${day(t.last_lead_reply_at)}` : ''}</div>
                 </div>
                 <div className={SIDE}>
                   {t.followups_sent} of 2 sent
@@ -126,13 +126,13 @@ export default function FollowupsClient() {
           {(warm.length > 0 || reopens.length > 0) && (
             <>
               <h2 className="text-sm font-semibold mb-2">Warm again</h2>
-              <p className="text-[#777] text-xs mb-2">They replied with interest, then went quiet 30-90 days ago. Re-opens are drafts - nothing sends unless you review it and press send. One per thread, ever.</p>
+              <p className="text-[#666] text-xs mb-2">They replied with interest, then went quiet 30-90 days ago. Re-opens are drafts - nothing sends unless you review it and press send. One per thread, ever.</p>
               <div className="card divide-y divide-black/5 mb-8">
                 {warm.map(t => (
                   <div key={t.thread_id} className="p-4 text-sm flex items-center gap-4">
                     <div className="flex-1 min-w-0">
                       <div className="font-medium">{t.company || t.name || t.to_email}</div>
-                      <div className="text-[#777] text-xs">{t.to_email} · last replied {day(t.last_reply_at)}</div>
+                      <div className="text-[#666] text-xs">{t.to_email} · last replied {day(t.last_reply_at)}</div>
                       {t.reply_excerpt && <div className="text-[#999] text-xs truncate">They wrote: &ldquo;{t.reply_excerpt}&rdquo;</div>}
                     </div>
                     <button onClick={() => void reopenAction('draft', t.thread_id)} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Draft re-open</button>
@@ -153,7 +153,7 @@ export default function FollowupsClient() {
                   <div key={`${m.thread_id}-${m.step}-${i}`} className={ROW}>
                     <div className={WHO}>
                       <div className="font-medium">{m.company || m.to_email}</div>
-                      <div className="text-[#777] text-xs">follow-up {m.step + 1} of 2 · {m.status}</div>
+                      <div className="text-[#666] text-xs">follow-up {m.step + 1} of 2 · {m.status}</div>
                     </div>
                     <div className={SIDE}>{day(m.created_at)}</div>
                   </div>
@@ -169,7 +169,7 @@ export default function FollowupsClient() {
                   <div key={t.thread_id} data-testid="stopped-row" className={ROW}>
                     <div className={WHO}>
                       <div className="font-medium">{t.company || t.name || t.to_email}</div>
-                      <div className="text-[#777] text-xs">{STOPPED[t.stopped ?? ''] ?? `Stopped (${t.stopped})`}</div>
+                      <div className="text-[#666] text-xs">{STOPPED[t.stopped ?? ''] ?? `Stopped (${t.stopped})`}</div>
                     </div>
                     <div className={SIDE}>{t.followups_sent} of 2 sent</div>
                   </div>
@@ -189,16 +189,16 @@ function ReopenRow({ t, onAction }: { t: Warm; onAction: (action: string, thread
   return (
     <div className="p-4 text-sm">
       <div className="flex items-center gap-3">
-        <div className="font-medium flex-1">{t.company || t.name || t.to_email} <span className="text-[#777] text-xs font-normal">{st === 'sent' ? ' - re-open sent' : st === 'skipped' ? ' - skipped' : st === 'approved' ? ' - send started, outcome not confirmed. Check your Gmail Sent folder before doing anything else' : '- draft, review before sending'}</span></div>
+        <div className="font-medium flex-1">{t.company || t.name || t.to_email} <span className="text-[#666] text-xs font-normal">{st === 'sent' ? ' - re-open sent' : st === 'skipped' ? ' - skipped' : st === 'approved' ? ' - send started, outcome not confirmed. Check your Gmail Sent folder before doing anything else' : '- draft, review before sending'}</span></div>
         {st === 'draft' && <button onClick={() => onAction('send', t.thread_id, body)} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">Send this</button>}
-        {(st === 'draft') && <button onClick={() => onAction('skip', t.thread_id)} className="text-xs text-[#777] hover:text-black">Skip</button>}
+        {(st === 'draft') && <button onClick={() => onAction('skip', t.thread_id)} className="text-xs text-[#666] hover:text-black">Skip</button>}
         {st === 'approved' && <button onClick={() => onAction('mark_sent', t.thread_id)} className="font-mono text-xs uppercase border border-black px-2 py-1 hover:bg-black hover:text-white">It was sent</button>}
-        {st === 'approved' && <button onClick={() => onAction('retry', t.thread_id)} className="text-xs text-[#777] hover:text-black">Not in Sent after 10+ minutes - back to draft</button>}
+        {st === 'approved' && <button onClick={() => onAction('retry', t.thread_id)} className="text-xs text-[#666] hover:text-black">Not in Sent after 10+ minutes - back to draft</button>}
       </div>
       {st === 'approved' && <p className="text-[#b45309] text-xs mt-2">Only choose &ldquo;back to draft&rdquo; after you have waited at least 10 minutes and found nothing in your Gmail Sent folder. A delayed delivery can still arrive, and sending again could email them twice. &ldquo;It was sent&rdquo; sends nothing.</p>}
       {st === 'draft'
         ? <textarea className="field w-full mt-2" rows={5} value={body} onChange={e => setBody(e.target.value)} onBlur={() => { if (body !== t.reopen?.body) void onAction('edit', t.thread_id, body) }} />
-        : <p className="text-[#777] text-xs mt-2 whitespace-pre-wrap">{t.reopen?.body}</p>}
+        : <p className="text-[#666] text-xs mt-2 whitespace-pre-wrap">{t.reopen?.body}</p>}
     </div>
   )
 }

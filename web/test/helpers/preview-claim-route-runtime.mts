@@ -14,7 +14,8 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', use: 'sig' }
 const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const sign = (claims: Record<string, unknown>) => { const h = b({ alg: 'RS256', kid: 'k1', typ: 'JWT' }), c = b(claims); return `${h}.${c}.${createSign('RSA-SHA256').update(`${h}.${c}`).sign(privateKey).toString('base64url')}` }
-let nonce = '', idEmail = 'pat@example.test', idSub = 'g-1'
+let nonce = ''
+const idEmail = 'pat@example.test', idSub = 'g-1'
 globalThis.fetch = (async (u: string | URL, init?: RequestInit) => {
   const url = String(u)
   if (url === 'https://www.googleapis.com/oauth2/v3/certs') return new Response(JSON.stringify({ keys: [jwk] }))
@@ -35,7 +36,10 @@ const callback = await import('../../app/api/auth/callback/google/route.ts')
 const previewGoogle = await import('../../app/api/preview/[token]/google/route.ts')
 const claimRoute = await import('../../app/api/preview/claim/route.ts')
 const issueRoute = await import('../../app/api/preview/issue/route.ts')
-const { getAuthDb, createPasswordUser, createSession } = await import('../../lib/auth-db.ts')
+const signinRoute = await import('../../app/api/auth/signin/route.ts')
+const signupRoute = await import('../../app/api/auth/signup/route.ts')
+const { createPasswordUser, createSession } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const { migrateScan, createJob } = await import('../../lib/scan/store.ts')
 const { migratePreviewClaim } = await import('../../lib/scan/preview-claim.ts')
 const { migratePlatform } = await import('../../lib/db/platform-tables.ts')
@@ -230,4 +234,45 @@ test('a failed Google round trip keeps the claim and return intent (#416): only 
   assert.ok(!set.some(c => /^dazl_claim=;.*Max-Age=0/.test(c)), 'claim intent survives a failed attempt, so retry resumes')
   assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'nothing claimed by the failed attempt')
   console.log('PREVIEW_AUTH_FAILURE_INTENT_OK')
+})
+
+test('password sign-up and sign-in resume a Google-path claim intent, and the first screen reads the prospect proof (#416)', async () => {
+  const r0 = await issueFor('casey@example.test')
+  const authPost = (route: typeof signupRoute | typeof signinRoute, path: string, body: unknown, cookie?: string) => withJar(new Map(), () =>
+    route.POST(new NextRequest(`https://app.test/api/auth/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://app.test', host: 'app.test', 'x-forwarded-for': `10.9.5.${++ip}`, ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) })))
+  const creds = { email: 'casey@example.test', password: 'fixture password42', name: 'Casey', business_name: '' }
+  // sign-up carrying the intent cookie (e.g. Google refused the address, the prospect fell back to a password)
+  const up = await authPost(signupRoute, 'signup', creds, `dazl_claim=${r0.token}`)
+  assert.equal(up.status, 200)
+  assert.deepEqual(await up.json(), { ok: true, redirect: '/app', resume: 'preview' }, 'sign-up says: resume the preview (an enum, never a URL)')
+  // sign-in: with the intent cookie it resumes; with none or a malformed one it does not
+  const inWith = await authPost(signinRoute, 'signin', creds, `dazl_claim=${r0.token}`)
+  assert.equal(inWith.status, 200)
+  assert.equal((await inWith.json()).resume, 'preview')
+  const inWithout = await authPost(signinRoute, 'signin', creds)
+  assert.equal((await inWithout.json()).resume, undefined, 'no intent: generic landing')
+  const inJunk = await authPost(signinRoute, 'signin', creds, 'dazl_claim=https%3A%2F%2Fevil.test')
+  assert.equal((await inJunk.json()).resume, undefined, 'a malformed intent is never resumed')
+  const failed = await authPost(signinRoute, 'signin', { ...creds, password: 'wrong password 1' }, `dazl_claim=${r0.token}`)
+  assert.equal(failed.status, 401)
+  assert.equal((await failed.json()).resume, undefined, 'a failed sign-in resumes nothing')
+  // the first screen after auth: the claim page's read-only GET returns the prospect's own offer and proof
+  const uid = (h.prepare("SELECT id FROM users WHERE email = 'casey@example.test'").get() as { id: string }).id
+  const session = await createSession(uid)
+  const read = (url: string, cookie = '') => withJar(new Map([['dazl_session', session]]), () =>
+    claimRoute.GET(new NextRequest(url, { headers: { 'x-forwarded-for': `10.9.6.${++ip}`, ...(cookie ? { cookie } : {}) } })))
+  for (const [how, res] of [['password path (?t=)', await read(`https://app.test/api/preview/claim?t=${r0.token}`)], ['Google path (cookie)', await read('https://app.test/api/preview/claim', `dazl_claim=${r0.token}`)]] as const) {
+    assert.equal(res.status, 200, how)
+    const d = await res.json()
+    assert.equal(d.business, 'Clinic Soft', how)
+    assert.deepEqual(d.offer, OFFER, `${how}: the offer inferred for this prospect`)
+    assert.deepEqual(d.companies.map((c: { company: string; eventDate: string; sourceUrl: string }) => [c.company, c.sourceUrl]), [['Northside Physio', 'https://news.test/a1']], `${how}: the dated, sourced proof`)
+    assert.ok(!('spendUsd' in d) && !JSON.stringify(d).includes('seller'), `${how}: no seller spend or tenant data`)
+  }
+  assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'reading the proof never claims')
+  const tampered = await read(`https://app.test/api/preview/claim?t=${r0.token.slice(0, 33)}${'0'.repeat(32)}`)
+  assert.equal(tampered.status, 404, 'a tampered token reads nothing')
+  const signedOut = await withJar(new Map(), () => claimRoute.GET(new NextRequest(`https://app.test/api/preview/claim?t=${r0.token}`, { headers: { 'x-forwarded-for': '10.9.6.250' } })))
+  assert.equal(signedOut.status, 401)
+  console.log('PREVIEW_PASSWORD_RESUME_OK')
 })

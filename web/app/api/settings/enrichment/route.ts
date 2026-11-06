@@ -7,6 +7,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { enrichmentWriteLimit } from '@/lib/settings/enrichment-guard'
 import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
+import { creditUse, setCreditLimit } from '@/lib/enrich/credit-pool'
 
 const CONNECTORS = ['enrich:apollo', 'enrich:pdl']
 
@@ -16,7 +17,7 @@ export async function GET() {
   const db = await getDb()
   const status = (await connectorStatus(db, user.tenantId)).filter(s => CONNECTORS.includes(s.connector))
   const auditRows = (await readRecentAudit(db, user.tenantId, 50) as { connector: string }[]).filter(r => CONNECTORS.includes(r.connector)).slice(0, 20)
-  return NextResponse.json({ connectors: status, audit: auditRows, fallback: await readEnrichFallbackEnabled(db, user.tenantId) })
+  return NextResponse.json({ connectors: status, audit: auditRows, fallback: await readEnrichFallbackEnabled(db, user.tenantId), credits: await creditUse(db, user.tenantId).catch(() => null) })
 }
 
 export async function POST(req: NextRequest) {
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
   const limited = await enrichmentWriteLimit(user.tenantId)
   if (!limited.ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: { 'Retry-After': String(limited.retryAfterS) } })
   if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Credential storage unavailable' }, { status: 503 })
-  const body = (await req.json().catch(() => null)) as { connector?: string; key?: string; disconnect?: boolean; fallback?: boolean } | null
+  const body = (await req.json().catch(() => null)) as { connector?: string; key?: string; disconnect?: boolean; fallback?: boolean; credit_limit?: { provider?: string; window?: string; limit?: number | null } } | null
   if (!body) return NextResponse.json({ error: 'Unknown connector' }, { status: 400 })
   const db = await getDb()
   // The Apollo -> PDL fallback is a separate, explicit, off-by-default opt-in: saving a PDL key is not consent
@@ -38,6 +39,16 @@ export async function POST(req: NextRequest) {
     await writeEnrichFallback(db, user.tenantId, body.fallback)
     await writeAudit(db, { tenantId: user.tenantId, connector: 'enrich:fallback', lookup: `fallback ${body.fallback ? 'opted in' : 'opted out'}`, status: 'ok', results: 0 })
     return NextResponse.json({ ok: true, fallback: body.fallback })
+  }
+  // Workspace credit limit (#363): per provider and UTC window, explicit and per workspace. Unset = no workspace limit
+  // (only the per-scan caps apply). A number saves it, null clears it. Never a default, never a key.
+  if (body.credit_limit) {
+    const c = body.credit_limit
+    if ((c.provider !== 'apollo' && c.provider !== 'pdl') || (c.window !== 'day' && c.window !== 'month') || !(c.limit === null || (Number.isInteger(c.limit) && (c.limit as number) > 0 && (c.limit as number) <= 1_000_000)))
+      return NextResponse.json({ error: 'Credit limit must be a whole number from 1 to 1,000,000, or empty for no limit' }, { status: 400 })
+    await setCreditLimit(db, user.tenantId, c.provider, c.window, c.limit as number | null)
+    await writeAudit(db, { tenantId: user.tenantId, connector: `enrich:${c.provider}`, lookup: `credit limit ${c.window}: ${c.limit === null ? 'cleared' : c.limit}`, status: 'ok', results: 0 })
+    return NextResponse.json({ ok: true })
   }
   if (!body.connector || !CONNECTORS.includes(body.connector)) return NextResponse.json({ error: 'Unknown connector' }, { status: 400 })
   if (body.disconnect) {

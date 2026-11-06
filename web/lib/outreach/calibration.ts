@@ -13,8 +13,9 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, gmailSend, gmailStatus, confirmedSendResult } from '../gmail/oauth.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { approveBlockReason, createDraft, getSettings, OutreachError, type Deps } from './service.ts'
+import { approveBlockReason, createDraft, getSettings, OutreachError, testRecipientApproved, type Deps } from './service.ts'
 import { getState, liftLaunchPause, MIN_CONFIDENCE } from './autopilot.ts'
+import { recheckSendAuthority } from './send-authority.ts'
 import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, REQUIRED_STOPS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
 import { PUBLISHED_RECIPIENT_CANDIDATE_SQL, publishedContact, draftEvidenceUrls } from './published-email.ts'
 
@@ -81,9 +82,9 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
   // A sample draft is an ordinary draft the tenant owns: autopilot never re-drafts a lead that already has a message, so
   // these leads are sent by hand (or deleted) by the tenant, never by the launch; they appear as drafts in Outreach.
   const candidates = db.prepare(
-    `SELECT l.id, l.contact, l.source_url, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    `SELECT l.id, l.contact, l.source_url, l.signal, l.evidence_excerpt, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND ${PUBLISHED_RECIPIENT_CANDIDATE_SQL} AND l.quarantined_at IS NULL
-     ORDER BY l.score DESC LIMIT 200`).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string | null; source_url: string | null; play: string }[]
+     ORDER BY l.score DESC LIMIT 200`).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string | null; source_url: string | null; signal: string | null; evidence_excerpt: string | null; play: string }[]
   const crawlRows = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl'")
   const samples: SampleDraft[] = []
   for (const c of candidates) {
@@ -99,16 +100,27 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
     // a lead createDraft refuses (its own gate) is not a sample; a store fault is not "too few samples" and surfaces
     if (!id) { try { id = createDraft(db, tenantId, c.id, businessName) } catch (e) { if (e instanceof OutreachError) continue; throw e } }
     const body = (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(id) as { body: string }).body
-    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }))))
+    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }), [c.signal, c.evidence_excerpt].filter(Boolean).join('\n'))))
   }
 
-  // integration check: only when the connected mailbox is the policy's sender, and only to the owned test inbox
+  // integration check: only when the connected mailbox is the policy's sender, and only to the owned test inbox.
+  // The env-designated test tenant's check is a send like any other: it may address only the approved test inbox
+  // (testRecipientApproved), whatever mailbox is connected; anything else holds the launch, fail closed.
+  const integrationRecipientOk = !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
+    ? testRecipientApproved(db, tenantId, policy.testInbox)
+    : true
   let testInboxDelivered = false
   const settings = getSettings(db, tenantId) as { sender_name?: string } | undefined
-  if (connected && connected === policy.sender && settings) {
+  if (connected && connected === policy.sender && settings && integrationRecipientOk) {
     const messageId = `dazl.launchcheck.${now}.${randomBytes(6).toString('hex')}@${connected.split('@')[1]}`
     try {
       const token = await getAccessToken(db, tenantId, d)
+      // Re-proved after the token await (TOCTOU, same class as every other send path): an allowlist
+      // narrowed while the check waited on the token stops it here, before anything reaches Gmail.
+      if (process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId && !testRecipientApproved(db, tenantId, policy.testInbox)) {
+        testInboxDelivered = false
+        return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
+      }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name ?? businessName, fromEmail: connected, to: policy.testInbox,
         subject: 'dazl launch check', body: 'This message checks that autopilot can send from this mailbox. No action needed.',
@@ -116,6 +128,12 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
         // the tenant's own inbox: the link goes to their autopilot settings, where the launch is turned off
         unsubscribeUrl: `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/app/outreach`,
       }))
+      // Shared authority recheck (send-authority.ts), after the token await and immediately before the handoff: the tenant's
+      // autopilot switch, suppression of the test inbox and the sending identity as they are NOW. A refusal sends nothing.
+      if (recheckSendAuthority(db, tenantId, { to: policy.testInbox, sender: connected, now, autopilot: 'enabled' })) {
+        testInboxDelivered = false
+        return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
+      }
       confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl))
       testInboxDelivered = mailbox?.read_granted === true && await receivedInInbox(token, messageId, d.fetchImpl ?? fetch)
     } catch { testInboxDelivered = false }

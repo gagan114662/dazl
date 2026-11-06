@@ -14,11 +14,21 @@ export function keepInvite(): void {
   history.replaceState(null, '', window.location.pathname + window.location.search)
 }
 
-export function afterSignIn(): string {
+// `resume` is the sign-in/sign-up API's answer: 'preview' when the browser still carries a Google-path claim intent
+// cookie (e.g. Google refused the address and the prospect fell back to a password). Only that one value is honoured;
+// the destination is always chosen here, never taken from a response or a URL.
+export function afterSignIn(resume?: unknown): string {
   let t: string | null = null
   try { t = sessionStorage.getItem(KEY); sessionStorage.removeItem(KEY) } catch { /* storage blocked */ }
   const invite = t && TOKEN.test(t) ? `/app/join#t=${t}` : null
-  return claimIntent() !== null ? '/preview/claim' : invite ?? '/app'
+  return claimIntent() !== null || resume === 'preview' ? '/preview/claim' : invite ?? '/app'
+}
+
+// Where "Continue with Google" on the sign-in/sign-up pages starts (#416): a tab carrying a preview claim goes through
+// the validating preview start route, so choosing Google there does not drop the claim and land on the generic /app.
+export function googleStartHref(): string {
+  const c = claimIntent()
+  return c ? `/api/preview/${c.token}/google` : '/api/auth/google'
 }
 
 // Keep a preview-claim token (and what it is for) for the auth round trip (#416). Called only from the preview page.

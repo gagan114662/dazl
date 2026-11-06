@@ -36,14 +36,16 @@ export const DEGRADED: Record<string, Degraded> = {
   'settings:enrichment': 'closed', 'enrich-retry': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   workers: 'closed', // runtime worker runs (app/api/workers): shared host capacity, so no runs while limits cannot be counted
-  checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
+  checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', 'first-party': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   // low risk: the app's own data, or must keep working
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'lead-feedback': 'local', 'domain-review': 'local',
-  'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local',
+  'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local', 'first-party-cfg': 'local',
   invite: 'local', 'invite-accept': 'local', sessions: 'local',
   'scan-estimate': 'local',   // read-only price estimate: no provider call, queues and counts nothing
+  lookalike: 'local',         // #386 lookalike features from a supplied cohort: pure computation, no provider call, nothing stored
   'audit-denied': 'local',    // only spaces out the audit trail's own refusal events; the refusal itself never waits on it
   send: 'local', draft: 'local', reopen: 'local', sequences: 'local', 'ranking-fixture': 'local', 'verification-fixture': 'local',
+  'inbox-fixture': 'local',   // test-only inbox fixture (#369): the designated test tenant's own rows; no provider or send
 }
 // The kind of a key is the longest listed prefix followed by ':' (keys may hold IPv6 addresses or emails after it).
 export function degradedPolicy(key: string): Degraded {

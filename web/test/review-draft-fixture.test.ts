@@ -40,7 +40,11 @@ test('supported fixture is gated, idempotent, never confirms human evidence or a
   assert.equal(leadEvidenceState(db,tenant,f.leadId),'unverified')
   assert.equal((db.prepare('SELECT count(*) n FROM sequence_steps WHERE approved_hash IS NOT NULL').get() as {n:number}).n,0)
   let network=0
-  await assert.rejects(sendMessage(db,tenant,f.messageId!,{fetchImpl:(async()=>{network++;throw new Error('no network')}) as typeof fetch}),/lead_evidence_withdrawn/)
+  // The fixture tenant is the env-designated test tenant: its sends may address only the approved
+  // test inbox, so the shared recipient gate refuses this synthetic-prospect draft first
+  // (personal_email). Evidence-withdrawal send refusal for ordinary tenants is covered in
+  // outreach.test.ts.
+  await assert.rejects(sendMessage(db,tenant,f.messageId!,{fetchImpl:(async()=>{network++;throw new Error('no network')}) as typeof fetch}),/personal_email/)
   assert.equal(network,0)
   db.close()
 })

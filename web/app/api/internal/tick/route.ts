@@ -20,6 +20,7 @@ import { DRAIN_HOLD_REASONS, classifySync, classifyWork, finishRun, migrateSched
 import { purgeExpiredTraces } from '@/lib/evals/capture'
 import { auditRetention, purgeAudit } from '@/lib/audit'
 import { purgeOnboardingAudit, redactOnboardingAuditDetails } from '@/lib/outreach/onboarding-policy'
+import { purgeFirstPartyRetention } from '@/lib/signals/first-party'
 
 // Called by a scheduler (cron or a systemd timer) with AUTOPILOT_TICK_SECRET. Reads replies and sends due
 // follow-ups for tenants who turned both on, and runs autopilot's first touches (held drafts due again, then new
@@ -106,7 +107,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
         // verified leads (#448). Every send runs within every autopilot and send check; the lease is kept alive
         // between its messages.
         stage = 'first_touch'
-        const dr = classifyWork(await drainFirstTouch(db, tenantId))
+        const dr = classifyWork(await drainFirstTouch(db, tenantId, { businessName: firstTouchSet.get(tenantId) ?? '' }))
         await progress(tenantId, 'first_touch', dr)
         if (dr.outcome === 'failure') continue
         const ap = await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? '', { keep: () => lease.keep() })
@@ -118,9 +119,11 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
     } catch (e) { fenced(e); await progress(tenantId, stage, failed(e)); captureError(e, { source: 'worker', where: 'tick:replies', tenantId, requestId }) }
   }
   let sequences = 0
-  for (const t of db.prepare("SELECT DISTINCT tenant_id FROM sequences WHERE status IN ('approved','active')").all() as { tenant_id: string }[]) {
+  // The account's business name, as runAutopilot is given it: an auto-enrolled set's claims fingerprint includes it
+  // (#414), so passing anything else would stop every such set as claims_changed before its first due step.
+  for (const t of db.prepare("SELECT DISTINCT s.tenant_id, u.business_name FROM sequences s LEFT JOIN users u ON u.id = s.tenant_id WHERE s.status IN ('approved','active')").all() as { tenant_id: string; business_name: string | null }[]) {
     await lease.keep()
-    try { const r = await runSequences(db,t.tenant_id,''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
+    try { const r = await runSequences(db,t.tenant_id,t.business_name ?? ''); sequences += r.sent; await progress(t.tenant_id, 'sequences', classifyWork(r)) } catch (e) { fenced(e); await progress(t.tenant_id, 'sequences', failed(e)); captureError(e, { source: 'worker', where: 'tick:sequences', tenantId: t.tenant_id, requestId }) }
   }
   await lease.keep()
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
@@ -173,6 +176,11 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   try { onboardingAuditRedacted = await redactOnboardingAuditDetails(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:onboarding-audit-redaction', requestId }) }
   let onboardingAuditPurged = 0
   try { onboardingAuditPurged = await purgeOnboardingAudit(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:onboarding-audit-retention', requestId }) }
+  // First-party signals (#390): every tenant's events older than the retention period it recorded are deleted, collecting
+  // or not (an opt-out does not stop the clock), with the first-party leads left without an event. Fenced like the purges above.
+  await lease.keep()
+  let firstPartyPurged = 0
+  try { firstPartyPurged = await purgeFirstPartyRetention(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:first-party-retention', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_redacted: onboardingAuditRedacted, onboarding_audit_purged: onboardingAuditPurged })
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_redacted: onboardingAuditRedacted, onboarding_audit_purged: onboardingAuditPurged, first_party_purged: firstPartyPurged })
 }

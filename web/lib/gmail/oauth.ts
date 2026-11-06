@@ -3,7 +3,7 @@ import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import { norm } from '../outreach/store.ts'
-import { isStaging, STUB_SENDER } from '../staging.ts'
+import { stagingGmail, STUB_SENDER } from '../staging.ts'
 
 // Least privilege: send is the required grant. Reading replies is a separate, optional gmail.readonly grant (below).
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
@@ -13,7 +13,8 @@ export const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const SCOPES = ['openid', 'email', GMAIL_SEND_SCOPE]
 const STATE_TTL_S = 600
 
-export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string; DAZL_ENV?: string }
+export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string; DAZL_ENV?: string; DAZL_STAGING_REAL_GMAIL?: string; GMAIL_STAGING_CLIENT_ID?: string; GMAIL_STAGING_CLIENT_SECRET?: string; DAZL_STAGING_GMAIL_ALLOWLIST?: string }
+const E = (env: OAuthEnv) => env as Record<string, string | undefined>
 export interface OAuthDeps { withRead?: boolean; env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -33,6 +34,9 @@ export function redirectUri(env: OAuthEnv): string {
 }
 
 function creds(env: OAuthEnv) {
+  const sg = stagingGmail(E(env))
+  if (sg.mode === 'real') return { id: sg.clientId, secret: sg.clientSecret }
+  if (sg.mode === 'misconfigured') throw new GmailError('config', 'staging_gmail_misconfigured')
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw new GmailError('config', 'google_not_configured')
   return { id: env.GOOGLE_CLIENT_ID, secret: env.GOOGLE_CLIENT_SECRET }
 }
@@ -40,8 +44,8 @@ function creds(env: OAuthEnv) {
 // Authorization code flow with PKCE and a one-time state bound to the signed-in user.
 export function startOAuth(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): string {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
-  if (isStaging(env as Record<string, string | undefined>)) return connectStub(db, tenantId, env, deps)
-  const c = creds(env)
+  if (stagingGmail(E(env)).mode === 'stub') return connectStub(db, tenantId, env, deps)
+  const c = creds(env) // staging: the staging-only client, or a refusal when the real-Gmail config is incomplete
   const state = randomBytes(24).toString('base64url')
   const verifier = randomBytes(32).toString('base64url')
   const t = nowS(deps)
@@ -132,7 +136,7 @@ export async function readGmailStatus(db: Db, tenantId: string): Promise<{ email
 // grant flips the account to needs_reconnect so nothing keeps trying to send.
 export async function getAccessToken(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<string> {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
-  const staging = isStaging(env as Record<string, string | undefined>)
+  const staging = stagingGmail(E(env)).mode === 'stub'
   const c = staging ? null : creds(env)
   const acc = db.prepare('SELECT refresh_ct, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string; status: string } | undefined
   if (!acc || acc.status !== 'active') throw new GmailError('reconnect', 'not_connected')
@@ -165,7 +169,7 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
 export async function disconnectGmail(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<void> {
   const acc = db.prepare('SELECT refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string } | undefined
   if (!acc) return
-  if (isStaging((deps.env ?? process.env) as Record<string, string | undefined>)) { db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId); return }
+  if (stagingGmail(E((deps.env ?? process.env) as OAuthEnv)).mode === 'stub') { db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId); return }
   try {
     const token = decryptSecret(acc.refresh_ct, ctx(tenantId), deps.master)
     await (deps.fetchImpl ?? fetch)('https://oauth2.googleapis.com/revoke', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token }), signal: AbortSignal.timeout(10_000) })
@@ -177,8 +181,15 @@ export async function disconnectGmail(db: Database.Database, tenantId: string, d
 
 // In staging (or with the stub token) nothing is sent: the message gets a stub id and its thread, as Gmail would return.
 const STAGING_TOKEN = 'staging-stub-token'
-export async function gmailSend(accessToken: string, raw: string, fetchImpl: typeof fetch = fetch, threadId?: string): Promise<{ id: string; threadId?: string }> {
-  if (accessToken === STAGING_TOKEN || isStaging()) {
+export async function gmailSend(accessToken: string, raw: string, fetchImpl: typeof fetch = fetch, threadId?: string, env: OAuthEnv = process.env as OAuthEnv): Promise<{ id: string; threadId?: string }> {
+  const sg = stagingGmail(E(env))
+  if (sg.mode === 'misconfigured') throw new GmailError('config', 'staging_gmail_misconfigured')
+  if (sg.mode === 'real') {
+    // Fail closed before any provider request: every recipient (To, Cc, Bcc) must be an exact allowlisted address, and the
+    // stub token can never reach the real endpoint.
+    if (accessToken === STAGING_TOKEN) throw new GmailError('config', 'staging_stub_token')
+    if (!recipientsAllowed(raw, sg.allowlist)) throw new GmailError('config', 'recipient_not_allowlisted')
+  } else if (accessToken === STAGING_TOKEN || sg.mode === 'stub') {
     const id = `stub${randomBytes(8).toString('hex')}`
     return { id, threadId: threadId ?? id }
   }
@@ -213,6 +224,27 @@ export function confirmedSendResult(r: unknown): { id: string; threadId?: string
 
 // The HTTP call succeeded but the response did not confirm the handoff. Deliberately NOT a GmailSendError: callers treat any
 // non-GmailSendError as an uncertain outcome (claim kept, tenant sending paused for review, no automatic retry).
+// Every address in the To, Cc and Bcc headers of the base64url MIME must be in the allowlist (exact match, case-insensitive).
+// No recipient header, an unparseable message or an address with display-name tricks is a refusal.
+export function recipientsAllowed(raw: string, allowlist: ReadonlySet<string>): boolean {
+  let mime: string
+  try { mime = Buffer.from(raw, 'base64url').toString('utf8') } catch { return false }
+  const head = mime.split(/\r?\n\r?\n/, 1)[0].replace(/\r?\n[ \t]+/g, ' ')
+  const addrs: string[] = []
+  for (const line of head.split(/\r?\n/)) {
+    const m = /^(to|cc|bcc|resent-to|resent-cc|resent-bcc):(.*)$/i.exec(line)
+    if (!m) continue
+    for (const part of m[2].split(',')) {
+      const t = part.trim()
+      if (!t) continue
+      const a = /^<([^<>\s]+)>$/.exec(t)?.[1] ?? /^[^<>\s]+$/.exec(t)?.[0] ?? /<([^<>\s]+)>\s*$/.exec(t)?.[1]
+      if (!a) return false
+      addrs.push(a.toLowerCase())
+    }
+  }
+  return addrs.length > 0 && addrs.every((a) => allowlist.has(a))
+}
+
 export class GmailUnconfirmedSend extends Error {
   reason: string
   constructor(reason: string) { super(`gmail_unconfirmed:${reason}`); this.reason = reason }

@@ -11,13 +11,14 @@ import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
 import { getState } from '@/lib/outreach/autopilot'
+import { displayStopReason } from '@/lib/outreach/lifecycle'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Sign in first.' }, { status: 401 })
   const db = getScanDb()
   const rows = db.prepare('SELECT id, message_id, lead_id, to_email, status, stop_reason FROM sequences WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(user.tenantId) as { id: string; status: string; lead_id: string; message_id: string }[]
-  const sequences = rows.map(s => ({ ...s, evidence_state: leadEvidenceState(db, user.tenantId, s.lead_id), currentness_held: (()=>{const m=db.prepare('SELECT to_email,test FROM outreach_messages WHERE id=? AND tenant_id=?').get(s.message_id,user.tenantId) as {to_email:string;test:number}|undefined;return !(m&&testFixtureSend(db,user.tenantId,m))&&currentnessHeld(db,user.tenantId,s.lead_id)})(), steps: sequenceStepsView(db, user.tenantId, s as { id: string; message_id: string; status: string }) }))
+  const sequences = rows.map(s => ({ ...s, stop_reason: displayStopReason((s as { stop_reason?: string | null }).stop_reason), evidence_state: leadEvidenceState(db, user.tenantId, s.lead_id), currentness_held: (()=>{const m=db.prepare('SELECT to_email,test FROM outreach_messages WHERE id=? AND tenant_id=?').get(s.message_id,user.tenantId) as {to_email:string;test:number}|undefined;return !(m&&testFixtureSend(db,user.tenantId,m))&&currentnessHeld(db,user.tenantId,s.lead_id)})(), steps: sequenceStepsView(db, user.tenantId, s as { id: string; message_id: string; status: string }) }))
   const campaigns = db.prepare('SELECT DISTINCT j.id,j.query FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id JOIN outreach_messages m ON m.lead_id = l.id AND m.tenant_id = j.user_id WHERE j.user_id = ? ORDER BY j.created_at DESC LIMIT 50').all(user.tenantId) as { id: string; query: string }[]
   const { scheduler, gates } = schedulerReadiness(db, user.tenantId)
   // scheduler/gates: configuration. freshness: whether the scheduler is actually making progress for this tenant (its own rows only).

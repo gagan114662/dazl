@@ -40,7 +40,7 @@ test('fixture populates source metrics and warm paths, is idempotent, cleanup re
   assert.equal(a.leadId, b.leadId)
 
   // #136 source quality: collectors, NULL counters, overlap, replied sequence
-  const rows = sourceMetrics(d, TEST_TENANT).rows
+  const rows = (await sourceMetrics(d, TEST_TENANT)).rows
   const tf = rows.find(r => r.collector === 'search:tinyfish')!
   assert.deepEqual({ leads: tf.leads, graded: tf.icp_graded, strong: tf.strong_fit, outreach: tf.outreach_started, replied: tf.replied }, { leads: 1, graded: 1, strong: 1, outreach: 1, replied: 1 })
   const gh = rows.find(r => r.collector === 'adapter:github')!
@@ -76,7 +76,7 @@ test('fixture populates source metrics and warm paths, is idempotent, cleanup re
   // cleanup removes the fixture, leaves the user's own import and unrelated rows
   const del = deleteVerificationFixture(d, TEST_TENANT)
   assert.equal(del.deleted, true)
-  assert.equal(sourceMetrics(d, TEST_TENANT).rows.length, 0)
+  assert.equal((await sourceMetrics(d, TEST_TENANT)).rows.length, 0)
   assert.equal((d.prepare('SELECT COUNT(*) c FROM leads WHERE company = ?').get(VERIFICATION_FIXTURE_LEAD) as { c: number }).c, 0)
   assert.equal((d.prepare("SELECT COUNT(*) c FROM leads WHERE review_reason = 'job_closed'").get() as { c: number }).c, 0)
   assert.equal((await warmPathsForLead(sqliteDb(d), TEST_TENANT, a.leadId)).imported_connections, 1) // import untouched

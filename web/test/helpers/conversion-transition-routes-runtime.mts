@@ -22,7 +22,7 @@ globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network 
 
 const { getDb, setDb, pgDb } = await import('../../lib/db/client.ts')
 const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const { ONBOARDING_POLICY_VERSION, onboardingSendAllowed } = await import('../../lib/outreach/onboarding-policy.ts')
 const { POST: tick } = await import('../../app/api/internal/tick/route.ts')
 const { GET: sequencesGet } = await import('../../app/api/outreach/sequences/route.ts')
@@ -71,10 +71,10 @@ test('tick: a verified conversion whose drain was lost stops the cold sequences 
   const call = () => tick(new NextRequest('http://localhost/api/internal/tick', { method: 'POST', headers: { authorization: 'Bearer test-tick-secret' } }))
   const r = await call()
   assert.equal(r.status, 200)
-  assert.deepEqual(await seq(db, 'sq-t1'), { status: 'stopped', stop_reason: 'converted_signup' })
-  assert.deepEqual(await seq(db, 'sq-t2'), { status: 'stopped', stop_reason: 'converted_signup' })
-  assert.deepEqual(await msg(db, 'h-t1'), { status: 'skipped', error: 'converted_signup' })
-  assert.deepEqual(await msg(db, 'h-t2'), { status: 'skipped', error: 'converted_signup' })
+  assert.deepEqual(await seq(db, 'sq-t1'), { status: 'stopped', stop_reason: 'policy_stop' })
+  assert.deepEqual(await seq(db, 'sq-t2'), { status: 'stopped', stop_reason: 'policy_stop' })
+  assert.deepEqual(await msg(db, 'h-t1'), { status: 'skipped', error: 'policy_stop' })
+  assert.deepEqual(await msg(db, 'h-t2'), { status: 'skipped', error: 'policy_stop' })
   assert.equal((await count(db, "SELECT COUNT(*) AS n FROM sequence_steps WHERE sequence_id IN ('sq-t1','sq-t2') AND status = 'sent'")), 0, 'no sales step went out')
   // The transition: the opted-in seller only.
   assert.deepEqual(await enrollments(db, email), [{ tenant_id: S1, source: 'conversion:signup' }])
@@ -91,7 +91,7 @@ test('tick: a verified conversion whose drain was lost stops the cold sequences 
   // The terminal conversion reason is what the seller's sequences view shows.
   setUser({ id: S1, business_name: 'S1 Co' })
   const view = await (await sequencesGet(new NextRequest('http://localhost/api/outreach/sequences'))).json() as { sequences: { id: string; status: string; stop_reason: string | null }[] }
-  assert.deepEqual(view.sequences.filter(s => s.id === 'sq-t1').map(s => [s.status, s.stop_reason]), [['stopped', 'converted_signup']])
+  assert.deepEqual(view.sequences.filter(s => s.id === 'sq-t1').map(s => [s.status, s.stop_reason]), [['stopped', 'policy_stop']])
 
   // A second tick (retry/restart) resurrects nothing and enrolls nothing twice.
   assert.equal((await call()).status, 200)
@@ -121,8 +121,8 @@ async function webhookScenario(engine: 'sqlite' | 'pg') {
   assert.equal(ok.status, 200)
   assert.deepEqual(await ok.json(), { result: 'applied' })
   for (const x of ['a', 'b', 'c']) {
-    assert.deepEqual(await seq(db, `sq-${tag}${x}`), { status: 'stopped', stop_reason: 'converted_payment' }, `${engine}: cold sequence ${x} stopped`)
-    assert.deepEqual(await msg(db, `h-${tag}${x}`), { status: 'skipped', error: 'converted_payment' })
+    assert.deepEqual(await seq(db, `sq-${tag}${x}`), { status: 'stopped', stop_reason: 'policy_stop' }, `${engine}: cold sequence ${x} stopped`)
+    assert.deepEqual(await msg(db, `h-${tag}${x}`), { status: 'skipped', error: 'policy_stop' })
   }
   assert.deepEqual(await enrollments(db, email), [{ tenant_id: S1, source: 'conversion:payment' }], `${engine}: only the opted-in seller transitions`)
   assert.deepEqual(await enrolledAudit(db, S1), [{ detail: 'conversion:payment' }])

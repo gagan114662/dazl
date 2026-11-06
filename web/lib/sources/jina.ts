@@ -38,17 +38,19 @@ export function pickQuote(content: string, keywords: string[]): string {
 export const jinaAdapter: SourceAdapter = {
   id: 'web',
   label: 'Web pages (read via Jina Reader)',
-  async collect({ keywords, pages = [], http }) {
+  async collect({ keywords, pages = [], http, note }) {
     const out: Evidence[] = []
     for (const page of pages.slice(0, PER_SCAN)) {
       const hit = cache.get(page)
       if (hit && Date.now() - hit.at < 15 * 60 * 1000) { out.push(...hit.items); continue }
       const now = Date.now()
       while (calls.length && now - calls[0] > WINDOW_MS) calls.shift()
-      if (calls.length >= MAX_CALLS) break
+      if (calls.length >= MAX_CALLS) { note?.('budget'); break }
       calls.push(now)
       const r = await http(`https://r.jina.ai/${page}`)
-      if (!r || r.status !== 200) continue
+      if (!r) { note?.('unreachable'); continue }
+      if (r.status !== 200) { note?.('http_error'); continue }
+      if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
       const { title, published, content } = parseReader(r.body)
       const quote = pickQuote(content, keywords)
       if (quote.length < 20) continue
