@@ -66,7 +66,7 @@ await ctx.route('**/*', async route => {
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 0, cap: 3 } })
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
   // This server has no search index, news or website reads switched on: only web research with a key is possible.
-  if (p === '/api/scan/sources') return state.sourcesFail ? json({ error: 'unavailable' }, 503) : json({ web_index: false, news: false, websites: false })
+  if (p === '/api/scan/sources') return state.sourcesFail ? json({ error: 'unavailable' }, 503) : json({ web_index: false, news: true, websites: false })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: Math.min(state.sent, 12), account_sent_24h: state.sent })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
   // An approved email and no rejections: the first-scan, leads-reviewed and first-approved rows are done here.
@@ -124,7 +124,7 @@ try {
   await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
   await row('key').getByText('✓').waitFor()
   await row('sources').getByText('✓').waitFor()
-  assert.match(await row('sources').textContent(), /Lead sources - a scan can use Web research with your AI key/)
+  assert.match(await row('sources').textContent(), /Lead sources - a scan can use News articles\./)
   await row('sender').getByRole('button', { name: 'Add' }).click()
   await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
   await page.getByRole('button', { name: 'Save sender details' }).click()
