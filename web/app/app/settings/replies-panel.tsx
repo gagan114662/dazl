@@ -1,7 +1,8 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { actionMessage, CONSENT_NEEDED_NOTICE, replyReadingState, type GmailStatus } from '@/lib/outreach/replies-view'
 
-interface Info { available: boolean; gmail_connected: boolean; consent: { version: string; text: string[]; accepted: boolean }; bounce_scan: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
+interface Info { available: boolean; gmail_connected: boolean; gmail_status?: GmailStatus; consent: { version: string; text: string[]; accepted: boolean }; bounce_scan: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
 
 export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
@@ -14,23 +15,35 @@ export default function RepliesPanel() {
   }, [])
   async function act(action: string, version?: string) {
     const r = await fetch('/api/outreach/replies', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, accept: true, version: version ?? i?.consent.version }) })
-    const j = await r.json().catch(() => ({})); setMsg(r.ok ? (action === 'sync' ? 'Checked replies.' : '') : j.error || 'Something went wrong'); void load()
+    const j = await r.json().catch(() => ({})); setMsg(actionMessage(action, r.ok, j)); void load()
   }
   if (!i || !i.available) return null
+  const state = replyReadingState(i)
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Replies and follow-ups</h2>
       <p className="text-[#555] text-sm mb-3">Lets dazl stop emailing people who unsubscribe or bounce, and follow up with people who replied with interest. Needs read access to the threads dazl started.</p>
-      {!i.gmail_connected ? (
+      {state === 'needs_reconnect' ? (
+        <div className="text-sm space-y-2">
+          <p className="text-[#555]">Gmail needs to be reconnected. dazl can&apos;t read replies or send until you reconnect.</p>
+          <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail</a>
+        </div>
+      ) : state === 'disconnected' ? (
         <div className="text-sm space-y-2">
           <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
           <a className="btn-primary inline-block" href="/api/gmail/connect">Connect Gmail</a>
           <p className="text-xs text-[#6b6b6b]">Connecting means you agree to the reply-reading above. On Google&apos;s screen you can untick the read access and still connect send-only.</p>
         </div>
-      ) : !i.read_granted ? (
+      ) : state === 'read_scope_missing' ? (
         <div className="text-sm space-y-2">
           <p className="text-[#555]">Gmail is connected send-only (the read access was unticked on Google&apos;s screen, or it predates reply reading). Reconnect and leave the read access ticked to turn on reply reading.</p>
           <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail with reply access</a>
+        </div>
+      ) : state === 'consent_needed' ? (
+        <div className="text-sm space-y-2">
+          <p className="text-[#555]">{CONSENT_NEEDED_NOTICE}</p>
+          <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
+          <button className="btn-primary" onClick={() => act('consent', i.consent.version)}>Turn on reply reading</button>
         </div>
       ) : (
         <div className="text-sm space-y-2">
@@ -42,7 +55,7 @@ export default function RepliesPanel() {
           </div>
         </div>
       )}
-      {i.gmail_connected && i.read_granted && (
+      {(state === 'on' || state === 'consent_needed') && (
         <div className="mt-4 border-t border-black/10 pt-4 text-sm space-y-2">
           <h3 className="font-medium">Delivery-failure scan</h3>
           {i.bounce_scan.accepted ? (
