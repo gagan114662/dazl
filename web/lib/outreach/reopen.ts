@@ -6,7 +6,7 @@
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { confirmedSendResult, connectionGone, connectionReplaced, getAccessTokenBound, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, connectionGone, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
 import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
@@ -161,7 +161,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const now = d.now ?? Math.floor(Date.now() / 1000)
   let token: string
   let tokenGen: string
-  try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) { throw new OutreachError(connectionGone(e) ? 'gmail_not_connected' : connectionReplaced(e) ? 'connection_replaced' : 'gmail_reconnect_needed') }
+  try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) { throw new OutreachError(connectionGone(e) ? 'gmail_not_connected' : isConnectionReplaced(e, db, tenantId) ? 'connection_replaced' : 'gmail_reconnect_needed') }
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
