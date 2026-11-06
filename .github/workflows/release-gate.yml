@@ -140,6 +140,14 @@ jobs:
       - name: Recovery drill with the app (synthetic backup, sending disabled)
         if: success() || failure()
         run: npm run test:smoke:recovery
+      # issue #360: the whole host-loss path (encrypted off-host copy + secrets/config bundle -> fetch, decrypt with the
+      # separately held identities and master key, the app on the restored copy: sign-in, scan, reads, sending off).
+      # age is installed here for it; the smoke exits 2 (NOT RUN, a failure) when age or the build is missing.
+      - name: Replacement-host restore drill (off-host copy, secrets/config, sign-in/decrypt/scan/read)
+        if: success() || failure()
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q age
+          npm run test:smoke:replacement
       - uses: actions/upload-artifact@v4
         if: success()
         with:
