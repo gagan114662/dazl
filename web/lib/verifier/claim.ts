@@ -8,6 +8,7 @@
 // Scope (#780+#781 only): company identity, domain binding, place and event date (#780); person/contact-route
 // (#781). Quotes, predicates and cross-producer blinding/provenance plumbing are #782's - out of scope here so this
 // PR's diff matches its own title.
+import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 
 export interface LeadClaim {
   company: string
@@ -70,7 +71,7 @@ export function blindClaim(raw: unknown): Blinded {
   if (input.person != null && !obj(input.person)) problems.push('person is malformed')
   const contact = input.contact == null ? null : take(obj(input.contact), 'contact', ['email', 'source_url'], o => {
     const email = str(o.email, 254)?.toLowerCase(), source_url = httpUrl(o.source_url)
-    return email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && source_url ? { email, source_url } : null
+    return email && PUBLISHED_EMAIL_RE.test(email) && source_url ? { email, source_url } : null
   })
   if (input.contact != null && !obj(input.contact)) problems.push('contact is malformed')
 

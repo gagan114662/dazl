@@ -27,7 +27,7 @@ const BASE: LeadClaim = {
   event: { date: '2026-10-20', source_url: OWN, corroborating_urls: [] },
   person: null, contact: null,
 }
-const EVENT_SOURCE = snap(OWN, page('<p>Harbor Ledger Analytics opened its new London office on October 20, 2026.</p>'))
+const EVENT_SOURCE = snap(OWN, page('<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>'))
 
 const run = (claim: LeadClaim, sources: Snapshot[]) => decide({ claim, problems: [], sources, asOf: AS_OF, windowDays: WINDOW_DAYS })
 const statusOf = (checks: ReturnType<typeof run>, check: string) => checks.filter(c => c.check === check).map(c => c.status)
@@ -48,7 +48,7 @@ test('former employee: a "formerly"/"until"/"ex-" marker next to the name fails,
   ]) {
     const checks = run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, page(`<p>${sentence}</p>`))])
     assert.deepEqual(statusOf(checks, 'person_current'), ['fail'], sentence)
-    assert.match(checks.find(c => c.check === 'person_current')!.reason, /former holder/)
+    assert.match(checks.find(c => c.check === 'person_current')!.reason, /past role/)
     assert.notEqual(overall(checks).action, 'accept', sentence)
   }
 })
@@ -133,4 +133,62 @@ test('blindClaim takes person/contact only through the allowlisted fields and no
   assert.deepEqual(claim.contact, { email: 'priya.raman@harborledger.example', source_url: PEOPLE_PAGE })
   assert.ok(dropped.includes('person.confidence'))
   assert.ok(dropped.includes('contact.verified_by_producer'))
+})
+
+// Regression cases for the independent review of this PR: each of these previously made a false pass or a false
+// fail possible.
+
+test('an unrelated company mention far from the name does not bind the title to the claimed company', () => {
+  const claim: LeadClaim = { ...BASE, person: { name: 'Priya Raman', title: 'Chief Revenue Officer', source_url: PEOPLE_PAGE } }
+  const filler = 'This masthead profiles leaders across several unrelated firms in the sector. '.repeat(4)
+  const html = page(`<p>Priya Raman, Chief Revenue Officer at RivalCo, spoke at a conference.</p><p>${filler}</p><p>Harbor Ledger Analytics was also mentioned in passing.</p>`)
+  assert.deepEqual(statusOf(run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, html)]), 'person_current'), ['unknown'])
+})
+
+test('a bare "was <title>" copula states a historical role and fails, even with no "formerly"/"until"/"ex-" marker', () => {
+  const claim: LeadClaim = { ...BASE, person: { name: 'Priya Raman', title: 'Chief Revenue Officer', source_url: PEOPLE_PAGE } }
+  const html = page('<p>In 2019, Priya Raman was Chief Revenue Officer at Harbor Ledger Analytics.</p>')
+  const checks = run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, html)])
+  assert.deepEqual(statusOf(checks, 'person_current'), ['fail'])
+  assert.notEqual(overall(checks).action, 'accept')
+  // "was named/appointed/promoted/elected/hired/made <title>" is a current-appointment announcement, not historical
+  const appointed = page('<p>Priya Raman was named Chief Revenue Officer at Harbor Ledger Analytics this quarter.</p>')
+  assert.deepEqual(statusOf(run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, appointed)]), 'person_current'), ['pass'])
+})
+
+test('a different (longer, or suffixed) address does not satisfy contact_on_source - only the exact printed address does', () => {
+  const claim: LeadClaim = { ...BASE, contact: { email: 'ann@harborledger.example', source_url: PEOPLE_PAGE } }
+  for (const html of [
+    page('<p>Reach us at joann@harborledger.example.</p>'),
+    page('<p>Reach us at ann@harborledger.example.evil.</p>'),
+  ]) {
+    assert.deepEqual(statusOf(run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, html)]), 'contact_on_source'), ['fail'], html)
+  }
+})
+
+test('former-role wording about a DIFFERENT employer, in its own clause, does not reject an explicit current claim at the claimed company', () => {
+  const claim: LeadClaim = { ...BASE, person: { name: 'Priya Raman', title: 'Chief Revenue Officer', source_url: PEOPLE_PAGE } }
+  const html = page('<p>Priya Raman, formerly VP at OldCo, is now Chief Revenue Officer at Harbor Ledger Analytics.</p>')
+  assert.deepEqual(statusOf(run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, html)]), 'person_current'), ['pass'])
+})
+
+test('a title substring inside an unrelated word does not count as the claimed title', () => {
+  const claim: LeadClaim = { ...BASE, person: { name: 'Priya Raman', title: 'COO', source_url: PEOPLE_PAGE } }
+  const html = page('<p>Priya Raman coordinates sales efforts at Harbor Ledger Analytics.</p>')
+  assert.deepEqual(statusOf(run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, html)]), 'person_current'), ['unknown'])
+})
+
+test('qualified recruiting aliases (careers-emea@, jobs-uk@, recruitment-team@) are still rejected as hiring inboxes', () => {
+  for (const mailbox of ['careers-emea', 'jobs-uk', 'recruitment-team']) {
+    assert.equal(isRecruitingMailbox(`${mailbox}@harborledger.example`), true, mailbox)
+  }
+  // look-alikes still allowed: a delimiter must actually follow the recruiting base word
+  assert.equal(isRecruitingMailbox('hrishi@harborledger.example'), false)
+  assert.equal(isRecruitingMailbox('jobsworth@harborledger.example'), false)
+})
+
+test('a malformed address with trailing punctuation is rejected by blindClaim, never reaches the checks', () => {
+  const { claim, problems } = blindClaim({ ...BASE, contact: { email: 'buyer@acme.com.', source_url: PEOPLE_PAGE } })
+  assert.equal(claim.contact, null)
+  assert.ok(problems.includes('contact is malformed'))
 })

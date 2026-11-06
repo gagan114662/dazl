@@ -41,10 +41,18 @@ const FORMER = /(?<![\p{L}])(?:(?:former|formerly|previously|departed|left (?:th
 // A bare "was <title>" copula states a past, ended role; "was named/appointed/promoted/elected/made <title>" announces
 // a CURRENT appointment (common recent-hire phrasing) and must not be read as historical.
 const PAST_STATE = /(?<![\p{L}])was(?![\p{L}])(?!\s+(?:named|appointed|promoted|elected|hired|made)\b)/u
-// Hiring inboxes, matched on the whole mailbox name before any +tag with punctuation removed (careers+toronto@,
-// talent.acquisition@ and join-us@ are hiring inboxes; hrishi@ and jobsworth@ are not).
-const RECRUITING = /^(?:jobs?|careers?|recruit(?:ing|ment|ers?)?|talent(?:acquisition|team)?|hr|humanresources|people(?:ops|team)?|hiring|apply|applications?|applicants?|cvs?|resumes?|joinus|join(?:theteam)?|workwithus|work|vacanc(?:y|ies)|staffing)$/
-export const isRecruitingMailbox = (email: string) => RECRUITING.test((email.split('@')[0] ?? '').split('+')[0].replace(/[._-]/g, ''))
+// Hiring inboxes, matched on the mailbox name before any +tag: the whole name, or a recruiting base word followed by
+// a "._-"-delimited qualifier (careers-emea@, jobs-uk@, recruitment-team@, talent.acquisition@ and join-us@ are all
+// hiring inboxes; hrishi@ and jobsworth@, which merely start with "hr"/"jobs" with no delimiter after, are not).
+const RECRUITING = /^(?:jobs?|careers?|recruit(?:ing|ment|ers?)?|talent(?:acquisition|team)?|hr|humanresources|people(?:ops|team)?|hiring|apply|applications?|applicants?|cvs?|resumes?|joinus|join(?:theteam)?|workwithus|work|vacanc(?:y|ies)|staffing)(?:[._-].*)?$/
+export const isRecruitingMailbox = (email: string) => RECRUITING.test((email.split('@')[0] ?? '').split('+')[0].toLowerCase())
+
+// Complete email tokens in folded text, boundary-aware: "joann@harborledger.example" must never satisfy a claimed
+// "ann@harborledger.example" (a raw substring check would accept it as a prefix match, and would equally accept
+// "ann@harborledger.example.evil" as a suffix match) - each match is the FULL contiguous address, compared for exact
+// equality, never containment.
+const EMAIL_TOKEN = /(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,}(?![\p{L}\p{N}-])/gu
+const emailsIn = (folded: string): string[] => [...folded.matchAll(EMAIL_TOKEN)].map(m => m[0])
 
 const PASSAGE = 250
 const near = (a: number[], b: number[], d = PASSAGE) => a.some(x => b.some(y => Math.abs(x - y) <= d))
@@ -209,7 +217,7 @@ export function decide(x: DecideInput): CheckResult[] {
       : r('contact_domain', 'contact', 'fail', `the address is on ${mailDomain}, not the company's domain ${claim.domain}`))
     const e = need(c.source_url, 'contact_on_source', 'contact')
     if (!isRead(e)) out.push(e)
-    else out.push(e.folded.includes(c.email) ? r('contact_on_source', 'contact', 'pass', 'the address is printed on its cited source')
+    else out.push(emailsIn(e.folded).includes(fold(c.email)) ? r('contact_on_source', 'contact', 'pass', 'the address is printed on its cited source')
       : r('contact_on_source', 'contact', e.s.truncated ? 'unknown' : 'fail', `${c.source_url} does not show the address`))
   }
 
