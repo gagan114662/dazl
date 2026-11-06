@@ -5,9 +5,10 @@
 // values). The verifier always fetches the cited pages itself (service.ts, a separate PR) rather than trusting the
 // producer's copy.
 //
-// Scope (#780+#781 only): company identity, domain binding, place and event date (#780); person/contact-route
-// (#781). Quotes, predicates and cross-producer blinding/provenance plumbing are #782's - out of scope here so this
-// PR's diff matches its own title.
+// Scope (#780+#781 only): company identity, domain binding, place, event date and quote corroboration (#780 - all
+// deterministic verbatim text matching, so quotes are #780's, not #782's: quote_on_source needs no model judge, same
+// as company/place/date); person/contact-route (#781). Predicates and cross-producer blinding/provenance plumbing
+// are #782's - out of scope here so this PR's diff matches its own title.
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 
 export interface LeadClaim {
@@ -15,6 +16,7 @@ export interface LeadClaim {
   domain: string                                   // the company's own registrable domain
   place: { city: string; country: string | null } | null
   event: { date: string; source_url: string; corroborating_urls: string[] }
+  quotes: { text: string; source_url: string }[]
   person: { name: string; title: string; source_url: string } | null
   contact: { email: string; source_url: string } | null
 }
@@ -25,8 +27,8 @@ export interface Blinded {
   problems: string[]       // why the claim cannot be fully evaluated (missing or malformed parts)
 }
 
-export const LIMITS = { text: 500, urls: 5 }
-const CLAIM_KEYS = new Set(['company', 'domain', 'place', 'event', 'person', 'contact'])
+export const LIMITS = { text: 500, urls: 5, quotes: 5 }
+const CLAIM_KEYS = new Set(['company', 'domain', 'place', 'event', 'quotes', 'person', 'contact'])
 
 const str = (v: unknown, max = LIMITS.text): string | null => typeof v === 'string' && v.trim() !== '' && v.length <= max ? v.trim() : null
 const obj = (v: unknown): Record<string, unknown> | null => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null
@@ -67,6 +69,19 @@ export function blindClaim(raw: unknown): Blinded {
     return { date, source_url, corroborating_urls }
   })
 
+  // Quotes are optional - a claim that cites none is not thereby malformed, it simply has no quote_on_source checks.
+  const quotesIn = input.quotes
+  let quotes: { text: string; source_url: string }[] = []
+  if (quotesIn !== undefined && quotesIn !== null) {
+    if (!Array.isArray(quotesIn) || quotesIn.length > LIMITS.quotes) problems.push('quotes is malformed')
+    else quotes = quotesIn.flatMap((x, i) => {
+      const o = obj(x)
+      if (!o) { problems.push(`quotes[${i}] is malformed`); return [] }
+      const q = take(o, `quotes[${i}]`, ['text', 'source_url'], oo => { const text = str(oo.text), source_url = httpUrl(oo.source_url); return text && source_url ? { text, source_url } : null })
+      return q ? [q] : []
+    })
+  }
+
   const person = input.person == null ? null : take(obj(input.person), 'person', ['name', 'title', 'source_url'], o => { const name = str(o.name, 150), title = str(o.title, 150), source_url = httpUrl(o.source_url); return name && title && source_url ? { name, title, source_url } : null })
   if (input.person != null && !obj(input.person)) problems.push('person is malformed')
   const contact = input.contact == null ? null : take(obj(input.contact), 'contact', ['email', 'source_url'], o => {
@@ -78,7 +93,7 @@ export function blindClaim(raw: unknown): Blinded {
   const claim: LeadClaim = {
     company: company ?? '', domain: domain ?? '', place,
     event: event ?? { date: '', source_url: '', corroborating_urls: [] },
-    person, contact,
+    quotes, person, contact,
   }
   return { claim, dropped: [...dropped].sort(), problems: [...new Set(problems)] }
 }

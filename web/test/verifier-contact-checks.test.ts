@@ -25,7 +25,7 @@ const BASE: LeadClaim = {
   company: 'Harbor Ledger Analytics', domain: 'harborledger.example',
   place: { city: 'London', country: 'United Kingdom' },
   event: { date: '2026-10-20', source_url: OWN, corroborating_urls: [] },
-  person: null, contact: null,
+  quotes: [], person: null, contact: null,
 }
 const EVENT_SOURCE = snap(OWN, page('<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>'))
 

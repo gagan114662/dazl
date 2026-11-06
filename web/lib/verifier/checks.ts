@@ -6,10 +6,12 @@
 // a former employee, a hiring inbox); a source the verifier could not read makes the checks that need it unknown,
 // never fail.
 //
-// Scope (#780+#781 only): claim well-formedness, company identity, domain binding, place and event date, cross-source
-// date conflicts (#780); person (current employer/title, former-role rejected) and contact-route (on its own cited
-// source, on the company's domain, not a generic/hiring inbox) (#781). Independent-confirmation/provenance-dependency
-// tracking and semantic-predicate judging are #782's - left out so this PR's diff matches its own title.
+// Scope (#780+#781 only): claim well-formedness, company identity, domain binding, place, event date, cross-source
+// date conflicts, and quote corroboration (verbatim text matching, no model judge - quotes are deterministic exactly
+// like company/place/date, so they belong here, not #782) (#780); person (current employer/title, former-role
+// rejected) and contact-route (on its own cited source, on the company's domain, not a generic/hiring inbox) (#781).
+// Independent-confirmation/provenance-dependency tracking and semantic-predicate judging are #782's - left out so
+// this PR's diff matches its own title.
 import type { LeadClaim } from './claim.ts'
 import { datesIn, fold, isoDay, isStamp, registrable, sentenceAt, tokenPositions } from './text.ts'
 
@@ -31,7 +33,7 @@ export interface DecideInput { claim: LeadClaim; problems: string[]; sources: Sn
 
 export const CHECK_VERSIONS = {
   claim_well_formed: 1, company_on_source: 1, domain_bound: 1, place_on_source: 1, event_date_on_source: 1, sources_agree: 1,
-  person_current: 1, contact_on_source: 1, contact_domain: 1, contact_not_recruiting: 1,
+  quote_on_source: 1, person_current: 1, contact_on_source: 1, contact_domain: 1, contact_not_recruiting: 1,
 } as const
 type CheckId = keyof typeof CHECK_VERSIONS
 const r = (check: CheckId, subject: string, status: Status, reason: string): CheckResult => ({ check, version: CHECK_VERSIONS[check], subject, status, reason })
@@ -176,7 +178,20 @@ export function decide(x: DecideInput): CheckResult[] {
     ? r('sources_agree', 'event', 'unknown', `${conflicts.map(c => c.s.url).join(', ')} date${conflicts.length > 1 ? '' : 's'} the event differently (${[...new Set(conflicts.flatMap(c => eventMentions(c).map(m => m.iso)))].join(', ')})`)
     : r('sources_agree', 'event', 'pass', 'no cited source dates the event differently'))
 
-  // 7. Person: named on the source, with the claimed title AND the claimed company both bound to that SAME name
+  // 7. Quotes: verbatim (case, quote marks, dashes and whitespace aside) on their own cited source, never trusted
+  // from the producer's own excerpt. A "..." split inside the claimed text must occur in order, so a quote cannot be
+  // assembled from two unrelated fragments - a fabricated or stitched-together quote fails, never passes.
+  claim.quotes.forEach((q, i) => {
+    const e = need(q.source_url, 'quote_on_source', `quote:${i}`)
+    if (!isRead(e)) { out.push(e); return }
+    const parts = fold(q.text).replace(/^["']|["']$/g, '').split('...').map(part => part.trim()).filter(Boolean)
+    let at = 0
+    const found = parts.length > 0 && parts.every(part => { const k = e.folded.indexOf(part, at); if (k < 0) return false; at = k + part.length; return true })
+    out.push(found ? r('quote_on_source', `quote:${i}`, 'pass', 'the quote is on the cited source verbatim')
+      : r('quote_on_source', `quote:${i}`, e.s.truncated ? 'unknown' : 'fail', `the quote is not on ${q.source_url}`))
+  })
+
+  // 8. Person: named on the source, with the claimed title AND the claimed company both bound to that SAME name
   // occurrence (not title anywhere near the name and company anywhere on the page, independently - that lets an
   // unrelated company mention elsewhere, or someone else's title at a different employer, satisfy this), and not
   // described as a former holder of the role - a "formerly"/"until 20xx"/"ex-" marker or a bare past-tense "was
@@ -206,7 +221,7 @@ export function decide(x: DecideInput): CheckResult[] {
     }
   }
 
-  // 8. Contact route: the address is printed on its cited source, on the company's own domain, and is not a generic
+  // 9. Contact route: the address is printed on its cited source, on the company's own domain, and is not a generic
   // hiring/recruiting inbox (a buyer route, not a job application address).
   if (claim.contact) {
     const c = claim.contact
