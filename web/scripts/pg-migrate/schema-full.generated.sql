@@ -496,7 +496,7 @@ CREATE TABLE outreach_messages (
       sent_at        BIGINT,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR char_length(error) <= 200),
-      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), thread_id TEXT, test BIGINT NOT NULL DEFAULT 0, reply_checked_at BIGINT, insert_seq BIGINT DEFAULT nextval('outreach_messages_insert_seq_seq'),
+      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), thread_id TEXT, test BIGINT NOT NULL DEFAULT 0, reply_checked_at BIGINT, words_rev BIGINT NOT NULL DEFAULT 0, insert_seq BIGINT DEFAULT nextval('outreach_messages_insert_seq_seq'),
       UNIQUE (tenant_id, lead_id)
     );
 

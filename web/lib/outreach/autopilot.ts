@@ -323,8 +323,9 @@ function draftContext(db: Database.Database, tenantId: string, messageId: string
   return a && sha([CONSENT_VERSION, a.to_email, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
 }
 const draftWords = (db: Database.Database, tenantId: string, messageId: string) =>
-  db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { subject: string; body: string } | undefined
-const sameWords = (a: { subject: string; body: string }, b: { subject: string; body: string }) => a.subject === b.subject && a.body === b.body
+  db.prepare('SELECT subject, body, words_rev FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { subject: string; body: string; words_rev: number } | undefined
+// Content-version binding: the words AND the revision every writer bumps, so an A to B to A owner edit is still an edit.
+const sameWords = (a: { subject: string; body: string; words_rev: number }, b: { subject: string; body: string; words_rev: number }) => a.subject === b.subject && a.body === b.body && a.words_rev === b.words_rev
 // The address of the connected Gmail account (the one the send path sends from), or null when none is connected.
 function gmailSender(db: Database.Database, tenantId: string): string | null {
   return (db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined)?.email.toLowerCase() ?? null
@@ -758,8 +759,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
       // The words as autopilot drafted them, bound before the polish await (#929). Anything else in the row afterwards is
       // the owner's (or another writer's) edit: never adopted as autopilot's own authority.
       const w0 = draftWords(db, tenantId, id)
-      let wrote: { subject: string; body: string } | null = null
-      try { const pr = await polishDraftWithWords(db, tenantId, id, businessName, pd); if (pr.rewritten && pr.words) wrote = pr.words } catch { /* template stays */ }
+      let wrote: { subject: string; body: string; words_rev: number } | null = null
+      try { const pr = await polishDraftWithWords(db, tenantId, id, businessName, pd); if (pr.rewritten && pr.words && w0) wrote = { ...pr.words, words_rev: w0.words_rev + 1 } } catch { /* template stays */ }
       const w1 = draftWords(db, tenantId, id)
       if (!w0 || !w1 || !(sameWords(w1, w0) || (wrote !== null && sameWords(w1, wrote)))) editedDuringPolish = true
       if (refused) { const why: SpendStop = refused; attempt(() => audit(db, tenantId, 'held_spend', why, l.id, id)); tryPause(why); out.held++; out.stopped = why; return out }
