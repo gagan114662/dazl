@@ -117,7 +117,8 @@ export function parseDraftOutput(text: string): { subject: string; body: string 
 // onboarding profile offer). With no offer anywhere the model would have to invent what the seller sells, so it refuses
 // with 'no_profile'; a contested play refuses too. Every refusal comes before any paid call.
 export async function polishDraft(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult> {
-  const { words: _words, ...r } = await polishDraftWithWords(db, tenantId, messageId, businessName, deps)
+  const r = await polishDraftWithWords(db, tenantId, messageId, businessName, deps)
+  delete r.words
   return r as PolishResult
 }
 // The same, also returning the words it wrote (autopilot binds them to tell its own polish from an owner edit, #929).
