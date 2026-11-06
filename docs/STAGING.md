@@ -5,7 +5,7 @@ Staging is the app on the same box as production, as a separate service. It has 
 **What is different in staging** (`DAZL_ENV=staging`, `web/lib/staging.ts`):
 - A **"Staging - test data"** banner is on every page.
 - Every page is **noindex**: the meta tag, the `X-Robots-Tag` header and `robots.txt` all say so.
-- **Gmail is stubbed.**
+- **Gmail is stubbed by default** (real staging Gmail exists behind an explicit flag, off; see "Real staging Gmail" below).
   - Connect needs no Google account.
   - A send makes no network call and gets a stub id.
   - Reply sync reads nothing.
@@ -177,13 +177,12 @@ cd /srv/dazl-staging/current/web && sudo -u dazl-staging env DAZL_ENV=staging DB
 
 Exit codes: 0 means all passed, 1 means a scenario failed (named), 2 means it refused to run. To attach the evidence to #362, copy `evidence.json` to the issue. It records the commit, time, each check and the recorded recipients, and holds no secrets.
 
-**Before any real send (not built; owner decisions):**
-- A real owned-inbox send through a real provider needs a sending identity approved by the owner: a dedicated nonproduction Gmail account, and its own staging-only OAuth client with the send scope.
-- It needs the exact recipient addresses, which must be inboxes the owner controls.
-- It needs the exact approved words.
-- It needs a separately reviewed change that adds a real transport behind an explicit staging flag and that allowlist.
-
-Until then `deploy.sh` keeps refusing Google send credentials on staging, and the staging Gmail stub sends nothing.
+**Real staging Gmail (#413): built, OFF by default, not activated.** The code is merged-ready capability only; sending anything for real still needs the owner's approval of the sending identity, the exact recipient addresses and the exact words at execution time.
+- It is on only when `DAZL_ENV=staging` and `DAZL_STAGING_REAL_GMAIL=1`. Unset or any other value: the stub above, unchanged. In production the flag is ignored.
+- Its own staging-only Google OAuth client: `GMAIL_STAGING_CLIENT_ID` / `GMAIL_STAGING_CLIENT_SECRET`, `gmail.send` scope (plus optional `gmail.readonly` as the connect route already records), redirect `https://staging.dazl.ai/api/gmail/callback`. Never `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` on staging: those switch off staging sign-in, and `deploy.sh` still refuses them.
+- `DAZL_STAGING_GMAIL_ALLOWLIST`: exact owner-controlled addresses, comma separated, no wildcards or domains. The send path checks every To, Cc and Bcc address before any provider request and refuses anything else.
+- Token exchange, send and reply reading switch together. With the flag on but any setting missing or malformed, every Gmail call refuses (`staging_gmail_misconfigured`); nothing falls back to a real send.
+- `deploy.sh` refuses Gmail credentials or an allowlist without the flag, the flag without both credentials and a valid allowlist, and any client id or secret that matches production's or the sign-in client's.
 
 ## Day to day
 - **Deploys** are automatic. `journalctl -u dazl-staging-deploy` shows each one. A build or health-check failure keeps the previous release serving, and the journal ends with `rolling back`.
