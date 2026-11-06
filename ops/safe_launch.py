@@ -269,6 +269,8 @@ def launch(stage, env, port):
 
 
 MAX_BACKUP_AGE_CAP_S = 7 * 24 * 3600
+# Owner decision (Gagan, 2026-11-06): launch is refused if the verified backup or its drill is older than 24h.
+DEFAULT_BACKUP_MAX_AGE_S = 24 * 3600
 CLOCK_SKEW_S = 120
 
 
@@ -308,7 +310,7 @@ def _pin_backup(backup):
 def check_database_backup(env, args, now=None):
     """#911: the backup must be bound to evidence from the supported online-backup + restore-drill path.
 
-    Policy (explicit, never inferred): --backup-max-age-s seconds (1..7 days). Required evidence:
+    Policy: --backup-max-age-s seconds (1..7 days), default 24h (owner decision); bad values are refused. Required evidence:
       * the create-backup sidecar manifest (default <backup>.json, tool dazl-create-backup) naming this
         backup file, the live DB_PATH as its source, and the exact bytes/sha256 of the file now;
       * manifest createdAt no older than the policy window (and not in the future);
@@ -466,7 +468,7 @@ def main():
     p.add_argument('--backup-db', required=True)
     p.add_argument('--backup-manifest')
     p.add_argument('--drill-report')
-    p.add_argument('--backup-max-age-s', type=int)
+    p.add_argument('--backup-max-age-s', type=int, default=DEFAULT_BACKUP_MAX_AGE_S)
     p.add_argument('--execute', action='store_true')
     p.add_argument('--status-file')
     args = p.parse_args()

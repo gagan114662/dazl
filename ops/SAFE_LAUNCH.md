@@ -48,7 +48,8 @@ manifest (`--backup-manifest`, default `<backup>.json`) whose sourcePath is DB_P
 whose backupPath names this file and whose bytes/sha256 match the file now, a
 `--drill-report` from `restore-drill.ts --report` with ok=true for this backup name
 and sha256 (started at/after the manifest), and an explicit recovery policy
-`--backup-max-age-s` (1s..7d; both manifest and drill must be within it). Integrity
+`--backup-max-age-s` (1s..7d, default 86400 = 24h per owner decision; both manifest
+and drill must be within it). Integrity
 is checked read-only too. The verified file's inode/bytes are re-hashed right before
 SIGTERM; any swap stops with `backup_changed`. `--backup-verified` no longer exists:
 a bare attestation is not evidence. A raw `cp` of a WAL database has no manifest and
