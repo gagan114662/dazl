@@ -237,7 +237,7 @@ test('held lead cannot receive warm followups',async()=>{
 test('reply capture stores the actual root outreach message link, not a guessed signal conversion', async () => {
   const db = await setup(); const s = sentLead(db,'p@one.example')
   await syncReplies(db,'A',{env:genv,master,now:NOW,fetchImpl:gmail({[s.thread]:[msg('linked-reply','p@one.example','Who is this?',NOW-1)]})})
-  const row = db.prepare('SELECT outreach_message_id,lead_id,classification FROM inbound_messages WHERE gmail_id=?').get('linked-reply') as any
+  const row = db.prepare('SELECT outreach_message_id,lead_id,classification FROM inbound_messages WHERE gmail_id=?').get('linked-reply') as { outreach_message_id: unknown; lead_id: unknown; classification: unknown } | undefined
   assert.deepEqual(row,{outreach_message_id:s.mid,lead_id:s.lead,classification:'other'})
 })
 
