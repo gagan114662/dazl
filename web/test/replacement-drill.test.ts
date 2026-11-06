@@ -41,7 +41,10 @@ async function world(opts: { config?: (dir: string, key: string) => string[] } =
   const fx = await fixtureBackup(path.join(d, 'fx'))
   const data = pair('data'), cfg = pair('config')
   const dest = path.join(d, 'offhost'); mkdirSync(dest)
-  const copy = spawnSync('bash', [path.join(ops, 'offhost-copy.sh'), fx.backup], { encoding: 'utf8', env: { ...baseEnv(), OFFHOST_AGE_RECIPIENTS: data.pub, OFFHOST_DEST: dest } as unknown as NodeJS.ProcessEnv })
+  // #360 review: offhost-copy.sh requires DAZL_TOMBSTONE_LEDGER to name an existing file (empty is fine; the app
+  // creates it empty at provisioning, #359) - a synthetic world needs one too, or the copy refuses before anything runs.
+  const ledger = path.join(d, 'tombstones.jsonl'); writeFileSync(ledger, '')
+  const copy = spawnSync('bash', [path.join(ops, 'offhost-copy.sh'), fx.backup], { encoding: 'utf8', env: { ...baseEnv(), OFFHOST_AGE_RECIPIENTS: data.pub, OFFHOST_DEST: dest, DAZL_TOMBSTONE_LEDGER: ledger } as unknown as NodeJS.ProcessEnv })
   assert.equal(copy.status, 0, copy.stdout + copy.stderr)
   const etc = path.join(d, 'etc'); mkdirSync(etc)
   const files = opts.config ? opts.config(etc, fx.key) : (() => {

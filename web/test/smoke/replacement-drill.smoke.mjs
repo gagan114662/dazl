@@ -28,7 +28,10 @@ try {
   }
   const data = pair('data'), cfg = pair('config')
   const dest = path.join(T, 'offhost'); mkdirSync(dest)
-  const env = { PATH: process.env.PATH, HOME: process.env.HOME, OFFHOST_AGE_RECIPIENTS: data.pub, OFFHOST_DEST: dest }
+  // #360 review: offhost-copy.sh requires DAZL_TOMBSTONE_LEDGER to name an existing file (empty is fine; the app
+  // creates it empty at provisioning, #359) - a synthetic world needs one too, or the copy refuses before anything runs.
+  const ledger = path.join(T, 'tombstones.jsonl'); writeFileSync(ledger, '')
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, OFFHOST_AGE_RECIPIENTS: data.pub, OFFHOST_DEST: dest, DAZL_TOMBSTONE_LEDGER: ledger }
   const copy = spawnSync('bash', [path.join(root, '../ops/backup/offhost-copy.sh'), fx.backup], { encoding: 'utf8', env })
   assert.equal(copy.status, 0, copy.stdout + copy.stderr)
   const etc = path.join(T, 'etc'); mkdirSync(etc)
