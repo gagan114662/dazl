@@ -1,5 +1,7 @@
 // #383 criterion 4: which found contacts are VERIFIED CURRENT and which are SEARCH RESULT ONLY.
-// Owner definition (Gagan, 2026-11-03, on PR #566). A contact is verified current only on dated evidence:
+// Windows are BUILDER-CHOSEN defaults (not a verified owner decision; Hermes kept them as defaults on PR #566, 2026-11-04)
+// and can be changed without a code change via DAZL_PEOPLE_FIRST_PARTY_DAYS / DAZL_PEOPLE_PROVIDER_DAYS. A contact is
+// verified current only on dated evidence:
 //   (a) a first-party company page (the company's own site, read by dazl's crawl) names them in that role, and that
 //       reading is within FIRST_PARTY_DAYS (180) days;
 //   (b) the provider's own record (Apollo / People Data Labs) carries a last-confirmed or updated date within
@@ -14,8 +16,13 @@ export type Currency = 'verified_current' | 'search_only'
 export type VerifiedBasis = 'first_party_page' | 'provider_record'
 export interface ContactCurrency { currency: Currency; basis: VerifiedBasis | null; dated: string | null }
 
-export const FIRST_PARTY_DAYS = 180
-export const PROVIDER_DAYS = 90
+// A bad override (non-integer, <1, >3650) falls back to the default: never silently widen the window.
+function windowDays(env: string | undefined, dflt: number): number {
+  const n = env && /^\d{1,4}$/.test(env.trim()) ? Number(env) : NaN
+  return Number.isInteger(n) && n >= 1 && n <= 3650 ? n : dflt
+}
+export const FIRST_PARTY_DAYS = windowDays(process.env.DAZL_PEOPLE_FIRST_PARTY_DAYS, 180)
+export const PROVIDER_DAYS = windowDays(process.env.DAZL_PEOPLE_PROVIDER_DAYS, 90)
 const DAY_MS = 86_400_000
 const SKEW_MS = 5 * 60_000 // a clock a few minutes ahead is not "the future"; anything more is
 
