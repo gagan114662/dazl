@@ -11,7 +11,7 @@ import { tableExists } from './send-budget.ts'
 import { draftOffer } from '../scan/play-offer-text.ts'
 import { captureError } from '../ops/errors.ts'
 import { ENRICH_STALE_S } from '../scan/enrichment.ts'
-import { polishDraft, type LlmDeps } from './draft-llm.ts'
+import { polishDraftWithWords, type LlmDeps } from './draft-llm.ts'
 import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, withdrawLaunchPolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
 import { providers as defaultProviders } from '../llm/provider.ts'
 import { displayAuditDetail } from './stop-reason.ts'
@@ -322,6 +322,9 @@ function draftContext(db: Database.Database, tenantId: string, messageId: string
   const a = authorityInputs(db, tenantId, messageId)
   return a && sha([CONSENT_VERSION, a.to_email, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
 }
+const draftWords = (db: Database.Database, tenantId: string, messageId: string) =>
+  db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { subject: string; body: string } | undefined
+const sameWords = (a: { subject: string; body: string }, b: { subject: string; body: string }) => a.subject === b.subject && a.body === b.body
 // The address of the connected Gmail account (the one the send path sends from), or null when none is connected.
 function gmailSender(db: Database.Database, tenantId: string): string | null {
   return (db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined)?.email.toLowerCase() ?? null
@@ -745,13 +748,20 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     }
     let id: string
     let context: string | null
+    let editedDuringPolish = false
     try {
       id = createDraft(db, tenantId, l.id, businessName)
       context = draftContext(db, tenantId, id)
       // under a calibrated launch every model call reserves its worst case against the launch's spend cap first
       let refused: SpendStop | null = null
       const pd = gate.calibrated ? { ...d, providers: launchProviders((d as LlmDeps).providers ?? defaultProviders, db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, now, why => { refused = why }) } : d
-      try { await polishDraft(db, tenantId, id, businessName, pd) } catch { /* template stays */ }
+      // The words as autopilot drafted them, bound before the polish await (#929). Anything else in the row afterwards is
+      // the owner's (or another writer's) edit: never adopted as autopilot's own authority.
+      const w0 = draftWords(db, tenantId, id)
+      let wrote: { subject: string; body: string } | null = null
+      try { const pr = await polishDraftWithWords(db, tenantId, id, businessName, pd); if (pr.rewritten && pr.words) wrote = pr.words } catch { /* template stays */ }
+      const w1 = draftWords(db, tenantId, id)
+      if (!w0 || !w1 || !(sameWords(w1, w0) || (wrote !== null && sameWords(w1, wrote)))) editedDuringPolish = true
       if (refused) { const why: SpendStop = refused; attempt(() => audit(db, tenantId, 'held_spend', why, l.id, id)); tryPause(why); out.held++; out.stopped = why; return out }
     } catch (e) {
       // Recorded once per reason: a lead refused again for the same reason moves its skipped row's time instead of
@@ -764,6 +774,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     }
     // The polish may change only the words: the offer, seller, sender settings or Gmail address changing across it hands
     // the draft to the user.
+    // An owner edit landed during the polish await: the draft goes back to the owner with their words untouched; autopilot
+    // neither approves nor sends words the owner last wrote, and never treats them as the authority it drafted under.
+    if (editedDuringPolish) { release(id, l.id, 'edited while autopilot was drafting: your words are kept, yours to approve'); continue }
     const expected = draftAuthority(db, tenantId, id)
     if (!context || !expected || draftContext(db, tenantId, id) !== context) { release(id, l.id); continue }
     if (await deliver(id, l.id, 0, expected) === 'stop') return out

@@ -117,9 +117,14 @@ export function parseDraftOutput(text: string): { subject: string; body: string 
 // onboarding profile offer). With no offer anywhere the model would have to invent what the seller sells, so it refuses
 // with 'no_profile'; a contested play refuses too. Every refusal comes before any paid call.
 export async function polishDraft(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult> {
+  const { words: _words, ...r } = await polishDraftWithWords(db, tenantId, messageId, businessName, deps)
+  return r as PolishResult
+}
+// The same, also returning the words it wrote (autopilot binds them to tell its own polish from an owner edit, #929).
+export async function polishDraftWithWords(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult & { words?: { subject: string; body: string } }> {
   const p = pickProvider(db, tenantId, deps)
   if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
-  const msg = db.prepare("SELECT m.id, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string } & LeadCtx & { id: string } | undefined
+  const msg = db.prepare("SELECT m.id, m.subject, m.body, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string; subject: string; body: string } & LeadCtx & { id: string } | undefined
   if (!msg) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
   let memory: Memory | null, r: ReturnType<typeof draftOffer>
   // The owner's claim authority (#402): a launch policy that binds the product truth record. An unreadable policy row
@@ -134,7 +139,7 @@ export async function polishDraft(db: Database.Database, tenantId: string, messa
   if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
   const finish = (outcome: PolishOutcome, d?: DetailedCompletion) => finishAttempt(db, attemptId, outcome, d)
   // usage rides along only when the provider reported it - no undefined keys.
-  const result = (r: PolishResult): PolishResult => { if (r.usage === undefined) delete r.usage; return r }
+  const result = (r: PolishResult & { words?: { subject: string; body: string } }): PolishResult & { words?: { subject: string; body: string } } => { if (r.usage === undefined) delete r.usage; return r }
   try {
     let text: string
     let usage: PolishUsage | undefined
@@ -153,10 +158,12 @@ export async function polishDraft(db: Database.Database, tenantId: string, messa
     // A claim the shipped product does not back (an unshipped channel or integration, an unpublished price, an
     // unbenchmarked comparison): the rewrite is refused and the template stays.
     if (truth && claims && truthClaimIssues(`${parsed.subject}\n${parsed.body}`, truth, { benchmarkUrls: claims.benchmarkUrls, acceptedVersion: claims.productTruthVersion }).length) { finish('blocked_claim', d); return result({ rewritten: false, reason: 'blocked_claim', usage }) }
-    const r = db.prepare("UPDATE outreach_messages SET subject = ?, body = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(parsed.subject, parsed.body, messageId, tenantId)
-    // changes 0 means the draft left 'draft' state between our read and write: the
+    // Compare-and-set on the words the polish started from (#929): an owner edit (or any other writer) during the model
+    // await makes this output void - it never overwrites words the owner has since written.
+    const r = db.prepare("UPDATE outreach_messages SET subject = ?, body = ? WHERE id = ? AND tenant_id = ? AND status = 'draft' AND subject = ? AND body = ?").run(parsed.subject, parsed.body, messageId, tenantId, msg.subject, msg.body)
+    // changes 0 means the draft left 'draft' state or its words changed between our read and write: the
     // tenant's own action won the race - that is superseded, not a provider error.
-    if (r.changes === 1) { finish('rewritten', d); return result({ rewritten: true, vendor: p.vendor, usage }) }
+    if (r.changes === 1) { finish('rewritten', d); return result({ rewritten: true, vendor: p.vendor, usage, words: { subject: parsed.subject, body: parsed.body } }) }
     finish('superseded', d)
     return result({ rewritten: false, reason: 'error', usage })
   } catch (e) {
