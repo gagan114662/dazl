@@ -32,7 +32,7 @@ bothEngines('an invitation is accepted once, by the invited account only, and st
 
   await assert.rejects(acceptInvitation(db, me('C'), inv.token), code('wrong_account'))
   assert.equal(await roleIn(db, 'A', 'C'), null)
-  assert.deepEqual(await acceptInvitation(db, me('B'), inv.token), { tenantId: 'A', role: 'operator' })
+  assert.deepEqual(await acceptInvitation(db, me('B'), inv.token), { tenantId: 'A', role: 'operator' , invitationId: inv.id, joined: true })
   assert.equal(await roleIn(db, 'A', 'B'), 'operator')
   await assert.rejects(acceptInvitation(db, me('B'), inv.token), code('invalid_invite'), 'replay')
   await assert.rejects(acceptInvitation(db, me('B'), 'f'.repeat(64)), code('invalid_invite'), 'unknown')
@@ -48,7 +48,7 @@ bothEngines('an account whose email is unverified cannot accept, even holding th
   await assert.rejects(acceptInvitation(db, me('U'), inv.token), code('email_unverified'))
   assert.equal(await roleIn(db, 'A', 'U'), null)
   await db.run("UPDATE users SET email_verified_at = 1 WHERE id = 'U'")
-  assert.deepEqual(await acceptInvitation(db, me('U'), inv.token), { tenantId: 'A', role: 'admin' })
+  assert.deepEqual(await acceptInvitation(db, me('U'), inv.token), { tenantId: 'A', role: 'admin' , invitationId: inv.id, joined: true })
 })
 
 bothEngines('expired, revoked and replaced links add nothing; an existing member cannot be invited', async ({ db }) => {
@@ -222,7 +222,7 @@ bothEngines('a link carries its inviter\'s authority: once the inviter is remove
   assert.equal(await roleIn(db, 'A', 'Y'), null)
   // a demoted inviter who can still grant the role: the link works
   const stillOk = await createInvitation(db, act('A', 'E', 'admin'), 'x@example.test', 'operator')
-  assert.deepEqual(await acceptInvitation(db, me('X'), stillOk.token), { tenantId: 'A', role: 'operator' })
+  assert.deepEqual(await acceptInvitation(db, me('X'), stillOk.token), { tenantId: 'A', role: 'operator' , invitationId: stillOk.id, joined: true })
 })
 
 bothEngines('replacing a pending invitation takes what revoking it would: an admin cannot replace an owner invitation', async ({ db }) => {
@@ -231,7 +231,7 @@ bothEngines('replacing a pending invitation takes what revoking it would: an adm
   const owner = await createInvitation(db, OWNER_A, 'y@example.test', 'owner')
   await assert.rejects(createInvitation(db, act('A', 'D', 'admin'), 'y@example.test', 'viewer'), code('forbidden'))
   assert.deepEqual((await listInvitations(db, 'A')).map(i => [i.email, i.role]), [['y@example.test', 'owner']])
-  assert.deepEqual(await acceptInvitation(db, me('Y'), owner.token), { tenantId: 'A', role: 'owner' })
+  assert.deepEqual(await acceptInvitation(db, me('Y'), owner.token), { tenantId: 'A', role: 'owner' , invitationId: owner.id, joined: true })
 })
 
 bothEngines('no account is left without a workspace; leaving points the account\'s sessions elsewhere', async ({ db }) => {
@@ -313,7 +313,7 @@ bothEngines('invitation variants: email case and lookalikes, tampered tokens, an
   await assert.rejects(revokeInvitation(db, act('B', 'B', 'owner'), inv.id), code('not_found'))
   assert.deepEqual(await listInvitations(db, 'B', now), [])
   await db.run('UPDATE users SET email=? WHERE id=?',['Q.Mixed@Example.TEST','B'])
-  assert.deepEqual(await acceptInvitation(db, { actorId: 'B', email: 'Q.Mixed@Example.TEST' }, inv.token, now), { tenantId: 'A', role: 'viewer' })
+  assert.deepEqual(await acceptInvitation(db, { actorId: 'B', email: 'Q.Mixed@Example.TEST' }, inv.token, now), { tenantId: 'A', role: 'viewer' , invitationId: inv.id, joined: true })
   // a link is dead at its expiry second, not one second later
   const edge = await createInvitation(db, OWNER_A, 'edge@example.test', 'viewer', now - INVITE_TTL_S)
   await assert.rejects(acceptInvitation(db, { actorId: 'B', email: 'edge@example.test' }, edge.token, now), code('invalid_invite'))

@@ -87,17 +87,20 @@ identifiers and redacted scalars today, so the guard is defence in depth.
 |---|---|
 | credentials | model key save/remove; enrichment key save/remove; social session save/remove; Cal.com signing secret rotation; CRM save/disconnect; Gmail connect (OAuth callback)/disconnect |
 | billing and revenue | checkout started; billing portal opened; Stripe webhook plan changed, plan held, payment failed (`stripe`, `service`) |
-| budget and sending | autopilot enable (with the daily cap), pause, resume, disable; message approve, skip, send (with its outcome), mark sent, retry; sequence approve, stop, resume, mark sent, retry; follow-ups on/off; sender settings changed |
+| budget and sending | autopilot enable (with the daily cap), pause, resume, disable; message approve, skip, send (with its outcome), mark sent, retry; sequence approve, stop, resume, mark sent, retry; re-open (warm again) send (with its outcome), retry, mark sent, skip; follow-ups on/off; sender settings changed |
+| team | invitation created (its role), revoked, accepted (in the workspace joined, under the account that accepted; whether it joined); member role changed (from, to); member removed (its role); member left (its role). Never the invitation's token or link, nor the invitee's address |
+| account and devices | session signed out; signed out everywhere else or everywhere (how many); sign-in address changed (when the new address's link is opened); password reset. Recorded in the account's own workspace (its id), whichever workspace the session acts in; never an address, password or token |
 | CRM | lead pushed (outcome ok, failed or unknown, including a push whose result could not be recorded); unknown result resolved |
 | configuration | business profile, memory and competitors changed (which parts, never their text) |
 | monitors | created (with its interval), paused, resumed, deleted |
 | pipeline | lead quarantined (whether a reason was typed, never the reason), released, confirmed, unconfirmed |
 | consent and channels | social channel notice accepted/revoked; reply-reading consent accepted/revoked; channel on/off |
 | export | lead export (rows, whether fixtures were included); audit export |
-| deletion | warm connections deleted (rows) |
+| deletion | warm connections deleted (rows); commenter import batch deleted (with the leads it made) |
 | policy | refused audit reads |
 
-Every route row above is tested through its real route (`test/audit-routes.test.ts`, `test/audit-coverage.test.ts`):
+Every route row above is tested through its real route (`test/audit-routes.test.ts`, `test/audit-coverage.test.ts`;
+the latter also reads every event back through `GET /api/workspace/audit`, as JSON and as the CSV download):
 each test names the exact events one request adds, and fails if that route's audit call is removed. Stripe's rows are
 tested through `applyStripeEvent` (`test/audit.test.ts`, both engines) and through the real webhook route
 (`test/billing-events.test.ts`, both engines). A request that changes nothing (a repeat send, a disconnect with
@@ -118,8 +121,9 @@ checkout while already on Pro): each has a route-level negative.
   owner decision; it is a behaviour change for every audited route.
 - **Refusals other than the audit read leave no event.** Role refusals (`denied()`, 403) and policy refusals of a
   send or approve (suppressed address, held lead, uncertain-send gate) answer as before, without a `denied` event.
-- **Member, role, invitation and session actions** (#437, #358, now on main) are not recorded yet: this PR keeps to
-  the action list above; wiring the Team and Devices routes is the next increment of #371.
+- **Not recorded yet:** starting a scan or CSV import (credit spend), resuming a CSV batch, a play's offer, switching
+  workspace, sign-in and sign-out, and asking for an email change (only its completion is recorded). None changes a
+  role, credential, send, CRM record or export; recording them is a later increment if wanted.
 - **The retention period itself.** Nothing is deleted until the owner chooses one and sets `AUDIT_RETENTION_DAYS`
   explicitly; the 30-day floor and the 1000-per-tick batch are the only bounds built in.
 - **Time-bounded support access** is not built (below), so this PR is part of #371, not its close.
