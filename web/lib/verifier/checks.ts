@@ -1,12 +1,14 @@
-// Deterministic checks of the independent evidence verifier (#780, part of #395). decide() is a pure function of the
-// claim and the verifier's OWN source snapshots (how those snapshots get fetched is a separate PR's concern - here
-// they are passed in directly, so tests use bounded, injected fixtures and no PR in this scope makes a network or
-// paid call). No model judge is involved: every check here is a deterministic read of text already in hand. Unknown
-// is never pass; a fail is a concrete contradiction on the source (a different city, a future or stale day); a source
-// the verifier could not read makes the checks that need it unknown, never fail.
+// Deterministic checks of the independent evidence verifier (#780/#781, part of #395). decide() is a pure function of
+// the claim and the verifier's OWN source snapshots (how those snapshots get fetched is a separate PR's concern -
+// here they are passed in directly, so tests use bounded, injected fixtures and no PR in this scope makes a network
+// or paid call). No model judge is involved: every check here is a deterministic read of text already in hand.
+// Unknown is never pass; a fail is a concrete contradiction on the source (a different city, a future or stale day,
+// a former employee, a hiring inbox); a source the verifier could not read makes the checks that need it unknown,
+// never fail.
 //
-// Scope (#780 only): claim well-formedness, company identity, domain binding, place and event date, and
-// cross-source date conflicts. Person/contact-route checks are #781's; independent-confirmation/provenance-dependency
+// Scope (#780+#781 only): claim well-formedness, company identity, domain binding, place and event date, cross-source
+// date conflicts (#780); person (current employer/title, former-role rejected) and contact-route (on its own cited
+// source, on the company's domain, not a generic/hiring inbox) (#781). Independent-confirmation/provenance-dependency
 // tracking and semantic-predicate judging are #782's - left out so this PR's diff matches its own title.
 import type { LeadClaim } from './claim.ts'
 import { datesIn, fold, isoDay, isStamp, registrable, sentenceAt, tokenPositions } from './text.ts'
@@ -29,11 +31,17 @@ export interface DecideInput { claim: LeadClaim; problems: string[]; sources: Sn
 
 export const CHECK_VERSIONS = {
   claim_well_formed: 1, company_on_source: 1, domain_bound: 1, place_on_source: 1, event_date_on_source: 1, sources_agree: 1,
+  person_current: 1, contact_on_source: 1, contact_domain: 1, contact_not_recruiting: 1,
 } as const
 type CheckId = keyof typeof CHECK_VERSIONS
 const r = (check: CheckId, subject: string, status: Status, reason: string): CheckResult => ({ check, version: CHECK_VERSIONS[check], subject, status, reason })
 
 const ANNOUNCED = /(?<![\p{L}])(will|plans? to|planning to|is set to|are set to|set to open|upcoming|scheduled|expected to|intends? to|aims? to|later this year|next (?:week|month|year)|coming soon)(?![\p{L}])/u
+const FORMER = /(?<![\p{L}])(?:(?:former|formerly|previously|departed|left (?:the company|in (?:19|20)\d{2}|to join)|retired|alumn(?:us|a|i)|used to|until (?:19|20)\d{2}|no longer)(?![\p{L}])|ex-(?=\p{L}))/u
+// Hiring inboxes, matched on the whole mailbox name before any +tag with punctuation removed (careers+toronto@,
+// talent.acquisition@ and join-us@ are hiring inboxes; hrishi@ and jobsworth@ are not).
+const RECRUITING = /^(?:jobs?|careers?|recruit(?:ing|ment|ers?)?|talent(?:acquisition|team)?|hr|humanresources|people(?:ops|team)?|hiring|apply|applications?|applicants?|cvs?|resumes?|joinus|join(?:theteam)?|workwithus|work|vacanc(?:y|ies)|staffing)$/
+export const isRecruitingMailbox = (email: string) => RECRUITING.test((email.split('@')[0] ?? '').split('+')[0].replace(/[._-]/g, ''))
 
 const PASSAGE = 250
 const near = (a: number[], b: number[], d = PASSAGE) => a.some(x => b.some(y => Math.abs(x - y) <= d))
@@ -132,6 +140,39 @@ export function decide(x: DecideInput): CheckResult[] {
   out.push(conflicts.length
     ? r('sources_agree', 'event', 'unknown', `${conflicts.map(c => c.s.url).join(', ')} date${conflicts.length > 1 ? '' : 's'} the event differently (${[...new Set(conflicts.flatMap(c => eventMentions(c).map(m => m.iso)))].join(', ')})`)
     : r('sources_agree', 'event', 'pass', 'no cited source dates the event differently'))
+
+  // 7. Person: named on the source, with the claimed title in the same passage and tied to the company, and not as a
+  // former holder of the role - a "formerly", "until 20xx" or "ex-" marker next to the name fails, never passes.
+  if (claim.person) {
+    const p = claim.person
+    const e = need(p.source_url, 'person_current', 'person')
+    if (!isRead(e)) out.push(e)
+    else {
+      const at = tokenPositions(e.folded, p.name)
+      const passages = at.map(i => e.folded.slice(Math.max(0, i - 150), i + p.name.length + 150))
+      const sentences = at.map(i => sentenceAt(e.folded, i, i + p.name.length))
+      if (!at.length) out.push(r('person_current', 'person', e.s.truncated ? 'unknown' : 'fail', `${p.name} is not named on ${p.source_url}`))
+      else if (sentences.some(s => FORMER.test(s))) out.push(r('person_current', 'person', 'fail', `the source describes ${p.name} as a former holder ("${sentences.find(s => FORMER.test(s))!.slice(0, 120)}")`))
+      else if (!passages.some(s => s.includes(fold(p.title)))) out.push(r('person_current', 'person', 'unknown', `the title "${p.title}" is not next to ${p.name} on the source`))
+      else if (!tokenPositions(e.folded, claim.company).length && !sameDomain(hostOf(e.s))) out.push(r('person_current', 'person', 'unknown', `the person's source does not tie them to ${claim.company}`))
+      else out.push(r('person_current', 'person', 'pass', `${p.name}, ${p.title}, on the source with no former-role marker`))
+    }
+  }
+
+  // 8. Contact route: the address is printed on its cited source, on the company's own domain, and is not a generic
+  // hiring/recruiting inbox (a buyer route, not a job application address).
+  if (claim.contact) {
+    const c = claim.contact
+    const mailDomain = c.email.split('@')[1] ?? ''
+    out.push(isRecruitingMailbox(c.email) ? r('contact_not_recruiting', 'contact', 'fail', `${c.email.split('@')[0]}@ is a hiring inbox, not a buyer route`)
+      : r('contact_not_recruiting', 'contact', 'pass', 'not a hiring inbox'))
+    out.push(sameDomain(mailDomain) ? r('contact_domain', 'contact', 'pass', `the address is on ${claim.domain}`)
+      : r('contact_domain', 'contact', 'fail', `the address is on ${mailDomain}, not the company's domain ${claim.domain}`))
+    const e = need(c.source_url, 'contact_on_source', 'contact')
+    if (!isRead(e)) out.push(e)
+    else out.push(e.folded.includes(c.email) ? r('contact_on_source', 'contact', 'pass', 'the address is printed on its cited source')
+      : r('contact_on_source', 'contact', e.s.truncated ? 'unknown' : 'fail', `${c.source_url} does not show the address`))
+  }
 
   return out
 }
