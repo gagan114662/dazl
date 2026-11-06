@@ -1,5 +1,5 @@
 import { readinessRows, type ReadinessInput, type Row } from './readiness.ts'
-import { coreSources, socialSources } from './scan/source-availability.ts'
+import { coreSources, NO_SOURCE, socialSources, usableSourceRows } from './scan/source-availability.ts'
 
 // Home's setup checklist toward the first useful result: business profile -> search can run -> first search ->
 // qualified lead -> contact -> draft -> sender setup. Read from the same tenant responses and rows as the full setup
@@ -34,12 +34,13 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
 
   // 2. A search can run: a working AI key (or free searches) and the sources a scan here can use. Only usable ones named.
   const core = coreSources(i.sources ?? null, i.usage ? { has_key: i.usage.has_key, trial: i.usage.trial } : null)
-  const usable = core ? [...core, ...socialSources(i.advanced ?? null)].filter(r => r.usable).map(r => r.label) : []
+  const usable = core ? usableSourceRows([...core, ...socialSources(i.advanced ?? null)]).map(r => r.label) : []
   // The account's scan allowance is checked first: adding a key does not get past a used-up allowance.
   const used = i.usage?.scans_used, limit = i.usage?.scan_limit
   const quotaUsed = typeof used === 'number' && typeof limit === 'number' && used >= limit
   const search: ReadyItem = quotaUsed ? { id: 'search', label: 'Search can run', state: 'todo', detail: `this month's scan allowance is used up (${used} of ${limit})`, fix: { href: '/app/settings#plan', label: 'See your plan' } }
     : key.state === 'unknown' || src.state === 'unknown' ? unknown('search', 'Search can run', key.state === 'unknown' ? key.detail : src.detail)
+    : key.state !== 'todo' && src.state === 'todo' && !usable.length && core ? { id: 'search', label: 'Search can run', state: 'todo', detail: NO_SOURCE, fix: src.fix?.kind === 'link' ? { href: src.fix.href, label: src.fix.label } : null }
     : key.state === 'todo' || src.state === 'todo' ? { id: 'search', label: 'Search can run', state: 'todo', detail: key.state === 'todo' ? key.detail : 'no source can run until your AI key works', fix: { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } }
     : { id: 'search', label: 'Search can run', state: 'done', detail: `${key.detail}. Sources: ${usable.join(', ')}`, fix: null }
 

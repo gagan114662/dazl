@@ -1,5 +1,5 @@
 import { scanOutcome } from './scan/scan-outcome.ts'
-import { coreSources, socialSources, type Advanced, type ServerSources } from './scan/source-availability.ts'
+import { coreSources, NO_SOURCE, socialSources, usableSourceRows, type Advanced, type ServerSources } from './scan/source-availability.ts'
 
 // Home readiness checklist and recent plays. Pure and client-safe: it only reads the existing status endpoints'
 // responses (profile, usage, outreach settings, scan jobs) and never decides anything the server enforces.
@@ -89,7 +89,7 @@ export function readinessRows(i: ReadinessInput): Row[] {
   // Only usable sources are named as usable; every other source is listed as not available, with its reason. Social
   // sources are added only when they loaded (a failed read never lists them either way).
   const all = core ? [...core, ...socialSources(i.advanced ?? null)] : []
-  const usableSources = all.filter(r => r.usable)
+  const usableSources = usableSourceRows(all)
   const off = all.filter(r => !r.usable && r.id !== 'research')
   const offText = off.length ? `. Not available: ${off.map(r => `${r.label} (${r.reason})`).join(', ')}` : ''
   const offFix = off.find(r => r.fix)?.fix
@@ -97,6 +97,8 @@ export function readinessRows(i: ReadinessInput): Row[] {
     // The key row's evidence that the saved key stopped working means web research cannot run either.
     : keyError ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan may not run until you save your AI key again${offText}`, fix: { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' } }
     : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start until you add an AI key${offText}`, fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
+    // A key alone finds no leads (key-based web research is retired, #510/#919): with no discovery source on, say so.
+    : !usableSources.length ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `${NO_SOURCE}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
     : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check - your sending settings did not load', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
