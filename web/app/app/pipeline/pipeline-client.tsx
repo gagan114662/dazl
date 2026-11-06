@@ -1,5 +1,6 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
+import { parseAmountInput } from '@/lib/pipeline/amount'
 
 // Revenue pipeline (#366): this workspace's deals (one per qualified conversation), their owner and stage, the routing
 // rules that assign new ones, and the report rebuilt from the deal history. Every change goes through the API, which
@@ -43,7 +44,8 @@ function DealRow({ d, owners, onDone }: { d: Deal; owners: Owner[]; onDone: (msg
     const body: Record<string, unknown> = { version: d.version }
     if (stage !== d.stage) body.stage = stage
     if (closing && stage !== d.stage) body.close_reason = reason || null
-    const cents = amount.trim() === '' ? null : Math.round(Number(amount) * 100)
+    const cents = parseAmountInput(amount)
+    if (cents === 'invalid') { onDone('The amount must be a number, like 1200 or 1200.50.'); return }
     if (OPEN.includes(d.stage) && (cents !== d.amount_minor || (cents !== null && currency !== d.currency))) { body.amount_minor = cents; body.currency = cents === null ? null : currency }
     onDone(await send(`/api/pipeline/deals/${d.id}`, 'PATCH', body))
   }

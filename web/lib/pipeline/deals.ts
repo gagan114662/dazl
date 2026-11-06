@@ -186,7 +186,7 @@ export function parseChange(b: unknown): DealChange | null {
 // The deal after `c`, or why the change is refused. Pure. Rules:
 //   - open stages move freely among themselves (forward or back); won/lost need a reason from that outcome's list;
 //     won also needs an amount and currency, so won revenue always has a value to report
-//   - a closed deal changes only by reopening it to an open stage (reason, note and closed time are cleared)
+//   - a closed deal changes only by reopening it to an open stage (reason, note, closed time, close date and amount are cleared)
 //   - amount and currency are set together: integer minor units, ISO 4217 shape
 export function applyChange(d: Deal, c: DealChange, owners: Set<string>, now: number): { deal: Deal; kind: 'changed' | 'closed' | 'reopened' } | ChangeError {
   const next: Deal = { ...d }
@@ -208,7 +208,13 @@ export function applyChange(d: Deal, c: DealChange, owners: Set<string>, now: nu
   // directly is refused too (reopen first), so every outcome in the history is a deliberate close.
   if (!wasOpen && !isOpen(to)) return 'bad_transition'
   if (to !== d.stage) {
-    if (!wasOpen) { kind = 'reopened'; next.close_reason = null; next.close_note = c.close_note !== undefined ? next.close_note : null; next.closed_at = null }
+    if (!wasOpen) {
+      // Reopening clears every fact of the old outcome: its close date and (won) amount must not linger on an open deal
+      // and count as open money in the report. Values supplied in this same change are kept (they are fresh).
+      kind = 'reopened'; next.close_reason = null; next.close_note = c.close_note !== undefined ? next.close_note : null; next.closed_at = null
+      if (c.close_date === undefined) next.close_date = null
+      if (c.amount_minor === undefined && c.currency === undefined) { next.amount_minor = null; next.currency = null }
+    }
     if (!isOpen(to)) {
       const reasons: readonly string[] = to === 'won' ? WON_REASONS : LOST_REASONS
       if (!c.close_reason) return 'reason_required'

@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { bothEngines, type EngineCtx } from './helpers/engines.ts'
 import { addRule, applyChange, changeDeal, deactivateRule, getDeal, listDeals, listRules, parseChange, parseRule, pickOwner, pipelineReport, routeQualifiedConversations, routingTenants, stateAt, type Deal } from '../lib/pipeline/deals.ts'
+import { parseAmountInput } from '../lib/pipeline/amount.ts'
 
 const A = 'pipe-tenant-a', B = 'pipe-tenant-b', NOW = 1_900_000_000
 const n = async (c: EngineCtx, sql: string, p: (string | number)[] = []) => Number((await c.db.get<{ n: number }>(sql, p))?.n ?? 0)
@@ -179,6 +180,45 @@ bothEngines('report: one count per canonical deal, money per currency, rebuilt a
 
 // Pure rules, no store.
 const base: Deal = { id: 'd', thread_id: 't', lead_id: 'l', title: 'x', owner_id: null, stage: 'new', amount_minor: null, currency: null, close_date: null, close_reason: null, close_note: null, rule_id: null, route_reason: 'rule', sla_due_at: null, created_at: 1, updated_at: 1, closed_at: null, version: 1 }
+bothEngines('reopen clears the old outcome: close date and won amount do not linger on an open deal or in its open money (#619 review)', async c => {
+  await seed(c, A)
+  await addRule(c.db, A, A, rule({ match_kind: 'any', owner_id: A }), { now: NOW })
+  await routeQualifiedConversations(c.db, A, { now: NOW })
+  const d = (await listDeals(c.db, A)).find(x => x.thread_id === `${A}-T1`)!
+  let v = d.version
+  const step = async (ch: Parameters<typeof changeDeal>[5], at: number) => { const r = await changeDeal(c.db, A, `${A}-op`, d.id, v, ch, { now: at }); assert.ok(r.ok, JSON.stringify(r)); v = r.deal.version; return r.deal }
+  await step({ stage: 'proposal', amount_minor: 500_000, currency: 'USD' }, NOW + 10)
+  const won = await step({ stage: 'won', close_reason: 'fit', close_date: '2026-10-01' }, NOW + 20)
+  assert.deepEqual([won.close_date, won.amount_minor, won.currency], ['2026-10-01', 500_000, 'USD'])
+  const open = await step({ stage: 'proposal' }, NOW + 30)
+  assert.deepEqual([open.close_date, open.amount_minor, open.currency, open.close_reason, open.closed_at], [null, null, null, null, null])
+  const g = (await getDeal(c.db, A, d.id))!
+  assert.deepEqual(g.deal, { ...g.deal, close_date: null, amount_minor: null, currency: null })
+  const snap = g.history.at(-1)!
+  assert.deepEqual([snap.kind, snap.stage, snap.amount_minor, snap.currency, snap.close_reason], ['reopened', 'proposal', null, null, null], 'history snapshot agrees')
+  const rep = await pipelineReport(c.db, A, { now: NOW + 31 })
+  assert.deepEqual(rep.open.amounts, {}, 'no stale won money in open amounts')
+  assert.equal(rep.reconciliation.mismatched, 0)
+  // the next close sets fresh values
+  const again = await step({ stage: 'won', close_reason: 'fit', amount_minor: 700_000, currency: 'CAD', close_date: '2026-11-05' }, NOW + 40)
+  assert.deepEqual([again.close_date, again.amount_minor, again.currency], ['2026-11-05', 700_000, 'CAD'])
+})
+
+test('reopen keeps an amount or close date supplied in the same change', () => {
+  const owners = new Set(['m1'])
+  const wonDeal: Deal = { ...base, stage: 'won', amount_minor: 100, currency: 'USD', close_date: '2026-10-01', close_reason: 'fit', closed_at: 5 }
+  const r = applyChange(wonDeal, { stage: 'proposal', amount_minor: 300, currency: 'EUR' }, owners, 9)
+  assert.ok(typeof r === 'object'); assert.deepEqual([r.deal.amount_minor, r.deal.currency, r.deal.close_date, r.kind], [300, 'EUR', null, 'reopened'])
+})
+
+test('parseAmountInput: garbage is refused, never sent as a null that clears a stored amount (#619 review)', () => {
+  assert.equal(parseAmountInput(''), null); assert.equal(parseAmountInput('   '), null)
+  assert.equal(parseAmountInput('1200'), 120_000); assert.equal(parseAmountInput('1200.5'), 120_050); assert.equal(parseAmountInput(' 0.07 '), 7)
+  for (const bad of ['abc', 'NaN', '1e3', '-5', '12.345', '1,200', 'Infinity', '9'.repeat(30)]) assert.equal(parseAmountInput(bad), 'invalid', bad)
+  // JSON would turn NaN into null; the parser never yields NaN
+  assert.equal(JSON.stringify({ a: parseAmountInput('abc') }), '{"a":"invalid"}')
+})
+
 test('applyChange / parseChange / parseRule / pickOwner refuse anything malformed', () => {
   const owners = new Set(['m1'])
   assert.equal(applyChange(base, {}, owners, 2), 'no_change')
