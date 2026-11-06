@@ -33,7 +33,7 @@ export const CHECK_VERSIONS = {
 type CheckId = keyof typeof CHECK_VERSIONS
 const r = (check: CheckId, subject: string, status: Status, reason: string): CheckResult => ({ check, version: CHECK_VERSIONS[check], subject, status, reason })
 
-const ANNOUNCED = /(?<![\p{L}])(will|plans? to|planning to|is set to|are set to|set to open|upcoming|scheduled|expected to|intends? to|aims? to|later this year|next (?:week|month|year)|coming soon)(?![\p{L}])/u
+const ANNOUNCED = /(?<![\p{L}])(will|plans? to|planning to|is set to|are set to|set to open|upcoming|scheduled|expected to|intends? to|aims? to|later this year|next (?:week|month|year)|coming soon|announc\w*|opening for)(?![\p{L}])/u
 
 const PASSAGE = 250
 const near = (a: number[], b: number[], d = PASSAGE) => a.some(x => b.some(y => Math.abs(x - y) <= d))
@@ -74,27 +74,37 @@ export function decide(x: DecideInput): CheckResult[] {
         : r('company_on_source', `source:${e.s.url}`, 'fail', `the source never names "${claim.company}"`))
   }
 
-  // 3. Domain binding: the event source is on the claimed domain, names it, or links to it - otherwise a same-name
-  // company on a different domain cannot be ruled out, so this is unknown, never a false pass.
+  // 3. Domain binding: the event source is on the claimed domain, or names it in the same passage as the company
+  // itself (not merely anywhere on the page - an unrelated footer, ad or disclaimer naming or linking the domain
+  // must not bind a same-name company to it). A registrable domain that cannot be determined for either side (an IP,
+  // a bare TLD, a malformed host) is never treated as a match. Otherwise a same-name company on a different domain
+  // cannot be ruled out, so this is unknown, never a false pass.
   const hostOf = (s: Snapshot) => { try { return new URL(s.final_url ?? s.url).hostname } catch { return null } }
-  const sameDomain = (host: string | null) => !!host && registrable(host) === registrable(claim.domain)
+  const sameDomain = (host: string | null) => { const a = host && registrable(host), b = registrable(claim.domain); return !!a && !!b && a === b }
   if (isRead(primary)) {
-    const domainNamed = tokenPositions(primary.folded, claim.domain).length > 0
-    const linked = primary.s.linked_domains.includes(registrable(claim.domain) ?? claim.domain)
+    const companyAt = tokenPositions(primary.folded, claim.company)
+    const domainNamedNear = near(tokenPositions(primary.folded, claim.domain), companyAt)
     out.push(sameDomain(hostOf(primary.s)) ? r('domain_bound', 'company', 'pass', `the event source is on ${claim.domain} itself`)
-      : domainNamed || linked ? r('domain_bound', 'company', 'pass', `the event source ${domainNamed ? 'names' : 'links to'} ${claim.domain}`)
-        : r('domain_bound', 'company', 'unknown', `the event source neither is on, names nor links to ${claim.domain}: a same-name company cannot be ruled out`))
+      : domainNamedNear ? r('domain_bound', 'company', 'pass', `the event source names ${claim.domain} next to "${claim.company}"`)
+        : r('domain_bound', 'company', 'unknown', `the event source neither is on ${claim.domain} nor names it next to "${claim.company}": a same-name company cannot be ruled out`))
   } else out.push(r('domain_bound', 'company', 'unknown', 'the event source could not be read'))
 
-  // 4. Geography: the claimed city is on a source that names the company, as a whole word.
+  // 4. Geography: the claimed city is named next to the company (not merely anywhere on the page - a page can
+  // mention an unrelated city in some other passage, e.g. a different office, without that being where this event
+  // happened). When a country is also claimed, the same source must independently state it too, otherwise an
+  // identically-named city elsewhere (London, Ontario vs London, United Kingdom) cannot be ruled out and this stays
+  // unknown rather than a false pass.
   if (!claim.place) out.push(r('place_on_source', 'company', 'unknown', 'no place is claimed'))
   else {
+    const place = claim.place
     const reads = eventReads.filter(isRead)
-    const hit = reads.find(e => tokenPositions(e.folded, claim.place!.city).length)
-    out.push(hit ? r('place_on_source', 'company', 'pass', `${claim.place.city} is on ${hit.s.url}`)
+    const cityNear = reads.find(e => near(tokenPositions(e.folded, place.city), tokenPositions(e.folded, claim.company)))
+    const countryConfirmed = !place.country || (!!cityNear && tokenPositions(cityNear.folded, place.country).length > 0)
+    out.push(cityNear && countryConfirmed ? r('place_on_source', 'company', 'pass', `${place.city} is named next to "${claim.company}" on ${cityNear.s.url}`)
+      : cityNear ? r('place_on_source', 'company', 'unknown', `${place.city} is named next to "${claim.company}" on ${cityNear.s.url}, but it never confirms ${place.country}: an identically-named city elsewhere cannot be ruled out`)
       : reads.length === 0 ? r('place_on_source', 'company', 'unknown', 'no event source could be read')
-        : reads.some(e => e.s.truncated) ? r('place_on_source', 'company', 'unknown', `${claim.place.city} is not in the readable part of the sources`)
-          : r('place_on_source', 'company', 'fail', `no cited source places the company in ${claim.place.city}`))
+        : reads.some(e => e.s.truncated) ? r('place_on_source', 'company', 'unknown', `${place.city} is not next to "${claim.company}" in the readable part of the sources`)
+          : r('place_on_source', 'company', 'fail', `no cited source names ${place.city} next to "${claim.company}"`))
   }
 
   // 5. Event date: stated in the source's own text (not only as its publication stamp or metadata), bound to the company
@@ -109,7 +119,13 @@ export function decide(x: DecideInput): CheckResult[] {
   else if (age < 0) out.push(r('event_date_on_source', 'event', 'fail', `event date ${dateReal} is after as_of ${asOfDay}: it has not happened`))
   else if (age > x.windowDays) out.push(r('event_date_on_source', 'event', 'fail', `event date ${dateReal} is ${age} days before as_of, outside the ${x.windowDays}-day window`))
   else if (!isRead(primary)) out.push(r('event_date_on_source', 'event', 'unknown', 'the event source could not be read'))
-  else {
+  else if (primary.s.meta_days.includes(dateReal)) {
+    // A publication/modification day the page itself declares (a pubdate-flagged <time>, a <meta> tag, JSON-LD) always
+    // wins over any visible-text mention of the same calendar day: a byline date next to the company by pure
+    // proximity ("By Staff Writer Oct 20 ... Harbor Ledger Analytics opened its office in 2019") must not be read as
+    // confirming the event, however near the company name it happens to sit.
+    out.push(r('event_date_on_source', 'event', 'fail', `${dateReal} is only the page's publication/update date, not a date the page gives the event`))
+  } else {
     const all = datesIn(primary.folded)
     const bound = eventMentions(primary).filter(m => m.iso === dateReal)
     if (bound.length) {
@@ -117,7 +133,7 @@ export function decide(x: DecideInput): CheckResult[] {
       out.push(ANNOUNCED.test(sentence)
         ? r('event_date_on_source', 'event', 'unknown', `the source announces ${dateReal} ("${sentence.slice(0, 120)}") but does not say it happened`)
         : r('event_date_on_source', 'event', 'pass', `the source states ${dateReal} next to "${claim.company}"`))
-    } else if (all.some(m => m.iso === dateReal && isStamp(primary.folded, m)) || primary.s.meta_days.includes(dateReal)) {
+    } else if (all.some(m => m.iso === dateReal && isStamp(primary.folded, m))) {
       out.push(r('event_date_on_source', 'event', 'fail', `${dateReal} is only the page's publication/update date, not a date the page gives the event`))
     } else if (all.some(m => m.iso === dateReal)) {
       out.push(r('event_date_on_source', 'event', 'unknown', `${dateReal} is on the source but not in a passage about "${claim.company}"`))

@@ -15,13 +15,47 @@ export function decodeEntities(s: string): string {
   })
 }
 
+// Every tag in `html`, from its opening `<` through the matching (quote-aware) `>`. A naive `<[^>]+>` stops at the
+// first `>`, including one inside a quoted attribute value - a page can hide readable-looking text there
+// (`<div data-x="a > FAKE EVIDENCE">`) that a naive stripper would leave behind as though it were content.
+function stripTags(s: string): string {
+  let out = ''
+  for (let i = 0; i < s.length;) {
+    if (s[i] !== '<') { out += s[i]; i++; continue }
+    i++
+    let quote: string | null = null
+    while (i < s.length && (quote || s[i] !== '>')) {
+      if (quote) { if (s[i] === quote) quote = null }
+      else if (s[i] === '"' || s[i] === "'") quote = s[i]
+      i++
+    }
+    i++ // past the closing '>' (or end of string for an unterminated tag)
+    out += ' '
+  }
+  return out
+}
+
+// A bare `<time datetime="...">` (no pubdate/itemprop) is ordinary page content, not a publication stamp
+// (metadataDays below only counts the publication-flagged form) - but its ISO value is often the ONLY place the
+// full year appears (a byline shows "Oct 20", the year lives only in the attribute). Inject it into the text
+// stream next to the element's own visible text so datesIn/isStamp/near can read it like any other date mention,
+// at the position where the element actually occurs - never floated to an unrelated passage.
+function inlineTimeElements(html: string): string {
+  return html.replace(/<time\b([^>]*)>([\s\S]*?)<\/time\s*>/gi, (whole, attrs: string, inner: string) => {
+    const dt = /\bdatetime\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1]
+    if (!dt) return whole
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dt.trim())
+    const iso = m && isoDay(+m[1], +m[2], +m[3])
+    return iso ? `${inner} ${iso} ` : whole
+  })
+}
+
 // Visible text of an HTML page: scripts, styles and markup removed, block boundaries kept as line breaks.
 export function htmlToText(html: string): string {
-  return decodeEntities(html
+  return decodeEntities(stripTags(inlineTimeElements(html)
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, ' ')
-    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article|\/header|\/footer)\b[^>]*>/gi, '\n')
-    .replace(/<[^>]+>/g, ' '))
+    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article|\/header|\/footer)\b[^>]*>/gi, '\n')))
     .replace(/[ \t\f\v\r]+/g, ' ')
     .replace(/ *\n[\n ]*/g, '\n')
     .trim()
@@ -90,7 +124,10 @@ export function sentenceAt(folded: string, i: number, j = i): string {
   return folded.slice(start + 1, ends.length ? Math.min(...ends) : folded.length).trim()
 }
 
-// Publication / modification days the page declares in metadata (meta tags, JSON-LD, <time datetime>).
+// Publication / modification days the page declares in metadata (meta tags, JSON-LD, a publication-flagged <time>).
+// A bare <time datetime="..."> with no pubdate attribute or publication itemprop is ordinary page content (an event
+// date, say) - htmlToText's inlineTimeElements puts its value in the visible text stream instead, where normal
+// passage-binding and isStamp() wording checks apply to it like any other date mention.
 export function metadataDays(html: string): string[] {
   const out = new Set<string>()
   const add = (v: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.trim()); const d = m && isoDay(+m[1], +m[2], +m[3]); if (d) out.add(d) }
@@ -102,14 +139,24 @@ export function metadataDays(html: string): string[] {
     }
   }
   for (const m of html.matchAll(/"date(?:Published|Modified|Created)"\s*:\s*"([^"]+)"/g)) add(m[1])
-  for (const m of html.matchAll(/<time\b[^>]*datetime\s*=\s*["']([^"']+)["']/gi)) add(m[1])
+  for (const m of html.matchAll(/<time\b[^>]*>/gi)) {
+    const tag = m[0]
+    if (!/\bpubdate\b/i.test(tag) && !/\bitemprop\s*=\s*["']?(?:datepublished|datemodified)["'\s>]/i.test(tag)) continue
+    const dt = /\bdatetime\s*=\s*["']([^"']+)["']/i.exec(tag)
+    if (dt) add(dt[1])
+  }
   return [...out].sort()
 }
 
+// allowPrivateDomains: without it, tldts normalizes a known multi-tenant host suffix (github.io, vercel.app, ...) only
+// down to the public suffix itself, so two unrelated tenants (realco.github.io, otherco.github.io) would both
+// normalize to "github.io" and compare equal - scan/lookalike-discovery.ts enables the same option for the same
+// reason. A host with no registrable domain at all (an IP, a bare TLD) returns null here, and sameDomain (checks.ts)
+// never treats two nulls as a match.
 export function registrable(hostOrUrl: string): string | null {
   let host = hostOrUrl.trim().toLowerCase()
   try { if (/^https?:\/\//.test(host)) host = new URL(host).hostname } catch { return null }
-  return getDomain(host.replace(/^\.+|\.+$/g, '')) ?? null
+  return getDomain(host.replace(/^\.+|\.+$/g, ''), { allowPrivateDomains: true }) ?? null
 }
 
 // Registrable domains the page links to, and its declared canonical URL.
