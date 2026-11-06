@@ -10,19 +10,36 @@ export default function NewsjackPanel() {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [copied, setCopied] = useState('')
-  async function load() { const r = await fetch('/api/seo/newsjack'); if (r.ok) setItems((await r.json()).newsjacks) }
-  useEffect(() => { void load() }, [])
+  // #902: explicit load error + retry, busy always cleared, approve shown only after the server confirms it.
+  const [loadErr, setLoadErr] = useState('')
+  async function load() {
+    try {
+      const r = await fetch('/api/seo/newsjack')
+      if (!r.ok) { setLoadErr(`Could not load drafts (error ${r.status}).`); return }
+      const j = await r.json().catch(() => null)
+      if (!j || !Array.isArray(j.newsjacks)) { setLoadErr('Could not load drafts (unexpected response).'); return }
+      setItems(j.newsjacks); setLoadErr('')
+    } catch { setLoadErr('Could not load drafts. Check your connection.') }
+  }
+  useEffect(() => { void Promise.resolve().then(load) }, [])
   async function create() {
     setBusy(true); setMsg('')
-    const r = await fetch('/api/seo/newsjack', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) })
-    const j = await r.json().catch(() => ({}))
-    setBusy(false)
-    if (!r.ok) { setMsg(j.error || 'Could not draft'); return }
-    setUrl('')
+    try {
+      const r = await fetch('/api/seo/newsjack', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setMsg(j.error || `Could not draft (error ${r.status}).`); return }
+      setUrl('')
+    } catch {
+      setMsg('Could not reach dazl, so the draft may or may not exist. Check the list below before trying again.')
+    } finally { setBusy(false) }
     void load()
   }
   async function approve(id: string) {
-    await fetch('/api/seo/newsjack', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'approve', id }) })
+    setMsg('')
+    try {
+      const r = await fetch('/api/seo/newsjack', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'approve', id }) })
+      if (!r.ok) { const j = await r.json().catch(() => ({})); setMsg(j.error || `Not approved (error ${r.status}). Try again.`) }
+    } catch { setMsg('Could not reach dazl, so the approval may not have saved. The list below shows the confirmed state.') }
     void load()
   }
   async function copy(id: string, text: string) {
@@ -36,7 +53,8 @@ export default function NewsjackPanel() {
         <input className="field flex-1" type="url" placeholder="https://news-site.example/big-story" value={url} onChange={e => setUrl(e.target.value)} maxLength={480} />
         <button className="btn-primary text-sm" disabled={busy || !url.trim().startsWith('https://')} onClick={create}>{busy ? 'Reading + drafting...' : 'Draft take'}</button>
       </div>
-      {msg && <p className="text-sm text-red-700 mb-2">{msg}</p>}
+      {msg && <p role="alert" className="text-sm text-red-700 mb-2" data-testid="newsjack-error">{msg}</p>}
+      {loadErr && <p role="alert" className="text-sm text-red-700 mb-2" data-testid="newsjack-load-error">{loadErr} <button className="underline" onClick={() => void load()}>Try again</button></p>}
       {items.map(n => (
         <details key={n.id} className="text-sm mb-2" open={n.status === 'draft'}>
           <summary className="cursor-pointer font-medium">
