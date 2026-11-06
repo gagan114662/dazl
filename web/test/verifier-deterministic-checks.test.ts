@@ -1,9 +1,9 @@
 // Independent evidence verifier, deterministic checks only (#780, part of #395). Every company, page and address below
 // is SYNTHETIC and every source is a hand-built fixture: decide() is exercised directly with bounded, injected
-// Snapshot[] fixtures, never a real fetch, never a model judge, never a paid call. Scope: company/domain/geography and
-// event date corroboration, and cross-source date conflicts - wrong-city, same-name-different-domain, a stale
-// publication date standing in for the event date, a future-dated event, and sources that disagree never pass, and
-// uncertain evidence holds (unknown) rather than being accepted.
+// Snapshot[] fixtures, never a real fetch, never a model judge, never a paid call. Scope: company/domain/geography,
+// event date and quote corroboration, and cross-source date conflicts - wrong-city, same-name-different-domain, a
+// stale publication date standing in for the event date, a future-dated event, a fabricated/stitched quote, and
+// sources that disagree never pass, and uncertain evidence holds (unknown) rather than being accepted.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { blindClaim, type LeadClaim } from '../lib/verifier/claim.ts'
@@ -24,6 +24,7 @@ const CLAIM: LeadClaim = {
   company: 'Harbor Ledger Analytics', domain: 'harborledger.example',
   place: { city: 'London', country: 'United Kingdom' },
   event: { date: '2026-10-20', source_url: OWN, corroborating_urls: [] },
+  quotes: [],
 }
 const GENUINE = page('<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>')
 
@@ -191,4 +192,36 @@ test('blindClaim drops anything the producer sent beyond the allowlisted fields,
   const { claim, dropped } = blindClaim({ ...CLAIM, model: 'producer-model-x', rationale: 'trust me', verified: true, score: 97 })
   assert.deepEqual(claim, CLAIM)
   assert.deepEqual(dropped, ['model', 'rationale', 'score', 'verified'])
+})
+
+test('a genuine verbatim quote on its cited source passes', () => {
+  const html = page(`<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>
+    <p>"We are hiring our first sales team in London," said a spokesperson.</p>`)
+  const claim: LeadClaim = { ...CLAIM, quotes: [{ text: 'We are hiring our first sales team in London', source_url: OWN }] }
+  assert.deepEqual(statusOf(run(claim, [snap(OWN, html)]), 'quote_on_source'), ['pass'])
+})
+
+test('a fabricated quote - never on the cited source - fails, and the producer\'s own excerpt/verified flag cannot rescue it', () => {
+  const claim: LeadClaim = { ...CLAIM, quotes: [{ text: 'We plan to triple headcount in London', source_url: OWN }] }
+  const checks = run(claim, [snap(OWN, GENUINE)])
+  assert.deepEqual(statusOf(checks, 'quote_on_source'), ['fail'])
+  assert.notEqual(overall(checks).action, 'accept')
+})
+
+test('a "..." quote must have both halves present and in order - stitching two unrelated fragments together fails', () => {
+  const html = page('<p>Harbor Ledger Analytics opened its office. Unrelated filler. The team plans further hiring next year.</p>')
+  // "opened its office" ... "Unrelated filler" - never in order as one coherent quote, must fail
+  const claim: LeadClaim = { ...CLAIM, quotes: [{ text: 'further hiring next year ... opened its office', source_url: OWN }] }
+  assert.deepEqual(statusOf(run(claim, [snap(OWN, html)]), 'quote_on_source'), ['fail'])
+})
+
+test('a quote cited to an unreadable source is unknown, never fail - a verifier defect cannot sink a lead', () => {
+  const claim: LeadClaim = { ...CLAIM, quotes: [{ text: 'anything', source_url: OWN }] }
+  assert.deepEqual(statusOf(run(claim, [snap(OWN, GENUINE, { outcome: 'error', text: '' })]), 'quote_on_source'), ['unknown'])
+})
+
+test('quotes are optional: a claim with none runs no quote_on_source check and is unaffected', () => {
+  const checks = run(CLAIM, [snap(OWN, GENUINE)])
+  assert.deepEqual(statusOf(checks, 'quote_on_source'), [])
+  assert.deepEqual(overall(checks), { verdict: 'pass', action: 'accept' })
 })

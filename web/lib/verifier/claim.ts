@@ -4,15 +4,18 @@
 // are dropped before any check runs (their field NAMES are kept for the audit trail, never their values). The verifier
 // always fetches the cited pages itself (service.ts, a separate PR) rather than trusting the producer's copy.
 //
-// Scope (#780 only): company identity, domain binding, place and event date. Person/contact-route fields are #781's;
-// quotes, predicates and cross-producer blinding/provenance plumbing are later #395 splits (#781/#782) - out of scope
-// here so this PR's diff matches its own title.
+// Scope (#780 only): company identity, domain binding, place, event date, and quote corroboration - all
+// deterministic (verbatim text matching), so quotes are this PR's, not #782's (a separately configured model judge,
+// which #780/#781/#782 never need: quote_on_source is a plain substring match, exactly like company/place/date).
+// Person/contact-route fields are #781's; predicates and cross-producer blinding/provenance plumbing are #782's -
+// out of scope here so this PR's diff matches its own title.
 
 export interface LeadClaim {
   company: string
   domain: string                                   // the company's own registrable domain
   place: { city: string; country: string | null } | null
   event: { date: string; source_url: string; corroborating_urls: string[] }
+  quotes: { text: string; source_url: string }[]
 }
 
 export interface Blinded {
@@ -21,8 +24,8 @@ export interface Blinded {
   problems: string[]       // why the claim cannot be fully evaluated (missing or malformed parts)
 }
 
-export const LIMITS = { text: 500, urls: 5 }
-const CLAIM_KEYS = new Set(['company', 'domain', 'place', 'event'])
+export const LIMITS = { text: 500, urls: 5, quotes: 5 }
+const CLAIM_KEYS = new Set(['company', 'domain', 'place', 'event', 'quotes'])
 
 const str = (v: unknown, max = LIMITS.text): string | null => typeof v === 'string' && v.trim() !== '' && v.length <= max ? v.trim() : null
 const obj = (v: unknown): Record<string, unknown> | null => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null
@@ -63,9 +66,23 @@ export function blindClaim(raw: unknown): Blinded {
     return { date, source_url, corroborating_urls }
   })
 
+  // Quotes are optional - a claim that cites none is not thereby malformed, it simply has no quote_on_source checks.
+  const quotesIn = input.quotes
+  let quotes: { text: string; source_url: string }[] = []
+  if (quotesIn !== undefined && quotesIn !== null) {
+    if (!Array.isArray(quotesIn) || quotesIn.length > LIMITS.quotes) problems.push('quotes is malformed')
+    else quotes = quotesIn.flatMap((x, i) => {
+      const o = obj(x)
+      if (!o) { problems.push(`quotes[${i}] is malformed`); return [] }
+      const q = take(o, `quotes[${i}]`, ['text', 'source_url'], oo => { const text = str(oo.text), source_url = httpUrl(oo.source_url); return text && source_url ? { text, source_url } : null })
+      return q ? [q] : []
+    })
+  }
+
   const claim: LeadClaim = {
     company: company ?? '', domain: domain ?? '', place,
     event: event ?? { date: '', source_url: '', corroborating_urls: [] },
+    quotes,
   }
   return { claim, dropped: [...dropped].sort(), problems: [...new Set(problems)] }
 }
