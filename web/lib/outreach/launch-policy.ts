@@ -175,9 +175,24 @@ export function parsePolicy(v: unknown): LaunchPolicy {
   }
 }
 
-export function acceptLaunchPolicy(db: Database.Database, tenantId: string, input: unknown, nowS: number): { ok: true } | { ok: false; problems: PolicyProblem[] } {
+// No defaults at acceptance (#800): parsePolicy fills an absent field so a stored row always reads, but an owner accepting
+// a policy states every authority field. An absent exclusions list would silently mean "exclude nobody"; absent claim and
+// stop fields would be accepted on the tenant's behalf. Each must be present with its own type (an empty list is a valid,
+// explicit answer). Checked on the raw input only, so policies already stored are read exactly as before.
+export const EXPLICIT_FIELDS = ['exclusions.domains', 'exclusions.emails', 'claims.mayStatePrice', 'claims.benchmarkUrls', 'stops.pauseOnAnyReply'] as const
+export function implicitFields(input: unknown): string[] {
+  const at = (path: string): unknown => path.split('.').reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), input)
+  return EXPLICIT_FIELDS.filter(f => {
+    const v = at(f)
+    return f.endsWith('Price') || f.endsWith('Reply') ? typeof v !== 'boolean' : !Array.isArray(v)
+  })
+}
+
+export type AcceptProblem = PolicyProblem | 'field_not_explicit'
+export function acceptLaunchPolicy(db: Database.Database, tenantId: string, input: unknown, nowS: number): { ok: true } | { ok: false; problems: AcceptProblem[] } {
   const policy = parsePolicy(input)
-  const problems = policyProblems(policy)
+  const problems: AcceptProblem[] = policyProblems(policy)
+  if (implicitFields(input).length) problems.push('field_not_explicit')
   // Only the record as it is now can be accepted: an owner accepts what dazl ships today, never an older record.
   if (policy.claims.productTruthVersion !== undefined && !problems.includes('product_truth_invalid') && policy.claims.productTruthVersion !== productTruth().version) problems.push('product_truth_not_current')
   if (problems.length) return { ok: false, problems }
