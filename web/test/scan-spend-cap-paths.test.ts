@@ -7,7 +7,8 @@
 //     made, and a scan at its cap makes no request at all (the refusal is recorded). No network: every fetch is a stub.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import Database from 'better-sqlite3'
 import { sqliteDb } from '../lib/db/client.ts'
@@ -19,6 +20,8 @@ import { apolloOrgEnrich, apolloPeopleSearch } from '../lib/enrich/apollo.ts'
 import { pdlPeopleSearch } from '../lib/enrich/pdl.ts'
 import { renderViaService } from '../lib/scan/fetch-page.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendContext, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
+import { runValidation, RUN_RECORD_CONTRACT, type RunDeps } from '../lib/evals/judge-validation-run.ts'
+import type { JudgeCorpus } from '../lib/evals/judge.ts'
 
 const ROOT = new URL('..', import.meta.url).pathname
 // PAID: endpoint -> the only module that may call it, and the kind it reserves.
@@ -34,6 +37,14 @@ const PAID: Record<string, { file: string; kind: SpendKind[] }> = {
 // Files that may NAME a paid endpoint without calling it (labels, not requests).
 const NAMES_ONLY: Record<string, string> = {
   'lib/evals/trace.ts': 'maps recorded request URLs to labels for trace capture; makes no request',
+}
+// A paid endpoint also called by a SEPARATE, narrowly-scoped runner that is never scan work and is never routed through
+// the scan spend cap: it has its own pre-send reservation, a persisted ledger and an owner-approved one-run claim gate
+// (#396, reviewer contract on #626/#640). Scoped to exactly one (endpoint, file) pair each: a second file naming the
+// same endpoint still falls through to `misplaced` below, and the test under "claim-gated runner" asserts the file
+// still shows its own guard and never piggybacks on reserveScanSpend.
+const CLAIM_GATED: Record<string, { file: string }> = {
+  'https://api.anthropic.com/v1/messages': { file: 'lib/evals/judge-validation-run.ts' },
 }
 // FREE: endpoints with no per-call charge to dazl or the tenant, or not on any scan path.
 const FREE: Record<string, string> = {
@@ -83,19 +94,58 @@ const SOURCES = [...files(join(ROOT, 'lib')), ...files(join(ROOT, 'app'))].map(p
 const ENDPOINT = /https:\/\/[a-z0-9.-]*(?:api[a-z0-9.-]*|googleapis\.com|r\.jina\.ai)[^'"`\s?$)]*/g
 const ENV_ENDPOINT = /\benv\.([A-Z0-9_]*(?:URL|ENDPOINT|BASE|HOST)[A-Z0-9_]*)/g
 
-test('inventory: every API endpoint and env-configured endpoint in lib/ and app/ is classified as paid (gated) or free', () => {
+// Pure so the narrow-scoping (a second, unexpected file naming a CLAIM_GATED endpoint must still fail) can be proved
+// against a synthetic source list, not only read off whatever happens to be on disk today.
+function classify(sources: { rel: string; text: string }[]): { unknown: string[]; misplaced: string[] } {
   const unknown: string[] = []
   const misplaced: string[] = []
-  for (const { rel, text } of SOURCES) {
+  for (const { rel, text } of sources) {
     const found = [...new Set([...[...text.matchAll(ENDPOINT)].map(m => m[0]), ...[...text.matchAll(ENV_ENDPOINT)].map(m => `env:${m[1]}`)])]
     for (const e of found) {
       if (rel === 'lib/scan/spend-cap.ts') continue // the gate's own documentation
-      if (PAID[e]) { if (PAID[e].file !== rel && !NAMES_ONLY[rel]) misplaced.push(`${e} in ${rel}`) }
+      if (PAID[e]) { if (PAID[e].file !== rel && CLAIM_GATED[e]?.file !== rel && !NAMES_ONLY[rel]) misplaced.push(`${e} in ${rel}`) }
       else if (!FREE[e]) unknown.push(`${e} in ${rel}`)
     }
   }
+  return { unknown, misplaced }
+}
+
+test('inventory: every API endpoint and env-configured endpoint in lib/ and app/ is classified as paid (gated) or free', () => {
+  const { unknown, misplaced } = classify(SOURCES)
   assert.deepEqual(unknown, [], 'classify each new endpoint here: PAID needs a reserveScanSpend gate in its transport')
-  assert.deepEqual(misplaced, [], 'a paid endpoint may only be called from its one gated module')
+  assert.deepEqual(misplaced, [], 'a paid endpoint may only be called from its one gated module, or its one claim-gated runner')
+})
+
+test('inventory: a claim-gated endpoint stays narrowly scoped - a second, unexpected file naming it still fails', () => {
+  for (const [e, c] of Object.entries(CLAIM_GATED)) {
+    const { misplaced } = classify([{ rel: c.file, text: e }, { rel: 'lib/evals/some-other-module.ts', text: e }])
+    assert.deepEqual(misplaced, [`${e} in lib/evals/some-other-module.ts`], `${e} is allowed only in ${c.file} and its one scan-cap module`)
+  }
+})
+
+// Behavioral proof, not a source-text grep: a text match for "checkClaims(" would survive a bypass that calls it and
+// ignores the result, or a dead/unreachable call. This instead runs the real runValidation with a real (but empty)
+// claims record and a transport that FAILS the test if it is ever invoked - so a removed, ignored or bypassed claim
+// check turns this red by making a network call, not by a missing string in the file.
+test('inventory: the judge-validation runner is claim-gated, not scan-cap-gated - a missing claim refuses before any network call', async () => {
+  const CORPUS = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/evals/judges/corpus.synthetic.json'), 'utf8')) as JudgeCorpus
+  for (const c of Object.values(CLAIM_GATED)) {
+    const src = SOURCES.find(s => s.rel === c.file)!.text
+    assert.ok(!/reserveScanSpend\(/.test(src), `${c.file} is not scan work and must never reserve on the scan spend cap`)
+    const stateDir = mkdtempSync(join(tmpdir(), 'dazl-inv-claim-'))
+    const recordPath = join(stateDir, 'runs.json')
+    writeFileSync(recordPath, JSON.stringify({ contract: RUN_RECORD_CONTRACT, note: 'inventory test: no claim recorded', claims: [] }))
+    let called = 0
+    const deps: RunDeps = {
+      transport: async () => { called++; throw new Error('the judge-validation runner called the network with no recorded claim') },
+      secrets: [`sk-ant-dummy-not-a-secret-${'k'.repeat(24)}`], corpus: CORPUS, now: () => new Date('2026-11-04T12:00:00Z'),
+      hostClaim: join(stateDir, 'host-claim'), machineFingerprint: () => 'fp-inventory-test', runRecord: recordPath,
+    }
+    const inputs = { runId: 'inv-check', model: 'claude-sonnet-4-5', capUsd: 3, fxCadPerUsd: 1.4, fxDate: '2026-11-03', fxSource: 'https://www.bankofcanada.ca/rates/exchange/daily-exchange-rates/', feeRate: 0.13, feeBasis: 'inventory test', stateDir }
+    const result = await runValidation(inputs, deps)
+    assert.equal(called, 0, 'no network call was made without a valid claim')
+    assert.equal(result.status, 'refused', `expected a refusal, got ${result.status}: ${JSON.stringify(result.problems)}`)
+  }
 })
 
 test('inventory: each gated module reserves its kind before its request, and dazl sends no cache_control', () => {

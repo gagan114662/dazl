@@ -38,7 +38,7 @@ export default function EnrichmentPanel() {
           return (
             <div key={s.id} className="text-sm">
               <div className="font-medium">{s.name}</div>
-              <p className="text-[#777] text-xs mb-1">{s.hint}</p>
+              <p className="text-[#6b6b6b] text-xs mb-1">{s.hint}</p>
               {st?.enabled ? (
                 <div className="flex items-center gap-3">
                   <span>Connected (key ending {st.last4})</span>
@@ -59,7 +59,7 @@ export default function EnrichmentPanel() {
           <input type="checkbox" className="mt-0.5" checked={!!data.fallback} onChange={e => act({ fallback: e.target.checked })} />
           <span>
             Also use People Data Labs as a fallback when Apollo finds no contacts for a company.
-            <span className="text-[#777] text-xs block">Off by default. Each fallback profile returned can use 1 PDL credit (up to 5 per scan - documented terms; the cost on your account is not verified).</span>
+            <span className="text-[#6b6b6b] text-xs block">Off by default. Each fallback profile returned can use 1 PDL credit (up to 5 per scan - documented terms; the cost on your account is not verified).</span>
           </span>
         </label>
       )}

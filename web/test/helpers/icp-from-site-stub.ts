@@ -10,10 +10,12 @@
 import type { SiteReadAdmission, SiteReadRefusal } from '../../lib/scan/trial-site-read.ts'
 export const handedKeys: string[] = []
 export const calls = { n: 0 }
-export const next: { error: string | null; outcome: 'ok' | 'guard_refused' | 'call_failed' } = { error: null, outcome: 'ok' }
+// `next.throws` makes the next read throw (an unexpected failure inside the read), for the route's record-then-rethrow path.
+export const next: { error: string | null; outcome: 'ok' | 'guard_refused' | 'call_failed'; throws?: boolean } = { error: null, outcome: 'ok' }
 const FREE = { free: true as const, source: 'https://acme.example/', site: 'acme.example', facts: [{ kind: 'title' as const, text: 'Acme', source: 'https://acme.example/' }] }
 export async function icpFromWebsite(_db: unknown, _tenantId: string, _url: string, deps: { trial?: () => Promise<SiteReadAdmission> }): Promise<{ free: true; source: string; site: string; facts: { kind: 'title'; text: string; source: string }[]; trial?: SiteReadRefusal } | { icp: { summary: string }; source: string; sells: string; funded: 'trial' } | { error: string }> {
   calls.n++
+  if (next.throws) { next.throws = false; throw new Error('read exploded') }
   if (next.error) { const error = next.error; next.error = null; return { error } }
   if (!deps.trial) return FREE
   const a = await deps.trial()

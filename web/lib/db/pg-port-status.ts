@@ -3,11 +3,6 @@
 // today. Production can move to Postgres only when this is empty (docs/PLATFORM.md "Postgres cutover").
 // Porting a module to the Db layer removes its line; a new raw-SQLite module, or a new rejected statement, fails the test.
 export const RAW_SQLITE_MODULES: Record<string, number> = {
-  'app/api/auth/callback/google/route.ts': 0,
-  'app/api/auth/reset/route.ts': 0,
-  'app/api/auth/signin/route.ts': 0,
-  'app/api/auth/signup/route.ts': 0,
-  'app/api/auth/verify/route.ts': 0,
   'app/api/campaigns/route.ts': 0,
   'app/api/crm/route.ts': 0,
   'app/api/enrich/held/route.ts': 0,
@@ -51,7 +46,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/scan/status/route.ts': 0,
   'app/api/unsubscribe/route.ts': 0,
   'lib/advanced/index.ts': 0,
-  'lib/auth-db.ts': 0,
   'lib/billing/plans-sqlite.ts': 0,
   'lib/connectors/sitecrawl.ts': 0,
   'lib/connectors/store.ts': 0,
@@ -82,7 +76,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/outreach/play-memory.ts': 0,
   'lib/outreach/provenance.ts': 0,
   'lib/outreach/reopen.ts': 1,
-  'lib/outreach/replies.ts': 5,
+  'lib/outreach/replies.ts': 6,
   'lib/outreach/send-budget.ts': 1,
   'lib/outreach/sequences.ts': 1,
   'lib/outreach/service.ts': 2,

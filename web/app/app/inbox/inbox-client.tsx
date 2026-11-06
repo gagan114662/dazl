@@ -110,17 +110,17 @@ export default function InboxClient() {
             <li key={r.thread_id} className="card p-4" data-testid="inbox-thread">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="text-sm">
-                  {r.unread && <span className="inline-block w-2 h-2 rounded-full bg-black mr-2 align-middle" aria-label="Unread" />}
+                  {r.unread && <span role="img" className="inline-block w-2 h-2 rounded-full bg-black mr-2 align-middle" aria-label="Unread" />}
                   <span className="font-medium">{r.company || r.from_email}</span>
                   {r.company && <span className="text-[#555]"> ({r.lead_name || r.from_email})</span>}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-[11px] px-1.5 py-0.5 border ${BADGE[r.classification] ?? BADGE.other}`}>{LABEL[r.classification] ?? r.classification}</span>
-                  <span className="text-xs text-[#888]">{new Date(r.received_at * 1000).toLocaleString()}</span>
+                  <span className="text-xs text-[#6b6b6b]">{new Date(r.received_at * 1000).toLocaleString()}</span>
                 </div>
               </div>
               <p className="text-sm text-[#333] mt-2">{r.excerpt}</p>
-              <div className="text-xs text-[#888] mt-2 flex items-center gap-3">
+              <div className="text-xs text-[#6b6b6b] mt-2 flex items-center gap-3">
                 {r.replies > 1 && <span>{r.replies} replies</span>}
                 <span>{r.stopped === 'review' ? 'Follow-ups stopped: this reply needs your review' : r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}</span>
                 <button className="underline underline-offset-2" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
@@ -132,7 +132,7 @@ export default function InboxClient() {
                     <p className="text-[#333]">If you want to offer a time, paste your own booking link into your reply:{' '}
                       <span className="font-mono break-all">{i.booking_url}</span>{' '}
                       <button className="underline" onClick={() => { void navigator.clipboard?.writeText(i.booking_url ?? ''); setCopied(r.gmail_id); setTimeout(() => setCopied(null), 1500) }}>{copied === r.gmail_id ? 'Copied' : 'Copy link'}</button>
-                      <span className="block text-[#888] mt-0.5">This is your saved link only - showing it does not check availability, reserve a time, or book anything.</span>
+                      <span className="block text-[#6b6b6b] mt-0.5">This is your saved link only - showing it does not check availability, reserve a time, or book anything.</span>
                     </p>
                   ) : (
                     <p className="text-[#555]">Add a booking link in <a className="underline" href="/app/settings">Settings</a> and it shows here for the next step.</p>
@@ -141,10 +141,10 @@ export default function InboxClient() {
               )}
               {open === r.thread_id && (
                 <div className="mt-3 border-l-2 border-black/10 pl-3 space-y-2">
-                  {(threads[r.thread_id] ?? []).length === 0 && <p className="text-xs text-[#888]">Loading...</p>}
+                  {(threads[r.thread_id] ?? []).length === 0 && <p className="text-xs text-[#6b6b6b]">Loading...</p>}
                   {(threads[r.thread_id] ?? []).map((m, idx) => (
                     <div key={idx} className="text-xs">
-                      <div className="text-[#888]">{m.dir === 'out' ? (m.kind === 'followup' ? 'You (automatic follow-up)' : 'You') : 'Them'} · {new Date(m.at * 1000).toLocaleString()}{m.subject ? ` · ${m.subject}` : ''}</div>
+                      <div className="text-[#6b6b6b]">{m.dir === 'out' ? (m.kind === 'followup' ? 'You (automatic follow-up)' : 'You') : 'Them'} · {new Date(m.at * 1000).toLocaleString()}{m.subject ? ` · ${m.subject}` : ''}</div>
                       {m.body && <p className="text-[#333] whitespace-pre-wrap mt-0.5">{m.body}</p>}
                     </div>
                   ))}

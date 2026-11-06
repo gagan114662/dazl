@@ -3,11 +3,13 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
 import { isStaging } from '../staging.ts'
-import { auditAt, recordBounce } from './autopilot.ts'
+import { auditAt } from './autopilot.ts'
 import { grantConsent, revokeAll } from './ledger.ts'
 import { norm, READ_CONSENT_VERSION } from './store.ts'
 import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
+import { dsnProvenance } from './dsn.ts'
+import { applyBounceVerdict, migrateBounceLedger } from './bounce-ledger.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens its outreach threads and bounded candidate delivery notices,
@@ -42,6 +44,7 @@ export function migrateReplies(db: Database.Database): void {
   `)
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
+  migrateBounceLedger(db) // both notice paths account through the one ledger (idempotent DDL, also run by the migration list)
 }
 
 export const acceptReadConsent = (db: Database.Database, tenantId: string) =>
@@ -150,9 +153,61 @@ const header = (m: GMsg, n: string) => m.payload?.headers?.find(h => h.name.toLo
 const addr = (v?: string) => norm((v?.match(/<([^>]+)>/)?.[1] ?? v ?? '').trim())
 
 // ---- Separate-thread delivery-failure notices (#415) ----
-// A delivery-status notice (RFC 3464 DSN) can arrive on its OWN thread, outside the outreach thread. The read
-// consent text already names "delivery-failure notices for them" (the threads dazl started), so the only mailbox
-// listing below is daemon notices inside the sync window: no other mail is listed, read or processed.
+// A delivery-status notice (RFC 3464 DSN) can arrive on its OWN thread, outside the outreach thread, so it is matched
+// to the send by what the notice itself carries - never by Gmail thread id. The read consent text already names
+// these notices, so the only mailbox listing below is daemon notices inside the sync window: no other mail is
+// listed, read or processed.
+//
+// Correlation keys (structured fields only, never a code or an address quoted in the human-readable text):
+//   - the original Message-ID: the returned headers (message/rfc822 or text/rfc822-headers part), then the notice's
+//     own Original-Message-ID / In-Reply-To / References headers. Only dazl's own ids on the sender's domain count
+//     (dazl.<send>@, dazl.s<n>.<send>@, dazl.f<n>.<send>@, dazl.reopen.<send>@); ids naming two different sends are
+//     ambiguous and correlate to nothing;
+//   - the recipient: a per-recipient delivery-status block whose Final-Recipient or Original-Recipient is exactly
+//     the address that send went to; or, only when the notice has no per-recipient block at all, the daemon's
+//     X-Failed-Recipients naming it. A block naming someone else never correlates (it cannot cost another contact).
+// The status of THAT recipient's block decides permanent (Action: failed + 5.x.x) vs soft; X-Failed-Recipients
+// alone carries no status, so it is a review item, never an automatic suppression.
+export interface DsnRecipientBlock { recipients: string[]; action: string | null; status: string | null }
+export interface NoticeFields { refs: string[]; blocks: DsnRecipientBlock[]; xFailed: string[] }
+
+const decodePart = (p?: GPart): string => { try { return p?.body?.data ? Buffer.from(p.body.data, 'base64url').toString('utf8') : '' } catch { return '' } }
+const fieldBlocks = (text: string): Record<string, string>[] =>
+  text.split(/\r?\n\s*\r?\n/).map(b => {
+    const o: Record<string, string> = {}
+    for (const line of b.split(/\r?\n/)) { const m = /^([A-Za-z-]+):\s*(.+)$/.exec(line.trim()); if (m) o[m[1].toLowerCase()] = m[2].trim() }
+    return o
+  }).filter(o => Object.keys(o).length > 0)
+const typedAddr = (v?: string) => (v ? addr(v.replace(/^[a-z0-9-]+\s*;\s*/i, '')) : '')
+
+export function noticeFields(payload: GPart | undefined): NoticeFields {
+  const hv = (p: GPart | undefined, n: string) => p?.headers?.filter(h => h.name.toLowerCase() === n).map(h => h.value) ?? []
+  const refs: string[] = []
+  const blocks: DsnRecipientBlock[] = []
+  const walk = (p: GPart | undefined, depth: number) => {
+    if (!p || depth > 12) return
+    const mime = (p.mimeType ?? '').toLowerCase()
+    if (mime === 'message/delivery-status') {
+      for (const b of fieldBlocks(decodePart(p))) {
+        const recipients = [typedAddr(b['final-recipient']), typedAddr(b['original-recipient'])].filter(Boolean)
+        if (recipients.length) blocks.push({ recipients, action: b['action']?.toLowerCase() ?? null, status: b['status'] ?? null })
+      }
+    } else if (mime === 'message/rfc822' || mime === 'text/rfc822-headers') {
+      refs.push(...hv(p, 'message-id'))
+      const text = decodePart(p)
+      const head = text.split(/\r?\n\r?\n/, 1)[0] ?? ''
+      const m = /^Message-ID:\s*(.+)$/im.exec(head)
+      if (m) refs.push(m[1])
+      for (const c of p.parts ?? []) refs.push(...hv(c, 'message-id')) // Gmail can expose the returned message as a nested part
+    }
+    for (const c of p.parts ?? []) walk(c, depth + 1)
+  }
+  walk(payload, 0)
+  for (const n of ['original-message-id', 'in-reply-to', 'references']) refs.push(...hv(payload, n))
+  const xFailed = hv(payload, 'x-failed-recipients').flatMap(v => v.split(',')).map(v => addr(v)).filter(Boolean)
+  return { refs, blocks, xFailed }
+}
+
 interface DsnReport { recipient: string | null; status: string | null; failed: boolean; messageRef: string | null }
 
 const dsnFields = (text: string): Record<string, string> => {
@@ -166,6 +221,8 @@ const dsnFields = (text: string): Record<string, string> => {
 
 // Structured evidence only: the delivery-status part (or the daemon's own X-Failed-Recipients), never a code or an
 // address quoted in the human-readable text. A notice that carries none of this structure reports nothing.
+// Used only by judgeDeliveryNotice below (the test-only inbox-fixture path, #369); the real sync (#415) uses
+// noticeFields/dsnProvenance above instead.
 function dsnFromNotice(g: GMsg): DsnReport {
   const heads = g.payload?.headers ?? []
   const hval = (n: string) => heads.find(h => h.name.toLowerCase() === n)?.value
@@ -188,10 +245,13 @@ function dsnFromNotice(g: GMsg): DsnReport {
   return { recipient, status, failed: action === 'failed', messageRef }
 }
 
-// One delivery notice from the daemon-notice listing, judged and turned into the inbound_messages row it is stored as.
-// Pure: the caller looks up the exact recorded send (NOTICE_SEND_SQL) and writes the row. The reply sync below and the
-// test-only inbox fixture (lib/outreach/inbox-fixture.ts, #369) store notices through this one judgement, so a fixture
-// bounce_review row is exactly what a real notice of that shape would produce.
+// One delivery notice, judged by Message-ID + recipient correlation alone (no authenticated DSN provenance) and
+// turned into the inbound_messages row it is stored as. Pure: the caller looks up the exact recorded send
+// (NOTICE_SEND_SQL) and writes the row. Used only by the test-only inbox fixture (lib/outreach/inbox-fixture.ts,
+// #369) to seed a bounce_review row for pagination/UI tests; the real reply sync below (#415) no longer calls this
+// directly — it correlates by the notice's own structured fields (noticeFields) and additionally requires
+// authenticated DSN provenance (dsnProvenance) before a correlated 5.x.x can suppress or stop anything, so a
+// fixture row seeded here is a plausible bounce_review shape, not a byte-for-byte stand-in for real sync output.
 export type NoticeMsg = GMsg
 export interface NoticeSend { id: string; lead_id: string; to_email: string }
 export interface NoticeRow { gmail_id: string; thread_id: string; lead_id: string | null; from_email: string; excerpt: string; classification: 'bounce_unmatched' | 'bounce_review' | 'soft_bounce'; received_at: number; outreach_message_id: string | null }
@@ -236,7 +296,27 @@ export function judgeDeliveryNotice(hitId: string, g: NoticeMsg, now: number, fi
   }
 }
 
-export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number }
+// The recorded sends a notice's references name, on the tenant's own sending domain. Any dazl id form maps to the
+// original send id (follow-ups and sequence steps carry the original's id).
+export function referencedSendIds(refs: string[], senderDomain: string): string[] {
+  const ids = new Set<string>()
+  for (const r of refs) for (const m of r.matchAll(/<?dazl\.(?:(?:s|f)\d+\.|reopen\.)?([a-z0-9]+)@([^\s<>,;]+)>?/gi))
+    if (m[2].toLowerCase() === senderDomain.toLowerCase()) ids.add(m[1])
+  return [...ids]
+}
+
+// Origin evidence for a separate-thread notice (lib/outreach/dsn.ts dsnProvenance): the mailbox is read through the
+// Gmail API, so the only receiving MX whose FIRST Authentication-Results is trusted is Google's; the authenticated
+// domain must align with the recorded recipient's domain or its MX hosts (resolved by DNS at sync time, never taken
+// from the notice). resolveMxFor is injectable for fixtures.
+const TRUSTED_AUTHSERV_IDS = ['mx.google.com', 'google.com']
+// node:dns/promises is loaded lazily so importing this module never needs a DNS module (route harnesses stub it).
+const defaultResolveMx = async (domain: string): Promise<string[]> => {
+  const { resolveMx } = await import('node:dns/promises')
+  return (await resolveMx(domain)).map(r => r.exchange.toLowerCase())
+}
+
+export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number; resolveMxFor?: (domain: string) => Promise<string[]> }
 // remaining: background threads (no automated send can reach them) not read this call because of the per-call cap or
 // the time budget; they are read on later calls, oldest check first. neverRead: those of them never read at all (no
 // freshness exists yet: the tick records a hold). freshAsOf: the OLDEST last-read time over every thread in scope after
@@ -320,7 +400,14 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         // Delivery-failure notice: only a permanent (5.x.x) failure suppresses.
         if (/^(mailer-daemon|postmaster)@/.test(from)) {
           const full = fullText(g.payload)
-          if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(full)) { recordBounce(db, tenantId, m.to_email, now); db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, thread); out.bounces++; log('bounce') } else log('soft_bounce')
+          if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(full)) {
+            // Accounted per send + recipient in the shared ledger: the same bounce also seen on its own thread (or a
+            // second notice for it) never suppresses or counts twice.
+            const r = applyBounceVerdict(db, tenantId, { kind: 'permanent', recipient: m.to_email, originalMessageId: root, outreachMessageId: m.id }, 'thread', g.id, now)
+            db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, thread)
+            if (r === 'recorded') out.bounces++
+            log('bounce')
+          } else log('soft_bounce')
           continue
         }
         const cls = classifyMessage(body, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') })
@@ -369,22 +456,62 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
     const since = prev ? Math.max(prev, now - 7 * 86400) : now - 2 * 86400
     const q = encodeURIComponent(`from:mailer-daemon OR from:postmaster after:${since}`)
     const list = (await get(`messages?q=${q}&maxResults=50`)) as { messages?: { id: string }[] }
+    const senderDomain = acct.email.split('@')[1] ?? ''
     for (const hit of list.messages ?? []) {
       if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, hit.id)) continue // increments once: seen notices are never reprocessed
       const g = (await get(`messages/${hit.id}?format=full`)) as GMsg
-      const v = judgeDeliveryNotice(hit.id, g, now, refId => db.prepare(NOTICE_SEND_SQL).get(tenantId, refId) as NoticeSend | undefined)
-      const store = () => db.prepare(`INSERT OR IGNORE INTO inbound_messages ${NOTICE_INSERT}`).run(...noticeParams(tenantId, v.row))
-      if (v.unmatched) {
-        store()
-        if (v.unmatched === 'no_correlation') auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
+      const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
+      const from = addr(header(g, 'from'))
+      // Retention minimum for anything that does not correlate to an exact recorded send: the opaque id (for
+      // one-time accounting), the time and the classification. No sender, recipient or content of mail that may
+      // not be ours - the read consent covers replies and delivery notices FOR OUR THREADS only.
+      const logUnmatched = () => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL)').run(hit.id, tenantId, g.threadId ?? '', '', '', 'bounce_unmatched', at)
+      if (!/^(mailer-daemon|postmaster)@/.test(from)) { logUnmatched(); continue }
+      // Correlate to the exact recorded send by the notice's own structured fields (see noticeFields), never by
+      // thread: the notice must reference our Message-ID AND name the recipient we wrote to. BOTH, always: a From
+      // line matching mailer-daemon is not authentication (anyone can set it), so no-reference notices - even
+      // genuine-looking 5.x.x ones naming a real sole recipient - can never suppress, stop a thread or end a
+      // sequence. They are counted unmatched.
+      const nf = noticeFields(g.payload)
+      const ids = referencedSendIds(nf.refs, senderDomain)
+      let m: { id: string; lead_id: string; to_email: string } | undefined
+      if (ids.length === 1) m = (db.prepare("SELECT id, lead_id, to_email FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status IN ('sent','sending','uncertain')").get(tenantId, ids[0]) as typeof m) ?? undefined
+      const block = m ? nf.blocks.find(b => b.recipients.includes(norm(m!.to_email))) : undefined
+      const xFailedOnly = !!m && !block && nf.blocks.length === 0 && nf.xFailed.includes(norm(m.to_email))
+      if (m && !block && !xFailedOnly) m = undefined // the notice must name who we actually wrote to
+      const status = block?.status ?? null
+      const log = (cls: string, mid: string | null, leadId: string | null) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(hit.id, tenantId, g.threadId ?? '', leadId, from, `dsn status ${status ?? (xFailedOnly ? 'x-failed-recipients' : 'none')}`, cls, at, mid)
+      if (!m || (block && !status)) { // no correlation, or a block with no status: nothing structured to act on
+        logUnmatched()
+        auditAt(db, tenantId, 'bounce_unmatched', 'no exact send correlation', undefined, undefined, now)
         continue
       }
-      // Counted once per send; the classification carries the correlation.
-      if (v.row.classification === 'bounce_review' && !db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, v.send!.id)) {
-        auditAt(db, tenantId, 'bounce_review', `dsn ${v.status} correlated, provenance unverified`, v.send!.lead_id, v.send!.id, now)
-        out.reviews++
+      const review = (why: string) => {
+        // Correlated but not provable: a human review item, counted once per send; never an automatic action.
+        if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, m!.id)) {
+          auditAt(db, tenantId, 'bounce_review', why, m!.lead_id, m!.id, now)
+          out.reviews++
+        }
+        log('bounce_review', m!.id, m!.lead_id)
       }
-      store()
+      if (xFailedOnly) { review('x-failed-recipients correlated, no delivery-status, provenance unverified'); continue }
+      if (block!.action !== 'failed' || !/^5\.\d{1,3}\.\d{1,3}$/.test(status!)) { log('soft_bounce', m.id, m.lead_id); continue } // 4.x.x / delayed: never a suppression
+      // A correlated permanent failure acts ONLY behind authenticated provenance: the first Authentication-Results
+      // is Google's receiving MX and its pass domain aligns with the recorded recipient's domain or its MX hosts.
+      const domain = norm(m.to_email).split('@')[1] ?? ''
+      const trust = (expected: string[]) => dsnProvenance(g.payload, { trustedAuthservIds: TRUSTED_AUTHSERV_IDS, expectedBounceDomains: expected })
+      let prov = trust([domain])
+      if (!prov.ok && prov.reason === 'domain_not_aligned') {
+        const mx = await (d.resolveMxFor ?? defaultResolveMx)(domain).catch(() => [] as string[])
+        if (!hasReadConsent(db, tenantId)) return { ...out, error: 'reading_not_enabled' } // revoked during the lookup: no write
+        prov = trust([domain, ...mx])
+      }
+      if (!prov.ok) { review(`dsn ${status} correlated, provenance unverified`); continue }
+      const applied = applyBounceVerdict(db, tenantId, { kind: 'permanent', recipient: m.to_email, originalMessageId: ids[0], outreachMessageId: m.id }, 'dsn', hit.id, now)
+      // the send's own outreach thread stops; suppress() (via recordBounce) already stopped the address's sequences
+      db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND root_message_id = ? AND (stopped IS NULL OR stopped = 'review')").run(tenantId, `dazl.${m.id}@${senderDomain}`)
+      if (applied === 'recorded') out.bounces++
+      log('bounce', m.id, m.lead_id)
     }
   } catch (e) {
     out.error = 'reply_sync_failed' // fail closed, same contract as the thread loop
