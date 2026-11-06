@@ -32,7 +32,7 @@ const seqName = (t: string) => `${t}_insert_seq_seq`
 
 // Split: triggers contain semicolons inside BEGIN...END, so pull them out first.
 // WHEN is optional: a guard without one (immutable / append-only tables) always aborts.
-const triggerRe = /CREATE TRIGGER (?:IF NOT EXISTS )?(\w+)\s+BEFORE (INSERT|DELETE|UPDATE(?: OF \w+)?) ON (\w+)\s+(?:WHEN ([\s\S]*?)\s+)?BEGIN SELECT RAISE\(ABORT, '([^']*)'\); END;/g
+const triggerRe = /CREATE TRIGGER (?:IF NOT EXISTS )?(\w+)\s+BEFORE (INSERT|DELETE|UPDATE(?: OF \w+(?:, \w+)*)?) ON (\w+)\s+(?:WHEN ([\s\S]*?)\s+)?BEGIN SELECT RAISE\(ABORT, '([^']*)'\); END;/g
 // The tenant deletion guard (lib/db/tenant-guard.ts): one `SELECT <tenant id>;` per tenant the row names (a no-op on
 // SQLite), then `SELECT RAISE(ABORT, ...) WHERE <condition>`. Postgres takes a shared transaction-scoped advisory lock
 // on each tenant id instead, so a deletion step (which takes it exclusively) waits for that tenant's open writers.

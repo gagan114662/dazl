@@ -122,3 +122,12 @@ test('every words writer bumps words_rev; a plain polish bumps it exactly once',
   const { db } = await run(FRESH, false)
   assert.equal((db.prepare("SELECT words_rev AS r FROM outreach_messages WHERE to_email = 'a@one.example'").get() as { r: number }).r, 1)
 })
+
+test('DB invariant: a subject/body change that does not bump words_rev is refused; a bumped write, and a no-op write, pass', async () => {
+  const { db } = await run(FRESH, false)
+  const upd = (sql: string) => db.prepare(sql).run()
+  assert.throws(() => upd("UPDATE outreach_messages SET body = 'a direct write that forgot the revision, long enough' WHERE to_email = 'a@one.example'"), /words_rev not bumped/)
+  assert.throws(() => upd("UPDATE outreach_messages SET subject = 'forgot the revision' WHERE to_email = 'a@one.example'"), /words_rev not bumped/)
+  upd("UPDATE outreach_messages SET body = 'a bumped write, long enough to pass', words_rev = words_rev + 1 WHERE to_email = 'a@one.example'")
+  upd("UPDATE outreach_messages SET subject = subject, body = body WHERE to_email = 'a@one.example'") // unchanged words need no bump
+})

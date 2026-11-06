@@ -1337,6 +1337,11 @@ CREATE TRIGGER outreach_sent_is_final
     WHEN OLD.status IN ('sent','skipped') AND NEW.status <> OLD.status
     BEGIN SELECT RAISE(ABORT, 'final outreach status'); END;
 
+CREATE TRIGGER outreach_words_need_rev
+    BEFORE UPDATE OF subject, body ON outreach_messages
+    WHEN (NEW.subject IS NOT OLD.subject OR NEW.body IS NOT OLD.body) AND NEW.words_rev = OLD.words_rev
+    BEGIN SELECT RAISE(ABORT, 'words_rev not bumped'); END;
+
 CREATE TRIGGER scan_jobs_insert_seq AFTER INSERT ON scan_jobs WHEN NEW.insert_seq IS NULL BEGIN UPDATE scan_jobs SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM scan_jobs) WHERE rowid = NEW.rowid; END;
 
 CREATE TRIGGER scan_jobs_transitions

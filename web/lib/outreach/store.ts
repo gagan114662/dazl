@@ -122,6 +122,12 @@ export function migrateOutreach(db: Database.Database): void {
   migrateLifecycle(db) // #417: conversion events stop queued acquisition work
   migrateOnboardingPolicy(db) // #417: the opted-in onboarding/customer-success policy gate for anything after conversion
   addCol('outreach_messages', 'words_rev', 'INTEGER NOT NULL DEFAULT 0') // bumped by every writer of subject/body (edit, polish, sequence rewrite): content-version binding across awaits (#929)
+  // Every writer of a draft's words must bump words_rev (the content version polish and autopilot bind across awaits, #929): a
+  // write that changes subject or body without moving the revision is refused by the database, in SQLite and Postgres alike.
+  db.exec(`CREATE TRIGGER IF NOT EXISTS outreach_words_need_rev
+    BEFORE UPDATE OF subject, body ON outreach_messages
+    WHEN (NEW.subject IS NOT OLD.subject OR NEW.body IS NOT OLD.body) AND NEW.words_rev = OLD.words_rev
+    BEGIN SELECT RAISE(ABORT, 'words_rev not bumped'); END;`)
   addCol('outreach_messages', 'offer_hash', 'TEXT') // hash of the offer inputs the draft's words were created under
   addCol('outreach_settings', 'booking_url', 'TEXT')
   // Idempotent upgrades for usage tables created before these columns existed.
