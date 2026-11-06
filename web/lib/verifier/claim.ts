@@ -1,14 +1,15 @@
-// What the independent evidence verifier is asked to check (#780, part of #395). blindClaim copies an allowlisted set
-// of claim fields and nothing else, so the verdict cannot depend on who or what produced the lead: the producer's
-// model, provider, prompt, rationale, confidence, own "verified" flag, score and any page text or excerpt it carries
-// are dropped before any check runs (their field NAMES are kept for the audit trail, never their values). The verifier
-// always fetches the cited pages itself (service.ts, a separate PR) rather than trusting the producer's copy.
+// What the independent evidence verifier is asked to check (#780/#781, part of #395). blindClaim copies an
+// allowlisted set of claim fields and nothing else, so the verdict cannot depend on who or what produced the lead:
+// the producer's model, provider, prompt, rationale, confidence, own "verified" flag, score and any page text or
+// excerpt it carries are dropped before any check runs (their field NAMES are kept for the audit trail, never their
+// values). The verifier always fetches the cited pages itself (service.ts, a separate PR) rather than trusting the
+// producer's copy.
 //
-// Scope (#780 only): company identity, domain binding, place, event date, and quote corroboration - all
-// deterministic (verbatim text matching), so quotes are this PR's, not #782's (a separately configured model judge,
-// which #780/#781/#782 never need: quote_on_source is a plain substring match, exactly like company/place/date).
-// Person/contact-route fields are #781's; predicates and cross-producer blinding/provenance plumbing are #782's -
-// out of scope here so this PR's diff matches its own title.
+// Scope (#780+#781 only): company identity, domain binding, place, event date and quote corroboration (#780 - all
+// deterministic verbatim text matching, so quotes are #780's, not #782's: quote_on_source needs no model judge, same
+// as company/place/date); person/contact-route (#781). Predicates and cross-producer blinding/provenance plumbing
+// are #782's - out of scope here so this PR's diff matches its own title.
+import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 
 export interface LeadClaim {
   company: string
@@ -16,6 +17,8 @@ export interface LeadClaim {
   place: { city: string; country: string | null } | null
   event: { date: string; source_url: string; corroborating_urls: string[] }
   quotes: { text: string; source_url: string }[]
+  person: { name: string; title: string; source_url: string } | null
+  contact: { email: string; source_url: string } | null
 }
 
 export interface Blinded {
@@ -25,7 +28,7 @@ export interface Blinded {
 }
 
 export const LIMITS = { text: 500, urls: 5, quotes: 5 }
-const CLAIM_KEYS = new Set(['company', 'domain', 'place', 'event', 'quotes'])
+const CLAIM_KEYS = new Set(['company', 'domain', 'place', 'event', 'quotes', 'person', 'contact'])
 
 const str = (v: unknown, max = LIMITS.text): string | null => typeof v === 'string' && v.trim() !== '' && v.length <= max ? v.trim() : null
 const obj = (v: unknown): Record<string, unknown> | null => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null
@@ -79,10 +82,18 @@ export function blindClaim(raw: unknown): Blinded {
     })
   }
 
+  const person = input.person == null ? null : take(obj(input.person), 'person', ['name', 'title', 'source_url'], o => { const name = str(o.name, 150), title = str(o.title, 150), source_url = httpUrl(o.source_url); return name && title && source_url ? { name, title, source_url } : null })
+  if (input.person != null && !obj(input.person)) problems.push('person is malformed')
+  const contact = input.contact == null ? null : take(obj(input.contact), 'contact', ['email', 'source_url'], o => {
+    const email = str(o.email, 254)?.toLowerCase(), source_url = httpUrl(o.source_url)
+    return email && PUBLISHED_EMAIL_RE.test(email) && source_url ? { email, source_url } : null
+  })
+  if (input.contact != null && !obj(input.contact)) problems.push('contact is malformed')
+
   const claim: LeadClaim = {
     company: company ?? '', domain: domain ?? '', place,
     event: event ?? { date: '', source_url: '', corroborating_urls: [] },
-    quotes,
+    quotes, person, contact,
   }
   return { claim, dropped: [...dropped].sort(), problems: [...new Set(problems)] }
 }
