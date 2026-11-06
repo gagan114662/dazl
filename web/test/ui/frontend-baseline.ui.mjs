@@ -195,8 +195,15 @@ async function metadataCheck(base) {
   console.log(`     sitemap lists ${locs.length} URL(s), each answers 200; robots.txt points at it and disallows /app, /api`)
 }
 
-// The same fence the harness sets, as a file URL so `--import` also resolves on Windows.
-const srv = await startServer({ env: { NODE_OPTIONS: `--experimental-strip-types --import ${pathToFileURL(path.join(root, 'test/helpers/net-fence.ts'))}` } })
+// The same fence the harness sets, as a file URL so `--import` also resolves on Windows. Override the harness's
+// default PUBLIC_BASE_URL=<local base> (#670 review): it exists so routes that build functional redirect URLs
+// (OAuth, Stripe) work against this ephemeral server, but a dynamically-rendered public page (e.g. /sign-up,
+// #668) reads SITE_BASE live from that same process env, so its canonical/og/twitter URLs would pick up the local
+// override too. This check already assumes every public page's metadata resolves to SITE (this test's own
+// PUBLIC_BASE_URL, defaulting to https://dazl.ai) - true by construction for a statically-baked page, but only
+// true for a dynamic one if the server process has the same value. local() below still rewrites that into `base`
+// to fetch it from this server, exactly as it already does for the static pages.
+const srv = await startServer({ env: { PUBLIC_BASE_URL: SITE, NODE_OPTIONS: `--experimental-strip-types --import ${pathToFileURL(path.join(root, 'test/helpers/net-fence.ts'))}` } })
 const { base } = srv
 let browser
 try {
