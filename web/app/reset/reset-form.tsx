@@ -27,7 +27,7 @@ export default function Reset({ mailAvailable }: { mailAvailable: boolean }) {
   }
 
   return (
-    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+    <main id="main" tabIndex={-1} className="outline-none min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
         <h1 className="text-2xl font-medium mb-1 text-center">{token ? 'Choose a new password' : 'Reset your password'}</h1>
         <p className="text-[#555] text-sm mb-6 text-center">{token ? 'This signs your account out on every device.' : mailAvailable ? 'We will email you a link that works for 30 minutes.' : 'Email delivery is not available right now. Try again later.'}</p>

@@ -42,7 +42,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
   // capped address and a failed send, so the page never claims delivery it cannot know happened.
   if (sent) {
     return (
-      <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+      <main id="main" tabIndex={-1} className="outline-none min-h-screen flex items-center justify-center glow px-4 py-10">
         <div className="card p-8 sm:p-10 w-full max-w-sm text-center" role="status">
           <Link href="/" className="text-xl font-medium tracking-tight block mb-6">dazl<span className="text-[#111]">.</span></Link>
           <h1 className="text-2xl font-medium mb-3">Check your email</h1>
@@ -55,7 +55,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
   }
 
   return (
-    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+    <main id="main" tabIndex={-1} className="outline-none min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
         <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>

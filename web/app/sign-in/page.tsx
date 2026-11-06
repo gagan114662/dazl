@@ -36,7 +36,7 @@ export default function SignIn() {
   }
 
   return (
-    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+    <main id="main" tabIndex={-1} className="outline-none min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
         <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></a>
         <h1 className="text-2xl font-medium mb-1 text-center">Sign in</h1>
