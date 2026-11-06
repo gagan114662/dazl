@@ -10,7 +10,7 @@ import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
-import { saveSettings, suppress } from '../lib/outreach/service.ts'
+import { saveSettings } from '../lib/outreach/service.ts'
 import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
 import { createReopenDraft, migrateReopen, sendReopen } from '../lib/outreach/reopen.ts'
 const master = randomBytes(32)
