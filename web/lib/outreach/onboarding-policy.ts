@@ -157,7 +157,7 @@ export function optInOnboarding(db: Database.Database, tenantId: string, actorUs
   })()
 }
 
-export function withdrawOnboarding(db: Database.Database, tenantId: string, actorUserId: string, now = Math.floor(Date.now() / 1000)): boolean {
+export function withdrawOnboarding(db: Database.Database, tenantId: string, _actorUserId: string, now = Math.floor(Date.now() / 1000)): boolean {
   migrateOnboardingPolicy(db)
   let changed = 0
   db.transaction(() => {

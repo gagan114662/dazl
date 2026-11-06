@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { anthropicProvider, openaiProvider, type Provider } from '../lib/llm/provider.ts'
+import type { Provider } from '../lib/llm/provider.ts'
 import { migrateScan, createJob, listLeads } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 

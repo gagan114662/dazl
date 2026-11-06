@@ -8,7 +8,7 @@ export default function ConversionPanel() {
   const [rep, setRep] = useState<Report | null>(null)
   useEffect(() => { fetch('/api/outreach/conversion').then(r => r.ok ? r.json() : null).then(setRep).catch(() => setRep(null)) }, [])
   if (!rep) return null
-  const unk = (r: Row, n: number | null, seen: number) => n === null ? `unknown${seen > 0 ? ` (${seen} seen earlier)` : ''}` : String(n)
+  const unk = (n: number | null, seen: number) => n === null ? `unknown${seen > 0 ? ` (${seen} seen earlier)` : ''}` : String(n)
   return (
     <section className="mb-8" aria-label="Reply rate by signal">
       <h2 className="text-lg font-bold tracking-tight mb-1">Reply rate by signal</h2>
@@ -28,9 +28,9 @@ export default function ConversionPanel() {
                   <td className="p-2">{r.signal_kind ?? 'unknown'}</td>
                   <td className="p-2">{r.source_kind ?? 'unknown'}</td>
                   <td className="p-2">{r.sent}</td>
-                  <td className="p-2">{unk(r, r.replied, r.observed_replied)}</td>
+                  <td className="p-2">{unk(r.replied, r.observed_replied)}</td>
                   <td className="p-2">{r.reply_rate === null ? 'unknown' : `${Math.round(r.reply_rate * 100)}% (${r.replied} of ${r.sent})`}</td>
-                  <td className="p-2">{unk(r, r.interested, r.observed_interested)}</td>
+                  <td className="p-2">{unk(r.interested, r.observed_interested)}</td>
                   <td className="p-2">{r.booked}</td>
                 </tr>
               ))}

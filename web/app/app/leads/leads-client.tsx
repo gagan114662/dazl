@@ -194,10 +194,8 @@ export default function LeadsClient() {
   const [watches, setWatches] = useState<Watch[]>([])
   const [watchNote, setWatchNote] = useState('')
   const [monitors, setMonitors] = useState<Monitor[]>([])
-  const [monError, setMonError] = useState('')
   const loadMonitors = () => fetch('/api/monitors').then(r => r.ok ? r.json() : null).then(j => { if (j) setMonitors(j.monitors) }).catch(() => {})
   useEffect(() => { void loadMonitors() }, [])
-  const addMonitor = async () => { if (!query.trim()) return; setMonError(''); const r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) }); const j = await r.json().catch(() => ({})); if (!r.ok) return setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || 'Could not create the monitor'); void loadMonitors() }
   const toggleMonitor = async (id: string, enabled: boolean) => { await fetch(`/api/monitors/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) }); void loadMonitors() }
   const removeMonitor = async (id: string) => { await fetch(`/api/monitors/${id}`, { method: 'DELETE' }); void loadMonitors() }
   const [csvBatch, setCsvBatch] = useState<CsvBatch | null>(null)
@@ -1301,7 +1299,6 @@ export default function LeadsClient() {
               </div>
             ))}
           </div>
-          {monError && <p className="text-red-400 text-xs mt-1">{monError}</p>}
         </div>
       )}
     </div>

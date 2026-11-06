@@ -130,7 +130,7 @@ export function testAddresses(db: Database.Database, tenantId: string): string[]
 export const isTestRecipient = (db: Database.Database, tenantId: string, email: string) => testAddresses(db, tenantId).includes(norm(email))
 
 // ---------- templates and LLM drafting for steps 2/3 (no-reply nudges) ----------
-export function sequenceStepText(step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string, bookingUrl?: string | null): string {
+export function sequenceStepText(step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, _businessName: string, bookingUrl?: string | null): string {
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   const fact = `${lead.signal} (${lead.source_url})`
   const book = bookingUrl ? `\n\nYou can grab a time here: ${bookingUrl}` : ''

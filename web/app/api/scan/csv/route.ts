@@ -6,7 +6,7 @@ import { readPlan } from '@/lib/plans'
 import { getDb } from '@/lib/db/client'
 import { hasKey } from '@/lib/llm/key-store'
 import { kickRunner } from '@/lib/scan/runner'
-import { batchStatus, createBatch, MAX_DOMAINS, normalizeRunBudget, parseDomains, queuePendingRows } from '@/lib/scan/csv-import'
+import { createBatch, MAX_DOMAINS, normalizeRunBudget, parseDomains, queuePendingRows } from '@/lib/scan/csv-import'
 import { denied } from '@/lib/workspace-access'
 
 const MAX_UPLOAD = 100_000 // ~50 domains is the cap; a bigger paste is a mistake, not a use case

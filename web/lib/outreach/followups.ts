@@ -71,7 +71,6 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
     if (isSuppressed(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('suppressed'); continue }
     if (!hasConsent(db, tenantId, t.to_email, 'email', 'followup', now)) { skip('no valid consent'); continue }
-    const sentToday = (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ('sent','followup_sent') AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
     if (accountSendCount(db,tenantId,now) >= Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) return stop('daily_cap')
 
     // at most once: the claim row is unique per thread and step

@@ -4,11 +4,9 @@ import assert from 'node:assert/strict'
 import { daysAgo } from './helpers/acceptance-harness.ts'
 import { fetchRankFor } from '../lib/scan/runner.ts'
 import { pickFetchUrls } from '../lib/search/tinyfish.ts'
-import { collectEvidenceReport, buildSourcePrompt } from '../lib/sources/index.ts'
+import { collectEvidenceReport } from '../lib/sources/index.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
-const REQUEST = 'Find London UK B2B SaaS startups with 10-50 employees that announced seed funding within the past 90 days and are hiring sales staff. Exclude agencies and recruiters. Include founder contacts and dated evidence.'
-const ICP = { summary: 's', who: ['Founder'], industries: ['SaaS'], sizes: ['10-50'], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [], country: 'GB', language: 'en', window_days: 90 }
 const mk = (url: string, title: string, snippet: string, date: string | null) => ({ url, title, snippet, date })
 const funding = Array.from({ length: 6 }, (_, i) => mk(`https://news${i}.example/co${i}-raises-seed`, `Co${i} raises seed round`, `Co${i}, a London B2B SaaS startup, raised a 3m GBP seed round`, daysAgo(10 + i)))
 const company = Array.from({ length: 6 }, (_, i) => mk(`https://co${i}.io/`, `Co${i} - sales tooling`, `Co${i} builds sales tooling in London`, null))

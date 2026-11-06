@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "check:unused": "node scripts/check-unused.mjs",
     "test:ui": "node test/ui/window-edit.ui.mjs",
     "test": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts",
     "db:migrate": "node --experimental-strip-types --no-warnings scripts/db-migrate.mts",

@@ -24,6 +24,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
+      # unused locals/imports/parameters, with narrow documented exemptions (#898)
+      - run: npm run check:unused
       # age for the encrypted off-host backup tests (test/offhost-backup.test.ts); DAZL_REQUIRE_AGE makes a missing one fail
       - run: sudo apt-get update -q && sudo apt-get install -y -q age
       - run: npm test
