@@ -77,6 +77,7 @@ export function readPage(text: string, cap = 60_000, show = 12): PageReading {
 
 import { asDb, type DbLike } from '../db/client.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
+import { domainConfirmedDb } from '../signals/domain-basis.ts'
 export interface LeadPageReading { url: string; role: 'posting' | 'company_home'; status: 'read' | 'failed' | 'not_used'; why?: string; reading?: PageReading }
 export interface LeadSignals { lead_id: string; company: string; topic: string; applies_to: string; looked_for: { task_terms: string[]; stack_names: string[] }; pages: LeadPageReading[]; model_call: false }
 
@@ -84,11 +85,13 @@ export interface LeadSignals { lead_id: string; company: string; topic: string; 
 // A posting page is used only if it names the company. Public pages only; no model, no spend, nothing stored.
 // The lead read is on the Db layer (#354), so the route runs on SQLite or Postgres; a raw handle is wrapped on the same connection.
 export async function leadSignals(db: DbLike, userId: string, leadId: string, fetchPage: (u: string) => Promise<Page | FetchFail> = fetchPageDetailed): Promise<LeadSignals | null> {
-  const lead = await asDb(db).get<{ id: string; company: string; source_url: string; company_domain: string | null }>('SELECT l.id, l.company, l.source_url, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, userId])
+  const d = asDb(db)
+  const lead = await d.get<{ id: string; company: string; source_url: string; company_domain: string | null }>('SELECT l.id, l.company, l.source_url, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, userId])
   if (!lead) return null
   const targets: { url: string; role: 'posting' | 'company_home' }[] = []
   if (/^https:\/\//.test(lead.source_url)) targets.push({ url: lead.source_url, role: 'posting' })
-  if (lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain)) targets.push({ url: `https://${lead.company_domain}/`, role: 'company_home' })
+  // The home page is read only for a CONFIRMED site (#912): a populated, hostname-shaped company_domain alone may be another company's.
+  if (lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain) && await domainConfirmedDb(d, userId, lead.id, lead.company_domain)) targets.push({ url: `https://${lead.company_domain}/`, role: 'company_home' })
   const nameOk = (t: string) => { const c = lead.company.toLowerCase().replace(/\s+/g, ' ').trim(); return c.length >= 2 && t.toLowerCase().replace(/\s+/g, ' ').includes(c) }
   const pages = await Promise.all(targets.map(async (t): Promise<LeadPageReading> => {
     const r = await fetchPage(t.url).catch(() => ({ fail: 'error' }) as FetchFail)
