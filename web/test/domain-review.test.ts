@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +11,7 @@ import { domainReviewFor } from '../lib/outreach/domain-review.ts'
 import { domainBasisFor } from '../lib/outreach/published-email.ts'
 import { setDomainReview, setDomainReviewDb } from '../lib/scan/domain-review-action.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { bothEngines } from './helpers/engines.ts'
 
 type Row = { connector: string; kind: string; value: string; label: string | null; source_url: string; retrieved_at: number }
 const email = (v = 'info@acme.test', url = 'https://acme.test/contact', at = 10): Row => ({ connector: 'sitecrawl', kind: 'email', value: v, label: null, source_url: url, retrieved_at: at })
@@ -135,6 +136,38 @@ test('setDomainReviewDb: blocked by a concurrent writer (nothing recorded), then
   assert.deepEqual(await setDomainReviewDb(sqliteDb(b), 'A', id, 'confirm', bind), { status: 'confirmed', domain: 'acme.test' })
   assert.equal(reviews(), 1)
   a.close(); b.close(); rmSync(dir, { recursive: true })
+})
+
+// #638 review finding: on Postgres, setDomainReviewDb's SERIALIZABLE confirm must map a real 40001 serialization
+// failure to the existing 'stale' 409 (the same thing a changed binding means), never let it surface as an
+// unhandled 500. Proven deterministically (not by racing real concurrent timing, which is flaky): a deferred
+// constraint trigger on lead_enrichments raises the genuine Postgres 40001 code at COMMIT, exactly where a losing
+// concurrent transaction's conflict is actually detected (see lib/db/client.ts pgDb: COMMIT is outside the
+// per-statement try/catch, so this is the raw driver error, not a StatementFailedInTx wrapper -- isSerializationFailure
+// in domain-review-action.ts has to recognize both shapes, and this pins the commit-time one).
+bothEngines('setDomainReviewDb: a real Postgres serialization failure at commit answers stale, never an unhandled throw; nothing partial is recorded', async ({ db, kind }) => {
+  if (kind !== 'pg') return
+  const job = 'g'.repeat(24), lead = 'h'.repeat(24)
+  await db.run('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES (?,?,?,?,?,?)', [job, 'A', 'S', 'x', 'y', 'running'])
+  await db.run('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)', [lead, job, 'Acme', null, 's', 'https://jobs.test/a', 'q', 90, 50])
+  await db.run('INSERT INTO lead_enrichments (id, tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    [randomBytes(12).toString('hex'), 'A', lead, 'sitecrawl', 'email', 'info@acme.test', null, 'https://acme.test/contact', '2026-10-24', 10])
+  const rows = await db.all('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?', [lead])
+  const bind = domainReviewFor({ id: lead, contact: null }, rows as never).binding!
+
+  // A genuine Postgres 40001 at commit, deterministically, exactly once -- the established technique (see
+  // test/play-research-db.test.ts "actual PG statement-time and deferred commit-time serialization failures").
+  await db.run('CREATE SEQUENCE dr_conflict_once')
+  await db.run("CREATE FUNCTION dr_conflict_once_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('dr_conflict_once') = 1 THEN RAISE EXCEPTION 'forced concurrent-confirm conflict' USING ERRCODE = '40001'; END IF; RETURN NEW; END $$")
+  await db.run('CREATE CONSTRAINT TRIGGER dr_conflict_once AFTER INSERT ON lead_enrichments DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION dr_conflict_once_fn()')
+
+  // First confirm: its own INSERT fires the trigger at COMMIT, simulating what a losing concurrent transaction sees.
+  assert.deepEqual(await setDomainReviewDb(db, 'A', lead, 'confirm', bind), { status: 'stale' }, 'a real 40001 at commit answers stale, never an unhandled throw')
+  assert.equal((await db.all("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND connector = 'user'", [lead])).length, 0, 'the losing transaction left no partial write: rolled back cleanly')
+
+  // Second confirm: the trigger fires only once (nextval = 1), so this one genuinely commits.
+  assert.deepEqual(await setDomainReviewDb(db, 'A', lead, 'confirm', bind), { status: 'confirmed', domain: 'acme.test' })
+  assert.equal((await db.all("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND connector = 'user'", [lead])).length, 1, 'exactly one confirmed row; no duplicate from the earlier failed attempt')
 })
 
 test('setDomainReviewDb answers and writes exactly as setDomainReview, including a same-second address tie and other tenants', async () => {

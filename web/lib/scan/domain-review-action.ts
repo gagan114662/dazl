@@ -1,7 +1,17 @@
 import type Database from 'better-sqlite3'
-import type { Db, TxBody } from '../db/client.ts'
+import { StatementFailedInTx, type Db, type TxBody } from '../db/client.ts'
 import { addEnrichment, addEnrichmentTx, type Enrichment } from '../connectors/store.ts'
 import { domainReviewFor, REVIEW_PREFIX } from '../outreach/domain-review.ts'
+
+// Postgres SQLSTATE 40001 (serialization_failure): the SERIALIZABLE confirm below aborts a transaction whose read
+// would conflict with a concurrent writer, usually detected at COMMIT (raw pg.Pool error, not wrapped) rather than
+// on an individual statement (wrapped in StatementFailedInTx). Either shape means the same thing a changed binding
+// means: the confirm was not proven against what the route checked, so it answers the existing 'stale' 409 instead
+// of letting a driver-level error surface as an unhandled 500.
+const isSerializationFailure = (e: unknown): boolean => {
+  const code = e instanceof StatementFailedInTx ? (e.cause as { code?: unknown } | undefined)?.code : (e as { code?: unknown } | null)?.code
+  return code === '40001'
+}
 
 export type DomainReviewResult =
   | { status: 'not_found' }
@@ -46,7 +56,9 @@ const reviewRow = (domain: string, binding: string, basisSourceUrl: string | nul
 // setDomainReview on the Db layer (SQLite or Postgres) for the domain-review route (#354): the same statements and the
 // same outcomes. The confirm is one transaction: on SQLite an IMMEDIATE one (the write lock is taken before the rows
 // are read, as above); on Postgres SERIALIZABLE, so a concurrent change to the evidence aborts it rather than letting a
-// confirm land on rows the binding check did not see. Either way a conflict throws; nothing is recorded.
+// confirm land on rows the binding check did not see. Either way a conflict throws; nothing is recorded. On Postgres
+// that throw is a 40001 serialization failure, answered as 'stale' (the same thing a changed binding means: the
+// confirm was not proven against what the route checked) rather than an unhandled 500 from the route.
 // The evidence rows are read in insert_seq order: on SQLite that is the order the sync read returns (rowid order),
 // and it gives Postgres the same order, so pickCrawledEmail's tie-break picks the same address on both engines.
 export async function setDomainReviewDb(db: Db, tenantId: string, leadId: string, action: 'confirm' | 'withdraw', expectedBinding?: string, now = Date.now()): Promise<DomainReviewResult> {
@@ -56,13 +68,18 @@ export async function setDomainReviewDb(db: Db, tenantId: string, leadId: string
     await db.run(WITHDRAW_SQL, [lead.id, tenantId])
     return { status: 'withdrawn' }
   }
-  return db.tx(function* (t): TxBody<DomainReviewResult> {
-    const rows = (yield* t.all(ROWS_IN_ORDER_SQL, [lead.id, tenantId])) as Rows
-    const d = domainReviewFor(lead, rows)
-    if (d.state === 'not_required' || !d.binding || !d.domain) return { status: 'not_required' }
-    if (expectedBinding !== d.binding) return { status: 'stale' }
-    yield* t.run(WITHDRAW_SQL, [lead.id, tenantId])
-    yield* addEnrichmentTx(t, tenantId, lead.id, reviewRow(d.domain, d.binding, d.basisSourceUrl, now))
-    return { status: 'confirmed', domain: d.domain }
-  }, 'serializable')
+  try {
+    return await db.tx(function* (t): TxBody<DomainReviewResult> {
+      const rows = (yield* t.all(ROWS_IN_ORDER_SQL, [lead.id, tenantId])) as Rows
+      const d = domainReviewFor(lead, rows)
+      if (d.state === 'not_required' || !d.binding || !d.domain) return { status: 'not_required' }
+      if (expectedBinding !== d.binding) return { status: 'stale' }
+      yield* t.run(WITHDRAW_SQL, [lead.id, tenantId])
+      yield* addEnrichmentTx(t, tenantId, lead.id, reviewRow(d.domain, d.binding, d.basisSourceUrl, now))
+      return { status: 'confirmed', domain: d.domain }
+    }, 'serializable')
+  } catch (e) {
+    if (isSerializationFailure(e)) return { status: 'stale' }
+    throw e
+  }
 }
