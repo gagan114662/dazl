@@ -1,4 +1,4 @@
-import type { Evidence, SourceAdapter } from './types.ts'
+import { isRecord, looksLikeHtml, statusNote, type Evidence, type SourceAdapter } from './types.ts'
 
 // V2EX public topics. Keyword search goes through sov2ex.com, a third-party search service
 // (the keywords are sent to it). When that is down the adapter falls back to the official
@@ -41,6 +41,8 @@ export function toEvidence(topics: Topic[], keywords: string[]): Evidence[] {
   return out.slice(0, 10)
 }
 
+class Malformed extends Error {}
+
 export const v2exAdapter: SourceAdapter = {
   id: 'v2ex',
   label: 'V2EX (public topics)',
@@ -60,26 +62,38 @@ export const v2exAdapter: SourceAdapter = {
     let items: Evidence[] = []
     const r = await http(`https://www.sov2ex.com/api/search?q=${encodeURIComponent(q)}&size=15&sort=created`)
     if (!r) noting('unreachable')
-    else if (r.status !== 200) noting('http_error')
+    else if (r.status !== 200) noting(statusNote(r.status))
     else if (r.truncated) noting('oversize') // never parse a prefix
+    else if (looksLikeHtml(r.body)) noting('challenge')
     else {
       try {
-        const json = JSON.parse(r.body) as { hits?: { _id: string; _source?: { title?: string; content?: string; created?: string } }[] }
-        const topics = (json.hits ?? []).map(h => ({ id: Number(h._id), title: h._source?.title ?? '', content: h._source?.content ?? '', created: Math.floor(new Date(h._source?.created ?? '').getTime() / 1000) })).filter(t => t.id > 0)
+        const json = JSON.parse(r.body) as unknown
+        // the search envelope: an object with a hits ARRAY; a row needs an _id and a _source object
+        if (!isRecord(json) || !Array.isArray(json.hits)) throw new Malformed()
+        const rows = (json.hits as unknown[]).filter((h): h is { _id: string; _source?: { title?: string; content?: string; created?: string } } => isRecord(h) && (typeof h._id === 'string' || typeof h._id === 'number') && isRecord(h._source))
+        if (rows.length < json.hits.length) noting('malformed_rows')
+        const topics = rows.map(h => ({ id: Number(h._id), title: h._source?.title ?? '', content: h._source?.content ?? '', created: Math.floor(new Date(h._source?.created ?? '').getTime() / 1000) })).filter(t => t.id > 0)
         items = toEvidence(topics, keywords)
-      } catch { noting('unparseable'); items = [] }
+      } catch (e) { noting(e instanceof Malformed ? 'malformed' : 'unparseable'); items = [] }
     }
     if (items.length === 0) {
       const hot = await http('https://www.v2ex.com/api/topics/hot.json', { accept: 'application/json' })
       if (!hot) noting('unreachable')
-      else if (hot.status !== 200) noting('http_error')
+      else if (hot.status !== 200) noting(statusNote(hot.status))
       else if (hot.truncated) noting('oversize') // never parse a prefix
+      else if (looksLikeHtml(hot.body)) noting('challenge')
       else {
         try {
-          const topics = (JSON.parse(hot.body) as { id: number; title?: string; content?: string; created?: number }[]).map(t => ({ id: t.id, title: t.title ?? '', content: t.content ?? '', created: t.created ?? 0 }))
+          const parsed = JSON.parse(hot.body) as unknown
+          if (!Array.isArray(parsed)) throw new Malformed()
+          const rows = parsed.filter((t): t is { id: number; title?: string; content?: string; created?: number } => isRecord(t) && typeof t.id === 'number' && t.id > 0)
+          if (rows.length < parsed.length) noting('malformed_rows')
+          const topics = rows.map(t => ({ id: t.id, title: t.title ?? '', content: t.content ?? '', created: t.created ?? 0 }))
           const kws = keywords.map(k => k.toLowerCase())
           items = toEvidence(topics.filter(t => kws.some(k => `${t.title} ${t.content}`.toLowerCase().includes(k))), keywords)
-        } catch { noting('unparseable'); items = [] }
+          // which backend answered: evidence from the hot list is a fallback, not the keyword search; the run says so and it is never cached as a search answer
+          if (items.length) noting('answered_by_hot_fallback')
+        } catch (e) { noting(e instanceof Malformed ? 'malformed' : 'unparseable'); items = [] }
       }
     }
     if (!noted) cache.set(q, { at: now, items })
