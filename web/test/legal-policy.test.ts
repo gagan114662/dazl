@@ -68,7 +68,7 @@ test('the policies stay labelled DRAFT and keep their open decisions visible unt
 })
 
 test('the policies are public and linked from the home footer and sign-up', () => {
-  const home = read('app/page.tsx'), signup = read('app/sign-up/page.tsx')
+  const home = read('app/page.tsx'), signup = read('app/sign-up/sign-up-form.tsx')
   for (const src of [home, signup]) {
     assert.match(src, /href="\/terms"/)
     assert.match(src, /href="\/privacy"/)
