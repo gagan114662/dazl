@@ -9,6 +9,8 @@ import { requestIdOf } from '@/lib/ops/request-log'
 import { deviceLabel } from '@/lib/sessions'
 import { getDb } from '@/lib/db/client'
 import { activateLifecycleForDb } from '@/lib/outreach/lifecycle'
+import { PREVIEW_CLAIM_COOKIE } from '@/lib/auth-google-response'
+import { isClaimToken } from '@/lib/scan/preview-claim'
 
 // Fixed dummy salt/hash so unknown emails cost the same time as known ones.
 const DUMMY_SALT = '00000000000000000000000000000000'
@@ -41,7 +43,10 @@ export async function POST(req: NextRequest) {
     if (user.email_verified_at !== null) { try { await activateLifecycleForDb(await getDb(), email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signin:lifecycle', method: 'POST', requestId: requestIdOf(req) }) } }
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
-    return NextResponse.json({ ok: true, redirect: '/app' })
+    // #416: a preview claim this browser is carrying from a Google attempt (the httpOnly intent cookie, which the page
+    // cannot read) is resumed after a password sign-in too. Only an enum goes back; the claim route re-verifies the token.
+    const resume = isClaimToken(req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value) ? { resume: 'preview' as const } : {}
+    return NextResponse.json({ ok: true, redirect: '/app', ...resume })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/auth/signin', method: 'POST', requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 })

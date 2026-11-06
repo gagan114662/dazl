@@ -2,7 +2,7 @@ import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { ownerGuarded } from '../llm/owner-guard.ts'
 import {currentnessHeld} from './currentness.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend } from './send-budget.ts'
-import { conversionBlockedNow, drainVerifiedPendingLifecycle } from './lifecycle.ts'
+import { conversionBlockedNow, displayStopReason, drainVerifiedPendingLifecycle } from './lifecycle.ts'
 import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -358,7 +358,7 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
       const gaps = isTestRecipient(db, tenantId, r.to_email) ? TEST_GAPS_S : GAPS_S
       nextDue = r.step1_sent + gaps[r.steps_sent] // steps_sent counts step 1: index of the NEXT step
     }
-    out.set(r.lead_id, { status: r.status, step: r.steps_sent, next_due_at: nextDue, stop_reason: r.stop_reason })
+    out.set(r.lead_id, { status: r.status, step: r.steps_sent, next_due_at: nextDue, stop_reason: displayStopReason(r.stop_reason) })
   }
   return out
 }
@@ -527,6 +527,13 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       if (s.policy !== null && !autoSequencePolicyAccepted(db, tenantId)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
         stopSequenceForThread(db,tenantId,s.lead_id,'stopped','policy_revoked',now); out.skipped++; continue
+      }
+      // The recipient gate is also re-proved at this send boundary (after the last await): an allowlist
+      // narrowed mid-tick - the designated test tenant may address only the approved test inbox - stops
+      // the step and the sequence here, never at Gmail.
+      if (!recipientAllowed(db, tenantId, s.to_email)) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped','personal_email',now); out.skipped++; continue
       }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name, fromEmail: acct.email, to: s.to_email, subject: stepRow.subject,

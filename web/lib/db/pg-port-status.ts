@@ -116,6 +116,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/shutdown-hook.ts': 0,
   'lib/scan/source-review.ts': 0,
   'lib/scan/source-runs.ts': 3,
+  'lib/scan/spend-cap.ts': 0,
   'lib/scan/store.ts': 11,
   'lib/scan/timing-proof.ts': 0,
   'lib/scan/trial.ts': 0,

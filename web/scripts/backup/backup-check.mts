@@ -7,6 +7,9 @@
 //     listing or read fails), holds no copy manifest, the newest copy is older than --offhost-max-age-s, or the newest
 //     manifest's ciphertext is absent, has other bytes than declared, or does not hash to its declared sha256: a
 //     manifest alone is not a recoverable backup. With OFFHOST_REQUIRED=1, no destination configured is a problem;
+//   - the tombstone ledger copy at that destination (#359; offhost-copy.sh step 4), when DAZL_TOMBSTONE_LEDGER is set
+//     (with OFFHOST_REQUIRED=1, unset is a problem): no dazl-ledger-* copy, a copy that is missing or does not match its
+//     manifest, or a newest ledger copy older than the newest backup copy (a restore could undo deletions made since);
 //   - the drill report: --drill-report FILE, else DRILL_REPORT from the environment, else <BACKUP_DIR>/drill-report.json
 //     (an empty value is an unexpanded variable: the default, as with --max-age-s). That default is the file every
 //     run-backup.sh run writes with restore-drill --report (pass or fail), so the shipped producer and this monitor
@@ -167,7 +170,8 @@ if (!offSpec) {
     // dazl-backup-<timestamp> names come first, newest timestamp first, so a few copies under other names (a manual
     // pre-migration copy, say) can never push the real newest out of the window; other names follow, newest-named first
     const rank = (f: string) => { const m = /^dazl-backup-(\d{8}T\d{6}Z)/.exec(f); return m ? `1-${m[1]}` : `0-${f}` }
-    const names = (await dest.list()).filter(f => f.endsWith('.age.json') && plainName(f)).sort((a, b) => rank(b).localeCompare(rank(a)))
+    const listed = await dest.list()
+    const names = listed.filter(f => f.endsWith('.age.json') && plainName(f) && !f.startsWith('dazl-ledger-')).sort((a, b) => rank(b).localeCompare(rank(a)))
     facts.offhost_manifests_listed = names.length
     const manifests: Record<string, unknown>[] = []; let read = 0
     for (const f of names) {
@@ -203,6 +207,34 @@ if (!offSpec) {
         else verified++
       }
       if (verified === newest.length) facts.newest_offhost_verified = true
+    }
+    // The tombstone ledger copy (#359; offhost-copy.sh step 4): a restore from the newest backup copy re-applies the
+    // deletions in it, so it must be at the destination, intact, and no older than that backup copy. Judged when
+    // DAZL_TOMBSTONE_LEDGER is set (the same env file the copy reads); with OFFHOST_REQUIRED=1, unset is a problem.
+    if (!process.env.DAZL_TOMBSTONE_LEDGER?.trim()) {
+      if (process.env.OFFHOST_REQUIRED === '1') problems.push('an off-host copy is required (OFFHOST_REQUIRED=1) but DAZL_TOMBSTONE_LEDGER is not set: the deletion ledger is not copied off-host')
+      else console.error('backup-check: DAZL_TOMBSTONE_LEDGER not set: the off-host copy of the deletion ledger is not checked')
+      facts.offhost_ledger = 'not configured'
+    } else {
+      const lnames = listed.filter(f => /^dazl-ledger-\d{8}T\d{6}Z\.jsonl\.age\.json$/.test(f)).sort().reverse().slice(0, 3)
+      type LedgerManifest = { copied_at: string; ciphertext?: string; bytes?: number; ciphertext_sha256?: string; lines?: number }
+      let ledger = null as LedgerManifest | null
+      for (const f of lnames) {
+        let m: Record<string, unknown> | null = null
+        try { m = JSON.parse(await dest.read(f)) } catch (e) { if (e instanceof SyntaxError || (e as NodeJS.ErrnoException)?.code) { problems.push(`off-host ledger manifest ${f} unreadable (${e instanceof SyntaxError ? 'not JSON' : reason(e)})`); continue } throw e }
+        if (m?.tool !== 'dazl-offhost-ledger' || !m.copied_at || Number.isNaN(Date.parse(String(m.copied_at)))) { problems.push(`off-host ledger manifest ${f} has no copied_at`); continue }
+        if (future(String(m.copied_at))) { problems.push(`off-host ledger manifest ${f} has a future timestamp`); continue }
+        if (!ledger || Date.parse(String(m.copied_at)) > Date.parse(ledger.copied_at)) ledger = m as unknown as LedgerManifest
+      }
+      if (!ledger) problems.push(`no off-host copy of the tombstone ledger at ${dest.label}`)
+      else {
+        facts.newest_offhost_ledger_age_s = ageS(ledger.copied_at); facts.offhost_ledger_lines = ledger.lines
+        const d = ledger.ciphertext && plainName(ledger.ciphertext) ? await dest.digest(ledger.ciphertext) : null
+        if (!d) problems.push(`newest off-host ledger copy ${ledger.ciphertext ?? '(unnamed)'} is missing (only its manifest exists)`)
+        else if (d.bytes !== ledger.bytes || d.sha256 !== ledger.ciphertext_sha256) problems.push(`newest off-host ledger copy ${ledger.ciphertext} does not match its manifest (truncated, replaced or corrupted)`)
+        else facts.newest_offhost_ledger_verified = true
+        if (manifests.length && Date.parse(ledger.copied_at) < Date.parse(String(manifests[0].copied_at))) problems.push('newest off-host ledger copy is older than the newest off-host backup copy: a restore from it could undo deletions made since')
+      }
     }
   } catch (e) { problems.push(`off-host destination ${dest.label} unreadable: ${reason(e)}`) }
 }

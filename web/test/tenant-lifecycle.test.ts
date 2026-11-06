@@ -133,6 +133,22 @@ test('retryable: staged steps, a failed step rolls back and resumes from the las
   assert.deepEqual(emptyExcept(snapshotSqlite(db, A), ['suppressions']), [])
 })
 
+test('named onboarding rows: enrollments and policies are erased with the tenant; every retained audit row is blank at completion', async () => {
+  const db = fixture(), d = sqliteDb(db)
+  // the generic seed put a marked row in both tables for A and B; give A's enrollment realistic content
+  db.prepare("UPDATE onboarding_enrollments SET email = 'converted@prospect.example', source = 'conversion:payment' WHERE tenant_id = ?").run(A)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_enrollments WHERE tenant_id = ?').get(A) as { n: number }).n, 1, 'seeded enrollment row present before deletion')
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_policies WHERE tenant_id = ?').get(A) as { n: number }).n, 1, 'seeded policy row present before deletion')
+  assert.ok((db.prepare('SELECT count(*) AS n FROM onboarding_audit WHERE tenant_id = ? AND detail IS NOT NULL').get(A) as { n: number }).n >= 1, 'seeded audit row carries detail before deletion')
+  await deleteTenant(d, A, { policy: POLICY, requestedBy: 'test', now: NOW })
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_enrollments WHERE tenant_id = ?').get(A) as { n: number }).n, 0, 'the enrollment row (email + conversion source) is erased with the tenant, not retained')
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_policies WHERE tenant_id = ?').get(A) as { n: number }).n, 0, 'the policy row is erased with the tenant')
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_audit WHERE tenant_id = ? AND detail IS NOT NULL').get(A) as { n: number }).n, 0, 'every retained audit row is blank at completion (synchronous redaction)')
+  // the other tenant's onboarding rows are untouched
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_enrollments WHERE tenant_id = ?').get(B) as { n: number }).n, 1)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM onboarding_policies WHERE tenant_id = ?').get(B) as { n: number }).n, 1)
+})
+
 test('retained consent proof: completion commits the 3-field redaction atomically, or not at all', async () => {
   const db = fixture(), d = sqliteDb(db)
   db.prepare("INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES ('oa-scope-1', ?, 'opted_in', 'policy 2026-11-02', ?)").run(A, NOW - 10)

@@ -185,7 +185,9 @@ function checkFlow(r: { out: Out[]; rows: Record<string, unknown> }, engine: str
   assert.equal((o('google gia').body as { location: string }).location, 'https://staging.dazl.ai/app')
   assert.deepEqual([o('verify tampered').status, o('reset tampered').status], [410, 410])
   const msg = Object.fromEntries(rows.messages.map(m => [m.id, `${m.status}:${m.error ?? ''}`]))
-  assert.deepEqual(msg, { 'm-0': 'skipped:converted_signup', 'm-1': 'skipped:converted_activation', 'm-2': 'skipped:converted_signup', 'm-3': 'skipped:converted_signup', 'm-4': 'draft:' }, `${engine}: queued work stopped for the four proven addresses, not the untouched one`)
+  // #664 (main, Nov 5): cancelPendingForTx writes the tenant-visible stop reason as policy_stop, never the
+  // conversion kind (signup vs activation) -- the kind stays server-side in lifecycle_events (checked below).
+  assert.deepEqual(msg, { 'm-0': 'skipped:policy_stop', 'm-1': 'skipped:policy_stop', 'm-2': 'skipped:policy_stop', 'm-3': 'skipped:policy_stop', 'm-4': 'draft:' }, `${engine}: queued work stopped for the four proven addresses, not the untouched one`)
   assert.deepEqual(rows.sequences.map(s => `${s.id}:${s.status}`), ['sq-0:stopped', 'sq-1:stopped', 'sq-2:stopped', 'sq-3:stopped', 'sq-4:active'])
   const ev = rows.events.map(e => `${e.kind}|${e.email}|${e.activated_at === 'now' || typeof e.activated_at === 'number' ? 'active' : 'pending'}`)
   assert.deepEqual(ev, ['activation|rob@example.test|active', 'signup|dee@example.test|active', 'signup|gia@example.test|active', 'signup|pat@example.test|active', 'signup|rob@example.test|active'])

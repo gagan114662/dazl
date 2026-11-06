@@ -57,8 +57,8 @@ export default function TeamPanel() {
       <p className="text-[#555] text-sm mb-3">You are <span className="font-medium">{mine}</span> in {current?.kind === 'personal' && current.tenant_id === ws.you.id ? 'your own workspace' : `${current?.name || 'this workspace'}`}: {ROLE_HELP[mine]}.</p>
       {ws.workspaces.length > 1 && (
         <div className="text-sm mb-4">
-          <label className="block text-xs text-gray-500 mb-1">Workspace</label>
-          <select className="field" value={ws.current.tenant_id} onChange={e => void switchTo(e.target.value)}>
+          <label htmlFor="team-workspace" className="block text-xs text-gray-500 mb-1">Workspace</label>
+          <select id="team-workspace" className="field" value={ws.current.tenant_id} onChange={e => void switchTo(e.target.value)}>
             {ws.workspaces.map(w => <option key={w.tenant_id} value={w.tenant_id}>{(w.tenant_id === ws.you.id ? 'Your workspace' : w.name || 'Workspace')} ({w.role})</option>)}
           </select>
         </div>
@@ -69,7 +69,7 @@ export default function TeamPanel() {
             <span className="truncate">{m.email}{m.member_id === ws.you.id ? ' (you)' : ''}</span>
             <span className="flex items-center gap-3 shrink-0">
               {admin && m.member_id !== ws.you.id && (owner || m.role !== 'owner') ? (
-                <select className="field" value={m.role} onChange={async e => { if (await send('/api/workspace/members', 'PATCH', { member_id: m.member_id, role: e.target.value })) load() }}>
+                <select className="field" aria-label={`Role for ${m.email}`} value={m.role} onChange={async e => { if (await send('/api/workspace/members', 'PATCH', { member_id: m.member_id, role: e.target.value })) load() }}>
                   {ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               ) : <span className="text-[#555]">{m.role}</span>}
@@ -81,8 +81,8 @@ export default function TeamPanel() {
       {admin && (
         <div className="text-sm space-y-2">
           <div className="flex flex-wrap gap-2">
-            <input className="field flex-1 min-w-0" type="email" placeholder="teammate@company.com" value={email} onChange={e => setEmail(e.target.value)} />
-            <select className="field" value={role} onChange={e => setRole(e.target.value as Role)}>{ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{r}</option>)}</select>
+            <input className="field flex-1 min-w-0" type="email" aria-label="Teammate email" placeholder="teammate@company.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <select className="field" aria-label="Role for the invite" value={role} onChange={e => setRole(e.target.value as Role)}>{ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{r}</option>)}</select>
             <button className="btn-primary" disabled={!email.trim()} onClick={() => void invite()}>Invite</button>
           </div>
           {link && <p className="text-[#555]">Send this one-time link to them (it works for 7 days, only for that email, and is shown only now): <code className="break-all select-all">{link}</code></p>}

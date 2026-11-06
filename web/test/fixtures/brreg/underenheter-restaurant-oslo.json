@@ -1,0 +1,988 @@
+{
+ "_embedded": {
+  "underenheter": [
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938737347"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/934576594"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Grønland 1"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0188",
+     "poststed": "OSLO"
+    },
+    "epostadresse": "maiyon@hotmail.com",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "REVETAL GAMLE STASJONEN AS AVD OSLO",
+    "oppstartsdato": "2026-11-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938737347",
+    "overordnetEnhet": "934576594",
+    "postadresse": {
+     "adresse": [
+      "Gamleveien 2"
+     ],
+     "kommune": "TØNSBERG",
+     "kommunenummer": "3905",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "3174",
+     "poststed": "REVETAL"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-11-02",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938797455"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/929449339"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Kjølberggata 21"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0653",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "hjelpeenhetskode": {
+     "beskrivelse": "Hovedkontortjenester",
+     "kode": "70.100"
+    },
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "HÅNDBAKT HOLDING AS",
+    "oppstartsdato": "2026-11-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938797455",
+    "overordnetEnhet": "929449339",
+    "registreringsdatoEnhetsregisteret": "2026-11-02",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938786666"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938786658"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Grønland 30"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0188",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "CHICKEN HOUSE AS TVANGSAVVIKLINGSBO",
+    "oppstartsdato": "2026-10-30",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AAFY"
+      }
+     },
+     "beskrivelse": "Underenhet til ikke-næringsdrivende",
+     "kode": "AAFY"
+    },
+    "organisasjonsnummer": "938786666",
+    "overordnetEnhet": "938786658",
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Stephan Didrich Eid",
+      "Parkveien 43"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0258",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-30",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938783462"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938747784"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Anton Tschudis vei 29B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0583",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "FREDRIK STRØM-LARSEN",
+    "oppstartsdato": "2026-10-23",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938783462",
+    "overordnetEnhet": "938747784",
+    "registreringsdatoEnhetsregisteret": "2026-10-30",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938783578"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938750386"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Mandalls gate 10"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0190",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "LOS CUATES AS",
+    "oppstartsdato": "2026-10-26",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938783578",
+    "overordnetEnhet": "938750386",
+    "registreringsdatoEnhetsregisteret": "2026-10-30",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938789509"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838583652"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Høgåsveien 52"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1259",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "SHAH HOSPITALITY GROUP AS",
+    "oppstartsdato": "2026-09-03",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938789509",
+    "overordnetEnhet": "838583652",
+    "registreringsdatoEnhetsregisteret": "2026-10-30",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938776830"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938567824"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Kringkollen 24B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0690",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "BOUAKA OUALID",
+    "oppstartsdato": "2026-09-25",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938776830",
+    "overordnetEnhet": "938567824",
+    "registreringsdatoEnhetsregisteret": "2026-10-29",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938779678"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938529442"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Ole Wingers vei 9"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0956",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "KHABOU MOHAMED LAMINE",
+    "oppstartsdato": "2026-09-19",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938779678",
+    "overordnetEnhet": "938529442",
+    "registreringsdatoEnhetsregisteret": "2026-10-29",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938780137"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938780129"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Fridtjof Nansens plass 8"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0160",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av barer",
+     "kode": "56.300"
+    },
+    "navn": "MIAMI OSLO AS KONKURSBO",
+    "oppstartsdato": "2026-10-29",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AAFY"
+      }
+     },
+     "beskrivelse": "Underenhet til ikke-næringsdrivende",
+     "kode": "AAFY"
+    },
+    "organisasjonsnummer": "938780137",
+    "overordnetEnhet": "938780129",
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Kristoffer Aasebø",
+      "Postboks 6604 St. Olavs plass"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0129",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-29",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938766142"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938766126"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Hegdehaugsveien 36A"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0352",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "AKKA ARABISK ESPRESSO AS KONKURSBO",
+    "oppstartsdato": "2026-10-28",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AAFY"
+      }
+     },
+     "beskrivelse": "Underenhet til ikke-næringsdrivende",
+     "kode": "AAFY"
+    },
+    "organisasjonsnummer": "938766142",
+    "overordnetEnhet": "938766126",
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Kristoffer Aasebø",
+      "Postboks 6604 St. Olavs plass"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0129",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-28",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938760942"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/952507729"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Geitaberget 17"
+     ],
+     "kommune": "STAVANGER",
+     "kommunenummer": "1103",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "4031",
+     "poststed": "STAVANGER"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Kantinedrift og annen cateringvirksomhet",
+     "kode": "56.220"
+    },
+    "navn": "COMPASS GROUP NORGE AS 509740 KAEFER ENERGY",
+    "oppstartsdato": "2026-12-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938760942",
+    "overordnetEnhet": "952507729",
+    "postadresse": {
+     "adresse": [
+      "Postboks 6489 Etterstad"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0606",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938761485"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938497303"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Johan Selmers gate 12"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0475",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "MONRAD-HASLUM SERVERING",
+    "oppstartsdato": "2026-09-21",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938761485",
+    "overordnetEnhet": "938497303",
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938758395"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938285438"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "c/o Ghanim Talal Ahmed",
+      "Bruksenhetsnummer H0301",
+      "Wilhelms gate 8B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0168",
+     "poststed": "OSLO"
+    },
+    "epostadresse": "ganem66@hotmail.com",
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "AL ARABI AS",
+    "oppstartsdato": "2026-09-28",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938758395",
+    "overordnetEnhet": "938285438",
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938757046"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938757038"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Bernt Ankers gate 27"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0183",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "ANCHAU AS KONKURSBO",
+    "oppstartsdato": "2026-10-27",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AAFY"
+      }
+     },
+     "beskrivelse": "Underenhet til ikke-næringsdrivende",
+     "kode": "AAFY"
+    },
+    "organisasjonsnummer": "938757046",
+    "overordnetEnhet": "938757038",
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Håvard Wiker",
+      "Postboks 1983 Vika"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0125",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938758050"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938758042"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Jerikoveien 23A"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "1067",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "CAZANEGRA AS KONKURSBO",
+    "oppstartsdato": "2026-10-27",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AAFY"
+      }
+     },
+     "beskrivelse": "Underenhet til ikke-næringsdrivende",
+     "kode": "AAFY"
+    },
+    "organisasjonsnummer": "938758050",
+    "overordnetEnhet": "938758042",
+    "postadresse": {
+     "adresse": [
+      "v/Adv. Håvard Wiker",
+      "Postboks 1983 Vika"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0125",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-27",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938750556"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/934218647"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Bygdøy allé 15"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0257",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "MANCI",
+    "oppstartsdato": "2026-09-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938750556",
+    "overordnetEnhet": "934218647",
+    "registreringsdatoEnhetsregisteret": "2026-10-26",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/838748112"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938715688"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Vestlisvingen 188"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0969",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "MUNCH. AS",
+    "oppstartsdato": "2026-10-21",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "838748112",
+    "overordnetEnhet": "938715688",
+    "registreringsdatoEnhetsregisteret": "2026-10-26",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938748101"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938715637"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Helgesens gate 90"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0563",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "TØYENBADET KAFE AS",
+    "oppstartsdato": "2026-10-14",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938748101",
+    "overordnetEnhet": "938715637",
+    "registreringsdatoEnhetsregisteret": "2026-10-26",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938739935"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938575983"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Etterstadgata 20B"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0658",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Catering for arrangementer",
+     "kode": "56.210"
+    },
+    "navn": "PRESENCE AS",
+    "oppstartsdato": "2026-09-01",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938739935",
+    "overordnetEnhet": "938575983",
+    "registreringsdatoEnhetsregisteret": "2026-10-24",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   },
+   {
+    "_links": {
+     "self": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938740305"
+     },
+     "overordnetEnhet": {
+      "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938700931"
+     }
+    },
+    "beliggenhetsadresse": {
+     "adresse": [
+      "Kongens gate 6"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0153",
+     "poststed": "OSLO"
+    },
+    "harRegistrertAntallAnsatte": false,
+    "historiskeNavn": [],
+    "naeringskode1": {
+     "beskrivelse": "Drift av restauranter",
+     "kode": "56.110"
+    },
+    "navn": "CAFÉ SERINE AS",
+    "oppstartsdato": "2026-09-15",
+    "organisasjonsform": {
+     "_links": {
+      "self": {
+       "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+      }
+     },
+     "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+     "kode": "BEDR"
+    },
+    "organisasjonsnummer": "938740305",
+    "overordnetEnhet": "938700931",
+    "postadresse": {
+     "adresse": [
+      "c/o Etna AS",
+      "Postboks 392 Sentrum"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0103",
+     "poststed": "OSLO"
+    },
+    "registreringsdatoEnhetsregisteret": "2026-10-23",
+    "registrertIMvaregisteret": false,
+    "respons_klasse": "Underenhet"
+   }
+  ]
+ },
+ "_links": {
+  "first": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=0&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "self": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "next": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=1&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  },
+  "last": {
+   "href": "https://data.brreg.no/enhetsregisteret/api/underenheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&page=5&size=20&sort=registreringsdatoEnhetsregisteret,desc"
+  }
+ },
+ "page": {
+  "number": 0,
+  "size": 20,
+  "totalElements": 105,
+  "totalPages": 6
+ }
+}

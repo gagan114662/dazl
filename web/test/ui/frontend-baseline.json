@@ -1,0 +1,4 @@
+{
+ "_doc": "Known axe-core violations per '<viewport> <page>' -> rule -> node count, checked by test/ui/frontend-baseline.ui.mjs. Listing a violation here does NOT mean it is fixed or accepted: it is the open backlog (docs/FRONTEND-BASELINE.md). The test fails if any entry grows, appears, drops or disappears, so this file always matches what is still there.",
+ "violations": {}
+}
