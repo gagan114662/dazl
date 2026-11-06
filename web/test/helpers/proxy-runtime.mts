@@ -48,7 +48,7 @@ test('proxy: a fresh request id per request, forwarded to the route and returned
 test('proxy: /app redirects every request without a live session before any page renders; a live session goes through', async () => {
   const raw = new Database(':memory:'); migrateAuth(raw)
   const db = sqliteDb(raw); setDb(db)
-  raw.prepare("INSERT INTO users (id, email, business_name, password_hash, salt) VALUES ('u1', 'owner@example.test', 'Acme', 'h', 's')").run()
+  raw.prepare("INSERT INTO users (id, email, business_name, password_hash, salt, email_verified_at) VALUES ('u1', 'owner@example.test', 'Acme', 'h', 's', 1)").run()
   const live = await createSession('u1', db)
   const expired = await createSession('u1', db)
   raw.prepare('UPDATE sessions SET expires_at = 1 WHERE id = (SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1)').run()

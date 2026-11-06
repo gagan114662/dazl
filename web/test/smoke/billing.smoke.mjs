@@ -39,7 +39,7 @@ const srv = await startServer({
     const d = db()
     try {
       migrateAllSqlite(d); migratePlans(d); migrateBilling(d)
-      d.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'b@example.test', 'x', 'y')").run(B)
+      d.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'b@example.test', 'x', 'y', 1)").run(B)
       d.prepare("INSERT INTO tenant_plans (tenant_id, plan, subscription_status, stripe_customer_id, stripe_subscription_id) VALUES (?, 'pro', 'active', 'cus_tenant_b', 'sub_tenant_b')").run(B)
     } finally { d.close() }
   },
