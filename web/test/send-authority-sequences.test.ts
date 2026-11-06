@@ -59,7 +59,7 @@ async function start(db: Database.Database,s: ReturnType<typeof add>,m: ReturnTy
 
 
 
-for (const mode of ['control', 'sender', 'revoke', 'unreadable'] as const) {
+for (const mode of ['control', 'sender', 'revoke', 'unreadable', 'other_sequence'] as const) {
   test(`sequence step 2, authority ${mode === 'control' ? 'unchanged' : 'changed during the token await'}: ${mode === 'control' ? 'sends' : 'refused, step returns to approved, no handoff'}`, async () => {
     const db = await setup(), s = add(db), m = mock(); await start(db, s, m)
     let tokens = 0; const f = m.fetchImpl
@@ -70,6 +70,8 @@ for (const mode of ['control', 'sender', 'revoke', 'unreadable'] as const) {
           if (mode === 'sender') db.prepare("UPDATE gmail_accounts SET email = 'other@other.example' WHERE tenant_id = 'A'").run()
           if (mode === 'revoke') db.prepare("UPDATE consent_ledger SET revoked_at = ? WHERE tenant_id = 'A'").run(NOW + 3 * DAY)
           if (mode === 'unreadable') db.exec('DROP TABLE suppressions')
+          // the only live grant now belongs to a different sequence for the same recipient: it must not authorise this step
+          if (mode === 'other_sequence') db.prepare("UPDATE consent_ledger SET evidence_ref = 'sequence:another' WHERE tenant_id = 'A' AND scope = 'sequence'").run()
         }
       }
       return f(...args)

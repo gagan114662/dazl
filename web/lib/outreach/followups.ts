@@ -131,7 +131,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
       }
       // Shared authority recheck (send-authority.ts), after every await on this path (token, follow-up text) and immediately
       // before the handoff: tenant switches, suppression, ledger consent and the sending identity as they are NOW.
-      const why = recheckSendAuthority(db, tenantId, { to: t.to_email, sender: acct.email, now, autopilot: 'followups', consentScope: 'followup' })
+      const why = recheckSendAuthority(db, tenantId, { to: t.to_email, sender: acct.email, now: d.now ?? Math.floor(Date.now() / 1000), autopilot: 'followups', consentScope: 'followup' })
       if (why) {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         if (why === 'suppressed') db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)

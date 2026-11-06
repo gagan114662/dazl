@@ -545,7 +545,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       }))
       // Shared authority recheck (send-authority.ts): the sending identity and the ledger consent as they are NOW, immediately
       // before the handoff and after every await on this path. Suppression and pause were re-read above; this adds the rest.
-      const why = recheckSendAuthority(db, tenantId, { to: s.to_email, sender: acct.email, now, consentScope: 'sequence' })
+      const why = recheckSendAuthority(db, tenantId, { to: s.to_email, sender: acct.email, now: d.now ?? Math.floor(Date.now() / 1000), consentScope: 'sequence', consentEvidenceRef: `sequence:${s.id}` })
       if (why) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId,s.id,stepRow.step)
         skip(why); continue
