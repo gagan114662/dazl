@@ -160,3 +160,29 @@ test('control: a daemon message without any 5.x.x stays a soft bounce', async ()
   assert.equal(isSuppressed(db, 'A', 's@four.example'), false)
   assert.equal(count(db, "SELECT count(*) n FROM inbound_messages WHERE classification = 'soft_bounce'"), 1)
 })
+
+test('same-thread matched recipient block says delayed / 4.x.x: stays soft even with unrelated 5.x.x text elsewhere', async () => {
+  for (const o of [{ action: 'delayed', status: '4.4.7' }, { action: 'failed', status: '4.2.2' }]) {
+    const db = await setup()
+    const m = sameThreadDsn('f6', { recipient: 'b@three.example', at: NOW - 3 * DAY, ...o })
+    m.payload.parts.unshift({ mimeType: 'text/plain', body: { data: Buffer.from('Another recipient other@x.example failed: 550 5.1.1 user unknown').toString('base64url') } })
+    const r = await syncReplies(db, 'A', opts(gmail({ [sentLead(db, 'b@three.example').thread]: [m] })))
+    assert.deepEqual([r.bounces, r.reviews], [0, 0])
+    assert.equal(count(db, "SELECT count(*) n FROM inbound_messages WHERE classification = 'soft_bounce'"), 1)
+    assert.equal(count(db, "SELECT count(*) n FROM inbound_messages WHERE classification = 'bounce_review'"), 0)
+  }
+})
+
+test('disconnect racing a sync: the account is gone before provider revocation resolves, the sync stores nothing', async () => {
+  const { disconnectGmail } = await import('../lib/gmail/oauth.ts')
+  const db = await setup(); const p = sentLead(db, 'p@one.example'); const calls: string[] = []
+  let release!: () => void
+  const revokeFetch = (async () => { await new Promise<void>(r => { release = r }); return json({}) }) as unknown as typeof fetch
+  let pending: Promise<void> | undefined
+  const r = await syncReplies(db, 'A', opts(hooked({ [p.thread]: [reply('m1')] }, { onToken: () => { pending = disconnectGmail(db, 'A', { env: genv, master, fetchImpl: revokeFetch }) } }, calls)))
+  assert.equal(r.error, 'reading_not_enabled')
+  assert.equal(calls.filter(u => /threads\//.test(u)).length, 0)
+  assert.equal(count(db, 'SELECT count(*) n FROM inbound_messages'), 0)
+  assert.equal(count(db, "SELECT count(*) n FROM gmail_accounts WHERE tenant_id = 'A'"), 0) // deleted while revoke still pending
+  release(); await pending
+})

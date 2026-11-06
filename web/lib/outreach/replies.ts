@@ -412,7 +412,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           const key = norm(m.to_email)
           const block = nf.blocks.find(b => b.recipients.includes(key))
           const permanent = !!block && block.action === 'failed' && /^5\.\d{1,3}\.\d{1,3}$/.test(block.status ?? '')
-          const plain5xx = /\b5\.\d{1,3}\.\d{1,3}\b/.test(fullText(g.payload))
+          // A matched recipient block alone decides (delayed / 4.x.x stays soft); the plain-text fallback only applies with no block.
+          const plain5xx = !block && /\b5\.\d{1,3}\.\d{1,3}\b/.test(fullText(g.payload))
           if (!permanent && !plain5xx) { log('soft_bounce'); continue }
           const review = (why: string) => {
             if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, m.id)) {
