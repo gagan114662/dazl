@@ -12,14 +12,18 @@ const require = createRequire(import.meta.url)
 test('installed Next ErrorBoundaryHandler hands the error component both retry and reset functions', async () => {
   const React = require('react') as typeof import('react')
   const { renderToString } = require('react-dom/server') as typeof import('react-dom/server')
-  const { ErrorBoundaryHandler } = require('next/dist/client/components/error-boundary.js')
+  type BoundaryProps = Record<string, unknown>
+  // The CJS require is untyped; type the installed class as a React component class so createElement accepts it.
+  const { ErrorBoundaryHandler } = require('next/dist/client/components/error-boundary.js') as {
+    ErrorBoundaryHandler: new (props: BoundaryProps) => import('react').Component<BoundaryProps, Record<string, unknown>>
+  }
   let received: Record<string, unknown> | null = null
   const ErrorComponent = (props: Record<string, unknown>) => { received = props; return null }
   const Boom = () => { throw new Error('synthetic boundary test error') }
   // renderToString does not run class getDerivedStateFromError, so seed the handler's error state directly the way
   // React would after a client render failure.
   class Seeded extends ErrorBoundaryHandler {
-    constructor(props: unknown) { super(props); this.state = { error: { thrownValue: new Error('synthetic') }, previousPathname: '/app' } }
+    constructor(props: BoundaryProps) { super(props); this.state = { error: { thrownValue: new Error('synthetic') }, previousPathname: '/app' } }
   }
   renderToString(React.createElement(Seeded, { pathname: '/app', errorComponent: ErrorComponent }, React.createElement(Boom)))
   assert.ok(received, 'error component was rendered')
