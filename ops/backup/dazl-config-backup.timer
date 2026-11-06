@@ -1,0 +1,11 @@
+# Daily secrets/config bundle (dazl-config-backup.service). Enable with the other dazl backup timers.
+[Unit]
+Description=daily dazl secrets/config bundle
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

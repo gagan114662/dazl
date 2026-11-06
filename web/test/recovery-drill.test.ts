@@ -69,7 +69,8 @@ test('unresolved sends and live leases in the backup are counted for reconciliat
     const leads = (raw.prepare('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? LIMIT 2').all(tenant) as { id: string }[]).map(l => l.id)
     const ins = raw.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES (?, ?, ?, 'x@staging.dazl.test', 'A quick question', 'A synthetic body long enough for the check.', ?, 1)")
     ins.run(randomBytes(12).toString('hex'), tenant, leads[0], 'uncertain'); ins.run(randomBytes(12).toString('hex'), tenant, leads[1], 'sending')
-    raw.prepare("INSERT INTO app_leases (name, owner, expires_at) VALUES ('internal-tick', 'old-host', ?)").run(Math.floor(Date.now() / 1000) + 3600)
+    raw.prepare("INSERT INTO app_leases (name, owner, expires_at) VALUES ('internal-tick', 'old-host', ?)").run(Date.now() + 3_600_000) // epoch ms, as tryLease writes
+    raw.prepare("INSERT INTO app_leases (name, owner, expires_at) VALUES ('old-expired', 'old-host', ?)").run(Date.now() - 31 * 60_000) // expired: not counted
   })
   const report = path.join(dir, 'report.json')
   const r = drill(['--backup', u.backup, '--key-file', u.keyFile, '--work-dir', path.join(T, `work-${++n}`), '--report', report])
