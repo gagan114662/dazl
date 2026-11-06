@@ -40,6 +40,10 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
+  policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
+  comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
+  from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
 
 - #415 b/415-bounce-outside-thread: separate-thread DSNs in `syncReplies` are matched by the notice's own fields (returned
   Message-ID / In-Reply-To / References, Final-/Original-Recipient, X-Failed-Recipients), not thread id; a verified 5.x.x
@@ -73,6 +77,12 @@ Updated by the builder on every branch. Newest first.
   the `OUTREACH_TEST_TENANT_ID` tenant only, OFF unless `OUTREACH_INBOX_FIXTURE=1`) seeds 120 labelled threads plus one
   bounce_review notice so pagination and bounce_review can be checked live; cleanup removes only those rows
   (web/docs/inbox-fixture.md).
+
+- b/354-pg-auth (#354, area 1 of the porting order): sign-up, sign-in, verification, reset and the Google callback reach
+  the #417 conversion boundary on the Db layer, and `lib/auth-db.ts` has no raw-handle code left (its sync profile
+  readers are gone; their callers read through Db). The store opener and the auth schema's SQLite half moved to engine
+  file `lib/db/sqlite-store.ts`. `RAW_SQLITE_MODULES` 137 -> 131. Postgres-only fixture: `test/pg-port-auth-routes`.
+  #354 stays open: 131 modules, two-instance and rollback criteria remain.
 
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
@@ -157,6 +167,7 @@ Updated by the builder on every branch. Newest first.
   tenant) recoverable through GET /api/leads/evidence. CSV origin cells say only what is recorded (copy / unreadable / confirmed by
   you); blank claims nothing. Limits: SQLite-only table (deletion requests: see b/evidence-purge), English wall-phrase list, silent truncation
   undetected, no live-yield evidence.
+- PR #567 b/534-frontend-baseline (Refs #534): axe/keyboard/overflow check on 9 pages x desktop + EMULATED iPhone 13/Pixel 7 and served-HTML metadata check (web/docs/FRONTEND-BASELINE.md); physical-device, screen-reader and live social-preview checks not done.
 
 ## In progress (interactive Claude session, do not duplicate)
 
@@ -187,7 +198,8 @@ complete — do not start new issues until each is closed or explicitly re-queue
    disposable tenant, DAZL_TOMBSTONE_LEDGER set on the host (ops/backup now copies it off-host), the owner's retention decisions.
 2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
    default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
-   holds.
+   holds. b/409-activation-funnel: every website read is now recorded (`onboarding.site_read` audit event: path,
+   result, reason) and `scripts/activation-report.mts` prints the funnel, drop-offs and time to first verified lead.
 3. #405 (calibrated launch / preflight): code shipped (ex-#467/#553) but inactive. Missing: activation, and proof
    the "no routine hand-approvals" journey actually works end to end.
 4. #394 (agent evals / autonomous evaluation): the evaluation tooling shipped (ex-#463/#556). Missing: the complete

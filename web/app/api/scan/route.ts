@@ -15,7 +15,7 @@ import { getDb } from '@/lib/db/client'
 import { normalizeSources } from '@/lib/sources'
 import { kickRunner } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
-import { getAuthDb, sellerProfile } from '@/lib/auth-db'
+import { readSellerLine } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { connectorStatus } from '@/lib/connectors/store'
 import { estimateForBody } from '@/lib/scan/estimate-request'
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
   // What the tenant sells for THIS play (lib/scan/play-offer.ts): the offer reviewed with the profile, stored with the
   // play. Without one, the play records the business profile's offer; a request that states a different offer is
   // refused until the caller chooses which one this play is for, before anything is queued or counted.
-  const seller = sellerProfile(getAuthDb(), user.tenantId)
+  const seller = await readSellerLine(await getDb(), user.tenantId)
   const offerSupplied = body?.offer !== undefined && body?.offer !== null
   let offer = offerSupplied ? cleanOffer(body.offer) : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })

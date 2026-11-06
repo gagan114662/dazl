@@ -67,7 +67,7 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const sum = (f: (c: Camp) => number) => camps ? camps.reduce((n, c) => n + f(c), 0) : 0
   const first = (f: (c: Camp) => boolean) => camps?.find(f) ?? null
   const href = (c: Camp | null) => c ? `/app/leads?job_id=${c.id}` : null
-  const qualifiedN = sum(ready), heldN = sum(c => c.qualification.held ?? 0)
+  const qualifiedN = sum(ready)
   const contactN = sum(c => c.contact?.readyWithContact ?? 0)
   // The two reads overlap (a campaign's drafts are also in the emails read), so they are never added together. A complete
   // emails read is the whole count; a capped one gives at least the larger of the two.
@@ -79,9 +79,11 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const noSearchYet = finishedN === 0
   // Qualified: point at held or to-review leads first (something to act on), else the newest finished search.
   const reviewCamp = first(c => (c.qualification.held ?? 0) + (c.qualification.needsReview ?? 0) > 0) ?? first(c => c.status === 'done')
+  // The count and the link describe the SAME set (#352 review of #647): the leads of the one search the link opens, held plus awaiting review.
+  const reviewN = reviewCamp ? (reviewCamp.qualification.held ?? 0) + (reviewCamp.qualification.needsReview ?? 0) : 0
   const qualified: ReadyItem = qualifiedN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'done', detail: `${qualifiedN} source-checked or confirmed by you`, fix: null }
     : !campsComplete ? unknown('qualified', 'Qualified lead', campGap)
-    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : heldN > 0 ? `${heldN} checked lead${heldN === 1 ? ' waits for its' : 's wait for their'} event date to be confirmed` : 'no lead has passed the source check yet', fix: noSearchYet || !reviewCamp ? null : { href: href(reviewCamp)!, label: 'Review leads' } }
+    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : reviewN > 0 ? `${reviewN} lead${reviewN === 1 ? '' : 's'} in this search ${reviewN === 1 ? 'needs' : 'need'} your review - open the list to see why each was held` : 'no lead has passed the source check yet', fix: noSearchYet || !reviewCamp ? null : { href: href(reviewCamp)!, label: 'Review leads' } }
   const contactCamp = first(c => ready(c) > 0)
   const contact: ReadyItem = contactN > 0 ? { id: 'contact', label: 'Contact found', state: 'done', detail: `${contactN} qualified lead${contactN === 1 ? '' : 's'} with a contact`, fix: null }
     : !campsComplete ? unknown('contact', 'Contact found', campGap)

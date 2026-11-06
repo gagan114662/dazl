@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { getAuthDb, getSellerProfile } from '@/lib/auth-db'
+import { readSellerProfile } from '@/lib/auth-db'
+import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { draftReply, markDraft, migrateThreadReplies, saveDraft } from '@/lib/replies/threads'
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   migrateThreadReplies(db)
 
   if (body?.action === 'draft') {
-    const r = await draftReply(db, user.tenantId, id, getSellerProfile(getAuthDb(), user.tenantId))
+    const r = await draftReply(db, user.tenantId, id, await readSellerProfile(await getDb(), user.tenantId))
     if ('error' in r) {
       if (r.error === 'spend_limit') return NextResponse.json({ error: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.', code: 'spend_limit' }, { status: 429 })
       const msg = r.error === 'key_unreadable' ? KEY_UNREADABLE_COPY : r.error === 'key_rejected' ? knownErrorCopy('key_rejected')! : r.error === 'no_key' ? 'Add your own AI key in Settings first' : r.error === 'not_found' ? 'Not found' : 'The AI provider failed - try again'

@@ -186,7 +186,7 @@ export function conversionEventFor(db: Database.Database, rawEmail: string): { k
 // The billing webhook runs where the raw SQLite handle is a trap (a PG deployment): the same conversion, on the
 // ported Db layer and SQL both engines accept. The cancel cascade below replicates cancelPendingFor (incl.
 // stopSequenceForThread's audited stop) statement for statement; the sync functions stay for the sqlite-side
-// callers (auth routes, the autopilot pass). No migrate calls here: the Db layer's schema comes from the
+// callers (the autopilot pass). The auth routes use these (#354). No migrate calls here: the Db layer's schema comes from the
 // migrations (sqlite-migrations.ts / pg 0029), as for every ported module.
 
 function* cancelPendingForTx(t: Tx, email: string, kind: LifecycleKind, now: number): TxBody<number> {
@@ -219,6 +219,22 @@ export async function recordLifecycleEventDb(db: Db, kind: LifecycleKind, rawEma
     const activated = ins.changes === 1 ? 1 : (yield* t.run('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL', [now, key])).changes
     if (activated !== 1) return 0
     return yield* cancelPendingForTx(t, email, kind, now)
+  })
+}
+
+// activateLifecycleFor on the Db layer: every pending conversion for the now-proven address activates, in one
+// transaction, stopping the queued work for each. Idempotent; returns rows stopped.
+export async function activateLifecycleForDb(db: Db, rawEmail: string, now = Math.floor(Date.now() / 1000)): Promise<number> {
+  const email = normalizeLifecycleEmail(rawEmail)
+  if (!email || !email.includes('@')) return 0
+  return db.tx(function* (t) {
+    let stopped = 0
+    const rows = yield* t.all<{ event_key: string; kind: LifecycleKind }>('SELECT event_key, kind FROM lifecycle_events WHERE email = ? AND activated_at IS NULL', [email])
+    for (const r of rows) {
+      const u = yield* t.run('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL', [now, r.event_key])
+      if (u.changes === 1) stopped += yield* cancelPendingForTx(t, email, r.kind, now)
+    }
+    return stopped
   })
 }
 
