@@ -24,7 +24,18 @@ export default function SocialClient() {
   const [editing, setEditing] = useState<string | null>(null)
   const [cardErr, setCardErr] = useState<Record<string, string>>({})
 
-  async function load() { const r = await fetch('/api/replies'); if (r.ok) setState(await r.json()) }
+  // #902: the list read has explicit loading / error states. A failed or malformed read never leaves the page on
+  // Loading forever, and a failed reload keeps the last confirmed list on screen with a retry.
+  const [loadErr, setLoadErr] = useState('')
+  async function load() {
+    try {
+      const r = await fetch('/api/replies')
+      if (!r.ok) { setLoadErr(r.status === 401 || r.status === 403 ? 'Your session may have expired. Sign in again to see social threads.' : `Could not load social threads (error ${r.status}).`); return }
+      const j = await r.json().catch(() => null)
+      if (!j || !Array.isArray(j.threads) || !Array.isArray(j.queries) || !j.platforms) { setLoadErr('Could not load social threads (unexpected response).'); return }
+      setState(j as State); setLoadErr('')
+    } catch { setLoadErr('Could not load social threads. Check your connection.') }
+  }
   useEffect(() => { void load() }, [])
 
   async function post(body: Record<string, unknown>, url = '/api/replies') {
@@ -55,8 +66,7 @@ export default function SocialClient() {
       const gradedPart = j.graded > 0 ? ` Buyer intent graded on your AI key: ${j.graded}.` : ''
       const backlog = (j.ungraded_remaining ?? 0) > 0 ? ` ${j.ungraded_remaining} older thread${j.ungraded_remaining === 1 ? ' is' : 's are'} still ungraded - check again to grade more.` : ''
       setMsg((j.added > 0 ? `${kept}${dropped}. ${parts.join(' - ')}` : `Nothing new${dropped}. ${parts.join(' - ')}`) + gradedPart + backlog)
-    } catch (e) { setMsg((e as Error).message) }
-    setBusy('')
+    } catch (e) { setMsg((e as Error).message) } finally { setBusy('') }
     void load()
   }
   async function draft(id: string) {
@@ -64,8 +74,7 @@ export default function SocialClient() {
     try {
       await post({ action: 'draft' }, `/api/replies/${id}`)
       setEdits(e => without(e, id)) // the editor shows the new server draft, not stale text
-    } catch (e) { setCardErr(c => ({ ...c, [id]: (e as Error).message })) }
-    setBusy('')
+    } catch (e) { setCardErr(c => ({ ...c, [id]: (e as Error).message })) } finally { setBusy('') }
     void load()
   }
   // Save keeps the editor open until the server confirms; a failure is shown on that card, never above the list.
@@ -78,26 +87,38 @@ export default function SocialClient() {
   }
   async function copyAndOpen(t: Thread) {
     const text = t.draft ?? '' // the server-confirmed draft, never unsaved editor text
-    try { await navigator.clipboard.writeText(text) } catch { setMsg('Copy failed - select the text and copy it by hand.') }
+    setCardErr(c => ({ ...c, [t.id]: '' }))
+    // #902: only a successful clipboard write may show "Copied" or record the copied status. On failure the thread
+    // still opens so the owner can copy the draft shown on the card by hand.
+    let ok = true
+    try { await navigator.clipboard.writeText(text) } catch { ok = false }
     window.open(t.url, '_blank', 'noopener,noreferrer')
+    if (!ok) { setCardErr(c => ({ ...c, [t.id]: 'Copy failed - select the draft text and copy it by hand.' })); return }
     setCopied(t.id); setTimeout(() => setCopied(''), 3000)
-    try { await post({ action: 'mark', status: 'copied' }, `/api/replies/${t.id}`) } catch { /* status is a convenience, not a gate */ }
+    try { await post({ action: 'mark', status: 'copied' }, `/api/replies/${t.id}`) } catch { /* the copy happened; the status label is a convenience, not a gate */ }
     void load()
   }
+  // #902: posted / rejected are shown only after the server confirms. A failure (or unknown outcome) is shown on the
+  // card and nothing is retried automatically; the owner can click again, and the reload shows the confirmed state.
   async function markPosted(id: string) {
-    try { await post({ action: 'mark', status: 'posted' }, `/api/replies/${id}`) } catch { /* ignore */ }
+    setCardErr(c => ({ ...c, [id]: '' }))
+    try { await post({ action: 'mark', status: 'posted' }, `/api/replies/${id}`) } catch (e) { setCardErr(c => ({ ...c, [id]: `Not marked as posted: ${(e as Error).message}. Try again.` })) }
     void load()
   }
   async function dismiss(id: string) {
-    try { await post({ action: 'dismiss', id }) } catch { /* ignore */ }
+    setCardErr(c => ({ ...c, [id]: '' }))
+    try { await post({ action: 'dismiss', id }) } catch (e) { setCardErr(c => ({ ...c, [id]: `Not rejected: ${(e as Error).message}. Try again.` })) }
     void load()
   }
 
-  if (!state) return <main className="p-6 md:p-10 max-w-4xl"><p className="text-[#555]">Loading...</p></main>
+  if (!state) return <main className="p-6 md:p-10 max-w-4xl">{loadErr
+    ? <div className="card p-4 text-sm" role="alert" data-testid="social-load-error"><p className="font-medium">{loadErr}</p><button className="btn-ghost btn-sm mt-2" onClick={() => void load()}>Try again</button></div>
+    : <p className="text-[#555]" aria-live="polite">Loading...</p>}</main>
   const anyPlatform = state.platforms.reddit || state.platforms.x
   return (
     <main className="p-6 md:p-10 max-w-4xl">
       <h1 className="text-2xl font-semibold mb-1">Social opportunities</h1>
+      {loadErr && <p role="alert" className="text-xs font-medium text-[#a3173f] mb-2" data-testid="social-load-error">{loadErr} Showing the last loaded threads. <button className="underline" onClick={() => void load()}>Try again</button></p>}
       <p className="text-[#555] text-sm mb-6">
         Fresh Reddit and X threads that mention your searches and look like questions. Not every match is your buyer - review each one and decide. Replies are drafted on your own AI key.
         dazl never posts: you review the reply, edit it, then copy it and post it yourself from your own account.
