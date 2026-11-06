@@ -193,7 +193,8 @@ complete — do not start new issues until each is closed or explicitly re-queue
    disposable tenant, DAZL_TOMBSTONE_LEDGER set on the host (ops/backup now copies it off-host), the owner's retention decisions.
 2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
    default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
-   holds.
+   holds. b/409-activation-funnel: every website read is now recorded (`onboarding.site_read` audit event: path,
+   result, reason) and `scripts/activation-report.mts` prints the funnel, drop-offs and time to first verified lead.
 3. #405 (calibrated launch / preflight): code shipped (ex-#467/#553) but inactive. Missing: activation, and proof
    the "no routine hand-approvals" journey actually works end to end.
 4. #394 (agent evals / autonomous evaluation): the evaluation tooling shipped (ex-#463/#556). Missing: the complete
