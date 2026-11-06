@@ -360,8 +360,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   if (!hasReadConsent(db, tenantId) || !acct || acct.read_granted !== 1 || acct.status !== 'active') return { ...out, error: 'reading_not_enabled' }
   // Read authority is re-proved (send-authority.ts recheckReadAuthority) after every await: before any further Gmail read and
   // before anything read is stored or granted from (#928). A revoked consent, replaced connection or unreadable check ends the sync.
-  class ReadAuthorityLost extends Error {}
-  const authority = () => { if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) throw new ReadAuthorityLost() }
+  const LOST = Symbol('read_authority_lost') // a sentinel, not an error type: it never leaves this function
+  const authority = () => { if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) throw LOST }
   const f = d.fetchImpl ?? fetch
   let token: string
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
@@ -464,7 +464,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       db.prepare('UPDATE outreach_messages SET reply_checked_at = ? WHERE id = ? AND tenant_id = ?').run(now, m.id, tenantId) // read and processed: checkpoint
       readNow.add(m.id)
     } catch (e) {
-      if (e instanceof ReadAuthorityLost) return { ...out, error: 'reading_not_enabled' } // nothing more is read or stored
+      if (e === LOST) return { ...out, error: 'reading_not_enabled' } // nothing more is read or stored
       out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
@@ -543,7 +543,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       log('bounce', m.id, m.lead_id)
     }
   } catch (e) {
-    if (e instanceof ReadAuthorityLost) return { ...out, error: 'reading_not_enabled' }
+    if (e === LOST) return { ...out, error: 'reading_not_enabled' }
     out.error = 'reply_sync_failed' // fail closed, same contract as the thread loop
     auditAt(db, tenantId, 'sync_error', `delivery notices: ${e instanceof Error ? e.message : 'error'}`, undefined, undefined, now)
   }
