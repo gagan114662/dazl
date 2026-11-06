@@ -40,6 +40,7 @@ function sentLead(db: Database.Database, to: string, sentAt = NOW - 4 * DAY) {
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at, gmail_id, thread_id) VALUES (?, 'A', ?, ?, 'Quick question', 'bodybodybodybodybodybody', 'sent', ?, ?, ?, ?)").run(mid, lead, to, sentAt, sentAt, 'g-' + mid, 't-' + mid)
   return { lead, mid, thread: 't-' + mid }
 }
+import { sameThreadDsn } from './helpers/dsn-fixture.ts'
 const msg = (id: string, from: string, body: string, at: number, extra: { name: string; value: string }[] = []) => ({ id, threadId: 't', internalDate: String(at * 1000), payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: from }, ...extra], body: { data: Buffer.from(body).toString('base64url') } } })
 function gmail(threads: Record<string, unknown[]>, calls: string[] = []) {
   return (async (url: string) => {
@@ -90,7 +91,7 @@ test('sync: positive reply grants consent; opt-out suppresses and revokes; hard 
   const th = {
     [p.thread]: [msg('m1', 'Pat <p@one.example>', 'Sounds good, send me more info', NOW - 2 * DAY)],
     [o.thread]: [msg('m2', 'o@two.example', 'Please unsubscribe me', NOW - 2 * DAY)],
-    [b.thread]: [msg('m3', 'Mail Delivery <mailer-daemon@googlemail.com>', 'Delivery Status Notification. 550 5.1.1 user unknown', NOW - 3 * DAY)],
+    [b.thread]: [sameThreadDsn('m3', { recipient: 'b@three.example', at: NOW - 3 * DAY })],
     [sb.thread]: [msg('m4', 'postmaster@four.example', 'Mailbox full 4.2.2', NOW - 3 * DAY)],
   }
   const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail(th) })

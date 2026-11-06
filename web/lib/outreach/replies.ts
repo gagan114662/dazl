@@ -9,6 +9,7 @@ import { norm, READ_CONSENT_VERSION } from './store.ts'
 import { suppress } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
 import { dsnProvenance } from './dsn.ts'
+import { recheckReadAuthority } from './send-authority.ts'
 import { applyBounceVerdict, migrateBounceLedger } from './bounce-ledger.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
@@ -355,13 +356,18 @@ export function replySyncLimits(env: Record<string, string | undefined> = proces
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
   const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
-  const acct = db.prepare('SELECT email, read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; read_granted: number; status: string } | undefined
+  const acct = db.prepare('SELECT email, read_granted, status, refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; read_granted: number; status: string; refresh_ct: string } | undefined
   if (!hasReadConsent(db, tenantId) || !acct || acct.read_granted !== 1 || acct.status !== 'active') return { ...out, error: 'reading_not_enabled' }
+  // Read authority is re-proved (send-authority.ts recheckReadAuthority) after every await: before any further Gmail read and
+  // before anything read is stored or granted from (#928). A revoked consent, replaced connection or unreadable check ends the sync.
+  class ReadAuthorityLost extends Error {}
+  const authority = () => { if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) throw new ReadAuthorityLost() }
   const f = d.fetchImpl ?? fetch
   let token: string
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
+  if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) return { ...out, error: 'reading_not_enabled' }
   if (gmailIsStubbed((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
-  const get = async (path: string) => { const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); return r.json() }
+  const get = async (path: string) => { authority(); const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); const body = await r.json(); authority(); return body }
 
   const seq = tableExists(db, 'sequences') ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : '0'
   const warm = tableExists(db, 'followup_threads') ? '(thread_id IS NOT NULL AND thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND stopped IS NULL AND last_lead_reply_at IS NOT NULL))' : '0'
@@ -399,15 +405,37 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         const log = (cls: string) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(g.id, tenantId, thread, m.lead_id, from, text.slice(0, 200), cls, at, m.id)
         // Delivery-failure notice: only a permanent (5.x.x) failure suppresses.
         if (/^(mailer-daemon|postmaster)@/.test(from)) {
-          const full = fullText(g.payload)
-          if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(full)) {
-            // Accounted per send + recipient in the shared ledger: the same bounce also seen on its own thread (or a
-            // second notice for it) never suppresses or counts twice.
-            const r = applyBounceVerdict(db, tenantId, { kind: 'permanent', recipient: m.to_email, originalMessageId: root, outreachMessageId: m.id }, 'thread', g.id, now)
-            db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, thread)
-            if (r === 'recorded') out.bounces++
-            log('bounce')
-          } else log('soft_bounce')
+          // Same bar as the separate-thread branch (#415/#928): a bounce is recorded ONLY from a structured delivery-status
+          // block (action=failed, 5.x.x) naming the recipient we wrote to, behind authenticated provenance. A daemon-looking
+          // From with a plain "5.1.1" body proves nothing: it is logged for review once per send, never suppresses or counts.
+          const nf = noticeFields(g.payload)
+          const key = norm(m.to_email)
+          const block = nf.blocks.find(b => b.recipients.includes(key))
+          const permanent = !!block && block.action === 'failed' && /^5\.\d{1,3}\.\d{1,3}$/.test(block.status ?? '')
+          const plain5xx = /\b5\.\d{1,3}\.\d{1,3}\b/.test(fullText(g.payload))
+          if (!permanent && !plain5xx) { log('soft_bounce'); continue }
+          const review = (why: string) => {
+            if (!db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND outreach_message_id = ? AND classification = 'bounce_review'").get(tenantId, m.id)) {
+              auditAt(db, tenantId, 'bounce_review', why, m.lead_id, m.id, now)
+              out.reviews++
+            }
+            log('bounce_review')
+          }
+          if (!permanent) { review('same-thread 5.x.x without a structured delivery-status for the recipient, provenance unverified'); continue }
+          const domain = key.split('@')[1] ?? ''
+          const trust = (expected: string[]) => dsnProvenance(g.payload, { trustedAuthservIds: TRUSTED_AUTHSERV_IDS, expectedBounceDomains: expected })
+          let prov = trust([domain])
+          if (!prov.ok && prov.reason === 'domain_not_aligned') {
+            const mx = await (d.resolveMxFor ?? defaultResolveMx)(domain).catch(() => [] as string[])
+            authority()
+            prov = trust([domain, ...mx])
+          }
+          if (!prov.ok) { review(`same-thread dsn ${block!.status} correlated, provenance unverified`); continue }
+          // Accounted per send + recipient in the shared ledger: the same bounce also seen as a separate notice never counts twice.
+          const r = applyBounceVerdict(db, tenantId, { kind: 'permanent', recipient: m.to_email, originalMessageId: root, outreachMessageId: m.id }, 'dsn', g.id, now)
+          db.prepare("UPDATE followup_threads SET stopped = 'bounce' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, thread)
+          if (r === 'recorded') out.bounces++
+          log('bounce')
           continue
         }
         const cls = classifyMessage(body, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') })
@@ -436,6 +464,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       db.prepare('UPDATE outreach_messages SET reply_checked_at = ? WHERE id = ? AND tenant_id = ?').run(now, m.id, tenantId) // read and processed: checkpoint
       readNow.add(m.id)
     } catch (e) {
+      if (e instanceof ReadAuthorityLost) return { ...out, error: 'reading_not_enabled' } // nothing more is read or stored
       out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
       auditAt(db, tenantId, 'sync_error', e instanceof Error ? e.message : 'error', m.lead_id, m.id, now)
     }
@@ -503,7 +532,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       let prov = trust([domain])
       if (!prov.ok && prov.reason === 'domain_not_aligned') {
         const mx = await (d.resolveMxFor ?? defaultResolveMx)(domain).catch(() => [] as string[])
-        if (!hasReadConsent(db, tenantId)) return { ...out, error: 'reading_not_enabled' } // revoked during the lookup: no write
+        if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) return { ...out, error: 'reading_not_enabled' } // revoked or replaced during the lookup: no write
         prov = trust([domain, ...mx])
       }
       if (!prov.ok) { review(`dsn ${status} correlated, provenance unverified`); continue }
@@ -514,6 +543,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       log('bounce', m.id, m.lead_id)
     }
   } catch (e) {
+    if (e instanceof ReadAuthorityLost) return { ...out, error: 'reading_not_enabled' }
     out.error = 'reply_sync_failed' // fail closed, same contract as the thread loop
     auditAt(db, tenantId, 'sync_error', `delivery notices: ${e instanceof Error ? e.message : 'error'}`, undefined, undefined, now)
   }
