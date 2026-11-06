@@ -1,11 +1,16 @@
-// Email finder, part 1 (docs/design/email-finder.md). Learns a company's address FORMAT from personal addresses it
-// publishes on its own site, and prepares candidate addresses for people the crawl found on that site.
-// Nothing here is shown, stored as a contact, or sent: candidates are UNVERIFIED and live in their own tables
-// (email_patterns, email_candidates), which no page and no outreach path reads. Showing a guessed address needs
-// mailbox verification and the US-only rule (docs/DECISIONS.md), which are parts 2-3 and not built.
-// Off unless EMAIL_GUESS_ENABLED=1.
+// Email finder (docs/design/email-finder.md). Part 1 learns a company's address FORMAT from personal addresses it
+// publishes on its own site and prepares candidate addresses for people the crawl found on that site. Part 2 (US-only,
+// docs/DECISIONS.md 2026-10-26) records candidates only for a lead whose confirmed site states a US address, keeping that
+// basis as provenance. Part 3 (mailbox verification) runs a pluggable verifier under a code-enforced per-tenant daily cap
+// and fails closed: only an explicit "deliverable" answer from a real check makes a candidate verified; catch-all,
+// unknown, refused, errors and a check that never finished stay non-verified and are surfaced as such.
+// Nothing here is shown, stored as a contact, or sent: candidates live in their own tables (email_patterns,
+// email_candidates), which no page and no outreach path reads. No verifier provider is wired (verifierFromEnv returns
+// null): choosing and paying for one is the owner's call. Off unless EMAIL_GUESS_ENABLED=1.
 import type Database from 'better-sqlite3'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
+import { US_STATES } from '../scan/place-agreement.ts'
+import { countriesIn } from '../scan/countries.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -74,17 +79,98 @@ export function migrateEmailGuess(db: Database.Database): void {
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified')),
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, address));`)
+  // Parts 2-3 (Postgres: lib/db/migrations/pg/0050_email_verification.sql). status stays 'unverified' (never a contact);
+  // verification is the mailbox check outcome, checked_at / verifier its provenance, country_basis the US evidence.
+  const has = (c: string) => (db.prepare('PRAGMA table_info(email_candidates)').all() as { name: string }[]).some(r => r.name === c)
+  if (!has('verification')) db.exec(`ALTER TABLE email_candidates ADD COLUMN verification TEXT NOT NULL DEFAULT 'none' CHECK (verification IN (${VERIFICATIONS.map(v => `'${v}'`).join(',')}))`)
+  if (!has('verifier')) db.exec('ALTER TABLE email_candidates ADD COLUMN verifier TEXT CHECK (verifier IS NULL OR length(verifier) <= 40)')
+  if (!has('checked_at')) db.exec('ALTER TABLE email_candidates ADD COLUMN checked_at INTEGER')
+  if (!has('country_basis')) db.exec('ALTER TABLE email_candidates ADD COLUMN country_basis TEXT CHECK (country_basis IS NULL OR length(country_basis) <= 160)')
+}
+
+// ---- part 2: US only. Unknown country counts as not US (docs/DECISIONS.md). ----
+// The confirmed homepage must state a US street address ("City, ST 12345"), the scan geography must not name another
+// country, and the homepage addresses must not include a Canadian postal code. Returns the address as provenance.
+const US_ZIP_ADDRESS = /([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/gu
+const CA_POSTAL_ADDRESS = /,\s*(?:ON|QC|BC|AB|MB|SK|NS|NB|NL|PE|YT|NT|NU)\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d\b/
+export function usEvidence(homeText: string | undefined, where: string[] = []): { us: true; basis: string } | { us: false; reason: string } {
+  const foreign = [...new Set(where.flatMap(w => countriesIn(w)))].filter(c => c !== 'US')
+  if (foreign.length) return { us: false, reason: `scan geography names ${foreign.join(', ')}` }
+  if (!homeText) return { us: false, reason: 'no homepage text: country unknown' }
+  if (CA_POSTAL_ADDRESS.test(homeText)) return { us: false, reason: 'homepage states a Canadian address' }
+  for (const m of homeText.matchAll(US_ZIP_ADDRESS)) if (m[2] in US_STATES) return { us: true, basis: `homepage address: ${m[0]}`.slice(0, 160) }
+  return { us: false, reason: 'no US address on the homepage: country unknown' }
+}
+
+// ---- part 3: mailbox verification ----
+export const VERIFICATIONS = ['none', 'pending', 'verified', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
+export type Verification = typeof VERIFICATIONS[number]
+export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverable' | 'unknown' | 'refused'; detail?: string }
+// A provider adapter. Tests inject a fake; production has none until the owner picks and approves a provider.
+export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> }
+export function verifierFromEnv(env: Record<string, string | undefined> = process.env): MailboxVerifier | null { void env; return null }
+// Per-tenant checks per UTC day. Default 0: no check runs unless a cap is set explicitly.
+export function verifyDailyCap(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.EMAIL_VERIFY_DAILY_CAP ?? '0')
+  return Number.isInteger(n) && n > 0 ? Math.min(n, 1000) : 0
+}
+const OUTCOME: Record<VerifyAnswer['outcome'], Verification> = { deliverable: 'verified', catch_all: 'catch_all', undeliverable: 'undeliverable', unknown: 'uncertain', refused: 'refused' }
+
+export interface VerifyRun { checked: number; verified: number; capped: number; skipped: string | null }
+// Checks a lead's unchecked US candidates, one reserved slot at a time. The slot (verification='pending', checked_at)
+// is written and counted inside a transaction BEFORE the provider call, so the cap holds even if the call or the
+// process dies; a pending row is never verified.
+export async function verifyCandidates(db: Database.Database, tenantId: string, leadId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal } = {}): Promise<VerifyRun> {
+  const env = opts.env ?? process.env
+  const run: VerifyRun = { checked: 0, verified: 0, capped: 0, skipped: null }
+  if (!emailGuessEnabled(env)) return { ...run, skipped: 'EMAIL_GUESS_ENABLED is off' }
+  if (!verifier) return { ...run, skipped: 'no verifier configured' }
+  const cap = verifyDailyCap(env)
+  if (cap === 0) return { ...run, skipped: 'EMAIL_VERIFY_DAILY_CAP is 0' }
+  migrateEmailGuess(db)
+  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400)
+  const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL ORDER BY address").all(tenantId, leadId) as { address: string }[]
+  const reserve = db.transaction((address: string): boolean => {
+    const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(tenantId, dayStart) as { n: number }).n
+    if (used >= cap) return false
+    return db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, verifier.name.slice(0, 40), tenantId, leadId, address).changes === 1
+  })
+  for (const { address } of rows) {
+    if (opts.signal?.aborted) break
+    if (!reserve(address)) { run.capped = rows.length - run.checked; break }
+    let v: Verification = 'uncertain'
+    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch { v = 'uncertain' }
+    db.prepare("UPDATE email_candidates SET verification = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(v, tenantId, leadId, address)
+    run.checked++
+    if (v === 'verified') run.verified++
+  }
+  return run
+}
+
+export type CandidateLabel = 'guessed' | 'guessed, verified' | 'guessed, catch-all' | 'guessed, undeliverable' | 'guessed, uncertain' | 'guessed, refused'
+// The only label a guessed address may carry. "verified" needs the check outcome AND its provenance; never "published".
+export function candidateLabel(r: { verification: string; checked_at: number | null; verifier: string | null; country_basis: string | null }): CandidateLabel {
+  if (r.verification === 'verified') return r.checked_at && r.verifier && r.country_basis ? 'guessed, verified' : 'guessed, uncertain'
+  if (r.verification === 'catch_all') return 'guessed, catch-all'
+  if (r.verification === 'undeliverable') return 'guessed, undeliverable'
+  if (r.verification === 'refused') return 'guessed, refused'
+  if (r.verification === 'uncertain' || r.verification === 'pending') return 'guessed, uncertain'
+  return 'guessed'
 }
 
 // Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople.
-export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[]): { format: Format; candidates: number } | null {
+// Writes nothing when the flag is off or the lead is not shown to be in the US.
+export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[] } = {}): { format: Format; candidates: number } | null {
+  if (!emailGuessEnabled(ctx.env ?? process.env)) return null
+  const us = usEvidence(ctx.homeText, ctx.where)
+  if (!us.us) return null
   const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
   const pattern = inferPattern(locals, names.map(x => x.name))
   if (!pattern) return null
   migrateEmailGuess(db)
   db.prepare('INSERT OR REPLACE INTO email_patterns (tenant_id, lead_id, site, format, support) VALUES (?, ?, ?, ?, ?)').run(tenantId, leadId, site, pattern.format, pattern.support)
-  const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format) VALUES (?, ?, ?, ?, ?)")
+  const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis) VALUES (?, ?, ?, ?, ?, ?)")
   let n = 0
-  for (const x of names) n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format).changes
+  for (const x of names) n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format, us.basis).changes
   return { format: pattern.format, candidates: n }
 }

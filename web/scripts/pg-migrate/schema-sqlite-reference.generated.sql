@@ -205,7 +205,7 @@ CREATE TABLE email_candidates (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (length(person) <= 120),
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified')),
-      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, address));
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), verification TEXT NOT NULL DEFAULT 'none' CHECK (verification IN ('none','pending','verified','catch_all','undeliverable','uncertain','refused')), verifier TEXT CHECK (verifier IS NULL OR length(verifier) <= 40), checked_at INTEGER, country_basis TEXT CHECK (country_basis IS NULL OR length(country_basis) <= 160), PRIMARY KEY (lead_id, address));
 
 CREATE TABLE email_patterns (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, site TEXT NOT NULL, format TEXT NOT NULL, support INTEGER NOT NULL,
