@@ -98,6 +98,8 @@ export function readinessRows(i: ReadinessInput): Row[] {
     : keyError ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan may not run until you save your AI key again${offText}`, fix: { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' } }
     : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start until you add an AI key${offText}`, fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
     // A key alone finds no leads (key-based web research is retired, #510/#919): with no discovery source on, say so.
+    // A failed social-source read cannot prove there is no source: "could not check", never a definitive to-do.
+    : !usableSources.length && !i.advanced ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check - your social source settings did not load', fix: null }
     : !usableSources.length ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `${NO_SOURCE}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
     : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check - your sending settings did not load', fix: null }

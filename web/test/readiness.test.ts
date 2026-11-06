@@ -119,7 +119,7 @@ test('lead sources: capabilities, never "searched"; no usable key means a scan c
   assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use News articles. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', fix: null })
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 2 } }).state, 'done', 'free searches left')
   // #919: key-based web research is retired (provider.research refuses), so a key alone is never a usable source.
-  const none = src({ web_index: false, news: false, websites: false }, { has_key: true })
+  const none = byId(readinessRows({ profile: null, usage: { has_key: true } as never, outreach: null, sources: { web_index: false, news: false, websites: false }, advanced: { available: true, platforms: [] } })).sources
   assert.deepEqual([none.state, none.detail, none.fix], ['todo', 'no lead source is available on this server yet. Not available: Web search index (not set up on this server), News articles (not set up on this server), Company websites (not set up on this server)', null], 'a key alone finds no leads')
   for (const st of [src(ON, { has_key: true }), nokey]) assert.doesNotMatch(st.detail, /search(es|ed)\b/, 'never claims sources are searched')
   assert.deepEqual([src(null, { has_key: true }).state, src(undefined, { has_key: true }).state, src(ON, null).state], ['unknown', 'unknown', 'unknown'], 'a failed or missing check is never done')

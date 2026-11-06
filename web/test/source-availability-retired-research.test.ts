@@ -28,13 +28,14 @@ test('a key or funded free searches is a prerequisite, never a usable source', (
 })
 
 test('with a key but no discovery source, setup and Home say no source is available', () => {
+  const ADV = { available: true, platforms: [] }
   for (const usage of KEYED) {
-    const row = readinessRows({ profile: null, usage: usage as never, outreach: null, sources: OFF }).find(r => r.id === 'sources')!
+    const row = readinessRows({ profile: null, usage: usage as never, outreach: null, sources: OFF, advanced: ADV }).find(r => r.id === 'sources')!
     assert.equal(row.state, 'todo')
     assert.match(row.detail, new RegExp(`^${NO_SOURCE}`))
     assert.doesNotMatch(row.detail, /a scan can use/)
   }
-  const search = readyItems({ profile: null, usage: { has_key: true } as never, outreach: null, sources: OFF } as never).find(x => x.id === 'search')!
+  const search = readyItems({ profile: null, usage: { has_key: true } as never, outreach: null, sources: OFF, advanced: ADV } as never).find(x => x.id === 'search')!
   assert.deepEqual([search.state, search.detail], ['todo', NO_SOURCE])
 })
 
@@ -44,4 +45,17 @@ test('a real source on: only it is named, and the row is done', () => {
   const row = readinessRows({ profile: null, usage: { has_key: true } as never, outreach: null, sources: { ...OFF, news: true } }).find(r => r.id === 'sources')!
   assert.equal(row.state, 'done')
   assert.match(row.detail, /^a scan can use News articles\./)
+})
+
+test('all core sources off and the social read failed: could not check, never a definitive no-source to-do', () => {
+  for (const advanced of [null, undefined]) {
+    const row = readinessRows({ profile: null, usage: { has_key: true } as never, outreach: null, sources: OFF, advanced }).find(r => r.id === 'sources')!
+    assert.deepEqual([row.state, row.fix], ['unknown', null])
+    assert.doesNotMatch(row.detail, new RegExp(NO_SOURCE))
+    const search = readyItems({ profile: null, usage: { has_key: true } as never, outreach: null, sources: OFF, advanced } as never).find(x => x.id === 'search')!
+    assert.equal(search.state, 'unknown')
+  }
+  // A loaded response with a usable social source: that source is named and the row is done.
+  const row = readinessRows({ profile: null, usage: { has_key: true } as never, outreach: null, sources: OFF, advanced: { available: true, platforms: [{ platform: 'x', consent: true, connected: true, enabled: true }] } }).find(r => r.id === 'sources')!
+  assert.deepEqual([row.state, row.detail.startsWith('a scan can use X posts')], ['done', true])
 })

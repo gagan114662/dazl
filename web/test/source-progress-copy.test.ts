@@ -25,7 +25,7 @@ test('state and counts read from the recorded rows; an unknown count is "-", nev
     ['News articles', 'Searching...', null],
     ['Job postings', 'Not used for this search', null],
     ['GitHub', 'Failed', null],
-    ['Web research with your AI key', 'Done', '3 found · - checked · - to review · - rejected'],
+    ['AI web research (retired)', 'Done', '3 found · - checked · - to review · - rejected'],
     ['Feeds', 'No results', null],
     ['Web pages', 'Partly answered', '0 found · - checked · - to review · - rejected'],
   ])
