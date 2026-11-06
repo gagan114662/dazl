@@ -10,6 +10,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: acceptance-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Builders never use GitHub closing keywords (repo rule; owner comment on #569, 2026-11-02): a merged PR must not
   # auto-close an issue that has not been verified live. Fails if the PR body or any PR commit message has one.

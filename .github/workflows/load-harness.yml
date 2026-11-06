@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
     paths: ["load/**"]
+concurrency:
+  group: load-harness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   harness:
     runs-on: ubuntu-latest
