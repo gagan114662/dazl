@@ -5,23 +5,16 @@ import { seedOffers } from './helpers/seed-offer.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { rmSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
-import { completeOAuth, startOAuth, GMAIL_READ_SCOPE, GmailSendError } from '../lib/gmail/oauth.ts'
-import { approve, createDraft, OutreachError, saveSettings, sendMessage, suppress, type Deps } from '../lib/outreach/service.ts'
-import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, drainFirstTouch, enable, getState, migrateAutopilot, offerHashFor, pause, recentAutopilotAudit, runAutopilot, withdrawLaunch } from '../lib/outreach/autopilot.ts'
-import { acceptLaunchPolicy, calibratedStop, launchGate, launchPolicyView, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
-import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { callCostUsd } from '../lib/llm/spend-guard.ts'
-import type { Provider, DetailedCompletion } from '../lib/llm/provider.ts'
+import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
+import { saveSettings, type Deps } from '../lib/outreach/service.ts'
+import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot } from '../lib/outreach/autopilot.ts'
+import { acceptLaunchPolicy, readLaunchPolicy, LAUNCH_POLICY_VERSION } from '../lib/outreach/launch-policy.ts'
 import { runCalibration } from '../lib/outreach/calibration.ts'
-import { productTruth } from '../lib/product-truth.ts'
 
 // #405 wiring: a calibrated launch replaces the hand-approval warmup only after an accepted policy passes the machine
 // preflight. Synthetic tenant and leads (.example); every Gmail call is a stub that records what would have been sent.
@@ -83,7 +76,6 @@ const gmail = (fail = false, delivered = true) => {
   const to = () => sent.map(r => /^To: (.*)$/m.exec(Buffer.from(r, 'base64url').toString())?.[1])
   return { sent, d, to }
 }
-const statuses = (db: Database.Database) => db.prepare('SELECT status FROM outreach_messages ORDER BY created_at, rowid').all().map(r => (r as { status: string }).status)
 
 
 

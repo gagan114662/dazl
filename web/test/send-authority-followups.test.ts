@@ -9,12 +9,11 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
-import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
-import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, newText, syncReplies, threadMessages } from '../lib/outreach/replies.ts'
-import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
-import { inboxPage } from '../lib/outreach/inbox.ts'
+import { saveSettings } from '../lib/outreach/service.ts'
+import { ATTESTATIONS, CONSENT_VERSION, enable, migrateAutopilot } from '../lib/outreach/autopilot.ts'
+import { migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
+import { acceptReadConsent, migrateReplies, syncReplies } from '../lib/outreach/replies.ts'
+import { runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
