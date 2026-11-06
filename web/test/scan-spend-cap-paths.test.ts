@@ -24,7 +24,8 @@ import { outsideScanSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scan
 import { runValidation, RUN_RECORD_CONTRACT, type RunDeps } from '../lib/evals/judge-validation-run.ts'
 import type { JudgeCorpus } from '../lib/evals/judge.ts'
 
-// fileURLToPath, never .pathname (#669): .pathname is the raw percent-encoded URL component.
+// fileURLToPath, never .pathname: .pathname is the raw percent-encoded URL component (a checkout path with a space
+// becomes literal "%20", which readdirSync then can't find) - fileURLToPath decodes it to a real filesystem path.
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 // PAID: endpoint -> the only module that may call it, and the kind it reserves.
 const PAID: Record<string, { file: string; kind: SpendKind[] }> = {

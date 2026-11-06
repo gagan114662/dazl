@@ -69,6 +69,9 @@ Updated by the builder on every branch. Newest first.
   at most `SCAN_PER_TENANT_MAX` (1) claimed per tenant, kicked every tick; a restart hands queue claims back. Tick-level
   multi-tenant load test with a default-off control. Migration 0047 (Instinct's order: this PR keeps 0047, #600
   renumbers).
+- b/360-offhost-dr-proof (#360): retention (off until BACKUP_RETENTION=1), encrypted secrets/config bundle with its own
+  key (master key excluded), replacement-host restore drill + separate key drill with dated RPO/RTO report, send gate,
+  config/key-drill monitoring; CI runs the whole host-loss path on synthetic data. Live drill is Instinct's (RECOVERY.md).
 
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
