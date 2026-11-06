@@ -137,6 +137,32 @@ function list(v: unknown, n: number): string[] {
   return v.map(x => clean(x, caps.item)).filter(Boolean).slice(0, n)
 }
 
+// #917: explicit, client-supplied criteria (a reviewed/edited profile posted to a scan) are a person's constraints, not
+// model output. normalizeIcp still bounds them (store/prompt safety), but silently slicing a 7th exclusion or the tail of
+// a long item would widen the scan behind the person's back. icpLoss names every place normalizeIcp WOULD drop or cut
+// explicit input, so admission can refuse it with field/item detail before anything is reserved, queued or counted.
+// Model output keeps the old bounded sanitation (parseIcp/normalizeIcp), unchanged.
+export type IcpLoss =
+  | { field: 'summary'; kind: 'too_long'; limit: number; actual: number }
+  | { field: IcpListField; kind: 'too_many_items'; limit: number; actual: number }
+  | { field: IcpListField; kind: 'item_too_long'; index: number; limit: number; actual: number }
+export type IcpListField = 'who' | 'industries' | 'sizes' | 'where' | 'signals' | 'exclude'
+const squash = (v: unknown): string => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim() : ''
+export function icpLoss(raw: unknown): IcpLoss[] {
+  if (!raw || typeof raw !== 'object') return []
+  const r = raw as Record<string, unknown>, out: IcpLoss[] = []
+  const summary = squash(r.summary)
+  if (summary.length > caps.summary) out.push({ field: 'summary', kind: 'too_long', limit: caps.summary, actual: summary.length })
+  for (const field of ['who', 'industries', 'sizes', 'where', 'signals', 'exclude'] as const) {
+    const v = r[field]
+    if (!Array.isArray(v)) continue
+    const items = v.map(squash).filter(Boolean)   // blanks are not criteria: dropping them loses nothing
+    if (items.length > caps[field]) out.push({ field, kind: 'too_many_items', limit: caps[field], actual: items.length })
+    items.forEach((t, index) => { if (t.length > caps.item) out.push({ field, kind: 'item_too_long', index, limit: caps.item, actual: t.length }) })
+  }
+  return out
+}
+
 // The country code goes to the search provider as its market. Models often write "UK" for the United Kingdom, which is
 // not an ISO 3166-1 code (GB is): a London scan then searched a market that does not exist. Common aliases are mapped;
 // anything that is not a real ISO 3166-1 alpha-2 code is dropped (no market sent) rather than passed through.
@@ -298,6 +324,15 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
 // Fallback when inference is not possible: the request itself is the profile.
 export function fallbackIcp(query: string): Icp {
   return { summary: clean(query, caps.summary), who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+}
+
+// #917: the fallback profile's summary holds at most caps.summary characters of a request MAX_QUERY allows, so a long
+// request's tail is NOT in the profile. Say so (the preview shows it) instead of implying every constraint survived.
+export type FallbackCoverage = { complete: true } | { complete: false; kept_chars: number; request_chars: number; dropped: string }
+export function fallbackCoverage(query: string): FallbackCoverage {
+  const full = squash(query)
+  if (full.length <= caps.summary) return { complete: true }
+  return { complete: false, kept_chars: caps.summary, request_chars: full.length, dropped: full.slice(caps.summary) }
 }
 
 // Uses the tenant's own provider and key. Returns the ICP and whether the model made it.

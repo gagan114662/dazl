@@ -6,7 +6,7 @@ import { cleanText } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
-import { MAX_QUERY, budgetedIcp, normalizeIcp } from '@/lib/scan/icp'
+import { MAX_QUERY, budgetedIcp, icpLoss, normalizeIcp } from '@/lib/scan/icp'
 import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { countActiveJobs, createJob, createQueryJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
@@ -41,6 +41,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   // Preferred input: free text, plus an optional profile the user already reviewed or edited.
   const query = cleanText(body?.query, MAX_QUERY)
+  // #917: a supplied profile is the person's explicit criteria. Anything normalizeIcp would drop or cut (a 7th exclusion,
+  // a 161-char item, a 301-char summary) is refused here, with field/item detail, before any offer read, reservation,
+  // trial admission or queue insert - never silently narrowed into a wider scan.
+  const lost = body?.icp && typeof body.icp === 'object' ? icpLoss(body.icp) : []
+  if (lost.length) return NextResponse.json({ error: 'profile_lossy', message: 'Part of this profile would be cut to fit. Shorten or split the listed fields - nothing was dropped silently.', loss: lost }, { status: 400 })
   const icp = body?.icp === undefined || body?.icp === null ? null : normalizeIcp(body.icp)
   if (body?.icp !== undefined && body?.icp !== null && !icp) return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
   // Legacy input, still accepted for older clients.
