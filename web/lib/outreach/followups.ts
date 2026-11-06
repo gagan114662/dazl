@@ -9,6 +9,7 @@ import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, CONSENT_VERSION, DEFAULT_DAILY, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
+import { recheckSendAuthority } from './send-authority.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -127,6 +128,14 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         if (stAfter === 'required' || stAfter === 'quarantined') db.prepare("UPDATE followup_threads SET stopped = ? WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(stAfter === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed', tenantId, t.thread_id)
         skip(stAfter === 'required' ? 'domain_unconfirmed' : stAfter === 'quarantined' ? 'lead_quarantined' : 'review_unreadable'); continue
+      }
+      // Shared authority recheck (send-authority.ts), after every await on this path (token, follow-up text) and immediately
+      // before the handoff: tenant switches, suppression, ledger consent and the sending identity as they are NOW.
+      const why = recheckSendAuthority(db, tenantId, { to: t.to_email, sender: acct.email, now, autopilot: 'followups', consentScope: 'followup' })
+      if (why) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
+        if (why === 'suppressed') db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)
+        skip(why); if (why === 'autopilot_off' || why === 'paused' || why === 'followups_off' || why === 'sender_changed' || why === 'gmail_not_connected' || why === 'authority_unreadable') return stop(why === 'sender_changed' || why === 'gmail_not_connected' ? 'gmail_unavailable' : 'paused'); continue
       }
       const r = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id))
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)

@@ -11,6 +11,7 @@ import { getMasterKey } from '../secrets.ts'
 import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
 import { accountSendCount, anyUncertainSend, tableExists } from './send-budget.ts'
+import { recheckSendAuthority } from './send-authority.ts'
 import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, testFixtureSend, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
 import { replySafetyStale } from './store.ts'
 
@@ -165,6 +166,8 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
   leadGates(db, tenantId, r)
   if (accountPaused(db, tenantId)) throw new OutreachError('paused') // a pause during the token await still holds this send
+  // Shared authority recheck (send-authority.ts) after the token await: the sending identity and suppression as they are NOW.
+  { const why = recheckSendAuthority(db, tenantId, { to: r.to_email, sender: acct.email, now }); if (why) throw new OutreachError(why) }
   // #413: never send a thread-bound re-open on stale safety state; nothing is claimed, the user can retry once fresh.
   if (orig && !testFixtureSend(db, tenantId, { to_email: r.to_email, test: orig.test }) && replySafetyStale(db, tenantId, r.to_email, now)) throw new OutreachError('reply_sync_stale')
   // At-most-once: claim the draft atomically right before the send. No await sits between the last check and
