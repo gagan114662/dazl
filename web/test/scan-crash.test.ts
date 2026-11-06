@@ -64,7 +64,8 @@ test('queue runner: a crashing executor fails the domain row (crashed) and the q
   db.exec(`CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, status TEXT, attempts INTEGER DEFAULT 0, created_at INTEGER,
     claimed_at INTEGER, error TEXT, finished_at INTEGER, business_name TEXT, industry TEXT, location TEXT, query TEXT, icp TEXT,
     sources TEXT, funded_by TEXT, watch_id TEXT, csv_domain TEXT);
-    CREATE TABLE tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);`)
+    CREATE TABLE tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);
+    CREATE TABLE scan_spend_calls (id TEXT PRIMARY KEY, scan_job_id TEXT, attempt INTEGER, status TEXT);`)
   const id = randomBytes(12).toString('hex')
   db.prepare("INSERT INTO scan_jobs (id, user_id, status, attempts, created_at, funded_by) VALUES (?, ?, 'pending', 0, ?, 'trial')").run(id, TA, Math.floor(Date.now() / 1000))
   const { got, restore } = capture()

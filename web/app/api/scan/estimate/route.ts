@@ -5,7 +5,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { readHasKey } from '@/lib/llm/key-store'
 import { getDb } from '@/lib/db/client'
 import { connectorStatus } from '@/lib/connectors/store'
-import { estimateForBody } from '@/lib/scan/estimate-request'
+import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { denied } from '@/lib/workspace-access'
 
 // Price estimate for a scan request, before anything paid runs. Read-only: it queues nothing, counts nothing against the
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const db = await getDb()   // the Db layer, not the raw SQLite handle
   const vendors = (await connectorStatus(db, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector)
-  const r = await estimateForBody(body, { db, tenantId: user.tenantId, hasOwnKey: await readHasKey(db, user.tenantId), enrichmentVendors: vendors })
+  const r = await estimateForBody(body, { db, tenantId: user.tenantId, hasOwnKey: await readHasKey(db, user.tenantId), model: await keyedModel(db, user.tenantId), enrichmentVendors: vendors })
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.detail ? { detail: r.detail } : {}) }, { status: r.status })
   return NextResponse.json({ estimate: r.estimate })
 }

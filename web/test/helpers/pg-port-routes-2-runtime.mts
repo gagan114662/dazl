@@ -226,7 +226,10 @@ test('batch 2 routes on SQLite: settings, Cal.com and warm paths behave, and ten
   assert.equal((o('B memory').body as { memory: unknown }).memory, null)
   assert.deepEqual((o('B competitors').body as { competitors: unknown[] }).competitors, [])
   assert.deepEqual((o('B calcom').body as { bookings: unknown[] }).bookings, [])
-  assert.deepEqual((o('B enrichment').body as { connectors: unknown[]; audit: unknown[]; fallback: boolean }), { connectors: [], audit: [], fallback: false })
+  const be = o('B enrichment').body as { connectors: unknown[]; audit: unknown[]; fallback: boolean; credits: { reserved: number; charged: number; limit: number | null }[] }
+  assert.deepEqual({ connectors: be.connectors, audit: be.audit, fallback: be.fallback }, { connectors: [], audit: [], fallback: false })
+  // Credit usage (#363) is tenant-scoped: B sees no usage and no limit of A's, and nothing is capped by default.
+  assert.ok(be.credits.length === 4 && be.credits.every(c => c.reserved === 0 && c.charged === 0 && c.limit === null))
   assert.equal((o('B warm status').body as { count: number }).count, 0)
   assert.deepEqual((o('B warm path of A').body as { first_degree: unknown[]; user_reported: unknown[] }).first_degree, [])
   assert.deepEqual((o('B warm path of A').body as { user_reported: unknown[] }).user_reported, [])

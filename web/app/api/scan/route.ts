@@ -18,7 +18,7 @@ import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { readSellerLine } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { connectorStatus } from '@/lib/connectors/store'
-import { estimateForBody } from '@/lib/scan/estimate-request'
+import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
@@ -139,10 +139,11 @@ export async function POST(req: NextRequest) {
   // refused with what to change (402 over_budget); a client that confirmed an estimate sends its ack, and a different current
   // estimate (limit, mode or key changed since) is returned for a fresh confirmation (409 estimate_changed). No paid call happens here.
   const estDb = await getDb()
-  const est = await estimateForBody(body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
+  const est = await estimateForBody(body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', model: funded === 'user' ? await keyedModel(estDb, user.tenantId) : null, enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
   if (est.ok) {
     if (est.estimate.verdict.reason === 'budget_unknown') return NextResponse.json({ error: 'budget_unknown', message: est.estimate.verdict.message, estimate: est.estimate }, { status: 503, headers: { 'Retry-After': '30' } })
     if (est.estimate.verdict.reason === 'accounting_unsettled') return NextResponse.json({ error: 'accounting_unsettled', message: est.estimate.verdict.message, estimate: est.estimate }, { status: 409 })
+    if (est.estimate.verdict.reason === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: est.estimate.verdict.message, change: est.estimate.verdict.change, estimate: est.estimate }, { status: 422 })
     if (!est.estimate.verdict.ok) return NextResponse.json({ error: 'over_budget', message: est.estimate.verdict.message, change: est.estimate.verdict.change, estimate: est.estimate }, { status: 402 })
     if (typeof body?.estimate_ack === 'string' && body.estimate_ack !== est.estimate.ack) return NextResponse.json({ error: 'estimate_changed', estimate: est.estimate }, { status: 409 })
   }

@@ -45,10 +45,12 @@ Updated by the builder on every branch. Newest first.
   comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
   from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
 
-- #415 b/415-bounce-outside-thread: separate-thread DSNs in `syncReplies` are matched by the notice's own fields (returned
-  Message-ID / In-Reply-To / References, Final-/Original-Recipient, X-Failed-Recipients), not thread id; a verified 5.x.x
-  (Google first Authentication-Results aligned with the recipient domain/MX) suppresses, stops the sequence and counts once
-  in the shared bounce ledger; unverified ones stay review. Same read consent and scope. Stubbed Gmail fixtures only.
+- b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
+  (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:
+  scan-runner settle, per-play caps outside scans, cost disclosure UI and threshold/stop events (web/docs/spend-safety.md).
+  Review fixes (Instinct 2026-11-05): NO default limits any more (unset = per-scan caps only; usage counted); limit is a
+  per-workspace explicit setting (Settings > Enrichment) with an operator-wide env fallback; credit_cap/credit_unsaved now
+  show in the scan view and Settings (provider, window, used of limit, where to change it); PG twins enforced by DAZL_REQUIRE_PG.
 - PR #568 b/359-lifecycle-flow (#359 part 2): authenticated, audited request flow for tenant export/deletion
   (session-scoped routes, owner+fresh-auth delete with explicit opt-out policy and resume, viewer+fresh-auth
   export), the settings completion UI reporting retained exceptions, and operator list/resume/reapply controls

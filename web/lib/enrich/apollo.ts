@@ -14,7 +14,9 @@ export class EnrichError extends Error {
 
 const BASE = 'https://api.apollo.io'
 import { reserveScanSpend, unitCostUsd } from '../scan/spend-cap.ts'
-const TIMEOUT_MS = 15_000
+// The paid lookup request is given up on after this; exported for the stale-running lease floor (lib/scan/store.ts).
+export const APOLLO_TIMEOUT_MS = 15_000
+const TIMEOUT_MS = APOLLO_TIMEOUT_MS
 
 export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null; address?: string | null }
 export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; recordDay?: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
@@ -34,8 +36,8 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       })
-    } catch (e) { await hold?.settle(null); throw e }
-    if (hold) await hold.settle(r.ok ? hold.usd : null)
+    } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
+    if (hold) { if (r.ok || [400, 401, 403, 404, 413, 429].includes(r.status)) { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status) } else hold.uncertain() } // a documented rejection is counted (kept) but never claimed uncharged; any other status: maybe billed
     if (r.status === 429) throw new EnrichError('rate_limited', 'Apollo rate limit reached')
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'Apollo rejected the key')
     if (!r.ok) throw new EnrichError('upstream', `Apollo returned ${r.status}`)

@@ -230,14 +230,15 @@ for (const t of TRANSPORTS) {
       try { out = await runWithScanSpend({ db: s2.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => callAtCap(f2, s2.raw)) } catch (e) { threw = e }
       assert.deepEqual(sent, [], 'no request at the cap')
       if (t.kind === 'render') assert.equal(out, null, 'a refused render renders nothing')
-      else if (t.kind.startsWith('tinyfish')) assert.deepEqual(out, { ok: false, reason: 'cap' })
+      // TinyFish included: the SCAN'S OWN budget refusal now propagates as SpendRefused (it used to be swallowed into a
+      // fake daily-allowance { ok: false, reason: 'cap' }, which made a hold-stopped source read as "no results").
       else assert.ok(threw instanceof SpendRefused && threw.reason === 'over_cap', String(threw))
       assert.deepEqual((await scanSpendCalls(s2.db, 'j1', A)).map(c => [c.kind, c.status, c.reason]), [[t.kind, 'refused', 'over_cap']])
     } finally { delete process.env.SCAN_RENDER_URL }
   })
 }
 
-test('pdl: the reservation for the size asked for settles to the profiles returned; a 404 is not billed', async () => {
+test('pdl: the reservation for the size asked for settles to the profiles returned; a 404 is not billed; any other failure stays reserved (maybe billed)', async () => {
   const by: unknown[] = []
   const r6 = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6)
   for (const reply of [ok({ data: [{ full_name: 'Pat Lee' }, { full_name: 'Sam Roe' }] }), new Response('{}', { status: 404 }), new Response('{}', { status: 500 }), new Response('not json', { status: 200 }), ok({ data: 'x' })]) {
@@ -245,7 +246,42 @@ test('pdl: the reservation for the size asked for settles to the profiles return
     await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => pdlPeopleSearch('pdl-test', 'Acme', (async () => reply) as unknown as typeof fetch, 5)).catch(() => null)
     by.push(...(await scanSpendCalls(s.db, 'j1', A)).map(c => [r6(c.reserve_usd), c.status, r6(c.actual_usd)]))
   }
-  assert.deepEqual(by, [[1.4, 'settled', 0.56], [1.4, 'settled', 0], [1.4, 'kept', null], [1.4, 'kept', null], [1.4, 'kept', null]])
+  assert.deepEqual(by, [[1.4, 'settled', 0.56], [1.4, 'settled', 0], [1.4, 'reserved', null], [1.4, 'reserved', null], [1.4, 'reserved', null]]) // a 5xx, an unreadable 200 and an answer without a profile list may have been billed: the row stays 'reserved' (#363), it used to be 'kept' (which let a retry re-send)
+})
+
+// #363 whole-scope: a paid vendor request that may have been billed (timeout/dropped connection after send, 5xx, unlisted status) leaves its
+// row 'reserved' so no automatic retry re-sends it; a documented rejection (400/401/403/404/413/429) settles it as kept (counted, retryable).
+test('every paid vendor path: maybe-billed failures stay reserved, documented rejections settle', async () => {
+  const cases: { name: string; call: (f: typeof fetch) => Promise<unknown> }[] = [
+    { name: 'apollo org', call: f => apolloOrgEnrich('ap-test', { domain: 'acme.example', name: 'Acme' }, f) },
+    { name: 'apollo people', call: f => apolloPeopleSearch('ap-test', { domain: 'acme.example', name: 'Acme' }, f, 5) },
+    { name: 'pdl', call: f => pdlPeopleSearch('pdl-test', 'Acme', f, 5) },
+    { name: 'tinyfish search', call: f => tfSearch(scan().raw, A, 'payroll hiring', {}, { searches: 0 }, { env: { ...TF_ENV, DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01' }, fetchImpl: f }) },
+  ]
+  const outcomes: [string, () => Response | never, string][] = [
+    ['timeout after send', () => { throw new TypeError('aborted') }, 'reserved'],
+    ['503', () => new Response('{}', { status: 503 }), 'reserved'],
+    ['409', () => new Response('{}', { status: 409 }), 'reserved'],
+    ['429', () => new Response('{}', { status: 429 }), 'kept'],
+  ]
+  for (const c of cases) for (const [what, reply, want] of outcomes) {
+    const s = scan()
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => c.call((async () => reply()) as unknown as typeof fetch)).catch(() => null)
+    const calls = await scanSpendCalls(s.db, 'j1', A)
+    // tinyfish builds its own db for the gate; its spend row is on the scan db passed to runWithScanSpend
+    assert.deepEqual(calls.map(x => x.status), [want], `${c.name} / ${what}`)
+  }
+  // In-attempt stop (#363): once ANY vendor request of an attempt may have been billed, no later paid request of ANY vendor is sent in that attempt.
+  for (const first of cases) for (const [how, firstAnswer] of [['maybe-billed (timeout)', async () => { throw new TypeError('aborted') }], ['documented rejection (429)', async () => new Response('{}', { status: 429 })], ['404 (no source shows a not-found is unbilled or harmless)', async () => new Response('{}', { status: 404 })]] as const) {
+    if (how.startsWith('404') && first.name === 'pdl') continue // PDL documents a 404 no-match as unbilled (https://docs.peopledatalabs.com/support/troubleshooting/no-results-found): it does not stop the scan
+    const s = scan()
+    let later = 0
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => {
+      await first.call(firstAnswer as unknown as typeof fetch).catch(() => null)
+      for (const c of cases) await c.call((async () => { later++; return new Response('{}', { status: 200 }) }) as unknown as typeof fetch).catch(() => null)
+    })
+    assert.equal(later, 0, `after a ${how} ${first.name} no later vendor request of any vendor is sent`)
+  }
 })
 
 test('model completions: an unlisted configured model is refused before any request; outside a scan the transport is unchanged', async () => {

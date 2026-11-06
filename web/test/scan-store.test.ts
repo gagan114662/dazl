@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { countActiveJobs, createJob, getJob, latestJobId, listLeads, migrateScan, reapStaleJobs } from '../lib/scan/store.ts'
+import { countActiveJobs, createJob, getJob, latestJobId, listLeads, migrateScan, reapStaleJobs, staleRunningSeconds, MIN_STALE_RUNNING_S } from '../lib/scan/store.ts'
+import { LLM_TIMEOUT_MS } from '../lib/llm/provider.ts'
 
 const input = { business_name: 'Acme Pest', industry: 'pest control', location: 'Toronto' }
 
@@ -153,4 +154,48 @@ test('widenWhyCap: a database with the old 300-char why CHECK is rebuilt to 600,
   assert.ok(idx)
   migrateScan(db) // idempotent no-op
   assert.equal((db.prepare("SELECT count(*) AS n FROM leads").get() as { n: number }).n, 1)
+})
+
+test('the stale-running window is floored above the longest paid vendor call - an enforced invariant, not a comment', () => {
+  const errs: string[] = []
+  const orig = console.error
+  console.error = (...a: unknown[]) => { errs.push(String(a[0])) }
+  try {
+    assert.equal(staleRunningSeconds({}), 20 * 60, 'default unchanged')
+    assert.equal(staleRunningSeconds({ SCAN_STALE_RUNNING_S: '5000' }), 5000, 'a value above the floor passes through')
+    assert.ok(MIN_STALE_RUNNING_S >= Math.ceil(LLM_TIMEOUT_MS / 1000) * 2, 'the floor is computed from the real max call timeout (no retries exist)')
+    assert.equal(staleRunningSeconds({ SCAN_STALE_RUNNING_S: '60' }), MIN_STALE_RUNNING_S, 'a too-small window is clamped UP to the floor')
+    assert.equal(errs.length, 1, 'the clamp is loud, never silent')
+    assert.match(errs[0], /clamped UP/)
+  } finally { console.error = orig }
+})
+
+test('a pending job holding a reserved (possibly billed) call is never claimed and ends accounting_uncertain', async () => {
+  const db = setup()
+  const { migrateScanSpendCap } = await import('../lib/scan/spend-cap.ts')
+  const { claimKeyedJob } = await import('../lib/scan/runner.ts')
+  const { migrateKeys } = await import('../lib/llm/key-store.ts')
+  migrateScanSpendCap(db); migrateKeys(db)
+  const id = createJob(db, 'u', input)
+  db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(id)
+  db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('c1', 'u', ?, 1, 'llm.anthropic', 0.05, 'reserved', 1)").run(id)
+  assert.equal(claimKeyedJob(db), null, 'never bound to run again: no fresh rebill (mutation: dropping NOT EXISTS claims it - red)')
+  reapStaleJobs(db)
+  const j = getJob(db, 'u', id)
+  assert.deepEqual([j?.status, j?.error], ['failed', 'accounting_uncertain'], 'the reaper ends the pre-#594 shape closed')
+})
+
+test("requeue on shutdown: an EARLIER attempt's reserved call blocks the hand-back (any-attempt)", async () => {
+  const db = setup()
+  const { migrateScanSpendCap } = await import('../lib/scan/spend-cap.ts')
+  const { trackInFlight, requeueInFlightForShutdown } = await import('../lib/scan/runner.ts')
+  migrateScanSpendCap(db)
+  const id = createJob(db, 'u', input)
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 2, claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ?").run(id)
+  db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('c1', 'u', ?, 1, 'llm.anthropic', 0.05, 'reserved', 1)").run(id)
+  const untrack = trackInFlight({ id, attempts: 2 } as never)
+  const n = requeueInFlightForShutdown(db)
+  untrack()
+  assert.equal(n, 0, 'not handed back to pending: the reaper owns the fail-closed end (mutation: attempt correlation hands it back - red)')
+  assert.equal(getJob(db, 'u', id)?.status, 'running')
 })
