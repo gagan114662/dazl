@@ -26,7 +26,7 @@ const CLAIM: LeadClaim = {
   event: { date: '2026-10-20', source_url: OWN, corroborating_urls: [] },
   person: null, contact: null,
 }
-const GENUINE = page('<p>Harbor Ledger Analytics opened its new London office on October 20, 2026.</p>')
+const GENUINE = page('<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>')
 
 const run = (claim: LeadClaim, sources: Snapshot[], asOf = AS_OF) => decide({ claim, problems: [], sources, asOf, windowDays: WINDOW_DAYS })
 const statusOf = (checks: ReturnType<typeof run>, check: string) => checks.filter(c => c.check === check).map(c => c.status)
@@ -59,11 +59,19 @@ test('same-name company: the source names the company and city on an unrelated d
   assert.equal(o.verdict, 'unknown', 'uncertain evidence stays uncertain - it is never turned into a verified lead')
 })
 
-test('same-name company, ruled in: the source links to the claimed domain -> domain_bound passes', () => {
+test('same-name company, ruled in: the source names the claimed domain right next to the company -> domain_bound passes', () => {
   const url = 'https://citywire.example.org/harbor-ledger-london'
-  const html = page('<p>Harbor Ledger Analytics opened its London office on October 20, 2026. <a href="https://harborledger.example">site</a></p>')
+  const html = page('<p>Harbor Ledger Analytics (harborledger.example) opened its London office on October 20, 2026.</p>')
   const claim = { ...CLAIM, event: { ...CLAIM.event, source_url: url } }
   assert.deepEqual(statusOf(run(claim, [snap(url, html)]), 'domain_bound'), ['pass'])
+})
+
+test('domain named only far away in an unrelated passage does not rule in a same-name company: domain_bound stays unknown', () => {
+  const url = 'https://citywire.example.org/harbor-ledger-london'
+  const filler = 'This masthead covers finance news across several European markets and client sectors. '.repeat(4)
+  const html = page(`<p>Harbor Ledger Analytics opened its London office on October 20, 2026.</p><p>${filler}</p><p>Advertisement: visit harborledger.example for unrelated offers.</p>`)
+  const claim = { ...CLAIM, event: { ...CLAIM.event, source_url: url } }
+  assert.deepEqual(statusOf(run(claim, [snap(url, html)]), 'domain_bound'), ['unknown'])
 })
 
 test('stale date: an old article whose own publication/update stamp is the only place the claimed date appears -> event_date_on_source fails, never accepted', () => {
@@ -121,6 +129,54 @@ test('unreadable source: a fetch failure makes the checks that need it unknown, 
     assert.deepEqual(statusOf(checks, check), ['unknown'], check)
   }
   assert.notEqual(overall(checks).action, 'accept')
+})
+
+// Regression cases for the independent review of this PR: each of these previously made a false pass possible.
+
+test('private-domain tenants (github.io, vercel.app, ...) are not aliased to one another by domain normalization', () => {
+  // The event source is itself hosted on a DIFFERENT tenant's github.io subdomain than the claimed domain. Without
+  // allowPrivateDomains, both normalize to the bare public suffix "github.io" and would incorrectly compare equal.
+  const url = 'https://otherco.github.io/news/london-office'
+  const html = page('<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>')
+  const claim: LeadClaim = { ...CLAIM, domain: 'harborledger.github.io', event: { ...CLAIM.event, source_url: url } }
+  const checks = run(claim, [snap(url, html)])
+  assert.deepEqual(statusOf(checks, 'domain_bound'), ['unknown'])
+  assert.notEqual(overall(checks).action, 'accept')
+})
+
+test('a page naming the claimed city only in an unrelated passage (a different, unchanged office) does not satisfy geography', () => {
+  const url = 'https://citywire.example.org/harbor-ledger-paris'
+  const filler = 'The firm continues to expand across several European markets and client sectors this year. '.repeat(4)
+  const html = page(`<p>Harbor Ledger Analytics opened its new Paris office on October 20, 2026.</p>
+    <p>${filler}</p><p>The firm's existing London office remains unchanged and continues normal operations.</p>`)
+  const claim = { ...CLAIM, event: { ...CLAIM.event, source_url: url } }
+  assert.deepEqual(statusOf(run(claim, [snap(url, html)]), 'place_on_source'), ['fail'])
+})
+
+test('a quoted HTML attribute cannot smuggle hidden text past the tag stripper (a ">" inside a quote is not a tag boundary)', () => {
+  const html = page(`<div data-state="x > Harbor Ledger Analytics opened its London, United Kingdom office on October 20, 2026">unrelated visible text</div>`)
+  const checks = run(CLAIM, [snap(OWN, html)])
+  assert.deepEqual(statusOf(checks, 'company_on_source'), ['fail'])
+  assert.deepEqual(statusOf(checks, 'place_on_source'), ['fail'])
+})
+
+test('a direct "announced" sentence is held as announced-only, same as "will"/"set to", never a pass', () => {
+  const html = page('<p>Harbor Ledger Analytics announced its London office opening for October 20, 2026.</p>')
+  assert.deepEqual(statusOf(run(CLAIM, [snap(OWN, html)]), 'event_date_on_source'), ['unknown'])
+})
+
+test('a bare <time datetime> with no pubdate/itemprop is read as ordinary event text (the year it alone supplies), not misclassified as a publication stamp', () => {
+  const html = page('<p>Harbor Ledger Analytics opened its London, United Kingdom office on <time datetime="2026-10-20">Oct 20</time>.</p>')
+  const checks = run(CLAIM, [snap(OWN, html)])
+  assert.deepEqual(statusOf(checks, 'event_date_on_source'), ['pass'])
+})
+
+test('a publication-flagged <time pubdate> next to the byline is still correctly excluded as a stamp, not the event date', () => {
+  const html = page('<p>By Staff Writer <time pubdate datetime="2026-10-20">Oct 20</time></p><p>Harbor Ledger Analytics opened its London office in March 2019.</p>')
+  const claim = { ...CLAIM, event: { ...CLAIM.event, date: '2026-10-20' } }
+  const checks = run(claim, [snap(OWN, html)])
+  assert.deepEqual(statusOf(checks, 'event_date_on_source'), ['fail'])
+  assert.match(checks.find(c => c.check === 'event_date_on_source')!.reason, /publication\/update date/)
 })
 
 test('malformed claim (blindClaim): missing domain or event is a problem, not silently ignored, and claim_well_formed is unknown', () => {
