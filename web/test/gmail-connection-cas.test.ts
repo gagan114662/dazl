@@ -47,11 +47,12 @@ for (const [label, newEmail] of [['another address', 'new@new.example'], ['the s
   })
   test(`old connection's disconnect does not delete a replacement (${label})`, async () => {
     const db = mk(); await connect(db, 'me@acme.example', 'rt-old')
-    await disconnectGmail(db, 'A', { env, master, fetchImpl: (async () => {
+    const err = await disconnectGmail(db, 'A', { env, master, fetchImpl: (async () => {
       db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run()
       await connect(db, newEmail, 'rt-new')
       return json({})
-    }) as unknown as typeof fetch })
+    }) as unknown as typeof fetch }).catch((e: unknown) => e)
+    assert.ok(err instanceof GmailError && err.message === 'connection_replaced', 'a stale disconnect is not reported as success')
     assert.deepEqual(row(db), { email: newEmail, status: 'active' })
   })
 }

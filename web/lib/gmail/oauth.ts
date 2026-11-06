@@ -191,6 +191,12 @@ export async function disconnectGmail(db: Database.Database, tenantId: string, d
   }
 }
 
+/** A token error caused by the connection being replaced mid-call: the new connection is fine, so callers retry later
+ *  instead of pausing or asking the user to reconnect (#740). */
+export function connectionReplaced(e: unknown): boolean {
+  return e instanceof GmailError && e.kind === 'retry' && e.message === 'connection_replaced'
+}
+
 // In staging (or with the stub token) nothing is sent: the message gets a stub id and its thread, as Gmail would return.
 const STAGING_TOKEN = 'staging-stub-token'
 export async function gmailSend(accessToken: string, raw: string, fetchImpl: typeof fetch = fetch, threadId?: string, env: OAuthEnv = process.env as OAuthEnv): Promise<{ id: string; threadId?: string }> {

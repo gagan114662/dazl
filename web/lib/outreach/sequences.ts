@@ -7,7 +7,7 @@ import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, connectionReplaced, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
@@ -470,9 +470,9 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     const master = d.master ?? getMasterKey()
     const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(s.message_id, master)}`
     let token: string
-    try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch {
+    try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch (e) {
       db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId, s.id, stepRow.step)
-      pause(db, tenantId, 'gmail_reconnect_needed')
+      if (!connectionReplaced(e)) pause(db, tenantId, 'gmail_reconnect_needed') // a replaced connection is retried next tick
       return stop('gmail_unavailable')
     }
     try {
