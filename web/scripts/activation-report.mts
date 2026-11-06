@@ -9,7 +9,7 @@
 // Stores: DATABASE_URL (Postgres) or DB_PATH (SQLite) for workspaces and the audit trail. Scans still run on the SQLite
 // store while the app reads Postgres (lib/scan/service.ts), so scan_jobs and leads are read there.
 import { getDb, sqliteDb } from '../lib/db/client.ts'
-import { getAuthDb } from '../lib/auth-db.ts'
+import { getAuthDb } from '../lib/db/sqlite-store.ts'
 import { activationReport, formatActivation } from '../lib/scan/activation.ts'
 
 const args = process.argv.slice(2)
