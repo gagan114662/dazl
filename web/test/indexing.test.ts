@@ -169,3 +169,70 @@ bothEngines('indexing: six instances claiming at once, repeatedly, never claim p
     }
   } finally { await Promise.all(pools.map(p => p.close())) }
 })
+
+// #904: results are bound to the domain they were checked against.
+bothEngines('indexing #904: a domain change shows the new domain unchecked and due; spend is not reset', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'alpha.example')
+  await addKeyword(db, 'u1', 'crm')
+  await runIndexChecks(db, 'u1', { env, fetchImpl: hits(['https://alpha.example/p']), now: NOW })
+  const [r] = await latestResults(db, 'u1')
+  assert.deepEqual(r, { keyword: 'crm', indexed: true, top_url: 'https://alpha.example/p', domain: 'alpha.example', checked_at: NOW })
+  await saveDomain(db, 'u1', 'bravo.example')
+  assert.deepEqual(await latestResults(db, 'u1'), [], 'alpha\'s success is not shown under bravo')
+  assert.equal((await getConfig(db, 'u1'))?.next_run_at, null, 'the new domain is due now')
+  assert.equal(await weeklySpend(db, 'u1', NOW), 1, 'the weekly allowance is not reset by the edit')
+  assert.ok((await dueTenants(db, NOW + 60)).includes('u1'))
+  // switching back scopes the historical alpha result in again (explicitly bound to alpha)
+  await saveDomain(db, 'u1', 'alpha.example')
+  assert.equal((await latestResults(db, 'u1'))[0]?.domain, 'alpha.example')
+})
+
+bothEngines('indexing #904: saving the unchanged domain keeps results and schedule', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'acme.com')
+  await addKeyword(db, 'u1', 'crm')
+  await runIndexChecks(db, 'u1', { env, fetchImpl: hits(['https://acme.com/p']), now: NOW })
+  const before = (await getConfig(db, 'u1'))?.next_run_at
+  await saveDomain(db, 'u1', 'https://www.acme.com/')
+  assert.equal((await getConfig(db, 'u1'))?.next_run_at, before)
+  assert.equal((await latestResults(db, 'u1')).length, 1)
+})
+
+bothEngines('indexing #904: a domain edit during the awaited search fences the commit; searches stay spent', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'alpha.example')
+  await addKeyword(db, 'u1', 'crm'); await addKeyword(db, 'u1', 'sales')
+  let edited = false
+  const f = (async (u: string) => {
+    if (!edited) { edited = true; await saveDomain(db, 'u1', 'bravo.example') }
+    return hits(['https://alpha.example/p'])(u)
+  }) as unknown as typeof fetch
+  assert.deepEqual(await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW }), [])
+  assert.deepEqual(await latestResults(db, 'u1'), [])
+  const cfg = await getConfig(db, 'u1')
+  assert.equal(cfg?.domain, 'bravo.example')
+  assert.equal(cfg?.next_run_at, null, 'the stale run did not schedule the new domain a week out')
+  assert.equal(await weeklySpend(db, 'u1', NOW), 2, 'already-sent searches remain counted')
+})
+
+bothEngines('indexing #904: a partial failure records only the checked keywords, bound to the domain', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'acme.com')
+  await addKeyword(db, 'u1', 'crm'); await addKeyword(db, 'u1', 'sales')
+  let n = 0
+  const f = (async (u: string) => (n++ === 0 ? hits(['https://acme.com/p'])(u) : new Response('upstream', { status: 500 }))) as unknown as typeof fetch
+  const out = await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW })
+  assert.equal(out!.length, 1)
+  assert.deepEqual((await latestResults(db, 'u1')).map(r => [r.keyword, r.domain]), [['crm', 'acme.com']])
+  assert.equal(await weeklySpend(db, 'u1', NOW), 2)
+})
+
+bothEngines('indexing #904: tied checked_at returns one deterministic row per keyword; legacy domain-less rows are not current', async ({ db }) => {
+  await saveDomain(db, 'u1', 'acme.com')
+  const ins = (id: string, indexed: number, domain: string | null) => db.run('INSERT INTO seo_index_results (id, tenant_id, keyword, indexed, top_url, checked_at, domain) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, 'u1', 'crm', indexed, null, NOW, domain])
+  await ins('a1', 0, 'acme.com'); await ins('b2', 1, 'acme.com'); await ins('z9', 0, null)
+  const rows = await latestResults(db, 'u1')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].indexed, true, 'tie broken by id descending, ignoring the domain-less legacy row')
+})

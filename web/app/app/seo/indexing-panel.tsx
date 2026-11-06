@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 type State = {
   config: { domain: string; next_run_at: number | null } | null
   keywords: string[]
-  results: { keyword: string; indexed: boolean; top_url: string | null }[]
+  results: { keyword: string; indexed: boolean; top_url: string | null; domain: string; checked_at: number }[]
   allowance: { used: number; limit: number }
 }
 
@@ -49,7 +49,7 @@ export default function IndexingPanel() {
                   <li key={k} className="flex items-center justify-between gap-3">
                     <span>{k}</span>
                     <span className="flex items-center gap-3">
-                      {r ? (r.indexed ? <span className="text-green-700 text-xs">listed</span> : <span className="text-red-700 text-xs">not found</span>) : <span className="text-[#999] text-xs">not checked yet</span>}
+                      {r ? <span className="text-xs" title={`checked ${r.domain} on ${new Date(r.checked_at * 1000).toLocaleString()}`}>{r.indexed ? <span className="text-green-700">listed</span> : <span className="text-red-700">not found</span>} <span className="text-[#999]">· {new Date(r.checked_at * 1000).toLocaleDateString()}</span></span> : <span className="text-[#999] text-xs">not checked yet</span>}
                       <button className="text-xs underline text-[#888]" onClick={() => act({ action: 'remove', keyword: k })}>remove</button>
                     </span>
                   </li>
