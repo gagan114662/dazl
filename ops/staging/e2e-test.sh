@@ -43,7 +43,8 @@ for i in \$(seq 1 40); do (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null || brea
 ( set -a; . $T/etc/env; set +a; cd $T/root/current/web && DAZL_COMMIT_SHA=\$(cat .build-commit) exec setsid runuser -u $U -- npx next start -p $PORT -H 127.0.0.1 ) > $T/app.log 2>&1 < /dev/null &
 RS
 chmod +x "$T/restart.sh"
-export STAGING_ROOT="$T/root" STAGING_ENV_FILE="$T/etc/env" STAGING_PORT=$PORT STAGING_USER=$U STAGING_REPO_URL="file://$T/origin.git" STAGING_RESTART="$T/restart.sh" PROD_DB_PATH="$T/prod/app.db"
+printf '#!/usr/bin/env bash\npkill -u %s || true\n' "$U" > "$T/stop.sh"; chmod +x "$T/stop.sh" # like systemctl stop (#908: before the recovery point)
+export STAGING_ROOT="$T/root" STAGING_ENV_FILE="$T/etc/env" STAGING_PORT=$PORT STAGING_USER=$U STAGING_REPO_URL="file://$T/origin.git" STAGING_RESTART="$T/restart.sh" STAGING_STOP="$T/stop.sh" PROD_DB_PATH="$T/prod/app.db"
 mkdir -p "$T/root"; chown "$U" "$T/root"
 D="bash $SRC/ops/staging/deploy.sh"
 sha() { git -C "$T/origin.git" rev-parse main; }
