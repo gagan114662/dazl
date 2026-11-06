@@ -24,7 +24,7 @@ test('a new account: the steps in order, each to-do with its fix; Gmail goes to 
 test('a ready account: all done, no fixes offered', () => {
   const r = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme', buyer: { summary: 'Independent dental practices', who: ['Practice owner'] } }, usage: { has_key: true, trial: null }, outreach: { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' }, daily_cap: 12, sent_24h: 3 }, jobs: [job()], sources: { web_index: true, news: true, websites: true }, messages: [{ status: 'sent' }], campaigns: [{ id: 'j', qualification: { rejected: 0 } }] })
   assert.ok(r.every(x => x.state === 'done' && x.fix === null && !x.next))
-  assert.equal(byId(r).sources.detail, 'a scan can use Web research with your AI key, Web search index, News articles, Company websites')
+  assert.equal(byId(r).sources.detail, 'a scan can use Web search index, News articles, Company websites')
   assert.equal(byId(r).gmail.detail, 'sending from me@acme.example')
   assert.equal(byId(r).site.detail, 'Acme - Booking software (acme.example)')
   assert.equal(byId(r).play.detail, '1 search written')
@@ -116,9 +116,11 @@ test('lead sources: capabilities, never "searched"; no usable key means a scan c
   const nokey = src(ON, { has_key: false, trial: null })
   assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start until you add an AI key. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', { kind: 'link', href: '/app/settings#model-key', label: 'Add key' }])
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 0 } }).state, 'todo', 'free searches used up')
-  assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use Web research with your AI key, News articles. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', fix: null })
+  assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use News articles. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', fix: null })
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 2 } }).state, 'done', 'free searches left')
-  assert.equal(src({ web_index: false, news: false, websites: false }, { has_key: true }).state, 'done', 'web research with the saved key')
+  // #919: key-based web research is retired (provider.research refuses), so a key alone is never a usable source.
+  const none = byId(readinessRows({ profile: null, usage: { has_key: true } as never, outreach: null, sources: { web_index: false, news: false, websites: false }, advanced: { available: true, platforms: [] } })).sources
+  assert.deepEqual([none.state, none.detail, none.fix], ['todo', 'no lead source is available on this server yet. Not available: Web search index (not set up on this server), News articles (not set up on this server), Company websites (not set up on this server)', null], 'a key alone finds no leads')
   for (const st of [src(ON, { has_key: true }), nokey]) assert.doesNotMatch(st.detail, /search(es|ed)\b/, 'never claims sources are searched')
   assert.deepEqual([src(null, { has_key: true }).state, src(undefined, { has_key: true }).state, src(ON, null).state], ['unknown', 'unknown', 'unknown'], 'a failed or missing check is never done')
 })
@@ -161,11 +163,11 @@ test('lead sources: only usable sources are named as usable; social sources that
   ] }
   const row = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, sources: ALL, advanced: adv as never })).sources
   assert.equal(row.state, 'done')
-  assert.equal(row.detail, 'a scan can use Web research with your AI key, Web search index, News articles, Company websites, X posts. Not available: LinkedIn (consent needed)')
+  assert.equal(row.detail, 'a scan can use Web search index, News articles, Company websites, X posts. Not available: LinkedIn (consent needed)')
   assert.deepEqual(row.fix, { kind: 'link', href: '/app/settings#social', label: 'Set up' })
   assert.doesNotMatch(row.detail, /Reddit/, 'a platform this server does not offer is not listed')
   const plain = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, sources: ALL, advanced: null })).sources
-  assert.deepEqual([plain.detail, plain.fix], ['a scan can use Web research with your AI key, Web search index, News articles, Company websites', null])
+  assert.deepEqual([plain.detail, plain.fix], ['a scan can use Web search index, News articles, Company websites', null])
 })
 
 // The Pancake path after setup: first scan, leads reviewed, an email approved in Outreach. Positive evidence only.

@@ -96,7 +96,7 @@ try {
     await row('sources').getByText('✓').waitFor({ timeout: 15000 })
     assert.equal(await row('key').getByText('✓').count(), 1)
     assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '').replace(/Set up$/, '')),
-      'a scan can use Web research with your AI key, News articles, Company websites, X posts. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
+      'a scan can use News articles, Company websites, X posts. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
     assert.equal(await row('sources').getByRole('link', { name: 'Set up' }).getAttribute('href'), '/app/settings#social')
     await row('sources').scrollIntoViewIfNeeded()
     await shot('sources-available')

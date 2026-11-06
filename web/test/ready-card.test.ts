@@ -24,7 +24,7 @@ test('seven steps in order; all done -> complete; sources name only what can run
   assert.deepEqual(items.map(x => x.id), ['profile', 'search', 'play', 'qualified', 'contact', 'draft', 'sender'])
   assert.deepEqual(items.map(x => x.state), Array(7).fill('done'))
   assert.equal(readyComplete(items), true)
-  assert.match(items[1].detail, /Sources: Web research with your AI key, News articles, Company websites$/, 'the operator-off index and unconsented Reddit are not named')
+  assert.match(items[1].detail, /Sources: News articles, Company websites$/, 'the operator-off index, unconsented Reddit and the key itself are not named')
   assert.equal(items[0].detail, 'brightsmile.example - Independent dental practices with 2-10 chairs')
 })
 

@@ -2,8 +2,9 @@
 // shown as recorded, and a count that is not known yet (null) reads as "-", never as 0.
 import type { SourceProgress } from './scan/progress.ts'
 
+// search:anthropic/openai only appear on older scans: key-based web research was retired (#510) and now refuses (#919).
 const NAMES: Record<string, string> = {
-  'search:tinyfish': 'Web search', 'search:news': 'News articles', 'search:anthropic': 'Web research with your AI key', 'search:openai': 'Web research with your AI key',
+  'search:tinyfish': 'Web search', 'search:news': 'News articles', 'search:anthropic': 'AI web research (retired)', 'search:openai': 'AI web research (retired)',
   'adapter:jobboards': 'Job postings', 'adapter:github': 'GitHub', 'adapter:youtube': 'YouTube', 'adapter:v2ex': 'V2EX', 'adapter:rss': 'Feeds', 'adapter:pages': 'Web pages', 'adapter:brreg': 'Norway business register',
   'adapter:reddit': 'Reddit', 'adapter:x': 'X posts', 'adapter:linkedin': 'LinkedIn', 'adapter:facebook': 'Facebook',
 }

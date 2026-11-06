@@ -73,7 +73,7 @@ try {
   if (process.env.BEFORE_ONLY) { const { page } = await open(); await page.waitForTimeout(800); await shot(page, 'leads'); console.log('before shot'); process.exit(0) }
   const { ctx, page, writes, scanBodies } = await open()
   const box = page.getByTestId('source-availability'); await page.getByTestId('sources-usable').waitFor()
-  assert.equal(await page.getByTestId('sources-usable').textContent(), 'Sources a scan here can use: Web research with your AI key, News articles, Company websites. Extra sources are optional, under More sources.')
+  assert.equal(await page.getByTestId('sources-usable').textContent(), 'Sources a scan here can use: News articles, Company websites. Extra sources are optional, under More sources.')
   assert.equal(await page.getByTestId('source-off-web_index').textContent(), 'Web search index (not set up on this server)')
   assert.equal(await page.getByTestId('source-off-web_index').getByRole('link').count(), 0, 'operator switch: no user link')
   assert.match(await page.getByTestId('source-off-social:linkedin').textContent(), /LinkedIn \(not connected, Set up\)/)
@@ -97,7 +97,7 @@ try {
   const run = page.getByTestId('run-sources'); await run.waitFor({ state: 'attached' })
   await page.getByTestId('scan-progress').getByRole('button', { name: 'About this scan' }).click() // the sources line sits behind the progress card's (i)
   await run.waitFor()
-  assert.equal(await run.textContent(), 'Sources this scan can use: Web research with your AI key, News articles, Company websites, GitHub.')
+  assert.equal(await run.textContent(), 'Sources this scan can use: News articles, Company websites, GitHub.')
   assert.doesNotMatch(await run.textContent(), /X posts|Web search index/, 'unticked and unavailable sources are not named')
   assert.equal(await page.getByText('Searching sources...').count(), 0)
   assert.equal(await box.count(), 0, 'the entry list is not shown over a running scan')
@@ -110,9 +110,14 @@ try {
   await nokey.page.getByTestId('sources-usable').waitFor()
   assert.equal(await nokey.page.getByTestId('sources-usable').textContent(), 'A scan cannot start until you add an AI key. Then it can use: Web search index, News articles, Company websites.')
   assert.equal(await nokey.page.getByText(/every scan searches|searches:/i).count(), 0, 'no-key: nothing is claimed as searched')
-  assert.match(await nokey.page.getByTestId('source-off-research').textContent(), /Web research with your AI key \(free searches used up; no key, Add key\)/)
+  assert.match(await nokey.page.getByTestId('source-off-research').textContent(), /AI key \(free searches used up; no key, Add key\)/)
   assert.equal(await nokey.page.getByTestId('source-off-research').getByRole('link', { name: 'Add key' }).getAttribute('href'), '/app/settings#model-key')
   await shot(nokey.page, 'no-key')
+  // #919: a key alone is a prerequisite, not a source: with every server source off nothing is usable.
+  const none = await open({ server: { web_index: false, news: false, websites: false }, usage: { plan: 'free', scans_used: 0, scan_limit: 10, has_key: true, trial: null } })
+  await none.page.getByTestId('sources-usable').waitFor()
+  assert.equal(await none.page.getByTestId('sources-usable').textContent(), 'No source is available for a scan yet.')
+  await none.ctx.close()
   await nokey.ctx.close()
   // The checks could not load: say so, list nothing as usable.
   const failed = await open({ sourcesFail: true })

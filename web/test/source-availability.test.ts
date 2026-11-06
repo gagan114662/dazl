@@ -7,7 +7,7 @@ const byId = (rows: SourceRow[]): Record<string, SourceRow> => Object.fromEntrie
 
 test('core sources: operator switches and the key decide; off ones say why, and only the key has a user fix', () => {
   const r = byId(coreSources({ web_index: false, news: true, websites: false }, { has_key: true })!)
-  assert.deepEqual(r.research, { id: 'research', label: 'Web research with your AI key', usable: true })
+  assert.deepEqual(r.research, { id: 'research', label: 'AI key', usable: true, kind: 'prerequisite' })
   assert.equal(r.web_index.fix, undefined, 'an operator switch has no user fix link')
   assert.deepEqual(r.web_index, { id: 'web_index', label: 'Web search index', usable: false, reason: 'not set up on this server' })
   assert.equal(r.news.usable, true)
@@ -15,7 +15,7 @@ test('core sources: operator switches and the key decide; off ones say why, and 
 })
 
 test('no key: research is unavailable with a link to add one; free searches left count as usable', () => {
-  assert.deepEqual(byId(coreSources(ALL_ON, { has_key: false, trial: null })!).research, { id: 'research', label: 'Web research with your AI key', usable: false, reason: 'no key', fix: { href: '/app/settings#model-key', label: 'Add key' } })
+  assert.deepEqual(byId(coreSources(ALL_ON, { has_key: false, trial: null })!).research, { id: 'research', label: 'AI key', usable: false, kind: 'prerequisite', reason: 'no key', fix: { href: '/app/settings#model-key', label: 'Add key' } })
   assert.equal(byId(coreSources(ALL_ON, { has_key: false, trial: { funded: true, remaining: 0 } })!).research.reason, 'free searches used up; no key')
   assert.equal(byId(coreSources(ALL_ON, { has_key: false, trial: { funded: true, remaining: 2 } })!).research.usable, true)
 })
@@ -53,6 +53,6 @@ test('social platform names are proper names, never raw ids', () => {
 })
 
 test('usable labels list only usable sources, in order', () => {
-  assert.equal(usableLabels(coreSources({ web_index: false, news: true, websites: true }, { has_key: true })!), 'Web research with your AI key, News articles, Company websites')
+  assert.equal(usableLabels(coreSources({ web_index: false, news: true, websites: true }, { has_key: true })!), 'News articles, Company websites', 'the AI key is a prerequisite, not a source (#919)')
   assert.equal(usableLabels(coreSources({ web_index: false, news: false, websites: false }, { has_key: false })!), '')
 })
