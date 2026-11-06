@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
@@ -23,7 +24,8 @@ import { outsideScanSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scan
 import { runValidation, RUN_RECORD_CONTRACT, type RunDeps } from '../lib/evals/judge-validation-run.ts'
 import type { JudgeCorpus } from '../lib/evals/judge.ts'
 
-const ROOT = new URL('..', import.meta.url).pathname
+// fileURLToPath, never .pathname (#669): .pathname is the raw percent-encoded URL component.
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 // PAID: endpoint -> the only module that may call it, and the kind it reserves.
 const PAID: Record<string, { file: string; kind: SpendKind[] }> = {
   'https://api.anthropic.com/v1/messages': { file: 'lib/llm/provider.ts', kind: ['llm.anthropic'] },
