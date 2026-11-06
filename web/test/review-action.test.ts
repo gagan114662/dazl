@@ -67,3 +67,15 @@ test('#352: someone else\'s customer, a different place, a closed opening: Keep 
     assert.doesNotMatch(a.hint, /can be drafted|wider|widen/i, r)
   }
 })
+
+// Instinct on #618: the generic "I checked the source - use it ... it can be drafted" wording was wrong for a first-party
+// signal, which has no source to check and no stored contact.
+test('a first-party signal: its own wording, no source check and no draft promised', () => {
+  for (const c of [{ review_reason: 'first_party_signal' }, { review_reason: 'first_party_signal', event_date: '2026-10-20' }]) {
+    const a = act(c)
+    assert.equal(a.label, 'Keep this signal')
+    assert.match(a.hint, /does not identify a person/)
+    assert.match(a.hint, /this signal alone cannot be drafted/)
+    assert.doesNotMatch(a.label + a.hint, /checked the source|it can be drafted/)
+  }
+})

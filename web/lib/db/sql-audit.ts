@@ -102,7 +102,9 @@ export function sqlSitesIn(path: string, root: string): SqlSite[] {
 // layer's SQLite engine, the cross-engine tooling (store copy, this audit, the inventory), and the SQLite half of a migration whose
 // Postgres half is a PG migration file (insertion-order.ts / 0010). Left out of the inventory.
 // insertion-order.ts and tenant-guard.ts are schema machinery: per-table columns and triggers built from the live schema.
-export const ENGINE_FILES = new Set(['lib/db/client.ts', 'lib/db/copy-store.ts', 'lib/db/sql-audit.ts', 'lib/db/pg-inventory.ts', 'lib/db/insertion-order.ts', 'lib/db/tenant-guard.ts'])
+// sqlite-store.ts opens the SQLite file the engine wraps and holds the auth schema's SQLite half (its backfills' Postgres
+// half is migrations 0015/0021/0022); test/pg-sql-audit.test.ts pins its statements so no business SQL lands there.
+export const ENGINE_FILES = new Set(['lib/db/client.ts', 'lib/db/copy-store.ts', 'lib/db/sql-audit.ts', 'lib/db/pg-inventory.ts', 'lib/db/insertion-order.ts', 'lib/db/tenant-guard.ts', 'lib/db/sqlite-store.ts'])
 
 export function sqlInventory(root: string): SqlSite[] {
   return sourceFiles(root).filter(f => !ENGINE_FILES.has(relative(root, f))).flatMap(f => sqlSitesIn(f, root))

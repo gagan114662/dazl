@@ -134,7 +134,7 @@ function leadGates(db: Database.Database, tenantId: string, r: { lead_id: string
   if (!leadEvidenceEligible(db, tenantId, r.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   if (domainReviewHeld(db, tenantId, r.lead_id, r.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, r.lead_id, r.to_email))
 }
-export async function sendReopen(db: Database.Database, tenantId: string, threadId: string, d: Deps & { now?: number } = {}): Promise<void> {
+export async function sendReopen(db: Database.Database, tenantId: string, threadId: string, d: Deps & { now?: number; claimedBy?: { won: boolean } } = {}): Promise<void> {
   const r = getReopen(db, tenantId, threadId)
   if (!r) throw new OutreachError('not_found')
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
@@ -173,6 +173,10 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   // The lead gates and the claim are one write transaction (the lock the identity review action takes): a withdraw cannot land between them.
   const claimed = db.transaction(() => { leadGates(db, tenantId, r); return db.prepare("UPDATE reopen_messages SET status = 'approved', sent_at = ? WHERE tenant_id = ? AND thread_id = ? AND status = 'draft'").run(now, tenantId, threadId) }).immediate()
   if (claimed.changes !== 1) throw new OutreachError(getReopen(db, tenantId, threadId)?.status === 'sent' ? 'already_sent' : 'send_uncertain')
+  // Operation identity, not shared row state: only the call whose own UPDATE just won the claim may report this
+  // attempt. A concurrent loser sees the same 'draft' before and the winner's 'sent'/'approved' after, but it never
+  // claimed anything - without this flag it would falsely audit the winner's send as its own (#371 review).
+  if (d.claimedBy) d.claimedBy.won = true
   // Same shared 24h cap as the other send paths; this claim counts itself. Over the cap: nothing was sent, so hand
   // the draft back (the user can send it later) rather than leaving an unresolved claim.
   if (accountSendCount(db, tenantId, now) > DAILY_CAP) {

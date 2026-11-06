@@ -53,9 +53,9 @@ node --experimental-strip-types scripts/backup/create-backup.ts --source "$DB_PA
   The sidecar catches accidental modification after creation; it is NOT an authenticity
   check - anything that can rewrite the backup can rewrite the sidecar sitting next to
   it. Real integrity anchoring would store the manifest separately from the backups.
-- Suggested starting schedule (operator's side): hourly cron, keep 48 hourly + 14 daily.
-  Retention/pruning is deliberately NOT implemented in this PR - deleting backups is its
-  own policy decision.
+- Schedule and retention: hourly `dazl-backup.timer`; retention is `scripts/backup/prune-backups.mts`
+  (48 local; off-host 48 hourly + 14 daily + 8 weekly), off until `BACKUP_RETENTION=1`
+  (docs/RECOVERY.md "Retention").
 
 ## Verifying a backup (restore drill)
 

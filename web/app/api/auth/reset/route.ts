@@ -5,10 +5,10 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { validatePassword } from '@/lib/validate'
 import { isEmailToken, resetPassword, tokenOwner } from '@/lib/email-ownership'
-import { getScanDb } from '@/lib/scan/service'
-import { activateLifecycleFor, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
+import { activateLifecycleForDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
+import { audit } from '@/lib/audit-route'
 
 // Opens a reset link with a new password. Success signs the account out everywhere; the person then signs in with
 // the new password. An unknown, used or expired link answers the same 410.
@@ -23,11 +23,14 @@ export async function POST(req: NextRequest) {
   const owner = await tokenOwner(await getDb(), body.token)
   const ok = await resetPassword(await getDb(), body.token, { password_hash: scryptSync(body.password, salt, 64).toString('hex'), salt })
   if (ok && owner) {
+    // the link's account, in its own workspace: that the password was reset (and every session signed out), never it
+    await audit({ tenantId: owner.user_id, actorId: owner.user_id }, req, { action: 'credential.password_reset', resource: 'account', id: owner.user_id })
     // #417: a reset link also proves ownership of the address (resetPassword sets email_verified_at), so it is
     // the same conversion boundary as verification. Best-effort; pending rows are durable.
     try {
-      recordLifecycleEvent(getScanDb(), 'activation', owner.email, owner.user_id)
-      activateLifecycleFor(getScanDb(), owner.email)
+      const db = await getDb()
+      await recordLifecycleEventDb(db, 'activation', owner.email, owner.user_id)
+      await activateLifecycleForDb(db, owner.email)
     } catch (e) { captureError(e, { source: 'route', where: '/api/auth/reset:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
   }
   return ok ? NextResponse.json({ ok: true, redirect: '/sign-in?reset=1' }) : NextResponse.json({ error: 'invalid_link' }, { status: 410 })

@@ -25,8 +25,8 @@
 //
 // Backups: a restore brings back rows deleted after the backup was taken, and loses tombstones written since.
 // tombstoneLedgerEntry() is the off-database record of a deletion and reapplyTombstones() re-runs every ledgered
-// deletion on a restored store; both are library functions in this part: nothing writes the line or calls the
-// re-application yet (the request flow and the recovery runbook of part 2 do; docs/TENANT-LIFECYCLE.md).
+// deletion on a restored store. The request flow writes the line (lib/tenant/ledger.ts) before any data step, and the
+// recovery plan re-applies it (scripts/tenant-lifecycle.mts --reapply; docs/TENANT-LIFECYCLE.md, docs/RECOVERY.md).
 //
 // No retention policy is decided here: deleteTenant() takes the policy as an argument and refuses to run without an
 // explicit decision on opt-outs (suppressions). The owner's decisions are listed in docs/TENANT-LIFECYCLE.md.
@@ -34,6 +34,7 @@ import { asDb, type DbLike, type Param, type Tx, type TxBody } from '../db/clien
 import { classify, type Scope } from './scope.ts'
 import { foreignKeys, tableColumns, UNGUARDED } from '../db/tenant-guard.ts'
 import { recordTx } from '../audit.ts'
+import { displayAuditDetail } from '../outreach/stop-reason.ts'
 
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
@@ -48,6 +49,20 @@ export const ALWAYS_RETAINED: Record<string, string> = {
   evidence_purge_audit: 'append-only audit of evidence purges (operator, reason, counts); no tenant content',
   audit_events: 'append-only audit trail (lib/audit.ts); redacted at the source, and its delete trigger would refuse the erase anyway',
   onboarding_audit: 'append-only opt-in/withdrawal/enrollment evidence (lib/outreach/onboarding-policy.ts); content-free at the source (no emails), and its delete trigger would refuse the erase anyway',
+}
+
+// Row counts per tenant-owned table for one tenant: the request UI's scope inventory (what an export or a
+// deletion covers), same ownership resolution the deletion itself uses.
+export async function tenantTableCounts(d: DbLike, tenant: string): Promise<Record<string, number>> {
+  const db = asDb(d)
+  const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
+  const counts: Record<string, number> = {}
+  for (const t of [...scope.keys()].sort()) {
+    const w = owned(scope, t, tenant)
+    const n = Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM "${t}" WHERE ${w.sql}`, w.params))?.n ?? 0)
+    if (n > 0) counts[t] = n
+  }
+  return counts
 }
 
 export interface DeletionPolicy {
@@ -78,8 +93,38 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
   const scope = new Map((await tenantScope(db)).map(s => [s.table, s]))
   const tables: TenantExport['tables'] = {}
   const redacted = new Set<string>()
+  // Conversion-kind-bearing text at tenant-readable columns. Values are generalized at export
+  // (converted_<kind> -> policy_stop, conversion:<kind> -> conversion) and the column is listed in
+  // redacted_columns, so the export discloses the redaction instead of claiming to be verbatim.
+  // The stored rows are internal evidence and are never rewritten.
+  const CONVERSION_TEXT_COLUMNS: Record<string, Set<string>> = {
+    sequences: new Set(['stop_reason']),
+    followup_threads: new Set(['stopped']),
+    outreach_messages: new Set(['error']),
+    onboarding_enrollments: new Set(['source']),
+    onboarding_audit: new Set(['detail']),
+    autopilot_audit: new Set(['detail']),
+  }
+  // Workspace credit records share tenant_spend_pools with the USD pools (lib/enrich/credit-pool.ts). Their columns are
+  // overloaded (reserved_usd = credits or a limit; on a hold row reported_usd = the reservation's epoch second and calls =
+  // provider 0/1), so a raw export would show credits as dollars, an epoch as dollars and a provider as a call count.
+  // They are exported as labelled credit records instead; every value is kept, nothing is dropped, and the columns are
+  // listed in redacted_columns because the rows are not verbatim. The stored rows are never rewritten.
+  const creditRecord = (r: Record<string, unknown>): Record<string, unknown> | null => {
+    const period = String(r.period ?? ''), num = (v: unknown) => typeof v === 'bigint' ? Number(v) : Number(v ?? 0)
+    const prov = (c: string) => c === 'a' ? 'apollo' : 'pdl', win = (c: string) => c === 'd' ? 'day' : 'month'
+    let m: RegExpMatchArray | null
+    if ((m = period.match(/^cl([ap])([dm])$/))) return { tenant_id: r.tenant_id, record: 'credit_limit', provider: prov(m[1]), window: win(m[2]), limit_credits: num(r.reserved_usd), updated_at: r.updated_at }
+    if ((m = period.match(/^c([ap])([dm]):(\d+)$/))) return { tenant_id: r.tenant_id, record: 'credit_usage', provider: prov(m[1]), window: win(m[2]), window_start: m[3], reserved_credits: num(r.reserved_usd), charged_credits: num(r.reported_usd), lookups: num(r.calls), updated_at: r.updated_at }
+    if (period.startsWith('ch:')) return { tenant_id: r.tenant_id, record: 'credit_hold', hold_id: period.slice(3), status: 'unsettled', note: 'Reserved credits are counted in the usage windows until the hold settles.', provider: num(r.calls) === 1 ? 'pdl' : 'apollo', reserved_credits: num(r.reserved_usd), reserved_at: new Date(num(r.reported_usd) * 1000).toISOString(), updated_at: r.updated_at }
+    return null
+  }
   const clean = (t: string, r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).map(([k, v]) => {
     if (REDACTED_COLUMN.test(k) && v != null) { redacted.add(`${t}.${k}`); return [k, '[redacted: stored credential]'] }
+    if (CONVERSION_TEXT_COLUMNS[t]?.has(k) && typeof v === 'string') {
+      const mapped = displayAuditDetail(v)
+      if (mapped !== v) { redacted.add(`${t}.${k}`); v = mapped }
+    }
     return [k, v instanceof Uint8Array ? { base64: Buffer.from(v).toString('base64') } : typeof v === 'bigint' ? Number(v) : v]
   }))
   const profile = await db.get<Record<string, unknown>>('SELECT * FROM users WHERE id = ?', [tenant])
@@ -91,7 +136,11 @@ export async function exportTenant(d: DbLike, tenant: string, now = new Date()):
     if (EXPORT_EXCLUDED[t]) continue
     const w = owned(scope, t, tenant)
     const rows = await db.all<Record<string, unknown>>(`SELECT * FROM "${t}" WHERE ${w.sql}`, w.params)
-    if (rows.length) tables[t] = rows.map(r => clean(t, r))
+    if (rows.length) tables[t] = rows.map(r => {
+      const c = t === 'tenant_spend_pools' ? creditRecord(r) : null
+      if (c) { for (const k of ['reserved_usd', 'reported_usd', 'calls', 'period']) redacted.add(`${t}(credit rows).${k}`); return clean(t, c) }
+      return clean(t, r)
+    })
   }
   return { format: 'dazl-tenant-export', version: 1, tenant, exported_at: now.toISOString(), tables, excluded: EXPORT_EXCLUDED, redacted_columns: [...redacted].sort() }
 }

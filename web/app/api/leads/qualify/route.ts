@@ -1,6 +1,7 @@
 import {NextRequest,NextResponse} from 'next/server'
 import {getScanDb,requireUser} from '@/lib/scan/service'
-import {getAuthDb,sellerProfile} from '@/lib/auth-db'
+import {readSellerLine} from '@/lib/auth-db'
+import {getDb} from '@/lib/db/client'
 import {sameOriginJson} from '@/lib/same-origin'
 import {rateLimit} from '@/lib/rate-limit'
 import {providers} from '@/lib/llm/provider'
@@ -26,6 +27,6 @@ export async function POST(req:NextRequest){
  if(!(await rateLimit(`qualify:${user.tenantId}`,5,60*60*1000)).ok)return NextResponse.json({error:'Too many checks. Try again later.'},{status:429})
  const db=getScanDb(),vendor=pickVendor(db,user.tenantId)
  const k=vendor?readKey(db,user.tenantId,vendor):{key:null,unreadable:false}
- const r=await runQualification(db,user.tenantId,b.lead_id,a as never,{enabled:true,sellerText:sellerProfile(getAuthDb(),user.tenantId),vendor,provider:vendor?providers[vendor]:null,apiKey:k.key})
+ const r=await runQualification(db,user.tenantId,b.lead_id,a as never,{enabled:true,sellerText:await readSellerLine(await getDb(),user.tenantId),vendor,provider:vendor?providers[vendor]:null,apiKey:k.key})
  return NextResponse.json(r,{status:r.status==='done'||r.status==='exists'?200:r.status==='failed'?502:409})
 }

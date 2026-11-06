@@ -106,7 +106,8 @@ export function parseXTweets(data) {
 export function parseAdaptiveTweets(data) {
   const tweets = data?.globalObjects?.tweets
   const users = data?.globalObjects?.users
-  if (!tweets || typeof tweets !== 'object') return []
+  // #436: a malformed adaptive.json envelope is a schema failure; {} tweets is a genuine empty search.
+  if (!tweets || typeof tweets !== 'object') throw new Error('x schema: adaptive.json envelope missing globalObjects.tweets')
   const out = []
   for (const t of Object.values(tweets)) {
     if (!t || typeof t.full_text !== 'string' || t.full_text.length < 20 || !t.id_str) continue

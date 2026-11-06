@@ -14,10 +14,12 @@ export class EnrichError extends Error {
 
 const BASE = 'https://api.apollo.io'
 import { reserveScanSpend, unitCostUsd } from '../scan/spend-cap.ts'
-const TIMEOUT_MS = 15_000
+// The paid lookup request is given up on after this; exported for the stale-running lease floor (lib/scan/store.ts).
+export const APOLLO_TIMEOUT_MS = 15_000
+const TIMEOUT_MS = APOLLO_TIMEOUT_MS
 
 export interface ApolloOrg { name: string | null; employees: number | null; industry: string | null; founded: number | null; website: string | null; linkedin: string | null; place: string | null; address?: string | null }
-export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
+export interface ApolloPerson { name: string; title: string | null; linkedin: string | null; recordDay?: string | null; place?: string | null; address?: string | null; domain?: string | null; organization?: { name: string | null; domain: string | null } | null } // organization: the company the RESULT says the person works for (kept so a contradicting one can be refused)
 
 async function call(apiKey: string, path: string, body: Record<string, unknown>, fetchImpl: typeof fetch): Promise<unknown> {
   // Inside a scan: reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal (SpendRefused) sends nothing.
@@ -34,8 +36,8 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       })
-    } catch (e) { await hold?.settle(null); throw e }
-    if (hold) await hold.settle(r.ok ? hold.usd : null)
+    } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
+    if (hold) { if (r.ok || [400, 401, 403, 404, 413, 429].includes(r.status)) { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status) } else hold.uncertain() } // a documented rejection is counted (kept) but never claimed uncharged; any other status: maybe billed
     if (r.status === 429) throw new EnrichError('rate_limited', 'Apollo rate limit reached')
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'Apollo rejected the key')
     if (!r.ok) throw new EnrichError('upstream', `Apollo returned ${r.status}`)
@@ -44,6 +46,8 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
 }
 
 import { formatPlace } from '../scan/contact-agreement.ts'
+import { isMailboxShaped } from './person-name.ts'
+import { latestDay } from '../people/currency.ts'
 const clean = (v: unknown, max = 200) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max) : null)
 
 // 1 credit per call.
@@ -87,11 +91,15 @@ export async function apolloPeopleSearch(apiKey: string, org: { domain?: string 
   if (org.domain) body.q_organization_domains = org.domain
   else body.q_organization_name = org.name
   const j = await call(apiKey, '/api/v1/mixed_people/api_search', body, fetchImpl) as { people?: Record<string, unknown>[] }
-  return (j.people ?? []).slice(0, max).map(p => ({
+  // Filter mailbox/team labels BEFORE the cap so department-labelled rows cannot displace real people within max.
+  return (j.people ?? []).map(p => ({
     name: clean(p.name, 120) ?? '',
     title: clean(p.title, 120),
     linkedin: clean(p.linkedin_url),
     organization: orgOf(p),
+    // The provider record's own last-refreshed / updated date (#383 criterion 4: verified current within 90 days). Kept
+    // only as a strict YYYY-MM-DD; any other shape is null, so the contact stays search-result-only.
+    recordDay: latestDay(p.last_refreshed_at, p.updated_at),
     // p.email / p.phone_numbers deliberately never read
-  })).filter(p => p.name)
+  })).filter(p => p.name && !isMailboxShaped(p.name)).slice(0, max)
 }

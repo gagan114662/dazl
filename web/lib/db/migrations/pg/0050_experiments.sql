@@ -2,8 +2,8 @@
 -- running -> paused/stopped; "running" = arm claims allowed in the staging stub, never a live launch), one arm claim per
 -- (tenant, experiment, prospect), and an append-only record of every call and its outcome. All three tables are
 -- tenant-scoped (tenant_id) and tomb-guarded per 0039.
--- Numbered 0049: main's highest is 0048_scan_spend_cap. Draft PRs #600/#601 also carry a 0049 on their branches; whichever
--- lands second renumbers to the next free number at merge order.
+-- Numbered 0050: main's highest is 0049_first_party_withdrawals at the 2026-11-06 merge of main. Whichever queued PR lands later
+-- renumbers to main's then-highest + 1 (#619's revenue pipeline also carries a 0050 on its branch).
 CREATE TABLE experiment_arm_claims (
       tenant_id     TEXT NOT NULL,
       experiment_id TEXT NOT NULL,

@@ -94,10 +94,13 @@ test('per-scan ceiling: a failed search keeps its charge; a trial with nothing f
     assert.deepEqual(sent.map(c => c.kind).filter(k => k !== 'complete'), ['search'], 'one search, which failed; no research after it')
     assert.ok(Math.abs(recorded(db, id) - total(sent)) < 1e-9, 'the failed search is counted like a successful one')
     const job = getJob(db, 'keyless', id)!
-    assert.deepEqual([job.status, job.error], ['failed', 'budget_stopped'])
+    assert.deepEqual([job.status, job.error], ['failed', 'accounting_uncertain']) // #594: a 5xx after send is uncertain, so the run stops rather than reporting a budget stop
     const o = scanOutcome({ ...job, id, status: job.status, error: job.error, funded_by: 'trial' } as never)
-    assert.equal(o.label, 'This free scan found no companies within its spending limit')
-    assert.match(o.detail ?? '', /does not show that no company matches/)
+    assert.equal(o.kind, 'stopped')
+    assert.equal(o.label, 'Stopped after an interruption - a paid step may already have been billed')
+    assert.match(o.detail ?? '', /dazl did not run it again automatically: that could bill the same step twice/)
+    assert.doesNotMatch(`${o.label} ${o.detail}`, /found no companies|no company matches|zero|nothing matches/i) // still no empty-search claim
+    // the unchanged assertions above still hold: exactly one search was sent and no research fallback ran after it
   })
 })
 

@@ -3,7 +3,7 @@ import {migratePlayResearch} from './play-research-schema.ts'
 // two-engine test harness (test/helpers/engines.ts) both use it, so the PG schema and the test schema cannot drift.
 import type Database from 'better-sqlite3'
 import { migrateInsertionOrder } from './insertion-order.ts'
-import { migrateAuth } from '../auth-db.ts'
+import { migrateAuth } from './sqlite-store.ts'
 import { migratePlatform } from './platform-tables.ts'
 import { migrateScan } from '../scan/store.ts'
 import { migrateSourceRuns } from '../scan/source-runs.ts'
@@ -52,6 +52,7 @@ import { migratePreviewClaim } from '../scan/preview-claim.ts'
 import { migrateTraceStore } from '../evals/trace-tables.ts'
 import { migrateWorkers } from '../workers/store.ts'
 import { migrateExperiments } from '../autopilot/experiment-runner.ts'
+import { migrateFirstParty } from '../signals/first-party.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
@@ -65,6 +66,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
     migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
     migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers, migrateExperiments,
+    migrateFirstParty,
   ]
   for (const m of migrates) m(db)
   // The queue adapter owns its tables and creates them in its constructor.

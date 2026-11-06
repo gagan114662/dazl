@@ -14,6 +14,7 @@ import type { LeadPriority } from '../events/prioritize.ts'
 import { tokens, MIN_COHORT } from '../scan/lookalike.ts'
 import type { LookalikeSignal } from '../scan/lookalike.ts'
 import { sameAccount, type FeedbackRow } from '../scan/feedback.ts'
+import { displayStopReason } from '../outreach/lifecycle.ts'
 
 type CohortRow = { id: string; signal: string; industry: string | null; location: string | null }
 
@@ -42,12 +43,33 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
   return {
     async getJob(userId, id) {
       const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
+      // A stale running job holding ANY reserved (sent, unsettled) paid call may have been billed, whichever attempt sent it: it ends
+      // accounting_uncertain and is never re-queued. Any-attempt rows count: an unsettled call of a dead earlier attempt is exactly the
+      // maybe-billed case, and an exact IN / NOT IN partition over the same subquery leaves no job stuck 'running' (bounded finalization).
+      // Two statements with uncorrelated subqueries so the pg-mem emulation can run the same SQL; scan_spend_calls.scan_job_id is NOT NULL
+      // (migration 0048), so NOT IN is NULL-safe. A call reserved between the statements is excluded by statement 2's own snapshot and
+      // finalized uncertain by the next read. Real-PG two-connection interleave proof: test/leads-read-pg-live.test.ts.
+      // A PENDING row with a reserved call (the pre-#594 shape) takes the legal pending->running step first - claimed_at = 0 is
+      // older than any cutoff and attempts is NOT bumped, so no executor ever runs it; statement 1 below ends it accounting_uncertain,
+      // exactly like the store.ts / store-db.ts reapers. The whole claim class closes on the read path too.
+      await pg.query(
+        `UPDATE scan_jobs SET status = 'running', claimed_at = 0
+         WHERE status = 'pending'
+           AND id IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`,
+      )
+      await pg.query(
+        `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', finished_at = CAST(floor(extract(epoch from now())) AS BIGINT), claimed_at = NULL
+         WHERE status = 'running' AND claimed_at < $1
+           AND id IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`,
+        [cutoff],
+      )
       await pg.query(
         `UPDATE scan_jobs SET status = CASE WHEN attempts >= $1 THEN 'failed' ELSE 'pending' END,
            error = CASE WHEN attempts >= $1 THEN 'timeout' ELSE error END,
            finished_at = CASE WHEN attempts >= $1 THEN CAST(floor(extract(epoch from now())) AS BIGINT) ELSE finished_at END,
            claimed_at = NULL
-         WHERE status = 'running' AND claimed_at < $2`,
+         WHERE status = 'running' AND claimed_at < $2
+           AND id NOT IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`, // never re-queue a job holding a reserved (possibly billed) call, even one reserved after statement 1
         [MAX_ATTEMPTS, cutoff],
       )
       const { rows } = await pg.query(
@@ -116,7 +138,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
           const gaps = testList.includes(norm(r.to_email)) ? TEST_GAPS_S : GAPS_S
           nextDue = step1Sent + gaps[stepsSent]
         }
-        out.set(r.lead_id, { status: r.status, step: stepsSent, next_due_at: nextDue, stop_reason: r.stop_reason })
+        out.set(r.lead_id, { status: r.status, step: stepsSent, next_due_at: nextDue, stop_reason: displayStopReason(r.stop_reason) })
       }
       return out as never
     },

@@ -42,7 +42,7 @@ export default function LlmKeyPanel() {
         </div>
       ))}
       <form method="post" onSubmit={save} className="flex flex-col gap-3" autoComplete="off">
-        <select className={field} value={vendor} onChange={e => setVendor(e.target.value as Vendor)}>
+        <select className={field} aria-label="Key provider" value={vendor} onChange={e => setVendor(e.target.value as Vendor)}>
           <option value="anthropic">Anthropic</option>
           <option value="openai">OpenAI</option>
         </select>

@@ -9,11 +9,14 @@ import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, latestAuditStatus, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
+import { refundCredits, reserveCredits, settleCredits, CreditRefused, refusalLookup, type CreditHold, type CreditRefusal } from './credit-pool.ts'
 import { runWithJobSpend } from '../scan/spend-cap.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 import { getMasterKey } from '../secrets.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection } from '../scan/contact-agreement.ts'
 import { roleContradicted } from '../people/rank.ts'
+import { providerContactLabel } from '../people/currency.ts'
 import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
 import { norm } from '../scan/evidence.ts'
 
@@ -53,7 +56,7 @@ export const MAX_FAILS = 3          // transient failures that open a provider's
 export const APOLLO_CALLS = MAX_LEADS * 2   // org + people lookups per scan
 export const PDL_CALLS = MAX_LEADS          // PDL PROFILES per scan: PDL charges 1 credit per profile RETURNED (adapter contract), so the budget caps profiles and each search's size is capped by what remains - the scan can never be charged for more than this many PDL profiles
 type Prov = 'apollo' | 'pdl'
-type SkipWhy = 'circuit_open' | 'budget_exhausted' | 'replayed' | 'uncertain' | 'not_configured' | 'unresolved' | 'fallback_off'
+type SkipWhy = 'circuit_open' | 'budget_exhausted' | 'credit_cap' | 'credit_unsaved' | 'replayed' | 'uncertain' | 'not_configured' | 'unresolved' | 'fallback_off'
 // A provider failure code: the EnrichError code, 'timeout' for an aborted/timed-out request (the adapters' 15s
 // abort), else 'error'. Non-terminal like the others: a timed-out lookup may have been billed, so its claim holds.
 export type FailCode = 'auth' | 'rate_limited' | 'upstream' | 'timeout' | 'error'
@@ -72,7 +75,7 @@ export async function enrichLeadContacts(
   tenantId: string,
   jobId: string,
   leads: LeadRow[],
-  deps: { fetchImpl?: typeof fetch; master?: Buffer; budget?: Partial<Record<Prov, number>>; only?: Prov } = {},
+  deps: { fetchImpl?: typeof fetch; master?: Buffer; budget?: Partial<Record<Prov, number>>; only?: Prov; env?: Record<string, string | undefined> } = {},
 ): Promise<EnrichSummary> {
   const fetchImpl = deps.fetchImpl ?? fetch
   const summary: EnrichSummary = { attached: 0, byProvider: { apollo: 0, pdl: 0 }, skipped: [], outcomes: [] }
@@ -116,11 +119,14 @@ export async function enrichLeadContacts(
   const budget: Record<Prov, number> = { apollo: deps.budget?.apollo ?? APOLLO_CALLS, pdl: deps.budget?.pdl ?? PDL_CALLS }
   const used: Record<Prov, number> = { apollo: 0, pdl: 0 }, fails: Record<Prov, number> = { apollo: 0, pdl: 0 }, open: Record<Prov, boolean> = { apollo: false, pdl: false }
   const told = new Set<string>()
-  const skip = (prov: Prov, why: SkipWhy, lead: LeadRow) => {
+  // The workspace credit pool refused this provider (its day/month cap, or the store could not save the reservation):
+  // no later lead of the pass reserves for it again.
+  const capped: Record<Prov, 'credit_cap' | 'credit_unsaved' | null> = { apollo: null, pdl: null }
+  const skip = (prov: Prov, why: SkipWhy, lead: LeadRow, refusal?: CreditRefusal) => {
     summary.skipped.push({ provider: prov, why })
     summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: why, attached: 0 })
     // visible once per provider and reason per pass
-    const k = `${prov}:${why}`; if (!told.has(k) && why !== 'replayed') { told.add(k); audit(db, { tenantId, connector: connector[prov], jobId, lookup: `people ${lead.company}`.slice(0, 200), status: why, results: 0 }) }
+    const k = `${prov}:${why}`; if (!told.has(k) && why !== 'replayed') { told.add(k); audit(db, { tenantId, connector: connector[prov], jobId, lookup: refusal ? refusalLookup(refusal) : `people ${lead.company}`.slice(0, 200), status: why, results: 0 }) }
   }
   const failed = (prov: Prov, e: unknown, lead: LeadRow) => {
     const code = failCode(e)
@@ -151,25 +157,41 @@ export async function enrichLeadContacts(
       continue
     }
     const src = lead.company_domain ? `https://${lead.company_domain}` : `https://www.linkedin.com/company/${encodeURIComponent(lead.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}`
-    const ctx: Ctx = { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl, buyerTitles }
+    const ctx: Ctx = { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl, buyerTitles, env: deps.env }
     let stopped = false // a verified/replayed result or a held (uncertain) claim ended this lead's waterfall on purpose
     for (const prov of ['apollo', 'pdl'] as Prov[]) {
       if (deps.only && prov !== deps.only) continue // an owner retry runs exactly the provider whose cost they saw
       if (!keys[prov]) continue
       if (open[prov]) { skip(prov, 'circuit_open', lead); continue }
+      const cap = capped[prov]; if (cap) { skip(prov, cap, lead); continue }
       if (used[prov] >= budget[prov]) { skip(prov, 'budget_exhausted', lead); continue }
       if (prov === 'pdl') {
         // PDL stays ONE whole-attempt claim (its search is itself the paid step): held = owner resolution only.
         // ATOMIC durable reservation (#382): one guarded insert claims this lookup for the job BEFORE any paid
         // call; a replayed or double-run job loses the race and reads the winner's outcome instead of paying again.
+        // The workspace credit pool first (#363): a PDL search can charge up to its size, so that many credits are
+        // reserved before the claim and the call; refused = no call.
+        const size = Math.max(1, Math.min(MAX_CONTACTS, budget.pdl - used.pdl))
+        // A lookup this job already has an outcome for is a replay: recognize it BEFORE reserving, so a full pool never
+        // turns a known replay into a credit_cap refusal (and never latches capped.pdl for the rest of the scan).
+        const known = readOutcome(db, { tenantId, connector: connector[prov], jobId, lookup: lookupKey('people', lead) })
+        if (known) {
+          if (known.prior === 'ok') { skip(prov, 'replayed', lead); stopped = true; break }
+          if (known.prior === 'empty' || known.prior === 'rejected') { skip(prov, 'replayed', lead); continue }
+          skip(prov, 'uncertain', lead); stopped = true; break
+        }
+        let hold: CreditHold
+        try { hold = await reserveCredits(db, tenantId, 'pdl', size, { env: deps.env, now }) }
+        catch (e) { const why = creditWhy(e); capped.pdl = why; skip(prov, why, lead, e instanceof CreditRefused ? e.detail : undefined); continue }
         const gate = auditTryReserve(db, { tenantId, connector: connector[prov], jobId, lookup: lookupKey('people', lead), status: 'reserved', results: 0 })
         if ('prior' in gate) {
+          await releaseUnused(db, hold) // another pass holds this lookup: no call here, the credits go back
           if (gate.prior === 'ok') { skip(prov, 'replayed', lead); stopped = true; break } // already found for this lead in this job
           if (gate.prior === 'empty' || gate.prior === 'rejected') { skip(prov, 'replayed', lead); continue } // known empty/terminally rejected: do not pay again, try the next provider
           skip(prov, 'uncertain', lead); stopped = true; break                       // a crashed pass may have paid: fail closed, never pay twice
         }
         let res: { n: number; verdict: 'attached' | 'empty' | 'rejected' }
-        try { const charged = { n: 0 }; res = await runPdl(ctx, gate.id, keys.pdl!, Math.min(MAX_CONTACTS, budget.pdl - used.pdl), charged); used.pdl += charged.n }
+        try { const charged = { n: 0 }; res = await runPdl(ctx, gate.id, keys.pdl!, size, charged, hold); used.pdl += charged.n }
         catch (e) { failed(prov, e, lead); continue }
         summary.byProvider[prov] += res.n; summary.attached += res.n
         summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: res.verdict, attached: res.n })
@@ -193,6 +215,7 @@ export async function enrichLeadContacts(
       if (out.kind === 'replayed-terminal') { skip(prov, 'replayed', lead); continue }
       if (out.kind === 'uncertain') { skip(prov, 'uncertain', lead); stopped = true; break }
       if (out.kind === 'budget') { skip(prov, 'budget_exhausted', lead); continue }
+      if (out.kind === 'credit') { capped.apollo = out.why; skip(prov, out.why, lead, out.refusal); continue }
       summary.byProvider.apollo += out.n; summary.attached += out.n
       summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: out.verdict, attached: out.n })
       if (out.n > 0) { stopped = true; break }
@@ -204,7 +227,17 @@ export async function enrichLeadContacts(
   return summary
 }
 
-interface Ctx { db: Database.Database; tenantId: string; jobId: string; lead: LeadRow; where: string[]; evidence: string; established: boolean; src: string; today: string; now: number; fetchImpl: typeof fetch; buyerTitles: string[] }
+interface Ctx { db: Database.Database; tenantId: string; jobId: string; lead: LeadRow; where: string[]; evidence: string; established: boolean; src: string; today: string; now: number; fetchImpl: typeof fetch; buyerTitles: string[]; env?: Record<string, string | undefined> }
+
+// Credit-pool helpers (lib/enrich/credit-pool.ts). A refusal names its reason; a release or settle that cannot be saved
+// leaves the full reservation counted (an over-count, never an under-count), so it only logs.
+const creditWhy = (e: unknown): 'credit_cap' | 'credit_unsaved' => e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap' : 'credit_unsaved'
+async function releaseUnused(db: Database.Database, h: CreditHold): Promise<void> {
+  try { await refundCredits(db, h) } catch (e) { console.error('[enrich] credit refund not saved (reservation kept):', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+}
+async function settleCharged(db: Database.Database, h: CreditHold, charged: number): Promise<void> {
+  try { await settleCredits(db, h, charged) } catch (e) { console.error('[enrich] credit settle not saved (reservation kept):', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+}
 
 // The REVIEWED buyer titles for the job (#383): only an explicit seller_decisions 'confirm' row is review
 // evidence - a submitted profile (icp_inferred=0), a 'reviewed' status string or a model grade are NOT
@@ -251,6 +284,7 @@ type AttemptOutcome =
   | { kind: 'replayed-terminal' }  // known empty / terminally rejected: do not pay again, try the next provider
   | { kind: 'uncertain' }          // a held claim MAY have been charged: fail closed - owner resolution only
   | { kind: 'budget' }             // the next step would exceed the per-scan call budget
+  | { kind: 'credit'; why: 'credit_cap' | 'credit_unsaved'; refusal?: CreditRefusal } // the workspace credit pool refused the paid org lookup: no call
 
 // The org claim's memo: everything the people step needs after the paid org lookup ran - the confirmed domain the
 // people search queries and the agreement basis bits the pass decided on. Written in the SAME transaction as the
@@ -303,14 +337,22 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   if (orgPrior?.prior === 'empty' || orgPrior?.prior === 'rejected') orgRan = true // terminal: never pay for it again
   if (!orgRan) {
     if (spend.used.apollo >= spend.budget.apollo) return { kind: 'budget' }
+    // The workspace credit pool (#363): the org lookup's 1 credit is reserved before the claim and the call.
+    let hold: CreditHold
+    try { hold = await reserveCredits(db, tenantId, 'apollo', 1, { env: c.env, now }) }
+    catch (e) { return { kind: 'credit', why: creditWhy(e), refusal: e instanceof CreditRefused ? e.detail : undefined } }
     spend.used.apollo += 1 // reserve the budget before spending it
     const gate = auditTryReserve(db, orgClaim)
     if ('prior' in gate) {
+      await releaseUnused(db, hold) // another pass holds this lookup: no call here
       if (gate.prior === 'uncertain') return { kind: 'uncertain' }
       if (gate.prior === 'ok') memo = parseMemo(readOutcome(db, orgClaim, { legacyAudit: false })?.memo ?? null)
     } else {
       try {
         org = await apolloOrgEnrich(key, { domain: normDomain(lead.company_domain), name: lead.company }, fetchImpl)
+        // A returned organization is the charged credit. No match, or an error, keeps the reservation: whether Apollo
+        // charged it is not known.
+        if (org) await settleCharged(db, hold, 1)
         const agree = org ? contactAgreement({ company_domain: lead.company_domain, where, evidence, domainEstablished: established }, { domain: domainOf(org.website), place: org.place, address: org.address, keyedOnLeadDomain: !!lead.company_domain }) : null
         if (org && agree && !agree.ok) {
           // The org data returned (paid, terminal) but is NOT this company: the org claim settles 'ok' WITH a
@@ -335,6 +377,9 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
         orgAudit(org ? 'ok' : 'empty', org ? 1 : 0)
         if (!org) memo = null
       } catch (e) {
+        // The scan's hard spend cap refused the org call before any request (lib/scan/spend-cap.ts): nothing was
+        // sent, so the workspace credit goes back. Any other failure keeps it (whether Apollo charged is unknown).
+        if (e instanceof SpendRefused) await releaseUnused(db, hold)
         const code = failCode(e)
         auditSettleClaim(db, { ...orgClaim, status: code, results: 0 }, gate.id, code, 0)
         if (e instanceof EnrichError && e.code === 'auth') throw e // a bad key stops the provider for the pass (the claim's audit row carries the auth); the held org claim fails the replay CLOSED
@@ -396,7 +441,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
     audit(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: peopleKey, status: why, results: 0 })
     recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_APOLLO, reason: why, sourceUrl: src })
   }
-  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'Apollo', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
+  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_APOLLO, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:apollo', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
   const out = people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty')
   auditSettleClaim(db, { ...peopleClaim, status: out, results: people.length }, pgate.id, out, people.length)
   return { kind: 'ran', n: people.length, verdict: people.length ? 'attached' : found.length ? 'rejected' : 'empty' }
@@ -405,13 +450,19 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
 // maxProfiles caps the request size to the scan's remaining PDL profile budget: PDL charges 1 credit per profile
 // RETURNED (adapter contract), so the size cap is the credit cap. Returns profiles ATTACHED; c.charged gets the
 // number of profiles returned (the credits actually spent, including profiles the agreement check then rejects).
-async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: number, charged: { n: number }): Promise<{ n: number; verdict: 'attached' | 'empty' | 'rejected' }> {
+async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: number, charged: { n: number }, hold: CreditHold): Promise<{ n: number; verdict: 'attached' | 'empty' | 'rejected' }> {
   const { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl } = c
   const peopleKey = lookupKey('people', lead)
   let found: Awaited<ReturnType<typeof pdlPeopleSearch>>
   try { found = await pdlPeopleSearch(key, lead.company, fetchImpl, Math.max(1, maxProfiles)) }
-  catch (e) { const code = failCode(e); auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e }
+  catch (e) {
+    // A refusal by the scan's hard spend cap sent nothing: the workspace credits go back. Any other error keeps them.
+    if (e instanceof SpendRefused) await releaseUnused(db, hold)
+    const code = failCode(e); auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e
+  }
   charged.n += found.length
+  // PDL charges per profile returned: the reservation moves to that count (an error above keeps all of it).
+  await settleCharged(db, hold, found.length)
   // PDL matches on the company NAME only: each person's company must agree with the lead on its domain or place.
   // Post-fetch role classification is shared with the Apollo path (#383): no extra PDL query, the
   // returned profiles are simply classified before attach - past/assistant titles never attach.
@@ -421,7 +472,7 @@ async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: n
     const why = a.ok ? roleRejection(p.title, c.buyerTitles.join('; ')) : a.reason
     if (!why) people.push(p); else { audit(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: why, results: 0 }); recordContactRejection(db, tenantId, lead.id, { connector: ENRICH_PDL, reason: why, sourceUrl: src }) }
   }
-  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: 'People Data Labs', confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
+  for (const p of people) addEnrichment(db, tenantId, lead.id, { connector: ENRICH_PDL, kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:pdl', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? src, source_date: today, retrieved_at: now })
   auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), results: people.length }, reservationId, people.length ? 'ok' : (found.length ? 'contact rejected: every candidate contradicted the company or the reviewed buyer role' : 'empty'), people.length)
   return { n: people.length, verdict: people.length ? 'attached' : found.length ? 'rejected' : 'empty' }
 }

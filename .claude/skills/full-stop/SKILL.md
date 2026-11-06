@@ -52,6 +52,11 @@ stop and say what Instinct needs to verify.
 
 When you cannot prove a change, you do not have full confidence. Say so in the handoff.
 
+**Never write a closing keyword** (`Closes`/`Fixes`/`Resolves #N`) in a PR body or commit message: use `Refs #N`.
+Issues are closed by Instinct or the owner after deploy + live proof (`docs/PROCESS.md` § "Closing issues").
+Where you can, commit the issue's reported scenario as a test whose name carries `#N` and paste the output of
+`node web/scripts/gate-check.mjs <N>`. That is additive evidence only; it does not replace the live check.
+
 ## Never merge
 
 You may commit and push to this task's own branch. Never merge, enable auto-merge, enter a merge queue, push to
@@ -72,6 +77,7 @@ The PR is ready when all of these are true on the latest commit:
 - CI is green on the exact head.
 - Every Instinct finding is fixed, or answered with a reason on the PR.
 - The branch is mergeable with `main` (no conflicts).
+- The PR body and commit messages say `Refs #N`, never a closing keyword (CI job `no-closing-keywords`).
 
 Then stop and report, on the PR and to the user: the PR link, the **exact head SHA**, the test commands and their
 output, the council result, what is NOT verified, and that the PR is open and unmerged, waiting for Instinct.

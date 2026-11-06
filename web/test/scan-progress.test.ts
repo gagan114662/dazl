@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import type Database from 'better-sqlite3'
 import { progressOf, outcomeInputs, sourceStatusOf, partialNote } from '../lib/scan/progress.ts'
 import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { sourceRuns } from '../lib/scan/source-runs.ts'
@@ -45,6 +46,9 @@ test('pure: per-source progress — status, candidates found, accepted; unknown 
   assert.equal(by(progressOf(rows, 'done'), 'search:news').status, 'failed', 'started but never reported, and the scan is over')
   assert.equal(sourceStatusOf('started', true), 'running')
   assert.deepEqual(outcomeInputs(null, rows, 'done').failed_sources, ['search:news'], 'only a source that never reported is failed; unavailable is not')
+  // a source the spend hold refused BEFORE it ran (skipped_hold) is skipped, never "had an error"
+  assert.equal(sourceStatusOf('skipped_hold', false), 'skipped')
+  assert.deepEqual(outcomeInputs(null, [{ collector: 'search:anthropic', status: 'skipped_hold' }], 'failed').failed_sources, [])
   assert.deepEqual(progressOf([{ collector: 'search:x', status: 'error', evidence_count: null, candidate_count: null, verified_count: null, review_count: null }], 'done')[0].status, 'failed')
   assert.deepEqual(outcomeInputs({ funnel: { review_reasons: { quote_unconfirmed: 2 }, drop_reasons: { duplicate: 1 } }, search: { hits_unique_urls: 6, attempted: 3, ok: 3 } }, [], 'done'), { failed_sources: [], reject_reasons: { 'review:quote_unconfirmed': 2, 'dropped:duplicate': 1 }, search_hits: 6, evidence_sources: [], unknown_sources: [], partial_sources: [] })
   assert.deepEqual(outcomeInputs({ search: { attempted: 3, ok: 0, hits_unique_urls: 0 } }, [], 'done').failed_sources, ['search:tinyfish'], 'every search attempt failed: a failed source, not an empty result')
@@ -90,10 +94,391 @@ test('runJob: ZERO-MATCH — the search returned nothing and no source failed', 
   assert.match(e.outcome.label, /sources returned nothing/)
 })
 
-test('runJob: FAILED — the search source answers 500: the outcome names the source and is not "zero-match"', async () => {
+test('runJob: FAILED — the search source answers 500: the outcome names the source, says a paid step may have been billed, and is not "zero-match"', async () => {
   const e = await ending(base({ hits: [], tfPages: {}, own: {}, extraction: [], searchStatus: 500 }))
-  assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows])); assert.match(e.outcome.label, /^Failed - search:tinyfish had an error/)
+  assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows]))
+  // Provenance: ONLY the source whose own request errored is named. The model search was refused BEFORE it ran (the spend
+  // hold), so its row reads skipped_hold and it is never reported as "had an error".
+  assert.equal(e.outcome.label, 'Failed - search:tinyfish had an error; a paid step may already have been billed')
+  const rep = (runReportFor(e.r.db, 'A', String((e.job as { id: string }).id)) ?? []).at(-1) ?? null
+  assert.deepEqual(outcomeInputs(rep, e.rows, String(e.job.status)).failed_sources, ['search:tinyfish'])
+  assert.equal((e.rows.find(r => r.collector === 'search:anthropic') as { status?: string } | undefined)?.status, 'skipped_hold')
+  // The source whose own request was sent and failed is named failed: its row is 'error', never flipped to skipped_hold by the finish-time hold.
+  assert.equal((e.rows.find(r => r.collector === 'search:tinyfish') as { status?: string } | undefined)?.status, 'error')
+  // #594: a 5xx after send may have been billed, so the job error is accounting_uncertain and the outcome says so while still naming the source.
+  assert.equal(e.job.error, 'accounting_uncertain'); assert.match(e.outcome.detail ?? '', /dazl did not run it again automatically: that could bill the same step twice/); assert.doesNotMatch(`${e.outcome.label} ${e.outcome.detail}`, /zero|no compan|nothing matches|sources returned nothing/i)
   assert.notEqual(e.outcome.kind, 'zero_match')
+})
+
+test('runJob: FAILED — the model search itself answers 500 after send: anthropic is named, never "skipped", billing uncertainty stated', async () => {
+  const e = await ending(base({ hits: [], tfPages: {}, own: {}, extraction: [], researchError: true, tinyfishOff: true }))
+  assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows]))
+  assert.equal(e.outcome.label, 'Failed - search:anthropic had an error; a paid step may already have been billed')
+  assert.equal((e.rows.find(r => r.collector === 'search:anthropic') as { status?: string } | undefined)?.status, 'error')
+  assert.equal(e.job.error, 'accounting_uncertain')
+  const rep = (runReportFor(e.r.db, 'A', String((e.job as { id: string }).id)) ?? []).at(-1) ?? null
+  assert.deepEqual(outcomeInputs(rep, e.rows, String(e.job.status)).failed_sources, ['search:anthropic'])
+})
+
+test('runJob: FAILED — a search fails after partial hits: the source reads error and keeps its partial evidence, never "ok"', async () => {
+  const hit = { url: 'https://ex.com/x', title: 'X', snippet: 's', date: null }
+  const e = await ending(base({
+    hits: [], modelQueries: ['London SaaS seed round', 'London SaaS startup funding'],
+    hitsFor: (n: number) => n === 0 ? [hit] : [],
+    searchStatusFor: (n: number) => n === 1 ? 500 : undefined,
+    tfPages: { 'https://ex.com/x': { title: 'X', text: 'evidence text' } },
+    own: {}, extraction: [{ company: 'X Co', signal: 's', source_url: 'https://ex.com/x', excerpt: 'e', event_date: null }],
+  }))
+  assert.equal(e.job.error, 'accounting_uncertain', JSON.stringify([e.outcome, e.job, e.rows]))
+  const row = e.rows.find(r => r.collector === 'search:tinyfish') as { status?: string } | undefined
+  // A sent-and-failed search after a partial hit is a real vendor error - never 'ok' on partial results. The fetch/extract
+  // stages after it were refused by the spend hold, so no candidates are claimed; the attempted hits stay in the run report.
+  assert.equal(row?.status, 'error')
+  assert.equal((e.rows.find(r => r.collector === 'search:anthropic') as { status?: string } | undefined)?.status, 'skipped_hold', 'the later model search was refused before it ran')
+  assert.equal(e.outcome.kind, 'failed')
+  assert.match(e.outcome.label, /search:tinyfish had an error/)
+  // The partial work is RETAINED as evidence in the run report (verified by direct table probe): 2 searches attempted, 1 ok, the partial hit counted.
+  assert.equal(e.r.report!.search.attempted, 2, JSON.stringify(e.r.report!.search))
+  assert.equal(e.r.report!.search.ok, 1)
+  assert.equal(e.r.report!.search.hits_unique_urls, 1, 'the partial hit is not lost')
+  // PERSISTED evidence, not only the in-memory result: the scan_run_report and scan_source_stats ROWS are written for the failed path.
+  const jobId = String((e.job as { id: string }).id)
+  const repRow = e.r.db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(jobId) as { report: string } | undefined
+  assert.ok(repRow, 'the scan_run_report row is persisted for the failed partial run')
+  const repJson = JSON.parse(repRow!.report) as { search: { attempted: number; ok: number; hits_unique_urls: number } }
+  assert.equal(repJson.search.attempted, 2, 'persisted report: both searches recorded')
+  assert.equal(repJson.search.ok, 1, 'persisted report: the successful search recorded')
+  assert.equal(repJson.search.hits_unique_urls, 1, 'persisted report: the partial hit is not lost')
+  const statsRow = e.r.db.prepare("SELECT searches_attempted, searches_ok FROM scan_source_stats WHERE job_id = ? AND collector = 'search:tinyfish'").get(jobId) as { searches_attempted: number; searches_ok: number } | undefined
+  assert.ok(statsRow, 'the scan_source_stats row is persisted for the failed partial run')
+  assert.equal(statsRow!.searches_attempted, 2, 'persisted stats: both searches attempted')
+  assert.equal(statsRow!.searches_ok, 1, 'persisted stats: one search succeeded')
+})
+
+test('runJob: hold-stopped AFTER partial work reads partial_hold - not skipped, not an outage - with its evidence kept', async () => {
+  const hit = { url: 'https://ex.com/x', title: 'X', snippet: 's', date: null }
+  // The fetch is PRICED (env price read at call time) above the run budget: the searches ran, the fetch is refused.
+  process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD = '0.01'
+  let e: Awaited<ReturnType<typeof ending>>
+  try {
+    e = await ending(base({
+      hits: [], modelQueries: ['London SaaS seed round', 'London SaaS startup funding'],
+      hitsFor: (n: number) => n === 0 ? [hit] : [],
+      tfPages: { 'https://ex.com/x': { title: 'X', text: 'evidence text' } },
+      own: {}, extraction: [{ company: 'X Co', signal: 's', source_url: 'https://ex.com/x', excerpt: 'e', event_date: null }],
+      runBudget: JSON.stringify({ max_usd: 0.005 }),
+    }))
+  } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD }
+  const row = e.rows.find(r => r.collector === 'search:tinyfish') as { status?: string } | undefined
+  assert.equal(row?.status, 'partial_hold:over_cap', `the source RAN (searches + fetches) then a later request was refused: ${JSON.stringify(e.rows)}`)
+  const mapped = progressOf([{ collector: 'search:tinyfish', status: 'partial_hold:over_cap', evidence_count: null, candidate_count: null, verified_count: null, review_count: null }], 'failed')[0]
+  assert.equal(mapped.status, 'partial', 'maps to partial, never to unavailable (no false outage) or skipped')
+  assert.equal(mapped.note, 'stopped by the spending limit after partial results')
+  // every hold reason maps to its own honest copy
+  assert.equal(partialNote('partial_hold:accounting_uncertain'), 'stopped after a request may have been billed without a settled cost; partial results kept')
+  assert.equal(partialNote('partial_hold:provider_rejected'), 'stopped after the provider rejected a request; partial results kept')
+  assert.equal(partialNote('partial_hold'), 'stopped by the spend guard after partial results')
+  assert.equal(e.r.report!.search.attempted, 1, 'the search that ran (the query-plan call was itself refused, so one fallback query) is retained in the run report')
+  assert.equal(e.r.report!.search.hits_unique_urls, 1, 'the partial hit is not lost')
+  // Persisted rows for the hold-stopped path too.
+  const jobId2 = String((e.job as { id: string }).id)
+  const repRow2 = e.r.db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(jobId2) as { report: string } | undefined
+  assert.ok(repRow2, 'the scan_run_report row is persisted for the hold-stopped partial run')
+  const repJson2 = JSON.parse(repRow2!.report) as { search: { attempted: number; hits_unique_urls: number } }
+  assert.equal(repJson2.search.attempted, 1, 'persisted report: the search that ran is recorded')
+  assert.equal(repJson2.search.hits_unique_urls, 1, 'persisted report: the partial hit is not lost')
+  const statsRow2 = e.r.db.prepare("SELECT searches_attempted FROM scan_source_stats WHERE job_id = ? AND collector = 'search:tinyfish'").get(jobId2) as { searches_attempted: number } | undefined
+  assert.ok(statsRow2, 'the scan_source_stats row is persisted for the hold-stopped partial run')
+})
+
+// The spend ledger (scan_spend_calls) in insertion order: the refusal-point evidence - WHICH reserve was refused first,
+// with what reason - rather than aggregate vendor-call counters.
+type SpendRow = { kind: string; attempt: number; status: string; reason: string | null }
+const spendRows = (db: Database.Database): SpendRow[] => db.prepare('SELECT kind, attempt, status, reason FROM scan_spend_calls ORDER BY rowid').all() as SpendRow[]
+
+test('runJob: CAUSAL - after the first search reserve is refused (query path), ZERO vendor requests are sent and the run halts', async () => {
+  const fixture = {
+    hits: [], modelQueries: ['London SaaS seed round', 'London SaaS startup funding'],
+    hitsFor: (n: number) => n === 0 ? [{ url: 'https://ex.com/x', title: 'X', snippet: 's', date: null }] : [],
+    tfPages: { 'https://ex.com/x': { title: 'X', text: 'evidence text' } },
+    own: {}, extraction: [{ company: 'X Co', signal: 's', source_url: 'https://ex.com/x', excerpt: 'e', event_date: null }],
+  }
+  process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD = '0.001'
+  let e: Awaited<ReturnType<typeof ending>>
+  try {
+    e = await ending(base({ ...fixture, runBudget: JSON.stringify({ max_usd: 0.0005 }) })) // every reserve exceeds the budget
+  } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD }
+  // Refusals are pre-call: NOTHING reached any vendor - no search, no fetch, no model prompt (plan or extraction) -
+  // and the run HALTED honestly instead of continuing as a clean no-results.
+  assert.equal(e.r.calls.searches.length, 0, `no search request was sent: ${JSON.stringify(e.r.calls.searches)}`)
+  assert.equal(e.r.calls.tfFetchBatches.length, 0, 'no fetch request was sent')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request was sent (plan refused; extraction never reached)')
+  assert.equal(e.r.extractionPrompt, '', 'the extraction stage after the search stage never ran')
+  assert.equal(e.job.status, 'failed', JSON.stringify([e.job, e.outcome]))
+  assert.equal(e.job.error, 'budget_stopped', `honest terminal state, never a clean zero-match: ${String(e.job.error)}`)
+  // The refusal POINT, instrumented at both gates the run actually passes:
+  //  - the PLAN call is refused by the per-run SpendGuard (prompt-estimate > max_usd) BEFORE the stub provider: no prompt
+  //    was sent (calls.prompts, above) and the job's own reservation never moved (model calls persist there, not in
+  //    scan_spend_calls);
+  //  - the fallback query's SEARCH reserve is then the first - and only - scan_ledger row: refused, over_cap.
+  const led1 = spendRows(e.r.db)
+  assert.deepEqual(led1, [{ kind: 'tinyfish.search', attempt: 1, status: 'refused', reason: 'over_cap' }], `exactly one ledgered refusal - the fallback query search reserve; nothing settled, nothing after: ${JSON.stringify(led1)}`)
+  const jr1 = e.r.db.prepare('SELECT spend_reserved_usd FROM scan_jobs').get() as { spend_reserved_usd: number | null }
+  assert.equal(Number(jr1.spend_reserved_usd ?? 0), 0, "the plan's SpendGuard refusal left no reservation: the plan never sent, never billed")
+  // CONTROL: the same fixture without the budget runs the plan, both searches, the fetch - the assertions are not vacuous.
+  // CONTROL: the same fixture without the budget runs the plan, both searches, the fetch - the assertions are not vacuous.
+  const c = await ending(base(fixture))
+  assert.equal(c.r.calls.searches.length, 2, 'control: both searches run without the budget')
+  assert.ok(c.r.calls.tfFetchBatches.length >= 1, 'control: the fetch stage runs without the budget')
+  assert.ok(c.r.calls.prompts.length >= 1, 'control: the plan prompt runs without the budget')
+})
+
+test('runJob: CAUSAL - after a fetch reserve is refused (a search already settled), ZERO later vendor requests are sent', async () => {
+  const fixture = {
+    hits: [], modelQueries: ['London SaaS seed round', 'London SaaS startup funding'],
+    hitsFor: (n: number) => n === 0 ? [{ url: 'https://ex.com/x', title: 'X', snippet: 's', date: null }] : [{ url: 'https://ex.com/y', title: 'Y', snippet: 's', date: null }],
+    tfPages: { 'https://ex.com/x': { title: 'X', text: 'evidence text' }, 'https://ex.com/y': { title: 'Y', text: 'evidence text' } },
+    own: {}, extraction: [{ company: 'X Co', signal: 's', source_url: 'https://ex.com/x', excerpt: 'e', event_date: null }],
+  }
+  process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD = '0.0001'
+  process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD = '0.001'
+  let e: Awaited<ReturnType<typeof ending>>
+  try {
+    e = await ending(base({ ...fixture, runBudget: JSON.stringify({ max_usd: 0.001 }) })) // search 1 settles (0.0001); the fetch reserve (0.001) -> refused pre-call
+  } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD; delete process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD }
+  // The search that settled before the refusal reached the vendor; the refused fetch never did, and the run HALTED:
+  // nothing after the refusal (no fetch, no extraction, no further paid stage) ran.
+  assert.equal(e.r.calls.searches.length, 1, `only the pre-refusal search reached the vendor: ${JSON.stringify(e.r.calls.searches)}`)
+  assert.equal(e.r.calls.tfFetchBatches.length, 0, `the refused fetch never reached the vendor: ${JSON.stringify(e.r.calls.tfFetchBatches)}`)
+  assert.equal(e.r.extractionPrompt, '', 'the extraction stage after the refusal never ran')
+  assert.equal(e.job.status, 'failed', JSON.stringify([e.job, e.outcome]))
+  assert.equal(e.job.error, 'budget_stopped', `honest terminal state: ${String(e.job.error)}`)
+  // The refusal POINT on the ledger: the settled search row precedes the refused fetch row, and NOTHING was reserved
+  // after the refusal (no extraction reserve): the halt is ledger-visible, not counter-visible.
+  const led2 = spendRows(e.r.db)
+  assert.equal(led2.length, 2, `the settled search, the refused fetch, and NOTHING after it (the run halted): ${JSON.stringify(led2)}`)
+  assert.deepEqual(led2[0], { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null }, 'the pre-refusal search settled')
+  assert.deepEqual(led2[1], { kind: 'tinyfish.fetch', attempt: 1, status: 'refused', reason: 'over_cap' }, 'the fetch reserve is the refusal point (the unpriced stub model leaves no llm rows on this path)')
+  // CONTROL: the same fixture without the budget runs both searches and fetches both hits.
+  const c = await ending(base(fixture))
+  assert.equal(c.r.calls.searches.length, 2, 'control: both searches run without the budget')
+  assert.equal(c.r.calls.tfFetchBatches.length, 1, 'control: both hits are fetched (one batch) without the budget')
+})
+
+test('runJob: CAUSAL - company path (three fixed queries, NO plan call): the first reserve refusal halts the run with ZERO vendor requests', async () => {
+  // The company job has no LLM planning call: its FIRST paid reserve is the first TinyFish search. With the tenant cap
+  // below one search reserve, that reserve is refused pre-call (over_cap), and the run must halt honestly.
+  process.env.DAZL_SCAN_CAP_CAD = '0.0002'
+  process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD = '0.001'
+  let e: Awaited<ReturnType<typeof ending>>
+  try {
+    e = await ending(base({
+      csvDomain: 'brightloop.example',
+      hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }],
+    }))
+  } finally { delete process.env.DAZL_SCAN_CAP_CAD; delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD }
+  assert.equal(e.r.calls.searches.length, 0, `the refused reserve never reached the vendor: ${JSON.stringify(e.r.calls.searches)}`)
+  assert.equal(e.r.calls.tfFetchBatches.length, 0, 'no fetch request was sent')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request was sent (the company path has no plan call, and the refused run never reached one)')
+  // The refusal POINT on the EXACT ledger: one refused tinyfish.search reserve (over_cap) and NOTHING else - after the
+  // first refusal the run STOPS (no later reserve at all, not even a refused one: the paid research fallback never
+  // runs). No llm plan row exists on this path. Causality from the ledger, not the counters.
+  const led = spendRows(e.r.db)
+  assert.deepEqual(led, [{ kind: 'tinyfish.search', attempt: 1, status: 'refused', reason: 'over_cap' }], `exactly one refused reserve, nothing before or after it: ${JSON.stringify(led)}`)
+  assert.equal(e.job.status, 'failed', JSON.stringify([e.job, e.outcome]))
+  assert.equal(e.job.error, 'budget_stopped', `the refusal ends the run as a budget stop, never a clean zero-match: ${String(e.job.error)}`)
+  // Provenance: the source never ran - skipped_hold, never "had an error".
+  assert.equal((e.rows.find(r => r.collector === 'search:tinyfish') as { status?: string } | undefined)?.status, 'skipped_hold')
+  // CONTROL: the same company fixture without the tiny cap runs the three fixed searches.
+  const c = await ending(base({ csvDomain: 'brightloop.example', hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }] }))
+  assert.equal(c.r.calls.searches.length, 3, 'control: the three fixed company queries run without the cap')
+})
+
+// The company path applies the query path's rule: a sent request that may have been billed (5xx/timeout) or was
+// rejected (403/429) ENDS the attempt - no paid research fallback, no later reserve, an honest terminal error that
+// never reads as "nothing found". The sent request's row stays unsettled ('reserved': possibly billed, never re-run).
+const companyFailure = (over: Partial<Fixture>) => ending(base({
+  csvDomain: 'brightloop.example',
+  hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }],
+  ...over,
+}))
+const companyRow = (e: Awaited<ReturnType<typeof ending>>) => e.rows.find(r => r.collector === 'search:tinyfish') as { status?: string } | undefined
+
+test('runJob: CAUSAL - company path: a sent search answered 5xx (maybe billed) ends accounting_uncertain, NO later paid reserve', async () => {
+  const e = await companyFailure({ searchStatus: 500 })
+  assert.equal(e.r.calls.searches.length, 1, 'the 5xx request WAS sent')
+  assert.equal(e.r.calls.tfFetchBatches.length, 0, 'no fetch after the failure')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request after the failure (no fallback research, no extraction)')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT after the failure')
+  assert.deepEqual(e.rows.map(r => r.collector), ['search:tinyfish'], `the fallback was never ENTERED: no search:anthropic source-run row exists: ${JSON.stringify(e.rows)}`)
+  assert.deepEqual(spendRows(e.r.db), [{ kind: 'tinyfish.search', attempt: 1, status: 'reserved', reason: null }], 'the maybe-billed row stays reserved, never settled, and NOTHING was reserved after it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'accounting_uncertain', `maybe billed, never re-run: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+  assert.equal(companyRow(e)?.status, 'error', 'a source that ran and failed reads error - never skipped, never ok')
+  assert.match(e.outcome.detail ?? '', /did not run it again automatically/, 'the outcome says no automatic re-run (double-bill honesty)')
+})
+
+test('runJob: CAUSAL - company path: a sent search that times out (maybe billed) ends accounting_uncertain, NO later paid reserve', async () => {
+  const e = await companyFailure({ searchTimeout: true })
+  assert.equal(e.r.calls.searches.length, 1, 'the timed-out request WAS sent')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request after the timeout')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT after the failure')
+  assert.deepEqual(e.rows.map(r => r.collector), ['search:tinyfish'], `the fallback was never ENTERED: no search:anthropic source-run row exists: ${JSON.stringify(e.rows)}`)
+  assert.deepEqual(spendRows(e.r.db), [{ kind: 'tinyfish.search', attempt: 1, status: 'reserved', reason: null }], 'the maybe-billed row stays reserved and nothing follows it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'accounting_uncertain')
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+  assert.equal(companyRow(e)?.status, 'error')
+})
+
+test('runJob: CAUSAL - company path: a documented 403 rejection ends provider_rejected, NO later paid reserve', async () => {
+  const e = await companyFailure({ searchStatus: 403 })
+  assert.equal(e.r.calls.searches.length, 1, 'the rejected request WAS sent (a rejection is an answer, not a refusal)')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request after the rejection')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT after the failure')
+  assert.deepEqual(e.rows.map(r => r.collector), ['search:tinyfish'], `the fallback was never ENTERED: no search:anthropic source-run row exists: ${JSON.stringify(e.rows)}`)
+  const led = spendRows(e.r.db)
+  assert.equal(led.length, 1, `exactly the rejected request's row, nothing after it: ${JSON.stringify(led)}`)
+  assert.equal(led[0].kind, 'tinyfish.search'); assert.equal(led[0].attempt, 1); assert.equal(led[0].status, 'kept', 'a rejected call KEEPS its worst-case reservation and is marked rejected on the attempt - dazl does not claim it was uncharged')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'provider_rejected', `a documented rejection ends distinct, never retried: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+  assert.equal(companyRow(e)?.status, 'error')
+})
+
+test('runJob: CAUSAL - company path: a documented 429 rejection ends provider_rate_limited, NO later paid reserve', async () => {
+  const e = await companyFailure({ searchStatus: 429 })
+  assert.equal(e.r.calls.searches.length, 1, 'the rate-limited request WAS sent')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request after the rejection')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT after the rejection')
+  assert.deepEqual(e.rows.map(r => r.collector), ['search:tinyfish'], `the fallback was never ENTERED: no search:anthropic source-run row exists: ${JSON.stringify(e.rows)}`)
+  assert.deepEqual(spendRows(e.r.db), [{ kind: 'tinyfish.search', attempt: 1, status: 'kept', reason: null }], 'the rejected 429 KEEPS its worst-case reservation, marked rejected on the attempt with its ACTUAL status - nothing reserved after it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'provider_rate_limited', `429 reads as rate-limited, not a generic failure: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+  assert.equal(companyRow(e)?.status, 'error')
+})
+
+test('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 5xx (maybe billed): accounting_uncertain, NO later paid send', async () => {
+  const e = await companyFailure({ hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }], fetchStatus: 500 })
+  assert.equal(e.r.calls.searches.length, 3, 'the three fixed searches ran clean')
+  assert.equal(e.r.calls.tfFetchBatches.length, 1, 'the fetch batch WAS sent')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request was SENT after the failure (the hold/guard refuses pre-send)')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT after the failure')
+  assert.deepEqual(e.rows.map(r => r.collector), ['search:tinyfish'], `the failure stays on the source that ran: ${JSON.stringify(e.rows)}`)
+  assert.equal(companyRow(e)?.status, 'error', 'a source that ran and failed reads error - never skipped, never ok')
+  assert.deepEqual(spendRows(e.r.db), [
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.fetch', attempt: 1, status: 'reserved', reason: null },
+  ], 'the searches settled; the maybe-billed fetch stays reserved and NOTHING was reserved after it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'accounting_uncertain', `maybe billed, never re-run: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+})
+
+test('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 429 (documented rejection): provider_rate_limited, NO later paid send', async () => {
+  const e = await companyFailure({ hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }], fetchStatus: 429 })
+  assert.equal(e.r.calls.searches.length, 3, 'the three fixed searches ran clean')
+  assert.equal(e.r.calls.tfFetchBatches.length, 1, 'the fetch batch WAS sent (a rejection is an answer, not a refusal)')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request was SENT after the rejection')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT after the rejection')
+  assert.deepEqual(e.rows.map(r => r.collector), ['search:tinyfish'], `the rejection stays on the source that ran: ${JSON.stringify(e.rows)}`)
+  assert.equal(companyRow(e)?.status, 'error')
+  assert.deepEqual(spendRows(e.r.db), [
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.fetch', attempt: 1, status: 'kept', reason: null },
+  ], 'the rejected fetch KEEPS its worst-case reservation with its ACTUAL 429 status on the attempt - nothing reserved after it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'provider_rate_limited', `429 reads as rate-limited, not a generic failure: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+})
+
+test('runJob: CAUSAL - company path: query 1 hits, query 2 answered 5xx (maybe billed): NO fetch send, accounting_uncertain', async () => {
+  const e = await companyFailure({ hitsFor: (n) => n === 0 ? [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }] : [], searchStatusFor: (n) => n === 1 ? 500 : undefined })
+  assert.equal(e.r.calls.searches.length, 2, 'query 1 ran clean, the query-2 request WAS sent')
+  assert.equal(e.r.calls.tfFetchBatches.length, 0, 'the fetch batch was never SENT after the maybe-billed search')
+  assert.equal(e.r.calls.prompts.length, 0, 'no model request was SENT after the failure')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT')
+  assert.deepEqual(e.rows.map(r => r.collector), ['search:tinyfish'], `the failure stays on the source that ran: ${JSON.stringify(e.rows)}`)
+  assert.equal(companyRow(e)?.status, 'error')
+  assert.deepEqual(spendRows(e.r.db), [
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'reserved', reason: null },
+  ], 'query 1 settled; the maybe-billed query 2 stays reserved; NOTHING reserved after it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'accounting_uncertain', `maybe billed, never re-run: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+})
+
+test('runJob: CAUSAL - company path: query 1 hits, query 2 answered 403 (documented rejection): NO fetch send, provider_rejected', async () => {
+  const e = await companyFailure({ hitsFor: (n) => n === 0 ? [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }] : [], searchStatusFor: (n) => n === 1 ? 403 : undefined })
+  assert.equal(e.r.calls.searches.length, 2, 'query 1 ran clean, the query-2 request WAS sent (a rejection is an answer)')
+  assert.equal(e.r.calls.tfFetchBatches.length, 0, 'the fetch batch was never SENT after the rejection')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT')
+  assert.deepEqual(spendRows(e.r.db), [
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'kept', reason: null },
+  ], 'the rejected query KEEPS its worst-case reservation with its ACTUAL status on the attempt - nothing after it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'provider_rejected', `a documented rejection ends distinct: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+  assert.equal(companyRow(e)?.status, 'error')
+})
+
+test('runJob: CAUSAL - company path: query 1 hits, query 2 answered 429: NO fetch send, provider_rate_limited', async () => {
+  const e = await companyFailure({ hitsFor: (n) => n === 0 ? [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }] : [], searchStatusFor: (n) => n === 1 ? 429 : undefined })
+  assert.equal(e.r.calls.searches.length, 2, 'query 1 ran clean, the query-2 request WAS sent')
+  assert.equal(e.r.calls.tfFetchBatches.length, 0, 'the fetch batch was never SENT after the rejection')
+  assert.equal(e.r.calls.research.length, 0, 'the paid research fallback was never SENT')
+  assert.deepEqual(spendRows(e.r.db), [
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'kept', reason: null },
+  ], 'the rejected 429 KEEPS its reservation - nothing reserved after it')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'provider_rate_limited', `429 reads as rate-limited: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
+  assert.equal(companyRow(e)?.status, 'error')
+})
+
+test('runJob: CAUSAL converse - company path: TinyFish cleanly empty, then the FALLBACK research answers 5xx: accounting_uncertain, both sources honest', async () => {
+  const e = await companyFailure({ hits: [], researchError: true, researchRealReserve: true })
+  assert.equal(e.r.calls.searches.length, 3, 'the three fixed company queries ran clean (empty is an answer, not a failure)')
+  assert.equal(e.r.calls.research.length, 1, 'the paid fallback research was attempted once after the clean empty')
+  assert.equal(e.r.extractionPrompt, '', 'nothing after the maybe-billed research failure ran')
+  assert.equal(e.job.status, 'failed'); assert.equal(e.job.error, 'accounting_uncertain', `the maybe-billed research call ends the run uncertain: ${String(e.job.error)}`)
+  assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'never re-attempted')
+  // Provenance: the clean-empty source reads unavailable (a real zero), the source whose own request failed reads error.
+  assert.equal(companyRow(e)?.status, 'unavailable', `TinyFish answered empty - never flipped to error: ${JSON.stringify(e.rows)}`)
+  const fallback = e.rows.find(r => r.collector === 'search:anthropic') as { status?: string } | undefined
+  assert.equal(fallback?.status, 'error', 'the source whose own request 5xx-ed is named failed')
+  assert.match(e.outcome.detail ?? '', /did not run it again automatically/, 'the outcome says no automatic re-run')
+  // The EXACT ledger: the three clean searches settled; the fallback research reserved through the REAL spend ledger
+  // and its row stays 'reserved' (maybe billed, never settled) - the durable production-model uncertainty, not a stub signal.
+  assert.deepEqual(spendRows(e.r.db), [
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null },
+    { kind: 'llm.anthropic', attempt: 1, status: 'reserved', reason: null },
+  ], 'three settled clean searches, then the maybe-billed research row left reserved - nothing after it')
+})
+
+test('runJob: company path CONTROL - the same fixture with no failure runs all three fixed searches and completes', async () => {
+  const e = await companyFailure({})
+  assert.equal(e.r.calls.searches.length, 3, 'the three fixed company queries run')
+  assert.equal(e.job.status, 'done', JSON.stringify([e.job, e.outcome]))
+  assert.ok(!['accounting_uncertain', 'provider_rejected', 'provider_rate_limited', 'budget_stopped'].includes(String(e.job.error)))
+})
+
+test('runJob: the TinyFish daily-allowance gate still returns the distinct cap outcome (not a spend refusal, no vendor call)', async () => {
+  const { tfSearch, tfFetch, migrateTinyfish, resetTinyfishState } = await import('../lib/search/tinyfish.ts')
+  const Database = (await import('better-sqlite3')).default
+  const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_SEARCHES_PER_SCAN: '5', TINYFISH_TENANT_DAILY: '1' } // one search a day per tenant
+  const noCall = (async () => { throw new Error('the vendor must not be called once the daily gate is tripped') }) as unknown as typeof fetch
+  const okCall = (async () => new Response('{"results":[]}', { status: 200 })) as unknown as typeof fetch
+  const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState()
+  const first = await tfSearch(db, 't1', 'ohio payroll hiring', {}, { searches: 0 }, { env, fetchImpl: okCall, now: 1_800_000_000 })
+  assert.equal(first.ok, true, 'the first search uses the daily allowance')
+  const s = await tfSearch(db, 't1', 'ohio payroll hiring again', {}, { searches: 1 }, { env, fetchImpl: noCall, now: 1_800_000_000 })
+  assert.deepEqual(s, { ok: false, reason: 'cap' }, 'the daily-allowance gate is unchanged: a distinct cap outcome, never a SpendRefused')
+  const envF = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_TENANT_DAILY: '0' } // fetch room = tenantDaily - used(searches) <= 0 after the search above
+  const f = await tfFetch(db, 't1', ['https://ex.com/x'], { fetches: 0 }, { env: { ...envF, TINYFISH_TENANT_DAILY: '1' }, fetchImpl: noCall, now: 1_800_000_000 })
+  assert.deepEqual(f, { ok: false, reason: 'cap' }, 'the fetch daily-allowance gate is unchanged')
 })
 
 test('LIVE: while the scan is still running (the verifier is fetching), the search source already reports its progress', async () => {

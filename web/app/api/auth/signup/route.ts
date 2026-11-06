@@ -4,13 +4,14 @@ import { cookies } from 'next/headers'
 import { createPasswordUser, createSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { sendVerification } from '@/lib/email-ownership'
 import { getDb } from '@/lib/db/client'
-import { getScanDb } from '@/lib/scan/service'
-import { queuePendingLifecycle } from '@/lib/outreach/lifecycle'
+import { queuePendingLifecycleDb } from '@/lib/outreach/lifecycle'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { deviceLabel } from '@/lib/sessions'
+import { PREVIEW_CLAIM_COOKIE } from '@/lib/auth-google-response'
+import { isClaimToken } from '@/lib/scan/preview-claim'
 
 export async function POST(req: NextRequest) {
   const rl = (await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000))
@@ -38,13 +39,16 @@ export async function POST(req: NextRequest) {
     // #417: queue the conversion as PENDING: this typed address is unverified, so it cancels nothing and
     // excludes nothing until its owner proves it (verification link, reset link, or Google sign-in). The row
     // is durable, so a lost drain is completed by a later sign-in. Best-effort: never blocks the signup.
-    try { queuePendingLifecycle(getScanDb(), 'signup', email, id) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signup:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
+    try { await queuePendingLifecycleDb(await getDb(), 'signup', email, id) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signup:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
     // The address is unverified until its owner opens this link; a failed send never blocks the signup.
     await sendVerification(await getDb(), id).catch(e => captureError(e, { source: 'route', where: '/api/auth/signup:verify', method: 'POST', requestId: requestIdOf(req) }))
     const token = await createSession(id, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
-    return NextResponse.json({ ok: true, redirect: '/app' })
+    // #416: a preview claim this browser is carrying from a Google attempt (the httpOnly intent cookie, which the page
+    // cannot read) is resumed after a password sign-in too. Only an enum goes back; the claim route re-verifies the token.
+    const resume = isClaimToken(req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value) ? { resume: 'preview' as const } : {}
+    return NextResponse.json({ ok: true, redirect: '/app', ...resume })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/auth/signup', method: 'POST', requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'Something went wrong. Try again.' }, { status: 500 })

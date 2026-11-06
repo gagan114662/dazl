@@ -12,7 +12,7 @@ export default function Verify() {
       .then(r => setState(r.ok ? 'done' : 'invalid')).catch(() => setState('invalid'))
   }, [])
   return (
-    <main className="min-h-screen flex items-center justify-center glow px-4 py-10">
+    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm text-center">
         <h1 className="text-2xl font-medium mb-3">Confirm your email</h1>
         {state === 'working' && <p className="text-[#555] text-sm">Confirming...</p>}

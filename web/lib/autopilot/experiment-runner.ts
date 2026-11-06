@@ -4,7 +4,7 @@
 // separately authorized step (#399), and `liveEnabled` is refused by the validator.
 //
 // Persistence is on the async Db layer (lib/db/client.ts), so it runs the same on SQLite and Postgres. Schema:
-// migrateExperiments below (SQLite, run by lib/db/sqlite-migrations.ts) and lib/db/migrations/pg/0049_experiments.sql.
+// migrateExperiments below (SQLite, run by lib/db/sqlite-migrations.ts) and lib/db/migrations/pg/0050_experiments.sql.
 // Tables, all scoped by tenant_id (tomb-guarded like every tenant table):
 //   experiments            one row per experiment, PRIMARY KEY (tenant_id, id): another tenant's id is simply absent.
 //   experiment_arm_claims  one row per (tenant, experiment, prospect): the prospect's arm, claimed exactly once.
@@ -110,7 +110,7 @@ export function validateExperimentConfig(input: unknown): ValidationResult {
   return { ok: true }
 }
 
-// SQLite schema (startup migration chain: lib/db/sqlite-migrations.ts). Postgres: migrations/pg/0049_experiments.sql.
+// SQLite schema (startup migration chain: lib/db/sqlite-migrations.ts). Postgres: migrations/pg/0050_experiments.sql.
 export function migrateExperiments(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS experiments (

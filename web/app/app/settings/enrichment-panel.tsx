@@ -10,9 +10,10 @@ const SLOTS = [
 ]
 
 export default function EnrichmentPanel() {
-  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean } | null>(null)
+  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean; credits?: { provider: 'apollo' | 'pdl'; window: 'day' | 'month'; reserved: number; charged: number; limit: number | null; source: 'tenant' | 'operator' | null }[] | null } | null>(null)
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState('')
+  const [limits, setLimits] = useState<Record<string, string>>({})
   async function load() { const r = await fetch('/api/settings/enrichment'); if (r.ok) setData(await r.json()) }
   useEffect(() => { void load() }, [])
   async function act(body: Record<string, unknown>) {
@@ -37,7 +38,7 @@ export default function EnrichmentPanel() {
           return (
             <div key={s.id} className="text-sm">
               <div className="font-medium">{s.name}</div>
-              <p className="text-[#777] text-xs mb-1">{s.hint}</p>
+              <p className="text-[#6b6b6b] text-xs mb-1">{s.hint}</p>
               {st?.enabled ? (
                 <div className="flex items-center gap-3">
                   <span>Connected (key ending {st.last4})</span>
@@ -46,7 +47,7 @@ export default function EnrichmentPanel() {
               ) : (
                 <div className="flex gap-2">
                   <input className="field flex-1" type="password" placeholder={`Paste your ${s.name} API key`} value={keys[s.id] ?? ''} onChange={e => setKeys({ ...keys, [s.id]: e.target.value })} />
-                  <button className="btn-primary" disabled={!(keys[s.id] ?? '').trim()} onClick={() => act({ connector: s.id, key: (keys[s.id] ?? '').trim() })}>Save</button>
+                  <button aria-label={`Save ${s.name} key`} className="btn-primary" disabled={!(keys[s.id] ?? '').trim()} onClick={() => act({ connector: s.id, key: (keys[s.id] ?? '').trim() })}>Save</button>
                 </div>
               )}
             </div>
@@ -58,9 +59,38 @@ export default function EnrichmentPanel() {
           <input type="checkbox" className="mt-0.5" checked={!!data.fallback} onChange={e => act({ fallback: e.target.checked })} />
           <span>
             Also use People Data Labs as a fallback when Apollo finds no contacts for a company.
-            <span className="text-[#777] text-xs block">Off by default. Each fallback profile returned can use 1 PDL credit (up to 5 per scan - documented terms; the cost on your account is not verified).</span>
+            <span className="text-[#6b6b6b] text-xs block">Off by default. Each fallback profile returned can use 1 PDL credit (up to 5 per scan - documented terms; the cost on your account is not verified).</span>
           </span>
         </label>
+      )}
+      {data.credits && (
+        <div className="mt-4 text-xs text-[#555]" data-testid="credit-limits">
+          <div className="font-medium text-sm mb-1">Credit limits (this workspace)</div>
+          <p className="mb-1">Optional. With no limit set, only the per-scan caps apply. When a limit is reached, paid lookups for that provider are skipped, and the scan says so.</p>
+          {data.credits.map(u => (
+            <div key={u.provider + u.window} className="flex flex-wrap gap-x-2 gap-y-1 items-center mb-2">
+              <span className="w-40 shrink-0">{u.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} per {u.window}</span>
+              <span>{u.reserved} credits used{u.limit === null ? ', no limit set' : ` of ${u.limit}${u.source === 'operator' ? ' (set by the operator)' : ''}`}</span>
+              {u.source !== 'operator' && (
+                <>
+                  <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-1 w-20 shrink-0" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? (u.source === 'tenant' && u.limit !== null ? String(u.limit) : '')} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
+                  {(() => {
+                    const key = u.provider + u.window, saved = u.source === 'tenant' && u.limit !== null ? String(u.limit) : ''
+                    const v = (limits[key] ?? saved).trim()
+                    // Save needs a whole number that differs from what is saved; a blank field never clears (the separate Clear does).
+                    const canSave = /^[0-9]+$/.test(v) && v !== saved
+                    return (
+                      <>
+                        <button aria-label={`Save ${u.provider} ${u.window} credit limit`} className="underline disabled:opacity-40 disabled:no-underline" disabled={!canSave} onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: Number(v) } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Save</button>
+                        {u.limit !== null && <button aria-label={`Clear ${u.provider} ${u.window} credit limit`} className="underline" onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: null } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Clear</button>}
+                      </>
+                    )
+                  })()}
+                </>
+              )}
+            </div>
+          ))}
+        </div>
       )}
       {data.audit.length > 0 && (
         <div className="mt-4 text-xs text-[#555]">

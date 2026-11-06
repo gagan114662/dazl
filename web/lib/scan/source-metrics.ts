@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3'
+import { asDb, type DbLike } from '../db/client.ts'
 
 // Source-run quality metrics: which collectors actually produce leads that survive the
 // pipeline, carry an ICP grade, and draw replies. Built only on recorded provenance
@@ -38,21 +38,25 @@ export interface SourceMetrics {
   strong_fit_threshold: number
 }
 
-export function sourceMetrics(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): SourceMetrics {
-  const runs = db.prepare(`
+// On the Db layer (#354): the route reads it on SQLite or Postgres; a raw better-sqlite3 handle is wrapped on the same
+// connection. Engine-neutral SQL: 'any run unknown' is MAX over a 0/1 CASE (Postgres has no MAX(boolean)), and each SUM
+// is cast back to BIGINT (Postgres sums BIGINT as NUMERIC, which the driver returns as a string).
+export async function sourceMetrics(d: DbLike, tenantId: string, now = Math.floor(Date.now() / 1000)): Promise<SourceMetrics> {
+  const db = asDb(d)
+  const runs = await db.all<{ collector: string; jobs: number; candidates: number | null; candidates_unknown: number; verified: number | null; verified_unknown: number; inserted: number | null }>(`
     SELECT r.collector AS collector,
            COUNT(DISTINCT r.job_id) AS jobs,
-           SUM(r.candidate_count) AS candidates,
-           MAX(r.candidate_count IS NULL) AS candidates_unknown,
-           SUM(r.verified_count) AS verified,
-           MAX(r.verified_count IS NULL) AS verified_unknown,
-           SUM(r.inserted_count) AS inserted
+           CAST(SUM(r.candidate_count) AS BIGINT) AS candidates,
+           MAX(CASE WHEN r.candidate_count IS NULL THEN 1 ELSE 0 END) AS candidates_unknown,
+           CAST(SUM(r.verified_count) AS BIGINT) AS verified,
+           MAX(CASE WHEN r.verified_count IS NULL THEN 1 ELSE 0 END) AS verified_unknown,
+           CAST(SUM(r.inserted_count) AS BIGINT) AS inserted
     FROM scan_source_runs r JOIN scan_jobs j ON j.id = r.job_id
     WHERE j.user_id = ? GROUP BY r.collector
-  `).all(tenantId) as { collector: string; jobs: number; candidates: number | null; candidates_unknown: number; verified: number | null; verified_unknown: number; inserted: number | null }[]
+  `, [tenantId])
 
   const cutoff = now - REPLY_WINDOW_S
-  const outcomes = db.prepare(`
+  const outcomes = await db.all<{ collector: string; leads: number; icp_graded: number; strong_fit: number; recent_leads: number; outreach_started: number; replied: number }>(`
     SELECT s.collector AS collector,
            COUNT(DISTINCT s.lead_id) AS leads,
            COUNT(DISTINCT CASE WHEN l.fit IS NOT NULL THEN s.lead_id END) AS icp_graded,
@@ -65,7 +69,7 @@ export function sourceMetrics(db: Database.Database, tenantId: string, now = Mat
     JOIN scan_jobs j ON j.id = l.scan_job_id
     LEFT JOIN sequences q ON q.lead_id = s.lead_id AND q.tenant_id = j.user_id
     WHERE j.user_id = ? GROUP BY s.collector
-  `).all(STRONG_FIT, cutoff, tenantId) as { collector: string; leads: number; icp_graded: number; strong_fit: number; recent_leads: number; outreach_started: number; replied: number }[]
+  `, [STRONG_FIT, cutoff, tenantId])
 
   const byCollector = new Map<string, SourceMetricRow>()
   for (const r of runs) {
