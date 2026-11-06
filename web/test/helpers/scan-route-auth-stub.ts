@@ -3,4 +3,4 @@
 const lines = new Map<string, string>()
 export function setSellerLine(userId: string, line: string): void { lines.set(userId, line) }
 export function getAuthDb(): null { return null }
-export function sellerProfile(_db: unknown, userId?: string): string { return (userId && lines.get(userId)) || '' }
+export async function readSellerLine(_db: unknown, userId?: string): Promise<string> { return (userId && lines.get(userId)) || '' }

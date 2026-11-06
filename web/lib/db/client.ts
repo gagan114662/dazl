@@ -277,7 +277,7 @@ export function getDb(): Promise<Db> {
     if (url) return pgDb({ connectionString: url })
     // The app's store with every module's sqlite migrate*() (lib/db/sqlite-migrations.ts, all idempotent). Not through
     // lib/scan/service.ts: that module needs next/headers, so plain-Node callers (scripts, tests) could not open the store.
-    const { getAuthDb } = await import('../auth-db.ts')
+    const { getAuthDb } = await import('./sqlite-store.ts')
     const { migrateAllSqlite } = await import('./sqlite-migrations.ts')
     const raw = getAuthDb()
     migrateAllSqlite(raw)

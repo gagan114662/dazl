@@ -1,70 +1,12 @@
-import Database from 'better-sqlite3'
 import { createHash, randomBytes } from 'crypto'
-import path from 'path'
 import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
-import { BACKFILL_SQL, WORKSPACE_DDL, createPersonalWorkspace, resolveMembership } from './workspaces.ts'
-import { AUDIT_DDL } from './audit.ts'
+import { createPersonalWorkspace, resolveMembership } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
-import { INVITATIONS_DDL } from './workspace-members.ts'
-import { EMAIL_TOKENS_DDL } from './email-ownership.ts'
-import { OUTBOX_DDL } from './system-mail.ts'
-import { SEEN_EVERY_S, SESSION_COLUMNS, SESSION_INDEXES, newPublicId } from './sessions.ts'
+import { SEEN_EVERY_S, newPublicId } from './sessions.ts'
 
-
-let db: Database.Database | null = null
-
-export function getAuthDb(): Database.Database {
-  if (db) return db
-  db = new Database(process.env.DB_PATH || path.join(process.cwd(), '..', '..', 'dazl-data', 'app.db'))
-  db.pragma('journal_mode = WAL')
-  migrateAuth(db)
-  return db
-}
-
-export function migrateAuth(d: Database.Database): void {
-  d.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      name TEXT,
-      business_name TEXT,
-      sells TEXT,
-      website TEXT,
-      password_hash TEXT NOT NULL,
-      salt TEXT NOT NULL,
-      created_at INTEGER DEFAULT (unixepoch())
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      created_at INTEGER DEFAULT (unixepoch()),
-      expires_at INTEGER NOT NULL
-    );
-  `)
-  try { d.exec('ALTER TABLE users ADD COLUMN sells TEXT') } catch { /* exists */ }
-  try { d.exec('ALTER TABLE users ADD COLUMN website TEXT') } catch { /* exists */ }
-  try { d.exec('ALTER TABLE users ADD COLUMN buyer_profile TEXT') } catch { /* exists */ }
-  // The workspace this session acts in (lib/workspaces.ts); NULL: the default one. PG: 0015_workspaces.sql.
-  try { d.exec('ALTER TABLE sessions ADD COLUMN active_tenant_id TEXT') } catch { /* exists */ }
-  // Session inventory and revocation (lib/sessions.ts). PG: 0021_session_inventory.sql.
-  for (const c of SESSION_COLUMNS) { try { d.exec(c) } catch { /* exists */ } }
-  const unnamed = d.prepare('SELECT id FROM sessions WHERE public_id IS NULL').all() as { id: string }[]
-  const name = d.prepare('UPDATE sessions SET public_id = ? WHERE id = ?')
-  d.transaction(() => { for (const r of unnamed) name.run(newPublicId(), r.id) })()
-  d.exec('UPDATE sessions SET authed_at = coalesce(created_at, 0) WHERE authed_at IS NULL')
-  d.exec(SESSION_INDEXES)
-  // Email ownership and recovery (lib/email-ownership.ts); Google accounts are backfilled in migrateOauth.
-  try { d.exec('ALTER TABLE users ADD COLUMN email_verified_at INTEGER') } catch { /* exists */ }
-  d.exec(EMAIL_TOKENS_DDL)
-  d.exec(OUTBOX_DDL)
-  // Durable audit trail (lib/audit.ts). PG: 0041_audit_events.sql.
-  d.exec(AUDIT_DDL)
-  d.exec(WORKSPACE_DDL)
-  d.exec(INVITATIONS_DDL)
-
-  d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()
-}
+// The auth schema's SQLite half and the store opener live in lib/db/sqlite-store.ts (engine code, #354).
+export { migrateAuth } from './db/sqlite-store.ts'
 
 // Sessions are stored as a SHA-256 digest; the raw token only lives in the cookie.
 export function hashToken(token: string): string {
@@ -116,8 +58,7 @@ export async function createPasswordUser(u: { id: string; email: string; name: s
 }
 
 // What the seller sells + their site, collected once on the home page. Used to aim ICP inference.
-// Each profile read and write exists twice: sync on the raw handle (callers not yet on Db) and async on Db (SQLite or
-// Postgres). Both run the same SQL and the same normalisation below, so they cannot drift apart.
+// On the Db layer (SQLite or Postgres), with the normalisation below applied on every read and write.
 const SELLER_SQL = 'SELECT sells, website FROM users WHERE id = ?'
 const BUYER_SQL = 'SELECT buyer_profile FROM users WHERE id = ?'
 const SET_BUYER_SQL = 'UPDATE users SET buyer_profile = ? WHERE id = ?'
@@ -129,52 +70,28 @@ const seller = (r: SellerRow) => ({ sells: r?.sells ?? '', website: r?.website ?
 const cleanName = (name: string) => name.replace(/\s+/g, ' ').trim().slice(0, 150)
 const sellerLine = (p: { sells: string; website: string }) => [p.sells, p.website].filter(Boolean).join(' - ').slice(0, 300)
 
-export function getSellerProfile(db: Database.Database, userId: string): { sells: string; website: string } {
-  return seller(db.prepare(SELLER_SQL).get(userId) as SellerRow)
-}
 export async function readSellerProfile(db: Db, userId: string): Promise<{ sells: string; website: string }> {
   return seller(await db.get<NonNullable<SellerRow>>(SELLER_SQL, [userId]))
 }
 
 // Who the seller sells to, as reviewed in onboarding: a normalized Icp stored as JSON (validated by the caller with
 // normalizeIcp). Read back through normalizeIcp too, so a stored row can never return fields the profile does not allow.
-export function getBuyerProfile(db: Database.Database, userId: string): string | null {
-  return (db.prepare(BUYER_SQL).get(userId) as { buyer_profile: string | null } | undefined)?.buyer_profile ?? null
-}
 export async function readBuyerProfile(db: Db, userId: string): Promise<string | null> {
   return (await db.get<{ buyer_profile: string | null }>(BUYER_SQL, [userId]))?.buyer_profile ?? null
-}
-
-export function setBuyerProfile(db: Database.Database, userId: string, json: string | null): void {
-  db.prepare(SET_BUYER_SQL).run(json, userId)
 }
 export async function writeBuyerProfile(db: Db, userId: string, json: string | null): Promise<void> {
   await db.run(SET_BUYER_SQL, [json, userId])
 }
 
-export function getBusinessName(db: Database.Database, userId: string): string {
-  return (db.prepare(NAME_SQL).get(userId) as { business_name: string | null } | undefined)?.business_name ?? ''
-}
 export async function readBusinessName(db: Db, userId: string): Promise<string> {
   return (await db.get<{ business_name: string | null }>(NAME_SQL, [userId]))?.business_name ?? ''
-}
-
-export function setBusinessName(db: Database.Database, userId: string, name: string): void {
-  db.prepare(SET_NAME_SQL).run(cleanName(name), userId)
 }
 export async function writeBusinessName(db: Db, userId: string, name: string): Promise<void> {
   await db.run(SET_NAME_SQL, [cleanName(name), userId])
 }
 
-export function sellerProfile(db: Database.Database, userId: string): string {
-  return sellerLine(getSellerProfile(db, userId))
-}
 export async function readSellerLine(db: Db, userId: string): Promise<string> {
   return sellerLine(await readSellerProfile(db, userId))
-}
-
-export function setSellerProfile(db: Database.Database, userId: string, sells: string, website: string): void {
-  db.prepare(SET_SELLER_SQL).run(sells.slice(0, 150), website.slice(0, 200), userId)
 }
 export async function writeSellerProfile(db: Db, userId: string, sells: string, website: string): Promise<void> {
   await db.run(SET_SELLER_SQL, [sells.slice(0, 150), website.slice(0, 200), userId])
