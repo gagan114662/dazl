@@ -100,6 +100,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'monitors/[id]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'read' },
   { path: 'monitors/[id]', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'monitors/[id]', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
+  { path: 'mcp', method: 'POST', auth: 'public', note: 'scoped discovery API (MCP, #392): a workspace API token as Bearer, SHA-256 looked up, revocable, scoped and re-checked against the creator\'s current role on every call; rate limited per IP and per token; OFF unless DAZL_API_TOKENS=1. Two-tenant test: helpers/api-tokens-route-runtime.mts' },
   { path: 'monitors', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'plays/[kind]/[id]/runs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'read' },
   { path: 'preview/[token]/google', method: 'GET', auth: 'public', note: 'continue-with-Google for a preview claim: a validated, live one-time claim token gates the handoff; foreign, expired or unknown tokens redirect, never reach Google, and no input URL is redirected to' },
@@ -166,6 +167,9 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/advanced', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/advanced', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'settings/api-tokens', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'settings/api-tokens', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'settings/api-tokens', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/api-tokens-route-runtime.mts' }, role: 'configure' },
   { path: 'settings/calcom', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/calcom', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
 

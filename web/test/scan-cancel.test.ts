@@ -62,7 +62,9 @@ test('leads page adopts a pending/running scan on load so a reload shows progres
 test('status poll is passive only for explicit ?passive=1 (adoption resumes the queue)', async () => {
   const fs = await import('node:fs')
   const route = fs.readFileSync(new URL('../app/api/scan/status/route.ts', import.meta.url), 'utf8')
-  assert.match(route, /passive'\) !== '1'\) after\(/)
+  assert.match(route, /kick: req\.nextUrl\.searchParams\.get\('passive'\) !== '1'/)
+  // the payload (and the kick) live in lib/scan/status-payload.ts, shared with the scoped API (#392), which never kicks
+  assert.match(fs.readFileSync(new URL('../lib/scan/status-payload.ts', import.meta.url), 'utf8'), /job\.status === 'pending' && o\.kick\) after\(/)
   const ui = fs.readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
   assert.match(ui, /passive=1/)
   assert.match(ui, /passiveJob\.current = false; setJobId\(j\.job_id\)/)

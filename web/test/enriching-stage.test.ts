@@ -75,7 +75,8 @@ test('history and status: begin/end are conditional on this attempt owning a don
 
 test('status route, jobs route and the leads page use the effective status', async () => {
   const fs = await import('node:fs'); const rd = (p: string) => fs.readFileSync(new URL(p, import.meta.url), 'utf8')
-  assert.match(rd('../app/api/scan/status/route.ts'), /status: effectiveStatus\(job\)/); assert.match(rd('../app/api/scan/status/route.ts'), /enrichment: \{ state: enrichState\(job\)/)
+  // the status route's payload is built in lib/scan/status-payload.ts (shared with the scoped API, #392)
+  assert.match(rd('../lib/scan/status-payload.ts'), /status: effectiveStatus\(job\)/); assert.match(rd('../lib/scan/status-payload.ts'), /enrichment: \{ state: enrichState\(job\)/)
   // The jobs route serves historyJobs (lib/scan/history-jobs.ts), which maps the effective status (behaviour: test/history-jobs.test.ts).
   assert.match(rd('../app/api/scan/jobs/route.ts'), /historyJobs\(/); assert.match(rd('../lib/scan/history-jobs.ts'), /status: effectiveStatus\(j\)/)
   const ui = rd('../app/app/leads/leads-client.tsx')

@@ -40,6 +40,11 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- b/392-discovery-api (#392, Refs): scoped workspace API tokens (SHA-256 stored, scopes read/scan re-checked against the
+  creator's current role, revocable, expiring, rate limited, per-token daily scans + forced max_usd) and a stateless MCP
+  endpoint `POST /api/mcp` (list_scans, get_scan, get_leads, list_monitors, get_profile, start_scan; no send/CRM tool). OFF unless
+  DAZL_API_TOKENS=1 (owner decides). Migration 0050. Not built: OAuth for ChatGPT's connector UI, writing monitors over the API,
+  settings UI, the #372 benchmark. docs/design/discovery-api.md.
 - b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
   policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
   comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
