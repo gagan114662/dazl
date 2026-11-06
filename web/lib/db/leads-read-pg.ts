@@ -11,7 +11,7 @@ import { eventTimingFresh } from '../events/store.ts'
 import type { CompanyEventRow, EventScope, EventType } from '../events/store.ts'
 import { groupUnderlyingEvents, scoreEvidence } from '../events/prioritize.ts'
 import type { LeadPriority } from '../events/prioritize.ts'
-import { tokens, MIN_COHORT } from '../scan/lookalike.ts'
+import { tokens, sharedTokens, sameLabel, MIN_COHORT } from '../scan/lookalike.ts'
 import type { LookalikeSignal } from '../scan/lookalike.ts'
 import { sameAccount, type FeedbackRow } from '../scan/feedback.ts'
 import { displayStopReason } from '../outreach/lifecycle.ts'
@@ -92,7 +92,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
     async listLeads(userId, jobId, limit = 200, includeHidden = false) {
       const { rows } = await pg.query(
         `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.evidence_translation, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
            l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
          FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
@@ -250,11 +250,9 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
         const on = new Set<string>()
         for (const c of cohortTok) {
           let hit = false
-          let shared = 0
-          for (const t of lt) if (c.tok.has(t)) shared++
-          if (shared >= 2) { hit = true; on.add('signal keywords') }
-          if (l.industry && c.row.industry && l.industry === c.row.industry) { hit = true; on.add('industry') }
-          if (l.location && c.row.location && l.location === c.row.location) { hit = true; on.add('location') }
+          if (sharedTokens(lt, c.tok) >= 2) { hit = true; on.add('signal keywords') } // same rule as lib/scan/lookalike.ts (#391: any script)
+          if (sameLabel(l.industry, c.row.industry)) { hit = true; on.add('industry') }
+          if (sameLabel(l.location, c.row.location)) { hit = true; on.add('location') }
           if (hit) matches++
         }
         out.set(l.id, { state: 'scored', cohort_size: cohort.length, matches, matched_on: [...on] })

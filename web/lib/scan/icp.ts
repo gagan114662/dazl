@@ -18,6 +18,10 @@ export interface Icp {
   // request was searched as if it were American. ISO 3166-1 alpha-2 (PT) and ISO 639-1 (pt); absent means unknown.
   country?: string
   language?: string
+  // Several markets in one request (#391: "Tokyo, Dubai and Pune" was searched as ONE country and ONE language, so two of the
+  // three markets were never visited). Each market is a place with its own country and publishing language; the search runs
+  // bounded per-market tasks (lib/search/markets.ts). Absent or a single entry: the country/language pair above is the market.
+  markets?: Market[]
   // Source-backed seller research (#379): per-offer buyer hypotheses with verbatim quotes, URLs and fetch times,
   // reviewed/rejected corrections and the one answered targeting question. Persisted INSIDE this JSON (no schema
   // change); the total serialized size is bounded by ICP_JSON_BUDGET. Never trusted as fact: only sourced/reviewed
@@ -126,6 +130,25 @@ export function budgetedIcp(icp: Icp): IcpBudget {
   return { ok: true, icp: out, json: JSON.stringify(out) }
 }
 
+export interface Market { where: string; country?: string; language?: string }
+export const MAX_MARKETS = 3
+// Validates a markets list: at most MAX_MARKETS, each a place (2-60 chars) with an ISO country and/or language, duplicates
+// (same place) dropped. Only lists of 2+ markets are kept: one market is just country/language.
+export function normalizeMarkets(raw: unknown): Market[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: Market[] = []
+  for (const m of raw.slice(0, 8) as Record<string, unknown>[]) {
+    if (!m || typeof m !== 'object') continue
+    const where = clean(m.where, 60)
+    const country = isoCountry(m.country)
+    const language = typeof m.language === 'string' && /^[A-Za-z]{2}$/.test(m.language.trim()) ? m.language.trim().toLowerCase() : null
+    if (where.length < 2 || (!country && !language) || out.some(o => o.where.toLowerCase() === where.toLowerCase())) continue
+    out.push({ where, ...(country ? { country } : {}), ...(language ? { language } : {}) })
+    if (out.length === MAX_MARKETS) break
+  }
+  return out.length >= 2 ? out : undefined
+}
+
 export const MAX_QUERY = 600
 const caps = { summary: 300, who: 6, industries: 6, sizes: 4, where: 6, signals: 8, exclude: 6, item: 160 }
 
@@ -159,11 +182,12 @@ export function normalizeIcp(raw: unknown): Icp | null {
   const language = typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()) ? r.language.trim().toLowerCase() : null
   const win = typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365 ? r.window_days : null
   const research = normalizeResearch(r.research)
+  const markets = normalizeMarkets(r.markets)
   // A lookalike block that is present but malformed refuses the whole profile: a scan must never run without the
   // supplied-account exclusions its profile claims to carry.
   const lookalike = normalizeLookalike(r.lookalike === null ? undefined : r.lookalike)
   if (lookalike === null) return null
-  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}) }
+  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(markets ? { markets } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}) }
 }
 
 export function icpPrompt(query: string, seller?: string): string {
@@ -173,7 +197,7 @@ Request: ${JSON.stringify(query.slice(0, MAX_QUERY))}${seller ? `\nWhat their co
 
 Work out the ideal customer profile. Do not ask questions. Fill in what the request leaves open, but NEVER widen, reinterpret or add to a constraint the request states: a funding stage ("seed" stays seed, never add Series A or later), company size, place, time window, role and exclusions are kept exactly as written. If the request names a place, keep it in "where". If it names no place, leave "where" empty.
 Reply with ONLY one JSON object, no prose, with these keys:
-{"summary": one sentence describing the buyer they want, "who": up to ${caps.who} roles or kinds of buyer, "industries": up to ${caps.industries} industries or [], "sizes": up to ${caps.sizes} company sizes (like "1-10 employees") or [], "where": up to ${caps.where} places or [], "signals": up to ${caps.signals} public events that show someone is likely to buy right now (hiring, funding, expansion, complaints about a competitor, a new launch, a permit, and so on), "exclude": up to ${caps.exclude} kinds of result to skip, "country": the ISO 3166-1 alpha-2 code of the one country the buyers are in (like "US", "PT", "IN") or "" if not one country, "language": the ISO 639-1 code of the language those buyers publish their web pages in (like "en", "pt", "hi") or ""}`
+{"summary": one sentence describing the buyer they want, "who": up to ${caps.who} roles or kinds of buyer, "industries": up to ${caps.industries} industries or [], "sizes": up to ${caps.sizes} company sizes (like "1-10 employees") or [], "where": up to ${caps.where} places or [], "signals": up to ${caps.signals} public events that show someone is likely to buy right now (hiring, funding, expansion, complaints about a competitor, a new launch, a permit, and so on), "exclude": up to ${caps.exclude} kinds of result to skip, "country": the ISO 3166-1 alpha-2 code of the one country the buyers are in (like "US", "PT", "IN") or "" if not one country, "language": the ISO 639-1 code of the language those buyers publish their web pages in (like "en", "pt", "hi") or "", "markets": when the request names places in MORE than one country or language, one entry per place, up to ${MAX_MARKETS}, each {"where": the place as the request writes it, "country": its ISO 3166-1 alpha-2 code, "language": the ISO 639-1 code its businesses publish in}, else []}`
 }
 
 export function parseIcp(text: string): Icp | null {
@@ -246,7 +270,7 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
   const allowed = (st: Stage) => (want.size === 0 || want.has(st)) && !notWant.has(st)
   // A model mention is bad if ANY stage in its span is not allowed: "Seed or later" under a seed-only request names A..E too.
   const bad = (m: Mention) => !m.excluded && span(m.stage, m.later).some(st => !allowed(st))
-  const fallback = (): Icp => { const f = fallbackIcp(query); return { ...f, ...(icp.country ? { country: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}), ...(icp.window_days ? { window_days: icp.window_days } : {}) } }
+  const fallback = (): Icp => { const f = fallbackIcp(query); return { ...f, ...(icp.country ? { country: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}), ...(icp.markets ? { markets: icp.markets } : {}), ...(icp.window_days ? { window_days: icp.window_days } : {}) } }
   // Remove offending mentions plus the separator that joined them ("seed / Series A", "seed or Series A, Series B").
   const trim = (t: string): string => {
     let out = t

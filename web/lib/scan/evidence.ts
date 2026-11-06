@@ -1,6 +1,7 @@
 import { isRecruitingInbox } from '../recruiting-inbox.ts'
 import type { Page } from './fetch-page.ts'
 import { classifySource } from './source-quality.ts'
+import { LEGAL_WORDS, foldText } from '../text/multilingual.ts'
 
 export interface Candidate {
   name: string
@@ -15,6 +16,10 @@ export interface Candidate {
   event_date_proof_note?: string | null // the short sanitized reason for the proof (<= 200 chars); never a page quote or user text
   published_at?: string | null // the page's publication day (label only; never the event date)
   timing_note?: string | null // how the date was read from the page, or a season/"soon" label with no date (scan/page-timing.ts)
+  // #391 in-scan identity (scan/dedup-scope.ts): set by code only, never parsed from model output. dedup_domain: the website the cited page itself states
+  // for the company; dedup_scope: the suffix that keeps same-name companies apart when their domains or countries differ (absent: today's name key).
+  dedup_domain?: string | null
+  dedup_scope?: string | null
 }
 
 export type Verdict =
@@ -29,8 +34,14 @@ export const MIN_CONFIDENCE = 55
 export const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{M}\p{N}@.+ ]+/gu, ' ').replace(/\s+/g, ' ').trim()
 
 const SUFFIXES = new Set(['inc', 'incorporated', 'ltd', 'limited', 'llc', 'corp', 'corporation', 'co', 'company', 'the', 'plc', 'llp', 'lp'])
+// Legal forms of the #391 languages are dropped like Inc/Ltd (株式会社サイボウズ and サイボウズ株式会社 are one company; شركة and
+// प्राइवेट लिमिटेड are not part of a name). The kept words are NOT otherwise folded: the verifier compares this key with norm()
+// of the page, so it must stay in norm()'s own form.
+const UNSPACED_LEGAL = ['株式会社', '有限会社', '合同会社', '合資会社', '合名会社']
 export function companyKey(company: string): string {
-  const words = norm(company).replace(/[.@+]/g, ' ').split(' ').filter(w => w && !SUFFIXES.has(w))
+  let n = norm(company)
+  for (const a of UNSPACED_LEGAL) n = n.split(a).join(' ')
+  const words = n.replace(/[.@+]/g, ' ').split(' ').filter(w => w && !SUFFIXES.has(w) && !LEGAL_WORDS.has(foldText(w)) && w !== '株' && w !== '有')
   return words.join(' ')
 }
 
@@ -243,8 +254,14 @@ export function supportedEvidenceWindow(claim: { company: string; signal: string
   return best ? best.trim() : null
 }
 
-export function dedupKey(c: { company: string; name: string }): string {
+// The name part of the key (company key, else the person's name). Evidence bookkeeping (run report, source credits) pairs it with the URL.
+export function dedupBaseKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)
+}
+// The in-scan identity of a lead: the name key, plus the scope (#391) when same-name companies in one scan must stay apart.
+export function dedupKey(c: { company: string; name: string; dedup_scope?: string | null }): string {
+  const base = dedupBaseKey(c)
+  return typeof c.dedup_scope === 'string' && c.dedup_scope ? `${base}${c.dedup_scope}` : base
 }
 
 function parseDay(s: string | null): Date | null {

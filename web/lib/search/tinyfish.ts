@@ -250,9 +250,15 @@ export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], sp
 // business announces an opening in Portuguese, not English.
 const LANG_NAMES: Record<string, string> = { en: 'English', pt: 'Portuguese', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', nl: 'Dutch', hi: 'Hindi', mr: 'Marathi', ja: 'Japanese', zh: 'Chinese', ko: 'Korean', ar: 'Arabic', pl: 'Polish', sv: 'Swedish', tr: 'Turkish', id: 'Indonesian' }
 export const queryPrompt = (query: string, icp: unknown, max: number) => {
-  const i = icp as { language?: string; window_days?: number; exclude?: string[] } | null
+  const i = icp as { language?: string; window_days?: number; exclude?: string[]; markets?: { where: string; country?: string; language?: string }[] } | null
   const lang = i?.language
-  const langLine = lang && lang !== 'en' ? `\nThe buyers publish in ${LANG_NAMES[lang] ?? `the language with ISO code "${lang}"`}: write at least half of the queries in that language, using the words a local business would use on its own site or in local news.` : ''
+  const name = (l: string) => LANG_NAMES[l] ?? `the language with ISO code "${l}"`
+  // Several markets (#391): each market's queries in that market's own language and naming its place; the original-language
+  // words (names, roles, places as written there) are kept, never only an English translation.
+  const markets = Array.isArray(i?.markets) && i.markets.length >= 2 ? i.markets.slice(0, 3) : []
+  const langLine = markets.length
+    ? `\nThe request covers ${markets.length} markets: ${markets.map(m => `${JSON.stringify(m.where)}${m.language ? ` (${name(m.language)})` : ''}`).join(', ')}. Write queries for EVERY market, each naming exactly one of these places, in the language that market's businesses publish in, using the words a local business would use on its own site or in local news (keep names and roles in their original script).`
+    : lang && lang !== 'en' ? `\nThe buyers publish in ${name(lang)}: write at least half of the queries in that language, using the words a local business would use on its own site or in local news.` : ''
   // The search itself is limited to the user's window (see windowAfter); say so, so the model does not pad queries with dates.
   const win = typeof i?.window_days === 'number' && i.window_days >= 1 ? `the last ${i.window_days} days` : 'the last year'
   const skip = (i?.exclude ?? []).filter(x => typeof x === 'string' && x.trim()).slice(0, 6)

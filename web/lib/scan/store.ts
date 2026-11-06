@@ -180,6 +180,8 @@ function addColumns(db: Database.Database): void {
   // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
   add('leads', 'event_date_proof', "TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured'))")
   add('leads', 'event_date_proof_note', 'TEXT CHECK (event_date_proof_note IS NULL OR length(event_date_proof_note) <= 200)')
+  // #391: the model's English gloss of evidence_excerpt (the original-language quote), shown beside it on the lead card. Never evidence: the verifier and every gate read the original only.
+  add('leads', 'evidence_translation', 'TEXT CHECK (evidence_translation IS NULL OR length(evidence_translation) <= 400)')
   widenWhyCap(db)
   backfillKindTags(db)
 }
@@ -332,7 +334,7 @@ function allWithHeldFallback(db: Database.Database, sql: { held: string; plain: 
 export function listLeads(db: Database.Database, userId: string, jobId: string, limit = 200, includeHidden = false) {
   const plain =
       `SELECT l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.evidence_translation, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id

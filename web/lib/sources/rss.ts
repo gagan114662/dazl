@@ -1,4 +1,5 @@
 import type { Evidence, SourceAdapter } from './types.ts'
+import { mentionsKeyword } from './keywords.ts'
 
 // RSS 2.0 and Atom. Same job as the feedparser backend in Agent Reach, written as a tiny parser with no dependency.
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
@@ -46,8 +47,7 @@ export const rssAdapter: SourceAdapter = {
       if (r.status !== 200) { note?.('http_error'); continue }
       if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
       for (const e of parseFeed(r.body)) {
-        const hay = e.title.toLowerCase()
-        if (keywords.length === 0 || keywords.some(k => hay.includes(k))) out.push({ source: 'rss', ...e })
+        if (mentionsKeyword(e.title, keywords)) out.push({ source: 'rss', ...e }) // script-aware (#391): an Arabic or Hindi title is matched in its own script and by alias
       }
     }
     return out.slice(0, 30)

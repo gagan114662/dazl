@@ -1,4 +1,5 @@
 import type { Evidence, SourceAdapter } from './types.ts'
+import { mentionsKeyword } from './keywords.ts'
 
 // V2EX public topics. Keyword search goes through sov2ex.com, a third-party search service
 // (the keywords are sent to it). When that is down the adapter falls back to the official
@@ -77,8 +78,7 @@ export const v2exAdapter: SourceAdapter = {
       else {
         try {
           const topics = (JSON.parse(hot.body) as { id: number; title?: string; content?: string; created?: number }[]).map(t => ({ id: t.id, title: t.title ?? '', content: t.content ?? '', created: t.created ?? 0 }))
-          const kws = keywords.map(k => k.toLowerCase())
-          items = toEvidence(topics.filter(t => kws.some(k => `${t.title} ${t.content}`.toLowerCase().includes(k))), keywords)
+          items = toEvidence(topics.filter(t => mentionsKeyword(`${t.title} ${t.content}`, keywords)), keywords)
         } catch { noting('unparseable'); items = [] }
       }
     }

@@ -15,8 +15,9 @@ export const COUNTERPARTY = 'counterparty_signal'
 export const UNDATED = 'undated'   // a verified lead with no event date when the request has a window: held later as outside_window_undated unless a dated source for the same company turns up
 export const MAX_FALLBACK = 3
 export const FALLBACK_CONNECTOR = 'scan:fallback'
-export interface Held { company: string; signal: string; source_url: string; review_reason?: string | null }
-export interface FallbackTarget { company: string; reason: string; url: string; query: string }
+export interface Held { company: string; signal: string; source_url: string; review_reason?: string | null; dedup_scope?: string | null }
+// key: the held row's in-scan identity (dedupKey, #391 scope included), so a rescue replaces exactly that row and never a same-name company kept apart from it
+export interface FallbackTarget { company: string; reason: string; url: string; query: string; key?: string }
 export interface FallbackNote { company: string; key: string; reason: string; blocked_url: string; via_url: string }
 const BLOCKED_FETCH: Record<string, string> = { blocked: 'blocked_by_site', js_required: 'needs_javascript' }
 
@@ -38,9 +39,10 @@ export function fallbackTargets(review: Held[], where: string[], undated: Held[]
   const out: FallbackTarget[] = [], seen = new Set<string>()
   for (const r of [...review, ...undated.map(u => ({ ...u, review_reason: UNDATED }))]) {
     if (!r.review_reason || !(BLOCKED_REASONS.has(r.review_reason) || r.review_reason === COUNTERPARTY || r.review_reason === UNDATED)) continue
-    const k = companyKey(r.company); if (!k || seen.has(k)) continue
+    if (!companyKey(r.company)) continue
+    const k = dedupKey({ company: r.company, name: '', dedup_scope: r.dedup_scope }); if (seen.has(k)) continue
     seen.add(k)
-    out.push({ company: r.company, reason: r.review_reason, url: r.source_url, query: `"${r.company.replace(/["\n]/g, ' ').trim()}" ${r.signal.slice(0, 60)} ${(where[0] ?? '').split(',')[0]}`.replace(/\s+/g, ' ').trim().slice(0, 150) })
+    out.push({ company: r.company, key: k, reason: r.review_reason, url: r.source_url, query: `"${r.company.replace(/["\n]/g, ' ').trim()}" ${r.signal.slice(0, 60)} ${(where[0] ?? '').split(',')[0]}`.replace(/\s+/g, ' ').trim().slice(0, 150) })
     if (out.length >= MAX_FALLBACK) break
   }
   return out
@@ -53,7 +55,7 @@ export function mergeFallback<L extends { company: string; source_url: string },
   extra: { leads: L[]; dropped: Record<string, number>; quotes?: Map<string, { url: string; excerpt: string; date: string | null }[]> },
   targets: FallbackTarget[],
 ): FallbackNote[] {
-  const wanted = new Map(targets.map(t => [companyKey(t.company), t]))
+  const wanted = new Map(targets.map(t => [t.key ?? companyKey(t.company), t]))
   const notes: FallbackNote[] = []
   const have = new Set(outcome.leads.map(l => dedupKey(l as never)))
   for (const l of extra.leads) {
@@ -95,7 +97,7 @@ export function recordRecovery(db: Database.Database, job: { id: string; user_id
   const find = db.prepare("SELECT id FROM leads WHERE scan_job_id = ? AND (dedup_key = ? OR dedup_key = ?)")
   const done = new Set(rescued.map(n => n.key))
   for (const t of targets) {
-    const key = companyKey(t.company); if (done.has(key)) continue
+    const key = t.key ?? companyKey(t.company); if (done.has(key)) continue
     try {
       const row = find.get(job.id, key, `review:${key}`) as { id: string } | undefined; if (!row) continue
       const what = t.reason === UNDATED ? 'a dated source' : t.reason === 'quote_unconfirmed' ? 'a page that carries the quote' : t.reason === COUNTERPARTY ? 'a source about the company itself' : 'a readable source'

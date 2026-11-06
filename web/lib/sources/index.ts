@@ -10,6 +10,7 @@ import { safeGet } from './http.ts'
 import { isAdvPlatform } from '../advanced/config.ts'
 import { compoundHalves, halvesBlock } from '../scan/halves.ts'
 import { flatProfile } from '../scan/icp.ts'
+import { keywordsFor } from './keywords.ts'
 
 export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter, jobboards: jobBoardsAdapter, brreg: brregAdapter }
 export const isAdapterId = (v: unknown): v is string => typeof v === 'string' && Object.hasOwn(ADAPTERS, v)
@@ -31,10 +32,12 @@ export function normalizeSources(raw: unknown): SourceSelection | null {
   return advanced.length ? { adapters, feeds, pages, advanced } : { adapters, feeds, pages }
 }
 
-const STOP = new Set(['looking', 'find', 'companies', 'company', 'people', 'who', 'that', 'with', 'from', 'have', 'just', 'recently', 'their', 'they', 'in', 'for', 'and', 'the'])
-export function keywordsFor(query: string): string[] {
-  return [...new Set(query.toLowerCase().split(/[^a-z0-9+#.-]+/).filter(w => w.length >= 4 && !STOP.has(w)))].slice(0, 6)
-}
+export { keywordsFor, mentionsKeyword } from './keywords.ts'
+
+// Items are in many languages (#391). The quoted passage stays in the item's own language: it is what the verifier finds on
+// the page. A translation may ride beside it for the reader, linked to that original passage and URL, and is never evidence.
+export const EXCERPT_LANGUAGE_RULE = `
+Copy "excerpt" in the language and script the item is written in; never translate it. When that language is not English you may add "excerpt_en": an English translation of that same passage (shown beside the original, never used as evidence).`
 
 // Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.
 export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout' | 'partial' | `partial:${string}` | 'skipped_out_of_coverage'; evidence: number | null; notes?: Record<string, number> } // partial: the source answered but some of it could not be read; never the same as a healthy empty
@@ -85,8 +88,8 @@ Ideal customer profile: ${JSON.stringify(flatProfile(icp))}
 Items (index, source, url, title, text, date): ${JSON.stringify(items.map((e, i) => ({ i, source: e.source, url: e.url, title: e.title, text: e.quote, date: e.date })))}
 
 Pick only items that show a company or person matching the profile with a recent buying signal. Use only these items. Do not invent anything.${halves ? halvesBlock(halves) : ''}
-Reply with ONLY a JSON array, no prose. Each item: {"name": person or "", "company": string, "contact": null, "signal": one sentence on why they are a lead, "source_url": the exact url of the item, "excerpt": ONE passage of 20-300 characters copied character-for-character from that item's text (no paraphrase, no "..." inside, no fixing typos) that names the company and shows the signal, "event_date": the item's date as YYYY-MM-DD or null, "score": 0-100 fit}.
-One item can name several companies (a list or a round-up): return each matching company separately, each with its own passage. Return [] if nothing fits.`
+Reply with ONLY a JSON array, no prose. Each item: {"name": person or "", "company": string, "contact": null, "signal": one sentence on why they are a lead, "source_url": the exact url of the item, "excerpt": ONE passage of 20-300 characters copied character-for-character from that item's text (no paraphrase, no "..." inside, no fixing typos) that names the company and shows the signal, "event_date": the item's date as YYYY-MM-DD or null, "website": the company's own website domain (like \"acme.com\") only when the item's text states it, else null, "score": 0-100 fit}.
+One item can name several companies (a list or a round-up): return each matching company separately, each with its own passage. Return [] if nothing fits.${EXCERPT_LANGUAGE_RULE}`
 }
 
 // Canonical form used to match a model-returned source_url back to a collected item (same rule as parseLeads).

@@ -4,9 +4,12 @@
 //
 // Requests are not only English (Instinct review: Portuguese and Hindi probes produced no direct queries). Hiring words,
 // list separators and filler words below cover English, Portuguese, Spanish, French, German, Italian, Dutch and Hindi
-// (Devanagari and romanized). Word boundaries are Unicode-aware: \b is ASCII-only, and Devanagari vowel signs are marks.
+// (Devanagari and romanized), and since #391 Arabic and Japanese. Word boundaries are Unicode-aware: \b is ASCII-only, and
+// Devanagari vowel signs are marks. Japanese is written without spaces, so its hiring words (採用, 募集, 求人) match without
+// word boundaries and its text is cut into words at script changes (lib/text/multilingual.ts).
+import { UNSPACED, segmentUnspaced } from '../text/multilingual.ts'
 const L = '\\p{L}\\p{M}\\p{N}'
-const word = (alts: string) => new RegExp(`(?<![${L}])(?:${alts})(?![${L}])`, 'iu')
+const word = (alts: string, unbounded = '') => new RegExp(`(?<![${L}])(?:${alts})(?![${L}])${unbounded ? `|(?:${unbounded})` : ''}`, 'iu')
 export const HIRING = word([
   'hiring|hire[sd]?|jobs?|roles?|openings?|positions?|recruit\\p{L}*|vacanc\\p{L}+', // en
   'contrat(?:a|am|ar|ando|amos|ação|acao)|vagas?|recrutamento|recrutando|recrutar|empregos?|procura(?:m)?-se|procuramos|admite-se|admitimos', // pt
@@ -16,8 +19,9 @@ export const HIRING = word([
   'assum(?:e|iamo|ono)|cerchiamo|offerte di lavoro|posizioni aperte', // it
   'vacatures?|wij zoeken', // nl
   'भर्ती|नौकरी|नौकरियां|नौकरियाँ|रिक्ति|रिक्तियां|रिक्तियाँ|naukri|bharti', // hi
-].join('|'))
-const SEPARATOR = new RegExp(`,|;|/|(?<![${L}])(?:or|and|ou|o|y|e|et|oder|und|या|और)(?![${L}])`, 'u')
+  'توظيف|توظف|يوظف|يوظفون|نوظف|وظائف|وظيفة|وظيفه|شاغرة|شاغره|شواغر|مطلوب|مطلوبون', // ar
+].join('|'), '採用|募集|求人|中途採用|新卒採用') // ja (unspaced)
+const SEPARATOR = new RegExp(`,|;|/|،|、|・|(?<![${L}])(?:or|and|ou|o|y|e|et|oder|und|या|और|أو|او)(?![${L}])|または|及び|および`, 'u')
 const NOISE = new Set([
   // en
   'find', 'finds', 'looking', 'look', 'for', 'with', 'that', 'the', 'and', 'who', 'from', 'have', 'has', 'their', 'they', 'are', 'was', 'were', 'recently', 'recent', 'just', 'newly', 'new', 'posted', 'post', 'posts', 'posting', 'postings', 'companies', 'company', 'people', 'person', 'employees', 'employee', 'staff', 'hiring', 'hire', 'hired', 'hires', 'job', 'jobs', 'role', 'roles', 'open', 'opening', 'openings', 'position', 'positions', 'team', 'remote', 'small', 'mid', 'size', 'sized', 'business', 'businesses', 'smbs', 'smb', 'any', 'all', 'some', 'near', 'based', 'into', 'about', 'also', 'more', 'than', 'least', 'between', 'over', 'under', 'this', 'last', 'week', 'weeks', 'month', 'months', 'days', 'day', 'year', 'years', 'signal', 'signals', 'buying', 'intent', 'one', 'two', 'three', 'ten', 'hundred', 'to', 'or', 'a', 'an', 'of', 'in', 'at', 'on', 'is', 'be', 'by', 'as', 'it', 'its', 'we', 'us', 'our', 'up', 'do', 'if', 'no', 'not',
@@ -34,9 +38,17 @@ const NOISE = new Set([
   'aziende', 'azienda', 'cerca', 'cerchiamo', 'assume', 'assumono', 'bedrijven', 'vacature', 'vacatures', 'zoeken',
   // hi (Devanagari and romanized)
   'में', 'के', 'की', 'का', 'लिए', 'भर्ती', 'नौकरी', 'नौकरियां', 'कंपनियां', 'कंपनी', 'रिक्ति', 'naukri', 'bharti', 'ke', 'ki', 'liye', 'mein',
+  'करने', 'वाली', 'वाले', 'रही', 'रहे', 'रहा', 'है', 'हैं', 'जो', 'कर', 'ढूंढो', 'ढूंढें', 'खोजें', 'नई', 'नया', 'हाल', 'ही',
+  // ar
+  'في', 'من', 'على', 'إلى', 'الى', 'عن', 'مع', 'التي', 'الذي', 'شركات', 'شركة', 'الشركات', 'ابحث', 'أبحث', 'نبحث', 'تبحث', 'حديثا', 'مؤخرا', 'جديد', 'جديدة',
+  'توظيف', 'توظف', 'يوظف', 'يوظفون', 'نوظف', 'وظائف', 'وظيفة', 'وظيفه', 'شاغرة', 'شاغره', 'شواغر', 'مطلوب', 'مطلوبون',
+  // ja (words after script segmentation; hiragana particles are already dropped)
+  '採用', '募集', '求人', '中途採用', '新卒採用', '会社', '企業', '最近', '探', '探す', '新規',
 ])
 const ONE_HOSTS = ['(site:boards.greenhouse.io OR site:job-boards.greenhouse.io)', '(site:jobs.ashbyhq.com OR site:jobs.lever.co)']
-const tokens = (text: string) => text.toLowerCase().split(new RegExp(`[^${L}+#&]+`, 'u')).filter(Boolean)
+const tokens = (text: string) => text.toLowerCase().split(new RegExp(`[^${L}+#&]+`, 'u')).filter(Boolean).flatMap(t => UNSPACED.test(t) ? segmentUnspaced(t) : [t])
+// Words of an unspaced script are joined without a space (営業 + マネージャー = 営業マネージャー, as the page writes it).
+const joinPhrase = (ws: string[]) => ws.reduce((acc, w, i) => i === 0 ? w : acc + (UNSPACED.test(ws[i - 1]) && UNSPACED.test(w) ? '' : ' ') + w, '')
 // Role PHRASES, not loose words. "a payroll, HR or office manager job" used to become (payroll OR hr OR office OR manager),
 // and the lone word "manager" matched every manager posting in the state. The request is split at list separators
 // (comma, slash, or/and in the languages above); in each part the last run of kept words is one phrase ("office manager"),
@@ -59,16 +71,22 @@ function phrasesIn(text: string, places: Set<string>): string[] {
   for (const part of text.toLowerCase().split(SEPARATOR)) {
     if (!part) continue
     if ((FUNDING.test(part) || OPENING.test(part)) && !HIRING.test(part)) continue
-    let run: string[] = []; let last: string[] = []
+    let run: string[] = []; let last: string[] = []; let objectOfHiring: string[] = []
     for (const w of tokens(part)) {
       const keep = [...w].length >= 2 && !/^\d+$/.test(w) && !NOISE.has(w) && !places.has(w) && !JOINERS.has(w)
       if (keep) run.push(w)
       else if (run.length && JOINERS.has(w)) run.push(w)
-      else { while (run.length && JOINERS.has(run[run.length - 1])) run.pop(); if (run.length) last = run; run = [] }
+      else {
+        while (run.length && JOINERS.has(run[run.length - 1])) run.pop()
+        // Japanese puts the object before the verb (セールスマネージャーを採用): the run right before a hiring word is the role.
+        if (run.length && UNSPACED.test(w) && HIRING.test(w) && !objectOfHiring.length) objectOfHiring = run
+        if (run.length) last = run; run = []
+      }
     }
     while (run.length && JOINERS.has(run[run.length - 1])) run.pop()
     if (run.length) last = run
-    if (last.length) out.push(last.slice(-3).join(' '))
+    if (objectOfHiring.length) last = objectOfHiring
+    if (last.length) out.push(joinPhrase(last.slice(-3)))
   }
   return out
 }
@@ -88,7 +106,7 @@ const REQ = '(?:need|needs|needed|require[sd]?|requiring|must|ensure|make sure|w
   'preciso|precisamos|necessito|necesito|necesitamos|besoin|brauche|benötige|ho bisogno|ik heb nodig)'
 const lead = `(?:(?:i|we|please|por favor|s'il vous plaît)\\s+)?`
 const REQ_CLAUSE = new RegExp(`(?<![${L}])${lead}${REQ}(?![${L}])([^.;!?\\n]*)`, 'giu')
-const WINDOW_CLAUSE = new RegExp(`(?<![${L}])(?:in|within|over|during|from|nos?|em|dans|innerhalb|binnen)?\\s*(?:the\\s+)?(?:past|last|ultimos?|últimos?|derniers?|letzten?|laatste)\\s+\\d+\\s*\\p{L}+|(?<![${L}])within\\s+\\d+\\s*\\p{L}+`, 'giu')
+const WINDOW_CLAUSE = new RegExp(`(?<![${L}])(?:in|within|over|during|from|nos?|em|dans|innerhalb|binnen)?\\s*(?:the\\s+)?(?:past|last|ultimos?|últimos?|derniers?|letzten?|laatste)\\s+\\d+\\s*\\p{L}+|(?<![${L}])within\\s+\\d+\\s*\\p{L}+|(?:पिछले|خلال|آخر|過去|直近)\\s*[\\d\\u0660-\\u0669\\u0966-\\u096f]+\\s*[\\p{L}\\p{M}]+(?:\\s+(?:में|الماضية|الماضيه|الأخيرة))?`, 'giu')
 // Negation and exclusion are CLAUSE-level (Instinct re-reviews of #220). The request is cut into segments at sentence
 // punctuation, commas, and conjunctions that open a NEW clause (the conjunction is followed within two words by a hiring word
 // or a negation/exclusion cue: "no contratan recepcionista Y contratan gerente", "not agencies BUT hiring a manager"; a

@@ -12,11 +12,12 @@ export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed
 
 // A person's check of the source can turn these into a usable lead (#352: Home, the Leads view and the draft gate agree):
 //   - dazl could not read or check the page: quote_unconfirmed, blocked_by_site, needs_javascript, login_required, location_unconfirmed;
+//   - dazl cannot tell which of two same-named companies in one scan the page is about (#391 ambiguous_same_name): the person reading it can;
 //   - the evidence a person can affirm by reading the source: no_event_evidence, no_sales_hiring_evidence, source_review_required, self_description,
 //     trial_budget_reached (found before a free scan's checks ran out), legacy_currentness_review;
 //   - a date a person can vouch for ("I checked the date - use it"): event_timing_unconfirmed, event_date_bad_date, event_date_future_date, event_date_stale.
 // Under a time window none of them is reviewable: the window hold survives confirmation (researchCause gives undated / older).
-export const REVIEWABLE: ReadonlySet<string> = new Set(['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'location_unconfirmed',
+export const REVIEWABLE: ReadonlySet<string> = new Set(['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'location_unconfirmed', 'ambiguous_same_name',
   'no_event_evidence', 'no_sales_hiring_evidence', 'source_review_required', 'self_description', 'trial_budget_reached', 'legacy_currentness_review',
   'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_future_date', 'event_date_stale',
   'first_party_signal']) // #390: the tenant's own signed, consented event; the owner reviews it like any held lead (other gates still apply)
