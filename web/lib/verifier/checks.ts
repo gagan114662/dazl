@@ -1,15 +1,17 @@
-// Deterministic checks of the independent evidence verifier (#780, part of #395). decide() is a pure function of the
-// claim and the verifier's OWN source snapshots (how those snapshots get fetched is a separate PR's concern - here
-// they are passed in directly, so tests use bounded, injected fixtures and no PR in this scope makes a network or
-// paid call). No model judge is involved: every check here is a deterministic read of text already in hand. Unknown
-// is never pass; a fail is a concrete contradiction on the source (a different city, a future or stale day); a source
-// the verifier could not read makes the checks that need it unknown, never fail.
+// Deterministic checks of the independent evidence verifier (#780/#781, part of #395). decide() is a pure function of
+// the claim and the verifier's OWN source snapshots (how those snapshots get fetched is a separate PR's concern -
+// here they are passed in directly, so tests use bounded, injected fixtures and no PR in this scope makes a network
+// or paid call). No model judge is involved: every check here is a deterministic read of text already in hand.
+// Unknown is never pass; a fail is a concrete contradiction on the source (a different city, a future or stale day,
+// a former employee, a hiring inbox); a source the verifier could not read makes the checks that need it unknown,
+// never fail.
 //
-// Scope (#780 only): claim well-formedness, company identity, domain binding, place, event date, cross-source date
-// conflicts, and quote corroboration (verbatim text matching, no model judge - quotes are deterministic exactly like
-// company/place/date, so they belong here, not #782). Person/contact-route checks are #781's; independent-
-// confirmation/provenance-dependency tracking and semantic-predicate judging are #782's - left out so this PR's diff
-// matches its own title.
+// Scope (#780+#781 only): claim well-formedness, company identity, domain binding, place, event date, cross-source
+// date conflicts, and quote corroboration (verbatim text matching, no model judge - quotes are deterministic exactly
+// like company/place/date, so they belong here, not #782) (#780); person (current employer/title, former-role
+// rejected) and contact-route (on its own cited source, on the company's domain, not a generic/hiring inbox) (#781).
+// Independent-confirmation/provenance-dependency tracking and semantic-predicate judging are #782's - left out so
+// this PR's diff matches its own title.
 import type { LeadClaim } from './claim.ts'
 import { datesIn, fold, isoDay, isStamp, registrable, sentenceAt, tokenPositions } from './text.ts'
 
@@ -31,15 +33,39 @@ export interface DecideInput { claim: LeadClaim; problems: string[]; sources: Sn
 
 export const CHECK_VERSIONS = {
   claim_well_formed: 1, company_on_source: 1, domain_bound: 1, place_on_source: 1, event_date_on_source: 1, sources_agree: 1,
-  quote_on_source: 1,
+  quote_on_source: 1, person_current: 1, contact_on_source: 1, contact_domain: 1, contact_not_recruiting: 1,
 } as const
 type CheckId = keyof typeof CHECK_VERSIONS
 const r = (check: CheckId, subject: string, status: Status, reason: string): CheckResult => ({ check, version: CHECK_VERSIONS[check], subject, status, reason })
 
 const ANNOUNCED = /(?<![\p{L}])(will|plans? to|planning to|is set to|are set to|set to open|upcoming|scheduled|expected to|intends? to|aims? to|later this year|next (?:week|month|year)|coming soon|announc\w*|opening for)(?![\p{L}])/u
+const FORMER = /(?<![\p{L}])(?:(?:former|formerly|previously|departed|left (?:the company|in (?:19|20)\d{2}|to join)|retired|alumn(?:us|a|i)|used to|until (?:19|20)\d{2}|no longer)(?![\p{L}])|ex-(?=\p{L}))/u
+// A bare "was <title>" copula states a past, ended role; "was named/appointed/promoted/elected/made <title>" announces
+// a CURRENT appointment (common recent-hire phrasing) and must not be read as historical.
+const PAST_STATE = /(?<![\p{L}])was(?![\p{L}])(?!\s+(?:named|appointed|promoted|elected|hired|made)\b)/u
+// Hiring inboxes, matched on the mailbox name before any +tag: the whole name, or a recruiting base word followed by
+// a "._-"-delimited qualifier (careers-emea@, jobs-uk@, recruitment-team@, talent.acquisition@ and join-us@ are all
+// hiring inboxes; hrishi@ and jobsworth@, which merely start with "hr"/"jobs" with no delimiter after, are not).
+const RECRUITING = /^(?:jobs?|careers?|recruit(?:ing|ment|ers?)?|talent(?:acquisition|team)?|hr|humanresources|people(?:ops|team)?|hiring|apply|applications?|applicants?|cvs?|resumes?|joinus|join(?:theteam)?|workwithus|work|vacanc(?:y|ies)|staffing)(?:[._-].*)?$/
+export const isRecruitingMailbox = (email: string) => RECRUITING.test((email.split('@')[0] ?? '').split('+')[0].toLowerCase())
+
+// Complete email tokens in folded text, boundary-aware: "joann@harborledger.example" must never satisfy a claimed
+// "ann@harborledger.example" (a raw substring check would accept it as a prefix match, and would equally accept
+// "ann@harborledger.example.evil" as a suffix match) - each match is the FULL contiguous address, compared for exact
+// equality, never containment.
+const EMAIL_TOKEN = /(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,}(?![\p{L}\p{N}-])/gu
+const emailsIn = (folded: string): string[] => [...folded.matchAll(EMAIL_TOKEN)].map(m => m[0])
 
 const PASSAGE = 250
 const near = (a: number[], b: number[], d = PASSAGE) => a.some(x => b.some(y => Math.abs(x - y) <= d))
+// The comma/semicolon/sentence-delimited clause around position i: "Priya Raman, formerly VP at OldCo, is now CRO at
+// Harbor Ledger Analytics" is three clauses - a former-role marker in one clause must not taint a current-role claim
+// bound to a different clause of the same sentence.
+const clauseAt = (folded: string, i: number): string => {
+  const start = Math.max(folded.lastIndexOf(',', i), folded.lastIndexOf(';', i), folded.lastIndexOf('. ', i), folded.lastIndexOf('\n', i), -1)
+  const stops = [folded.indexOf(',', i), folded.indexOf(';', i), folded.indexOf('. ', i), folded.indexOf('\n', i)].filter(x => x >= 0)
+  return folded.slice(start + 1, stops.length ? Math.min(...stops) : folded.length).trim()
+}
 
 interface Read { s: Snapshot; folded: string }
 export function decide(x: DecideInput): CheckResult[] {
@@ -164,6 +190,51 @@ export function decide(x: DecideInput): CheckResult[] {
     out.push(found ? r('quote_on_source', `quote:${i}`, 'pass', 'the quote is on the cited source verbatim')
       : r('quote_on_source', `quote:${i}`, e.s.truncated ? 'unknown' : 'fail', `the quote is not on ${q.source_url}`))
   })
+
+  // 8. Person: named on the source, with the claimed title AND the claimed company both bound to that SAME name
+  // occurrence (not title anywhere near the name and company anywhere on the page, independently - that lets an
+  // unrelated company mention elsewhere, or someone else's title at a different employer, satisfy this), and not
+  // described as a former holder of the role - a "formerly"/"until 20xx"/"ex-" marker or a bare past-tense "was
+  // <title>" copula fails, never passes. Former-role wording is scoped to the title's OWN clause, so "formerly VP at
+  // OldCo, is now CRO at Harbor Ledger Analytics" does not taint the current, separately-clausal claim.
+  if (claim.person) {
+    const p = claim.person
+    const e = need(p.source_url, 'person_current', 'person')
+    if (!isRead(e)) out.push(e)
+    else {
+      const nameAt = tokenPositions(e.folded, p.name)
+      const titleAt = tokenPositions(e.folded, p.title)
+      const companyAt = tokenPositions(e.folded, claim.company)
+      if (!nameAt.length) out.push(r('person_current', 'person', e.s.truncated ? 'unknown' : 'fail', `${p.name} is not named on ${p.source_url}`))
+      else {
+        const bound = nameAt.find(i => near([i], titleAt) && near([i], companyAt))
+        if (bound === undefined) {
+          out.push(r('person_current', 'person', 'unknown', `the title "${p.title}" and "${claim.company}" are not both next to ${p.name} on the source`))
+        } else {
+          const boundTitleAt = titleAt.filter(t => near([t], [bound]))
+          const titleClauses = boundTitleAt.map(t => clauseAt(e.folded, t))
+          const formerClause = titleClauses.find(c => FORMER.test(c) || PAST_STATE.test(c))
+          out.push(formerClause ? r('person_current', 'person', 'fail', `the source describes ${p.name}'s "${p.title}" as a past role ("${formerClause.slice(0, 120)}")`)
+            : r('person_current', 'person', 'pass', `${p.name}, ${p.title}, at ${claim.company}, on the source with no former-role marker`))
+        }
+      }
+    }
+  }
+
+  // 9. Contact route: the address is printed on its cited source, on the company's own domain, and is not a generic
+  // hiring/recruiting inbox (a buyer route, not a job application address).
+  if (claim.contact) {
+    const c = claim.contact
+    const mailDomain = c.email.split('@')[1] ?? ''
+    out.push(isRecruitingMailbox(c.email) ? r('contact_not_recruiting', 'contact', 'fail', `${c.email.split('@')[0]}@ is a hiring inbox, not a buyer route`)
+      : r('contact_not_recruiting', 'contact', 'pass', 'not a hiring inbox'))
+    out.push(sameDomain(mailDomain) ? r('contact_domain', 'contact', 'pass', `the address is on ${claim.domain}`)
+      : r('contact_domain', 'contact', 'fail', `the address is on ${mailDomain}, not the company's domain ${claim.domain}`))
+    const e = need(c.source_url, 'contact_on_source', 'contact')
+    if (!isRead(e)) out.push(e)
+    else out.push(emailsIn(e.folded).includes(fold(c.email)) ? r('contact_on_source', 'contact', 'pass', 'the address is printed on its cited source')
+      : r('contact_on_source', 'contact', e.s.truncated ? 'unknown' : 'fail', `${c.source_url} does not show the address`))
+  }
 
   return out
 }
