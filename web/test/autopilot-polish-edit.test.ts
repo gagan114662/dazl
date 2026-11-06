@@ -131,3 +131,35 @@ test('DB invariant: a subject/body change that does not bump words_rev is refuse
   upd("UPDATE outreach_messages SET body = 'a bumped write, long enough to pass', words_rev = words_rev + 1 WHERE to_email = 'a@one.example'")
   upd("UPDATE outreach_messages SET subject = subject, body = body WHERE to_email = 'a@one.example'") // unchanged words need no bump
 })
+
+// Cross-process races outside the polish await (#929 review): another process edits the row right after createDraft
+// commits (before any separate word snapshot) or right after the post-polish read (before the expected authority is
+// computed). Simulated by performing the owner edit when autopilot next prepares its authority-inputs read (the Nth one).
+async function raceAt(model: string, nth: number) {
+  const db = await setup(); ok(db); warmed(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', KEY, master); lead(db, 'a@one.example')
+  const s = sendStub(NOW)
+  const prep = db.prepare.bind(db)
+  let seen = 0
+  ;(db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+    if (/SELECT m\.to_email, m\.subject, m\.body, m\.lead_id/.test(sql) && ++seen === nth) prep("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1 WHERE status = 'draft'").run(OWNER.subject, OWNER.body)
+    return prep(sql)
+  }
+  const providers = { anthropic: { complete: async () => model } }
+  const out = await runAutopilot(db, 'A', 'Acme', { ...s.d, providers } as never)
+  const row = prep("SELECT subject, body, status, approved_hash FROM outreach_messages WHERE to_email = 'a@one.example'").get() as { subject: string; body: string; status: string; approved_hash: string | null }
+  return { db, out, s, row }
+}
+
+for (const [name, model] of [['UNUSABLE', 'not usable'], ['USABLE', STALE]] as const) {
+  test(`owner edit right after createDraft commits (before any snapshot), model ${name}: never adopted, never overwritten, never sent`, async () => {
+    const { s, row } = await raceAt(model, 1)
+    assert.equal(s.calls.length, 0)
+    assert.deepEqual({ subject: row.subject, body: row.body, status: row.status, approved_hash: row.approved_hash }, { ...OWNER, status: 'draft', approved_hash: null })
+  })
+  test(`owner edit after the post-polish read (before expected authority), model ${name}: the owner words are not the expected authority, not sent`, async () => {
+    const { s, row } = await raceAt(model, 2)
+    assert.equal(s.calls.length, 0)
+    assert.equal(row.status, 'draft'); assert.equal(row.approved_hash, null)
+    assert.deepEqual({ subject: row.subject, body: row.body }, OWNER)
+  })
+}

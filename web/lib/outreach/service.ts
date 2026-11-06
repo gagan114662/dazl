@@ -255,6 +255,15 @@ export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: 
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
 }
+// The same, also returning the exact words it inserted, read inside the creating transaction (#929): autopilot binds
+// these as its own authority, never a later re-read that another process's edit could have reached first.
+export function createDraftWithWords(db: Database.Database, tenantId: string, leadId: string, businessName: string): { id: string; words: { subject: string; body: string; words_rev: number } } {
+  return db.transaction(() => {
+    const id = createDraftInner(db, tenantId, leadId, businessName)
+    const words = db.prepare('SELECT subject, body, words_rev FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { subject: string; body: string; words_rev: number }
+    return { id, words }
+  }).immediate()
+}
 
 // Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
 function draftChecks(db: Database.Database, tenantId: string, leadId: string) {

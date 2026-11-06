@@ -121,11 +121,12 @@ export async function polishDraft(db: Database.Database, tenantId: string, messa
   return r as PolishResult
 }
 // The same, also returning the words it wrote (autopilot binds them to tell its own polish from an owner edit, #929).
-export async function polishDraftWithWords(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult & { words?: { subject: string; body: string } }> {
+// baseRev: the words revision the caller bound (autopilot's inserted template); the polish starts only from that revision.
+export async function polishDraftWithWords(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}, baseRev?: number): Promise<PolishResult & { words?: { subject: string; body: string } }> {
   const p = pickProvider(db, tenantId, deps)
   if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
   const msg = db.prepare("SELECT m.id, m.words_rev, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string; words_rev: number } & LeadCtx & { id: string } | undefined
-  if (!msg) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
+  if (!msg || (baseRev !== undefined && msg.words_rev !== baseRev)) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
   let memory: Memory | null, r: ReturnType<typeof draftOffer>
   // The owner's claim authority (#402): a launch policy that binds the product truth record. An unreadable policy row
   // binds nothing here; under a launch the send gates stop on it (launchGate throws), and without one a person approves.

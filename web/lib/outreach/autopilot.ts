@@ -5,7 +5,7 @@ import { PUBLISHED_RECIPIENT_CANDIDATE_SQL } from './published-email.ts'
 import { draftClaimContextFor } from './service.ts'
 import { publishedContact } from './published-email.ts'
 import { gmailStatus } from '../gmail/oauth.ts'
-import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
+import { createDraft, createDraftWithWords, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
 import { readTenantOffer } from './play-memory.ts'
 import { tableExists } from './send-budget.ts'
 import { draftOffer } from '../scan/play-offer-text.ts'
@@ -316,6 +316,12 @@ const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).diges
 export function draftAuthority(db: Database.Database, tenantId: string, messageId: string): string | null {
   const a = authorityInputs(db, tenantId, messageId)
   return a && sha([CONSENT_VERSION, a.to_email, a.subject, a.body, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
+}
+// The authority for an explicit word set (#929): the live row supplies everything but the words, so autopilot's
+// expected authority is the words it wrote, never words re-read after another writer could have changed them.
+function draftAuthorityFor(db: Database.Database, tenantId: string, messageId: string, words: { subject: string; body: string }): string | null {
+  const a = authorityInputs(db, tenantId, messageId)
+  return a && sha([CONSENT_VERSION, a.to_email, words.subject, words.body, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
 }
 // The same, without the words: what a new draft's polish (which rewrites only the words) must leave unchanged.
 function draftContext(db: Database.Database, tenantId: string, messageId: string): string | null {
@@ -750,19 +756,25 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     let id: string
     let context: string | null
     let editedDuringPolish = false
+    let accepted: { subject: string; body: string; words_rev: number } | null = null
     try {
-      id = createDraft(db, tenantId, l.id, businessName)
+      // The words as autopilot drafted them, returned by the creating transaction itself (#929): no separate re-read an
+      // owner edit in another process could reach first. Anything else in the row afterwards is the owner's (or another
+      // writer's) edit: never adopted as autopilot's own authority.
+      const created = createDraftWithWords(db, tenantId, l.id, businessName)
+      id = created.id
+      const w0 = created.words
       context = draftContext(db, tenantId, id)
       // under a calibrated launch every model call reserves its worst case against the launch's spend cap first
       let refused: SpendStop | null = null
       const pd = gate.calibrated ? { ...d, providers: launchProviders((d as LlmDeps).providers ?? defaultProviders, db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, now, why => { refused = why }) } : d
-      // The words as autopilot drafted them, bound before the polish await (#929). Anything else in the row afterwards is
-      // the owner's (or another writer's) edit: never adopted as autopilot's own authority.
-      const w0 = draftWords(db, tenantId, id)
       let wrote: { subject: string; body: string; words_rev: number } | null = null
-      try { const pr = await polishDraftWithWords(db, tenantId, id, businessName, pd); if (pr.rewritten && pr.words && w0) wrote = { ...pr.words, words_rev: w0.words_rev + 1 } } catch { /* template stays */ }
+      try { const pr = await polishDraftWithWords(db, tenantId, id, businessName, pd, w0.words_rev); if (pr.rewritten && pr.words) wrote = { ...pr.words, words_rev: w0.words_rev + 1 } } catch { /* template stays */ }
+      // The one accepted word set: the polish's own write, else the inserted template. The row is compared with it, and
+      // the expected authority below is computed from it, not from the row.
+      accepted = wrote ?? w0
       const w1 = draftWords(db, tenantId, id)
-      if (!w0 || !w1 || !(sameWords(w1, w0) || (wrote !== null && sameWords(w1, wrote)))) editedDuringPolish = true
+      if (!w1 || !sameWords(w1, accepted)) editedDuringPolish = true
       if (refused) { const why: SpendStop = refused; attempt(() => audit(db, tenantId, 'held_spend', why, l.id, id)); tryPause(why); out.held++; out.stopped = why; return out }
     } catch (e) {
       // Recorded once per reason: a lead refused again for the same reason moves its skipped row's time instead of
@@ -778,8 +790,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     // An owner edit landed during the polish await: the draft goes back to the owner with their words untouched; autopilot
     // neither approves nor sends words the owner last wrote, and never treats them as the authority it drafted under.
     if (editedDuringPolish) { release(id, l.id, 'edited while autopilot was drafting: your words are kept, yours to approve'); continue }
-    const expected = draftAuthority(db, tenantId, id)
-    if (!context || !expected || draftContext(db, tenantId, id) !== context) { release(id, l.id); continue }
+    const expected = accepted && draftAuthorityFor(db, tenantId, id, accepted)
+    if (!context || !expected || draftAuthority(db, tenantId, id) !== expected || draftContext(db, tenantId, id) !== context) { release(id, l.id); continue }
     if (await deliver(id, l.id, 0, expected) === 'stop') return out
   }
   return out
