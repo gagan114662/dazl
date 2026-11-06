@@ -196,6 +196,27 @@ test('every audited route in the Covered table records its event, with the redac
   await step('re-open marked sent', t.O, ro({ action: 'mark_sent', thread_id: threads[2] }), [['O', 'reopen.mark_sent', 'thread', threads[2], {}]])
   assert.deepEqual(threads.map(th => (raw.prepare("SELECT status FROM reopen_messages WHERE tenant_id = 'A' AND thread_id = ?").get(th) as { status: string }).status), ['sent', 'skipped', 'sent'])
 
+  // ---- #371 review (2026-11-04T20:36:13Z): two real sessions race 'send' on the SAME draft. Operation identity is
+  // the atomic claim, not state read before/after: the loser must leave no 'reopen.send' event attributed to it, even
+  // though it sees the same 'draft' before and the winner's 'sent' after. Real route, real sessions, no sendFn stub.
+  const raceThread = hex()
+  raw.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at) VALUES (?, 'A', ?, 'info@lead5.example', 'Quick question for Lead Co 5', 'Hi, body text here for the first mail.', 'sent', ?)").run(hex(), leads[5], nowS - 86400 * 50)
+  raw.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at) VALUES ('A', ?, ?, ?, ?, ?, ?)").run(raceThread, leads[5], `info@lead5.example`, '<root-race@a-mail.example>', nowS - 40 * 86400, nowS - 40 * 86400)
+  await step('re-open drafted (race)', t.O, ro({ action: 'draft', thread_id: raceThread }), [])
+  const raceBefore = top()
+  const sendsBeforeRace = sends()
+  const [raceO, raceD] = await Promise.allSettled([as<Response>(t.O, ro({ action: 'send', thread_id: raceThread })), as<Response>(t.D, ro({ action: 'send', thread_id: raceThread }))])
+  const statuses = [raceO, raceD].map(r => r.status === 'fulfilled' ? r.value.status : -1)
+  assert.deepEqual(statuses.sort(), [200, 409], 'exactly one request wins the claim')
+  assert.equal(sends(), sendsBeforeRace + 1, 'exactly one Gmail call, however the claim races')
+  const raceEvents = raw.prepare('SELECT actor_id, action, summary FROM audit_events WHERE rowid > ? ORDER BY rowid').all(raceBefore) as { actor_id: string; action: string; summary: string }[]
+  assert.equal(raceEvents.length, 1, `exactly one reopen.send event, win or lose: ${JSON.stringify(raceEvents)}`)
+  assert.equal(raceEvents[0].action, 'reopen.send')
+  assert.deepEqual(JSON.parse(raceEvents[0].summary), { outcome: 'sent' })
+  const winner = statuses[0] === 200 ? 'O' : 'D'
+  assert.equal(raceEvents[0].actor_id, winner, 'the event is attributed to the winner, never the loser')
+  all.push([winner, 'reopen.send', 'thread', raceThread, { outcome: 'sent' }])
+
   // ---- autopilot: enable records the cap as applied (clamped to MAX_DAILY; the default when none is asked), not as asked
   const ap = (body: Record<string, unknown>) => () => autopilot.POST(post('/api/outreach/autopilot', body))
   const consent = { version: AUTOPILOT_CONSENT, attestations: [...ATTESTATIONS] }

@@ -49,7 +49,8 @@ export async function POST(req: NextRequest) {
         try { editReopen(db, user.tenantId, threadId, body.body) } catch (e) { if (!(e instanceof OutreachError) || (e as OutreachError).code !== 'not_editable') throw e }
       }
       const before = state()
-      try { await sendReopen(db, user.tenantId, threadId) } finally { await sendAudit(before) }
+      const claimedBy = { won: false }
+      try { await sendReopen(db, user.tenantId, threadId, { claimedBy }) } finally { if (claimedBy.won) await sendAudit(before) }
     }
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   } catch (e) {
