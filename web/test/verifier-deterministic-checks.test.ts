@@ -190,7 +190,7 @@ test('malformed claim (blindClaim): missing domain or event is a problem, not si
 
 test('blindClaim drops anything the producer sent beyond the allowlisted fields, by name only never by value', () => {
   const { claim, dropped } = blindClaim({ ...CLAIM, model: 'producer-model-x', rationale: 'trust me', verified: true, score: 97 })
-  assert.deepEqual(claim, CLAIM)
+  assert.deepEqual(claim, { ...CLAIM, predicates: [] }) // blindClaim always sets predicates (none requested: empty)
   assert.deepEqual(dropped, ['model', 'rationale', 'score', 'verified'])
 })
 

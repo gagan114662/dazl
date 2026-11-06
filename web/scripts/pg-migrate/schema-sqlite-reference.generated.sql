@@ -235,6 +235,22 @@ CREATE TABLE evidence_purge_audit (
 
 CREATE TABLE evidence_purge_gate (tenant_id TEXT PRIMARY KEY);
 
+CREATE TABLE evidence_verdicts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      claim_hash TEXT NOT NULL CHECK (length(claim_hash) = 64),
+      verifier_version TEXT NOT NULL CHECK (length(verifier_version) <= 40),
+      state TEXT NOT NULL CHECK (state IN ('running', 'done')),
+      verdict TEXT CHECK (verdict IS NULL OR verdict IN ('pass', 'fail', 'unknown')),
+      action TEXT CHECK (action IS NULL OR action IN ('accept', 'hold', 'skip')),
+      day TEXT NOT NULL CHECK (length(day) = 10),
+      reserved_micros INTEGER NOT NULL CHECK (reserved_micros >= 0),
+      spent_micros INTEGER CHECK (spent_micros IS NULL OR spent_micros >= 0),
+      created_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      record TEXT CHECK (record IS NULL OR length(record) <= 2000000)
+    );
+
 CREATE TABLE first_party_config_meta (
     tenant_id      TEXT PRIMARY KEY,
     retention_days INTEGER NOT NULL,
@@ -1176,6 +1192,10 @@ CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
 CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
 
+CREATE INDEX evidence_verdicts_tenant_claim ON evidence_verdicts (tenant_id, claim_hash, created_at);
+
+CREATE INDEX evidence_verdicts_tenant_day ON evidence_verdicts (tenant_id, day);
+
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);
 
 CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
@@ -1305,6 +1325,10 @@ CREATE TRIGGER evidence_purge_audit_no_delete BEFORE DELETE ON evidence_purge_au
 
 CREATE TRIGGER evidence_purge_audit_no_update BEFORE UPDATE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
 
+CREATE TRIGGER evidence_verdicts_final BEFORE UPDATE ON evidence_verdicts
+      WHEN OLD.state = 'done'
+      BEGIN SELECT RAISE(ABORT, 'evidence verdicts are final once done'); END;
+
 CREATE TRIGGER lead_enrichments_insert_seq AFTER INSERT ON lead_enrichments WHEN NEW.insert_seq IS NULL BEGIN UPDATE lead_enrichments SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM lead_enrichments) WHERE rowid = NEW.rowid; END;
 
 CREATE TRIGGER lead_evidence_copies_delete_only_expired BEFORE DELETE ON lead_evidence_copies
@@ -1396,6 +1420,8 @@ CREATE TRIGGER tomb_email_patterns BEFORE INSERT ON email_patterns BEGIN SELECT 
 CREATE TRIGGER tomb_email_tokens BEFORE INSERT ON email_tokens BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
 
 CREATE TRIGGER tomb_evidence_purge_audit BEFORE INSERT ON evidence_purge_audit BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_evidence_verdicts BEFORE INSERT ON evidence_verdicts BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_first_party_config_meta BEFORE INSERT ON first_party_config_meta BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
@@ -1588,6 +1614,8 @@ CREATE TRIGGER tomb_upd_email_patterns BEFORE UPDATE OF tenant_id ON email_patte
 CREATE TRIGGER tomb_upd_email_tokens BEFORE UPDATE OF user_id ON email_tokens BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_evidence_purge_audit BEFORE UPDATE OF tenant_id ON evidence_purge_audit BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_evidence_verdicts BEFORE UPDATE OF tenant_id ON evidence_verdicts BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_first_party_config_meta BEFORE UPDATE OF tenant_id ON first_party_config_meta BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

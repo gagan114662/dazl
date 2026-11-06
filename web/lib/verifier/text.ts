@@ -186,3 +186,18 @@ export function normalizeUrl(u: string): string {
     return `${x.hostname.toLowerCase().replace(/^www\./, '')}${x.pathname.replace(/\/+$/, '')}`
   } catch { return u.trim().toLowerCase() }
 }
+
+// 8-word shingles of the folded text; overlap of two pages' shingles relative to the smaller page (syndicated copies
+// share nearly all). Used only by provenanceGroups (checks.ts) to count copies of one source as one source.
+export function shingles(folded: string, k = 8): Set<string> {
+  const w = folded.replace(/[^\p{L}\p{N} ]+/gu, ' ').split(' ').filter(Boolean)
+  const out = new Set<string>()
+  for (let i = 0; i + k <= w.length; i++) out.add(w.slice(i, i + k).join(' '))
+  return out
+}
+export function overlap(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let n = 0
+  for (const x of a) if (b.has(x)) n++
+  return n / Math.min(a.size, b.size)
+}

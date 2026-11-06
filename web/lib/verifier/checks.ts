@@ -10,10 +10,11 @@
 // date conflicts, and quote corroboration (verbatim text matching, no model judge - quotes are deterministic exactly
 // like company/place/date, so they belong here, not #782) (#780); person (current employer/title, former-role
 // rejected) and contact-route (on its own cited source, on the company's domain, not a generic/hiring inbox) (#781).
-// Independent-confirmation/provenance-dependency tracking and semantic-predicate judging are #782's - left out so
-// this PR's diff matches its own title.
+// #395 (service.ts) adds: independent confirmation (copies of one source count once, provenanceGroups) and
+// predicate_judged, which only reads the judge samples service.ts recorded - decide() itself never calls a judge, so
+// it stays a pure, replayable function of the claim, the snapshots, the recorded samples and as_of.
 import type { LeadClaim } from './claim.ts'
-import { datesIn, fold, isoDay, isStamp, registrable, sentenceAt, tokenPositions } from './text.ts'
+import { datesIn, fold, isoDay, isStamp, normalizeUrl, overlap, registrable, sentenceAt, shingles, tokenPositions } from './text.ts'
 
 export type Status = 'pass' | 'fail' | 'unknown'
 export interface CheckResult { check: string; version: number; subject: string; status: Status; reason: string }
@@ -21,19 +22,28 @@ export interface CheckResult { check: string; version: number; subject: string; 
 // One cited source as the verifier itself read it.
 export interface Snapshot {
   url: string
-  outcome: 'ok' | 'error'
+  // service.ts's fetch outcomes: anything but 'ok' leaves the checks that need this source unknown, never fail.
+  outcome: 'ok' | 'error' | 'unauthorized' | 'timeout' | 'not_html' | 'budget'
   final_url: string | null
+  status?: number | null  // HTTP status as fetched (service.ts); not read by any check
   text: string            // visible text ('' unless ok)
   truncated: boolean      // text was cut at a length limit: an absence on it is unknown, not fail
   meta_days: string[]     // publication/modification days in the page's metadata
   linked_domains: string[]
+  canonical?: string | null // the page's declared canonical URL (normalized): one document under two URLs is one source
+  sha256?: string | null    // of the fetched body as received (service.ts), for the audit trail
 }
 
-export interface DecideInput { claim: LeadClaim; problems: string[]; sources: Snapshot[]; asOf: string; windowDays: number }
+// What the separately configured judge answered for one requested predicate (recorded by service.ts, replayed here).
+export interface JudgeSample { answer: 'yes' | 'no' | 'unclear' | 'timeout' | 'error'; cost_usd: number }
+export interface JudgeTrail { predicate: number; judge_id: string | null; refused: string | null; samples: JudgeSample[] }
+
+export interface DecideInput { claim: LeadClaim; problems: string[]; sources: Snapshot[]; judgements?: JudgeTrail[]; asOf: string; windowDays: number }
 
 export const CHECK_VERSIONS = {
   claim_well_formed: 1, company_on_source: 1, domain_bound: 1, place_on_source: 1, event_date_on_source: 1, sources_agree: 1,
   quote_on_source: 1, person_current: 1, contact_on_source: 1, contact_domain: 1, contact_not_recruiting: 1,
+  independent_confirmation: 1, predicate_judged: 1,
 } as const
 type CheckId = keyof typeof CHECK_VERSIONS
 const r = (check: CheckId, subject: string, status: Status, reason: string): CheckResult => ({ check, version: CHECK_VERSIONS[check], subject, status, reason })
@@ -65,6 +75,24 @@ const clauseAt = (folded: string, i: number): string => {
   const start = Math.max(folded.lastIndexOf(',', i), folded.lastIndexOf(';', i), folded.lastIndexOf('. ', i), folded.lastIndexOf('\n', i), -1)
   const stops = [folded.indexOf(',', i), folded.indexOf(';', i), folded.indexOf('. ', i), folded.indexOf('\n', i)].filter(x => x >= 0)
   return folded.slice(start + 1, stops.length ? Math.min(...stops) : folded.length).trim()
+}
+
+// Snapshots that share one origin: the same document (URL or declared canonical), the same site, or a near-verbatim
+// copy of the same text (syndication). Copies in one group are one source, however many URLs they have.
+export function provenanceGroups(sources: Snapshot[]): string[][] {
+  const ok = sources.filter(s => s.outcome === 'ok')
+  const parent = ok.map((_, i) => i)
+  const find = (i: number): number => parent[i] === i ? i : (parent[i] = find(parent[i]))
+  const sh = ok.map(s => shingles(fold(s.text)))
+  const keys = ok.map(s => new Set([normalizeUrl(s.url), normalizeUrl(s.final_url ?? s.url), ...(s.canonical ? [s.canonical] : [])]))
+  const site = ok.map(s => registrable(s.final_url ?? s.url))
+  for (let i = 0; i < ok.length; i++) for (let j = i + 1; j < ok.length; j++) {
+    const shared = [...keys[i]].some(k => keys[j].has(k))
+    if (shared || (site[i] && site[i] === site[j]) || overlap(sh[i], sh[j]) >= 0.6) parent[find(j)] = find(i)
+  }
+  const groups = new Map<number, string[]>()
+  ok.forEach((s, i) => { const g = find(i); groups.set(g, [...(groups.get(g) ?? []), s.url]) })
+  return [...groups.values()]
 }
 
 interface Read { s: Snapshot; folded: string }
@@ -178,6 +206,19 @@ export function decide(x: DecideInput): CheckResult[] {
     ? r('sources_agree', 'event', 'unknown', `${conflicts.map(c => c.s.url).join(', ')} date${conflicts.length > 1 ? '' : 's'} the event differently (${[...new Set(conflicts.flatMap(c => eventMentions(c).map(m => m.iso)))].join(', ')})`)
     : r('sources_agree', 'event', 'pass', 'no cited source dates the event differently'))
 
+  // 6b. Independent confirmation: the company's own site is a cited event source, or two sources of different origin
+  // each state the claimed day next to the company. Syndicated copies, one document under two URLs, and pages of one
+  // site count once. Fewer is unknown (hold), never fail: a single third-party report is not a contradiction.
+  const groups = provenanceGroups(x.sources.filter(s => eventUrls.includes(s.url)))
+  const firstParty = eventReads.filter(isRead).some(e => sameDomain(hostOf(e.s)))
+  const confirming = groups.filter(g => g.some(u => {
+    const e = eventReads.find((z): z is Read => isRead(z) && z.s.url === u)
+    return !!e && !!dateReal && eventMentions(e).some(m => m.iso === dateReal)
+  }))
+  out.push(firstParty ? r('independent_confirmation', 'event', 'pass', `the company's own site (${claim.domain}) is a cited source`)
+    : confirming.length >= 2 ? r('independent_confirmation', 'event', 'pass', `${confirming.length} sources of different origin state the event date`)
+      : r('independent_confirmation', 'event', 'unknown', `${confirming.length} independent origin(s) state the event date (${groups.length} origin(s) among ${eventUrls.length} cited URL(s)); copies of one source are one source`))
+
   // 7. Quotes: verbatim (case, quote marks, dashes and whitespace aside) on their own cited source, never trusted
   // from the producer's own excerpt. A "..." split inside the claimed text must occur in order, so a quote cannot be
   // assembled from two unrelated fragments - a fabricated or stitched-together quote fails, never passes.
@@ -235,6 +276,19 @@ export function decide(x: DecideInput): CheckResult[] {
     else out.push(emailsIn(e.folded).includes(fold(c.email)) ? r('contact_on_source', 'contact', 'pass', 'the address is printed on its cited source')
       : r('contact_on_source', 'contact', e.s.truncated ? 'unknown' : 'fail', `${c.source_url} does not show the address`))
   }
+
+  // 10. Requested predicates: judged by service.ts's separately configured judge; decide() only reads the recorded
+  // samples. Two agreeing usable answers, or unknown: no judge, a refused judge (not independent, unreadable source,
+  // budget), a disagreement, a timeout or an error all hold - never pass.
+  ;(claim.predicates ?? []).forEach((_, i) => {
+    const t = (x.judgements ?? []).find(j => j.predicate === i)
+    const answered = t?.samples.filter(s => s.answer === 'yes' || s.answer === 'no') ?? []
+    if (!t) out.push(r('predicate_judged', `predicate:${i}`, 'unknown', 'not judged'))
+    else if (t.refused) out.push(r('predicate_judged', `predicate:${i}`, 'unknown', t.refused))
+    else if (answered.length < 2) out.push(r('predicate_judged', `predicate:${i}`, 'unknown', `judge gave ${answered.length} usable answer(s) in ${t.samples.length} attempt(s) (${t.samples.map(s => s.answer).join(', ') || 'none'})`))
+    else if (answered.some(s => s.answer !== answered[0].answer)) out.push(r('predicate_judged', `predicate:${i}`, 'unknown', 'the judge disagreed with itself'))
+    else out.push(r('predicate_judged', `predicate:${i}`, answered[0].answer === 'yes' ? 'pass' : 'fail', `judge ${t.judge_id} answered ${answered[0].answer} twice`))
+  })
 
   return out
 }
