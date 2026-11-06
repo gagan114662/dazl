@@ -9,7 +9,7 @@ import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, type Enrichment } from './store.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
+import { emailGuessEnabled, personalAddresses, recordEmailGuesses } from '../people/email-pattern.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -399,7 +399,7 @@ const lastHit = new Map<string, number>()
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
 // buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
 // payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string }> {
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
@@ -418,7 +418,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
   if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
   const found = new Map<string, Found>(); let pages = 1
-  onPage?.(home.body)
+  onPage?.(home.body, home.finalUrl)
   for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
     if (stopped()) break
@@ -427,7 +427,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
     const r = await polite(origin + p, robots.delayMs)
     if (!r || r.status >= 400) continue
     pages++
-    onPage?.(r.body)
+    onPage?.(r.body, r.finalUrl)
     for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
   }
   // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
@@ -589,6 +589,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const guessing = emailGuessEnabled(deps.env ?? process.env)
     const localsBySite = new Map<string, Set<string>>()
+    const seenBySite = new Map<string, Map<string, { address: string; url: string }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
     let buyerRoles: string | undefined
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
@@ -600,7 +601,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (c.reason !== 'name_mismatch') return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? html => { for (const l of personalLocals(html, cand)) locals.add(l) } : undefined, buyerRoles)
+      const seen = new Map<string, { address: string; url: string }>(); seenBySite.set(cand, seen)
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? (html, url) => { for (const a of personalAddresses(html, cand)) { locals.add(a.local); if (!seen.has(a.address) && seen.size < 200) seen.set(a.address, { address: a.address, url }) } } : undefined, buyerRoles)
       siteRead.set(cand, r)
       return r
     }
@@ -672,7 +674,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
-      if (guessing && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where }) } catch { /* never affects the crawl */ } }
+      if (guessing && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
       let n = 0
       // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
       // instead of being swallowed by the first. For link bases source_url is the cited page holding the link; for name_probe it is only the

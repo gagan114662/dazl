@@ -23,6 +23,18 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
    - `candidateLabel` gives the only labels a guessed address may carry ("guessed", "guessed, verified", ...);
      "verified" also needs `checked_at`, `verifier` and `country_basis`. Never "published".
 
+4. **Free-first tiers (built).** Before any paid check, use what the confirmed site already prints:
+   - **published**: a person named on the site whose own address (any known format of their name) is printed on one of
+     the site's crawled pages. Stored exactly as printed (domain kept, never rebuilt), `tier = 'published'`, with
+     `source_url` = that page. Labelled "published" only with that page; otherwise "guessed". Never mailbox-checked.
+   - **pattern confidence**: `rankPattern` grades the learned format: `high` (2+ supporters, no rival format; score
+     90/95), `medium` (2+ supporters but a rival format also seen; score 70 x share), `low` (one supporting address;
+     score 35); a tie is no pattern. `email_patterns` stores `confidence`, `score`, `runner_up` and `evidence` (the
+     supporting addresses with the page each was printed on).
+   - **guessed** rows carry the pattern's `confidence`. Only `tier = 'guessed'` with `confidence = 'high'` is eligible for
+     the optional, capped (default 0) mailbox check. Medium and low stay "guessed". Same US-only gate for both tiers.
+   No extra fetches: addresses come from pages the crawl already reads (`crawlSite` hands each page's HTML and URL).
+
 ## Not done on purpose
 
 - **No provider is wired.** `verifierFromEnv` returns null. Picking a verification provider (and paying for it)
