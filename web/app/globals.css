@@ -109,7 +109,7 @@ body { font-size: 16px; line-height: 1.5; }
 .ask:focus-within { border-color: var(--ink); box-shadow: 0 0 0 4px rgba(138,77,255,.12), 0 10px 30px -18px rgba(44,0,42,.35); }
 .ask textarea { display: block; width: 100%; background: transparent; border: 0; outline: 0; resize: none; padding: 1.05rem 4.25rem 1.05rem 1.25rem; font-size: 1.05rem; line-height: 1.5; color: var(--ink); }
 .ask textarea::placeholder { color: var(--ink-3); }
-.app-ui .ask .send { padding: 0; position: absolute; right: .7rem; bottom: .7rem; width: 2.6rem; height: 2.6rem; border-radius: 999px; background: var(--ink); color: #fff; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, opacity .15s; }
+.app-ui .ask .send { padding: 0; position: absolute; right: .7rem; bottom: .6rem; width: 2.75rem; height: 2.75rem; /* #672: 44px touch target */ border-radius: 999px; background: var(--ink); color: #fff; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, opacity .15s; }
 .app-ui .ask .send:hover { background: #4a1347; }
 .app-ui .ask .send:disabled { opacity: .35; cursor: not-allowed; }
 
@@ -139,8 +139,12 @@ body { font-size: 16px; line-height: 1.5; }
 
 /* (i) info tooltips: caveats live here. Opens on hover, keyboard focus or click. */
 .infotip { position: relative; display: inline-flex; vertical-align: middle; }
-.infotip > button { width: 1.1rem; height: 1.1rem; border-radius: 999px; border: 1px solid var(--line-2); color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: #fff; }
-.infotip > button:hover, .infotip > button:focus-visible { border-color: var(--ink); color: var(--ink); outline: none; }
+/* #672: the button is a 44x44 hit area; the visible 1.1rem circle is drawn by ::before, and the negative margin keeps
+   the (i) taking the same 1.1rem of layout as before. */
+.infotip > button { position: relative; isolation: isolate; width: 2.75rem; height: 2.75rem; margin: -.825rem; border-radius: 999px; border: 0; color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: transparent; }
+.infotip > button::before { content: ""; position: absolute; inset: .825rem; z-index: -1; border-radius: 999px; border: 1px solid var(--line-2); background: #fff; }
+.infotip > button:hover, .infotip > button:focus-visible { color: var(--ink); outline: none; }
+.infotip > button:hover::before, .infotip > button:focus-visible::before { border-color: var(--ink); }
 .infotip > [role="tooltip"] { display: none; position: absolute; z-index: 40; left: 50%; top: calc(100% + .45rem); transform: translateX(-50%); width: min(22rem, 80vw); background: var(--ink); color: #fff; font-size: .78rem; font-weight: 400; font-style: normal; line-height: 1.45; text-align: left; padding: .7rem .85rem; border-radius: 12px; box-shadow: 0 12px 28px -8px rgba(44,0,42,.45); white-space: normal; letter-spacing: 0; text-transform: none; }
 .infotip > [role="tooltip"] a { color: #fff; text-decoration: underline; }
 .infotip[data-open="true"] > [role="tooltip"], .infotip:hover > [role="tooltip"], .infotip:focus-within > [role="tooltip"] { display: block; }
