@@ -132,6 +132,8 @@ async function keyboardCheck(page, key) {
   await page.focus('.skip-link'); await page.keyboard.press('Enter')
   if (!(await page.evaluate(() => location.hash === '#main' && !!document.getElementById('main')))) fail(key, 'skip link Enter did not land on #main (missing id="main")')
   else {
+    // #673: on /app routes focus itself must move to <main> (tabindex="-1"), not stay on BODY.
+    if (key.includes(' /app')) { const at = await page.evaluate(() => document.activeElement?.id === 'main' ? 'MAIN' : document.activeElement?.tagName); if (at !== 'MAIN') fail(key, `skip link Enter left focus on ${at}, not <main id="main">`) }
     await page.keyboard.press('Tab')
     if (!(await page.evaluate(() => !!document.activeElement?.closest('#main') || !document.querySelector('#main a[href], #main button, #main input, #main select, #main textarea')))) fail(key, 'after the skip link, Tab did not move into #main')
   }
@@ -243,6 +245,23 @@ try {
       await axeCheck(page, key)
       await overflowCheck(page, key)
       await keyboardCheck(page, key)
+      await page.close()
+    }
+    // #673: Home (/app) is not in APP (its content depends on onboarding state), but it shares the /app layout's
+    // <main>, so the skip link must move focus there too, after hydration.
+    {
+      const key = `${vp} /app (skip link)`; console.log(`---- ${key}`)
+      stubs = {}
+      const page = await ctx.newPage()
+      await page.goto(base + '/app', { waitUntil: 'networkidle' }); await page.waitForTimeout(400)
+      const landed = new URL(page.url()).pathname
+      if (!landed.startsWith('/app')) fail(key, `landed on ${landed}`)
+      else {
+        await page.focus('.skip-link'); await page.keyboard.press('Enter')
+        const at = await page.evaluate(() => document.activeElement?.id === 'main' ? 'MAIN' : document.activeElement?.tagName)
+        if (at !== 'MAIN') fail(key, `skip link Enter left focus on ${at}, not <main id="main">`)
+        console.log(`     landed on ${landed}; skip link focus -> ${at}`)
+      }
       await page.close()
     }
     await ctx.close()
