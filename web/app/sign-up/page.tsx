@@ -32,7 +32,7 @@ export default function SignUp() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center glow px-4 py-10">
+    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
         <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></a>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
@@ -42,14 +42,22 @@ export default function SignUp() {
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">
-          <input name="name" type="text" required placeholder="Your name"
+          <label className="flex flex-col gap-1 text-sm text-[#333]">Your name
+          <input name="name" type="text" required placeholder="Your name" autoComplete="name"
             className="field" />
-          <input name="email" type="email" required placeholder="you@company.com"
+          </label>
+          <label className="flex flex-col gap-1 text-sm text-[#333]">Email
+          <input name="email" type="email" required placeholder="you@company.com" autoComplete="email"
             className="field" />
-          <input name="business_name" type="text" placeholder="Company (optional)"
+          </label>
+          <label className="flex flex-col gap-1 text-sm text-[#333]">Company (optional)
+          <input name="business_name" type="text" placeholder="Company (optional)" autoComplete="organization"
             className="field" />
-          <input name="password" type="password" required placeholder="Password (10+ characters, letters and numbers)" minLength={10}
+          </label>
+          <label className="flex flex-col gap-1 text-sm text-[#333]">Password
+          <input name="password" type="password" required placeholder="Password (10+ characters, letters and numbers)" minLength={10} autoComplete="new-password"
             className="field" />
+          </label>
           <button type="submit" disabled={loading}
             className="btn-primary mt-1 !py-3">
             {loading ? 'Creating account…' : 'Create your account'}

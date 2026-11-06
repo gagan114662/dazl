@@ -424,22 +424,22 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         {freeRead && <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-3" data-testid="free-site-read">
           {freeRead.facts.length === 0
             ? <p className="text-[#555]">The page did not state a title or description in readable HTML.</p>
-            : <ul className="flex flex-col gap-2">{freeRead.facts.map((fact, i) => <li key={i}><span className="text-xs uppercase tracking-wide text-[#777]">{fact.kind === 'title' ? 'Page title' : 'Page description'}</span><br />{fact.text} <a className="underline text-xs" href={fact.source} target="_blank" rel="noreferrer">source</a></li>)}</ul>}
+            : <ul className="flex flex-col gap-2">{freeRead.facts.map((fact, i) => <li key={i}><span className="text-xs uppercase tracking-wide text-[#666]">{fact.kind === 'title' ? 'Page title' : 'Page description'}</span><br />{fact.text} <a className="underline text-xs" href={fact.source} target="_blank" rel="noreferrer">source</a></li>)}</ul>}
         </div>}
         {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on your own Anthropic or OpenAI key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
-        <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#777]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
+        <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#666]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
         <label className="flex flex-col gap-1">Who buys it<textarea className="field" rows={2} maxLength={400} value={summary} onChange={e => setSummary(e.target.value)} placeholder="e.g. Independent dental practices with 2-10 chairs" /></label>
-        <label className="flex flex-col gap-1">Buyer roles <span className="text-xs text-[#777]">separate with ;</span><input className="field" value={who} onChange={e => setWho(e.target.value)} placeholder="Practice owner, Office manager" /></label>
+        <label className="flex flex-col gap-1">Buyer roles <span className="text-xs text-[#666]">separate with ;</span><input className="field" value={who} onChange={e => setWho(e.target.value)} placeholder="Practice owner, Office manager" /></label>
         <div className="grid sm:grid-cols-2 gap-3">
           <label className="flex flex-col gap-1">Industries<input className="field" value={industries} onChange={e => setIndustries(e.target.value)} placeholder="Dental" /></label>
           <label className="flex flex-col gap-1">Where<input className="field" value={where} onChange={e => setWhere(e.target.value)} placeholder="Ohio" /></label>
         </div>
-        <label className="flex flex-col gap-1">Signs they need you now <span className="text-xs text-[#777]">public events, separate with ;</span><input className="field" value={signals} onChange={e => setSignals(e.target.value)} placeholder="Opened a new location, hiring front-desk staff" /></label>
+        <label className="flex flex-col gap-1">Signs they need you now <span className="text-xs text-[#666]">public events, separate with ;</span><input className="field" value={signals} onChange={e => setSignals(e.target.value)} placeholder="Opened a new location, hiring front-desk staff" /></label>
         <div className="grid sm:grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1">Company sizes <span className="text-xs text-[#777]">optional</span><input className="field" value={sizes} onChange={e => setSizes(e.target.value)} placeholder="2-50 employees" /></label>
-          <label className="flex flex-col gap-1">Skip <span className="text-xs text-[#777]">optional</span><input className="field" value={exclude} onChange={e => setExclude(e.target.value)} placeholder="Dental schools, chains" /></label>
+          <label className="flex flex-col gap-1">Company sizes <span className="text-xs text-[#666]">optional</span><input className="field" value={sizes} onChange={e => setSizes(e.target.value)} placeholder="2-50 employees" /></label>
+          <label className="flex flex-col gap-1">Skip <span className="text-xs text-[#666]">optional</span><input className="field" value={exclude} onChange={e => setExclude(e.target.value)} placeholder="Dental schools, chains" /></label>
         </div>
         <div className="flex gap-3 items-center mt-1">
           <button className="btn-primary" disabled={busy || sells.trim().length < 3}>{busy ? 'Saving...' : 'Looks right, continue'}</button>
@@ -465,7 +465,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>
       </form>}
 
-      <button type="button" className="text-xs text-[#777] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
+      <button type="button" className="text-xs text-[#666] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
     </div>
   )
 }

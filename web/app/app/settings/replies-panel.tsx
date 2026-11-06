@@ -25,7 +25,7 @@ export default function RepliesPanel() {
         <div className="text-sm space-y-2">
           <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
           <a className="btn-primary inline-block" href="/api/gmail/connect">Connect Gmail</a>
-          <p className="text-xs text-[#888]">Connecting means you agree to the reply-reading above. On Google&apos;s screen you can untick the read access and still connect send-only.</p>
+          <p className="text-xs text-[#6b6b6b]">Connecting means you agree to the reply-reading above. On Google&apos;s screen you can untick the read access and still connect send-only.</p>
         </div>
       ) : !i.read_granted ? (
         <div className="text-sm space-y-2">
