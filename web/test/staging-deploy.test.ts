@@ -359,3 +359,71 @@ test('staging Gmail (#413): Gmail credentials need the flag and the full config;
   const pe = path.join(dir, 'prod2.env'); writeFileSync(pe, `DB_PATH=${prodDb}\nGOOGLE_CLIENT_ID=stg.apps.googleusercontent.com\n`)
   assert.match(check(withEnv(real), { PROD_ENV_FILE: pe }).out, /production's Google client/)
 })
+
+// #907: the real deploy.sh with a build that starts a writer which leaves the build's session (setsid), ignores TERM and
+// keeps writing after its parent exits. Failed build, operator abort and low disk each stop EVERY build process before the
+// release is removed; the lock is released and the live release is unchanged. A survivor (stub containment exiting 125)
+// is reported as blocked cleanup and the release is left in place, never deleted beneath a process.
+test('build containment: escaped descendants are stopped on failure, abort and low disk; blocked cleanup deletes nothing', async () => {
+  const { execFileSync, spawn } = await import('node:child_process')
+  const { existsSync, readdirSync, readlinkSync, statSync, symlinkSync } = await import('node:fs')
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-contain-'))
+  const root = path.join(T, 'root'), repo = path.join(T, 'repo'), bin = path.join(T, 'bin'), availFile = path.join(T, 'avail'), out = path.join(T, 'escaped.out')
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
+  const g = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', ...a], { encoding: 'utf8', env: gitEnv }).trim()
+  mkdirSync(path.join(repo, 'web'), { recursive: true }); mkdirSync(bin)
+  execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
+  writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}'); g('add', '-A'); g('commit', '-qm', 'new')
+  const sha = g('rev-parse', 'HEAD')
+  writeFileSync(path.join(bin, 'df'), `#!/usr/bin/env bash\necho Avail\ncat ${availFile}\n`); execFileSync('chmod', ['+x', path.join(bin, 'df')])
+  writeFileSync(availFile, String(10e9))
+  const old = 'a'.repeat(40)
+  mkdirSync(path.join(root, 'releases', old, 'web'), { recursive: true }); writeFileSync(path.join(root, 'releases', old, '.complete'), '')
+  symlinkSync(path.join(root, 'releases', old), path.join(root, 'current')); writeFileSync(path.join(root, 'current-sha'), old + '\n')
+  const env = path.join(T, 'env'); writeFileSync(env, good)
+  const ESC = `setsid bash -c "trap '' TERM; while true; do echo x >> ${out}; sleep 0.05; done" < /dev/null > /dev/null 2>&1 &`
+  const envFor = (build: string, extra: Record<string, string> = {}) => ({
+    PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
+    STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
+    STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1000', DISK_RESERVE_BYTES: '0',
+    FIRST_RELEASE_BYTES: '1', STAGING_BUILD_GRACE: '0.5', STAGING_ALERT_CMD: 'true', ...extra,
+  } as unknown as NodeJS.ProcessEnv)
+  const run = (build: string, extra: Record<string, string> = {}) => { const r = spawnSync('bash', [script], { encoding: 'utf8', env: envFor(build, extra) }); return { code: r.status, out: r.stdout + r.stderr } }
+  const growing = async () => { if (!existsSync(out)) return false; const a = statSync(out).size; await new Promise(r => setTimeout(r, 400)); return statSync(out).size !== a }
+  const live = () => [path.basename(readlinkSync(path.join(root, 'current'))), readFileSync(path.join(root, 'current-sha'), 'utf8').trim()]
+  const unchanged = () => { assert.deepEqual(live(), [old, old]); assert.deepEqual(readdirSync(path.join(root, 'releases')), [old]) }
+  try {
+    // 1. the build fails after starting the escaped writer
+    let r = run(`${ESC} sleep 0.3; exit 4`)
+    assert.equal(r.code, 1, r.out); assert.match(r.out, /build or seed of [0-9a-f]{40} failed \(exit 4\)/)
+    assert.equal(await growing(), false, 'no build process outlived the failed build'); unchanged()
+    // the lock was released: the next run is not "another deploy is running"
+    r = run('exit 5'); assert.doesNotMatch(r.out, /another deploy is running/); assert.match(r.out, /exit 5/)
+
+    // 2. operator abort (SIGTERM to the deploy) mid-build
+    const p = spawn('bash', [script], { env: envFor(`${ESC} sleep 30`), stdio: ['ignore', 'pipe', 'pipe'] })
+    let text = ''; p.stdout.on('data', d => { text += d }); p.stderr.on('data', d => { text += d })
+    await new Promise(res => setTimeout(res, 2500)); assert.equal(await growing(), true, 'the escaped writer was running')
+    p.kill('SIGTERM'); const code = await new Promise<number | null>(res => p.on('exit', c => res(c)))
+    assert.equal(code, 1, text); assert.match(text, /aborted; every build process stopped, release removed/)
+    assert.equal(await growing(), false, 'abort stopped every build process'); unchanged()
+    r = run('exit 6'); assert.doesNotMatch(r.out, /another deploy is running/)
+
+    // 3. free space reaches the floor during the build: the watcher stops the whole tree, not just the first group
+    r = run(`${ESC} sleep 0.5; echo 10 > ${availFile}; sleep 30`)
+    assert.equal(r.code, 1, r.out); assert.match(r.out, /low_disk_during_build/)
+    assert.equal(await growing(), false); unchanged()
+    writeFileSync(availFile, String(10e9))
+
+    // 4. a process survives SIGKILL (stub containment reporting 125): cleanup BLOCKED, the release is NOT deleted beneath it
+    writeFileSync(path.join(T, 'stuck.py'), 'import sys\nsys.exit(125)\n')
+    r = run('true', { STAGING_CONTAIN: path.join(T, 'stuck.py') })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, /cleanup BLOCKED/)
+    assert.ok(existsSync(path.join(root, 'releases', sha)), 'the release is left for an operator'); assert.deepEqual(live(), [old, old])
+  } finally { spawnSync('pkill', ['-KILL', '-f', out]) }
+})
+
+test('contain.py: escaped descendants stopped on normal exit, failure and abort', () => {
+  const r = spawnSync('python3', ['-W', 'ignore', '-m', 'unittest', 'test_contain'], { cwd: path.dirname(script), encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+})

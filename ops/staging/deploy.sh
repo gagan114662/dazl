@@ -35,6 +35,10 @@ PROD_ENV_FILE=${PROD_ENV_FILE:-}
 # The build, run in the release's web/ directory as the service user with the env file's values. Tests replace it.
 BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
 HEALTH_TRIES=${STAGING_HEALTH_TRIES:-60}
+# Build containment (#907): the build runs under ops/staging/contain.py, a child subreaper, so a descendant that leaves the
+# build's session/process group is still ours; on any exit or abort the whole tree gets TERM, BUILD_GRACE seconds, KILL.
+CONTAIN=${STAGING_CONTAIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/contain.py}
+BUILD_GRACE=${STAGING_BUILD_GRACE:-10}
 # Low-disk alerts: OPS_ALERT_WEBHOOK_URL from the staging env file (https), or STAGING_ALERT_CMD (tests). One alert per
 # reason per STAGING_ALERT_EVERY_S while the condition lasts; every skip is still logged to the journal.
 ALERT_CMD=${STAGING_ALERT_CMD:-}
@@ -178,24 +182,42 @@ log "deploying $new (was ${cur:-none}); $avail bytes free, release about $est"
 
 rel="$ROOT/releases/$new"
 build_pid=
-cleanup() { [ -n "$build_pid" ] && kill -TERM -- "-$build_pid" 2>/dev/null || true; rm -rf "$rel"; }
-trap 'cleanup; fail "deploy of $new failed; release removed, the live release is unchanged"' ERR
+# Stop the build and CONFIRM it is gone: contain.py exits only once every build process has exited, or with 125 when one
+# survived SIGKILL (blocked cleanup). The release is deleted only after a confirmed stop, never beneath a live process.
+stop_build() {
+  [ -n "$build_pid" ] || return 0
+  kill -TERM "$build_pid" 2>/dev/null || true
+  local st=0; wait "$build_pid" 2>/dev/null || st=$?
+  build_pid=
+  [ "$st" != 125 ]
+}
+cleanup() {
+  if ! stop_build; then log "BLOCKED: build processes of $new survived SIGKILL; release $rel NOT removed"; return 1; fi
+  rm -rf "$rel"
+}
+blocked() { trap - ERR INT TERM HUP; fail "$1: build processes survived SIGKILL, cleanup BLOCKED; $rel left in place for an operator (the live release is unchanged)"; }
+trap 'cleanup || blocked "deploy of $new failed"; fail "deploy of $new failed; release removed, the live release is unchanged"' ERR
+trap 'cleanup || blocked "deploy of $new aborted"; fail "deploy of $new aborted; every build process stopped, release removed, the live release is unchanged"' INT TERM HUP
 rm -rf "$rel"; install -d -o "$RUN_AS" -g "$(id -gn "$RUN_AS")" "$rel"
 as sh -c "git -C '$ROOT/repo' archive '$new' | tar -x -C '$rel'"
 [ $reuse = 1 ] && cp -al "$live/web/node_modules" "$rel/web/node_modules"
 
-# The build runs in its own process group; a watcher stops it if free space falls to the floor plus the reserve.
+# The build runs contained (contain.py, above); a watcher stops it if free space falls to the floor plus the reserve.
+# The deploy lock (fd 9) is not inherited: nothing the build starts can hold it.
 ( set -a; . "$ENV_FILE"; set +a
-  exec setsid bash -c 'if [ "$(id -un)" = "$0" ]; then exec "$@"; else exec runuser -u "$0" -- "$@"; fi' "$RUN_AS" \
+  exec 9>&-
+  exec python3 "$CONTAIN" --grace "$BUILD_GRACE" --kill-wait 10 -- setsid bash -c 'if [ "$(id -un)" = "$0" ]; then exec "$@"; else exec runuser -u "$0" -- "$@"; fi' "$RUN_AS" \
     bash -c "cd '$rel/web' && echo '$new' > .build-commit && $BUILD" ) &
 build_pid=$!
 low=0; guard=$(( MIN_FREE_BYTES + DISK_RESERVE_BYTES ))
 while kill -0 "$build_pid" 2>/dev/null; do
-  if [ "$(free_bytes)" -lt "$guard" ]; then low=1; kill -TERM -- "-$build_pid" 2>/dev/null || true; break; fi
+  if [ "$(free_bytes)" -lt "$guard" ]; then low=1; kill -TERM "$build_pid" 2>/dev/null || true; break; fi
   sleep "$WATCH_INTERVAL"
 done
 status=0; wait "$build_pid" || status=$?
 build_pid=
+# contain.py has stopped every remaining build process (a normal exit included); 125: one survived, nothing is deleted
+[ "$status" != 125 ] || blocked "build of $new"
 if [ $low = 1 ]; then
   cleanup
   alert low_disk_during_build "$(free_bytes)" "$est" "stopped the build of $new: free space fell below the floor plus reserve ($guard bytes); its release removed, the live release unchanged"
@@ -209,7 +231,7 @@ if [ "$after" -lt "$guard" ]; then
   alert low_disk_after_build "$after" "$est" "did not put $new live: $after bytes free after its build, below the floor plus reserve ($guard bytes); its release removed, the live release unchanged"
   fail "free space below the floor plus reserve ($guard bytes) after the build; release removed, live release unchanged"
 fi
-trap - ERR
+trap - ERR INT TERM HUP
 
 # Cutover. From here until the new release is healthy, any failure (the switch, the restart command, readiness)
 # goes to cutover_fail, which puts the previous complete release back and checks it is really serving again.
