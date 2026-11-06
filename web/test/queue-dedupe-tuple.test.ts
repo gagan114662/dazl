@@ -37,13 +37,20 @@ const COLLIDING: ReadonlyArray<readonly [EnqueueInput, EnqueueInput]> = [
   [{ tenantId: 't', kind: 'ab', dedupeKey: 'c' }, { tenantId: 't', kind: 'a', dedupeKey: 'bc' }],
   // a delimiter inside the values: 'x:y' + ':' + 'z' vs 'x' + ':' + 'y:z'
   [{ tenantId: 'x:y', kind: 'k', dedupeKey: 'z' }, { tenantId: 'x', kind: 'y:k', dedupeKey: 'z' }],
-  [{ tenantId: 't', kind: 'a\u0000b', dedupeKey: 'c' }, { tenantId: 't', kind: 'a', dedupeKey: 'b\u0000c' }],
   // same tenant, different kind, same key
   [{ tenantId: 't', kind: 'monitor', dedupeKey: 'k1' }, { tenantId: 't', kind: 'sequence', dedupeKey: 'k1' }],
 ]
 
-async function scenario(make: () => Q): Promise<void> {
-  for (const [a, b] of COLLIDING) {
+// NUL-delimiter collisions run against the in-memory adapter only: PostgreSQL TEXT cannot store U+0000
+// (invalid byte sequence for encoding "UTF8": 0x00), so the durable adapter can never receive these tuples.
+// DbQueue's handling of NUL input is out of this lane (#909 owns memory.ts only).
+const NUL_COLLIDING: ReadonlyArray<readonly [EnqueueInput, EnqueueInput]> = [
+  [{ tenantId: 't', kind: 'a\u0000b', dedupeKey: 'c' }, { tenantId: 't', kind: 'a', dedupeKey: 'b\u0000c' }],
+  [{ tenantId: 'a\u0000b', kind: 'k', dedupeKey: 'c' }, { tenantId: 'a', kind: 'b\u0000k', dedupeKey: 'c' }],
+]
+
+async function scenario(make: () => Q, cases: ReadonlyArray<readonly [EnqueueInput, EnqueueInput]> = COLLIDING): Promise<void> {
+  for (const [a, b] of cases) {
     const q = make()
     const ra = await q.enqueue({ ...a, id: 'first', now: T0 })
     const rb = await q.enqueue({ ...b, id: 'second', now: T0 })
@@ -84,6 +91,10 @@ async function scenario(make: () => Q): Promise<void> {
 
 test('InProcessQueue: dedupe tuple is collision-safe (#909)', async () => {
   await scenario(mem)
+})
+
+test('InProcessQueue: NUL-delimiter tuples do not collide (#909, memory-only; PostgreSQL TEXT rejects U+0000)', async () => {
+  await scenario(mem, NUL_COLLIDING)
 })
 
 // Parity: the durable adapter gives the same answers for the same scenarios.
