@@ -70,7 +70,7 @@ bothEngines('#409 isolation: each kind defaults OFF; a read needs both money cei
     }
     // Missing operator key: off for both kinds whatever else is set.
     assert.deepEqual(await admitTrialSiteRead(db, qa, '203.0.113.3', { env: { ...SCAN_ENV, DAZL_TRIAL_ANTHROPIC_KEY: '' }, limit: limiter() }), { ok: false, reason: 'not_configured' })
-    assert.equal(trialFundable({ ...SCAN_ENV, DAZL_TRIAL_ANTHROPIC_KEY: '' } as NodeJS.ProcessEnv), false)
+    assert.equal(trialFundable({ ...SCAN_ENV, DAZL_TRIAL_ANTHROPIC_KEY: '' } as unknown as NodeJS.ProcessEnv), false)
     // Scan config without the read gates: scans on, reads still off (no ceiling / no allowlist).
     const noReads = { ...SCAN_ENV, DAZL_TRIAL_SITE_READS_PER_DAY: undefined }
     assert.equal(trialCaps(noReads) !== null, true)
