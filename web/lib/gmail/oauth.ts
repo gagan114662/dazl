@@ -135,12 +135,20 @@ export async function readGmailStatus(db: Db, tenantId: string): Promise<{ email
 // Short-lived access token from the stored refresh token. A revoked or expired
 // grant flips the account to needs_reconnect so nothing keeps trying to send.
 export async function getAccessToken(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<string> {
+  return (await getAccessTokenBound(db, tenantId, deps)).token
+}
+
+// The token plus the connection generation it was minted from: the stored refresh ciphertext it read (the same identity
+// #740's compare-and-set uses). Send paths pass it to recheckSendAuthority as expectRefreshCt, so a connection replaced
+// between the token fetch and the Gmail handoff - even to the same address - refuses the send. The value is a server-internal
+// comparison key: never log it or return it in a response.
+export async function getAccessTokenBound(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<{ token: string; refreshCt: string }> {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
   const staging = stagingGmail(E(env)).mode === 'stub'
   const c = staging ? null : creds(env)
   const acc = db.prepare('SELECT refresh_ct, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string; status: string } | undefined
   if (!acc || acc.status !== 'active') throw new GmailError('reconnect', 'not_connected')
-  if (staging || !c) return STAGING_TOKEN
+  if (staging || !c) return { token: STAGING_TOKEN, refreshCt: acc.refresh_ct }
   const refresh = decryptSecret(acc.refresh_ct, ctx(tenantId), deps.master)
   let res: Response
   try {
@@ -175,7 +183,7 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
   if (!j.access_token) throw new GmailError('retry', 'no_access_token')
   const moved = changed()
   if (moved) throw moved
-  return j.access_token
+  return { token: j.access_token, refreshCt: acc.refresh_ct }
 }
 
 export async function disconnectGmail(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<void> {

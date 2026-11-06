@@ -11,7 +11,7 @@
 //     run (the stop's table is readable on this handle), not declared: an unreadable store holds the launch.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { getAccessToken, gmailSend, gmailStatus, confirmedSendResult } from '../gmail/oauth.ts'
+import { getAccessTokenBound, gmailSend, gmailStatus, confirmedSendResult } from '../gmail/oauth.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { approveBlockReason, createDraft, getSettings, OutreachError, testRecipientApproved, type Deps } from './service.ts'
 import { getState, liftLaunchPause, MIN_CONFIDENCE } from './autopilot.ts'
@@ -114,7 +114,8 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
   if (connected && connected === policy.sender && settings && integrationRecipientOk) {
     const messageId = `dazl.launchcheck.${now}.${randomBytes(6).toString('hex')}@${connected.split('@')[1]}`
     try {
-      const token = await getAccessToken(db, tenantId, d)
+      const bound = await getAccessTokenBound(db, tenantId, d)
+      const token = bound.token
       // Re-proved after the token await (TOCTOU, same class as every other send path): an allowlist
       // narrowed while the check waited on the token stops it here, before anything reaches Gmail.
       if (process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId && !testRecipientApproved(db, tenantId, policy.testInbox)) {
@@ -130,7 +131,7 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
       }))
       // Shared authority recheck (send-authority.ts), after the token await and immediately before the handoff: the tenant's
       // autopilot switch, suppression of the test inbox and the sending identity as they are NOW. A refusal sends nothing.
-      if (recheckSendAuthority(db, tenantId, { to: policy.testInbox, sender: connected, now, autopilot: 'enabled' })) {
+      if (recheckSendAuthority(db, tenantId, { to: policy.testInbox, sender: connected, now, autopilot: 'enabled', expectRefreshCt: bound.refreshCt })) {
         testInboxDelivered = false
         return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
       }
