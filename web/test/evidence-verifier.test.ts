@@ -16,7 +16,7 @@ const NOW = Date.parse(AS_OF)
 const A = 'tenant-verifier-aaaa', B = 'tenant-verifier-bbbb'
 const OWN = 'https://harborledger.example/news/london-office'
 const page = (body: string, head = '') => `<html><head><title>Synthetic</title>${head}</head><body>${body}</body></html>`
-const GENUINE = page(`<p>Harbor Ledger Analytics opened its new London office on October 20, 2026.</p>
+const GENUINE = page(`<p>Harbor Ledger Analytics opened its new London, United Kingdom office on October 20, 2026.</p>
   <p>&ldquo;We are hiring our first sales team in London,&rdquo; said Priya Raman, Chief Revenue Officer at Harbor Ledger Analytics.</p>
   <p>Press: <a href="mailto:priya.raman@harborledger.example">priya.raman@harborledger.example</a></p>`)
 
@@ -149,7 +149,7 @@ test('conflicting sources: a second source dating the event differently -> not p
 
 test('provenance: syndicated copies of one article are one origin; two different articles confirm independently', async () => {
   const s1 = 'https://alpha-news.example/harbor', s2 = 'https://beta-wire.example/syndicated/harbor', s3 = 'https://gamma-times.example/harbor-london'
-  const story = '<p>Harbor Ledger Analytics (harborledger.example) opened its London office on October 20, 2026, adding a sales floor for forty people near Old Street and a training room for new analysts.</p>'
+  const story = '<p>Harbor Ledger Analytics (harborledger.example) opened its London office on October 20, 2026, adding a sales floor for forty people near Old Street and a training room for new analysts in London, United Kingdom.</p>'
   const base = claim({ quotes: [{ text: 'opened its London office', source_url: s1 }], person: null, contact: null })
   const copies = await run({ ...base, event: { date: '2026-10-20', source_url: s1, corroborating_urls: [s2] } }, { [s1]: page(story), [s2]: page(`<div>Syndicated.</div>${story}`) })
   assert.equal(copies.record.provenance.length, 1)
@@ -158,7 +158,7 @@ test('provenance: syndicated copies of one article are one origin; two different
     { [s1]: page(story), [s3]: page('<p>Different words: Harbor Ledger Analytics said on October 20, 2026 that London is now open.</p>', `<link rel="canonical" href="${s1}">`) })
   assert.equal(canon.record.provenance.length, 1, 'a page declaring the other as canonical is the same document')
   const two = await run({ ...base, event: { date: '2026-10-20', source_url: s1, corroborating_urls: [s3] } },
-    { [s1]: page(story), [s3]: page('<p>Analytics firm Harbor Ledger Analytics cut the ribbon in London on October 20, 2026, its chief executive told reporters.</p>') })
+    { [s1]: page(story), [s3]: page('<p>Analytics firm Harbor Ledger Analytics cut the ribbon in London, United Kingdom on October 20, 2026, its chief executive told reporters.</p>') })
   assert.equal(two.record.provenance.length, 2)
   assert.deepEqual(status(two.record, 'independent_confirmation'), ['pass'])
   assert.equal(two.record.verdict, 'pass')
