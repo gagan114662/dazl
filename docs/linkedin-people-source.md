@@ -36,3 +36,16 @@ One `LinkedInTransport.fetch` call = one upstream request = one page of at most 
 Accounting note: the shared hourly budget counts ONLY reservations (`adv_requests`). The first reservation for a tenant/connector snapshots that connector's in-window audit rows as legacy reservations in the same transaction, counting every status that meant an upstream request was made (`ok, empty, worker_error, error, auth_failed, throttled, schema_error, upstream_error`), so calls recorded before reservations existed still count and nothing is counted twice.
 
 Deadline: a call that misses the 20 s deadline STOPS the run (`stopped_deadline`, which starts the 24 h cooldown): a transport that ignored the abort may still be requesting in the background, so it is never handed another reservation.
+
+## Signed-in session transport (owner decision, 2026-11-06)
+
+The owner authorised Gojiberry-style collection: reading the people who comment on or react to competitors' LinkedIn posts through a signed-in session, and explicitly accepted the risk that the account used is restricted or banned. Scope of that decision:
+
+- **One designated throwaway account only.** Its session (`li_at` + `JSESSIONID`) is stored encrypted as the tenant's own `adv:linkedin` connector credential. Never a person's own account. The code cannot tell whose cookie it is; the operator who stores it is responsible.
+- **Off by default, twice.** `LINKEDIN_SESSION_TRANSPORT=1` AND the tenant id in `LINKEDIN_SESSION_TENANTS`, on top of every existing gate (`ADVANCED_CONNECTORS`, `ADVANCED_LINKEDIN`, `ADVANCED_LINKEDIN_PEOPLE`, no `ADVANCED_KILL`, consent, connector switch).
+- **Read-only.** The worker issues GETs only. Nothing is posted, liked, commented, messaged or connected.
+- **Plan.** Per competitor: one post search (`/fetch`, platform `linkedin`), then the commenters and the reactors of the first post found (`/linkedin/engagers`). One call = one worker request = one upstream GET; one page, no pagination, no retry.
+- **Caps and pace.** Shared hourly cap (3, atomic), per-run cap `LINKEDIN_SESSION_PER_RUN` (default 3, never above the hourly cap), atomic daily cap `LINKEDIN_ENGAGERS_DAILY_CAP` (default 6, max 50, key `adv:linkedin:day`), and `LINKEDIN_SESSION_GAP_MS` (default 20 s, plus up to 50 % jitter) between requests.
+- **Truthful failure.** A redirect to /login or /authwall, an authwall page, a 401/403 is `stopped_unauthorized`; a /checkpoint or captcha page or LinkedIn's 999 bot block is `stopped_challenge`; a 429 is `stopped_throttled`. Each stops the run at once, starts the 24 h tenant cooldown, is audited, and marks the scan's LinkedIn source `unavailable` / `partial`. None is ever recorded as zero results.
+- **Output.** Public profile URL, name and headline, the person's own comment (or the reaction type) and the post link in the quote. Leads stay in the review lane (login-walled) and are never emailed automatically.
+- **Fixtures.** `session-worker/test/fixtures/linkedin-*.json` are SYNTHETIC, in the voyager shapes. Before the first live run they must be re-captured from a controlled sign-in of the throwaway account and the parser re-checked against them.

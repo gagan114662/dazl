@@ -4,6 +4,7 @@
 import http from 'node:http'
 import { CAPABILITY, FETCHERS, isPlatform } from './fetchers.ts'
 import { FetchFailure } from './util.ts'
+import { fetchEngagers, isEngagerKind } from './linkedin-engagers.ts'
 
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
@@ -17,7 +18,8 @@ const server = http.createServer((req, res) => {
     res.end(b)
   }
   if (req.method === 'GET' && req.url === '/health') return reply(200, { ok: true })
-  if (req.method !== 'POST' || req.url !== '/fetch') return reply(404, { error: 'not found' })
+  if (req.method !== 'POST' || (req.url !== '/fetch' && req.url !== '/linkedin/engagers')) return reply(404, { error: 'not found' })
+  const route = req.url
   if (!TOKEN || req.headers.authorization !== `Bearer ${TOKEN}`) return reply(401, { error: 'unauthorized' })
   let body = ''
   let tooBig = false
@@ -36,6 +38,15 @@ const server = http.createServer((req, res) => {
     // JSON.parse accepts null, arrays and primitives; only a plain object is a request.
     if (!isPlainObject(raw)) return reply(400, { error: 'body must be a JSON object' })
     const parsed = raw as { platform?: unknown; query?: unknown; session?: unknown }
+    // #192: one page of a post's commenters or reactors through the session the app sends. One request = one upstream GET.
+    if (route === '/linkedin/engagers') {
+      const e = raw as { kind?: unknown; post?: unknown; session?: unknown }
+      if (!isEngagerKind(e.kind) || typeof e.post !== 'string' || typeof e.session !== 'string' || !e.post || !e.session) return reply(400, { error: 'kind, post and session are required' })
+      try {
+        const items = await Promise.race([fetchEngagers(e.kind, e.post.slice(0, 300), e.session.slice(0, 8000)), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 40_000))])
+        return reply(200, { items, upstream_requests: 1 })
+      } catch (err) { return reply(502, { error: 'fetch_failed', outcome: err instanceof FetchFailure ? err.kind : 'upstream_error' }) }
+    }
     if (!isPlatform(parsed.platform)) return reply(400, { error: 'unknown platform' })
     // An adapter this build cannot run is refused before any platform request and reported as
     // 'unsupported' - distinct from a genuine empty result and from a failure.

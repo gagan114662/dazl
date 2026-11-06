@@ -1,0 +1,11 @@
+{
+  "_note": "SYNTHETIC fixture in the normalized voyager feed/comments shape (#192). Not a live capture: it must be re-captured from a controlled sign-in of the designated throwaway account before the live path is reviewed. All names are invented.",
+  "data": { "*elements": ["urn:li:fs_objectComment:(7390000000000000001,activity:7391234567890123456)", "urn:li:fs_objectComment:(7390000000000000002,activity:7391234567890123456)", "urn:li:fs_objectComment:(7390000000000000003,activity:7391234567890123456)"], "paging": { "count": 25, "start": 0, "total": 3 } },
+  "included": [
+    { "$type": "com.linkedin.voyager.identity.shared.MiniProfile", "entityUrn": "urn:li:fs_miniProfile:ACoAAA1", "publicIdentifier": "jane-example-1", "firstName": "Jane", "lastName": "Example", "occupation": "VP People at Northwind Payroll" },
+    { "$type": "com.linkedin.voyager.identity.shared.MiniProfile", "entityUrn": "urn:li:fs_miniProfile:ACoAAA2", "publicIdentifier": "raj-sample-2", "firstName": "Raj", "lastName": "Sample", "occupation": "HR Manager, Ohio" },
+    { "$type": "com.linkedin.voyager.feed.Comment", "entityUrn": "urn:li:fs_objectComment:(7390000000000000001,activity:7391234567890123456)", "createdTime": 1793000000000, "commenter": { "com.linkedin.voyager.feed.MemberActor": { "*miniProfile": "urn:li:fs_miniProfile:ACoAAA1" } }, "commentV2": { "text": "We switched off this vendor last quarter, the payroll exports kept breaking for us." } },
+    { "$type": "com.linkedin.voyager.feed.Comment", "entityUrn": "urn:li:fs_objectComment:(7390000000000000002,activity:7391234567890123456)", "createdTime": 1793000500000, "commenter": { "com.linkedin.voyager.feed.MemberActor": { "*miniProfile": "urn:li:fs_miniProfile:ACoAAA2" } }, "commentV2": { "text": "Is anyone else evaluating alternatives for multi-state payroll this year?" } },
+    { "$type": "com.linkedin.voyager.feed.Comment", "entityUrn": "urn:li:fs_objectComment:(7390000000000000003,activity:7391234567890123456)", "createdTime": 1793000900000, "commenter": { "com.linkedin.voyager.feed.MemberActor": { "*miniProfile": "urn:li:fs_miniProfile:ACoAAA1" } }, "commentV2": { "text": "Following up on my earlier note: happy to share what we moved to instead." } }
+  ]
+}

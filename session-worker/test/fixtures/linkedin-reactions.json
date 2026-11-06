@@ -1,0 +1,9 @@
+{
+  "_note": "SYNTHETIC fixture in the normalized voyagerSocialDashReactions shape (#192). Not a live capture: re-capture from a controlled sign-in before the live path is reviewed. All names are invented.",
+  "data": { "*elements": ["urn:li:fsd_reaction:(urn:li:fsd_profile:ACoAAB1,urn:li:activity:7391234567890123456,LIKE)", "urn:li:fsd_reaction:(urn:li:fsd_profile:ACoAAB2,urn:li:activity:7391234567890123456,EMPATHY)"], "paging": { "count": 25, "start": 0, "total": 2 } },
+  "included": [
+    { "$type": "com.linkedin.voyager.dash.social.Reaction", "entityUrn": "urn:li:fsd_reaction:(urn:li:fsd_profile:ACoAAB1,urn:li:activity:7391234567890123456,LIKE)", "reactionType": "LIKE", "reactorLockup": { "title": { "text": "Maria Placeholder" }, "subtitle": { "text": "Head of Finance Operations at Contoso Retail" }, "navigationUrl": "https://www.linkedin.com/in/maria-placeholder-7?miniProfileUrn=urn%3Ali%3Afs_miniProfile%3AACoAAB1" } },
+    { "$type": "com.linkedin.voyager.dash.social.Reaction", "entityUrn": "urn:li:fsd_reaction:(urn:li:fsd_profile:ACoAAB2,urn:li:activity:7391234567890123456,EMPATHY)", "reactionType": "EMPATHY", "actor": { "*profileUrn": "urn:li:fsd_profile:ACoAAB2" } },
+    { "$type": "com.linkedin.voyager.dash.identity.profile.Profile", "entityUrn": "urn:li:fsd_profile:ACoAAB2", "publicIdentifier": "tom-fixture-8", "firstName": "Tom", "lastName": "Fixture", "headline": "Payroll Lead, Columbus OH" }
+  ]
+}

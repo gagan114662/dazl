@@ -12,7 +12,8 @@ export interface FetchOptions { cookie?: string; headers?: Record<string, string
 // Why a supported fetch produced no list. Each is its own outcome, never a zero-result search:
 // the platform rejected the session (auth), throttled it, or answered with something that is not
 // the JSON this fetcher reads (schema). Anything else (network, 5xx, timeout) is upstream.
-export type FailureKind = 'auth_failed' | 'throttled' | 'schema_error' | 'upstream_error'
+// 'challenge' (a checkpoint / captcha / bot block) is only produced by the LinkedIn engagers reader (src/linkedin-engagers.ts).
+export type FailureKind = 'auth_failed' | 'throttled' | 'challenge' | 'schema_error' | 'upstream_error'
 export class FetchFailure extends Error {
   readonly kind: FailureKind
   constructor(kind: FailureKind) { super(kind); this.kind = kind }

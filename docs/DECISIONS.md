@@ -3,6 +3,16 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-11-06: LinkedIn post engagers through a signed-in throwaway session
+
+The owner authorised (Refs #192) reading the commenters and reactors of competitors' LinkedIn posts through a
+signed-in session, Gojiberry-style, and explicitly accepted the risk that the account is restricted or banned.
+Limits: ONE designated throwaway account only, never a person's own; read-only (no posting, reacting,
+commenting, messaging or connecting); off by default behind its own flag and a tenant allowlist on top of
+the existing LinkedIn gates; small hourly and daily caps with a human pace; a login wall, checkpoint/captcha or
+rate limit stops the run visibly and is never recorded as zero results; every lead keeps a quote and the post
+link and stays in the review lane. Details: docs/linkedin-people-source.md.
+
 ## 2026-11-02: consent/onboarding audit retention at tenant erasure
 
 Resolves the owner decision #564 held open (`onboarding_audit` row contract for #417).
