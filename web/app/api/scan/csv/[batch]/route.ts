@@ -6,7 +6,7 @@ import { readPlan } from '@/lib/plans'
 import { getDb } from '@/lib/db/client'
 import { hasKey } from '@/lib/llm/key-store'
 import { kickRunner } from '@/lib/scan/runner'
-import { batchStatus, queuePendingRows } from '@/lib/scan/csv-import'
+import { batchRunBudget, batchStatus, queuePendingRows } from '@/lib/scan/csv-import'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
@@ -40,7 +40,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ bat
   const db = getScanDb()
   if ((await readPlan(await getDb(), r.user.tenantId)) !== 'pro') return NextResponse.json({ error: 'pro_only' }, { status: 402 })
   if (!hasKey(db, r.user.tenantId)) return NextResponse.json({ error: 'no_api_key' }, { status: 400 })
+  // #916: resumed rows run under the batch's own recorded budget (a pre-#916 batch: every narrowing control off)
   const { quotaStop } = queuePendingRows(db, r.user.tenantId, batch)
+  const rb = batchRunBudget(db, r.user.tenantId, batch)!
   after(() => kickRunner(db))
-  return NextResponse.json({ ...batchStatus(db, r.user.tenantId, batch)!, quota_stop: quotaStop }, { status: 202 })
+  return NextResponse.json({ ...batchStatus(db, r.user.tenantId, batch)!, quota_stop: quotaStop, budget: rb.budget ? JSON.parse(rb.budget) as Record<string, boolean> : null, budget_recorded: rb.recorded }, { status: 202 })
 }
