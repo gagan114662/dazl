@@ -58,7 +58,7 @@ for (const mode of ['control', 'sender', 'disconnect', 'suppress', 'unreadable']
       assert.equal((db.prepare("SELECT status FROM reopen_messages WHERE thread_id = ?").get(tid) as { status: string }).status, 'draft', 'draft stays a draft, nothing recorded as sent')
     }
     if (mode === 'sender') assert.equal(result, 'sender_changed')
-    if (mode === 'disconnect') assert.equal(result, 'gmail_not_connected')
+    if (mode === 'disconnect') assert.equal(result, 'gmail_reconnect_needed', 'the token call itself now refuses a connection that disappeared mid-call (#740); still no handoff, draft stays a draft')
     db.close()
   })
 }
