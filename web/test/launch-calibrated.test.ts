@@ -18,6 +18,7 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { callCostUsd } from '../lib/llm/spend-guard.ts'
 import type { Provider, DetailedCompletion } from '../lib/llm/provider.ts'
 import { runCalibration } from '../lib/outreach/calibration.ts'
+import { productTruth } from '../lib/product-truth.ts'
 
 // #405 wiring: a calibrated launch replaces the hand-approval warmup only after an accepted policy passes the machine
 // preflight. Synthetic tenant and leads (.example); every Gmail call is a stub that records what would have been sent.
@@ -336,6 +337,39 @@ test('HOLD: the current policy\'s claim authority applies to every final outgoin
   db.prepare('UPDATE autopilot_launch_policy SET policy = ?').run(JSON.stringify(stored))
   lead(db, job, 'e@five.example')
   assert.equal((await runAutopilot(db, 'A', 'Acme', gmail().d)).sent, 1)
+})
+
+test('HOLD (#402): a launch bound to the product truth record never sends a promise of an unshipped capability, a pitch to a no-fit prospect, or copy prepared under a changed record', async () => {
+  const db = await setup(); const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
+  assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([job], { claims: { mayStatePrice: false, benchmarkUrls: [], productTruthVersion: productTruth().version } }), NOW), { ok: true })
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true, 'the seeded offer claims nothing the record does not ship')
+  // the play's offer now promises an unshipped sender and channel: drafted, held, never sent
+  db.prepare('UPDATE scan_jobs SET offer = ? WHERE id = ?').run('Lead research that sends from your Outlook and follows up with LinkedIn messages', job)
+  lead(db, job, 'd@four.example')
+  const g = gmail()
+  assert.equal((await runAutopilot(db, 'A', 'Acme', g.d)).sent, 0); assert.equal(g.sent.length, 0)
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'held_claims'))
+  // a clean offer, but the prospect says they need an unshipped sender: no-fit, held
+  db.prepare('UPDATE scan_jobs SET offer = ? WHERE id = ?').run('Lead research with the evidence for each lead', job)
+  const nf = lead(db, job, 'e@five.example')
+  db.prepare('UPDATE leads SET evidence_excerpt = ? WHERE id = ?').run('We need a tool that sends from Outlook', nf)
+  const heldClaims = () => recentAutopilotAudit(db, 'A').filter(a => a.action === 'held_claims').length
+  const h0 = heldClaims()
+  assert.equal((await runAutopilot(db, 'A', 'Acme', gmail().d)).sent, 0)
+  assert.equal(heldClaims(), h0 + 1, 'held by the claim check, as no-fit')
+  // the record changed since the owner accepted it: copy relying on it is held until the owner accepts the new record
+  const stored = readLaunchPolicy(db, 'A')!.policy
+  db.prepare('UPDATE autopilot_launch_policy SET policy = ?').run(JSON.stringify({ ...stored, claims: { ...stored.claims, productTruthVersion: 'pt-0000000000000000' } }))
+  db.prepare('UPDATE scan_jobs SET offer = ? WHERE id = ?').run('Lead research, sent from your own Gmail', job)
+  lead(db, job, 'f@six.example')
+  const h1 = heldClaims()
+  assert.equal((await runAutopilot(db, 'A', 'Acme', gmail().d)).sent, 0)
+  assert.equal(heldClaims(), h1 + 1, 'held by the claim check: product_truth_changed')
+  // back on the current record, the same shipped claim goes out
+  db.prepare('UPDATE autopilot_launch_policy SET policy = ?').run(JSON.stringify(stored))
+  lead(db, job, 'g@seven.example')
+  const ok = gmail()
+  assert.equal((await runAutopilot(db, 'A', 'Acme', ok.d)).sent, 1); assert.deepEqual(ok.to(), ['g@seven.example'])
 })
 
 // A recorded model: every completion is captured with the max_tokens it was allowed; usage is what the test says the

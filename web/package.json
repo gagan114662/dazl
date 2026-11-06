@@ -11,7 +11,8 @@
     "test": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts",
     "db:migrate": "node --experimental-strip-types --no-warnings scripts/db-migrate.mts",
     "prebuild": "git rev-parse HEAD > .build-commit 2>/dev/null || rm -f .build-commit",
-    "test:smoke": "node test/smoke/app-pages.smoke.mjs",
+    "test:smoke": "node test/smoke/app-pages.smoke.mjs && npm run test:smoke:frontend",
+    "test:smoke:frontend": "SHOTS=preview/frontend-baseline node test/ui/frontend-baseline.ui.mjs",
     "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs",
     "test:smoke:client-errors": "node test/smoke/client-errors.smoke.mjs",
     "test:smoke:billing": "node --experimental-strip-types --no-warnings test/smoke/billing.smoke.mjs",
@@ -22,6 +23,7 @@
     "test:smoke:release": "node test/smoke/release-identity.smoke.mjs",
     "staging:scenarios": "node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/staging-send-scenarios.mts",
     "test:smoke:recovery": "node --experimental-strip-types --no-warnings test/smoke/recovery-drill.smoke.mjs",
+    "test:smoke:replacement": "node --experimental-strip-types --no-warnings test/smoke/replacement-drill.smoke.mjs",
     "evals": "SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/evals.mts",
     "test:smoke:authforms": "node test/smoke/auth-form-fallback.smoke.mjs",
     "test:smoke:enrichment": "node --experimental-strip-types --no-warnings test/smoke/enrichment-fallback.smoke.mjs"

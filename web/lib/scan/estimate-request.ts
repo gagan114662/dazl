@@ -6,7 +6,9 @@ import { MAX_QUERY, normalizeIcp } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { ownerMaxUsd } from './runner.ts'
-import { ownerSetting, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
+import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
+import { priceOf } from '../llm/spend-guard.ts'
+import { ownerLimits, ownerSetting, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 
@@ -24,7 +26,12 @@ async function pools(db: Db, tenantId: string, now = Math.floor(Date.now() / 100
     return { day, month, unknown: false, unsettled }
   } catch { return { day: 0, month: 0, unknown: true, unsettled: false } }
 }
-export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: string; hasOwnKey: boolean; enrichmentVendors: string[] }): Promise<EstimateResult> {
+// The model the tenant's own newest key would run (the runner's pickVendor choice), for the pre-launch limit check; null with no key.
+export async function keyedModel(db: Db, tenantId: string): Promise<string | null> {
+  const r = await db.get<{ vendor: string }>('SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1', [tenantId]).catch(() => undefined)
+  return r?.vendor === 'openai' ? openaiProvider.configuredModel!() : r?.vendor === 'anthropic' ? anthropicProvider.configuredModel!() : null
+}
+export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: string; hasOwnKey: boolean; enrichmentVendors: string[]; /** the model the run's own key would use (provider.configuredModel()), when known */ model?: string | null }): Promise<EstimateResult> {
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
   const first5 = b.mode === 'first5'
   if (b.mode !== undefined && b.mode !== 'first5') return { ok: false, status: 400, error: 'unknown_mode' }
@@ -41,5 +48,15 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     ownerCapUsd: ownerMaxUsd(ctx.tenantId), ownerMonthCapUsd: ownerSetting('DAZL_OWNER_MONTH_MAX_USD_USERS', ctx.tenantId, process.env),
   })
+  // A run under a spending limit (this run's max_usd, or the owner's day/month pool) only reserves for a model with a listed price; any other model
+  // is refused at its first call (model_unpriced). Say so BEFORE launch, instead of letting the run start and stop.
+  const limited = nb.budget?.max_usd != null || ownerLimits(ctx.tenantId) !== null
+  if (ctx.hasOwnKey && limited && ctx.model && !priceOf(ctx.model)) {
+    estimate.verdict = {
+      ok: false, reason: 'model_unpriced', warning: null,
+      message: `Your key's model (${ctx.model}) has no listed price in dazl yet, so a run under a spending limit cannot reserve for it and would stop at its first model call. Nothing was started or charged.`,
+      change: ['Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)', 'Or use an Anthropic key (claude-sonnet-4-5 is priced)'],
+    }
+  }
   return { ok: true, estimate }
 }

@@ -105,19 +105,24 @@ test('users without a key are never claimed; a job with its key removed fails wi
   assert.equal(getJob(db, 'A', id)?.error, 'no_api_key')
 })
 
-test('rejected key fails at once without retry; timeouts retry then fail after 3 attempts', async () => {
+test('rejected key fails at once without retry; vendor-declined (429) failures retry then fail after 3 attempts; a timeout after send fails closed (#363)', async () => {
   const db = setup()
   const a = createJob(db, 'A', input)
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: fake(async () => { throw new ProviderError('auth', 'key_rejected') }), master }), 'failed')
   assert.equal(getJob(db, 'A', a)?.error, 'key_rejected')
 
   const b = createJob(db, 'B', input)
-  const boom = fake(async () => { throw new ProviderError('retry', 'network_or_timeout') })
+  const boom = fake(async () => { throw new ProviderError('retry', 'provider_429', 'none') })
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: boom, master }), 'retry')
   assert.equal(getJob(db, 'B', b)?.status, 'pending')
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: boom, master }), 'retry')
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: boom, master }), 'failed')
   assert.equal(getJob(db, 'B', b)?.status, 'failed')
+  // This test used to pin 'network_or_timeout' as retryable. A timeout after send may have been billed: it now ends the scan, no retry.
+  const c = createJob(db, 'B', input)
+  const hung = fake(async () => { throw new ProviderError('retry', 'network_or_timeout') })
+  assert.equal(await runJob(db, claimKeyedJob(db)!, { providers: hung, master }), 'failed')
+  assert.deepEqual([getJob(db, 'B', c)?.status, getJob(db, 'B', c)?.error], ['failed', 'accounting_uncertain'])
 })
 
 test('bad model output is retried; a stale run cannot overwrite a newer attempt', async () => {

@@ -121,7 +121,11 @@ try {
   d.prepare('DELETE FROM outreach_messages WHERE lead_id = ?').run(`lead-${LIVE_LONDON}`)
   d.prepare('UPDATE leads SET human_confirmed_at = ?, human_confirmed_from = ?, event_date = ? WHERE id = ?').run(Math.floor(Date.now()/1000),'synthetic_source_review',new Date(Date.now()-3*86400000).toISOString().slice(0,10),`lead-${LIVE_LONDON}`)
   d.prepare('UPDATE leads SET id = ? WHERE id = ?').run('a'.repeat(24),`lead-${LIVE_LONDON}`)
-  d.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,label,source_url,source_date,retrieved_at) VALUES (? ,?,'u1','scan:gate','gate_passed','sales_hiring','Synthetic test precondition','https://news.example/a',?,?)").run('b'.repeat(24),'a'.repeat(24),new Date().toISOString().slice(0,10),Math.floor(Date.now()/1000))
+  // #818: the LIVE_LONDON request names a specific role ("...hiring their first sales representative..."), so
+  // lib/scan/held-state.ts's requestedHiringRoles/roleNeedsSourceProof now requires the role-specific gate-pass
+  // value 'requested_role_v1', not the generic 'sales_hiring' this fixture wrote before that gate existed
+  // (cca303f1, partial #533). test/offer-live-349.test.ts already uses 'requested_role_v1' for this same lead.
+  d.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,label,source_url,source_date,retrieved_at) VALUES (? ,?,'u1','scan:gate','gate_passed','requested_role_v1','Synthetic test precondition','https://news.example/a',?,?)").run('b'.repeat(24),'a'.repeat(24),new Date().toISOString().slice(0,10),Math.floor(Date.now()/1000))
   d.close()
   const made = await p.evaluate(async id => {const r=await fetch('/api/outreach',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lead_id:id})});return {status:r.status,body:await r.json()}},'a'.repeat(24))
   assert.ok(made.status===200||made.status===201,JSON.stringify(made))

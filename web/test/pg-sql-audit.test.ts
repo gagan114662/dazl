@@ -9,11 +9,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import pg from 'pg'
-import { sqlInventory, sqlSitesIn, rawSqliteModules, pgRejects, portStatus, toPgParams, isSqliteAdmin } from '../lib/db/sql-audit.ts'
+import { sqlInventory, sqlSitesIn, rawSqliteModules, pgRejects, portStatus, toPgParams, isSqliteAdmin, ENGINE_FILES } from '../lib/db/sql-audit.ts'
 import { RAW_SQLITE_MODULES } from '../lib/db/pg-port-status.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
-import { writeFileSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdtempSync, rmSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const root = join(import.meta.dirname, '..')
@@ -64,6 +64,45 @@ test('every module on the raw SQLite handle is in lib/db/pg-port-status.ts, and 
   const ported = listed.filter(f => !raw.includes(f))
   assert.deepEqual(added, [], `new code on the raw SQLite handle: write it on the Db layer (lib/db/client.ts) instead. ${REGEN} only if it truly cannot be`)
   assert.deepEqual(ported, [], `these no longer use the raw SQLite handle: remove their lines (${REGEN})`)
+})
+
+// #354 auth port: sign-in, sign-up, verification, reset and the Google callback, and lib/auth-db.ts, are off the raw
+// handle, and stay off it (the manifest only shrinks).
+const AUTH_PORTED = ['app/api/auth/callback/google/route.ts', 'app/api/auth/reset/route.ts', 'app/api/auth/signin/route.ts', 'app/api/auth/signup/route.ts', 'app/api/auth/verify/route.ts', 'lib/auth-db.ts']
+test('the auth area is off the raw SQLite handle: no app/api/auth module and not lib/auth-db.ts', () => {
+  const raw = rawSqliteModules(root).map(f => f.replace(/\\/g, '/'))
+  assert.deepEqual(raw.filter(f => f.startsWith('app/api/auth/') || f === 'lib/auth-db.ts'), [])
+  assert.deepEqual(Object.keys(RAW_SQLITE_MODULES).filter(f => AUTH_PORTED.includes(f) || f.startsWith('app/api/auth/')), [])
+  // the routes reach the conversion boundary through the Db layer, never getScanDb
+  for (const f of AUTH_PORTED.filter(f => f.startsWith('app/'))) assert.doesNotMatch(readFileSync(join(root, f), 'utf8'), /getScanDb|getAuthDb/, f)
+})
+
+// #354 leads routes, first slice: the evidence, source-metrics, page-signals and domain-review routes, and the two
+// modules now fully on the Db layer, are off the raw handle and stay off it.
+const LEADS_PORTED = ['app/api/leads/[lead]/domain-review/route.ts', 'app/api/leads/evidence/route.ts', 'app/api/leads/page-signals/route.ts', 'app/api/leads/source-metrics/route.ts', 'lib/scan/page-signals.ts', 'lib/scan/source-metrics.ts']
+test('the ported leads routes are off the raw SQLite handle', () => {
+  const raw = rawSqliteModules(root).map(f => f.replace(/\\/g, '/'))
+  assert.deepEqual(raw.filter(f => LEADS_PORTED.includes(f)), [])
+  assert.deepEqual(Object.keys(RAW_SQLITE_MODULES).filter(f => LEADS_PORTED.includes(f)), [])
+  for (const f of LEADS_PORTED.filter(f => f.startsWith('app/'))) assert.doesNotMatch(readFileSync(join(root, f), 'utf8'), /getScanDb|getAuthDb/, f)
+})
+
+// lib/db/sqlite-store.ts is engine code (the SQLite file the engine wraps, and the auth schema's SQLite half). It may
+// hold schema statements and exactly the three one-time backfills whose Postgres half is a migration file, nothing else.
+test('lib/db/sqlite-store.ts holds only schema setup and the backfills Postgres migrations 0015/0021/0022 mirror', () => {
+  assert.ok(ENGINE_FILES.has('lib/db/sqlite-store.ts'))
+  const sites = sqlSitesIn(join(root, 'lib', 'db', 'sqlite-store.ts'), root)
+  assert.deepEqual(sites.filter(s => s.api !== 'raw'), [], 'no Db-layer or pg statements: business SQL belongs in a ported module')
+  assert.deepEqual(sites.filter(s => s.dynamic || !isSqliteAdmin(s.sql)).map(s => s.sql), [
+    'SELECT id FROM sessions WHERE public_id IS NULL', // + the UPDATE below: 0021_session_inventory.sql
+    'UPDATE sessions SET public_id = ? WHERE id = ?',
+    'UPDATE sessions SET authed_at = coalesce(created_at, 0) WHERE authed_at IS NULL', // 0022_session_fresh_auth.sql
+    '/*${}*/', // BACKFILL_SQL (lib/workspaces.ts): 0015_workspaces.sql, held to the same SQL by test/workspaces.test.ts
+  ])
+  const pgMig = (n: string) => readFileSync(join(root, 'lib', 'db', 'migrations', 'pg', n), 'utf8')
+  assert.match(pgMig('0021_session_inventory.sql'), /UPDATE sessions SET public_id = .* WHERE public_id IS NULL;/)
+  assert.match(pgMig('0022_session_fresh_auth.sql'), /UPDATE sessions SET authed_at = coalesce\(created_at, 0\) WHERE authed_at IS NULL;/)
+  assert.match(readFileSync(join(root, 'lib', 'db', 'sqlite-store.ts'), 'utf8'), /for \(const s of BACKFILL_SQL\) d\.prepare\(s\)\.run\(\)/)
 })
 
 test('Postgres PREPAREs every statement on the Db layer, and rejects no more raw statements than the manifest says', { skip: pgSkip }, async () => {

@@ -1,5 +1,6 @@
 import { test } from 'node:test'
-import { sqliteDb } from '../../lib/db/client.ts'
+import { setDb, sqliteDb } from '../../lib/db/client.ts'
+import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
@@ -27,6 +28,7 @@ const t = await installFixtureTransport({
 
 const db = new Database(':memory:')
 migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateMemory(db)
+migrateAllSqlite(db) // the app store's full schema: getDb() serves this store too (rate limits, the domain-review route)
 saveMemory(db, 'A', { positioning: 'Synthetic fixture offer.' })
 const job = createJob(db, 'A', { business_name: 'Seller', industry: 'x', location: 'y' })
 const jobB = createJob(db, 'B', { business_name: 'Other', industry: 'x', location: 'y' })
@@ -42,6 +44,7 @@ ins.run(ID(5), job, 'Different Corp', null, 'x', 'https://jobboard.test/b', 'x',
 ins.run(ID(6), job, 'Blocked Co', null, 'x', 'https://jobboard.test/c', 'x', null, 'source_review_required', 50, null)       // robots disallow
 for (const n of [1, 3, 5, 6]) await confirmLeadReview(sqliteDb(db), 'A', ID(n))
 setScanDb(db)
+setDb(sqliteDb(db)) // the domain-review route reads through getDb() (#354): the same store, as in the app
 
 const post = (id: string, headers: Record<string, string> = { 'content-type': 'application/json' }) =>
   POST(new NextRequest(`http://localhost/api/leads/${id}/find-contact`, { method: 'POST', headers, body: '{}' }), { params: Promise.resolve({ lead: id }) })

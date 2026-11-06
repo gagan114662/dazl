@@ -84,7 +84,7 @@ CREATE TABLE scan_jobs (
       created_at    BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)),
       claimed_at    BIGINT,
       finished_at   BIGINT
-    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR char_length(offer) <= 150), offer_set_at BIGINT, watch_id TEXT, candidates BIGINT, needs_review BIGINT, dropped BIGINT, run_budget TEXT, estimate TEXT, spend_reserved_usd DOUBLE PRECISION, drop_reasons TEXT, verified BIGINT, query TEXT CHECK (query IS NULL OR char_length(query) <= 600), icp TEXT CHECK (icp IS NULL OR char_length(icp) <= 4000), icp_inferred BIGINT, sources TEXT CHECK (sources IS NULL OR char_length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR char_length(csv_domain) <= 253), batch_id TEXT, enrich_started_at BIGINT, enrich_finished_at BIGINT, insert_seq BIGINT DEFAULT nextval('scan_jobs_insert_seq_seq'));
+    , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR char_length(offer) <= 150), offer_set_at BIGINT, watch_id TEXT, candidates BIGINT, needs_review BIGINT, dropped BIGINT, run_budget TEXT, estimate TEXT, spend_reserved_usd DOUBLE PRECISION, drop_reasons TEXT, verified BIGINT, query TEXT CHECK (query IS NULL OR char_length(query) <= 600), icp TEXT CHECK (icp IS NULL OR char_length(icp) <= 4000), icp_inferred BIGINT, sources TEXT CHECK (sources IS NULL OR char_length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR char_length(csv_domain) <= 253), batch_id TEXT, enrich_started_at BIGINT, enrich_finished_at BIGINT, insert_seq BIGINT DEFAULT nextval('scan_jobs_insert_seq_seq'), spend_cap_usd DOUBLE PRECISION CHECK (spend_cap_usd IS NULL OR (spend_cap_usd > 0 AND spend_cap_usd <= 3.3334)), spend_cap_reserved_usd DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (spend_cap_reserved_usd >= 0), spend_cap_refusals BIGINT NOT NULL DEFAULT 0);
 
 CREATE TABLE sequence_settings (
       tenant_id      TEXT PRIMARY KEY,
@@ -168,3 +168,18 @@ CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
+
+CREATE TABLE scan_spend_calls (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  scan_job_id TEXT NOT NULL,
+  attempt     BIGINT NOT NULL,
+  kind        TEXT NOT NULL CHECK (char_length(kind) <= 32),
+  reserve_usd DOUBLE PRECISION NOT NULL CHECK (reserve_usd >= 0),
+  actual_usd  DOUBLE PRECISION CHECK (actual_usd IS NULL OR actual_usd >= 0),
+  status      TEXT NOT NULL CHECK (status IN ('reserved','settled','kept','refused')),
+  reason      TEXT CHECK (reason IS NULL OR char_length(reason) <= 80),
+  created_at  BIGINT NOT NULL,
+  settled_at  BIGINT
+);
+CREATE INDEX scan_spend_calls_job ON scan_spend_calls (user_id, scan_job_id);

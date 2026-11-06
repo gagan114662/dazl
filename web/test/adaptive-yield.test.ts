@@ -232,6 +232,7 @@ test('#381 D2 feedback before fetch: a company in feedback memory returned by ro
 })
 
 test('#381 D3 round equivalence: a lead of the same shape persists the same gate-derived fields whether it came through round one or round two', async () => {
+  const t0 = Date.now()
   const r1 = await scan({ aVerifies: true }) // A verified in round one
   const r2 = await scan() // A refused in round one, B verified in round two
   const cols = (r1.db.prepare("SELECT name FROM pragma_table_info('leads')").all() as { name: string }[]).map(c => c.name)
@@ -239,13 +240,14 @@ test('#381 D3 round equivalence: a lead of the same shape persists the same gate
   const row2 = r2.db.prepare('SELECT * FROM leads WHERE scan_job_id = ?').get(r2.jobId) as Record<string, unknown>
   assert.ok(row1 && row2, 'both scans persisted their lead')
   // identity and content-derived columns legitimately differ; every gate-derived column must match exactly
-  const exempt = new Set(['id', 'scan_job_id', 'company', 'dedup_key', 'source_url', 'created_at', 'evidence_excerpt']) // only genuinely varying identity; timing, copy/origin and every gate column are compared
+  const exempt = new Set(['retrieved_at', 'id', 'scan_job_id', 'company', 'dedup_key', 'source_url', 'created_at', 'evidence_excerpt']) // only genuinely varying identity; timing, copy/origin and every gate column are compared
   const diffs: string[] = []
   for (const c of cols) {
     if (exempt.has(c)) continue
     if (String(row1[c] ?? null) !== String(row2[c] ?? null)) diffs.push(`${c}: round1=${JSON.stringify(row1[c] ?? null)} round2=${JSON.stringify(row2[c] ?? null)}`)
   }
-  assert.ok(Math.abs(Number(row1.retrieved_at) - Number(row2.retrieved_at)) <= 5, 'retrieved_at semantics: both are a fresh read time')
+  assert.ok(Math.abs(Number(row1.retrieved_at) - Number(row2.retrieved_at)) <= 5 + Math.ceil((Date.now() - t0) / 1000), // retrieved_at is wall clock: two sequential scans differ by at most their own elapsed time (a slow CI box made a fixed 5s bound flaky)
+     'retrieved_at semantics: both are a fresh read time')
   assert.equal(row1.evidence_excerpt, A.quote); assert.equal(row2.evidence_excerpt, B.quote) // each excerpt is its own page's quote
   assert.equal(row1.source_url, A.url); assert.equal(row2.source_url, B.url) // attribution to the page that was read
   assert.equal(r1.pageReads.includes(A.url) && r2.pageReads.includes(B.url), true, 'own fetch succeeded in both: no held-copy fallback (copy/origin columns null in both, compared above)')

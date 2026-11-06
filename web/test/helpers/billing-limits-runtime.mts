@@ -17,7 +17,7 @@ process.env.STRIPE_WEBHOOK_SECRET = 'whsec_fixture_' + randomBytes(8).toString('
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 
 const { getDb } = await import('../../lib/db/client.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const { saveKey } = await import('../../lib/llm/key-store.ts')
 const { PLAN_LIMITS } = await import('../../lib/plans.ts')
 const webhook = await import('../../app/api/billing/webhook/route.ts')

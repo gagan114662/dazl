@@ -75,15 +75,16 @@ export function readPage(text: string, cap = 60_000, show = 12): PageReading {
   return { chars_read: body.length, passages, passages_total: wins.length }
 }
 
-import type Database from 'better-sqlite3'
+import { asDb, type DbLike } from '../db/client.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 export interface LeadPageReading { url: string; role: 'posting' | 'company_home'; status: 'read' | 'failed' | 'not_used'; why?: string; reading?: PageReading }
 export interface LeadSignals { lead_id: string; company: string; topic: string; applies_to: string; looked_for: { task_terms: string[]; stack_names: string[] }; pages: LeadPageReading[]; model_call: false }
 
 // Reads the lead's own saved posting page, and its home page only when the lead already has a confirmed site.
 // A posting page is used only if it names the company. Public pages only; no model, no spend, nothing stored.
-export async function leadSignals(db: Database.Database, userId: string, leadId: string, fetchPage: (u: string) => Promise<Page | FetchFail> = fetchPageDetailed): Promise<LeadSignals | null> {
-  const lead = db.prepare('SELECT l.id, l.company, l.source_url, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, userId) as { id: string; company: string; source_url: string; company_domain: string | null } | undefined
+// The lead read is on the Db layer (#354), so the route runs on SQLite or Postgres; a raw handle is wrapped on the same connection.
+export async function leadSignals(db: DbLike, userId: string, leadId: string, fetchPage: (u: string) => Promise<Page | FetchFail> = fetchPageDetailed): Promise<LeadSignals | null> {
+  const lead = await asDb(db).get<{ id: string; company: string; source_url: string; company_domain: string | null }>('SELECT l.id, l.company, l.source_url, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, userId])
   if (!lead) return null
   const targets: { url: string; role: 'posting' | 'company_home' }[] = []
   if (/^https:\/\//.test(lead.source_url)) targets.push({ url: lead.source_url, role: 'posting' })

@@ -6,7 +6,8 @@ import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
 import { PLATFORM_SUPPORT } from '../advanced/config.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
-import { getAuthDb, getSellerProfile } from '../auth-db.ts'
+import { readSellerProfile } from '../auth-db.ts'
+import { getDb } from '../db/client.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 
@@ -182,7 +183,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
   let sells = ''
   let website = ''
   try {
-    const profile = getSellerProfile(getAuthDb(), tenantId)
+    const profile = await readSellerProfile(await getDb(), tenantId)
     sells = profile.sells
     website = profile.website
   } catch { /* keyword gate already applied; refresh continues */ }

@@ -131,3 +131,12 @@ test('an erroring source keeps its siblings evidence; all-timeout and all-error 
     assert.deepEqual(allErr.runs.map(r => [r.status, r.evidence]), [['error', null]]); assert.equal(allErr.items.length, 0)
   } finally { for (const k of ['iso_ok', 'iso_err', 'iso_slow1', 'iso_slow2']) delete ADAPTERS[k] }
 })
+
+test('a source still started when the scan ends converts to error at write (it ran or was interrupted - never silently "skipped"); a site-recorded skipped_hold survives', () => {
+  const { db, id } = setup()
+  const l = new SourceRunLedger()
+  l.record('search:tinyfish', 'started'); l.record('search:anthropic', 'skipped_hold'); l.record('search:news', 'ok')
+  l.write(db, id, 1, null, null, new Set())
+  const rows = db.prepare('SELECT collector, status FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string }[]
+  assert.deepEqual(rows, [{ collector: 'search:anthropic', status: 'skipped_hold' }, { collector: 'search:news', status: 'ok' }, { collector: 'search:tinyfish', status: 'error' }])
+})

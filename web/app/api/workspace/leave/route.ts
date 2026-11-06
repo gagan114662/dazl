@@ -4,6 +4,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { leave } from '@/lib/workspace-members'
 import { memberFail } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
 
 // Leave the workspace this session acts in. The last owner cannot leave; the next request uses another workspace.
 export async function POST(req: NextRequest) {
@@ -11,7 +12,9 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    await leave(await getDb(), user)
+    const role = await leave(await getDb(), user)
+    // recorded in the workspace that was left, where its admins can see it
+    await audit(user, req, { action: 'member.left', resource: 'member', id: user.actorId, summary: { role } })
     return NextResponse.json({ ok: true })
   } catch (e) { return memberFail(e) }
 }

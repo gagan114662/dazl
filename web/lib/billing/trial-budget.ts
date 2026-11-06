@@ -40,7 +40,7 @@ import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { captureError } from '../ops/errors.ts'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
-import { TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
+import { operatorKey, TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
 
 export function migrateTrialBudget(db: Database.Database): void {
   db.exec(`
@@ -88,6 +88,25 @@ export function trialCaps(env: Record<string, string | undefined> = process.env)
   if (!reserveUsd || !accountTotalUsd || !globalDailyUsd || tinyfishSearchUsd === null || tinyfishFetchUsd === null) return null
   return { reserveUsd, accountTotalUsd, globalDailyUsd, tinyfishSearchUsd, tinyfishFetchUsd }
 }
+
+// #409 admission isolation: the money ceilings every trial-funded admission is checked against - the account's total
+// and the deployment's day. A website read needs only these (plus its own gates: lib/scan/trial-site-read.ts operator
+// key, DAZL_TRIAL_SITE_READS_PER_DAY, DAZL_TRIAL_SITE_READ_ALLOWLIST); a trial scan needs ALL of trialCaps (its own
+// per-scan reserve and TinyFish prices on top). So a deployment can fund one allowlisted website read with
+// DAZL_TRIAL_SCAN_RESERVE_USD (or the TinyFish prices) left unset, and trial scans stay OFF for every account - before
+// this, enabling a read required the full scan config, which opened trial scans to every eligible signup. Both default
+// OFF: null unless both ceilings are set to a positive number.
+export interface TrialWallet { accountTotalUsd: number; globalDailyUsd: number }
+export function trialWalletCaps(env: Record<string, string | undefined> = process.env): TrialWallet | null {
+  const accountTotalUsd = positive(env.DAZL_TRIAL_ACCOUNT_TOTAL_USD), globalDailyUsd = positive(env.DAZL_TRIAL_GLOBAL_DAILY_USD)
+  return accountTotalUsd && globalDailyUsd ? { accountTotalUsd, globalDailyUsd } : null
+}
+
+// Whether a trial scan could actually be admitted right now (#668 review): the operator key alone is not enough -
+// admitTrialScan also requires trialCaps() to resolve, and a deployment can have the key set with the ceilings/TinyFish
+// config absent (production was in exactly that state). The one helper every "is the trial on" copy/claim must share,
+// so the sign-up page, Settings and admission itself cannot drift from each other.
+export const trialFundable = (env: NodeJS.ProcessEnv = process.env): boolean => !!operatorKey(env) && trialCaps(env) !== null
 
 // Mailbox providers anyone can sign up to: the one-trial-per-domain rule would lock out everyone else on them, so these
 // count per account only (a verified Google account each).
@@ -149,7 +168,10 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 }
 
 // The checks, as a transaction step: the reason a trial scan would be refused for this user now, or null.
-function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialCaps, day: number, reserveUsd = caps.reserveUsd): TxBody<TrialRefusal | null> {
+// The attempts counter is the account's trial SCANS only (ledger: a website read is money in the wallet, not an
+// attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
+// (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
+function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number): TxBody<TrialRefusal | null> {
   const google = yield* t.get("SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?", [user.id])
   if (!google) return 'google_required'
   const domain = emailDomain(user.email)
@@ -179,7 +201,7 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
     // every admission takes this row first (created by the first admission, so a freshly migrated store stays empty), so
     // two instances cannot both admit against the same remaining budget: the upsert locks the row until this commits
     yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
-    const why = yield* refusal(t, user, caps, day)
+    const why = yield* refusal(t, user, caps, day, caps.reserveUsd)
     if (why) return { ok: false, reason: why }
     const id = randomBytes(12).toString('hex')
     yield* t.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, ?, ?, ?)', [id, user.id, caps.reserveUsd, day, now])
@@ -189,8 +211,9 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
 
 // #409: admit one trial-funded website read: the same checks and lock as a scan, against the read's own reserve, and a
 // 'site_read' reservation of that reserve in the wallet. Settle it with settleTrialSiteRead once its call has ended.
+// Gated by the wallet's money ceilings only (trialWalletCaps), never by the scan config: see trialWalletCaps.
 export async function admitTrialSiteReadBudget(db: Db, user: { id: string; email: string }, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<Admission> {
-  const caps = trialCaps(o.env)
+  const caps = trialWalletCaps(o.env)
   if (!caps) return { ok: false, reason: 'not_configured' }
   const now = o.now ?? Math.floor(Date.now() / 1000), day = utcDay(now)
   return db.tx(function* (t: Tx): TxBody<Admission> {
@@ -214,12 +237,15 @@ export async function settleTrialSiteRead(db: Db, tenantId: string, reservation:
 }
 
 // For the free-scans counter: why a trial scan would be refused right now (null = it would run), without reserving.
-// reserveUsd: the amount the admission would reserve (default: a scan's reserve; a website read passes its own).
-export async function trialRefusal(db: Db, user: { id: string; email: string }, o: { now?: number; env?: Record<string, string | undefined>; reserveUsd?: number } = {}): Promise<TrialRefusal | null> {
-  const caps = trialCaps(o.env)
+// kind 'site_read' asks the same for a website read instead: the wallet's ceilings only (trialWalletCaps), against the
+// read's reserve, so it agrees with admitTrialSiteReadBudget. reserveUsd overrides the amount checked.
+export async function trialRefusal(db: Db, user: { id: string; email: string }, o: { now?: number; env?: Record<string, string | undefined>; reserveUsd?: number; kind?: 'scan' | 'site_read' } = {}): Promise<TrialRefusal | null> {
+  const read = o.kind === 'site_read'
+  const caps = read ? trialWalletCaps(o.env) : trialCaps(o.env)
   if (!caps) return 'not_configured'
   const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
-  return db.tx(t => refusal(t, user, caps, day, o.reserveUsd))
+  const reserveUsd = o.reserveUsd ?? (read ? TRIAL_SITE_READ_RESERVE_USD : (caps as TrialCaps).reserveUsd)
+  return db.tx(t => refusal(t, user, caps, day, reserveUsd))
 }
 
 // Called by the runner as the very last step of a trial scan's run (lib/scan/runner.ts), after the scan, its enrichment

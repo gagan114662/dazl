@@ -25,6 +25,7 @@ const REQUEST = 'Find Ohio companies with 10 to 100 employees that recently post
 const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: ['payroll job'], exclude: [] }
 
 
+const USAGE_IN = 6000, USAGE_OUT = 300 // about 0.0225 per call at the sonnet price
 type Calls = { complete: number; research: number; maxTokens: number[]; promptBytes: number }
 // sameDb: run a second job in the store of an earlier run (the owner pool lives in that store, as in the app).
 function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, sameDb: Database.Database | null = null, countMode: 'ok' | 'huge' | 'fail' = 'ok') {
@@ -50,7 +51,9 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
   }) as unknown as typeof fetch
   const anth: Provider = {
     research: async () => { calls.research++; return { text: '', citedUrls: [] } },
-    complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { calls.complete++; calls.maxTokens.push(maxTokens ?? 0); calls.promptBytes += Buffer.byteLength(p); if ((failExtraction && maxTokens !== 300) || (noIcp && failExtraction)) throw new ProviderError('retry', 'provider_500'); return maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead]) },
+    complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { calls.complete++; calls.maxTokens.push(maxTokens ?? 0); calls.promptBytes += Buffer.byteLength(p); if ((failExtraction && maxTokens !== 300) || (noIcp && failExtraction)) throw new ProviderError('retry', 'provider_429', 'none'); return maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead]) },
+    // A real provider returns its usage; the runner settles each call to it (#363). Without usage the worst case stays reserved and the scan stops after one call.
+    completeDetailed: async (k: string, p: string, f?: typeof fetch, maxTokens?: number) => ({ text: await anth.complete!(k, p, f, maxTokens), model: model ?? null, usage: { input_tokens: USAGE_IN, output_tokens: USAGE_OUT } }) as never,
     ...(model ? { configuredModel: () => model } : {}),
   }
   const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: anth, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
@@ -106,7 +109,7 @@ test('budget mode: a provider failure is terminal. The job is NOT re-queued for 
   assert.equal(row.attempts, 1)
 })
 
-test('without a budget the same provider failure still re-queues (unchanged behavior)', async () => {
+test('without a budget a provider failure with nothing outstanding still re-queues (unchanged behavior)', async () => {
   const x = await run(null, undefined, true, true)
   assert.equal((x.db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status, 'pending')
 })

@@ -44,6 +44,32 @@ log() { echo "staging-deploy: $*"; }
 fail() { echo "staging-deploy: $*" >&2; exit 1; }
 val() { sed -n "s/^\(export \)\{0,1\}$1=//p" "$2" | tail -n 1 | sed "s/^[\"']//; s/[\"']$//"; }
 
+# Staging Gmail (issue #413): stubbed unless DAZL_STAGING_REAL_GMAIL=1. Real mode needs its own staging-only OAuth client
+# (GMAIL_STAGING_CLIENT_ID/SECRET, both) and an owner-inbox allowlist (DAZL_STAGING_GMAIL_ALLOWLIST: exact addresses, no
+# wildcards or domains). Credentials without the flag, or the flag without the full config, refuse the deploy.
+check_gmail_transport() {
+  local f=$1 flag id secret allow a
+  flag=$(val DAZL_STAGING_REAL_GMAIL "$f"); id=$(val GMAIL_STAGING_CLIENT_ID "$f"); secret=$(val GMAIL_STAGING_CLIENT_SECRET "$f"); allow=$(val DAZL_STAGING_GMAIL_ALLOWLIST "$f")
+  if [ "$flag" != 1 ]; then
+    [ -z "$flag" ] || [ "$flag" = 0 ] || fail "env: DAZL_STAGING_REAL_GMAIL must be 1 or unset"
+    [ -z "$id$secret$allow" ] || fail "env: Gmail credentials/allowlist on staging need DAZL_STAGING_REAL_GMAIL=1 (Gmail is stubbed)"
+    return 0
+  fi
+  [ -n "$id" ] && [ -n "$secret" ] || fail "env: GMAIL_STAGING_CLIENT_ID and GMAIL_STAGING_CLIENT_SECRET go together and are required with DAZL_STAGING_REAL_GMAIL=1"
+  case "$id" in *.apps.googleusercontent.com) ;; *) fail "env: GMAIL_STAGING_CLIENT_ID is not a Google OAuth client id";; esac
+  [ -n "$allow" ] || fail "env: DAZL_STAGING_GMAIL_ALLOWLIST is required with DAZL_STAGING_REAL_GMAIL=1"
+  local IFS=,
+  for a in $allow; do
+    a=$(printf '%s' "$a" | tr -d ' ')
+    case "$a" in *'*'*|'') fail "env: DAZL_STAGING_GMAIL_ALLOWLIST holds exact addresses only";; esac
+    printf '%s' "$a" | grep -Eq '^[^@<>;" ]+@[^@<>;" ]+[.][^@<>;" ]+$' || fail "env: DAZL_STAGING_GMAIL_ALLOWLIST entry is not an email address"
+  done
+  unset IFS
+  for k in GOOGLE_CLIENT_ID GOOGLE_SIGNIN_CLIENT_ID GMAIL_STAGING_CLIENT_ID; do v=; [ -z "$PROD_ENV_FILE" ] || v=$(val "$k" "$PROD_ENV_FILE"); [ -z "$v" ] || [ "$v" != "$id" ] || fail "env: the staging Gmail client is production's Google client"; done
+  for k in GOOGLE_CLIENT_SECRET GOOGLE_SIGNIN_CLIENT_SECRET GMAIL_STAGING_CLIENT_SECRET; do v=; [ -z "$PROD_ENV_FILE" ] || v=$(val "$k" "$PROD_ENV_FILE"); [ -z "$v" ] || [ "$v" != "$secret" ] || fail "env: the staging Gmail client secret is production's"; done
+  sid=$(val GOOGLE_SIGNIN_CLIENT_ID "$f"); [ -z "$sid" ] || [ "$sid" != "$id" ] || fail "env: the staging Gmail client must differ from the sign-in client"
+}
+
 check_env() {
   local f=$1
   [ -f "$f" ] || fail "env file $f not found"
@@ -51,7 +77,8 @@ check_env() {
   [ -z "$(val DATABASE_URL "$f")" ] || fail "env: no DATABASE_URL on staging (its store is its own SQLite file)"
   case "$(val STRIPE_SECRET_KEY "$f")" in sk_test_*|rk_test_*|'') ;; *) fail "env: STRIPE_SECRET_KEY must be a test-mode key";; esac
   case "$(val PUBLIC_BASE_URL "$f")" in https://staging.*) ;; *) fail "env: PUBLIC_BASE_URL must be the staging URL";; esac
-  [ -z "$(val GOOGLE_CLIENT_SECRET "$f")" ] && [ -z "$(val GOOGLE_CLIENT_ID "$f")" ] || fail "env: no Google credentials on staging (Gmail is stubbed)"
+  [ -z "$(val GOOGLE_CLIENT_SECRET "$f")" ] && [ -z "$(val GOOGLE_CLIENT_ID "$f")" ] || fail "env: no Google credentials on staging under GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET (they disable staging sign-in; real staging Gmail uses GMAIL_STAGING_*)"
+  check_gmail_transport "$f"
   check_signin_client "$f"
   local db; db=$(val DB_PATH "$f")
   [ -n "$db" ] || fail "env: DB_PATH is required"

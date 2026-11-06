@@ -40,7 +40,17 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
+  policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
+  comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
+  from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
 
+- b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
+  (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:
+  scan-runner settle, per-play caps outside scans, cost disclosure UI and threshold/stop events (web/docs/spend-safety.md).
+  Review fixes (Instinct 2026-11-05): NO default limits any more (unset = per-scan caps only; usage counted); limit is a
+  per-workspace explicit setting (Settings > Enrichment) with an operator-wide env fallback; credit_cap/credit_unsaved now
+  show in the scan view and Settings (provider, window, used of limit, where to change it); PG twins enforced by DAZL_REQUIRE_PG.
 - PR #568 b/359-lifecycle-flow (#359 part 2): authenticated, audited request flow for tenant export/deletion
   (session-scoped routes, owner+fresh-auth delete with explicit opt-out policy and resume, viewer+fresh-auth
   export), the settings completion UI reporting retained exceptions, and operator list/resume/reapply controls
@@ -61,6 +71,9 @@ Updated by the builder on every branch. Newest first.
   at most `SCAN_PER_TENANT_MAX` (1) claimed per tenant, kicked every tick; a restart hands queue claims back. Tick-level
   multi-tenant load test with a default-off control. Migration 0047 (Instinct's order: this PR keeps 0047, #600
   renumbers).
+- b/360-offhost-dr-proof (#360): retention (off until BACKUP_RETENTION=1), encrypted secrets/config bundle with its own
+  key (master key excluded), replacement-host restore drill + separate key drill with dated RPO/RTO report, send gate,
+  config/key-drill monitoring; CI runs the whole host-loss path on synthetic data. Live drill is Instinct's (RECOVERY.md).
 
 - b/369-server-pagination (#369 follow-up to #425): Inbox and Outcomes share one needs-owner rule
   (`lib/outreach/needs-owner.ts`); since #415 the server counted bounce_review threads but Outcomes dropped them, so the
@@ -69,6 +82,25 @@ Updated by the builder on every branch. Newest first.
   the `OUTREACH_TEST_TENANT_ID` tenant only, OFF unless `OUTREACH_INBOX_FIXTURE=1`) seeds 120 labelled threads plus one
   bounce_review notice so pagination and bounce_review can be checked live; cleanup removes only those rows
   (web/docs/inbox-fixture.md).
+
+- b/354-pg-auth (#354, area 1 of the porting order): sign-up, sign-in, verification, reset and the Google callback reach
+  the #417 conversion boundary on the Db layer, and `lib/auth-db.ts` has no raw-handle code left (its sync profile
+  readers are gone; their callers read through Db). The store opener and the auth schema's SQLite half moved to engine
+  file `lib/db/sqlite-store.ts`. `RAW_SQLITE_MODULES` 137 -> 131. Postgres-only fixture: `test/pg-port-auth-routes`.
+  #354 stays open: 131 modules, two-instance and rollback criteria remain.
+
+- b/354-pg-leads-routes (#354, area 2, first slice; stacked on b/354-pg-auth): the leads evidence, source-metrics,
+  page-signals and domain-review routes run on the Db layer (`getDb()`), with Db-layer twins `evidenceCopyForLeadDb`,
+  `evidencePurgedAtDb`, `setDomainReviewDb`; `sourceMetrics` and `leadSignals` take a Db. `RAW_SQLITE_MODULES`
+  131 -> 125. Postgres-only fixture: `test/pg-port-leads-routes`. The other 17 leads/scan routes still call sync
+  `lib/scan`/`lib/outreach` code (runner, crawler, enrichment, qualification, currentness gate, fixtures) or need an
+  insert_seq migration; blocker per route on #354. #354 stays open.
+
+- b/354-pg-auth (#354, area 1 of the porting order): sign-up, sign-in, verification, reset and the Google callback reach
+  the #417 conversion boundary on the Db layer, and `lib/auth-db.ts` has no raw-handle code left (its sync profile
+  readers are gone; their callers read through Db). The store opener and the auth schema's SQLite half moved to engine
+  file `lib/db/sqlite-store.ts`. `RAW_SQLITE_MODULES` 137 -> 131. Postgres-only fixture: `test/pg-port-auth-routes`.
+  #354 stays open: 131 modules, two-instance and rollback criteria remain.
 
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid
@@ -153,6 +185,7 @@ Updated by the builder on every branch. Newest first.
   tenant) recoverable through GET /api/leads/evidence. CSV origin cells say only what is recorded (copy / unreadable / confirmed by
   you); blank claims nothing. Limits: SQLite-only table (deletion requests: see b/evidence-purge), English wall-phrase list, silent truncation
   undetected, no live-yield evidence.
+- PR #567 b/534-frontend-baseline (Refs #534): axe/keyboard/overflow check on 9 pages x desktop + EMULATED iPhone 13/Pixel 7 and served-HTML metadata check (web/docs/FRONTEND-BASELINE.md); physical-device, screen-reader and live social-preview checks not done.
 
 ## In progress (interactive Claude session, do not duplicate)
 
@@ -167,7 +200,7 @@ Updated by the builder on every branch. Newest first.
   workspace; docs/design/email-ownership.md) and increment 2
   (change email, explicit Google linking) in review; next: #371.
 - Audit trail (#371, part): design in docs/design/audit.md. Append-only `audit_events` (PG 0041), events for
-  credential, billing, Stripe plan, sending, CRM, pipeline, consent, export and deletion actions, Settings > Audit
+  credential, billing, Stripe plan, sending, CRM, pipeline, consent, export, deletion, team and device actions, Settings > Audit
   trail and `GET /api/workspace/audit` (owners and admins; CSV). Automatic deletion is off: the tick purges nothing
   until the owner chooses a retention period (`AUDIT_RETENTION_DAYS`). Support access needs an owner decision.
 
@@ -183,7 +216,8 @@ complete — do not start new issues until each is closed or explicitly re-queue
    disposable tenant, DAZL_TOMBSTONE_LEDGER set on the host (ops/backup now copies it off-host), the owner's retention decisions.
 2. #409 (trial-funded site read): code shipped (ex-#444/#552) behind `DAZL_TRIAL_SITE_READS_PER_DAY`, OFF by
    default. Missing: turn it on in a live setting and verify the first-useful-result-without-BYOK promise actually
-   holds.
+   holds. b/409-activation-funnel: every website read is now recorded (`onboarding.site_read` audit event: path,
+   result, reason) and `scripts/activation-report.mts` prints the funnel, drop-offs and time to first verified lead.
 3. #405 (calibrated launch / preflight): code shipped (ex-#467/#553) but inactive. Missing: activation, and proof
    the "no routine hand-approvals" journey actually works end to end.
 4. #394 (agent evals / autonomous evaluation): the evaluation tooling shipped (ex-#463/#556). Missing: the complete

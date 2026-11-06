@@ -21,7 +21,7 @@ process.env.PUBLIC_BASE_URL = 'https://dazl.test'
 
 const { getDb, setDb, pgDb } = await import('../../lib/db/client.ts')
 const { runPgMigrations } = await import('../../lib/db/migrate-pg.ts')
-const { getAuthDb } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const webhook = await import('../../app/api/billing/webhook/route.ts')
 const usage = await import('../../app/api/usage/route.ts')
 

@@ -236,6 +236,40 @@ a lead it calls `contradicts`. It has no send or tool authority.
 
 **Limits and what is not built:**
 - No real model has been calibrated. That needs a provider adapter, a key and a paid budget, so it is the owner's call.
+- The real-model run is built but has not run (`lib/evals/judge-validation-run.ts`, `scripts/judge-validation-run.mts`).
+  It is separate from the stub harness above, which never loads it. One run covers both judges on both splits; the
+  thresholds, repeats and output limits are fixed in code. The run needs an explicit run id, model (named by the owner
+  at run time; only `claude-sonnet-4-5` is priced), USD cap, the dated Bank of Canada USD/CAD rate with its
+  bankofcanada.ca source URL, and the billing account's fee/tax rate with its stated basis. All of these are recorded in
+  the artifact. The cap's CAD equivalent must fit the owner's approval: Gagan's WhatsApp messages of 2026-11-03 (19:52
+  and 19:53 ET), ONE run, hard CAD 5 total. The key is read from `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY` only.
+  - Before each request, the worst case is reserved and persisted.
+  - There are no retries. Any timeout, unknown bill, invalid response, model mismatch or failed accounting stops the run
+    as failed.
+  - Each attempt records the model's `stop_reason`; the totals count refusals and max_tokens stops. A refused item has
+    no verdict and counts as unknown (abstain). More than `MAX_REFUSALS` (9) refusals stop the run as failed.
+  - One run, ever. There is no rerun path: no flag, env var or file authorizes a second run.
+    - Before `--execute`, a pre-call claim must be merged to main by a reviewed PR in
+      `web/lib/evals/judge-validation-runs.json`. The plan-only CLI prints the claim for this machine, these inputs and
+      this checkout. Exactly one claim may exist. It binds the run id, the approval text, the machine fingerprint
+      (sha256 of the macOS IOPlatformUUID or Linux `/etc/machine-id`, never HOME), the model, the USD cap, the FX rate,
+      date and source, the fee rate and basis, the state dir and the sha256 of each runner code file. It also has
+      `created_at` and `expires_at` (at most 7 days apart). The runner recomputes every field and refuses, with nothing
+      claimed or sent, when there is no claim, more than one entry, any mismatch, any extra or missing key, an expired
+      claim, or a consumed one. A stale or wrong checkout, another machine, other inputs or changed code cannot run.
+    - The state dir is stable: it is named in the reviewed claim (absolute, no default). Any other dir is refused.
+    - Then, before the first request, the run is consumed locally with exclusive creates: the approval claim in the
+      state dir, then a host claim outside it (`~/.dazl/judge-validation.host-claim`), then the run marker and ledger.
+      Any leftover refuses. A run that crashes keeps them, so a rerun refuses on that machine (same or new HOME, since the
+      state dir is bound) and on every other machine (fingerprint).
+    - After the run, add its `artifact_sha256` and `ended_at` to the claim by a reviewed PR. A consumed claim refuses
+      in every checkout.
+    - Residual, tested: on the claimed machine, if both the host claim in HOME and the claimed state dir are wiped
+      before the consumption record is merged, the local markers are gone and the committed claim alone does not stop
+      a second run there. Only the post-run consumption record closes this, so merge it right after the run.
+    - The fingerprint is the OS machine id, so a VM or container cloned from the claimed machine shares it. Run on the
+      machine the claim names, not a clone.
+  - The result is a redacted local artifact under the state dir. It makes no live-web claim and does not update the lock.
   The scan judge also runs on each tenant's own provider and model, so no single calibration covers it.
 - The scan does not consult `judgeGate` yet. Doing so would change lead scoring for every tenant whose judge is
   uncalibrated, which is all of them today.
