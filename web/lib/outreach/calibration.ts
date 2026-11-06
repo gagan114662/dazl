@@ -15,6 +15,7 @@ import { getAccessToken, gmailSend, gmailStatus, confirmedSendResult } from '../
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { approveBlockReason, createDraft, getSettings, OutreachError, testRecipientApproved, type Deps } from './service.ts'
 import { getState, liftLaunchPause, MIN_CONFIDENCE } from './autopilot.ts'
+import { recheckSendAuthority } from './send-authority.ts'
 import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, REQUIRED_STOPS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
 import { PUBLISHED_RECIPIENT_CANDIDATE_SQL, publishedContact, draftEvidenceUrls } from './published-email.ts'
 
@@ -127,6 +128,12 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
         // the tenant's own inbox: the link goes to their autopilot settings, where the launch is turned off
         unsubscribeUrl: `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/app/outreach`,
       }))
+      // Shared authority recheck (send-authority.ts), after the token await and immediately before the handoff: the tenant's
+      // autopilot switch, suppression of the test inbox and the sending identity as they are NOW. A refusal sends nothing.
+      if (recheckSendAuthority(db, tenantId, { to: policy.testInbox, sender: connected, now, autopilot: 'enabled' })) {
+        testInboxDelivered = false
+        return recordPreflight(db, tenantId, stored, { connectedMailbox: connected, testInboxDelivered, samples, stopsEnforced: observedStops(db, tenantId) }, now)
+      }
       confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl))
       testInboxDelivered = mailbox?.read_granted === true && await receivedInInbox(token, messageId, d.fetchImpl ?? fetch)
     } catch { testInboxDelivered = false }

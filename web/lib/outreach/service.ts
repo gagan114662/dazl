@@ -19,6 +19,7 @@ import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './publi
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
+import { recheckSendAuthority } from './send-authority.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -577,6 +578,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
+  { const why = recheckSendAuthority(db, tenantId, { to: m.to_email, sender: acct!.email, now: nowS(d) }); if (why) release(why) } // the shared recheck (send-authority.ts); the first-touch set above stays
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
   if (tableExists(db,'sequences')) {
