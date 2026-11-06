@@ -40,6 +40,10 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
+  policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
+  comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
+  from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
 
 - PR #568 b/359-lifecycle-flow (#359 part 2): authenticated, audited request flow for tenant export/deletion
   (session-scoped routes, owner+fresh-auth delete with explicit opt-out policy and resume, viewer+fresh-auth
@@ -69,6 +73,12 @@ Updated by the builder on every branch. Newest first.
   the `OUTREACH_TEST_TENANT_ID` tenant only, OFF unless `OUTREACH_INBOX_FIXTURE=1`) seeds 120 labelled threads plus one
   bounce_review notice so pagination and bounce_review can be checked live; cleanup removes only those rows
   (web/docs/inbox-fixture.md).
+
+- b/354-pg-auth (#354, area 1 of the porting order): sign-up, sign-in, verification, reset and the Google callback reach
+  the #417 conversion boundary on the Db layer, and `lib/auth-db.ts` has no raw-handle code left (its sync profile
+  readers are gone; their callers read through Db). The store opener and the auth schema's SQLite half moved to engine
+  file `lib/db/sqlite-store.ts`. `RAW_SQLITE_MODULES` 137 -> 131. Postgres-only fixture: `test/pg-port-auth-routes`.
+  #354 stays open: 131 modules, two-instance and rollback criteria remain.
 
 - b/352-zero-ready-recovery (#352): a customer-mention hold (counterparty_signal) now gets the same bounded automatic
   same-company press search as blocked/undated holds (cap 3, same verifier, skipped when the run disables the paid

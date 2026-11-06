@@ -41,7 +41,9 @@ test('homepage claims match behaviour (Instinct #326): example demo labelled, we
   assert.match(page, /held for your review, out of the ready-to-contact list/)
   // Pro is a flat dazl fee; AI usage on the user's own key is billed by the provider, stated on the Pro card itself.
   const pro = page.slice(page.indexOf('>Pro<'), page.indexOf('Start free, upgrade any time'))
-  assert.match(pro, /your provider bills that usage separately/)
+  // The card renders the one disclosure the product truth record carries (lib/plans.ts PRICE_DISCLOSURE, #402).
+  assert.match(pro, /\{PRICE_DISCLOSURE\}/)
+  assert.match(read('lib/plans.ts'), /PRICE_DISCLOSURE = '[^']*your provider bills that usage separately/)
   assert.doesNotMatch(page, /no overages/i)
 })
 

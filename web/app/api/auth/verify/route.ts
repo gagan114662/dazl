@@ -3,8 +3,7 @@ import { getDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { tokenOwner, verifyEmail } from '@/lib/email-ownership'
-import { getScanDb } from '@/lib/scan/service'
-import { activateLifecycleFor, recordLifecycleEvent } from '@/lib/outreach/lifecycle'
+import { activateLifecycleForDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -22,8 +21,9 @@ export async function POST(req: NextRequest) {
     // pending conversion for the address (a payment made while unverified) drains with it. Best-effort: the
     // pending rows are durable, so a lost drain completes at a later sign-in; never fails the verification.
     try {
-      recordLifecycleEvent(getScanDb(), owner.purpose === 'change' ? 'activation' : 'signup', owner.email, owner.user_id)
-      activateLifecycleFor(getScanDb(), owner.email)
+      const db = await getDb()
+      await recordLifecycleEventDb(db, owner.purpose === 'change' ? 'activation' : 'signup', owner.email, owner.user_id)
+      await activateLifecycleForDb(db, owner.email)
     } catch (e) { captureError(e, { source: 'route', where: '/api/auth/verify:lifecycle', method: 'POST', requestId: requestIdOf(req) }) }
   }
   return ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: 'invalid_link' }, { status: 410 })

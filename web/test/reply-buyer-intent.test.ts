@@ -11,14 +11,16 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
 
 process.env.DB_PATH = process.env.DB_PATH || `/tmp/reply-bi-test-${process.pid}.db`
-const { getAuthDb, setSellerProfile } = await import('../lib/auth-db.ts')
+const { getAuthDb } = await import('../lib/db/sqlite-store.ts')
+const { writeSellerProfile } = await import('../lib/auth-db.ts')
+const { sqliteDb } = await import('../lib/db/client.ts')
 
 const ENV_ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'https://w.example', ADVANCED_WORKER_TOKEN: 't' } as Record<string, string>
 const NOW = Date.now()
 const DAY = new Date(NOW - 86400_000).toISOString().slice(0, 10)
 
 // The designated test tenant's actual seller profile (read live 2026-10-22).
-function setup(sells = 'Sales prospecting software for B2B sales teams') {
+async function setup(sells = 'Sales prospecting software for B2B sales teams') {
   const d = new Database(':memory:')
   migrateThreadReplies(d); migrateOutreach(d); migrateScan(d); migrateSequences(d); migrateConnectors(d); migrateAdvanced(d); migrateKeys(d)
   const master = randomBytes(32)
@@ -27,7 +29,7 @@ function setup(sells = 'Sales prospecting software for B2B sales teams') {
   setQueries(d, 't1', ['cold email software'])
   const auth = getAuthDb()
   auth.prepare("INSERT OR REPLACE INTO users (id, email, password_hash, salt) VALUES ('t1', 't1@test.local', 'x', 'y')").run()
-  setSellerProfile(auth, 't1', sells, '')
+  await writeSellerProfile(sqliteDb(auth), 't1', sells, '')
   return { d, master }
 }
 
@@ -41,7 +43,7 @@ const CANDIDATES = [
 ]
 
 test('buyer-intent grading: buyer thread stored with verdict, internship thread filtered as no', async () => {
-  const { d, master } = setup()
+  const { d, master } = await setup()
   {
     // model verdict by thread content: internship seeker = not a buyer
     const fetchImpl = (async (_url: unknown, init: { body?: string } = {}) => {
@@ -60,7 +62,7 @@ test('buyer-intent grading: buyer thread stored with verdict, internship thread 
 })
 
 test('provider error: thread stored keyword-matched only (buyer_intent NULL), never hidden', async () => {
-  const { d, master } = setup()
+  const { d, master } = await setup()
   {
     const fetchImpl = (async () => { throw new Error('upstream down') }) as unknown as typeof fetch
     const worker = async () => ({ unsupported: null, items: [CANDIDATES[0]] })
@@ -82,7 +84,7 @@ test('no AI key: no grading calls, keyword behavior unchanged', async () => {
 })
 
 test('existing keyword-only rows are re-graded inside a manual refresh: internship row verdict no is hidden, drafted rows stay visible', async () => {
-  const { d, master } = setup()
+  const { d, master } = await setup()
   // Pre-existing rows stored before grading existed (buyer_intent NULL), like the live tenant.
   const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', ?, 0, NULL)")
   ins.run('old1', 'https://reddit.com/r/jobs/2', 'HELPPPP What organizations should I cold email?', "I'm trying to cold email some PI's for an internship in drug discovery", DAY)
@@ -105,7 +107,7 @@ test('existing keyword-only rows are re-graded inside a manual refresh: internsh
 })
 
 test('refresh reports graded count: new candidates graded once each, no backlog left', async () => {
-  const { d, master } = setup()
+  const { d, master } = await setup()
   const fetchImpl = (async (_url: unknown, init: { body?: string } = {}) => {
     const word = /internship/i.test(init?.body ?? '') ? 'no' : 'yes'
     return new Response(JSON.stringify({ content: [{ type: 'text', text: word }] }), { status: 200 })
@@ -119,7 +121,7 @@ test('refresh reports graded count: new candidates graded once each, no backlog 
 })
 
 test('per-refresh cap is honest: 12 backlog rows, cap 10 - graded 10, ungraded_remaining 2, no full-backfill promise', async () => {
-  const { d, master } = setup()
+  const { d, master } = await setup()
   const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', ?, 0, NULL)")
   for (let i = 0; i < 12; i++) ins.run(`old${i}`, `https://reddit.com/r/sysadmin/${i}`, `deliverability question ${i}`, `scaling cold email, filters got harder ${i}`, DAY)
   const worker = async () => ({ unsupported: null, items: [] as { url: string; title: string; quote: string; date: string | null; login_walled: boolean }[] })
@@ -135,7 +137,7 @@ test('per-refresh cap is honest: 12 backlog rows, cap 10 - graded 10, ungraded_r
 })
 
 test('provider errors count nothing: graded 0, rows stay NULL, ungraded_remaining reports the backlog', async () => {
-  const { d, master } = setup()
+  const { d, master } = await setup()
   const ins = d.prepare("INSERT INTO reply_threads (id, tenant_id, platform, url, title, quote, query, date, login_walled, buyer_intent) VALUES (?, 't1', 'reddit', ?, ?, ?, 'cold email software', ?, 0, NULL)")
   ins.run('old1', 'https://reddit.com/r/sysadmin/1', 'deliverability one', 'scaling cold email', DAY)
   ins.run('old2', 'https://reddit.com/r/sysadmin/2', 'deliverability two', 'spam filters got harder', DAY)
@@ -148,7 +150,7 @@ test('provider errors count nothing: graded 0, rows stay NULL, ungraded_remainin
 })
 
 test('unreadable stored key: refresh completes keyword-only, rows stay NULL, graded 0, backlog counted', async () => {
-  const { d, master } = setup()
+  const { d, master } = await setup()
   d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
   const worker = async () => ({ unsupported: null, items: [CANDIDATES[1]] }) // internship thread passes the keyword gate
   const r = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })

@@ -7,8 +7,8 @@ import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { deviceLabel } from '@/lib/sessions'
-import { getScanDb } from '@/lib/scan/service'
-import { activateLifecycleFor } from '@/lib/outreach/lifecycle'
+import { getDb } from '@/lib/db/client'
+import { activateLifecycleForDb } from '@/lib/outreach/lifecycle'
 import { PREVIEW_CLAIM_COOKIE } from '@/lib/auth-google-response'
 import { isClaimToken } from '@/lib/scan/preview-claim'
 
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
     if (!token) return fail()
     // #417 safety net: a verified account signing in completes any pending conversion queued for its address,
     // so a drain lost at the verification boundary still lands. Best-effort; never blocks the sign-in.
-    if (user.email_verified_at !== null) { try { activateLifecycleFor(getScanDb(), email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signin:lifecycle', method: 'POST', requestId: requestIdOf(req) }) } }
+    if (user.email_verified_at !== null) { try { await activateLifecycleForDb(await getDb(), email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/signin:lifecycle', method: 'POST', requestId: requestIdOf(req) }) } }
     const cookieStore = await cookies()
     cookieStore.set('dazl_session', token, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_TTL_S, path: '/' })
     // #416: a preview claim this browser is carrying from a Google attempt (the httpOnly intent cookie, which the page
