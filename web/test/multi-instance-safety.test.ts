@@ -79,7 +79,7 @@ test('[pg] the TinyFish breaker one instance trips stops the other instance too'
     let calls = 0
     const limited = (async () => { calls++; return new Response('{}', { status: 429 }) }) as unknown as typeof fetch
     const fine = (async () => { calls++; return new Response(JSON.stringify({ results: [] }), { status: 200 }) }) as unknown as typeof fetch
-    assert.deepEqual(await tfSearch(one, T, 'first query here', {}, { searches: 0 }, { env, fetchImpl: limited, now }), { ok: false, reason: 'rate' })
+    assert.deepEqual(await tfSearch(one, T, 'first query here', {}, { searches: 0 }, { env, fetchImpl: limited, now }), { ok: false, reason: 'rate', status: 429 })
     await resetTinyfishState() // both handles are in this process: drop its own memory, as a second process would not have it
     assert.deepEqual(await tfSearch(two, T, 'second query here', {}, { searches: 0 }, { env, fetchImpl: fine, now: now + 30 }), { ok: false, reason: 'rate' }, 'the other instance is held by the breaker')
     assert.equal(calls, 1)

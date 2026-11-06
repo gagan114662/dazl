@@ -37,6 +37,10 @@ test('postgres: export complete, deletion erases only the target, other tenant b
     await assert.rejects(deleteTenant(db, A, { policy: { suppressions: 'retain', retainTables: ['lead_sources'] }, requestedBy: 'synthetic pg test' }), /lead_sources cannot be retained without leads/)
     assert.deepEqual(await snapshot(db, A), aBefore, 'refused: nothing changed')
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM tenant_tombstones'))?.n), 0)
+    // named, non-vacuous: the seeded onboarding rows exist before the deletion
+    for (const t of ['onboarding_enrollments', 'onboarding_policies'])
+      assert.equal(Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM ${t} WHERE tenant_id = ?`, [A]))!.n), 1, `seeded ${t} row present before deletion`)
+    assert.ok(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM onboarding_audit WHERE tenant_id = ? AND detail IS NOT NULL', [A]))!.n) >= 1, 'seeded audit row carries detail before deletion')
     const bBefore = await snapshot(db, B)
     const t = await deleteTenant(db, A, { policy: { suppressions: 'retain', retainTables: ['scan_jobs', 'leads', 'lead_sources'] }, requestedBy: 'synthetic pg test' })
     assert.equal(t.state, 'completed'); assert.deepEqual(JSON.parse(t.retained!), { audit_events: 4, evidence_purge_audit: 1, lead_sources: 1, leads: 1, onboarding_audit: 1, scan_jobs: 1, suppressions: 1 }) // audit_events: the seeded row + the deletion's own three closing events
@@ -44,6 +48,12 @@ test('postgres: export complete, deletion erases only the target, other tenant b
     const kept = ['suppressions', 'evidence_purge_audit', 'audit_events', 'onboarding_audit', 'scan_jobs', 'leads', 'lead_sources'] // onboarding_audit: ALWAYS_RETAINED, content-free consent evidence survives
     assert.deepEqual(Object.entries(after).filter(([k, v]) => !kept.includes(k) && v !== '[]').map(([k]) => k), [])
     for (const k of ['scan_jobs', 'leads', 'lead_sources']) assert.equal(after[k], aBefore[k], `${k} retained byte-identical`)
+    // named: onboarding enrollments/policies erased with the tenant; retained audit detail blanked atomically at completion
+    for (const t of ['onboarding_enrollments', 'onboarding_policies'])
+      assert.equal(Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM ${t} WHERE tenant_id = ?`, [A]))!.n), 0, `${t} erased with the tenant`)
+    assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM onboarding_audit WHERE tenant_id = ? AND detail IS NOT NULL', [A]))!.n), 0, 'every retained audit row blank at completion')
+    for (const t of ['onboarding_enrollments', 'onboarding_policies'])
+      assert.equal(Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM ${t} WHERE tenant_id = ?`, [B]))!.n), 1, `other tenant's ${t} row untouched`)
     assert.deepEqual(await snapshot(db, B), bBefore, 'the other tenant is byte-identical')
     await assert.rejects(db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES ('late', ?, 'x', 'y', 'z')", [A]), /tenant deleted/)
     assert.equal((await db.get<{ n: number }>('SELECT count(*) AS n FROM organizations WHERE id = ?', [A]))!.n, 0)

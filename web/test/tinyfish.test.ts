@@ -36,7 +36,7 @@ test('402 and 429 and 401 trip a breaker so no more calls are made', async () =>
   for (const [status, reason] of [[402, 'quota'], [429, 'rate'], [401, 'auth']] as const) {
     const db = mk(); let n = 0
     const f = (async () => { n++; return new Response('{}', { status }) }) as unknown as typeof fetch
-    assert.deepEqual(await tfSearch(db, 't1', 'some query text', {}, { searches: 0 }, { env, fetchImpl: f, now: NOW }), { ok: false, reason })
+    assert.deepEqual(await tfSearch(db, 't1', 'some query text', {}, { searches: 0 }, { env, fetchImpl: f, now: NOW }), { ok: false, reason, status }, 'the result carries the ACTUAL HTTP status when the provider answered')
     await tfSearch(db, 't1', 'some query again', {}, { searches: 0 }, { env, fetchImpl: f, now: NOW + 1 })
     assert.equal(n, 1)
   }

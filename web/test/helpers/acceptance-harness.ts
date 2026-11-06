@@ -4,13 +4,14 @@
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
-import { migrateScan, createQueryJob } from '../../lib/scan/store.ts'
+import { migrateScan, createJob, createQueryJob } from '../../lib/scan/store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateAuth } from '../../lib/auth-db.ts'
 import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
-import type { Provider } from '../../lib/llm/provider.ts'
+import { ProviderError, type Provider } from '../../lib/llm/provider.ts'
+import { reserveScanSpend } from '../../lib/scan/spend-cap.ts'
 import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
 import { resetTinyfishState } from '../../lib/search/tinyfish.ts'
@@ -30,17 +31,25 @@ export interface Fixture {
   modelIcp: object                         // SYNTHETIC profile-generation reply (real normalisation and funding-stage guard run on it)
   modelQueries: string[]                   // SYNTHETIC query-writing reply
   hits: Hit[]                              // SYNTHETIC search results (returned for every query)
+  hitsFor?: (n: number) => Hit[]           // SYNTHETIC results for the n-th search of the scan (0-based; replaces `hits` when set)
   tfPages: Record<string, { title: string; text: string }>   // SYNTHETIC TinyFish fetch results
   own: Record<string, { title: string; text: string; published?: string; structured?: string[] } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   extractionFn?: (prompt: string) => Cand[]   // SYNTHETIC extraction reply that depends on the prompt it was given (replaces `extraction` when set)
+  researchError?: boolean                  // the paid model web search fails AFTER send (uncertain 5xx) instead of answering
+  searchStatusFor?: (n: number) => number | undefined   // per-search HTTP status (0-based); overrides hitsFor for that search (a mid-run source failure)
+  tinyfishOff?: boolean                    // TINYFISH_API_KEY is not set: the TinyFish stage is skipped entirely
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
   beforeRun?: (db: Database.Database) => void | Promise<void>   // called once with the job claimed, before the scan starts (state an earlier play left)
 
   reviewedIcp?: object                     // a profile the USER reviewed: stored with the job exactly as POST /api/scan stores it (normalizeIcp, icp_inferred = 0); no inference is run
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
   runBudget?: string                       // the job's stored run_budget JSON (as POST /api/scan stores it)
+  csvDomain?: string                       // a CSV company job for this domain (the business path: three fixed queries, no LLM planning call)
   searchStatus?: number                    // the search API answers every query with this HTTP status (a source/infrastructure failure)
+  searchTimeout?: boolean                  // the search request never answers (the fetch rejects like an abort/timeout: a maybe-billed send)
+  fetchStatus?: number                     // the fetch API answers every batch with this HTTP status (a source/infrastructure failure)
+  researchRealReserve?: boolean            // the stub research reserves through the REAL spend ledger before failing (durable production-model uncertainty, not a no-reserve stub)
   fundedBy?: 'trial'                       // the job is a free-trial scan (funded_by = 'trial'; the caller sets the DAZL_TRIAL_* env)
   model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
 }
@@ -52,22 +61,32 @@ export async function runFixture(f: Fixture) {
   db.prepare("INSERT INTO users (id, email, business_name, password_hash, salt) VALUES ('A', 'acme@example.test', 'Acme', 'h', 's')").run()
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
   const icp = f.reviewedIcp ? normalizeIcp(f.reviewedIcp)! : (await inferIcp(icpProvider, KEY, f.request)).icp
-  createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
+  if (f.csvDomain) {
+    // CSV company path: business job, no query on the job (the runner builds three fixed queries from the domain)
+    const id = createJob(db, 'A', { business_name: 'Brightloop', industry: 'B2B SaaS', location: 'London, UK' }, f.runBudget ?? null)
+    db.prepare('UPDATE scan_jobs SET csv_domain = ? WHERE id = ?').run(f.csvDomain, id)
+  } else {
+    createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
+  }
   if (f.fundedBy) { migrateTrialBudget(db); db.prepare('UPDATE scan_jobs SET funded_by = ?').run(f.fundedBy) }   // the trial tables, so settleTrialReservation finds its table (no reservation row: admission is the route's job)
   const job = claimKeyedJob(db)!
   await f.beforeRun?.(db)
-  const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[] }
+  const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[], research: [] as true[] }
   const fetchImpl = (async (u: string, init?: RequestInit) => {
     if (u.startsWith('https://api.search.tinyfish.ai')) {
       const q = new URL(u).searchParams.get('query') ?? ''
       if (q.startsWith('site:linkedin.com/in ')) return new Response(JSON.stringify({ results: [] }), { status: 200 })
       calls.searches.push(q); calls.afters.push(new URL(u).searchParams.get('after_date'))
+      const stN = f.searchStatusFor?.(calls.searches.length - 1)
+      if (stN) return new Response('{}', { status: stN })
       if (f.searchStatus) return new Response('{}', { status: f.searchStatus })
-      return new Response(JSON.stringify({ results: f.hits.map(h => ({ url: h.url, title: h.title, snippet: h.snippet, ...(h.date ? { date: h.date } : {}) })) }), { status: 200 })
+      if (f.searchTimeout) throw new DOMException('The operation timed out.', 'TimeoutError') // sent, never answered
+      return new Response(JSON.stringify({ results: (f.hitsFor ? f.hitsFor(calls.searches.length - 1) : f.hits).map(h => ({ url: h.url, title: h.title, snippet: h.snippet, ...(h.date ? { date: h.date } : {}) })) }), { status: 200 })
     }
     if (u.startsWith('https://api.fetch.tinyfish.ai')) {
       const urls = (JSON.parse(String(init?.body ?? '{}')) as { urls?: string[] }).urls ?? []
       calls.tfFetchBatches.push(urls)
+      if (f.fetchStatus) return new Response('{}', { status: f.fetchStatus })
       return new Response(JSON.stringify({ results: urls.filter(x => f.tfPages[x]).map(x => ({ url: x, ...f.tfPages[x] })) }), { status: 200 })
     }
     return new Response('{}', { status: 200 })
@@ -75,7 +94,16 @@ export async function runFixture(f: Fixture) {
   const reply = (p: string, maxTokens?: number) => { calls.prompts.push(p); return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
-      research: async () => ({ text: '[]', citedUrls: [] }), // the paid fallback (when search finds nothing) also answers with no candidates
+      research: async () => {
+        calls.research.push(true)
+        if (f.researchError) {
+          // Mirror the production paid-call path: a REAL reserve through the spend ledger, then a maybe-billed failure -
+          // the row stays 'reserved' (unsettled), the durable evidence a no-reserve stub cannot produce.
+          if (f.researchRealReserve) { const hold = await reserveScanSpend('llm.anthropic', () => 0.001); if (!hold) throw new Error('reserveScanSpend returned null outside a scan attempt'); hold.uncertain() }
+          throw new ProviderError('retry', 'http 500', 'uncertain')
+        }
+        return { text: '[]', citedUrls: [] }
+      }, // the paid fallback (when search finds nothing) also answers with no candidates
       complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => reply(p, maxTokens),
       // SYNTHETIC usage numbers (stub counts, not real tokens or charges): proves the usage path records what a provider reports.
       completeDetailed: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => ({ text: reply(p, maxTokens), model: 'stub-model-served', usage: { input_tokens: 1000, output_tokens: 100 } }),
@@ -92,7 +120,7 @@ export async function runFixture(f: Fixture) {
     if (typeof o === 'string') return { fail: (o === 'js_required' ? 'js_required' : o === 'not_found' ? 'not_found' : 'blocked') as 'blocked' }
     return { text: o.text, title: o.title, retrievedAt: Math.floor(Date.now() / 1000), ...(o.published ? { published: o.published } : {}), ...(o.structured ? { structured: o.structured } : {}) }
   }
-  const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; process.env.TINYFISH_API_KEY = 'tf-test'
+  const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; if (!f.tinyfishOff) process.env.TINYFISH_API_KEY = 'tf-test'
   try {
     const r = await runJob(db, job, { providers, master, fetchPage, fetchImpl, score: false, ground: false, judge: null, ...(f.deps ?? {}) })
     const jobRow = db.prepare('SELECT status, error, candidates, verified, needs_review, dropped, drop_reasons FROM scan_jobs').get() as Record<string, unknown>

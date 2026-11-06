@@ -5,7 +5,7 @@ import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
-import { conversionBlockedNow } from './lifecycle.ts'
+import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -32,8 +32,26 @@ export const TEST_INBOX = 'instinct114114@gmail.com'
 export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
   norm(email) === TEST_INBOX && isAllowlistedTestRecipient(db,tenantId,email)
-export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
-  !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
+// Synthetic recipients of the test-only inbox fixture (lib/outreach/inbox-fixture.ts, #369). The .invalid TLD cannot
+// resolve, and no draft, send, follow-up or sequence step may ever be addressed to one: recipientAllowed refuses them
+// (every follow-up and sequence path checks it), and draft and send refuse them first with their own code.
+export const INBOX_FIXTURE_DOMAIN = 'inbox-fixture.dazl.invalid'
+export const isInboxFixtureAddress = (email: string): boolean => {
+  const d = norm(email).split('@').pop() ?? ''
+  return d === INBOX_FIXTURE_DOMAIN || d.endsWith(`.${INBOX_FIXTURE_DOMAIN}`)
+}
+// The env-designated test tenant may address only the approved test inbox. Every send path
+// (draft, manual and autopilot send, follow-up, sequence step, re-open) runs this gate
+// synchronously before a send, so the restriction holds at each authoritative send boundary,
+// not only in the UI. A missing or malformed allowlist fails closed via testRecipientApproved:
+// nothing is addressable for that tenant. Other tenants are unaffected. Code gate only.
+const isDesignatedTestTenant = (tenantId: string): boolean =>
+  !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
+export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean => {
+  if (isInboxFixtureAddress(email)) return false
+  if (isDesignatedTestTenant(tenantId)) return testRecipientApproved(db, tenantId, email)
+  return !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
+}
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -189,15 +207,18 @@ function readDeliverabilityRows(db: Database.Database, tenantId: string, leadId:
 function readCrawledRows(db: Database.Database, tenantId: string, leadId: string): CrawledRows {
   return db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(leadId, tenantId) as CrawledRows
 }
-// The pages a draft for this lead may cite, for the launch claim check (claimIssuesFor): read from the store so a
-// send gate can check a made draft without re-deriving the address. The crawl rows unreadable is not fatal here:
-// the draft itself was made under the same read, so a missing table shrinks the allowlist to the cited pages.
-export function draftEvidenceUrlsFor(db: Database.Database, tenantId: string, leadId: string): string[] {
-  const row = db.prepare('SELECT contact, source_url FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null } | undefined
-  if (!row) return []
+// The launch claim check's context for this lead (claimIssuesFor's evidenceUrls, prospectText and rowFound): the pages a
+// draft may cite, read from the store so a send gate can check a made draft without re-deriving the address, and what the
+// lead's source says about them (signal and saved excerpt), which the product truth qualification reads (#402). The crawl
+// rows unreadable is not fatal here: the draft itself was made under the same read, so a missing table shrinks the
+// allowlist to the cited pages. The lead row ITSELF missing is different: that is data loss, not a sparse-but-real lead,
+// so rowFound=false tells claimIssuesFor to fail closed (hold) rather than quietly qualify against empty text.
+export function draftClaimContextFor(db: Database.Database, tenantId: string, leadId: string): [string[], string, boolean] {
+  const row = db.prepare('SELECT contact, source_url, signal, evidence_excerpt FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null; signal: string | null; evidence_excerpt: string | null } | undefined
+  if (!row) return [[], '', false]
   let crawled: CrawledRows = []
   try { crawled = readCrawledRows(db, tenantId, leadId) } catch { /* enrichment table not present */ }
-  return draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled })
+  return [draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled }), [row.signal, row.evidence_excerpt].filter(Boolean).join('\n'), true]
 }
 
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
@@ -241,6 +262,8 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
+  // A test-only inbox fixture contact (#369) is never drafted to, whatever else holds the lead.
+  if (isInboxFixtureAddress(lead.contact ?? '')) throw new OutreachError('fixture_recipient')
   if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
   if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
@@ -271,6 +294,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
     addressUrl = addressCitationUrl({ contact: lead.contact, source_url: lead.source_url, enrichments: crawled }) ?? lead.source_url
   } catch { /* enrichment table not present */ }
   const to = norm(published)
+  if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   // Published is not the same as sales-contactable: press, support, privacy,
   // careers and similar inboxes exist for another purpose. Never aim a sales
@@ -339,7 +363,7 @@ export function listMessages(db: Database.Database, tenantId: string, d: Deps = 
   // The draft list carries the evidence basis so the approval UI can label a human
   // confirmation (never presented as dazl's verification) or a withdrawn one.
   const sender = getSettings(db, tenantId)
-  return rows.map(r => ({ ...r, send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
+  return rows.map(r => ({ ...r, error: displayStopReason(r.error), send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
@@ -449,6 +473,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
 type StoredMsg = NonNullable<ReturnType<typeof getMsg>>
 // Every check sendMessage makes before it claims the message, in the same order. Throws OutreachError on the first refusal.
 function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg): void {
+  if (isInboxFixtureAddress(pre.to_email)) throw new OutreachError('fixture_recipient')
   if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')

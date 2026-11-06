@@ -10,3 +10,5 @@ Before reporting a PR as ready, run full-stop (council review with the opus/sonn
 - Skills are in `.claude/skills` (vendored from t3dotgg/tstack, MIT; changes listed in its `README.md`). The
   reviewer agents are in `.claude/agents`.
 - Report every PR with its exact head SHA, the test commands and their output, and what is not verified.
+- Never use a closing keyword (`Closes`/`Fixes`/`Resolves #N`): write `Refs #N`. Instinct or the owner closes
+  issues after deploy + live proof (`docs/PROCESS.md` § "Closing issues").

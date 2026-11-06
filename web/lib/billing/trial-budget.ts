@@ -40,7 +40,7 @@ import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { captureError } from '../ops/errors.ts'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
-import { TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
+import { operatorKey, TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
 
 export function migrateTrialBudget(db: Database.Database): void {
   db.exec(`
@@ -88,6 +88,12 @@ export function trialCaps(env: Record<string, string | undefined> = process.env)
   if (!reserveUsd || !accountTotalUsd || !globalDailyUsd || tinyfishSearchUsd === null || tinyfishFetchUsd === null) return null
   return { reserveUsd, accountTotalUsd, globalDailyUsd, tinyfishSearchUsd, tinyfishFetchUsd }
 }
+
+// Whether a trial scan could actually be admitted right now (#668 review): the operator key alone is not enough -
+// admitTrialScan also requires trialCaps() to resolve, and a deployment can have the key set with the ceilings/TinyFish
+// config absent (production was in exactly that state). The one helper every "is the trial on" copy/claim must share,
+// so the sign-up page, Settings and admission itself cannot drift from each other.
+export const trialFundable = (env: NodeJS.ProcessEnv = process.env): boolean => !!operatorKey(env) && trialCaps(env) !== null
 
 // Mailbox providers anyone can sign up to: the one-trial-per-domain rule would lock out everyone else on them, so these
 // count per account only (a verified Google account each).

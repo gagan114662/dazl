@@ -10,10 +10,12 @@
 // Plus the channel: email readiness is separate from phone-only reachability.
 // Pure: reads the lead's stored fields and enrichment rows only. Nothing here fetches, resolves DNS or guesses.
 import { pickCrawledEmail, publishedContact, PUBLISHED_EMAIL_RE } from './published-email.ts'
+import { identityOf } from '../scan/opportunity.ts'
 import type { ContactContext } from './contact-context.ts'
 
 export interface RouteRow { connector: string; kind: string; value: string; label?: string | null; source_url?: string | null; retrieved_at?: number | null }
 export interface RouteLead {
+  id?: string
   contact: string | null
   source_url: string
   evidence_excerpt?: string | null
@@ -22,7 +24,7 @@ export interface RouteLead {
 }
 export interface RoutePerson { name: string; title: string | null; roleRelevant: boolean | null }
 
-export type ProvenanceState = 'cited_page' | 'company_site' | 'none'
+export type ProvenanceState = 'cited_page' | 'company_site' | 'unconfirmed_site' | 'unrecorded_site' | 'none'
 export type DeliverabilityState = 'not_checked' | 'domain_invalid' | 'mail_server_found' | 'catch_all' | 'mailbox_accepted' | 'mailbox_rejected'
 export type PersonRouteState = 'person_named_address' | 'shared_inbox' | 'restricted_inbox' | 'owner_unknown' | 'phone_only' | 'none'
 export type EmailReadiness = 'blocked' | 'uncertain' | 'checked' | 'none'
@@ -117,9 +119,20 @@ export function contactRoute(l: RouteLead, person: RoutePerson | null, now: numb
   const stale = ageDays !== null && ageDays > STALE_CONTACT_DAYS
   const what = email ? 'Address' : 'Number'
   const read = fromLead ? 'read when the scan ran' : lastReadAt ? `last read ${dayOf(lastReadAt)}${stale ? ` (${ageDays} days ago, may be out of date)` : ''}` : 'when it was read is not recorded'
+  // A crawled page is "the company website" only when the site identity is established as theirs (own-domain basis or
+  // the user's own confirmation) - the SAME identity facts the card's identity line uses (scan/opportunity.ts
+  // identityOf). A crawled email/phone row alone says nothing about which site it came from: an unconfirmed site is
+  // named as unconfirmed, and with no recorded site identity the page's relation to the company is not recorded.
+  const siteId = channel === 'none' || fromLead ? null : identityOf({ id: l.id, contact: l.contact }, rows)
+  const ownSite = !!siteId && (siteId.state === 'fact' || siteId.state === 'user_confirmed')
+  const where = fromLead ? `the cited page${hostOf(url) ? ` (${hostOf(url)})` : ''}`
+    : ownSite ? `the company website${hostOf(url) ? ` (${hostOf(url)})` : ''}`
+    : siteId ? `a page at ${hostOf(url) ?? 'a recorded website'}, a website not confirmed as the company's own`
+    : `a page at ${hostOf(url) ?? 'a recorded website'}, not recorded as the company's own website`
+  const pState: ProvenanceState = channel === 'none' ? 'none' : fromLead ? 'cited_page' : ownSite ? 'company_site' : siteId ? 'unconfirmed_site' : 'unrecorded_site'
   const provenance: ContactRoute['provenance'] = channel === 'none'
     ? { state: 'none', url: null, lastReadAt: null, ageDays: null, stale: false, text: 'Published contact: none stored.' }
-    : { state: fromLead ? 'cited_page' : 'company_site', url, lastReadAt, ageDays, stale, text: `Published: ${what.toLowerCase()} printed on ${fromLead ? 'the cited page' : 'the company website'}${hostOf(url) ? ` (${hostOf(url)})` : ''}, ${read}; when it was first published is unknown.` }
+    : { state: pState, url, lastReadAt, ageDays, stale, text: `Published: ${what.toLowerCase()} printed on ${where}, ${read}; when it was first published is unknown.` }
 
   const deliverability: ContactRoute['deliverability'] = email ? deliverabilityOf(email, rows, now)
     : { state: 'not_checked', checkedAt: null, text: phone ? 'Deliverability: no email address; a phone number is not email readiness.' : 'Deliverability: nothing to check.' }

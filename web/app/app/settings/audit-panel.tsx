@@ -9,6 +9,7 @@ type Ev = { id: string; at: number; actor_id: string; actor_kind: string; action
 const FILTERS = [['', 'Everything'], ['credential.', 'Credentials'], ['billing.', 'Billing'], ['crm.', 'CRM'], ['export.', 'Exports'],
   ['pipeline.', 'Pipeline'], ['outreach.', 'Sending'], ['sequence.', 'Sequences'], ['autopilot.', 'Autopilot'], ['followups.', 'Follow-ups'], ['monitor.', 'Monitors'], ['settings.', 'Settings'], ['consent.', 'Consent'],
   ['connector.', 'Channels'],
+  ['onboarding.', 'Onboarding'],
   ['data.', 'Deletions']] as const
 const LABEL: Record<string, string> = {
   'credential.saved': 'Saved a credential', 'credential.removed': 'Removed a credential', 'credential.rotated': 'Rotated a signing secret',
@@ -23,6 +24,7 @@ const LABEL: Record<string, string> = {
   'followups.enabled': 'Turned follow-ups on', 'followups.disabled': 'Turned follow-ups off',
   'monitor.created': 'Created a monitor', 'monitor.enabled': 'Resumed a monitor', 'monitor.disabled': 'Paused a monitor',
   'connector.enabled': 'Turned a channel on', 'connector.disabled': 'Turned a channel off', 'data.deleted': 'Deleted data', 'audit.read': 'Tried to read the audit trail',
+  'onboarding.site_read': 'Read the website for a business profile',
 }
 const label = (a: string) => LABEL[a] ?? (a.startsWith('autopilot.') ? `Autopilot: ${a.slice(10)}` : a)
 const when = (s: number) => new Date(s * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })

@@ -31,8 +31,14 @@ import type { Db, Tx, TxBody } from '../db/client.ts'
 import { stopSequenceForThread } from './sequences.ts'
 import { tableExists } from './send-budget.ts'
 import { transitionToOnboarding, transitionToOnboardingTx } from './onboarding-policy.ts'
+import { POLICY_STOP, displayStopReason, displayAuditDetail } from './stop-reason.ts'
+export { POLICY_STOP, displayStopReason, displayAuditDetail }
 
 export type LifecycleKind = 'signup' | 'activation' | 'payment'
+
+// Tenant-facing stop/audit rendering lives in stop-reason.ts (standalone: autopilot.ts must not
+// import this module, it would cycle through sequences.ts). Re-exported here for existing callers.
+
 
 export function migrateLifecycle(db: Database.Database): void {
   db.exec(`
@@ -60,7 +66,7 @@ export const LIFECYCLE_NOT_CONVERTED = `NOT EXISTS (SELECT 1 FROM lifecycle_even
 // Stops every automated pending acquisition step addressed to that exact email across tenants. Runs inside
 // the caller's transaction. Returns the number of rows stopped.
 function cancelPendingFor(db: Database.Database, email: string, kind: LifecycleKind, now: number): number {
-  const reason = `converted_${kind}`
+  const reason = POLICY_STOP
   let stopped = 0
   const tenants = new Set<string>() // tenants whose acquisition work this conversion stopped
   // Approved/active cold sequences: the audited stop path, per owning tenant.
@@ -180,11 +186,11 @@ export function conversionEventFor(db: Database.Database, rawEmail: string): { k
 // The billing webhook runs where the raw SQLite handle is a trap (a PG deployment): the same conversion, on the
 // ported Db layer and SQL both engines accept. The cancel cascade below replicates cancelPendingFor (incl.
 // stopSequenceForThread's audited stop) statement for statement; the sync functions stay for the sqlite-side
-// callers (auth routes, the autopilot pass). No migrate calls here: the Db layer's schema comes from the
+// callers (the autopilot pass). The auth routes use these (#354). No migrate calls here: the Db layer's schema comes from the
 // migrations (sqlite-migrations.ts / pg 0029), as for every ported module.
 
 function* cancelPendingForTx(t: Tx, email: string, kind: LifecycleKind, now: number): TxBody<number> {
-  const reason = `converted_${kind}`
+  const reason = POLICY_STOP
   let stopped = 0
   const tenants = new Set<string>()
   const seqs = yield* t.all<{ tenant_id: string; lead_id: string }>("SELECT tenant_id, lead_id FROM sequences WHERE status IN ('approved','active') AND lower(trim(to_email)) = ?", [email])
@@ -213,6 +219,22 @@ export async function recordLifecycleEventDb(db: Db, kind: LifecycleKind, rawEma
     const activated = ins.changes === 1 ? 1 : (yield* t.run('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL', [now, key])).changes
     if (activated !== 1) return 0
     return yield* cancelPendingForTx(t, email, kind, now)
+  })
+}
+
+// activateLifecycleFor on the Db layer: every pending conversion for the now-proven address activates, in one
+// transaction, stopping the queued work for each. Idempotent; returns rows stopped.
+export async function activateLifecycleForDb(db: Db, rawEmail: string, now = Math.floor(Date.now() / 1000)): Promise<number> {
+  const email = normalizeLifecycleEmail(rawEmail)
+  if (!email || !email.includes('@')) return 0
+  return db.tx(function* (t) {
+    let stopped = 0
+    const rows = yield* t.all<{ event_key: string; kind: LifecycleKind }>('SELECT event_key, kind FROM lifecycle_events WHERE email = ? AND activated_at IS NULL', [email])
+    for (const r of rows) {
+      const u = yield* t.run('UPDATE lifecycle_events SET activated_at = ? WHERE event_key = ? AND activated_at IS NULL', [now, r.event_key])
+      if (u.changes === 1) stopped += yield* cancelPendingForTx(t, email, r.kind, now)
+    }
+    return stopped
   })
 }
 

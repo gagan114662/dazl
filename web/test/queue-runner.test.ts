@@ -17,7 +17,8 @@ function fixture(): { db: Database.Database; dir: string } {
       created_at INTEGER, claimed_at INTEGER, error TEXT, finished_at INTEGER,
       business_name TEXT, industry TEXT, location TEXT, query TEXT, icp TEXT,
       sources TEXT, funded_by TEXT, watch_id TEXT, csv_domain TEXT);
-    CREATE TABLE tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);`)
+    CREATE TABLE tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);
+    CREATE TABLE scan_spend_calls (id TEXT PRIMARY KEY, scan_job_id TEXT, attempt INTEGER, status TEXT);`)
   return { db, dir }
 }
 
@@ -233,7 +234,8 @@ test('bridge 2-process: two queue handles over one file never run a job twice', 
         created_at INTEGER, claimed_at INTEGER, error TEXT, finished_at INTEGER,
         business_name TEXT, industry TEXT, location TEXT, query TEXT, icp TEXT,
         sources TEXT, funded_by TEXT, watch_id TEXT, csv_domain TEXT);
-      CREATE TABLE IF NOT EXISTS tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);`)
+      CREATE TABLE IF NOT EXISTS tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);
+      CREATE TABLE IF NOT EXISTS scan_spend_calls (id TEXT PRIMARY KEY, scan_job_id TEXT, attempt INTEGER, status TEXT);`)
     return db
   }
   const dbA = mkDb()
@@ -312,4 +314,21 @@ test('sync mirror race: PK conflict from a racing process is verified, not throw
   }
   assert.throws(() => syncPendingScansToQueue(db, brokenQueue as unknown as SqliteQueue), /disk I\/O/)
   db.close(); rmSync(dir, { recursive: true, force: true })
+})
+
+// #363: a dead attempt (lease expired) with a paid call still reserved may have been billed: queue mode (which never runs the legacy
+// reaper) must end it accounting_uncertain and NOT run it again; a dead attempt with nothing unsettled is re-run as before.
+test('queue bind: a stale running scan with an unsettled paid call fails closed and is never re-executed', async () => {
+  const { db, dir } = fixture()
+  try {
+    const old = Math.floor(Date.now() / 1000) - 3 * 3600
+    for (const id of ['unc', 'ok']) { db.prepare("INSERT INTO scan_jobs (id, user_id, status, attempts, created_at, claimed_at, funded_by) VALUES (?, 'u1', 'running', 1, ?, ?, 'trial')").run(id, old, old) }
+    db.prepare("INSERT INTO scan_spend_calls (id, scan_job_id, attempt, status) VALUES ('c1', 'unc', 1, 'reserved'), ('c2', 'ok', 1, 'settled')").run()
+    const ran: string[] = []
+    const exec = async (_d: Database.Database, job: { id: string; attempts: number }): Promise<'done'> => { ran.push(job.id); db.prepare("UPDATE scan_jobs SET status='done', claimed_at=NULL WHERE id=?").run(job.id); return 'done' }
+    await kickQueueRunner(db, {} as never, exec as never, { leaseSeconds: 20 * 60 })
+    await new Promise(r => setTimeout(r, 50))
+    assert.deepEqual(ran, ['ok'], 'the scan with nothing unsettled is re-run; the uncertain one never reaches the executor')
+    assert.deepEqual(db.prepare("SELECT status, error FROM scan_jobs WHERE id='unc'").get(), { status: 'failed', error: 'accounting_uncertain' })
+  } finally { db.close(); rmSync(dir, { recursive: true, force: true }) }
 })

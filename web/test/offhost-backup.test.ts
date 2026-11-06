@@ -18,8 +18,14 @@ const skip = hasAge ? false : 'age is not installed (apt install age)'
 const T = mkdtempSync(path.join(tmpdir(), 'offhost-test-'))
 test.after(() => rmSync(T, { recursive: true, force: true }))
 const sh = (script: string, args: string[], env: Record<string, string>) => {
-  const r = spawnSync('bash', [path.join(ops, script), ...args], { encoding: 'utf8', env: { PATH: process.env.PATH!, HOME: process.env.HOME!, ...env } as unknown as NodeJS.ProcessEnv, timeout: 60_000 })
+  const r = spawnSync('bash', [path.join(ops, script), ...args], { encoding: 'utf8', env: { PATH: process.env.PATH!, HOME: process.env.HOME!, DAZL_TOMBSTONE_LEDGER: ledgerFile(), ...env } as unknown as NodeJS.ProcessEnv, timeout: 60_000 })
   return { code: r.status, out: r.stdout + r.stderr }
+}
+// a synthetic tombstone ledger (#359): one line in the shape tombstoneLedgerEntry writes, no tenant data
+function ledgerFile() {
+  const f = path.join(T, 'tombstones.jsonl')
+  if (!existsSync(f)) writeFileSync(f, JSON.stringify({ deleted_tenant: 'tenant-synthetic-1', requested_at: '2026-11-01T00:00:00.000Z', policy: 'erase' }) + '\n')
+  return f
 }
 const keys = () => {
   const id = path.join(T, 'identity.txt')
@@ -35,7 +41,7 @@ test('offhost copy: only ciphertext leaves; it decrypts with the offline identit
   const r = sh('offhost-copy.sh', [fx.backup], { OFFHOST_AGE_RECIPIENTS: pub, OFFHOST_DEST: dest })
   assert.equal(r.code, 0, r.out); assert.match(r.out, /"type":"offhost_copy","ok":true/)
   const files = readdirSync(dest).sort()
-  assert.deepEqual(files.map(f => f.replace(/^dazl-backup-.*?\.db/, 'B')), ['B.age', 'B.age.json'])
+  assert.deepEqual(files.map(f => f.replace(/^dazl-backup-.*?\.db/, 'B').replace(/^dazl-ledger-\d{8}T\d{6}Z\.jsonl/, 'L')), ['B.age', 'B.age.json', 'L.age', 'L.age.json'])
   for (const f of files) assert.ok(!readFileSync(path.join(dest, f)).includes('SQLite format 3'), `${f} holds no plaintext database`)
   const out = path.join(T, 'decrypted.db')
   assert.equal(spawnSync('age', ['-d', '-i', id, '-o', out, path.join(dest, files[0])]).status, 0)
@@ -61,7 +67,54 @@ test('run-backup: snapshot, restore check and encrypted off-host copy in one sch
   const r = sh('run-backup.sh', [], { DB_PATH: fx.source, BACKUP_DIR: bdir, WEB_DIR: web, OFFHOST_AGE_RECIPIENTS: pub, OFFHOST_DEST: dest })
   assert.equal(r.code, 0, r.out); assert.match(r.out, /"type":"backup","ok":true/)
   assert.equal(readdirSync(bdir).filter(f => f.endsWith('.db')).length, 1)
-  assert.equal(readdirSync(dest).filter(f => f.endsWith('.age')).length, 1)
+  assert.equal(readdirSync(dest).filter(f => f.endsWith('.db.age')).length, 1)
+  assert.equal(readdirSync(dest).filter(f => /^dazl-ledger-.*\.jsonl\.age$/.test(f)).length, 1, 'the deletion ledger went off-host in the same run')
+})
+
+// #359 review gate: the tombstone ledger is copied off-host with the backups, and the check fails when it lags.
+test('ledger copy: encrypted, decrypts to the exact ledger, manifest counts its lines; unset or missing ledger fails after the backup copy', { skip }, async () => {
+  const fx = await fixtureBackup(path.join(T, 'lg')), { id, pub } = keys()
+  const dest = path.join(T, 'lg-dest'); mkdirSync(dest)
+  let r = sh('offhost-copy.sh', [fx.backup], { OFFHOST_AGE_RECIPIENTS: pub, OFFHOST_DEST: dest })
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /"type":"offhost_ledger_copy","ok":true/)
+  const ct = readdirSync(dest).find(f => /^dazl-ledger-.*\.jsonl\.age$/.test(f))!
+  assert.ok(!readFileSync(path.join(dest, ct)).includes('tenant-synthetic-1'), 'only ciphertext of the ledger leaves')
+  const out = path.join(T, 'ledger-decrypted.jsonl')
+  assert.equal(spawnSync('age', ['-d', '-i', id, '-o', out, path.join(dest, ct)]).status, 0)
+  assert.ok(readFileSync(out).equals(readFileSync(ledgerFile())), 'decrypts to the exact ledger bytes')
+  const m = JSON.parse(readFileSync(path.join(dest, ct + '.json'), 'utf8'))
+  assert.equal(m.tool, 'dazl-offhost-ledger'); assert.equal(m.lines, 1); assert.equal(m.with_backup, path.basename(fx.backup))
+  for (const [env, why] of [[{ DAZL_TOMBSTONE_LEDGER: '' }, /DAZL_TOMBSTONE_LEDGER is not set/], [{ DAZL_TOMBSTONE_LEDGER: path.join(T, 'no-such-ledger.jsonl') }, /names no file/]] as const) {
+    const d2 = path.join(T, `lg-dest-${Math.random().toString(36).slice(2)}`); mkdirSync(d2)
+    r = sh('offhost-copy.sh', [fx.backup], { OFFHOST_AGE_RECIPIENTS: pub, OFFHOST_DEST: d2, ...env })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, why)
+    assert.deepEqual(readdirSync(d2).map(f => f.replace(/^dazl-backup-.*?\.db/, 'B')).sort(), ['B.age', 'B.age.json'], 'the backup copy is in place; no ledger copy')
+  }
+})
+
+test('off-host check with DAZL_TOMBSTONE_LEDGER: verified ledger copy passes; missing, tampered or older than the newest backup copy fails', { skip }, async () => {
+  const fx = await fixtureBackup(path.join(T, 'lc')), { pub } = keys(), local = path.dirname(fx.backup)
+  const dest = path.join(T, 'lc-dest'); mkdirSync(dest)
+  assert.equal(sh('offhost-copy.sh', [fx.backup], { OFFHOST_AGE_RECIPIENTS: pub, OFFHOST_DEST: dest }).code, 0)
+  const env = { OFFHOST_DEST: dest, DAZL_TOMBSTONE_LEDGER: ledgerFile() }
+  let r = checkAt(local, env)
+  assert.equal(r.code, 0, r.out); assert.equal(r.json.newest_offhost_ledger_verified, true); assert.equal(r.json.offhost_ledger_lines, 1)
+  assert.equal(r.json.offhost_manifests_listed, 1, 'a ledger manifest is never judged as a backup copy')
+  const ct = readdirSync(dest).find(f => /^dazl-ledger-.*\.jsonl\.age$/.test(f))!, mf = path.join(dest, ct + '.json'), original = readFileSync(path.join(dest, ct)), manifest = readFileSync(mf, 'utf8')
+  writeFileSync(path.join(dest, ct), original.subarray(0, original.length - 5)); r = checkAt(local, env)
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /ledger copy .* does not match its manifest/)
+  rmSync(path.join(dest, ct)); r = checkAt(local, env)
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /ledger copy .* is missing/)
+  writeFileSync(path.join(dest, ct), original)
+  // the newest backup copy is newer than the newest ledger copy (a run whose ledger step failed): a problem
+  const m = JSON.parse(manifest); m.copied_at = new Date(Date.now() - 3600_000).toISOString(); writeFileSync(mf, JSON.stringify(m)); r = checkAt(local, env)
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /ledger copy is older than the newest off-host backup copy/)
+  writeFileSync(mf, manifest); assert.equal(checkAt(local, env).code, 0, 'restored: ok again')
+  rmSync(path.join(dest, ct)); rmSync(mf); r = checkAt(local, env)
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /no off-host copy of the tombstone ledger/)
+  r = checkAt(local, { OFFHOST_DEST: dest, OFFHOST_REQUIRED: '1' })
+  assert.equal(r.code, 1); assert.match(r.json.problems.join(), /DAZL_TOMBSTONE_LEDGER is not set/)
+  r = checkAt(local, { OFFHOST_DEST: dest }); assert.equal(r.code, 0, r.out); assert.equal(r.json.offhost_ledger, 'not configured')
 })
 
 test('backup-check: fresh is ok; stale, modified, missing off-host copy and a failed drill each alert, throttled', async () => {
@@ -163,7 +216,7 @@ test('the shipped dazl-backup-check.service, run as systemd would (its ExecStart
   // the env file: env.example's keys with this test's values (systemd EnvironmentFile); the fixture's own fresh
   // drill-report.json sits at the default <BACKUP_DIR>/drill-report.json the unit derives, exactly as shipped
   const keysIn = [...readFileSync(path.join(ops, 'env.example'), 'utf8').matchAll(/^([A-Z_]+)=/gm)].map(m => m[1])
-  for (const k of ['BACKUP_DIR', 'OFFHOST_DEST', 'OFFHOST_REQUIRED', 'DRILL_REPORT']) assert.ok(keysIn.includes(k), `env.example has ${k}`)
+  for (const k of ['BACKUP_DIR', 'OFFHOST_DEST', 'OFFHOST_REQUIRED', 'DRILL_REPORT', 'DAZL_TOMBSTONE_LEDGER']) assert.ok(keysIn.includes(k), `env.example has ${k}`)
   const env: Record<string, string> = { BACKUP_DIR: local, OFFHOST_DEST: dest, OFFHOST_REQUIRED: '1' }
   // systemd expands ${VAR} in ExecStart from the environment; the unit runs with no test-side path substitution
   const argv = exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? '').split(/\s+/)

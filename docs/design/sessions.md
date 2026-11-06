@@ -1,6 +1,7 @@
 # Sessions: inventory, revocation, cleanup, fresh authentication (#358)
 
-Status: increment 1 (inventory, revoke one/all, reaper) and increment 2 (fresh authentication) built.
+Status: increment 1 (inventory, revoke one/all, reaper) and increment 2 (fresh authentication) built; increment 3
+(workspace offboarding) built.
 
 ## Model
 
@@ -33,8 +34,21 @@ over several ticks.
 
 ## Offboarding and recovery
 
-- Removing a member from a workspace (`lib/workspace-members.ts`) ends their access to it on their next request.
-  Their sessions stay valid for their own workspace, which is theirs.
+- Removing a member from a workspace (`removeMember`, `lib/workspace-members.ts`) offboards them in the same
+  transaction (`revokeWorkspaceSessionsTx`, `lib/sessions.ts`):
+  - every working session of theirs that acts in that workspace is revoked: reason `offboarded`, `revoked_by` the
+    remover, `revoked_at` now. A session acts there when it chose that workspace, or chose none and that workspace
+    is its default (personal workspace, else oldest membership, as `resolveMembership` picks). That device's next
+    request is refused (401) on every instance, and stays refused: it must sign in again.
+  - their sessions acting in their other workspaces (normally their own) stay valid; the account is theirs, not the
+    workspace's. Signing them out everywhere is `revokeAllSessionsTx`, which only the account itself (or recovery) takes.
+  - invitations they sent that are still pending are revoked (they already added nothing once the inviter is gone).
+  - expired sessions are left as they were (not relabelled `offboarded`).
+  - a removal that fails (last owner, only workspace, store error) revokes nothing.
+- Leaving (`leave`) points the leaver's sessions elsewhere instead of revoking them, and revokes their pending
+  invitations in that workspace.
+- What removal does NOT end: a Gmail mailbox, CRM or other connector the departed member connected stays connected
+  for the workspace (those rows do not record which member connected them); an admin disconnects it in Settings.
 - `revokeAllSessionsTx(t, userId, { reason: 'recovery' | 'offboarded' })` is the step that account recovery (#357)
   and account disabling take, inside their own transaction.
 

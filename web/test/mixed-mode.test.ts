@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { createPasswordUser, createSession, getSessionUser, sellerProfile, setSellerProfile } from '../lib/auth-db.ts'
+import { createPasswordUser, createSession, getSessionUser, readSellerLine, writeSellerProfile } from '../lib/auth-db.ts'
 import { resolveUser } from '../lib/auth-google.ts'
 import { applyStripeEvent } from '../lib/billing/stripe.ts'
 import { scanQuota } from '../lib/plans.ts'
@@ -25,7 +25,7 @@ test('mixed mode: concurrent ported transactions and raw requests on one SQLite 
   for (const t of tenants) {
     await createPasswordUser({ id: t, email: `${t}@x.com`, name: t, business_name: `Biz ${t}`, password_hash: 'h'.repeat(128), salt: 's'.repeat(32) }, db)
     token[t] = await createSession(t, db)
-    setSellerProfile(raw, t, `sells ${t}`, `https://${t}.example`)
+    await writeSellerProfile(db, t, `sells ${t}`, `https://${t}.example`)
     job[t] = createJob(raw, t, { business_name: `Biz ${t}`, industry: 'software', location: 'Toronto' })
     raw.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job[t])
     raw.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score) VALUES (?, ?, '', ?, 'hiring', 'https://e.x/j', 80)").run(`lead-${t}`, job[t], `Co ${t}`)
@@ -41,7 +41,7 @@ test('mixed mode: concurrent ported transactions and raw requests on one SQLite 
     if (!u) throw new Error('not signed in')
     return {
       id: u.tenantId,
-      profile: sellerProfile(raw, u.tenantId),
+      profile: await readSellerLine(db, u.tenantId),
       prepared: profileStmt.get(u.tenantId) as { sells: string },
       plan: getPlan(raw, u.tenantId),
       quota: scanQuota(raw, u.tenantId),

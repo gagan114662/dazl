@@ -13,6 +13,7 @@ import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES } from './provider-issu
 import type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus } from './provider-issue-text.ts'
 export type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus }
 import { getDb } from '../db/client.ts'
+import { parseRefusalLookup } from '../enrich/credit-pool.ts'
 
 // null = the audit table could not be read (older DB without it, or any read failure): the scan
 // view renders an explicit "provider record not available, not an all-clear" notice for it (see
@@ -29,7 +30,17 @@ export async function providerIssues(tenantId: string, jobId: string): Promise<P
        GROUP BY connector, status ORDER BY latest DESC`,
       [tenantId, jobId, ...PROVIDER_FAILURE_STATUSES, ...ENRICH_SKIP_STATUSES],
     )
-    return rows.map(r => ({ connector: r.connector, status: r.status, lookups_affected: Number(r.n), latest_at: Number(r.latest) }))
+    const issues: ProviderIssue[] = rows.map(r => ({ connector: r.connector, status: r.status, lookups_affected: Number(r.n), latest_at: Number(r.latest) }))
+    // A credit_cap carries the numbers the refusing window had AT the refusal (stored on its audit row), never a later re-read.
+    for (const i of issues) {
+      if (i.status !== 'credit_cap') continue
+      try {
+        const row = await db.get<{ lookup: string }>(`SELECT lookup FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = 'credit_cap' ORDER BY created_at DESC LIMIT 1`, [tenantId, jobId, i.connector])
+        const c = row ? parseRefusalLookup(row.lookup) : null
+        if (c) i.credit = c
+      } catch { /* numbers omitted: the sentence then names no window */ }
+    }
+    return issues
   } catch {
     return null
   }

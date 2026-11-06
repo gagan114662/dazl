@@ -19,8 +19,8 @@ export function migrateBounceLedger(db: Database.Database): void {
 
 export type BounceApplication = 'recorded' | 'duplicate' | 'held' | 'ignored'
 
-// Applies a DSN verdict to the ledger. 'source' names the ingestion path ('thread' for in-thread notices today,
-// 'dsn' for the separate-thread path once wired). Soft, held and ignored verdicts never write: a soft failure is
+// Applies a DSN verdict to the ledger. 'source' names the ingestion path ('thread' for in-thread notices,
+// 'dsn' for separate-thread notices in syncReplies). Soft, held and ignored verdicts never write: a soft failure is
 // not a bounce, and a held notice is evidence for a person, not an account.
 export function applyBounceVerdict(db: Database.Database, tenantId: string, verdict: DsnVerdict, source: string, sourceGmailId: string | null, now = Math.floor(Date.now() / 1000), record: typeof recordBounce = recordBounce): BounceApplication {
   if (verdict.kind === 'hold') return 'held'
