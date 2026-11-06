@@ -127,6 +127,21 @@ test('the launch policy binds the record by version: owner-accepted, current onl
   assert.deepEqual(claimIssuesFor(stale, 'Email goes from your own Gmail.'), ['product_truth_changed'])
 })
 
+test('reviewer finding (#402): a lead row that could not be read fails closed, never defaults to fit', () => {
+  const current = productTruth().version
+  const bound = policy({ productTruthVersion: current })
+  // draftClaimContextFor's own shape for a missing lead row: no evidence urls, empty prospect text, rowFound=false.
+  // Before the fix, qualifyProspect('', truth) always returns 'fit' (no sentences to scan), so a missing row
+  // silently passed every send gate that uses it (autopilot.ts). Now rowFound=false holds the draft outright.
+  assert.deepEqual(claimIssuesFor(bound, 'Saw the posting. Worth a short call?', [], '', false), ['prospect_context_missing'])
+  // Contrast: an empty prospect text with a REAL (found) row behaves as before -- genuinely nothing to qualify
+  // against is 'fit', not held. The bug was specifically about missing data being indistinguishable from this.
+  assert.deepEqual(claimIssuesFor(bound, 'Saw the posting. Worth a short call?', [], '', true), [])
+  assert.deepEqual(claimIssuesFor(bound, 'Saw the posting. Worth a short call?'), [], 'rowFound defaults to true: existing callers are unaffected')
+  // An unbound policy (no accepted truth version) does not call qualifyProspect at all, so rowFound is moot either way
+  assert.deepEqual(claimIssuesFor(policy(), 'Saw the posting. Worth a short call?', [], '', false), [])
+})
+
 test('routine buyer answers come from the record, and a changed record stops them until the owner accepts it', () => {
   const facts = productFactsFromTruth(truth, { signupUrl: 'https://app.example/sign-up', bookingUrl: null })
   assert.equal(facts.version, truth.version)

@@ -206,8 +206,9 @@ export function launchPolicyView(db: Database.Database, tenantId: string): { acc
 // What the copy may claim under the policy: no price unless allowed; links only to https benchmarks it lists, the
 // sender's own domain, or the lead's own evidence source (the page the email cites as why it is writing). With a bound
 // product truth record (#402), also what the product actually ships, and whether this prospect (prospectText: the
-// lead's signal and evidence) needs something it does not.
-export function claimIssuesFor(policy: LaunchPolicy, body: string, evidenceUrls: string[] = [], prospectText = ''): string[] {
+// lead's signal and evidence) needs something it does not. rowFound=false (the lead row the context was derived from
+// could not be read, e.g. draftClaimContextFor's lead row missing) fails closed: held, never silently treated as fit.
+export function claimIssuesFor(policy: LaunchPolicy, body: string, evidenceUrls: string[] = [], prospectText = '', rowFound = true): string[] {
   const out: string[] = []
   if (!policy.claims.mayStatePrice && /(?:[$€£]\s?\d|\d\s?(?:usd|eur|gbp)\b|per month|\/mo\b)/i.test(body)) out.push('price_not_allowed')
   const own = domainOf(policy.sender)
@@ -220,8 +221,11 @@ export function claimIssuesFor(policy: LaunchPolicy, body: string, evidenceUrls:
   if (policy.claims.productTruthVersion !== undefined) {
     const truth = productTruth()
     out.push(...truthClaimIssues(body, truth, { benchmarkUrls: policy.claims.benchmarkUrls, acceptedVersion: policy.claims.productTruthVersion }))
-    const q = qualifyProspect(prospectText, truth)
-    if (q.verdict !== 'fit') out.push(...q.unmet.map(id => `prospect_${q.verdict}:${id}`))
+    if (!rowFound) out.push('prospect_context_missing') // the lead row is gone: nothing to qualify against, never default to fit
+    else {
+      const q = qualifyProspect(prospectText, truth)
+      if (q.verdict !== 'fit') out.push(...q.unmet.map(id => `prospect_${q.verdict}:${id}`))
+    }
   }
   return out
 }
