@@ -40,6 +40,10 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
+  policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
+  comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
+  from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
 
 - PR #568 b/359-lifecycle-flow (#359 part 2): authenticated, audited request flow for tenant export/deletion
   (session-scoped routes, owner+fresh-auth delete with explicit opt-out policy and resume, viewer+fresh-auth

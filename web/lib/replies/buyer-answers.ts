@@ -30,7 +30,9 @@ export interface ProductFacts {
   signupUrl: string; bookingUrl: string | null
   knownIntegrations: string[]                 // names the facts can answer about (e.g. Gmail, HubSpot, Pipedrive)
 }
-export interface AnswerPolicy { cta: 'signup' | 'meeting'; maxAutoReplies: number }
+// acceptedFactsVersion: the facts version the owner approved routine answers for. When set, facts of any other version
+// (the product truth record changed since: lib/product-truth.ts) answer nothing until the owner approves again.
+export interface AnswerPolicy { cta: 'signup' | 'meeting'; maxAutoReplies: number; acceptedFactsVersion?: string }
 export interface ThreadState {
   authenticatedSender: boolean                // the inbound passed authentication and matches the thread's prospect
   takenOver: boolean                          // the tenant has replied in this thread themselves
@@ -40,7 +42,7 @@ export interface ThreadState {
 export interface Inbound { messageId: string; text: string }
 
 export type Topic = 'pricing' | 'prerequisites' | 'how_to_start' | 'limitations' | 'booking'
-export type EscalateReason = 'unauthenticated' | 'authority' | 'unknown_integration' | 'not_routine' | 'reply_limit' | 'negative' | 'sensitive' | 'seller_scope' | 'facts_missing'
+export type EscalateReason = 'unauthenticated' | 'authority' | 'unknown_integration' | 'not_routine' | 'reply_limit' | 'negative' | 'sensitive' | 'seller_scope' | 'facts_missing' | 'facts_stale'
 export type Decision =
   | { action: 'suppress'; messageId: string }
   | { action: 'pause'; messageId: string }
@@ -230,6 +232,7 @@ export function decide(inbound: Inbound, thread: ThreadState, facts: ProductFact
   const cls = classifyReply(inbound.text)
   if (cls === 'opt_out') return { action: 'suppress', messageId }
   if (thread.takenOver) return { action: 'pause', messageId }
+  if (policy.acceptedFactsVersion !== undefined && policy.acceptedFactsVersion !== facts.version) return { action: 'escalate', messageId, reason: 'facts_stale' }
   if (!thread.authenticatedSender) return { action: 'escalate', messageId, reason: 'unauthenticated' }
   if (cls === 'negative' || cls === 'uncertain' || cls === 'auto') return { action: 'escalate', messageId, reason: 'negative', detail: cls }
   if (AUTHORITY.test(inbound.text)) return { action: 'escalate', messageId, reason: 'authority' }
