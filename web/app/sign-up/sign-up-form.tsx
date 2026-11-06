@@ -44,7 +44,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
     return (
       <main id="main" tabIndex={-1} className="outline-none min-h-screen flex items-center justify-center glow px-4 py-10">
         <div className="card p-8 sm:p-10 w-full max-w-sm text-center" role="status">
-          <Link href="/" className="text-xl font-medium tracking-tight block mb-6">dazl<span className="text-[#111]">.</span></Link>
+          <Link href="/" className="text-xl font-medium tracking-tight flex items-center min-h-11 mb-4">dazl<span className="text-[#111]">.</span></Link>
           <h1 className="text-2xl font-medium mb-3">Check your email</h1>
           <p className="text-[#555] text-sm mb-4">If <span className="text-[#111]">{sent}</span> can receive mail from us, a link to confirm it is on its way. Open it, then sign in. The link works once, for 24 hours.</p>
           <p className="text-[#555] text-sm mb-4">Nothing arrived? Sign in with your password and we&apos;ll try to send a new link.</p>
@@ -57,7 +57,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
   return (
     <main id="main" tabIndex={-1} className="outline-none min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
-        <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></Link>
+        <Link href="/" className="text-xl font-medium tracking-tight flex items-center justify-center min-h-11 mb-4">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
         <p className="text-[#555] text-sm mb-6 text-center">
           {trialFunded
@@ -91,7 +91,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
           </button>
         </form>
         <p className="mt-4 text-sm text-[#666] text-center">
-          Already have an account? <a href="/sign-in" className="text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
+          Already have an account? <a href="/sign-in" className="inline-flex items-center min-h-11 text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
         </p>
         <p className="mt-3 text-xs text-[#6b6b6b] text-center">
           <a href="/terms" className="underline underline-offset-2 hover:text-[#111]">Terms of Service</a> · <a href="/privacy" className="underline underline-offset-2 hover:text-[#111]">Privacy Policy</a>
