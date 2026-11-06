@@ -76,6 +76,27 @@ bothEngines("cancel: B cannot cancel A's job; A's pending scan is cancelled thro
   assert.deepEqual(await S.cancelJob(db, A, a.query, T0 + 41), { ok: false, reason: 'already_finished' })
 })
 
+bothEngines('cancel: a PENDING job with a RESERVED spend call is cancelled through legal transitions; the reserved row is never touched and no claimer takes the job after', async ({ db }) => {
+  const id = await S.createQueryJob(db, A, { query: 'find acme buyers', icp: '{"x":1}', runBudget: null }, T0)
+  await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('c1', ?, ?, 0, 'llm.anthropic', 0.05, 'reserved', ?)", [A, id, T0])
+  const r = await S.cancelJob(db, A, id, T0 + 1)
+  assert.deepEqual(r, { ok: true, was_running: false }, 'a pending job cancels through the legal pending->running->failed path in one tx')
+  const j = (await db.get<{ status: string; error: string | null; attempts: number }>('SELECT status, error, attempts FROM scan_jobs WHERE id = ?', [id]))!
+  assert.deepEqual(j, { status: 'failed', error: 'cancelled', attempts: 1 }, 'terminal cancelled state, exactly one (the cancelling) attempt')
+  const call = (await db.get<{ status: string }>('SELECT status FROM scan_spend_calls WHERE id = ?', ['c1']))!
+  assert.equal(call.status, 'reserved', 'the unsettled call is NEVER auto-settled or deleted by a cancel: possibly billed stays possibly billed')
+  assert.deepEqual(await S.cancelJob(db, A, id, T0 + 2), { ok: false, reason: 'already_finished' }, 'a cancelled job is terminal: it can never be re-cancelled or re-claimed')
+  // The reaper runs with a far-future clock: a genuinely stale RUNNING job in the same database IS reaped (control,
+  // proving the call was live), while the terminal cancelled row is outside its target set and never resurrected.
+  const staleId = await S.createQueryJob(db, A, { query: 'find stale buyers', icp: '{"x":1}', runBudget: null }, T0)
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = 1 WHERE id = ?", [staleId])
+  await S.reapStaleJobs(db, T0 + 100000)
+  const staleAfter = (await db.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ?', [staleId]))!
+  assert.notEqual(staleAfter.status, 'running', 'control: the reaper was live - the genuinely stale running job was reaped')
+  const after = (await db.get<{ status: string; attempts: number }>('SELECT status, attempts FROM scan_jobs WHERE id = ?', [id]))!
+  assert.deepEqual(after, { status: 'failed', attempts: 1 }, 'the reaper never resurrects a cancelled job')
+})
+
 bothEngines('stale reaper: a running job past the timeout goes back to pending, or fails after the last attempt', async ({ db }) => {
   const now = T0 + 10_000
   const retry = await S.createJob(db, A, { business_name: 'R', industry: 'i', location: 'l' }, null, T0)
@@ -171,4 +192,23 @@ bothEngines('failOrRequeue: retryable errors requeue until the last attempt, the
   assert.deepEqual([(await S.getJob(db, A, c.id))!.status, (await S.getJob(db, A, c.id))!.error], ['failed', 'key_rejected'])
   assert.equal(await S.failOrRequeue(db, { id: c.id, attempts: 1 }, 'late', { retryable: true }), 'stale')
   assert.equal((await S.getJob(db, A, c.id))!.error, 'key_rejected')
+})
+
+bothEngines("stale reaper: ANY attempt's reserved call ends the job accounting_uncertain; a pending row with one ends the same (never re-billed)", async ({ db }) => {
+  const now = T0 + 10_000
+  const earlier = await S.createJob(db, A, { business_name: 'E', industry: 'i', location: 'l' }, null, T0)
+  const pend = await S.createJob(db, A, { business_name: 'P', industry: 'i', location: 'l' }, null, T0)
+  const clean = await S.createJob(db, A, { business_name: 'C', industry: 'i', location: 'l' }, null, T0)
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 2, claimed_at = ? WHERE id = ?", [now - Legacy.STALE_RUNNING_S - 1, earlier])
+  // attempt 1 < the job's current attempt 2: the maybe-billed EARLIER attempt (mutation: restoring c.attempt = scan_jobs.attempts re-queues this to pending - red)
+  await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('cE', ?, ?, 1, 'llm.anthropic', 0.05, 'reserved', ?)", [A, earlier, now - 5000])
+  // pending + reserved: the pre-#594 shape (the old reaper reset to pending regardless of reservations)
+  await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('cP', ?, ?, 1, 'llm.anthropic', 0.05, 'reserved', ?)", [A, pend, now - 5000])
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?", [now - Legacy.STALE_RUNNING_S - 1, clean])
+  await S.reapStaleJobs(db, now)
+  const e = (await S.getJob(db, A, earlier))!
+  assert.deepEqual([e.status, e.error, Number(e.attempts)], ['failed', 'accounting_uncertain', 2])
+  const pj = (await S.getJob(db, A, pend))!
+  assert.deepEqual([pj.status, pj.error, Number(pj.attempts)], ['failed', 'accounting_uncertain', 0], 'pending+reserved ends closed: the park never bumps the attempt (0 = the seeded value), so no executor ever runs')
+  assert.equal((await S.getJob(db, A, clean))!.status, 'pending', 'a stale job with NO reserved call is still retried')
 })

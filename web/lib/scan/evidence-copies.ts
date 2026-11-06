@@ -4,6 +4,7 @@
 // preserved whole), rows expire after RETENTION_DAYS and a tenant holds at most MAX_TENANT_COPIES unexpired rows.
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { canonicalUrl } from './evidence-origin.ts'
 
 export interface HeldPageRecord { url: string; title: string; text: string; sha256: string; heldAt: number }
@@ -117,12 +118,27 @@ export function evidenceCopyForLead(db: Database.Database, tenantId: string, lea
   const r = db.prepare(`SELECT c.id, l.id AS lead_id, c.job_id, c.attempt, c.source_url, c.title, c.title_sha256, c.sha256, c.fetched_at, c.expires_at, c.text, l.own_fetch_failure
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id JOIN lead_evidence_copies c ON c.id = l.evidence_copy_id
     WHERE l.id = ? AND j.user_id = ? AND c.tenant_id = ? AND c.job_id = j.id AND c.expires_at > CAST(strftime('%s','now') AS INTEGER)`).get(leadId, tenantId, tenantId) as Omit<EvidenceCopyView, 'integrity'> | undefined
-  if (!r) return null
-  return { ...r, integrity: createHash('sha256').update(r.text).digest('hex') === r.sha256 && createHash('sha256').update(r.title).digest('hex') === r.title_sha256 ? 'ok' : 'mismatch' }
+  return r ? withIntegrity(r) : null
 }
+const withIntegrity = (r: Omit<EvidenceCopyView, 'integrity'>): EvidenceCopyView =>
+  ({ ...r, integrity: createHash('sha256').update(r.text).digest('hex') === r.sha256 && createHash('sha256').update(r.title).digest('hex') === r.title_sha256 ? 'ok' : 'mismatch' })
 
 // Was this lead's copied text deleted on request? (Distinct from "never had one" and from "expired".)
 export function evidencePurgedAt(db: Database.Database, tenantId: string, leadId: string): number | null {
-  const r = db.prepare('SELECT l.evidence_purged_at AS t FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { t: number | null } | undefined
+  const r = db.prepare(PURGED_AT_SQL).get(leadId, tenantId) as { t: number | null } | undefined
   return r?.t ?? null
+}
+const PURGED_AT_SQL = 'SELECT l.evidence_purged_at AS t FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?'
+
+// The two reads above on the Db layer (SQLite or Postgres), for the leads evidence route (#354). The same SQL, except
+// that the expiry clock is bound by the caller instead of strftime('now'), so it runs on both engines.
+const COPY_FOR_LEAD_DB_SQL = `SELECT c.id, l.id AS lead_id, c.job_id, c.attempt, c.source_url, c.title, c.title_sha256, c.sha256, c.fetched_at, c.expires_at, c.text, l.own_fetch_failure
+    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id JOIN lead_evidence_copies c ON c.id = l.evidence_copy_id
+    WHERE l.id = ? AND j.user_id = ? AND c.tenant_id = ? AND c.job_id = j.id AND c.expires_at > ?`
+export async function evidenceCopyForLeadDb(db: Db, tenantId: string, leadId: string, now = Math.floor(Date.now() / 1000)): Promise<EvidenceCopyView | null> {
+  const r = await db.get<Omit<EvidenceCopyView, 'integrity'>>(COPY_FOR_LEAD_DB_SQL, [leadId, tenantId, tenantId, now])
+  return r ? withIntegrity(r) : null
+}
+export async function evidencePurgedAtDb(db: Db, tenantId: string, leadId: string): Promise<number | null> {
+  return (await db.get<{ t: number | null }>(PURGED_AT_SQL, [leadId, tenantId]))?.t ?? null
 }

@@ -7,6 +7,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { acceptInvitation, switchWorkspace } from '@/lib/workspace-members'
 import { memberFail } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
 
 // Accept an invitation as the signed-in account, then act in that workspace. The account's email must be the one
 // invited; an unknown, used, revoked or expired link answers the same 410.
@@ -19,6 +20,8 @@ export async function POST(req: NextRequest) {
   try {
     const db = await getDb()
     const m = await acceptInvitation(db, user, body?.token)
+    // recorded in the workspace joined (the one the invitation is for), under the account that accepted it
+    await audit({ tenantId: m.tenantId, actorId: user.actorId }, req, { action: 'invitation.accepted', resource: 'invitation', id: m.invitationId, summary: { role: m.role, joined: m.joined } })
     const token = (await cookies()).get('dazl_session')?.value
     let switched = false
     if (token) switched = await switchWorkspace(db, hashToken(token), user.actorId, m.tenantId).then(() => true, () => false)

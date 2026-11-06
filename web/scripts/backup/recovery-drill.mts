@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import net from 'node:net'
 import path from 'node:path'
 import { restoreDrill } from './lib.ts'
+import { sendSafety } from './send-safety.mts'
 import { decryptSecret } from '../../lib/secrets.ts'
 import { REWRAP_COLUMNS } from '../../lib/secrets-rewrap.ts'
 
@@ -87,19 +88,11 @@ if (contentOk && restored) {
 
   await step('send safety (reconcile before enabling sending)', async () => {
     const db = new Database(restored!, { readonly: true })
-    const has = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t)
-    const n = (sql: string, ...p: unknown[]) => (db.prepare(sql).get(...p) as { n: number }).n
-    const now = Math.floor(Date.now() / 1000)
     try {
-      const detail = {
-        messages_sending: has('outreach_messages') ? n("SELECT count(*) AS n FROM outreach_messages WHERE status = 'sending'") : 0,
-        messages_uncertain: has('outreach_messages') ? n("SELECT count(*) AS n FROM outreach_messages WHERE status = 'uncertain'") : 0,
-        sequence_steps_unresolved: has('sequence_steps') ? n("SELECT count(*) AS n FROM sequence_steps WHERE status IN ('sending','uncertain')") : 0,
-        followups_unresolved: has('followup_messages') ? n("SELECT count(*) AS n FROM followup_messages WHERE status IN ('sending','uncertain')") : 0,
-        leases_unexpired_at_drill: has('app_leases') ? n('SELECT count(*) AS n FROM app_leases WHERE expires_at > ?', now) : 0,
-        tenants_autopilot_on: has('autopilot_settings') ? n('SELECT count(*) AS n FROM autopilot_settings WHERE enabled = 1 AND paused = 0') : 0,
-      }
-      // a report, not a failure: these must be reconciled (resolveUncertain, lease expiry) before sending is re-enabled
+      const { leases_unexpired, ...rest } = sendSafety(db)
+      // a report, not a failure: these must be reconciled (resolveUncertain, lease expiry) before sending is re-enabled;
+      // send-gate.mts enforces it on the restored host
+      const detail = { ...rest, leases_unexpired_at_drill: leases_unexpired }
       return { ok: true, detail }
     } finally { db.close() }
   })
@@ -142,9 +135,33 @@ if (contentOk && restored) {
           let leadsRead = 0
           for (const id of ids) { const l = await get(`/api/leads?job_id=${id}`); if (l.status === 200) { try { const j = JSON.parse(l.body); leadsRead += Array.isArray(j.leads) ? j.leads.length : 0 } catch { /* counted as 0 */ } } }
           const keys = await get('/api/settings/llm-key'), page = await get('/app/leads')
-          Object.assign(detail, { scans_status: jobs.status, scans_read: ids.length, leads_read: leadsRead, key_status: keys.status, leads_page_status: page.status })
-          ok &&= jobs.status === 200 && keys.status === 200 && page.status === 200 && (tenant.leads === 0 || leadsRead > 0)
-        } else detail.note = 'no tenant with scans in this backup: reads not checked'
+          // a scan on the restored store: accepted (202 with a job id) and readable back. Providers are fenced, so the
+          // runner's calls fail without leaving the machine; the check is that the scan path works on this copy.
+          const sc = await get('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'recovery drill check: dental clinics in Toronto', offer: 'recovery drill check', mode: 'first5' }) })
+          let scanId: string | null = null
+          try { const j = JSON.parse(sc.body); scanId = typeof j.job_id === 'string' && /^[a-f0-9]{24}$/.test(j.job_id) ? j.job_id : null } catch { /* not JSON: refused below */ }
+          let scanError: string | null = null
+          if (!scanId) { try { const e = JSON.parse(sc.body).error; scanError = typeof e === 'string' ? e.slice(0, 60) : null } catch { scanError = 'not json' } }
+          const scanBack = scanId ? await get(`/api/scan/status?job_id=${scanId}&passive=1`) : null
+          Object.assign(detail, { scans_status: jobs.status, scans_read: ids.length, leads_read: leadsRead, key_status: keys.status, leads_page_status: page.status, scan_started_status: sc.status, scan_read_back_status: scanBack?.status ?? null, ...(scanError ? { scan_refused: scanError } : {}) })
+          ok &&= jobs.status === 200 && keys.status === 200 && page.status === 200 && (tenant.leads === 0 || leadsRead > 0) && sc.status === 202 && scanBack?.status === 200
+        } else { detail.note = 'no tenant with scans in this backup: reads and the scan not checked'; ok = false }
+        // a real password sign-in through the app's own routes, as a drill-only account made in the restored COPY: the
+        // account is created (sign-up), signed out, then signed in with its password; the new session must read the
+        // signed-in API. Proves password verification and session creation work on the restored store; no existing
+        // user's credentials are touched or needed.
+        const email = `recovery-drill-${randomBytes(6).toString('hex')}@drill.invalid`, password = randomBytes(18).toString('base64url')
+        const post = (p: string, body: unknown, cookie = '') => fetch(base + p, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) })
+        const cookieOf = (r: Response) => /dazl_session=([^;]+)/.exec(r.headers.get('set-cookie') ?? '')?.[1] ?? null
+        const up = await post('/api/auth/signup', { email, password, name: 'Recovery drill', business_name: 'Recovery drill' })
+        const upCookie = cookieOf(up)
+        if (upCookie) await post('/api/auth/signout', {}, `dazl_session=${upCookie}`)
+        const inn = await post('/api/auth/signin', { email, password })
+        const inCookie = cookieOf(inn)
+        const me = inCookie ? await fetch(base + '/api/settings/llm-key', { redirect: 'manual', headers: { cookie: `dazl_session=${inCookie}` } }) : null
+        const wrong = await post('/api/auth/signin', { email, password: password + 'x' })
+        Object.assign(detail, { sign_up_status: up.status, sign_in_status: inn.status, signed_in_read_status: me?.status ?? null, wrong_password_status: wrong.status })
+        ok &&= up.status === 200 && inn.status === 200 && !!inCookie && me?.status === 200 && wrong.status === 401
         return { ok, detail }
       } finally { server.kill('SIGTERM') }
     })

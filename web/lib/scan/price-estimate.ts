@@ -23,7 +23,7 @@ export interface EstimateRow {
   capped: boolean                    // counted against max_usd by the spend guard
   note: string
 }
-export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | null; message: string; change: string[]; warning: string | null }
+export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | null; message: string; change: string[]; warning: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
   payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }

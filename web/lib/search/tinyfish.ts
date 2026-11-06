@@ -1,4 +1,8 @@
 import { SpendRefused } from '../llm/spend-guard.ts'
+
+// One TinyFish vendor request (search or fetch) is given up on after this; the stale-running lease floor
+// (lib/scan/store.ts MIN_STALE_RUNNING_S) is computed from the MAX of the paid call paths' timeouts incl. this one.
+export const TINYFISH_TIMEOUT_MS = 20_000
 import { reserveScanSpend, unitCostUsd, type SpendHold } from '../scan/spend-cap.ts'
 import type Database from 'better-sqlite3'
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
@@ -85,20 +89,22 @@ export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; tra
 // `observed` (context only) and `date` stays null. via marks which index surfaced the hit (attribution).
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null; observed?: string | null; via?: 'gdelt' }
 
-async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail }> {
+async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail; maybeBilled?: boolean; status?: number }> {
+  // maybeBilled (#363): the request may have been processed (timeout/dropped connection, 5xx, 402, unlisted status, unreadable body). The caller then
+  // leaves its spend row 'reserved' so no automatic retry re-sends it. 401/403/429 are documented rejections (assumption, see lib/llm/provider.ts).
   try {
-    const res = await f(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'X-API-Key': key }, redirect: 'error', signal: AbortSignal.timeout(20_000) })
-    if (res.status === 401 || res.status === 403) { await block(db, now + 600); return { ok: false, reason: 'auth' } }
-    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota' } }
-    if (res.status === 429) { await block(db, now + 60); return { ok: false, reason: 'rate' } }
-    if (!res.ok) return { ok: false, reason: 'unavailable' }
+    const res = await f(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'X-API-Key': key }, redirect: 'error', signal: AbortSignal.timeout(TINYFISH_TIMEOUT_MS) })
+    if (res.status === 401 || res.status === 403) { await block(db, now + 600); return { ok: false, reason: 'auth', status: res.status } }
+    if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota', maybeBilled: true, status: res.status } }
+    if (res.status === 429) { await block(db, now + 60); return { ok: false, reason: 'rate', status: 429 } }
+    if (!res.ok) return { ok: false, reason: 'unavailable', maybeBilled: true, status: res.status }
     const text = await res.text()
-    if (text.length > 3_000_000) return { ok: false, reason: 'unavailable' }
+    if (text.length > 3_000_000) return { ok: false, reason: 'unavailable', maybeBilled: true }
     return { ok: true, json: JSON.parse(text) }
-  } catch { return { ok: false, reason: 'unavailable' } }
+  } catch { return { ok: false, reason: 'unavailable', maybeBilled: true } }
 }
 
-export async function tfSearch(db: DbLike, tenant: string, query: string, opts: { afterDate?: string; location?: string; language?: string }, spent: { searches: number }, d: TfDeps = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail }> {
+export async function tfSearch(db: DbLike, tenant: string, query: string, opts: { afterDate?: string; location?: string; language?: string }, spent: { searches: number }, d: TfDeps = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail; status?: number }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.search({ query, attempted: false, outcome: 'disabled', hits: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
@@ -114,14 +120,16 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   // Inside a scan: reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal sends nothing.
   let hold: SpendHold | null
   try { hold = await reserveScanSpend('tinyfish.search', () => unitCostUsd('tinyfish.search', 1, env)) } catch (e) {
-    if (!(e instanceof SpendRefused)) throw e
-    // Money, not a count cap: the trace says spend_refused so a budget refusal is never reported as search_cap.
-    d.trace?.search({ query, attempted: false, outcome: 'spend_refused', hits: null }); return { ok: false, reason: 'cap' }
+    // A refusal by the SCAN'S OWN budget (reserveScanSpend) stops the scan - the runner records its exact provenance
+    // (skipped_hold before any send, partial_hold after work ran). It is NOT the daily-allowance 'cap' above: swallowing
+    // it here made a hold-stopped source read as a clean "no results" (unavailable) and let the scan keep spending.
+    if (e instanceof SpendRefused) d.trace?.search({ query, attempted: false, outcome: 'spend_refused', hits: null }) // money, not a count cap (never search_cap)
+    throw e
   }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) await hold.settle(r.ok ? hold.usd : null)
-  if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r }
+  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
+  if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
   if (!Array.isArray(arr)) { d.trace?.search({ query, attempted: true, outcome: 'unavailable', hits: null }); return { ok: false, reason: 'unavailable' } }
@@ -135,7 +143,7 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   return { ok: true, hits }
 }
 
-export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
+export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'disabled', pages: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
@@ -154,13 +162,13 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   await d.charge?.('fetch', batch.length)
   let hold: SpendHold | null
   try { hold = await reserveScanSpend('tinyfish.fetch', () => unitCostUsd('tinyfish.fetch', batch.length, env)) } catch (e) {
-    if (!(e instanceof SpendRefused)) throw e
-    // Money, not a count cap: spend_refused, so a budget refusal is never reported as search_cap.
-    d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'spend_refused', pages: null }); return { ok: false, reason: 'cap' }
+    // Same rule as the search reserve above: the scan's own budget refusal propagates; the daily-allowance gate stays 'cap'.
+    if (e instanceof SpendRefused) d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'spend_refused', pages: null }) // money, not a count cap
+    throw e
   }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) await hold.settle(r.ok ? hold.usd : null)
-  if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r }
+  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
+  if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []
   for (const x of Array.isArray(arr) ? arr : []) {
@@ -223,17 +231,17 @@ export function pickFetchUrls(urls: string[], max: number, rank?: (url: string) 
 
 // Fetch in provider-sized batches (tfFetch takes at most 10 urls per call). All per-scan, per-tenant and global caps
 // still bind inside tfFetch. A provider failure stops further batches; pages already returned are kept.
-export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail }> {
+export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number }> {
   const L = limits(d.env ?? process.env)
   const todo = urls.slice(0, Math.max(0, L.fetchesPerScan - spent.fetches))
   const pages: { url: string; title: string; text: string }[] = []
-  let first: Fail | null = null; let anyOk = false
+  let first: Fail | null = null; let firstStatus: number | undefined; let anyOk = false
   for (let i = 0; i < todo.length; i += 10) {
     const r = await tfFetch(db, tenant, todo.slice(i, i + 10), spent, d)
-    if (!r.ok) { first = first ?? r.reason; break }
+    if (!r.ok) { first = first ?? r.reason; firstStatus = firstStatus ?? r.status; break }
     anyOk = true; pages.push(...r.pages)
   }
-  if (!anyOk) return { ok: false, reason: first ?? 'cap' }
+  if (!anyOk) return firstStatus === undefined ? { ok: false, reason: first ?? 'cap' } : { ok: false, reason: first ?? 'cap', status: firstStatus }
   return { ok: true, pages }
 }
 

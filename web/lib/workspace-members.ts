@@ -105,21 +105,24 @@ export async function listWorkspaces(db: Db, actorId: string) {
      WHERE m.member_id = ? ORDER BY CASE WHEN o.id = m.member_id THEN 0 ELSE 1 END, m.created_at, o.id`, [actorId])
 }
 
-export async function changeRole(db: Db, by: Acting, memberId: string, role: Role): Promise<void> {
-  await db.tx(function* (t) {
+// Returns the member's role before the change (equal to `role` when nothing changed), for the audit trail.
+export async function changeRole(db: Db, by: Acting, memberId: string, role: Role): Promise<Role> {
+  return db.tx(function* (t) {
     const me = yield* actingRole(t, by)
     const current = yield* roleOf(t, by.tenantId, memberId)
     if (!current) throw new MemberError('not_found')
     if (!mayManage(me, current, role)) throw new MemberError('forbidden')
     if (current === 'owner' && role !== 'owner' && (yield* owners(t, by.tenantId)) <= 1) throw new MemberError('last_owner')
-    yield* t.run('UPDATE memberships SET role = ? WHERE tenant_id = ? AND member_id = ?', [role, by.tenantId, memberId])
+    if (current !== role) yield* t.run('UPDATE memberships SET role = ? WHERE tenant_id = ? AND member_id = ?', [role, by.tenantId, memberId])
+    return current
   })
 }
 
 // Removing someone else; leaving is leave(). Access ends on the member's next request: getSessionUser reads the row.
-export async function removeMember(db: Db, by: Acting, memberId: string): Promise<void> {
+// Returns the role the member held.
+export async function removeMember(db: Db, by: Acting, memberId: string): Promise<Role> {
   if (memberId === by.actorId) throw new MemberError('forbidden')
-  await db.tx(function* (t) {
+  return db.tx(function* (t) {
     yield* lockAccount(t,memberId)
     const me = yield* actingRole(t, by)
     const current = yield* roleOf(t, by.tenantId, memberId)
@@ -129,11 +132,13 @@ export async function removeMember(db: Db, by: Acting, memberId: string): Promis
     if(yield* lastWorkspace(t,memberId))throw new MemberError('only_workspace')
     yield* offboardTx(t, by.tenantId, memberId, by.actorId)
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, memberId])
+    return current
   })
 }
 
-export async function leave(db: Db, by: Acting): Promise<void> {
-  await db.tx(function* (t) {
+// Returns the role the account held.
+export async function leave(db: Db, by: Acting): Promise<Role> {
+  return db.tx(function* (t) {
     yield* lockAccount(t,by.actorId)
     yield* lockWorkspace(t, by.tenantId)
     const current = yield* roleOf(t, by.tenantId, by.actorId)
@@ -143,6 +148,7 @@ export async function leave(db: Db, by: Acting): Promise<void> {
     yield* revokeSentInvitesTx(t, by.tenantId, by.actorId)
     yield* t.run('DELETE FROM memberships WHERE tenant_id = ? AND member_id = ?', [by.tenantId, by.actorId])
     yield* t.run('UPDATE sessions SET active_tenant_id=NULL WHERE user_id=? AND active_tenant_id=?',[by.actorId,by.tenantId])
+    return current
   })
 }
 
@@ -174,13 +180,15 @@ export async function listInvitations(db: Db, tenantId: string, now = nowS()) {
     [tenantId, now])
 }
 
-export async function revokeInvitation(db: Db, by: Acting, id: string, now = nowS()): Promise<void> {
-  await db.tx(function* (t) {
+// Returns the revoked invitation's role.
+export async function revokeInvitation(db: Db, by: Acting, id: string, now = nowS()): Promise<Role> {
+  return db.tx(function* (t) {
     const me = yield* actingRole(t, by)
     const inv = yield* t.get<{ role: string }>('SELECT role FROM invitations WHERE id = ? AND tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL', [id, by.tenantId])
     if (!inv || !isRole(inv.role)) throw new MemberError('not_found')
     if (!mayManage(me, null, inv.role)) throw new MemberError('forbidden')
     yield* t.run('UPDATE invitations SET revoked_at = ? WHERE id = ? AND tenant_id = ?', [now, id, by.tenantId])
+    return inv.role
   })
 }
 
@@ -189,7 +197,7 @@ export async function revokeInvitation(db: Db, by: Acting, id: string, now = now
 // token is used up in the same transaction that adds the membership, so a replay, an expired or a revoked link adds
 // nothing. Unknown, used, revoked and expired links all answer the same 'invalid_invite'. An account already in the
 // workspace keeps its role.
-export async function acceptInvitation(db: Db, actor: { actorId: string; email: string }, token: string, now = nowS()): Promise<{ tenantId: string; role: Role }> {
+export async function acceptInvitation(db: Db, actor: { actorId: string; email: string }, token: string, now = nowS()): Promise<{ tenantId: string; role: Role; invitationId: string; joined: boolean }> {
   if (!isInviteToken(token)) throw new MemberError('invalid_invite')
   return db.tx(function* (t) {
     const inv = yield* t.get<{ id: string; tenant_id: string; email: string; role: string; invited_by: string }>(
@@ -204,10 +212,10 @@ export async function acceptInvitation(db: Db, actor: { actorId: string; email: 
     const account=yield* t.get<{email:string;email_verified_at:number|null}>('SELECT email,email_verified_at FROM users WHERE id=?',[actor.actorId])
     if(!account || inv.email!==account.email.trim().toLowerCase())throw new MemberError('wrong_account')
     if(account.email_verified_at===null)throw new MemberError('email_unverified')
-    yield* t.run('INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, member_id) DO NOTHING',
+    const added = yield* t.run('INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, member_id) DO NOTHING',
       [inv.tenant_id, actor.actorId, inv.role, now, inv.invited_by])
     const role = yield* roleOf(t, inv.tenant_id, actor.actorId)
-    return { tenantId: inv.tenant_id, role: role ?? inv.role }
+    return { tenantId: inv.tenant_id, role: role ?? inv.role, invitationId: inv.id, joined: added.changes === 1 }
   })
 }
 

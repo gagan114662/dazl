@@ -224,3 +224,36 @@ test('scan spend cap: a store that does not answer refuses the call (ledger_unav
   } finally { console.error = orig }
   assert.equal(n, 3, 'reserve, then the settle and its one retry')
 })
+
+bothEngines('scan spend cap: a settle refreshes the lease ONLY for its own attempt and only on a real transition', async ({ db }) => {
+  await job(db, 'j1', A)
+  const h = await runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('apollo.org', () => 0.2))
+  // A newer attempt owns the job before the old hold settles: the old call's accounting still closes (settled), but its
+  // settle must NOT refresh the newer attempt's lease (attempts fence).
+  await db.run("UPDATE scan_jobs SET attempts = 2, claimed_at = 1 WHERE id = 'j1' AND user_id = ?", [A])
+  await h!.settle(0.1)
+  const j1 = await db.get<{ claimed_at: number | string }>("SELECT claimed_at FROM scan_jobs WHERE id = 'j1' AND user_id = ?", [A])
+  assert.equal(Number(j1!.claimed_at), 1, "an old hold's settle never refreshes a newer attempt's lease")
+  const calls = await scanSpendCalls(db, 'j1', A)
+  assert.equal(calls[0].status, 'settled', "the old call's accounting still closes")
+
+  await job(db, 'j2', A)
+  const h2 = await runWithScanSpend(ctx(db, 'j2', A), () => reserveScanSpend('apollo.org', () => 0.2))
+  await db.run("UPDATE scan_jobs SET claimed_at = 1 WHERE id = 'j2' AND user_id = ?", [A])
+  await h2!.settle(0.1)
+  const j2 = await db.get<{ claimed_at: number | string }>("SELECT claimed_at FROM scan_jobs WHERE id = 'j2' AND user_id = ?", [A])
+  assert.ok(Number(j2!.claimed_at) > 100000, 'a same-attempt real settle DOES refresh the lease (DB clock, not the app clock)')
+
+  // The REPLAY branch: the old hold's settle is delivered AGAIN after a newer attempt owns the job. The row is already
+  // 'settled', so the replay is a no-transition no-op (r.changes === 0): it must NOT refresh the newer attempt's lease
+  // and must NOT re-apply the cost delta to the reserved total (a double-counted delta corrupts the cap).
+  await job(db, 'j3', A)
+  const h3 = await runWithScanSpend(ctx(db, 'j3', A), () => reserveScanSpend('apollo.org', () => 0.2))
+  await h3!.settle(0.1) // the real first settle: transition applied, delta -0.1 applied to the reserved total
+  const before = await db.get<{ spend_cap_reserved_usd: number | string }>("SELECT spend_cap_reserved_usd FROM scan_jobs WHERE id = 'j3' AND user_id = ?", [A])
+  await db.run("UPDATE scan_jobs SET attempts = 2, claimed_at = 1 WHERE id = 'j3' AND user_id = ?", [A]) // a newer attempt owns the job
+  await h3!.settle(0.1) // REPLAY: already-settled row, no transition
+  const j3 = await db.get<{ claimed_at: number | string; spend_cap_reserved_usd: number | string }>("SELECT claimed_at, spend_cap_reserved_usd FROM scan_jobs WHERE id = 'j3' AND user_id = ?", [A])
+  assert.equal(Number(j3!.claimed_at), 1, 'a replayed settle never refreshes the newer attempt')
+  assert.equal(Number(j3!.spend_cap_reserved_usd), Number(before!.spend_cap_reserved_usd), 'a replayed settle never re-applies the cost delta')
+})

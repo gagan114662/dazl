@@ -14,7 +14,8 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', use: 'sig' }
 const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const sign = (claims: Record<string, unknown>) => { const h = b({ alg: 'RS256', kid: 'k1', typ: 'JWT' }), c = b(claims); return `${h}.${c}.${createSign('RSA-SHA256').update(`${h}.${c}`).sign(privateKey).toString('base64url')}` }
-let nonce = '', idEmail = 'pat@example.test', idSub = 'g-1'
+let nonce = ''
+const idEmail = 'pat@example.test', idSub = 'g-1'
 globalThis.fetch = (async (u: string | URL, init?: RequestInit) => {
   const url = String(u)
   if (url === 'https://www.googleapis.com/oauth2/v3/certs') return new Response(JSON.stringify({ keys: [jwk] }))
@@ -37,7 +38,8 @@ const claimRoute = await import('../../app/api/preview/claim/route.ts')
 const issueRoute = await import('../../app/api/preview/issue/route.ts')
 const signinRoute = await import('../../app/api/auth/signin/route.ts')
 const signupRoute = await import('../../app/api/auth/signup/route.ts')
-const { getAuthDb, createPasswordUser, createSession } = await import('../../lib/auth-db.ts')
+const { createPasswordUser, createSession } = await import('../../lib/auth-db.ts')
+const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 const { migrateScan, createJob } = await import('../../lib/scan/store.ts')
 const { migratePreviewClaim } = await import('../../lib/scan/preview-claim.ts')
 const { migratePlatform } = await import('../../lib/db/platform-tables.ts')

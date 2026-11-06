@@ -9,7 +9,8 @@ import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from '
 // leads journey, so an account without its own AI key may have it read on dazl's trial key. Cost authority stays
 // explicit and bounded:
 //   - only an account the trial would admit right now (lib/scan/trial.ts and lib/billing/trial-budget.ts: operator
-//     key, trial budget configured, Google sign-in, one trial per company domain, attempt and spend caps);
+//     key, the wallet's money ceilings configured (trialWalletCaps - NOT the trial-scan config, so funding a read never
+//     turns trial scans on), Google sign-in, one trial per company domain, attempt and spend caps);
 //   - the deployment must set its own daily ceiling for these reads (DAZL_TRIAL_SITE_READS_PER_DAY); unset = off;
 //   - admission is ALLOWLIST-ONLY until a deliberate public launch: DAZL_TRIAL_SITE_READ_ALLOWLIST must name the
 //     accounts (comma-separated emails or user ids) that may be funded at all. Unset or empty = nobody is admitted,
@@ -84,7 +85,7 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   //    attempts, money ceilings). An account refused here takes no slot of any counter.
   const status = await readTrialStatus(db, user.id, ip, new Date(), env as NodeJS.ProcessEnv)
   if (!status.funded) return { ok: false, reason: status.reason ?? 'not_configured' }
-  const why = await trialRefusal(db, user, { env, reserveUsd: TRIAL_SITE_READ_RESERVE_USD })
+  const why = await trialRefusal(db, user, { env, kind: 'site_read', reserveUsd: TRIAL_SITE_READ_RESERVE_USD })
   if (why) return { ok: false, reason: why }
   // The allowlist gates SPEND, not eligibility reporting: an ineligible account still hears its real reason above,
   // and an eligible account off the list stops here, before any counter or wallet slot is taken.

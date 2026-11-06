@@ -1,0 +1,18 @@
+# Daily encrypted off-host copy of the service's secrets and config (scripts/backup/config-backup.mts; docs/RECOVERY.md
+# "Secrets and config"). A TEMPLATE, installed with dazl-backup.service after the owner approves the destination.
+# Runs as root because the app's env file is root-owned. The bundle excludes DAZL_MASTER_KEY (replaced by a placeholder)
+# and is encrypted to CONFIG_AGE_RECIPIENTS, a key pair of its own (never the database copies' one). It uploads only
+# when the newest bundle at the destination does not already hold this content.
+[Unit]
+Description=dazl secrets/config bundle (encrypted, master key excluded)
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/dazl-backup/env
+# for OFFHOST_DEST=rclone:REMOTE:PATH: the SAME remote the app user's backups use (root has no rclone config of its own).
+# A directory destination: files are handed to the directory's owner, so the app user's monitor can read them.
+Environment=RCLONE_CONFIG=/home/CHANGE-ME-app-user/.config/rclone/rclone.conf
+WorkingDirectory=CHANGE-ME-release/web
+ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/config-backup.mts
+TimeoutStartSec=10min

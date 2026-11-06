@@ -81,5 +81,5 @@ test('tfFetchMany: a later batch failing keeps earlier pages; the page count is 
 
 test('tfFetchMany: first batch failing returns the failure', async () => {
   const db = mk(); const r = await tfFetchMany(db, 't1', ['https://a.example/x'], { fetches: 0 }, { env, now: NOW, fetchImpl: fetcher([], [1]) })
-  assert.deepEqual(r, { ok: false, reason: 'unavailable' })
+  assert.deepEqual(r, { ok: false, reason: 'unavailable', status: 500 }, 'the provider answered 500, so the result carries the actual status')
 })

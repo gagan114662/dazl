@@ -5,6 +5,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { changeRole, listMembers, removeMember } from '@/lib/workspace-members'
 import { isRole } from '@/lib/workspaces'
 import { denied, isId, memberFail, stale } from '@/lib/workspace-access'
+import { audit } from '@/lib/audit-route'
 
 // Who is in this workspace and as what. Every member may see the team.
 export async function GET() {
@@ -24,7 +25,9 @@ export async function PATCH(req: NextRequest) {
   if (!isId(body?.member_id)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
   if (!isRole(body?.role)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    await changeRole(await getDb(), user, body.member_id, body.role)
+    const from = await changeRole(await getDb(), user, body.member_id, body.role)
+    // the roles only; a role set to the one the member already holds changed nothing and records nothing
+    if (from !== body.role) await audit(user, req, { action: 'member.role_changed', resource: 'member', id: body.member_id, summary: { from, to: body.role } })
     return NextResponse.json({ ok: true })
   } catch (e) { return memberFail(e) }
 }
@@ -40,7 +43,8 @@ export async function DELETE(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!isId(body?.member_id)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
   try {
-    await removeMember(await getDb(), user, body.member_id)
+    const role = await removeMember(await getDb(), user, body.member_id)
+    await audit(user, req, { action: 'member.removed', resource: 'member', id: body.member_id, summary: { role } })
     return NextResponse.json({ ok: true })
   } catch (e) { return memberFail(e) }
 }

@@ -19,6 +19,7 @@ import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './publi
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
+import { recheckSendAuthority } from './send-authority.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
@@ -207,15 +208,18 @@ function readDeliverabilityRows(db: Database.Database, tenantId: string, leadId:
 function readCrawledRows(db: Database.Database, tenantId: string, leadId: string): CrawledRows {
   return db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND ((connector = 'sitecrawl' AND kind IN ('email','domain')) OR (connector = 'user' AND kind = 'domain_review'))").all(leadId, tenantId) as CrawledRows
 }
-// The pages a draft for this lead may cite, for the launch claim check (claimIssuesFor): read from the store so a
-// send gate can check a made draft without re-deriving the address. The crawl rows unreadable is not fatal here:
-// the draft itself was made under the same read, so a missing table shrinks the allowlist to the cited pages.
-export function draftEvidenceUrlsFor(db: Database.Database, tenantId: string, leadId: string): string[] {
-  const row = db.prepare('SELECT contact, source_url FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null } | undefined
-  if (!row) return []
+// The launch claim check's context for this lead (claimIssuesFor's evidenceUrls, prospectText and rowFound): the pages a
+// draft may cite, read from the store so a send gate can check a made draft without re-deriving the address, and what the
+// lead's source says about them (signal and saved excerpt), which the product truth qualification reads (#402). The crawl
+// rows unreadable is not fatal here: the draft itself was made under the same read, so a missing table shrinks the
+// allowlist to the cited pages. The lead row ITSELF missing is different: that is data loss, not a sparse-but-real lead,
+// so rowFound=false tells claimIssuesFor to fail closed (hold) rather than quietly qualify against empty text.
+export function draftClaimContextFor(db: Database.Database, tenantId: string, leadId: string): [string[], string, boolean] {
+  const row = db.prepare('SELECT contact, source_url, signal, evidence_excerpt FROM leads WHERE id = ?').get(leadId) as { contact: string | null; source_url: string | null; signal: string | null; evidence_excerpt: string | null } | undefined
+  if (!row) return [[], '', false]
   let crawled: CrawledRows = []
   try { crawled = readCrawledRows(db, tenantId, leadId) } catch { /* enrichment table not present */ }
-  return draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled })
+  return [draftEvidenceUrls({ contact: row.contact, source_url: row.source_url ?? undefined, enrichments: crawled }), [row.signal, row.evidence_excerpt].filter(Boolean).join('\n'), true]
 }
 
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
@@ -574,6 +578,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
+  { const why = recheckSendAuthority(db, tenantId, { to: m.to_email, sender: acct!.email, now: nowS(d) }); if (why) release(why) } // the shared recheck (send-authority.ts); the first-touch set above stays
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
   if (tableExists(db,'sequences')) {

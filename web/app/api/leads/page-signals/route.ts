@@ -1,5 +1,6 @@
 import {NextRequest,NextResponse} from 'next/server'
-import {getScanDb,requireUser} from '@/lib/scan/service'
+import {requireUser} from '@/lib/scan/service'
+import {getDb} from '@/lib/db/client'
 import {rateLimit} from '@/lib/rate-limit'
 import {leadSignals} from '@/lib/scan/page-signals'
 
@@ -10,7 +11,7 @@ export async function GET(req:NextRequest){
  const id=req.nextUrl.searchParams.get('lead_id')??''
  if(!/^[0-9a-f]{24}$/.test(id))return NextResponse.json({error:'Bad request'},{status:400})
  if(!(await rateLimit(`page-signals:${user.tenantId}`,20,60*60*1000)).ok)return NextResponse.json({error:'Too many reads. Try again later.'},{status:429})
- const s=await leadSignals(getScanDb(),user.tenantId,id)
+ const s=await leadSignals(await getDb(),user.tenantId,id)
  if(!s)return NextResponse.json({error:'Not found'},{status:404})
  return NextResponse.json(s)
 }

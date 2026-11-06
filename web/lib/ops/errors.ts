@@ -61,7 +61,7 @@ export function scrub(s: string): string {
 }
 
 // This app's error classes whose names do not end in Error (grep 'extends Error').
-const OWN_ERROR_NAMES = new Set(['LeaseLost', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SpendAccountingFailed', 'SpendRefused', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
+const OWN_ERROR_NAMES = new Set(['CreditRefused', 'LeaseLost', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SpendAccountingFailed', 'SpendRefused', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
 // A class-shaped name is not safe by its shape alone (Account1234567890Error): it must also come through the scrub
 // unchanged and carry no run of 4+ digits.
 export function errorName(n: unknown): string {
@@ -139,7 +139,7 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
 // event is built field by field below. The full scrubbed record stays in the server's own log (stderr).
 const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError', 'DOMException', 'ChunkLoadError'])
 // This app's error classes (test/ops-sentry.test.ts fails when a class extending an Error in lib/ or app/ is missing).
-export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxFixtureError', 'InboxQueryError', 'JobFeedError',
+export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'CopyVerifyError', 'CreditRefused', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxFixtureError', 'InboxQueryError', 'JobFeedError',
   'LeaseLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused',
 
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
@@ -159,7 +159,9 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'C
   // lib/crm/index.ts (#365): a CRM push that failed (nothing created) or has an unknown outcome
   'CrmPushError',
   // lib/tenant/lifecycle.ts (#359/#455): a refused ledger re-application during tenant deletion
-  'TombstoneReapplyError'])
+  'TombstoneReapplyError',
+  // lib/evals/judge-validation-run.ts (#396): the real-model judge validation run stopped (cap, failure, refusal limit)
+  'RunStopped'])
 export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'
 export interface OutboundFrame { filename: string; lineno: number; colno: number }
 // A frame's file only when it is this build's own code (lib/ops/emitted.ts): a server file that exists under the app

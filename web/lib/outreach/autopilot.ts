@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { drainVerifiedPendingLifecycle, LIFECYCLE_NOT_CONVERTED } from './lifecycle.ts'
 import { PUBLISHED_RECIPIENT_CANDIDATE_SQL } from './published-email.ts'
-import { draftEvidenceUrlsFor } from './service.ts'
+import { draftClaimContextFor } from './service.ts'
 import { publishedContact } from './published-email.ts'
 import { gmailStatus } from '../gmail/oauth.ts'
 import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
@@ -440,7 +440,7 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     const m = messageId ? db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { to_email: string; subject: string; body: string } | undefined : undefined
     const outside = outsidePolicy(gate.policy, row?.play ?? '', m?.to_email ?? row?.contact ?? '')
     if (outside) return outside
-    if (m && claimIssuesFor(gate.policy, `${m.subject}\n${m.body}`, draftEvidenceUrlsFor(db, tenantId, leadId)).length) return 'claims'
+    if (m && claimIssuesFor(gate.policy, `${m.subject}\n${m.body}`, ...draftClaimContextFor(db, tenantId, leadId)).length) return 'claims'
     return null
   }
   // A launch stop ends the pass: the drafted message (if any) goes back to the tenant - it was approved under authority
@@ -815,7 +815,7 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
     const m2 = db.prepare('SELECT to_email, subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { to_email: string; subject: string; body: string } | undefined
     const outside = outsidePolicy(g2.policy, row?.play ?? '', m2?.to_email ?? row?.contact ?? '')
     if (outside) return 'launch_policy_changed'
-    if (m2 && claimIssuesFor(g2.policy, `${m2.subject}\n${m2.body}`, draftEvidenceUrlsFor(db, tenantId, leadId)).length) return 'launch_policy_changed'
+    if (m2 && claimIssuesFor(g2.policy, `${m2.subject}\n${m2.body}`, ...draftClaimContextFor(db, tenantId, leadId)).length) return 'launch_policy_changed'
     return null
   }
   // Caller-side authority for each drain send, checked by the send path as its last word before Gmail (the service
@@ -854,7 +854,7 @@ export async function drainFirstTouch(db: Database.Database, tenantId: string, d
       const play = db.prepare('SELECT scan_job_id AS play, source_url FROM leads WHERE id = ?').get(m.lead_id) as { play: string; source_url: string | null } | undefined
       const words = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(m.id, tenantId) as { subject: string; body: string } | undefined
       // Out of the policy's scope, or claims it did not allow: never sent by the drain; left held for the tenant.
-      if (!play || !words || outsidePolicy(gate.policy, play.play, m.to_email) || claimIssuesFor(gate.policy, `${words.subject}\n${words.body}`, draftEvidenceUrlsFor(db, tenantId, m.lead_id)).length) { out.held++; continue }
+      if (!play || !words || outsidePolicy(gate.policy, play.play, m.to_email) || claimIssuesFor(gate.policy, `${words.subject}\n${words.body}`, ...draftClaimContextFor(db, tenantId, m.lead_id)).length) { out.held++; continue }
     }
     const domain = m.to_email.split('@')[1]
     if (autoSent24h(db, tenantId, now) >= Math.min(st.daily_cap, gate.calibrated ? gate.cap : Number.MAX_SAFE_INTEGER)) { setHold(db, tenantId, m.id, m.lead_id, 'daily_cap', dailyCapDueAt(db, tenantId, now)); out.held++; continue }
