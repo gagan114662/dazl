@@ -7,6 +7,7 @@
 //   unavailable          cannot run (no key / feature off)
 // Instrumentation only: nothing here changes a lead or a decision.
 import type Database from 'better-sqlite3'
+import { ENRICH_SKIP_STATUSES } from './provider-issue-text.ts'
 
 export type StageStatus = 'ok' | 'attempted_no_result' | 'skipped' | 'failed' | 'unavailable'
 export interface StageNote { stage: string; status: StageStatus; reason: string | null; detail?: Record<string, number | string> }
@@ -64,4 +65,34 @@ export function mergeIntoRunReport(db: Database.Database, jobId: string, attempt
     db.prepare('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = ?').run(s, jobId, attempt)
     return true
   } catch { return false }
+}
+
+// Paid contact enrichment (#923). The writers record connector 'enrich:apollo' / 'enrich:pdl' exactly, so match those, not a
+// bare provider prefix. Every row is classified; a failure row is never counted as a successful lookup.
+export const PAID_ENRICH_CONNECTORS = ['enrich:apollo', 'enrich:pdl'] as const
+const HELD = new Set<string>([...ENRICH_SKIP_STATUSES, 'reserved', 'skipped', 'held'])
+export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, jobId: string): { ok: number; empty: number; held: number; failed: number; total: number; unreadable: boolean } {
+  const out = { ok: 0, empty: 0, held: 0, failed: 0, total: 0, unreadable: false }
+  let rows: { status: string; results: number }[]
+  try {
+    rows = db.prepare(`SELECT status, results FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector IN (${PAID_ENRICH_CONNECTORS.map(() => '?').join(',')})`).all(tenantId, jobId, ...PAID_ENRICH_CONNECTORS) as { status: string; results: number }[]
+  } catch { out.unreadable = true; return out }
+  for (const r of rows) {
+    out.total++
+    if (r.status === 'ok' && r.results > 0) out.ok++
+    else if (r.status === 'ok' || r.status === 'empty') out.empty++
+    else if (HELD.has(r.status)) out.held++
+    else out.failed++ // rejected (name_mismatch ...), provider errors, anything unknown
+  }
+  return out
+}
+export function notePaidEnrichment(trace: EnrichmentTrace, db: Database.Database, tenantId: string, jobId: string): void {
+  const o = paidEnrichmentOutcomes(db, tenantId, jobId)
+  const detail = { lookups: o.total, with_results: o.ok, empty: o.empty, held: o.held, failed: o.failed }
+  if (o.unreadable) trace.note('paid_enrichment', 'failed', 'the paid-enrichment audit could not be read', detail)
+  else if (o.total === 0) trace.note('paid_enrichment', 'unavailable', 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
+  else if (o.ok > 0) trace.note('paid_enrichment', 'ok', null, detail)
+  else if (o.failed > 0) trace.note('paid_enrichment', 'failed', 'paid lookups were rejected or failed; none returned a contact', detail)
+  else if (o.empty > 0) trace.note('paid_enrichment', 'attempted_no_result', 'paid lookups ran and found no contact', detail)
+  else trace.note('paid_enrichment', 'skipped', 'paid lookups were held (budget, credits, circuit or fallback off)', detail)
 }
