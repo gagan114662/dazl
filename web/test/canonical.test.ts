@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseHomepage } from '../lib/seo/audit.ts'
 
 const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
@@ -23,9 +24,9 @@ test('every indexable public page carries a self-referencing canonical built fro
 
 test('authenticated app pages get no canonical (they must not claim a public URL)', () => {
   const walk = (dir: string): string[] =>
-    readdirSync(join(new URL('..', import.meta.url).pathname, dir)).flatMap(f => {
+    readdirSync(join(fileURLToPath(new URL('..', import.meta.url)), dir)).flatMap(f => {
       const rel = `${dir}/${f}`
-      const abs = join(new URL('..', import.meta.url).pathname, rel)
+      const abs = join(fileURLToPath(new URL('..', import.meta.url)), rel)
       return statSync(abs).isDirectory() ? walk(rel) : [rel]
     })
   const offenders = walk('app/app').filter(f => f.endsWith('.tsx') && /canonical/.test(read(f)))

@@ -1,75 +1,23 @@
-"use client"
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { afterSignIn, keepInvite } from '@/lib/invite-return'
-import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
+import { connection } from 'next/server'
+import { trialFundable } from '@/lib/billing/trial-budget'
+import SignUpForm from './sign-up-form'
 
-export default function SignUp() {
-  const router = useRouter()
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const claim = useClaimContext()
-
-  useEffect(() => { keepInvite() }, [])
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault()
-    setLoading(true); setError('')
-    const fd = new FormData(e.currentTarget)
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: fd.get('email'),
-        password: fd.get('password'),
-        name: fd.get('name'),
-        business_name: fd.get('business_name'),
-      })
-    })
-    const data = await res.json()
-    if (!res.ok) { setError(data.error || 'Signup failed'); setLoading(false); return }
-    router.push(afterSignIn(data.resume))
-  }
-
-  return (
-    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
-      <div className="card p-8 sm:p-10 w-full max-w-sm">
-        <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></a>
-        <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
-        <p className="text-[#555] text-sm mb-6 text-center">Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first. Upgrade any time.</p>
-        <ClaimContextBanner business={claim.business} action="Create your account" />
-        <a href={claim.googleHref} className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
-        <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
-        {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
-        <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-sm text-[#333]">Your name
-          <input name="name" type="text" required placeholder="Your name" autoComplete="name"
-            className="field" />
-          </label>
-          <label className="flex flex-col gap-1 text-sm text-[#333]">Email
-          <input name="email" type="email" required placeholder="you@company.com" autoComplete="email"
-            className="field" />
-          </label>
-          <label className="flex flex-col gap-1 text-sm text-[#333]">Company (optional)
-          <input name="business_name" type="text" placeholder="Company (optional)" autoComplete="organization"
-            className="field" />
-          </label>
-          <label className="flex flex-col gap-1 text-sm text-[#333]">Password
-          <input name="password" type="password" required placeholder="Password (10+ characters, letters and numbers)" minLength={10} autoComplete="new-password"
-            className="field" />
-          </label>
-          <button type="submit" disabled={loading}
-            className="btn-primary mt-1 !py-3">
-            {loading ? 'Creating account…' : 'Create your account'}
-          </button>
-        </form>
-        <p className="mt-4 text-sm text-[#666] text-center">
-          Already have an account? <a href="/sign-in" className="text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
-        </p>
-        <p className="mt-3 text-xs text-[#6b6b6b] text-center">
-          <a href="/terms" className="underline underline-offset-2 hover:text-[#111]">Terms of Service</a> · <a href="/privacy" className="underline underline-offset-2 hover:text-[#111]">Privacy Policy</a>
-        </p>
-      </div>
-    </main>
-  )
+// Runtime deployment availability only (#668): whether a trial is funded here is an env fact read at request time,
+// never baked into the build and never implying anything about this specific visitor's own trial eligibility or use.
+// trialFundable, never operatorKey() alone: the operator key makes a trial POSSIBLE, but admitTrialScan also
+// requires trialCaps() to resolve (spend ceilings, TinyFish) - a deployment can have the key set with those absent,
+// which refuses every trial as not_configured despite looking funded (review of #670, production was in that state).
+// connection() with NO Suspense boundary around it, plus `instant = false` (review of #670): with no Suspense
+// ancestor Next cannot stream a fallback-then-swap for this piece, so the route blocks until connection() resolves
+// (near-instant) and sends the complete real HTML in one shot - the form is in the initial markup, not hidden
+// behind an inline swap script. A Suspense-wrapped version of this exact pattern (await connection() inside the
+// boundary) is what broke JS-disabled signup (test/smoke/auth-form-fallback.smoke.mjs) and is why /reset, which
+// keeps that Suspense wrapper, is excluded from that smoke's cases. Without any dynamic API call at all,
+// cacheComponents prerenders this route fully static at build time, baking in whatever env the build machine
+// happened to have - connection() is what keeps this a live, per-request read; `instant = false` is what lets
+// cacheComponents allow a blocking (non-prerendered) route without a Suspense boundary.
+export const instant = false
+export default async function SignUp() {
+  await connection()
+  return <SignUpForm trialFunded={trialFundable()} />
 }

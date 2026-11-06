@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // A React onSubmit-only <form> has no method attribute, so before hydration (or with JS disabled)
 // the browser falls back to a NATIVE GET submission - and every field, including passwords and API
@@ -20,7 +21,7 @@ const FORMS = /<form\b[^>]*>/g
 
 test('every form on a credential-collecting page declares method="post"', () => {
   const offenders: string[] = []
-  for (const file of walk(join(new URL('.', import.meta.url).pathname, '..', 'app'))) {
+  for (const file of walk(join(fileURLToPath(new URL('.', import.meta.url)), '..', 'app'))) {
     const src = readFileSync(file, 'utf8')
     if (!/type=["']password["']/.test(src)) continue
     for (const m of src.matchAll(FORMS)) {
@@ -31,8 +32,8 @@ test('every form on a credential-collecting page declares method="post"', () => 
 })
 
 test('the public auth forms (sign-up, sign-in, reset) declare method="post"', () => {
-  for (const f of ['app/sign-up/page.tsx', 'app/sign-in/page.tsx', 'app/reset/reset-form.tsx']) {
-    const src = readFileSync(join(new URL('.', import.meta.url).pathname, '..', f), 'utf8')
+  for (const f of ['app/sign-up/sign-up-form.tsx', 'app/sign-in/page.tsx', 'app/reset/reset-form.tsx']) {
+    const src = readFileSync(join(fileURLToPath(new URL('.', import.meta.url)), '..', f), 'utf8')
     for (const m of src.matchAll(FORMS)) {
       assert.match(m[0], /method=["']?post/i, `${f}: ${m[0].slice(0, 80)}`)
     }
