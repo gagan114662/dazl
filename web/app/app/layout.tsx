@@ -2,11 +2,15 @@ import Link from 'next/link'
 import { Suspense } from 'react'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { connection } from 'next/server'
 import { hasLiveSession } from '@/lib/auth-db'
 import Nav from './nav'
 import { Icon } from './ui/icons'
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
+  // #942: the session's expiry check reads the clock (auth-db nowS). connection() binds this render to the request, so
+  // cacheComponents never prerenders it (runtime prefetch included) and the check always runs at request time.
+  await connection()
   const token = (await cookies()).get('dazl_session')?.value
   if (!(await hasLiveSession(token))) redirect('/sign-in')
 

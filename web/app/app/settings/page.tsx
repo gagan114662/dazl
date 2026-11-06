@@ -16,6 +16,7 @@ import SessionsPanel from './sessions-panel'
 import ReauthGate from './reauth-gate'
 import AccountPanel from './account-panel'
 import AuditPanel from './audit-panel'
+import { connection } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { can } from '@/lib/workspaces'
 
@@ -23,6 +24,7 @@ const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['
 
 export default async function Settings() {
   // the audit trail is for owners and admins; nobody else's page load asks for it (a refused read is a recorded event)
+  await connection() // #942: request-time only; the session read checks expiry against the clock
   const user = await requireUser()
   return (
     <div className="p-8 max-w-2xl">
