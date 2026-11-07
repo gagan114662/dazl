@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { Suspense } from 'react'
 import { cookies } from 'next/headers'
+import { connection } from 'next/server'
 import { redirect } from 'next/navigation'
 import { hasLiveSession } from '@/lib/auth-db'
 import Nav from './nav'
@@ -8,6 +9,9 @@ import MainFocus from './main-focus'
 import { Icon } from './ui/icons'
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
+  // #988: the session check reads the clock (expiry). Opt this subtree into request time first, so the prerender never
+  // sees Date.now() (blocking-prerender-current-time) and the static shell cannot disagree with the first client render.
+  await connection()
   const token = (await cookies()).get('dazl_session')?.value
   if (!(await hasLiveSession(token))) redirect('/sign-in')
 
