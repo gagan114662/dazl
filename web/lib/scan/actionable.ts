@@ -1,4 +1,3 @@
-import { isRecruitingInbox } from '../recruiting-inbox.ts'
 // "Qualified / actionable" yield, measured separately from "source-checked". A lead is ACTIONABLE only when, at the END of enrichment, it has
 //   - a company domain the crawl confirmed (the homepage named the company and agreed on the place),
 //   - when the request needs sales hiring: the sales-hiring proof (it is still verified after the gate: own quote, dated ATS posting, or a careers-page vacancy),
@@ -9,7 +8,7 @@ import { isRecruitingInbox } from '../recruiting-inbox.ts'
 // the run report gets the same counts, so the report and the card agree.
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
-import { titleMatches } from '../people/rank.ts'
+import { currentSiteContact, NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf } from './site-contact.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 import { FIT_MIN } from './scoreboard.ts'
 import { getMemory, isExcluded } from '../memory.ts'
@@ -21,18 +20,13 @@ import { listCompetitors } from '../signals/competitor-reddit.ts'
 const GATES = new Set<string>(['sales_hiring_check_failed', 'quarantined', 'excluded', 'fit_below_threshold', 'not_graded', 'targeting_not_proven'])
 export const TARGETING_CONNECTOR = 'scan:targeting'
 export const ACTIONABLE_CONNECTOR = 'scan:actionable'
-export type Missing = 'sales_hiring_check_failed' | 'targeting_not_proven' | 'quarantined' | 'excluded' | 'fit_below_threshold' | 'not_graded' | 'no_domain' | 'no_sales_vacancy' | 'no_contact_person' | 'no_published_contact'
-// Mailboxes that are not a way to reach a founder: support, privacy, legal, careers, recruiting, press, abuse, no-reply, billing.
-export const NOT_A_FOUNDER_ROUTE = /^(?:support|help|privacy|legal|dpo|security|abuse|careers?|jobs?|recruit\w*|hiring|talent|hr|people|press|media|pr|billing|accounts?|invoices?|noreply|no-reply|donotreply|webmaster|postmaster|compliance|gdpr)$/i
-const FOUNDER = /\b(?:founder|co-?founder|ceo|chief executive|managing director|owner|president)\b/i
-
-// A named person counts as the contact only when the title is a founder-level role or matches the role the request asked for (a dentist at a SaaS lead is not the decision-maker).
-export const personMatchesRole = (value: string, who: string): boolean => { const t = value.split(',').slice(1).join(',').trim(); return FOUNDER.test(t) || titleMatches(t, who).length > 0 }
+export type Missing = 'sales_hiring_check_failed' | 'targeting_not_proven' | 'quarantined' | 'excluded' | 'fit_below_threshold' | 'not_graded' | 'no_domain' | 'domain_unconfirmed' | 'no_sales_vacancy' | 'no_contact_person' | 'no_published_contact'
+// The person / route rule lives in site-contact.ts (one rule for actionability, the timing proof and completion); re-exported for existing callers.
+export { NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf }
 // `targeting`: the clause-by-clause proof of the request's compiled plan (#380), present only when the plan says more than one flat signal.
 export interface LeadYield { held?: boolean; url?: string; lead_id: string; company: string; actionable: boolean; missing: Missing[]; person: string | null; route: string | null; targeting?: ClauseProof[] }
 export interface YieldSummary { held_leads?: { id: string; company: string; url: string }[]; source_checked: number; verified: number; actionable: number; missing: Record<string, number>; leads: { company: string; actionable: boolean; missing: Missing[] }[] }
 
-export const whoOf = (icp: string | null | undefined): string => { try { const j = icp ? JSON.parse(icp) as { who?: unknown } : null; return Array.isArray(j?.who) ? j!.who.filter((x): x is string => typeof x === 'string').join(' ') : '' } catch { return '' } }
 
 // `held`: leads a REQUIRED gate failed on, kept in memory by the caller. They are held even when the database still says verified (the recovery write was rejected too).
 export type HeldIds = ReadonlyMap<string, string>   // lead id -> reason
@@ -61,13 +55,16 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
       if (ev.truth !== 'pass') return { lead_id: l.id, company: l.company, actionable: false, missing: ['targeting_not_proven'], person: null, route: null, targeting: ev.clauses }
       targeting = ev.clauses
     }
-    if (!l.company_domain) missing.push('no_domain')
     // The sales-hiring half is enforced by the gate (applySalesHiringGate runs before this): a lead that is still verified has the proof.
     void needVacancy
-    const people = rows.filter(r => r.kind === 'person' && r.connector === 'sitecrawl')
-    const person = people.find(p => personMatchesRole(p.value, who))
+    // Domain, person and route are read from the CURRENT rows through the shared rule (#914): a confirmed domain, and a person / route
+    // whose source is that domain. A contact-source pass that failed or was skipped cannot leave a foreign contact counted here.
+    const site = currentSiteContact(db, job.user_id, l, who, rows)
+    if (!l.company_domain) missing.push('no_domain')
+    else if (!site.confirmed) missing.push('domain_unconfirmed')
+    const person = site.person
     if (!person) missing.push('no_contact_person')
-    const route = rows.find(r => r.connector === 'sitecrawl' && (r.kind === 'phone' || (r.kind === 'email' && !isRecruitingInbox(r.value) && !NOT_A_FOUNDER_ROUTE.test(r.value.split('@')[0].replace(/[._-]/g, '')))))
+    const route = site.route
     if (!route) missing.push('no_published_contact')
     return { lead_id: l.id, company: l.company, actionable: missing.length === 0, missing, person: person?.value ?? null, route: route ? `${route.kind}: ${route.value}` : null, ...(targeting ? { targeting } : {}) }
   })
