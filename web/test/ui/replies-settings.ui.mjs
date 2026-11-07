@@ -58,7 +58,7 @@ async function open(size, [width, height], initial, onPost) {
 }
 const routeLike = (s, body) => {
   switch (body.action) {
-    case 'revoke': s.info.consent.accepted = false; s.info.bounce_scan.accepted = false; s.info.followups_enabled = false; return { body: { ok: true } }
+    case 'revoke': s.info.consent.accepted = false; s.info.followups_enabled = false; return { body: { ok: true } }   // as lib/outreach/replies.ts revokeReadConsent: read consent + follow-ups only; the delivery-failure scan consent is separate and untouched
     case 'consent': if (body.version !== s.info.consent.version) return { status: 409, body: { error: 'Terms changed. Reload.' } }; s.info.consent.accepted = true; return { body: { ok: true } }
     case 'bounce_scan_on': s.info.bounce_scan.accepted = true; return { body: { ok: true } }
     case 'sync': return s.info.consent.accepted ? { body: { ok: true, sync: { threads: 2, replies: 1, optOuts: 0, bounces: 0, consents: 0, reviews: 0 } } } : { body: { ok: true, sync: { error: 'reading_not_enabled', threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 } } }
@@ -92,6 +92,14 @@ try {
       assert.equal(t.server.info.read_granted, true, 'the Gmail read scope was not touched by the revoke'); await t.shot('revoked-after-reload')
       await t.panel.getByRole('button', { name: 'Turn on reply reading' }).click(); await t.panel.getByText('Reading replies: on').waitFor()
       assert.deepEqual(t.server.posts, ['revoke', 'consent'], 're-accepted with one consent POST, no reconnect'); await t.shot('reaccepted'); await t.ctx.close()
+    }
+    // The delivery-failure scan consent is separate: revoking reply reading must leave it, and its panel text, exactly as it was (server and screen).
+    {
+      const t = await open(size, vp, { bounce_scan: { version: 'b1', text: BOUNCE, accepted: true }, followups_enabled: true, autopilot_on: true }, routeLike)
+      await t.panel.getByRole('button', { name: 'Stop reading replies' }).click(); await t.panel.getByText('Reading replies: off').waitFor()
+      assert.equal(t.server.info.bounce_scan.accepted, true, 'server: bounce-scan consent unchanged by revoke'); assert.equal(t.server.info.followups_enabled, false, 'follow-ups are switched off with reply reading (as the real route does)')
+      assert.ok(await has(t.page, 'Delivery-failure scan') && await has(t.page, 'On. dazl scans for delivery-failure notices'), 'screen: the delivery-failure scan still reads On')
+      assert.deepEqual(t.server.posts, ['revoke'], 'only the revoke was sent'); await t.shot('revoked-bounce-scan-unchanged'); await t.ctx.close()
     }
     // Check replies: valid result, refused sync, and malformed 2xx bodies must not say "Checked replies."
     for (const [label, res, want, notWant] of [
