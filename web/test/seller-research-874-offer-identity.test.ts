@@ -4,10 +4,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, offerId, targetingFor, toStored, OFFER_QUESTION, WHO_QUESTION, type FetchedPage, type SellerResearch } from '../lib/scan/seller-research.ts'
+import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, heldIds, offerId, offerIds, targetingFor, toStored, OFFER_QUESTION, WHO_QUESTION, type FetchedPage, type SellerResearch } from '../lib/scan/seller-research.ts'
 import { normalizeResearch, type Icp } from '../lib/scan/icp.ts'
 import { norm } from '../lib/scan/evidence.ts'
-import { assembleDecisionPack, decisionRows, reuseSellerDecisions } from '../lib/scan/intelligence.ts'
+import { assembleDecisionPack, decisionRows, reuseSellerDecisions, type SellerDecision } from '../lib/scan/intelligence.ts'
 import { reviewedBuyerTitles } from '../lib/enrich/index.ts'
 import { captureSellerDecisions, createJob, migrateScan } from '../lib/scan/store.ts'
 
@@ -77,7 +77,10 @@ test('#874 old-scheme state, colliding long names: storage kept ONE shared id fo
     assert.equal(r2.answered, null, `${order[0]} first: the answer cannot be attributed, so it is not carried`)
     assert.ok(!who(r2, STARTER).includes(ANSWER) && !who(r2, PRO).includes(ANSWER), 'neither offer receives the typed buyer')
     assert.ok(!who(r2, STARTER).includes(EDITED) && !who(r2, PRO).includes(EDITED), 'neither offer receives the edited persona')
-    assert.notEqual(hyp(r2, STARTER, 'industry').status, 'rejected'); assert.notEqual(hyp(r2, PRO, 'industry').status, 'rejected')
+    // the rejection could not be attributed: it is HELD (kept, and honoured on both candidates), never dropped and never moved onto a guessed offer
+    assert.equal(hyp(r2, STARTER, 'industry').status, 'rejected'); assert.equal(hyp(r2, PRO, 'industry').status, 'rejected')
+    assert.ok((r2.unresolved ?? []).length >= 3, 'the answer, the edited persona and the rejection are all kept as unresolved decisions')
+    assert.deepEqual([...heldIds(r2)].sort(), [idOf(r2, STARTER), idOf(r2, PRO)].sort(), 'both candidate offers are held')
     assert.ok(r2.question !== null, 'the person is asked again')
   }
 })
@@ -91,6 +94,7 @@ test('#874 old-scheme state whose ids survived storage (short-slug collision "Ca
     assert.equal(r2.answered?.offer, idOf(r2, a), `${order[0]} first: the answer stays with ${a}`)
     assert.ok(who(r2, a).includes(ANSWER) && !who(r2, b).includes(ANSWER) && who(r2, b).includes(EDITED) && !who(r2, a).includes(EDITED))
     assert.equal(hyp(r2, a, 'industry').status, 'rejected'); assert.notEqual(hyp(r2, b, 'industry').status, 'rejected')
+    assert.deepEqual(r2.unresolved ?? [], [], 'unambiguous: nothing is held')
   }
 })
 
@@ -196,7 +200,7 @@ test('#874 control: short-name behaviour is unchanged (plain slug ids, same hypo
 function jobDb(research: SellerResearch, offerName: string, decisions: ReturnType<typeof decisionRows>) {
   const db = new Database(':memory:'); migrateScan(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
-  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ?, offer = ? WHERE id = ?").run(JSON.stringify({ who: [], research: toStored(research) }), offerName, jobId)
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ?, offer = ? WHERE id = ?").run(JSON.stringify({ who: [], research: normalizeResearch(JSON.parse(JSON.stringify(toStored(research)))) }), offerName, jobId)
   captureSellerDecisions(db, decisions.map(d => ({ ...d, job_id: jobId })))
   return { db, jobId }
 }
@@ -215,4 +219,129 @@ test('#874 consumers: reviewed buyer titles for retrieval and the targeting merg
   const pack = assembleDecisionPack(rows.map(d => ({ ...d })), 'u1', SITE)
   const icp2: Icp = { summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], research: toStored(r2) }
   assert.deepEqual(reuseSellerDecisions(icp2, pack, STARTER).who, [ANSWER]); assert.deepEqual(reuseSellerDecisions(icp2, pack, PRO).who, [])
+})
+
+
+// =====================================================================================================================================================
+// Review round 1 on #1000: (1) unresolved identity is a persisted, fail-closed HOLD, (2) already-saved seller_decisions rows are rebound or held through both real consumers,
+// (3) one identity contract (the STORED name) across construction, storage, reviewed draft, retrieval titles and decision reuse.
+// =====================================================================================================================================================
+const QUOTE_PAGES: FetchedPage[] = [{ url: 'https://crm.example/', kind: 'home', title: 'CRM', text: 'Enterprise customer relationship management for retailers and distributors, with a Starter plan and a Pro plan.', fetched_at: 1800000000 }]
+// A SOURCED statement: a verbatim quote that carries the claim. This is the statement a person once rejected and a fresh read now supports again.
+const SOURCED = { kind: 'industry', text: 'retailers and distributors', quote: 'for retailers and distributors' }
+const buildSourced = (names: string[], prior?: SellerResearch | null): SellerResearch => {
+  const m = { offers: names.map((n, i) => ({ id: `o${i + 1}`, name: n })), items: names.map((_, i) => ({ offer: `o${i + 1}`, kind: SOURCED.kind, text: SOURCED.text, url: QUOTE_PAGES[0].url, quote: SOURCED.quote, inferred: false })) }
+  const r = buildResearch(m, QUOTE_PAGES, SITE, prior); if ('error' in r) throw new Error('setup'); return r
+}
+const industries = (r: SellerResearch, name: string) => targetingFor(r, idOf(r, name)).industries
+
+test('#874 held identity is a PERSISTED, fail-closed state: a previously rejected claim that a fresh quote supports again is not targeted until the person reviews it', () => {
+  // The old run stored a REJECTION of 'retailers and distributors' for one of two colliding long-name offers; storage collapsed their ids, so whose it was is lost.
+  const legacy = legacyState([{ id: BASE40, name: STARTER }, { id: `${BASE40}-2`, name: PRO }], { answered: BASE40, edited: `${BASE40}-2`, rejected: BASE40 })
+  legacy.hypotheses = legacy.hypotheses.map(h => h.kind === 'industry' ? { ...h, text: SOURCED.text } : h)   // the rejected statement is the one the page supports
+  const stored = roundTrip(legacy)
+  const r2 = buildSourced([PRO, STARTER], stored)
+  for (const n of [STARTER, PRO]) {
+    assert.equal(hyp(r2, n, 'industry', SOURCED.text).status, 'rejected', `${n}: the unattributable rejection is honoured, the fresh quote does not resurrect it`)
+    assert.deepEqual(industries(r2, n), [], `${n}: and it is not used for targeting`)
+  }
+  // The hold survives storage and the next rerun (it is not just an unanswered question):
+  const again = buildSourced([STARTER, PRO], roundTrip(r2))
+  assert.ok((again.unresolved ?? []).length >= 3, 'persisted through toStored/normalizeResearch/fromStored and carried to the next rerun')
+  for (const n of [STARTER, PRO]) assert.deepEqual(industries(again, n), [])
+  // A statement the model supports that nobody ever decided on is held too (only explicit review targets for a held offer):
+  const other = legacyState([{ id: BASE40, name: STARTER }, { id: `${BASE40}-2`, name: PRO }], { answered: BASE40, edited: `${BASE40}-2`, rejected: BASE40 })   // its rejection is about 'Retail', not the quoted claim
+  const fresh = buildSourced([STARTER, PRO], roundTrip(other))
+  assert.ok(fresh.hypotheses.some(h => h.status === 'sourced' && h.kind === 'industry'), 'fixture check: the page-supported claim is sourced')
+  for (const n of [STARTER, PRO]) assert.deepEqual(industries(fresh, n), [], `${n}: sourced alone does not target while the offer is held`)
+  // Control: with no prior at all, the same claim is sourced and targeted.
+  assert.deepEqual(industries(buildSourced([STARTER, PRO]), STARTER), [SOURCED.text])
+})
+
+test('#874 the hold is released only by a new explicit decision on the same statement (or a typed answer), never by a rerun', () => {
+  const legacy = legacyState([{ id: BASE40, name: STARTER }, { id: `${BASE40}-2`, name: PRO }], { answered: BASE40, edited: `${BASE40}-2`, rejected: BASE40 })
+  legacy.hypotheses = legacy.hypotheses.map(h => h.kind === 'industry' ? { ...h, text: SOURCED.text } : h)
+  let r = buildSourced([STARTER, PRO], roundTrip(legacy)); assert.equal(heldIds(r).length, 2)
+  r = buildSourced([STARTER, PRO], roundTrip(r)); assert.equal(heldIds(r).length, 2, 'a plain rerun does not release it')
+  // the person explicitly re-decides the statements the unresolved decisions were about, on STARTER only
+  const mine = r.hypotheses.filter(h => h.offer === idOf(r, STARTER) && h.kind === 'industry')
+  const done = applyCorrections(r, mine.map(h => ({ offer: h.offer, hypothesis: h.id, action: 'reject' as const })))
+  assert.ok((done.unresolved ?? []).length < (r.unresolved ?? []).length, 'the entry for the decided statement is released')
+  assert.ok(!(done.unresolved ?? []).some(u => u.kind === 'industry'), 'only that statement\'s entry')
+})
+
+// ---- already-saved seller_decisions rows, through real storage and both real consumers ----
+const T = 'u1', ACTOR = 'a1'
+let rowClock = 1000
+const row = (offer_id: string, text: string, action: 'confirm' | 'reject', o: { site?: string; tenant?: string; at?: number } = {}): SellerDecision => ({ id: `r${rowClock}`, tenant_id: o.tenant ?? T, actor_id: ACTOR, job_id: 'j0', site: o.site ?? SITE, offer_id, hypothesis_id: `h-${rowClock++}`, kind: 'persona', text, action, source_url: null, source_quote: null, source_checked_at: null, created_at: o.at ?? rowClock * 10, version: 1 })
+function stored(research: SellerResearch, rows: SellerDecision[], playOffer: string) {
+  const db = new Database(':memory:'); migrateScan(db)
+  const jobId = createJob(db, T, { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ?, offer = ? WHERE id = ?").run(JSON.stringify({ who: [], research: normalizeResearch(JSON.parse(JSON.stringify(toStored(research)))) }), playOffer, jobId)
+  captureSellerDecisions(db, rows.map(r => ({ ...r, job_id: jobId })))
+  const saved = db.prepare('SELECT id,tenant_id,actor_id,job_id,site,offer_id,hypothesis_id,kind,text,action,source_url,source_quote,source_checked_at,created_at,version FROM seller_decisions WHERE tenant_id = ? AND site = ? ORDER BY created_at DESC, action DESC, id DESC').all(T, SITE) as SellerDecision[]
+  const icp = JSON.parse((db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string }).icp) as { research: ReturnType<typeof toStored> }
+  const flat = (who: string[]): Icp => ({ summary: 's', who, industries: [], sizes: [], where: [], signals: [], exclude: [], research: icp.research })
+  return { titles: () => reviewedBuyerTitles(db, jobId), reuse: (who: string[] = []) => reuseSellerDecisions(flat(who), assembleDecisionPack(saved, T, SITE), playOffer) }
+}
+const LONG = 'Enterprise customer relationship management Starter'   // 51 chars: stored whole; its legacy id is the 40-char prefix
+test('#874 saved decisions, unique long-name offer: rows saved under the OLD id are rebound to it by name (confirm, edit-as-confirm and reject), through both consumers', () => {
+  const r = build([LONG]); assert.notEqual(idOf(r, LONG), BASE40, 'the id changed')
+  const s = stored(r, [row(BASE40, 'VP Retail', 'confirm', { at: 100 }), row(BASE40, 'Head of Ops', 'confirm', { at: 200 }), row(BASE40, 'Head of Ops', 'reject', { at: 300 })], LONG)
+  assert.deepEqual(s.titles(), ['VP Retail'], 'retrieval titles: the confirmation survives, the newer rejection of the other title wins')
+  const out = s.reuse(['Head of Ops', 'Buyer X'])
+  assert.deepEqual(out.who, ['Buyer X', 'VP Retail'], 'decision reuse: confirmed text added, rejected text removed (rejection precedence)')
+})
+test('#874 saved decisions, colliding short names: an old shared id is HELD (reject honoured on both, confirm applied to neither); a later hashed id rebinds when the companion leaves', () => {
+  const [a, b] = ['Café Pro', 'Caf Pro']
+  const both = build([a, b])
+  const s = stored(both, [row('caf-pro', 'Owner A', 'confirm', { at: 100 }), row('caf-pro', 'Owner B', 'reject', { at: 200 })], a)
+  assert.deepEqual(s.titles(), [], 'retrieval: the unattributable confirmation is applied to no offer')
+  const out = s.reuse(['Owner A', 'Owner B'])
+  assert.deepEqual(out.who, ['Owner A'], 'reuse: the confirmation is not added, the rejection removes its text, nothing moves to a guessed offer')
+  assert.ok((out.research!.u ?? []).some(u => u.s === 'rejected' && u.t === 'Owner B'), 'and the held decision stays visible in the research block')
+  // written while the companion existed (hashed id), read after it was removed (plain id again):
+  const hashedA = offerIds([a, b]).ids[0]; assert.notEqual(hashedA, 'caf-pro')
+  const alone = stored(build([a]), [row(hashedA, 'Owner A', 'confirm')], a)
+  assert.equal(idOf(build([a]), a), 'caf-pro'); assert.deepEqual(alone.titles(), ['Owner A'], 'rebound by name to the offer it was written for')
+})
+test('#874 saved decisions: an old positional "-2" id, a removed offer, and another site/tenant are never carried to a guessed offer', () => {
+  const r = build([STARTER, PRO])
+  const s = stored(r, [row(`${BASE40}-2`, 'Pos buyer', 'confirm'), row('long-gone-offer', 'Gone buyer', 'confirm'), row(idOf(r, STARTER), 'Other site buyer', 'confirm', { site: 'other.example' }), row(idOf(r, STARTER), 'Other tenant buyer', 'confirm', { tenant: 'u2' })], STARTER)
+  assert.deepEqual(s.titles(), [], 'nothing carried: the positional id is held, the removed offer and other site/tenant rows never match')
+  assert.deepEqual(s.reuse([]).who, [])
+  const own = stored(r, [row(idOf(r, STARTER), 'Own buyer', 'confirm')], STARTER)
+  assert.deepEqual(own.titles(), ['Own buyer'], 'control: a row under the current id still applies'); assert.deepEqual(stored(r, [row(idOf(r, STARTER), 'Own buyer', 'confirm')], PRO).titles(), [], 'and never to the other play')
+})
+
+// ---- one identity contract: the STORED name, across storage, reviewed draft, titles and reuse ----
+const N90 = 'Enterprise customer relationship management platform for independent regional retailers and distributors'   // > 60 chars
+test('#874 identity contract: a unique name longer than 60 characters still matches its play after storage, in the reviewed draft AND both consumers', () => {
+  assert.ok(N90.length > 60)
+  const r = build([N90]), id = idOf(r, N90)
+  const s = stored(r, [row(id, 'Buyer 90', 'confirm')], N90)
+  assert.deepEqual(s.titles(), ['Buyer 90']); assert.deepEqual(s.reuse([]).who, ['Buyer 90'])
+  const draft = applyReviewedDraft({ summary: 's', who: ['x'], industries: [], sizes: [], where: [], signals: [], exclude: [], research: normalizeResearch(JSON.parse(JSON.stringify(toStored({ ...r, answered: null, question: OFFER_QUESTION })))) }, N90)
+  assert.equal(draft.research!.ans?.o, id, 'the reviewed draft binds the same offer by the same stored-name contract')
+})
+test('#874 identity contract: two names equal through 60 characters select NOTHING in any consumer (play ambiguity), and a removed companion makes the survivor selectable again', () => {
+  const X = 'Enterprise customer relationship management platform for retail'   // 63 chars
+  const A = `${X} Starter edition`, B = `${X} Pro edition`; assert.equal(A.slice(0, 60), B.slice(0, 60))
+  const r = build([A, B]); const s = stored(r, [row(idOf(r, A), 'Buyer A', 'confirm')], A)
+  assert.deepEqual(s.titles(), []); assert.deepEqual(s.reuse(['Existing']).who, ['Existing'], 'draft passes through untouched')
+  const alone = build([A]); assert.deepEqual(stored(alone, [row(idOf(alone, A), 'Buyer A', 'confirm')], A).titles(), ['Buyer A'])
+})
+test('#874 storage canonicalization: control characters / runs of spaces before the 60-character cap do not cost an identical rerun its answer', () => {
+  const odd = `Acme${' '.repeat(60)}Booking`, ctrl = 'Acme\u0000\u0007 Booking'
+  for (const name of [odd, ctrl]) {
+    const r0 = build([name]); const r1 = build([name], { ...r0, answered: { question: WHO_QUESTION, offer: r0.offers[0].id, text: ANSWER } })
+    const r2 = build([name], roundTrip(r1))
+    assert.equal(r2.answered?.text, ANSWER, JSON.stringify(name)); assert.ok(who(r2, name).includes(ANSWER))
+    assert.equal(stored(r2, [row(idOf(r2, name), 'Titled', 'confirm')], name).titles()[0], 'Titled')
+  }
+})
+test('#874 the fix does not change what a person sees for a plain site: short unique names, no holds, same ids, same targeting', () => {
+  const r = build(['Acme Booking', 'Acme Payroll']); assert.equal(r.unresolved, undefined); assert.deepEqual(heldIds(r), [])
+  assert.deepEqual(roundTrip(r).unresolved, undefined)
+  assert.deepEqual(targetingFor(r, 'acme-booking').who, [])
 })

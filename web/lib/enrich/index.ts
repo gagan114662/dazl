@@ -20,6 +20,7 @@ import { roleContradicted } from '../people/rank.ts'
 import { providerContactLabel } from '../people/currency.ts'
 import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
 import { norm } from '../scan/evidence.ts'
+import { selectOffer, rebindOfferId } from '../scan/offer-identity.ts'
 
 export const ENRICH_APOLLO = 'enrich:apollo'
 export const ENRICH_PDL = 'enrich:pdl'
@@ -297,20 +298,27 @@ export function reviewedBuyerTitles(db: Database.Database, jobId: string): strin
     const icp = j?.icp ? JSON.parse(j.icp) as { research?: { site?: unknown; offers?: { i: string; n: string }[] } } : null
     const site = typeof icp?.research?.site === 'string' ? siteKey(icp.research.site) : null
     if (!j?.user_id || !site) return []
-    const offers = Array.isArray(icp?.research?.offers) ? icp.research.offers : []
+    const offers = (Array.isArray(icp?.research?.offers) ? icp.research.offers : []).filter(o => o && typeof o.i === 'string' && typeof o.n === 'string')
     const offerName = j.offer && j.offer !== '-' ? j.offer : null
-    const matches = offers.filter(o => o && typeof o.n === 'string' && offerName && norm(o.n) === norm(offerName))
-    const selected = matches.length === 1 ? matches[0].i : (!offerName && offers.length === 1 ? offers[0].i : null)
+    // The same play-name -> offer contract as the reviewed draft and decision reuse (stored name; more than one candidate selects nothing).
+    const named = offers.map(o => ({ id: o.i, name: o.n }))
+    const sel = offerName ? selectOffer(named, offerName, (a, b) => !!norm(a) && norm(a) === norm(b)) : null
+    const selected = sel ?? (!offerName && offers.length === 1 ? offers[0].i : null)
     if (!selected) return []
     const rows = db.prepare("SELECT offer_id, hypothesis_id, kind, text, action FROM seller_decisions WHERE tenant_id = ? AND site = ? AND kind = 'persona' ORDER BY created_at DESC, action DESC, id DESC LIMIT ?").all(j.user_id, site, RECALL_LIMIT + 1) as { offer_id: string; hypothesis_id: string; kind: string; text: string; action: string }[]
-    const seen = new Set<string>(), titles: string[] = []
-    for (const r of rows.slice(0, RECALL_LIMIT)) {
-      const hypKey = `${r.offer_id}|id:${r.hypothesis_id}`, textKey = `${r.offer_id}|${r.kind}|text:${norm(r.text)}`
+    // Saved rows carry only an offer id, which can change; each is rebound to the ONE current offer its id can mean, or HELD. A held confirmation is applied to no offer; a held rejection
+    // blocks its text for every candidate. A row naming no current offer is not carried.
+    const seen = new Set<string>(), titles: string[] = [], blocked = new Set<string>()
+    for (const raw of rows.slice(0, RECALL_LIMIT)) {
+      const rb = rebindOfferId(named, raw.offer_id); if (!rb) continue
+      const offerId = 'offer' in rb ? rb.offer : `held:${rb.held.join(',')}`
+      const hypKey = `${offerId}|id:${raw.hypothesis_id}`, textKey = `${offerId}|${raw.kind}|text:${norm(raw.text)}`
       if (seen.has(hypKey) || seen.has(textKey)) continue // superseded by a newer decision
       seen.add(hypKey); seen.add(textKey)
-      if (r.offer_id === selected && r.action === 'confirm' && r.text.trim() && titles.length < 10) titles.push(r.text.trim())
+      if ('held' in rb) { if (raw.action === 'reject' && rb.held.includes(selected)) blocked.add(norm(raw.text)); continue }
+      if (rb.offer === selected && raw.action === 'confirm' && raw.text.trim() && titles.length < 10) titles.push(raw.text.trim())
     }
-    return titles
+    return titles.filter(t => !blocked.has(norm(t)))
   } catch { return [] }
 }
 
