@@ -86,8 +86,8 @@ for (const [name, file, expect] of [
 
   ["tenant B cannot read or change tenant A's rows through the id-taking lead, batch and reply routes", 'tenant-route-ids-runtime.mts', /COHORT 23/],
   ["tenant B cannot read or change tenant A's rows through the list, body-id and query-id routes, or any session-scope route", 'tenant-route-pending-runtime.mts',
-    // 13 targeted handlers, then the sweep over every session-scope handler (the cohort counts both)
-    new RegExp(`SWEPT ${SCOPED}\\b[\\s\\S]*COHORT ${13 + SCOPED}\\b`)],
+    // 16 targeted calls (15 handlers; answers POST twice: release and resolve), then the sweep over every session-scope handler (the cohort counts both)
+    new RegExp(`SWEPT ${SCOPED}\\b[\\s\\S]*COHORT ${16 + SCOPED}\\b`)],
 ] as const) {
   test(name, () => {
     const env = { ...process.env }

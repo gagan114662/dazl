@@ -197,7 +197,7 @@ async function accountHold(db: Db, tenantId: string, flags: Record<string, strin
   if (Number(st.paused) === 1) return 'autopilot_paused'
   if (st.consent_version !== CONSENT_VERSION) return 'consent_outdated'
   if (Number(st.followups_enabled) !== 1) return 'followups_off'
-  for (const [table, status] of [['outreach_messages', 'uncertain'], ['followup_messages', 'uncertain'], ['sequence_steps', 'uncertain'], ['reopen_messages', 'approved']])
+  for (const [table, status] of [['outreach_messages', 'uncertain'], ['followup_messages', 'uncertain'], ['sequence_steps', 'uncertain'], ['reopen_messages', 'approved'], ['buyer_answers', 'uncertain']])
     if (await exists(db, `SELECT 1 FROM ${table} WHERE tenant_id = ? AND status = ?`, [tenantId, status])) return 'uncertain_send'
   const acct = await readGmailStatus(db, tenantId)
   if (acct?.status !== 'active' || !(await exists(db, 'SELECT 1 FROM outreach_settings WHERE tenant_id = ?', [tenantId]))) return 'gmail_or_identity'
@@ -214,6 +214,7 @@ async function capReached(db: Db, tenantId: string, now: number): Promise<boolea
     + await count("SELECT count(*) AS n FROM followup_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND created_at >= ?")
     + await count("SELECT count(*) AS n FROM sequence_steps WHERE tenant_id = ? AND step > 1 AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?")
     + await count("SELECT count(*) AS n FROM reopen_messages WHERE tenant_id = ? AND status IN ('sent','approved') AND COALESCE(sent_at,created_at) >= ?")
+    + await count("SELECT count(*) AS n FROM buyer_answers WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,updated_at) >= ?")
   const cap = Number((await db.get<{ c: number }>('SELECT daily_cap AS c FROM autopilot_settings WHERE tenant_id = ?', [tenantId]))?.c ?? DEFAULT_DAILY)
   return n >= Math.min(ACCOUNT_SEND_CAP, cap)
 }

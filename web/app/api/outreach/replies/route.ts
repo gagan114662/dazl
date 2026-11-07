@@ -4,6 +4,7 @@ import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERS
 import { acceptBounceScanConsent, BOUNCE_SCAN_CONSENT_TEXT, BOUNCE_SCAN_CONSENT_VERSION, hasBounceScanConsent, revokeBounceScanConsent } from '@/lib/outreach/bounce-scan'
 import { followupsEnabled, runFollowups, setFollowups } from '@/lib/outreach/followups'
 import { getState } from '@/lib/outreach/autopilot'
+import { runAnswers } from '@/lib/replies/answer-ledger'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
@@ -69,7 +70,9 @@ export async function POST(req: NextRequest) {
       if (!(await rateLimit(`sync:${user.tenantId}`, 6, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
       const r = await syncReplies(db, user.tenantId)
       const f = !r.error && followupsEnabled(db, user.tenantId) ? await runFollowups(db, user.tenantId, user.business_name) : null
-      return NextResponse.json({ ok: true, sync: r, followups: f })
+      // routine answers the sync recorded as ready (#406); runAnswers refuses unless autopilot and the launch allow it
+      const a = !r.error ? await runAnswers(db, user.tenantId) : null
+      return NextResponse.json({ ok: true, sync: r, followups: f, answers: a })
     }
   }
   return NextResponse.json({ error: 'Bad request' }, { status: 400 })

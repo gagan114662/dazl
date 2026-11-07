@@ -253,6 +253,7 @@ function accountCapDueAt(db: Database.Database, tenantId: string, now: number): 
   if (tableExists(db, 'followup_messages')) take((db.prepare("SELECT MIN(created_at) AS t FROM followup_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND created_at >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
   if (tableExists(db, 'sequence_steps')) take((db.prepare("SELECT MIN(COALESCE(claimed_at,sent_at,created_at)) AS t FROM sequence_steps WHERE tenant_id = ? AND step > 1 AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
   if (tableExists(db, 'reopen_messages')) take((db.prepare("SELECT MIN(COALESCE(sent_at,created_at)) AS t FROM reopen_messages WHERE tenant_id = ? AND status IN ('sent','approved') AND COALESCE(sent_at,created_at) >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
+  if (tableExists(db, 'buyer_answers')) take((db.prepare("SELECT MIN(COALESCE(claimed_at,updated_at)) AS t FROM buyer_answers WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,updated_at) >= ?").get(tenantId, now - 86400) as { t: number | null }).t)
   return (oldest ?? now) + 86400
 }
 

@@ -11,6 +11,7 @@ import { fullText, messageText, type GPart } from './reply-text.ts'
 import { dsnProvenance } from './dsn.ts'
 import { recheckReadAuthority } from './send-authority.ts'
 import { applyBounceVerdict, migrateBounceLedger } from './bounce-ledger.ts'
+import { migrateBuyerAnswers, planThreadAnswers, type ThreadContext as ThreadAnswerInput } from '../replies/answer-ledger.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens its outreach threads and bounded candidate delivery notices,
@@ -46,6 +47,7 @@ export function migrateReplies(db: Database.Database): void {
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
   migrateBounceLedger(db) // both notice paths account through the one ledger (idempotent DDL, also run by the migration list)
+  migrateBuyerAnswers(db) // the routine-answer ledger (#406): one decision per inbound message of these threads
 }
 
 export const acceptReadConsent = (db: Database.Database, tenantId: string) =>
@@ -317,7 +319,8 @@ const defaultResolveMx = async (domain: string): Promise<string[]> => {
   return (await resolveMx(domain)).map(r => r.exchange.toLowerCase())
 }
 
-export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number; resolveMxFor?: (domain: string) => Promise<string[]> }
+// flags: the operator switches (AUTOPILOT_ENABLED, AUTOPILOT_KILL) the answer planner reads; process.env when unset.
+export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number; resolveMxFor?: (domain: string) => Promise<string[]>; flags?: Record<string, string | undefined>; baseUrl?: string }
 // remaining: background threads (no automated send can reach them) not read this call because of the per-call cap or
 // the time budget; they are read on later calls, oldest check first. neverRead: those of them never read at all (no
 // freshness exists yet: the tick records a hold). freshAsOf: the OLDEST last-read time over every thread in scope after
@@ -384,6 +387,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   let background = 0, remaining = 0, dueUnread = 0
   const skipBackground = () => { remaining++ }
   const readNow = new Set<string>()
+  const toPlan: ThreadAnswerInput[] = [] // #406: threads read without error, planned after the FULL safety ingest below
   for (const m of sent) {
     if (clock() - t0 > budgetMs) { if (m.due) dueUnread++; else skipBackground(); continue }
     if (!m.due) { if (background >= maxThreads) { skipBackground(); continue } background++ }
@@ -464,6 +468,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       }
       db.prepare('UPDATE outreach_messages SET reply_checked_at = ? WHERE id = ? AND tenant_id = ?').run(now, m.id, tenantId) // read and processed: checkpoint
       readNow.add(m.id)
+      toPlan.push({ threadId: thread, leadId: m.lead_id, outreachId: m.id, prospect: m.to_email, mailbox: acct.email, messages: t.messages ?? [] })
     } catch (e) {
       if (e === LOST) return { ...out, error: 'reading_not_enabled' } // nothing more is read or stored
       out.error = 'reply_sync_failed' // fail closed: the scheduler must not treat a partial sync as fresh
@@ -548,6 +553,11 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
     out.error = 'reply_sync_failed' // fail closed, same contract as the thread loop
     auditAt(db, tenantId, 'sync_error', `delivery notices: ${e instanceof Error ? e.message : 'error'}`, undefined, undefined, now)
   }
+  // #406: routine buyer answers are planned only AFTER the whole safety ingest above - the in-thread classifications
+  // AND the separate-thread delivery-notice path (#415/#581) - so a recipient suppressed or a thread stopped by either
+  // path is already recorded when the planner (and, again, the send-time re-check) reads it. One recorded decision per
+  // new inbound message; reads the full new text in memory only; never throws.
+  for (const p of toPlan) planThreadAnswers(db, tenantId, p, { flags: d.flags, env: d.env as Record<string, string | undefined> | undefined, baseUrl: d.baseUrl, now })
   return out
 }
 

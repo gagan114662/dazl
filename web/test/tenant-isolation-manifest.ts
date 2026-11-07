@@ -112,6 +112,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'onboarding/policy', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'outreach/[id]', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'outreach/[id]', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
+  { path: 'outreach/answers', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
+  { path: 'outreach/answers', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'send' },
   { path: 'outreach/autopilot', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'outreach/autopilot', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'send' },
   { path: 'outreach/conversion', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },

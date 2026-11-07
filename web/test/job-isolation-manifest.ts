@@ -17,6 +17,7 @@ export const JOBS: JobEntry[] = [
   // Per-tenant tick workers (app/api/internal/tick/route.ts passes the tenant id explicitly).
   { id: 'tick:reply_sync', worker: 'syncReplies', isolation: { covered: 'reply-optout.test.ts' } },
   { id: 'tick:followups', worker: 'runFollowups', isolation: { covered: 'job-isolation.test.ts' } },
+  { id: 'tick:answers', worker: 'runAnswers', isolation: { covered: 'answer-ledger.test.ts' } },
   { id: 'tick:first_touch_drain', worker: 'drainFirstTouch', isolation: { covered: 'job-isolation.test.ts' } },
   { id: 'tick:first_touch_autopilot', worker: 'runAutopilot', isolation: { covered: 'job-isolation.test.ts' } },
   { id: 'tick:sequences', worker: 'runSequences', isolation: { covered: 'job-isolation.test.ts' } },
