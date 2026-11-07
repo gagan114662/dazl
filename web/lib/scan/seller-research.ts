@@ -23,12 +23,47 @@ const KINDS: [PageKind, RegExp][] = [
 ]
 const registrable = (h: string) => h.toLowerCase().replace(/^www\./, '')
 
-// Stable offer identity: the normalized NAME, never the model's positional ref (o1, o2). A recrawl that lists the same
-// offers in a different order yields the same ids, so corrections and answered questions stay bound to the right offer.
-export function offerId(name: string): string {
-  const s = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
-  return s || 'offer'
+// ---- stable offer identity (#874) ----
+// An offer's id is derived from its NAME only, never from the model's positional ref (o1, o2) and never from its position in the list, so a recrawl that lists
+// the same offers in a different order yields the same ids. A short, unambiguous name keeps its plain slug (storage and callers unchanged). A name whose slug
+// is longer than the 40-character id budget, or whose slug is shared with a DIFFERENT name in the same read ("Café Pro" / "Caf Pro", two names that differ only
+// past the 40th slug character), gets a collision-safe id: a readable slug prefix, a double hyphen (which no plain slug or legacy positional suffix can contain)
+// and a 12-hex digest of the full normalized name. A saved state is never bound by id alone: see priorBindings().
+const ID_MAX = 40
+const slugOf = (name: string): string => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'offer'
+// Identity key: what makes two offer names the SAME offer. Keeps accents, scripts and punctuation (they distinguish offers); folds only case, width and whitespace.
+export const offerKey = (name: string): string => name.slice(0, 120).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim()
+function digest(s: string): string {   // cyrb53, 12 hex digits; pure JS so the core stays runtime-agnostic
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677) }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909); h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0').slice(-12)
 }
+const hashedId = (slug: string, key: string): string => `${slug.slice(0, 25).replace(/-+$/g, '') || 'offer'}--${digest(key)}`
+// The id of a name on its own: plain when it fits, hashed when it cannot. (A short name that collides with a different name in the same read is hashed by
+// offerIds(), which sees the whole list.)
+export function offerId(name: string): string {
+  const slug = slugOf(name.slice(0, 120))
+  return slug.length <= ID_MAX ? slug : hashedId(slug, offerKey(name))
+}
+// Ids for a whole read, independent of listing order. `ambiguous[i]` is true when the SAME name is listed more than once: those offers cannot be told
+// apart, so nothing saved is ever bound to them.
+export function offerIds(names: string[]): { ids: string[]; ambiguous: boolean[] } {
+  const keys = names.map(offerKey), slugs = names.map(n => slugOf(n.slice(0, 120)))
+  const keysBySlug = new Map<string, Set<string>>()
+  slugs.forEach((sl, i) => { const k = keysBySlug.get(sl) ?? new Set<string>(); k.add(keys[i]); keysBySlug.set(sl, k) })
+  const seenKey = new Map<string, number>()
+  const ids = names.map((_, i) => {
+    const n = (seenKey.get(keys[i]) ?? 0) + 1; seenKey.set(keys[i], n)
+    const shared = (keysBySlug.get(slugs[i])?.size ?? 0) > 1
+    if (slugs[i].length <= ID_MAX && !shared && n === 1) return slugs[i]
+    return hashedId(slugs[i], n === 1 ? keys[i] : `${keys[i]}#${n}`)
+  })
+  return { ids, ambiguous: keys.map(k => keys.filter(x => x === k).length > 1) }
+}
+// Stored offer names are capped at 60 characters (icp.ts RCAPS); compare current names at that same width.
+const STORED_NAME = 60
+const storedKey = (name: string): string => offerKey(name.slice(0, STORED_NAME))
 
 // Hypothesis ids are content-keyed (offer + kind + the model's original text), so a recrawl that finds the same
 // statement reproduces the same id and a reviewed correction re-applies to it. An edited text is a new statement.
@@ -71,16 +106,13 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
   if (prior && prior.site !== site) prior = null
   const o = out as { offers?: unknown; items?: unknown }
   const raw = (Array.isArray(o.offers) ? o.offers : []).filter((x): x is { id?: unknown; name: string } => typeof (x as { name?: unknown })?.name === 'string').slice(0, 6)
-  const seen = new Map<string, number>()
-  const offers = raw.map(x => {
-    const base = offerId(x.name.slice(0, 120))
-    const n = (seen.get(base) ?? 0) + 1; seen.set(base, n)
-    return { ref: typeof (x as { id?: unknown }).id === 'string' ? String((x as { id?: unknown }).id) : null, id: n > 1 ? `${base}-${n}` : base, name: x.name.slice(0, 120) }
-  })
+  const names = raw.map(x => x.name.slice(0, 120)), { ids, ambiguous } = offerIds(names)
+  const offers = raw.map((x, i) => ({ ref: typeof (x as { id?: unknown }).id === 'string' ? String((x as { id?: unknown }).id) : null, id: ids[i], name: names[i], ambiguous: ambiguous[i] }))
   if (offers.length === 0) return { error: 'model_failed' }
   const byRef = new Map(offers.map(x => [x.ref, x.id]))
   const byUrl = new Map(pages.map(p => [p.url, p]))
   const hyps: Hypothesis[] = offers.map(x => ({ id: `${x.id}:offer`, offer: x.id, kind: 'offer' as const, text: x.name, status: 'hypothesis' as const, url: null, quote: null, fetched_at: null }))
+  const origin = new Map<Hypothesis, string>()   // the model's own wording, which the content-keyed id was made from (an edited text is a different string)
   for (const it of (Array.isArray(o.items) ? o.items : []).slice(0, 40) as Record<string, unknown>[]) {
     const offer = typeof it.offer === 'string' && byRef.has(it.offer) ? byRef.get(it.offer)! : offers.some(x => x.id === it.offer) ? String(it.offer) : null
     const kind = typeof it.kind === 'string' && ['persona', 'industry', 'size', 'location', 'disqualifier', 'pain'].includes(it.kind) ? it.kind as HypKind : null
@@ -93,17 +125,26 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
     const quoted = !!pg && it.inferred !== true && quote.length >= 12 && norm(pg.text).includes(norm(quote)) && quoteSupports(kind, text, quote)
     // A size or place without that is unknown, never carried as fact; a persona without it is a hypothesis.
     const status: HypStatus = quoted ? 'sourced' : kind === 'size' || kind === 'location' ? 'unknown' : 'hypothesis'
-    hyps.push({ id: hypId(offer, kind, text), offer, kind, text: status === 'unknown' ? 'unknown' : text, status, url: quoted ? pg!.url : null, quote: quoted ? quote : null, fetched_at: quoted ? pg!.fetched_at : null })
+    const h: Hypothesis = { id: hypId(offer, kind, text), offer, kind, text: status === 'unknown' ? 'unknown' : text, status, url: quoted ? pg!.url : null, quote: quoted ? quote : null, fetched_at: quoted ? pg!.fetched_at : null }
+    hyps.push(h); origin.set(h, text)
   }
-  // Prior reviewed corrections re-apply to the same content-keyed hypotheses (cross-offer matching impossible: keys include the offer).
+  // Saved reviewed/rejected corrections and the answered question belong to an OFFER, so they follow the offer by NAME (see priorBindings), never by an id that
+  // two offers can share or that a reordered listing can move. An offer with no unambiguous prior counterpart starts clean: the correction holds, it does not move.
+  const bind = priorBindings(prior, offers)
   let corrected = hyps
-  if (prior?.hypotheses?.length) {
+  if (prior?.hypotheses?.length && bind.size) {
     const prev = new Map(prior.hypotheses.filter(h => h.status === 'reviewed' || h.status === 'rejected').map(h => [h.id, h]))
-    corrected = hyps.map(h => { const p = prev.get(h.id); return p && h.status !== 'unknown' ? { ...h, text: p.status === 'reviewed' ? p.text : h.text, status: p.status } : h })
+    corrected = hyps.map(h => {
+      const pid = bind.get(h.offer), raw = origin.get(h)
+      if (!pid || raw === undefined || h.status === 'unknown') return h
+      const p = prev.get(hypId(pid, h.kind, raw))   // the prior id was made with the prior offer id: recompute it the same way
+      return p && p.offer === pid ? { ...h, text: p.status === 'reviewed' ? p.text : h.text, status: p.status } : h
+    })
   }
   const offersKept = offers.map(({ id, name }) => ({ id, name }))
   // The answered binding survives a recrawl while the answering offer still exists; the same question is not re-asked.
-  const answered = prior?.answered && offersKept.some(x => x.id === prior.answered!.offer) ? prior.answered : null
+  const answeredAs = prior?.answered ? [...bind].find(([, pid]) => pid === prior.answered!.offer)?.[0] : undefined
+  const answered = prior?.answered && answeredAs ? { ...prior.answered, offer: answeredAs } : null
   // A typed 'Who buys this?' answer is the person's own targeting: it survives a recrawl as a REVIEWED persona on the
   // answering offer, so a fresh model draft can never lose it behind the answered-question suppression. Deleting it
   // from the draft on the next play records an explicit rejection, like any reviewed statement.
@@ -114,6 +155,22 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
   let question = offersKept.length > 1 && offersKept.some(x => !sourcedBuyer(x.id)) ? OFFER_QUESTION : !offersKept.some(x => sourcedBuyer(x.id)) ? WHO_QUESTION : null
   if (question && answered && answered.question === question) question = null
   return { site, pages: pages.map(p => ({ url: p.url, title: p.title, fetched_at: p.fetched_at, kind: p.kind })), offers: offersKept, hypotheses: corrected, question, answered }
+}
+
+// Which saved offer is THIS offer? Only a saved offer whose stored name equals this one's (at the stored 60-character width) and that nothing else in either list
+// resembles. Same name twice (either side), two names that agree through the stored width, or no counterpart: no binding, so nothing saved is applied.
+function priorBindings(prior: SellerResearch | null | undefined, offers: { id: string; name: string; ambiguous: boolean }[]): Map<string, string> {
+  const out = new Map<string, string>()
+  if (!prior?.offers?.length) return out
+  for (const c of offers) {
+    if (c.ambiguous) continue
+    const k = storedKey(c.name)
+    const ps = prior.offers.filter(p => storedKey(p.name) === k)
+    // A saved id that more than one saved offer carries (the old 40-character id budget cut '...-2' back to the shared prefix, so such state cannot say whose
+    // statements are whose) is no identity at all: hold.
+    if (ps.length === 1 && prior.offers.filter(p => p.id === ps[0].id).length === 1 && offers.filter(x => storedKey(x.name) === k).length === 1) out.set(c.id, ps[0].id)
+  }
+  return out
 }
 
 // ---- reviewed corrections: keyed by offer, applied before anything is used for retrieval or ranking ----
@@ -154,6 +211,15 @@ export function fromStored(s: IcpResearch): SellerResearch {
 const kindField = { persona: 'who', industry: 'industries', size: 'sizes', location: 'where', disqualifier: 'exclude' } as const
 type DraftField = 'who' | 'industries' | 'sizes' | 'where' | 'exclude'
 const exact = (a: string, b: string) => { const x = norm(a), y = norm(b); return !!x && x === y }
+// The saved offer a play's offer name means, or null. Tiers: (1) the same name at the stored width (case/width/whitespace folded; accents and punctuation kept);
+// (2) failing that, the older loose comparison, which also folds accents and punctuation. In either tier more than one candidate means nothing binds.
+function bindOffer(offers: { id: string; name: string }[], offer: string): string | null {
+  const unique = (o: { id: string }) => offers.filter(x => x.id === o.id).length === 1   // a saved id shared by two saved offers binds nothing (see priorBindings)
+  const strict = offers.filter(o => storedKey(o.name) === storedKey(offer))
+  if (strict.length) return strict.length === 1 && unique(strict[0]) ? strict[0].id : null
+  const loose = offers.filter(o => exact(o.name, offer) || exact(o.name, offer.slice(0, STORED_NAME)))
+  return loose.length === 1 && unique(loose[0]) ? loose[0].id : null
+}
 
 // The reviewed draft is the person's authority over the hypotheses (#379):
 // - a hypothesis whose text appears EXACTLY (normalized) in the matching draft field is confirmed ('reviewed');
@@ -170,11 +236,10 @@ export function applyReviewedDraft(icp: Icp, offer: string): Icp {
   const stored = icp.research
   if (!stored) return icp
   const r = fromStored(stored)
-  // Stable, unambiguous offer identity: exact id or exact normalized name. Zero matches (the play's offer was not
+  // Stable, unambiguous offer identity: the offer's stored NAME (an id alone never binds: two names can share a legacy id). Zero matches (the play's offer was not
   // found on the site read) or several ('SEO audit' vs 'SEO audit Pro', two offers with the same name) mean nothing
   // can be bound: no corrections, no answer, the draft passes through untouched.
-  const matches = r.offers.filter(o => o.id === offerId(offer) || exact(o.name, offer))
-  const oid = matches.length === 1 ? matches[0].id : null
+  const oid = bindOffer(r.offers, offer)
   if (!oid) return icp
   const hyps = r.hypotheses.map(h => {
     if (h.offer !== oid) return h
