@@ -362,7 +362,7 @@ test('staging Gmail (#413): Gmail credentials need the flag and the full config;
 
 // #908: the schema change happens only behind a verified pre-migration recovery point, with the service stopped, and every rollback
 // puts the matching database back BEFORE the old code starts. Real deploy.sh, scratch SQLite database, stub stop/restart/health.
-test('recovery point: migration failure, partial seed, failed new service, refused backup, failed stop and failed restore', async () => {
+test('recovery point: migration failure, partial seed, failed new service, refused backup, failed stop, leftover migration process, failed restore on both paths', async () => {
   const { execFileSync, spawn } = await import('node:child_process')
   const { existsSync, readlinkSync, rmSync } = await import('node:fs')
   const net = await import('node:net')
@@ -441,16 +441,37 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     assert.ok(!r.order.includes('migrate')); assert.equal(current(), s0b)
     rmSync(path.join(T, 'fail-stop'))
 
+    // 4b. a migration that leaves a process running in its group: reaped before the restore, never outlives the step
+    const pidf = path.join(T, 'orphan.pid')
+    commit('migration leaves an orphan')
+    r = deploy({ STAGING_MIGRATE: `echo migrate >> ${log}; sleep 300 >/dev/null 2>&1 & echo $! > ${pidf}; exit 3` })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, new RegExp(`database restored, ${s0b} is live again`))
+    const orphan = Number(readFileSync(pidf, 'utf8').trim())
+    // gone, or a zombie no one has reaped yet (dead either way; the test host's init may not reap promptly)
+    const alive = (pid: number) => { try { return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8')) } catch { return false } }
+    assert.equal(alive(orphan), false, 'the migration step\'s leftover process was stopped')
+    assert.equal(current(), s0b)
+
     // 5. the restore itself fails: reported as no live service; old code is NOT started against the migrated database
     const wrap = path.join(T, 'rp-wrap.py')
     writeFileSync(wrap, `import sys, runpy\nif sys.argv[1] == 'restore': sys.exit(1)\nsys.argv[0] = ${JSON.stringify(path.resolve(path.dirname(script), 'recovery_point.py'))}\nrunpy.run_path(sys.argv[0], run_name='__main__')\n`)
     r = deploy({ STAGING_RECOVERY: wrap, STAGING_MIGRATE: `echo migrate >> ${log}; exit 3` })
     assert.equal(r.code, 1, r.out); assert.match(r.out, /database restore failed: NO LIVE STAGING SERVICE/)
     assert.ok(!r.order.some(l => l === `restart ${s0b}`), 'old code never restarted against an unrestored database')
+
+    // 6. the same refusal on the CUTOVER-failure path: the migration succeeded, the new release never became ready, and the
+    // restore fails. The deploy must refuse: old code is NOT restarted against the migrated database, nothing claims live.
+    const s6 = commit('never ready, restore fails'); writeFileSync(path.join(T, `unready-${s6}`), '')
+    r = deploy({ STAGING_RECOVERY: wrap, STAGING_MIGRATE: `echo migrate >> ${log}; python3 -c "import sqlite3; c=sqlite3.connect('${sdb}'); c.execute('CREATE TABLE IF NOT EXISTS migrated6(id)'); c.commit()"` })
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /database restore failed: NO LIVE STAGING SERVICE \(old code not started against a migrated database/)
+    assert.doesNotMatch(r.out, /rolled back|is live again/)
+    assert.deepEqual(r.order, ['stop', 'migrate', `restart ${s6}`, 'stop'], 'stopped the failed release, then refused: no restart of the old code')
+    assert.notEqual(current(), s0b, 'current is not switched back to the old release over a migrated database')
   } finally { server.kill() }
 })
 
-test('recovery_point.py scratch-database checks (WAL capture, absent database, tamper, wrong database, corrupt source)', () => {
+test('recovery_point.py scratch-database checks (WAL capture, orphaned WAL/SHM/journal, absent database, tamper, wrong database, corrupt source)', () => {
   const r = spawnSync('python3', ['-W', 'ignore', '-m', 'unittest', 'test_recovery_point'], { cwd: path.dirname(script), encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
   assert.equal(r.status, 0, r.stdout + r.stderr)
 })

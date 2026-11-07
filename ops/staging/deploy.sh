@@ -255,10 +255,24 @@ if ! python3 "$RECOVERY" create --db "$staging_db" --dir "$rp" --commit "$(basen
 fi
 log "recovery point for $(basename "${prev:-none}") verified before migrating"
 restore_db() { python3 "$RECOVERY" restore --db "$staging_db" --dir "$rp"; }
+# The migration runs as its own process group (setsid: its pid is the group id) without the deploy lock (fd 9). When it
+# exits, anything it left running in that group gets TERM, then KILL, so no migration process outlives this step or
+# writes after a restore. A process that leaves the group is out of reach here; #907's contain.py (the build's subreaper)
+# is meant to wrap this step the same way once both land. errexit is off inside an `||` list, so a failed env load exits.
 mstatus=0
-( set -a; . "$ENV_FILE"; set +a
-  exec bash -c 'if [ "$(id -un)" = "$0" ]; then exec "$@"; else exec runuser -u "$0" -- "$@"; fi' "$RUN_AS" \
-    bash -c "cd '$rel/web' && $MIGRATE" ) || mstatus=$?
+( set -a; . "$ENV_FILE" || exit 1; set +a
+  exec 9>&-
+  exec setsid bash -c 'if [ "$(id -un)" = "$0" ]; then exec "$@"; else exec runuser -u "$0" -- "$@"; fi' "$RUN_AS" \
+    bash -c "cd '$rel/web' && $MIGRATE" ) &
+migrate_pid=$!
+wait "$migrate_pid" || mstatus=$?
+reap_group() { # TERM, a short grace, then KILL whatever is left in the group
+  kill -0 -- "-$1" 2>/dev/null || return 0
+  kill -TERM -- "-$1" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- "-$1" 2>/dev/null || return 0; sleep 0.5; done
+  kill -KILL -- "-$1" 2>/dev/null || true
+}
+reap_group "$migrate_pid"; migrate_pid=
 if [ $mstatus != 0 ]; then
   rm -rf "$rel"
   restore_db || fail "migration of $new failed (exit $mstatus) and the database restore failed: NO LIVE STAGING SERVICE (recovery point kept at $rp)"

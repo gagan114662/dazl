@@ -55,6 +55,25 @@ class RecoveryPointTest(unittest.TestCase):
         r = run('restore', '--db', self.db, '--dir', self.rp); self.assertEqual(r.returncode, 1); self.assertIn('does not match', r.stderr)
         self.assertEqual(Path(self.db).read_bytes(), before, 'a refused restore changes nothing')
 
+    def test_orphaned_wal_shm_and_journal_beside_a_present_database_are_removed_on_restore(self):
+        # The live database is in WAL mode; the recovery point is taken, then "the migration" writes post-backup rows into a
+        # WAL that is never checkpointed. Its -wal/-shm are captured, the connection closes, and they are put back beside the
+        # database as orphans (plus a stale hot -journal). A restore that left them there could replay or roll back pages over
+        # the restored copy and silently bring post-backup rows back. They must be gone and the rows must be the backup's.
+        live = sqlite3.connect(self.db); live.execute('PRAGMA journal_mode=WAL'); live.execute('CREATE TABLE t(v)'); live.execute("INSERT INTO t VALUES ('a')"); live.commit(); live.close()
+        r = run('create', '--db', self.db, '--dir', self.rp, '--commit', 'old'); self.assertEqual(r.returncode, 0, r.stderr)
+        m = sqlite3.connect(self.db); m.execute('PRAGMA wal_autocheckpoint=0'); m.execute("INSERT INTO t VALUES ('post-backup')"); m.commit()
+        wal, shm = Path(self.db + '-wal').read_bytes(), Path(self.db + '-shm').read_bytes()
+        self.assertGreater(len(wal), 0, 'the fixture really has WAL frames to orphan')
+        m.close()
+        Path(self.db + '-wal').write_bytes(wal); Path(self.db + '-shm').write_bytes(shm)
+        Path(self.db + '-journal').write_bytes(b'stale hot journal from an interrupted write' * 64)
+        r = run('restore', '--db', self.db, '--dir', self.rp); self.assertEqual(r.returncode, 0, r.stderr)
+        for side in ('-wal', '-shm', '-journal'):
+            self.assertFalse(os.path.exists(self.db + side), f'stale {side} removed before the restored copy is used')
+        self.assertEqual(rows(self.db), ['a'])
+        c = sqlite3.connect(self.db); self.assertEqual(c.execute('PRAGMA integrity_check').fetchone()[0], 'ok'); c.close()
+
     def test_corrupt_source_and_reused_directory_are_refused(self):
         Path(self.db).write_bytes(b'not a database' * 100)
         self.assertEqual(run('create', '--db', self.db, '--dir', self.rp).returncode, 1)
