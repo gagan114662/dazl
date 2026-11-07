@@ -168,4 +168,4 @@ const has = async (page, text) => (await page.locator('#replies').innerText()).i
   }
   console.log('replies-settings UI check passed (#931): all five reading states, revoke -> reload -> re-accept, sync refusal and malformed 2xx never say Checked replies, no overflow, at phone and desktop (simulated API, local)')
 }
-} finally { await cleanup() }
+} finally { const unverified = await cleanup(); if (unverified.length) process.exit(1) }   // an unverified cleanup (e.g. a leaked browser keeping the loop alive) must not linger until the hard deadline
