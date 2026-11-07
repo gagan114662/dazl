@@ -1,24 +1,37 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { actionMessage, CONSENT_NEEDED_NOTICE, replyReadingState, type GmailStatus } from '@/lib/outreach/replies-view'
+import { CONSENT_NEEDED_NOTICE, performReplyAction, replyReadingState, type GmailStatus } from '@/lib/outreach/replies-view'
 
 interface Info { available: boolean; gmail_connected: boolean; gmail_status?: GmailStatus; consent: { version: string; text: string[]; accepted: boolean }; bounce_scan: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
 
 export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
   const [msg, setMsg] = useState('')
-  async function load() { const r = await fetch('/api/outreach/replies'); if (r.ok) setI(await r.json()) }
+  // The server's current state, or null when it cannot be read. A failed reload after an action leaves the old status on
+  // screen, which could still say "on" after a revoke, so that case is flagged and the controls are replaced by a notice.
+  const [stale, setStale] = useState(false)
+  async function load(): Promise<boolean> {
+    try { const r = await fetch('/api/outreach/replies'); if (!r.ok) return false; setI(await r.json()); setStale(false); return true } catch { return false }
+  }
   useEffect(() => {
     let alive = true
-    void (async () => { const r = await fetch('/api/outreach/replies'); if (r.ok && alive) setI(await r.json()) })()
+    void (async () => { try { const r = await fetch('/api/outreach/replies'); if (r.ok && alive) setI(await r.json()) } catch { /* no status yet: the panel stays hidden */ } })()
     return () => { alive = false }
   }, [])
   async function act(action: string, version?: string) {
-    const r = await fetch('/api/outreach/replies', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, accept: true, version: version ?? i?.consent.version }) })
-    const j = await r.json().catch(() => ({})); setMsg(actionMessage(action, r.ok, j)); void load()
+    const res = await performReplyAction(fetch, action, version ?? i?.consent.version)
+    setMsg(res.message)
+    if (!(await load())) setStale(true)
   }
   if (!i || !i.available) return null
   const state = replyReadingState(i)
+  if (stale) return (
+    <div className="card p-6 mb-4">
+      <h2 className="font-semibold mb-1">Replies and follow-ups</h2>
+      <p className="text-sm text-[#555]" role="status">Could not confirm the current reply-reading status. Reload the page to see it before changing anything.</p>
+      {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
+    </div>
+  )
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Replies and follow-ups</h2>
