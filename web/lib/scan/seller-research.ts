@@ -14,7 +14,7 @@ export interface ResearchedPage { url: string; title: string; fetched_at: number
 export interface AnsweredQuestion { question: string; offer: string; text?: string }
 // A saved decision (a reviewed or rejected statement, or a typed answer) whose OFFER can no longer be told: it is kept here by the name(s) it might belong to, never moved onto a guess.
 // Every current offer whose stored name is in `names` is HELD: only statements the person explicitly reviewed target for it (see targetingFor) until none of its statements is left unreviewed.
-export interface Unresolved { names: string[]; kind: HypKind; text: string; status: 'reviewed' | 'rejected' }
+export interface Unresolved { names: string[]; kind: HypKind; text: string; status: 'reviewed' | 'rejected'; whole?: boolean }   // whole: capacity overflow collapsed to a group-level hold (see capHolds)
 export interface SellerResearch { site: string; pages: ResearchedPage[]; offers: { id: string; name: string }[]; hypotheses: Hypothesis[]; question: string | null; answered: AnsweredQuestion | null; unresolved?: Unresolved[] }
 export type PageKind = 'home' | 'product' | 'pricing' | 'customers' | 'industries'
 
@@ -27,7 +27,7 @@ const KINDS: [PageKind, RegExp][] = [
 const registrable = (h: string) => h.toLowerCase().replace(/^www\./, '')
 
 // Offer identity lives in ./offer-identity.ts (one contract for construction, storage, the reviewed draft, retrieval titles and decision reuse).
-import { holdName, holdNameOf, offerId, offerIds, offerKey, selectOffer, storedKey } from './offer-identity.ts'
+import { capHolds, holdName, holdNameOf, offerId, offerIds, offerKey, selectOffer, storedKey } from './offer-identity.ts'
 export { offerId, offerIds, offerKey }
 
 // Hypothesis ids are content-keyed (offer + kind + the model's original text), so a recrawl that finds the same
@@ -159,8 +159,7 @@ function carryUnresolved(prior: SellerResearch | null | undefined, offers: { id:
       for (const d of decisionsOf(prior, id)) out.push({ ...d, names })
     }
   }
-  const seen = new Set<string>()
-  return out.filter(u => { const k = `${[...u.names].sort().join('|')}#${u.kind}#${norm(u.text)}#${u.status}`; if (seen.has(k)) return false; seen.add(k); return true }).slice(0, 8)
+  return capHolds(out, names => ({ names, kind: 'persona', text: '', status: 'reviewed', whole: true }), norm)
 }
 // Current offers that are held: their stored name is in an unresolved decision. The hold ends only by an explicit new decision on the same statement (applyCorrections) or, for a typed answer,
 // by the person answering again; a rerun, an unanswered question and a rejection the hold itself applied never end it.
@@ -198,7 +197,10 @@ export function applyCorrections(r: SellerResearch, corrections: Correction[]): 
   const decided = corrections.map(c => { const h = r.hypotheses.find(x => x.id === c.hypothesis && x.offer === c.offer); const o = r.offers.find(x => x.id === c.offer); return h && o ? { kind: h.kind, text: norm(h.text), name: holdNameOf(o.name), offer: o.id } : null }).filter((x): x is { kind: HypKind; text: string; name: string; offer: string } => !!x)
   const groupOf = (n: string) => r.offers.filter(o => holdNameOf(o.name) === n).map(o => o.id)
   const releasable = (u: Unresolved, n: string) => { const who = new Set(decided.filter(d => d.kind === u.kind && d.text === norm(u.text) && d.name === n).map(d => d.offer)); return groupOf(n).length > 0 && groupOf(n).every(id => who.has(id)) }
-  const left = (r.unresolved ?? []).map(u => ({ ...u, names: u.names.map(holdName).filter(n => !releasable(u, n)) })).filter(u => u.names.length)
+  // A whole-group entry (capacity overflow) stands for decisions that could not be kept one by one: it is released for a name only when every offer carrying that name has NO statement left that
+  // the person has not explicitly reviewed or rejected.
+  const unreviewed = (n: string) => groupOf(n).some(id => hyps.some(h => h.offer === id && h.kind !== 'offer' && (h.status === 'sourced' || h.status === 'hypothesis')))
+  const left = (r.unresolved ?? []).map(u => ({ ...u, names: u.names.map(holdName).filter(n => (u.whole ? unreviewed(n) : !releasable(u, n))) })).filter(u => u.names.length)
   const { unresolved: _drop, ...rest } = r; void _drop
   return { ...rest, hypotheses: hyps, question: null, ...(left.length ? { unresolved: left } : {}) }
 }
@@ -218,13 +220,13 @@ export function toStored(r: SellerResearch): IcpResearch {
   return {
     v: 1, site: r.site, q: r.question, ans: r.answered ? { q: r.answered.question, o: r.answered.offer, ...(r.answered.text ? { t: r.answered.text } : {}) } : null,
     offers: r.offers.map(o => ({ i: o.id, n: o.name })),
-    ...(r.unresolved?.length ? { u: r.unresolved.map(x => ({ n: x.names, k: x.kind, t: x.text, s: x.status })) } : {}),
+    ...(r.unresolved?.length ? { u: r.unresolved.map(x => ({ n: x.names, k: x.kind, t: x.text, s: x.status, ...(x.whole ? { w: true as const } : {}) })) } : {}),
     hyps: r.hypotheses.filter(h => h.status !== 'unknown').map(h => ({ i: h.id, o: h.offer, k: h.kind, t: h.text, s: h.status as ResearchedHyp['s'], u: h.url, q: h.quote, at: h.fetched_at })),
   }
 }
 export function fromStored(s: IcpResearch): SellerResearch {
   return {
-    ...(s.u?.length ? { unresolved: s.u.map(x => ({ names: x.n.map(holdName), kind: x.k, text: x.t, status: x.s })) } : {}),
+    ...(s.u?.length ? { unresolved: s.u.map(x => ({ names: x.n.map(holdName), kind: x.k, text: x.t, status: x.s, ...(x.w ? { whole: true as const } : {}) })) } : {}),
     site: s.site, question: s.q, answered: s.ans ? { question: s.ans.q, offer: s.ans.o, ...(s.ans.t ? { text: s.ans.t } : {}) } : null,
     pages: [], offers: s.offers.map(o => ({ id: o.i, name: o.n })),
     hypotheses: s.hyps.map(h => ({ id: h.i, offer: h.o, kind: h.k, text: h.t, status: h.s, url: h.u, quote: h.q, fetched_at: h.at })),

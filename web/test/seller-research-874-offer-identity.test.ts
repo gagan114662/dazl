@@ -4,8 +4,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, heldIds, offerId, offerIds, targetingFor, toStored, OFFER_QUESTION, WHO_QUESTION, type FetchedPage, type SellerResearch } from '../lib/scan/seller-research.ts'
-import { normalizeResearch, type Icp } from '../lib/scan/icp.ts'
+import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, heldIds, offerId, offerIds, targetingFor, toStored, OFFER_QUESTION, WHO_QUESTION, type FetchedPage, type SellerResearch, type Unresolved } from '../lib/scan/seller-research.ts'
+import { budgetedIcp, normalizeResearch, type Icp } from '../lib/scan/icp.ts'
 import { norm } from '../lib/scan/evidence.ts'
 import { holdNameOf } from '../lib/scan/offer-identity.ts'
 import { assembleDecisionPack, decisionRows, reuseSellerDecisions, type SellerDecision } from '../lib/scan/intelligence.ts'
@@ -421,4 +421,72 @@ test('#874 shared hold key: a typed answer for one offer id does not release a g
   const d = build(['Alpha Pro', 'Beta Pro']), dh: SellerResearch = { ...d, unresolved: [{ names: [holdNameOf('Alpha Pro'), holdNameOf('Beta Pro')], kind: 'persona', text: ANSWER, status: 'reviewed' }] }
   const dr = build(['Alpha Pro', 'Beta Pro'], { ...roundTrip(dh), answered: { question: WHO_QUESTION, offer: d.offers[0].id, text: ANSWER } })
   assert.deepEqual(heldIds(dr), [idOf(dr, 'Beta Pro')], 'Alpha released by its own answer, Beta still held')
+})
+
+
+// =====================================================================================================================================================
+// Review round 4 on #1000: bounded storage must never drop a HOLD. More unresolved statements than the stored bound collapse into a whole-group entry that keeps every
+// affected name held; specific rejections are kept first; a valid release (every statement of the offer decided) still works.
+// =====================================================================================================================================================
+const P = ['Alpha Pro', 'Beta Pro', 'Gamma Pro']
+const hold = (name: string, text: string, status: 'reviewed' | 'rejected' = 'reviewed', kind: Unresolved['kind'] = 'industry'): Unresolved => ({ names: [holdNameOf(name)], kind, text, status })
+// eight distinct statements for the FIRST group, one for each later group: ten entries, the bound is eight
+const OVERFLOW = (): Unresolved[] => [...Array.from({ length: 8 }, (_, i) => hold(P[0], `statement ${i + 1}`, i < 3 ? 'rejected' : 'reviewed')), hold(P[1], 'statement 1', 'rejected'), hold(P[2], 'statement 2')]   // each text is a statement the model really offers, so a decision on it can match
+const productsHeld = (r: SellerResearch) => P.every(n => heldIds(r).includes(idOf(r, n)))
+const buildOverflow = (prior: SellerResearch | null): SellerResearch => {
+  const m = { offers: P.map((n, i) => ({ id: `o${i + 1}`, name: n })), items: P.flatMap((_, i) => [{ offer: `o${i + 1}`, kind: SOURCED.kind, text: SOURCED.text, url: QUOTE_PAGES[0].url, quote: SOURCED.quote, inferred: false }, ...Array.from({ length: 8 }, (_, k) => ({ offer: `o${i + 1}`, kind: 'industry', text: `statement ${k + 1}`, url: QUOTE_PAGES[0].url, quote: '', inferred: true }))]) }
+  const r = buildResearch(m, QUOTE_PAGES, SITE, prior); if ('error' in r) throw new Error('setup'); return r
+}
+test('#874 overflow: more unresolved statements than the stored bound across products keeps EVERY product held through save, reload and rerun', () => {
+  const base = build(P); assert.equal(OVERFLOW().length, 10)
+  let r = buildOverflow({ ...base, unresolved: OVERFLOW() })
+  assert.ok(productsHeld(r), 'all three products held right after the build')
+  assert.ok((r.unresolved ?? []).length <= 8, 'bounded'); assert.ok((r.unresolved ?? []).some(u => u.whole), 'the overflow is a whole-group entry, not a silent drop')
+  assert.ok([...new Set((r.unresolved ?? []).flatMap(u => u.names))].length === 3, 'the union of held names is unchanged by the cap')
+  for (let round = 0; round < 3; round++) r = buildOverflow(roundTrip(r))   // save, reload, rerun, again
+  assert.ok(productsHeld(r), 'still held after three persisted reruns')
+  for (const n of P) { const tg = targetingFor(r, idOf(r, n)); assert.deepEqual([tg.industries, tg.who], [[], []], `${n}: merely-sourced statements (including a rejected text a fresh quote supports) do not target`) }
+  // the later products' only holds are exactly the ones the old cap discarded
+  assert.ok(heldIds(r).includes(idOf(r, P[2])) && heldIds(r).includes(idOf(r, P[1])))
+})
+test('#874 overflow: rejections are kept first (specific) and a rejected text is never targeting while its product is held', () => {
+  const r = buildOverflow({ ...build(P), unresolved: OVERFLOW() })
+  const specificRejected = (r.unresolved ?? []).filter(u => !u.whole && u.status === 'rejected')
+  assert.ok(specificRejected.length >= 3, 'the three Alpha rejections and Beta\'s are kept specifically before any reviewed entry')
+  const again = fromStored(normalizeResearch(JSON.parse(JSON.stringify(toStored(r))))!)
+  assert.deepEqual((again.unresolved ?? []).map(u => [u.status, u.whole ?? false, u.text]), (r.unresolved ?? []).map(u => [u.status, u.whole ?? false, u.text]), 'storage is lossless for a bounded list')
+})
+test('#874 overflow in storage: an oversized unresolved list read from storage keeps every held name (bounded, not truncated)', () => {
+  const st = toStored(build(P)); const many = [...Array.from({ length: 12 }, (_, i) => ({ n: [holdNameOf(P[i % 2])], k: 'industry' as const, t: `s${i}`, s: 'reviewed' as const })), { n: [holdNameOf(P[2])], k: 'industry' as const, t: 'late', s: 'reviewed' as const }]
+  const n = normalizeResearch(JSON.parse(JSON.stringify({ ...st, u: many })))!
+  assert.ok((n.u ?? []).length <= 8); assert.deepEqual([...new Set((n.u ?? []).flatMap(u => u.n))].sort(), P.map(holdNameOf).sort(), 'the later product\'s only hold is not cut')
+})
+test('#874 overflow vs the 4000-character column: holds survive the research budget (details collapse before a hold is dropped)', () => {
+  const longNames = ['Alpha ' + 'x'.repeat(54), 'Beta ' + 'y'.repeat(55), 'Gamma ' + 'z'.repeat(54)]
+  const base = build(longNames)
+  const holdsMany: Unresolved[] = [...longNames.flatMap((n, g) => Array.from({ length: 4 }, (_, i) => hold(n, `${'long statement text '.repeat(5)} ${g}-${i}`, i % 2 ? 'rejected' : 'reviewed')))]
+  const r = buildOverflow(null); void r
+  const research = toStored({ ...base, unresolved: holdsMany.slice(0, 12) })
+  const icp: Icp = { summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], research }
+  const out = budgetedIcp(icp); assert.ok(out.ok, 'the profile fits'); if (!out.ok) return
+  const held = new Set((out.icp.research?.u ?? []).flatMap(u => u.n)); assert.deepEqual([...held].sort(), longNames.map(holdNameOf).sort(), 'every product is still held after the budget fit')
+})
+test('#874 overflow control: a product is released only when ITS statements are all decided; others stay held; everything decided releases all', () => {
+  let r = buildOverflow({ ...build(P), unresolved: OVERFLOW() })
+  const decideAll = (rr: SellerResearch, name: string) => applyCorrections(rr, rr.hypotheses.filter(h => h.offer === idOf(rr, name) && h.kind !== 'offer').map(h => ({ offer: h.offer, hypothesis: h.id, action: 'reject' as const })))
+  r = decideAll(r, P[2]); assert.ok(!heldIds(r).includes(idOf(r, P[2])), 'Gamma released: every one of its statements was explicitly decided'); assert.ok(heldIds(r).includes(idOf(r, P[0])) && heldIds(r).includes(idOf(r, P[1])))
+  const rerun = buildOverflow(roundTrip(r)); assert.ok(!heldIds(rerun).includes(idOf(rerun, P[2])) || (rerun.unresolved ?? []).some(u => u.names.includes(holdNameOf(P[2]))), 'consistent after reload')
+  r = decideAll(r, P[1]); r = decideAll(r, P[0])
+  assert.deepEqual(heldIds(r), [], 'all products decided: nothing held'); assert.deepEqual(r.unresolved ?? [], [])
+})
+test('#874 overflow through saved-decision reuse: more than eight held rows across two ambiguous groups keep BOTH groups held (research persistence + reuse)', () => {
+  const names = ['Café Pro', 'Caf Pro', 'Cafè Co', 'Caf Co'], base = build(names)
+  const rows = [...Array.from({ length: 9 }, (_, i) => row('caf-pro', `Pro buyer ${i + 1}`, i < 3 ? 'reject' : 'confirm', { at: 1000 + i })), row('caf-co', 'Co buyer', 'confirm', { at: 2000 })]
+  const out = reuseSellerDecisions({ summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], research: toStored(base) }, assembleDecisionPack(rows, T, SITE), names[0])
+  assert.ok((out.research!.u ?? []).length <= 8 && (out.research!.u ?? []).some(u => u.w), 'bounded with a whole-group entry')
+  let persisted = fromStored(normalizeResearch(JSON.parse(JSON.stringify(out.research)))!)
+  assert.deepEqual([...heldIds(persisted)].sort(), persisted.offers.map(o => o.id).sort(), 'all four offers held after reuse + storage + fromStored')
+  const rerun = (prior: SellerResearch) => { const m = { offers: names.map((n, i) => ({ id: `o${i + 1}`, name: n })), items: names.map((_, i) => ({ offer: `o${i + 1}`, kind: SOURCED.kind, text: SOURCED.text, url: QUOTE_PAGES[0].url, quote: SOURCED.quote, inferred: false })) }; const r = buildResearch(m, QUOTE_PAGES, SITE, prior); if ('error' in r) throw new Error('setup'); return r }
+  persisted = rerun(roundTrip(persisted))
+  for (const n of names) assert.deepEqual(targetingFor(persisted, idOf(persisted, n)).industries, [], `${n}: still not targeting after a persisted rerun`)
 })

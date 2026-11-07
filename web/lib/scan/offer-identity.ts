@@ -70,3 +70,26 @@ export function rebindOfferId(offers: Named[], x: string): Rebind {
   if (m) { const near = offers.filter(o => legacyBase(o.name) === m[1]); if (near.length) return { held: near.map(o => o.id) } }
   return null
 }
+
+// ---- bounded hold storage ----
+// Unresolved decisions are persisted, and persistence is bounded. The bound must never drop a HOLD: when the specific decisions do not fit, the overflow collapses into ONE whole-group entry that keeps
+// every affected name held (and so keeps merely-sourced statements out of targeting) until each of those offers has been reviewed statement by statement. Specific rejections are kept first, so the
+// statement-level authority survives as long as it can; what cannot be kept specifically is still held, never discarded.
+export const MAX_HOLDS = 8
+export interface HoldEntry { names: string[]; kind: string; text: string; status: 'reviewed' | 'rejected'; whole?: boolean }
+export function capHolds<T extends HoldEntry>(list: T[], whole: (names: string[]) => T, norm: (s: string) => string = s => s.toLowerCase().trim()): T[] {
+  const seen = new Set<string>(), specific: T[] = []
+  let wholeNames: string[] = []
+  for (const e of list) {
+    const names = [...new Set(e.names.map(holdName).filter(Boolean))]
+    if (!names.length) continue
+    if (e.whole) { wholeNames = [...new Set([...wholeNames, ...names])]; continue }
+    const k = `${[...names].sort().join('|')}#${e.kind}#${norm(e.text)}#${e.status}`
+    if (!seen.has(k)) { seen.add(k); specific.push({ ...e, names }) }
+  }
+  const ordered = [...specific.filter(e => e.status === 'rejected'), ...specific.filter(e => e.status !== 'rejected')]
+  const room = MAX_HOLDS - (wholeNames.length ? 1 : 0)
+  if (ordered.length <= room) return [...ordered, ...(wholeNames.length ? [whole(wholeNames)] : [])]
+  const keep = ordered.slice(0, MAX_HOLDS - 1), dropped = ordered.slice(MAX_HOLDS - 1)
+  return [...keep, whole([...new Set([...wholeNames, ...dropped.flatMap(e => e.names)])])]
+}

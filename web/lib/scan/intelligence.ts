@@ -2,7 +2,7 @@
 // -> editable targeting. This is NOT autonomous learning, lead qualification, consent or a source verifier.
 import { createHash } from 'node:crypto'
 import type { Db, Param } from '../db/client.ts'
-import type { Icp, IcpResearch, ResearchedHyp } from './icp.ts'
+import { capStoredHolds, type Icp, type IcpResearch, type ResearchedHyp } from './icp.ts'
 import { norm } from './evidence.ts'
 import { holdNameOf, rebindOfferId, selectOffer } from './offer-identity.ts'
 
@@ -130,7 +130,7 @@ export function reuseSellerDecisions(icp: Icp, pack: DecisionPack, offerName: st
   // No fuzzy selection. Multiple products never donate their buyer list to one flat draft. One play-name contract with the reviewed draft and retrieval: the stored name.
   const sel = selectOffer(offers, offerName, (a, b) => !!norm(a) && norm(a) === norm(b))
   const selected = sel ? r.offers.find(o => o.i === sel) ?? null : r.offers.length === 1 && !offerName ? r.offers[0] : null
-  const out = { ...icp, research: { ...r, hyps, ...(u.length ? { u: u.slice(0, 8) } : {}) } }
+  const out = { ...icp, research: { ...r, hyps, ...(u.length ? { u: capStoredHolds(u) } : {}) } }
   if (!selected) return out
   for (const x of heldRejects.filter(x => x.ids.includes(selected.i))) {
     const f = fields[x.d.kind as keyof typeof fields]
