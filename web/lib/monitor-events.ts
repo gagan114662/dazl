@@ -104,6 +104,18 @@ export function decide(l: RunLead, prior: PriorEvent | null, entityKnown: boolea
   return { kind, alert }
 }
 
+// Missed-run backfill from cursors (#885): a run that comes after a gap longer than the play's window still reads every
+// event dated since the source was last checked (its monitor_cursors.last_checked_at; a source with no cursor yet uses
+// the monitor's latest check). Without it, events that happened during the skipped runs were outside the late run's
+// window and were dropped as old news. An on-time run (gap <= window) is unchanged; the backfill never reaches past
+// MAX_BACKFILL_DAYS (or the play's own window when that is longer); future and undated events stay suppressed.
+export const MAX_BACKFILL_DAYS = DEFAULT_EVENT_WINDOW_DAYS
+export function backfillWindowDays(windowDays: number, lastCheckedAt: number | null, now: number): number {
+  if (lastCheckedAt == null || lastCheckedAt >= now) return windowDays
+  const gapDays = Math.ceil((now - lastCheckedAt) / 86400)
+  return Math.max(windowDays, Math.min(gapDays, Math.max(windowDays, MAX_BACKFILL_DAYS)))
+}
+
 export interface FoldResult { alerts: { kind: AlertKind; company: string; event_key: string; latency_s: number }[]; suppressed: Partial<Record<Suppress, number>> }
 
 // Fold one finished run into the tenant's event state, in the caller's transaction: records first-seen / occurred /
@@ -111,15 +123,20 @@ export interface FoldResult { alerts: { kind: AlertKind; company: string; event_
 export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; runId: string; leads: RunLead[]; policy: AlertPolicy; windowDays: number; now: number }): TxBody<FoldResult> {
   const out: FoldResult = { alerts: [], suppressed: {} }
   const bump = (s: Suppress) => { out.suppressed[s] = (out.suppressed[s] ?? 0) + 1 }
+  // the cursors as they stood before this run (this run's own writes below never shrink its backfill)
+  const cursors = new Map((yield* t.all<{ source: string; last_checked_at: number }>('SELECT source, last_checked_at FROM monitor_cursors WHERE monitor_id = ?', [a.monitorId]))
+    .map(c => [c.source, Number(c.last_checked_at)] as const))
+  const latest = cursors.size ? Math.max(...cursors.values()) : null
   for (const l of a.leads) {
-    if (l.date_status !== 'verified' || !l.event_date || windowStatus(l.event_date, a.windowDays, new Date(a.now * 1000)) !== 'inside') {
+    const wd = backfillWindowDays(a.windowDays, cursors.get(sourceOf(l)) ?? latest, a.now)
+    if (l.date_status !== 'verified' || !l.event_date || windowStatus(l.event_date, wd, new Date(a.now * 1000)) !== 'inside') {
       bump(l.date_status !== 'verified' || !l.event_date ? 'undated' : 'out_of_window'); continue   // never stored, never surfaced
     }
     const ek = entityKeyOf(l), ev = eventKeyOf(l), occ = dayStartS(l.event_date)
     const prior = yield* t.get<{ actionable_at: number | null; reachable_at: number | null }>('SELECT actionable_at, reachable_at FROM monitor_events WHERE user_id = ? AND event_key = ?', [a.userId, ev])
     const known = !!(yield* t.get('SELECT 1 AS x FROM monitor_events WHERE user_id = ? AND entity_key = ? AND event_key <> ? AND actionable_at IS NOT NULL LIMIT 1', [a.userId, ek, ev]))
     const p: PriorEvent | null = prior ? { actionable_at: prior.actionable_at == null ? null : Number(prior.actionable_at), reachable_at: prior.reachable_at == null ? null : Number(prior.reachable_at) } : null
-    const d = decide(l, p, known, a.policy, a.windowDays, a.now)
+    const d = decide(l, p, known, a.policy, wd, a.now)
     const act = 'kind' in d && d.kind !== 'now_reachable', reach = 'kind' in d && l.reachable
     yield* t.run(`INSERT INTO monitor_events (user_id, event_key, entity_key, monitor_id, occurred_at, first_seen_at, last_checked_at, actionable_at, reachable_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (user_id, event_key) DO UPDATE SET last_checked_at = excluded.last_checked_at,
