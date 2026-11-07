@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
   try { decisions = decisionRows(body?.research_decisions, effective?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, effective ?? undefined) }
   catch { return NextResponse.json({ error: 'invalid_research_decisions' }, { status: 400 }) }
   const sized = effective ? budgetedIcp(effective) : null
-  if (sized && !sized.ok) return NextResponse.json({ error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
+  if (sized && !sized.ok) return NextResponse.json(sized.reason === 'holds_too_large' ? { error: 'holds_too_large', message: 'This profile leaves no room to keep the decisions you have not finished reviewing, so nothing was saved or started. Shorten the profile a little.' } : { error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
 
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not
   // strictly valid is rejected, never ignored, so a caller expecting a restricted run is never widened into a full one.
