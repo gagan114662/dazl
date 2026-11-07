@@ -125,7 +125,7 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
   }
   const current = () => existsSync(path.join(root, 'current')) ? path.basename(readlinkSync(path.join(root, 'current'))) : null
   const releaseEnv = () => existsSync(path.join(T, 'state', 'release.env')) ? readFileSync(path.join(T, 'state', 'release.env'), 'utf8').trim() : null
-  const releases = () => readdirSync(path.join(root, 'releases')).sort()
+  const releases = () => readdirSync(path.join(root + '-releases')).sort()
   const servedNow = () => readFileSync(served, 'utf8').trim()
   try {
     mkdirSync(root)
@@ -212,7 +212,7 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
     return { code: r.status, out: r.stdout + r.stderr }
   }
   const sent = () => existsSync(alerts) ? readFileSync(alerts, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : []
-  const releases = () => existsSync(path.join(root, 'releases')) ? readdirSync(path.join(root, 'releases')) : []
+  const releases = () => existsSync(path.join(root + '-releases')) ? readdirSync(path.join(root + '-releases')) : []
 
   // 1. below the floor: skipped with exit 0 before anything is fetched; one alert, then throttled
   const huge = String(1e15)
@@ -270,8 +270,8 @@ test('low disk after or near the end of a build: never put live; the reserve abo
   writeFileSync(path.join(T, 'alert.sh'), `echo "$1" >> ${alerts}\n`)
   // an existing live release (complete), which must stay live
   const old = 'a'.repeat(40)
-  mkdirSync(path.join(root, 'releases', old, 'web'), { recursive: true }); writeFileSync(path.join(root, 'releases', old, '.complete'), '')
-  symlinkSync(path.join(root, 'releases', old), path.join(root, 'current')); mkdirSync(path.join(T, 'state'), { mode: 0o700 }); writeFileSync(path.join(T, 'state', 'current-sha'), old + '\n')
+  mkdirSync(root, { recursive: true }); mkdirSync(path.join(root + '-releases', old, 'web'), { recursive: true }); writeFileSync(path.join(root + '-releases', old, '.complete'), '')
+  symlinkSync(path.join(root + '-releases', old), path.join(root, 'current')); mkdirSync(path.join(T, 'state'), { mode: 0o700 }); writeFileSync(path.join(T, 'state', 'current-sha'), old + '\n')
   const env = path.join(T, 'env'); writeFileSync(env, good)
   const FLOOR = 2147483648, RESERVE = 268435456
   const run = (build: string, avail: number) => {
@@ -295,8 +295,8 @@ test('low disk after or near the end of a build: never put live; the reserve abo
   assert.doesNotMatch(r.out, /live: [0-9a-f]{40}$/m)
   assert.doesNotMatch(r.out, /cutover of/, 'no cutover was even attempted')
   assert.deepEqual(live(), [old, old], 'the live release is unchanged')
-  assert.deepEqual(readdirSync(path.join(root, 'releases')), [old], 'the failed release is removed')
-  assert.equal(existsSync(path.join(root, 'releases', sha)), false)
+  assert.deepEqual(readdirSync(path.join(root + '-releases')), [old], 'the failed release is removed')
+  assert.equal(existsSync(path.join(root + '-releases', sha)), false)
   assert.equal(lastAlert().reason, 'low_disk_after_build')
 
   // 2. above the floor but inside the reserve: no build starts at all
@@ -308,7 +308,7 @@ test('low disk after or near the end of a build: never put live; the reserve abo
   r = run(`echo ${FLOOR + 1000} > ${availFile} && sleep 20`, 10e9)
   assert.equal(r.code, 1, r.out); assert.match(r.out, /ALERT low_disk_during_build: stopped the build/)
   assert.ok(r.ms < 8000, `stopped promptly (${r.ms} ms), not after the 20 s build`)
-  assert.deepEqual(live(), [old, old]); assert.deepEqual(readdirSync(path.join(root, 'releases')), [old])
+  assert.deepEqual(live(), [old, old]); assert.deepEqual(readdirSync(path.join(root + '-releases')), [old])
   assert.ok(lastAlert().free_bytes >= FLOOR, 'stopped while still above the protected floor')
 })
 
@@ -550,7 +550,7 @@ test('recovery_point.py scratch-database checks (WAL capture, orphaned WAL/SHM/j
 
 // #972 review: root must never write through a name the service account controls. Its home (STAGING_ROOT) is planted with
 // symlinks at every path an older deploy.sh wrote as root (.deploy.lock, release.env, current-sha, alert stamps), a
-// symlink inside releases/ pointing at a victim directory, a `current` pointing outside releases/, and a build that plants
+// symlink inside the releases directory pointing at a victim directory, a `current` pointing outside it, and a build that plants
 // its release's .complete as a symlink to a file that does not exist yet. A full deploy must leave every victim unchanged
 // (and never create the dangling target), keep its own state in the root-only state directory, and refuse a symlinked
 // releases directory or state directory before stopping anything.
@@ -586,11 +586,11 @@ http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.strin
     return { code: r.status, out: r.stdout + r.stderr }
   }
   try {
-    mkdirSync(path.join(root, 'releases'), { recursive: true }); mkdirSync(path.join(victims, 'dir'), { recursive: true })
+    mkdirSync(root, { recursive: true }); mkdirSync(path.join(root + '-releases'), { recursive: true }); mkdirSync(path.join(victims, 'dir'), { recursive: true })
     const names = ['.deploy.lock', 'release.env', 'current-sha', '.alert-low_disk', '.alert-low_disk_for_release']
     for (const n of names) { writeFileSync(path.join(victims, n), `victim ${n}\n`); symlinkSync(path.join(victims, n), path.join(root, n)) }
     writeFileSync(path.join(victims, 'dir', 'keep'), 'victim dir file\n')
-    symlinkSync(path.join(victims, 'dir'), path.join(root, 'releases', 'evil'))        // an incomplete-looking "release" that is a symlink
+    symlinkSync(path.join(victims, 'dir'), path.join(root + '-releases', 'evil'))        // an incomplete-looking "release" that is a symlink
     symlinkSync(path.join(victims, 'dir'), path.join(root, 'current'))                  // `current` outside releases/
     const r = deploy()
     assert.equal(r.code, 0, r.out); assert.match(r.out, /live: [0-9a-f]{40}/)
@@ -599,9 +599,9 @@ http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.strin
       assert.ok(lstatSync(path.join(root, n)).isSymbolicLink(), `${n} left alone`)
     }
     assert.equal(readFileSync(path.join(victims, 'dir', 'keep'), 'utf8'), 'victim dir file\n', 'the directory behind a planted releases/ symlink is untouched')
-    assert.equal(existsSync(path.join(root, 'releases', 'evil')), false, 'a symlink in releases/ is removed, not followed')
+    assert.equal(existsSync(path.join(root + '-releases', 'evil')), false, 'a symlink in releases/ is removed, not followed')
     assert.equal(existsSync(path.join(victims, 'created-by-root')), false, 'root never creates a file through a planted .complete symlink')
-    const done = lstatSync(path.join(root, 'releases', sha, '.complete'))
+    const done = lstatSync(path.join(root + '-releases', sha, '.complete'))
     assert.ok(done.isFile() && !done.isSymbolicLink(), '.complete is a fresh regular file')
     assert.equal(path.basename(readlinkSync(path.join(root, 'current'))), sha)
     // the deploy's own state: root-only directory, never in the home
@@ -620,10 +620,10 @@ http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.strin
 
     // refused before anything is stopped: a symlinked releases directory, a state directory open to others, a symlinked state directory
     const stopLog = path.join(T, 'stopped')
-    rmSync(path.join(root, 'releases'), { recursive: true }); symlinkSync(path.join(victims, 'dir'), path.join(root, 'releases'))
+    const keepRels = root + '-releases.kept'; execFileSync('mv', [root + '-releases', keepRels]); symlinkSync(path.join(victims, 'dir'), root + '-releases')
     let x = deploy({ STAGING_STOP: `touch ${stopLog}` })
-    assert.equal(x.code, 1); assert.match(x.out, /releases is not a plain directory/); assert.equal(existsSync(stopLog), false)
-    rmSync(path.join(root, 'releases')); mkdirSync(path.join(root, 'releases'))
+    assert.equal(x.code, 1); assert.match(x.out, /the releases directory .* is a symlink/); assert.equal(existsSync(stopLog), false)
+    rmSync(root + '-releases'); execFileSync('mv', [keepRels, root + '-releases'])
     execFileSync('chmod', ['755', state])
     x = deploy({ STAGING_STOP: `touch ${stopLog}` })
     assert.equal(x.code, 1); assert.match(x.out, /deploy state directory .* is not private/); assert.equal(existsSync(stopLog), false)
@@ -634,4 +634,136 @@ http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.strin
   } finally {
     server.kill()
   }
+})
+
+// #908 releases-directory race: releases live in a root-owned directory BESIDE the service home (STAGING_RELEASES,
+// default `${STAGING_ROOT}-releases`, mode 750), so the service account cannot rename or replace a release path between
+// root's check and its use. Here the build (which runs as the service account) does what that account can still do in its
+// own home mid-deploy: it renames the old in-home `releases` directory away and puts a symlink to a victim directory in its
+// place, a victim holding a directory named for the release being built plus four complete-looking old "releases". Whether
+// the build then fails (root removes the failed release) or succeeds (root prunes old releases), every victim stays. The
+// deploy refuses, before stopping anything: a `current` still pointing into the old in-home releases (the upgrade step),
+// a releases directory inside the home, writable by others, under a parent others can change, or not a plain directory.
+// Release contents are only read, linked or run as the service account.
+test('releases race: releases live in a root-owned directory outside the service home; mid-deploy swaps in the home reach nothing', async () => {
+  const { execFileSync, spawn } = await import('node:child_process')
+  const { existsSync, readdirSync, readlinkSync, rmSync, statSync, utimesSync } = await import('node:fs')
+  const net = await import('node:net')
+  const port = await new Promise<number>(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => r(p)) }) })
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-race-'))
+  const root = path.join(T, 'root'), rels = root + '-releases', repo = path.join(T, 'repo'), victims = path.join(T, 'victims'), state = path.join(T, 'state')
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
+  const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', ...a], { encoding: 'utf8', env: gitEnv }).trim()
+  mkdirSync(path.join(repo, 'web'), { recursive: true }); execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
+  writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}')
+  const commit = (n: string) => { writeFileSync(path.join(repo, 'README.md'), n); git('add', '-A'); git('commit', '-qm', n); return git('rev-parse', 'HEAD') }
+  const env = path.join(T, 'env'); writeFileSync(env, good)
+  const served = path.join(T, 'served')
+  writeFileSync(path.join(T, 'health.mjs'), `import http from 'node:http'; import fs from 'node:fs'
+http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.stringify(served)}, 'utf8').trim() } catch {}
+  s.end(JSON.stringify({ ok: true, commit: c, checks: {} })) }).listen(${port}, '127.0.0.1')`)
+  const server = spawn(process.execPath, [path.join(T, 'health.mjs')], { stdio: 'ignore' })
+  const restart = path.join(T, 'restart.sh')
+  writeFileSync(restart, `#!/usr/bin/env bash\nbasename "$(readlink -f ${root}/current)" > ${served}\n`); execFileSync('chmod', ['+x', restart])
+  const me = execFileSync('id', ['-un'], { encoding: 'utf8' }).trim()
+  const stopLog = path.join(T, 'stopped')
+  const deploy = (extra: Record<string, string> = {}) => {
+    const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
+      STAGING_USER: me, STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart,
+      STAGING_STOP: `touch ${stopLog}`, STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '3', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'),
+      STAGING_STATE_ROOT: state, PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1', ...extra,
+    } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr }
+  }
+  // the victim behind the swapped name: a directory named for the release being built, and four old complete "releases"
+  const plantVictims = (sha: string) => {
+    rmSync(path.join(victims, 'rels'), { recursive: true, force: true })
+    mkdirSync(path.join(victims, 'rels', sha), { recursive: true }); writeFileSync(path.join(victims, 'rels', sha, 'keep'), 'victim\n')
+    for (const n of ['o1', 'o2', 'o3', 'o4']) {
+      mkdirSync(path.join(victims, 'rels', n), { recursive: true }); writeFileSync(path.join(victims, 'rels', n, '.complete'), '')
+      utimesSync(path.join(victims, 'rels', n), new Date(2000, 0, 1), new Date(2000, 0, 1))
+    }
+  }
+  const victimsIntact = (sha: string) => readdirSync(path.join(victims, 'rels')).sort().join() === [sha, 'o1', 'o2', 'o3', 'o4'].sort().join()
+    && readFileSync(path.join(victims, 'rels', sha, 'keep'), 'utf8') === 'victim\n'
+  // the build, as the service account: swap the in-home name for a symlink to the victim, then succeed or fail
+  const swapBuild = (ok: boolean) => `mv ${root}/releases ${root}/releases.moved 2>/dev/null; ln -sfn ${path.join(victims, 'rels')} ${root}/releases; ${ok ? 'true' : 'exit 3'}`
+  try {
+    mkdirSync(path.join(root, 'releases'), { recursive: true }); mkdirSync(victims)
+    // 1. a first deploy creates the releases directory: the deploy user's, mode 750, the service account's group, outside the home
+    const s1 = commit('one')
+    let r = deploy()
+    assert.equal(r.code, 0, r.out); assert.match(r.out, /live: [0-9a-f]{40}/)
+    const st = statSync(rels)
+    assert.equal(st.mode & 0o777, 0o750); assert.equal(st.uid, process.getuid!())
+    assert.equal(st.gid, Number(execFileSync('id', ['-g', me], { encoding: 'utf8' }).trim()))
+    assert.equal(readlinkSync(path.join(root, 'current')), path.join(rels, s1))
+    assert.deepEqual(readdirSync(path.join(root, 'releases')), [], 'nothing is created in the old in-home releases directory')
+
+    // 2. the build swaps the in-home name mid-deploy, then fails: the failed release is removed from the releases directory only
+    const s2 = commit('two'); plantVictims(s2)
+    r = deploy({ STAGING_BUILD: swapBuild(false) })
+    assert.equal(r.code, 1, r.out); assert.match(r.out, /build or seed of [0-9a-f]{40} failed/)
+    assert.ok(victimsIntact(s2), 'the victim behind the swapped in-home name is untouched by the failed-release removal')
+    assert.deepEqual(readdirSync(rels), [s1]); assert.equal(readlinkSync(path.join(root, 'current')), path.join(rels, s1))
+
+    // 3. the same swap, and the build succeeds: going live and pruning old releases never reach the victim
+    for (const n of ['three', 'four', 'five']) {
+      const s = commit(n); plantVictims(s)
+      rmSync(path.join(root, 'releases'), { force: true }); rmSync(path.join(root, 'releases.moved'), { recursive: true, force: true }); mkdirSync(path.join(root, 'releases'))
+      r = deploy({ STAGING_BUILD: swapBuild(true) })
+      assert.equal(r.code, 0, r.out); assert.match(r.out, /live: [0-9a-f]{40}/)
+      assert.ok(victimsIntact(s), `the victim is untouched by deploying and pruning (${n})`)
+      assert.equal(readlinkSync(path.join(root, 'current')), path.join(rels, s))
+    }
+    assert.equal(readdirSync(rels).length, 3, 'old releases are pruned in the releases directory: the live one and two before it')
+
+    // 4. refused before anything is stopped
+    const refuse = (why: RegExp, extra: Record<string, string> = {}) => {
+      rmSync(stopLog, { force: true }); commit(`refuse-${Math.random()}`)
+      const x = deploy(extra)
+      assert.equal(x.code, 1, x.out); assert.match(x.out, why); assert.equal(existsSync(stopLog), false, `nothing stopped (${why})`)
+    }
+    // a box upgraded without moving its releases: `current` still points into the old in-home releases directory
+    const live = readlinkSync(path.join(root, 'current'))
+    mkdirSync(path.join(root, 'releases', 'x'), { recursive: true }); rmSync(path.join(root, 'releases'), { recursive: true }); mkdirSync(path.join(root, 'releases', 'x'), { recursive: true })
+    rmSync(path.join(root, 'current')); symlinkSync(path.join(root, 'releases', 'x'), path.join(root, 'current'))
+    refuse(/current points into the old in-home releases directory; move the releases to .* first/)
+    rmSync(path.join(root, 'current')); symlinkSync('releases/x', path.join(root, 'current'))
+    refuse(/current points into the old in-home releases directory/)
+    // `current` replaced by a real directory root would write into
+    rmSync(path.join(root, 'current')); mkdirSync(path.join(root, 'current'))
+    refuse(/current is not a symlink/)
+    rmSync(path.join(root, 'current'), { recursive: true }); symlinkSync(live, path.join(root, 'current'))
+    // a releases directory inside the service home, or containing it
+    refuse(/the releases directory .* is inside the service home/, { STAGING_RELEASES: path.join(root, 'rels') })
+    refuse(/the releases directory .* contains the service home/, { STAGING_RELEASES: T })
+    // writable by others (group or world), or not a plain directory
+    for (const mode of ['770', '757']) {
+      execFileSync('chmod', [mode, rels]); refuse(/the releases directory .* is writable by another user/)
+    }
+    execFileSync('chmod', ['750', rels])
+    const loose = path.join(T, 'loose'); mkdirSync(loose); execFileSync('chmod', ['777', loose])
+    refuse(/the releases directory's parent .* can be changed by another user/, { STAGING_RELEASES: path.join(loose, 'rels') })
+    assert.equal(existsSync(path.join(loose, 'rels')), false, 'not created under a parent others can change')
+    const notDir = path.join(T, 'not-a-dir'); writeFileSync(notDir, '')
+    refuse(/the releases directory .* is not a plain directory/, { STAGING_RELEASES: notDir })
+    // a sticky world-writable parent owned by root (like /tmp) is fine: that is where this test's own directories live
+    assert.ok((statSync(tmpdir()).mode & 0o1000) !== 0 || statSync(tmpdir()).uid === process.getuid!())
+  } finally {
+    server.kill()
+  }
+})
+
+test('releases race: inside a release, root only deletes whole releases; reading, linking and running its files is the service account\'s', () => {
+  const src = readFileSync(script, 'utf8')
+  // every command that reads, links or runs a release's contents goes through `as` (the service account)
+  for (const re of [/\bdu -sb\b[^\n]*"\$live\/web/g, /\bcp -al "\$live\/web\/node_modules"/g, /\bnode "\$smoke"/g, /\bnode "\$rel\/ops\/release-manifest\.mjs"/g]) {
+    const hits = [...src.matchAll(re)]
+    assert.ok(hits.length > 0, String(re))
+    for (const h of hits) assert.match(src.slice(Math.max(0, h.index! - 3), h.index!), /as $/, `not run as the service account: ${h[0]}`)
+  }
+  // and no path under the service home's old releases directory is ever used as a release path
+  assert.doesNotMatch(src.replace(/"\$ROOT\/releases\/"\*\|releases\/\*\)/, ''), /\$ROOT\/releases/)
 })
