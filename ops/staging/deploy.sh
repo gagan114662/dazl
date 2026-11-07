@@ -7,8 +7,13 @@
 #   3. builds the commit in its own release directory as the service user, with the env file's values passed in by
 #      root (the file itself stays root-only, mode 600); the build does NOT touch the database
 #   3b. (#908) stops the service (no writes from here), takes a verified WAL-safe recovery point of DB_PATH bound to the
-#      live release (ops/staging/recovery_point.py; fail closed: no recovery point, no migration, old release restarted),
-#      then migrates and seeds, switches `current`, restarts the service
+#      live release (ops/staging/recovery_point.py, in a root-only directory outside anything the service account can
+#      write; fail closed: no recovery point, no migration, old release restarted), records a root-only pending marker
+#      (which recovery point, its manifest checksum, the previous release), then migrates and seeds, switches `current`,
+#      restarts the service. The deploy commits when the new release is healthy and the marker is removed.
+#   0. before anything else, a pending marker left by a deploy that was killed or whose restore failed is finished: the
+#      service is stopped, THAT recovery point (checked against its recorded checksum) is restored, and the previous
+#      release restarted. A retry never takes a new recovery point over a migrated database while one is pending.
 #   4. waits for /api/health to answer ok (every configured database reachable) with the new commit (the smoke check,
 #      ops/health-smoke.mjs); otherwise stops it, restores the recovery point (the matching pre-migration database) and
 #      only then switches back and restarts the previous release. A restore that cannot be verified leaves the service
@@ -43,7 +48,10 @@ BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --l
 # The schema change and seed (#908): run only after the service is stopped and a verified recovery point exists. Tests replace it.
 MIGRATE=${STAGING_MIGRATE:-'npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
 STOP=${STAGING_STOP:-systemctl stop $SERVICE}
+# The recovery helper, installed beside this script in a root-owned directory (docs/STAGING.md), and the root-only directory
+# recovery points live in: outside STAGING_ROOT (the service account's home) so that account cannot rename or replace them.
 RECOVERY=${STAGING_RECOVERY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recovery_point.py}
+RROOT=${STAGING_RECOVERY_ROOT:-/var/lib/dazl-staging-recovery}
 HEALTH_TRIES=${STAGING_HEALTH_TRIES:-60}
 # Low-disk alerts: OPS_ALERT_WEBHOOK_URL from the staging env file (https), or STAGING_ALERT_CMD (tests). One alert per
 # reason per STAGING_ALERT_EVERY_S while the condition lasts; every skip is still logged to the journal.
@@ -134,6 +142,56 @@ case "$root_real/" in "$prod_dir/"*) fail "STAGING_ROOT $ROOT is inside producti
 case "$prod_dir/" in "$root_real/"*) fail "STAGING_ROOT $ROOT contains production's data directory";; esac
 mkdir -p "$ROOT/releases"
 exec 9>"$ROOT/.deploy.lock"; flock -n 9 || { log "another deploy is running"; exit 0; }
+staging_db=$(val DB_PATH "$ENV_FILE")
+
+# Preflight (#908), before anything is stopped: the recovery helper is installed, owned by root (or by the user running the
+# deploy, in tests) and writable by no one else, as is its directory; the recovery root is private. Otherwise nothing runs.
+for f in "$RECOVERY" "$(dirname "$RECOVERY")"; do
+  [ -e "$f" ] || fail "the recovery helper $RECOVERY is not installed (install ops/staging/recovery_point.py beside deploy.sh, docs/STAGING.md); nothing stopped or changed"
+  o=$(stat -Lc %u "$f"); m=$(stat -Lc %a "$f")
+  { [ "$o" = 0 ] || [ "$o" = "$(id -u)" ]; } && [ $(( 8#$m & 8#022 )) = 0 ] || fail "the recovery helper or its directory ($f) is writable by another user; nothing stopped or changed"
+done
+command -v python3 >/dev/null || fail "python3 is required for the recovery point; nothing stopped or changed"
+[ -d "$RROOT" ] || install -d -m 700 "$RROOT"
+python3 "$RECOVERY" check-root --dir "$RROOT" || fail "the recovery root $RROOT is not private to root; nothing stopped or changed"
+pending="$RROOT/pending"
+pval() { [ -e "$pending" ] || return 0; sed -n "s/^$1=//p" "$pending" | tail -n 1; }
+write_pending() { # rp manifest-sha prev new: written whole, fsynced, then renamed into place and the directory fsynced
+  local t="$RROOT/.pending.tmp"
+  printf 'rp=%s\nmanifest=%s\nprev=%s\nnew=%s\n' "$1" "$2" "$3" "$4" > "$t" && sync "$t" && mv -f "$t" "$pending" && sync "$RROOT"
+}
+clear_pending() { rm -f "$pending"; sync "$RROOT"; }
+# The smoke check: /api/health answers 200, ok, with commit $1, run with that release's own ops/health-smoke.mjs. A
+# release from before the smoke check existed (only ever a rollback target) is checked for its commit alone.
+healthy() {
+  local smoke="$ROOT/releases/$1/ops/health-smoke.mjs"
+  for _ in $(seq 1 "$HEALTH_TRIES"); do
+    if [ -f "$smoke" ]; then node "$smoke" "http://127.0.0.1:$PORT" "$1" 2>/dev/null && return 0
+    else curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q "\"commit\":\"$1\"" && return 0; fi
+    sleep 2
+  done
+  [ -f "$smoke" ] && node "$smoke" "http://127.0.0.1:$PORT" "$1" >&2 || true # the last reason, in the journal
+  return 1
+}
+
+# 0. An earlier deploy left a pending marker: it was killed after its recovery point, or its restore failed. Finish that
+# restore first, from THAT recovery point (refused if it is not the one recorded), and put the previous release back.
+if [ -e "$pending" ]; then
+  p_rp=$(pval rp); p_m=$(pval manifest); p_prev=$(pval prev); p_new=$(pval new)
+  log "an interrupted deploy of ${p_new:-?} left a pending recovery point; restoring it before anything else"
+  $STOP 9>&- || fail "interrupted deploy of $p_new: could not stop the service to restore the database: NO VERIFIED STAGING STATE (recovery point kept at $p_rp)"
+  python3 "$RECOVERY" restore --db "$staging_db" --dir "$p_rp" --expect-manifest "$p_m" \
+    || fail "interrupted deploy of $p_new: database restore failed: NO LIVE STAGING SERVICE (old code not started; recovery point kept at $p_rp)"
+  clear_pending
+  [ -n "$p_new" ] && [ "$ROOT/releases/$p_new" != "$p_prev" ] && rm -rf "$ROOT/releases/$p_new"
+  if [ -n "$p_prev" ] && [ -d "$p_prev" ]; then
+    ln -sfn "$p_prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$(basename "$p_prev")" > "$ROOT/release.env"
+    $RESTART 9>&- && healthy "$(basename "$p_prev")" && fail "recovered the interrupted deploy of $p_new: database restored, $(basename "$p_prev") is live again"
+    fail "recovered the interrupted deploy of $p_new: database restored, but $(basename "$p_prev") did not come up healthy: NO LIVE STAGING SERVICE"
+  fi
+  rm -f "$ROOT/current" "$ROOT/release.env"
+  fail "recovered the interrupted first deployment of $p_new: database restored, NO LIVE STAGING SERVICE"
+fi
 as() { if [ "$(id -un)" = "$RUN_AS" ]; then "$@"; else runuser -u "$RUN_AS" -- "$@"; fi; }
 free_bytes() { df -B1 --output=avail "$ROOT" | tail -n 1 | tr -d ' '; }
 alert() { # reason, free bytes, bytes needed (0 when only the floor matters), message
@@ -221,40 +279,41 @@ if [ "$after" -lt "$guard" ]; then
 fi
 trap - ERR
 
-# The smoke check: /api/health answers 200, ok, with commit $1, run with that release's own ops/health-smoke.mjs. A
-# release from before the smoke check existed (only ever a rollback target) is checked for its commit alone.
-healthy() {
-  local smoke="$ROOT/releases/$1/ops/health-smoke.mjs"
-  for _ in $(seq 1 "$HEALTH_TRIES"); do
-    if [ -f "$smoke" ]; then node "$smoke" "http://127.0.0.1:$PORT" "$1" 2>/dev/null && return 0
-    else curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q "\"commit\":\"$1\"" && return 0; fi
-    sleep 2
-  done
-  [ -f "$smoke" ] && node "$smoke" "http://127.0.0.1:$PORT" "$1" >&2 || true # the last reason, in the journal
-  return 1
-}
 # Recovery point, then the schema change (#908). The live service is stopped first so nothing writes between the copy and
 # the migration; the copy is verified against its manifest before anything is migrated. No verified copy: no migration.
 prev=$live
-staging_db=$(val DB_PATH "$ENV_FILE")
-rp="$ROOT/recovery/$new"
-install -d -m 700 "$ROOT/recovery"; rm -rf "$rp"
-restart_prev() { # the previous release, unchanged code and database, back up after a refusal before any migration
-  [ -n "$prev" ] || return 0
+# A fresh, uniquely named recovery point for this attempt: an earlier one is never reused, overwritten or deleted here (a
+# pending one was restored at step 0; older ones are pruned only below, never the pending one).
+rp="$RROOT/$new.$(date +%s).$$"
+prune_recovery() { # the newest three recovery points are kept, and never the one a pending marker names
+  local keep; keep=$(pval rp)
+  ls -1dt "$RROOT"/*/ 2>/dev/null | sed 's:/$::' | while read -r d; do [ "$d" = "$keep" ] || echo "$d"; done | tail -n +4 | xargs -r rm -rf || true
+}
+prune_recovery
+# The previous release, unchanged code and database, back up after a refusal before any migration. A first deployment has
+# no previous release: returns 1, so nothing reports a restart that did not happen.
+restart_prev() {
+  [ -n "$prev" ] || return 1
   ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$(basename "$prev")" > "$ROOT/release.env"
   $RESTART 9>&- && healthy "$(basename "$prev")"
 }
 if ! $STOP 9>&-; then
-  cleanup; restart_prev || true
-  fail "could not stop the service for a recovery point; nothing migrated, release removed"
+  cleanup
+  restart_prev && fail "could not stop the service for a recovery point; nothing migrated, release removed, $(basename "$prev") restarted unchanged"
+  [ -n "$prev" ] || fail "could not stop the service for a recovery point; nothing migrated, release removed (first deployment: NO LIVE STAGING SERVICE)"
+  fail "could not stop the service for a recovery point; nothing migrated, release removed, and $(basename "$prev") did not come back healthy: NO LIVE STAGING SERVICE"
 fi
-if ! python3 "$RECOVERY" create --db "$staging_db" --dir "$rp" --commit "$(basename "${prev:-none}")"; then
+mh=
+if ! mh=$(python3 "$RECOVERY" create --db "$staging_db" --dir "$rp" --commit "$(basename "${prev:-none}")") || ! [[ $mh =~ ^[0-9a-f]{64}$ ]]; then
   rm -rf "$rp"; cleanup
   restart_prev && fail "no verified recovery point; nothing migrated, $(basename "$prev") restarted unchanged"
-  fail "no verified recovery point; nothing migrated${prev:+, and $(basename "$prev") did not come back healthy}"
+  [ -n "$prev" ] || fail "no verified recovery point on a first deployment; nothing migrated, NO LIVE STAGING SERVICE"
+  fail "no verified recovery point; nothing migrated, and $(basename "$prev") did not come back healthy: NO LIVE STAGING SERVICE"
 fi
+# From here until the deploy commits, a pending marker names this recovery point; a kill at any point is finished by step 0.
+write_pending "$rp" "$mh" "$prev" "$new" || { rm -rf "$rp"; cleanup; restart_prev; fail "could not record the pending recovery point; nothing migrated"; }
 log "recovery point for $(basename "${prev:-none}") verified before migrating"
-restore_db() { python3 "$RECOVERY" restore --db "$staging_db" --dir "$rp"; }
+restore_db() { python3 "$RECOVERY" restore --db "$staging_db" --dir "$rp" --expect-manifest "$mh"; }
 # The migration runs as its own process group (setsid: its pid is the group id) without the deploy lock (fd 9). When it
 # exits, anything it left running in that group gets TERM, then KILL, so no migration process outlives this step or
 # writes after a restore. A process that leaves the group is out of reach here; #907's contain.py (the build's subreaper)
@@ -276,6 +335,7 @@ reap_group "$migrate_pid"; migrate_pid=
 if [ $mstatus != 0 ]; then
   rm -rf "$rel"
   restore_db || fail "migration of $new failed (exit $mstatus) and the database restore failed: NO LIVE STAGING SERVICE (recovery point kept at $rp)"
+  clear_pending
   restart_prev && fail "migration or seed of $new failed (exit $mstatus); database restored, $(basename "$prev") is live again"
   [ -n "$prev" ] || fail "migration or seed of $new failed (exit $mstatus) on a first deployment; database restored, NO LIVE STAGING SERVICE"
   fail "migration of $new failed; database restored, but $(basename "$prev") did not come up healthy: NO LIVE STAGING SERVICE"
@@ -290,6 +350,7 @@ cutover_fail() {
   # the pre-migration database goes back BEFORE the old code starts: old code never runs against a migrated schema
   $STOP 9>&- || fail "could not stop the failed release to restore the database: NO VERIFIED STAGING STATE (recovery point kept at $rp)"
   restore_db || fail "database restore failed: NO LIVE STAGING SERVICE (old code not started against a migrated database; recovery point kept at $rp)"
+  clear_pending
   if [ -n "$prev" ]; then
     local p; p=$(basename "$prev")
     ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$p" > "$ROOT/release.env"
@@ -305,6 +366,7 @@ ln -sfn "$rel" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$new" > "$ROOT/release.env
 $RESTART 9>&- || cutover_fail "the restart command failed" # the service must not inherit the deploy lock
 healthy "$new" || cutover_fail "/api/health never answered ok with commit $new"
 trap - ERR
+clear_pending   # the commit point: from here a crash is NOT rolled back (a retry redeploys this commit over its migrated database)
 touch "$rel/.complete"; echo "$new" > "$ROOT/current-sha"
 log "live: $new"
 # Release identity (ops/release-manifest.mjs): the exact commit, build id and readiness the live service reports, in the
@@ -315,7 +377,7 @@ if [ -f "$rel/ops/release-manifest.mjs" ]; then
   else log "release identity: not recorded (no build output to describe)"; fi
 fi
 # recovery points: the three newest are kept (the live release's is the newest)
-ls -1dt "$ROOT"/recovery/*/ 2>/dev/null | tail -n +4 | xargs -r rm -rf
+prune_recovery
 # keep the live release and the two complete ones before it
-ls -1dt "$ROOT"/releases/*/ | while read -r d; do [ -e "$d/.complete" ] && echo "$d"; done | tail -n +4 | xargs -r rm -rf
+ls -1dt "$ROOT"/releases/*/ | while read -r d; do [ -e "$d/.complete" ] && echo "$d"; done | tail -n +4 | xargs -r rm -rf || true
 exit 0
