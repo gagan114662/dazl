@@ -34,7 +34,8 @@ export function migrateCsv(db: Database.Database): void {
   // #916: the batch's validated per-run budget, recorded at creation and reused for every row it ever queues (a resume
   // after a quota stop or a month rollover included). budget_recorded = 1 means run_budget is the creation-time
   // decision (NULL = explicitly unrestricted); 0 is a batch from before this column, whose original restriction is
-  // unrecoverable - it resumes under every narrowing control (BATCH_UNKNOWN_BUDGET), never as unrestricted.
+  // unrecoverable - resume refuses it (batch_budget_unknown, fail closed) and the owner re-imports the file; it never
+  // runs unrestricted.
   const has = (c: string) => (db.prepare('PRAGMA table_info(csv_batches)').all() as { name: string }[]).some(r => r.name === c)
   if (!has('run_budget')) db.exec('ALTER TABLE csv_batches ADD COLUMN run_budget TEXT CHECK (run_budget IS NULL OR length(run_budget) <= 200)')
   if (!has('budget_recorded')) db.exec('ALTER TABLE csv_batches ADD COLUMN budget_recorded INTEGER NOT NULL DEFAULT 0')

@@ -264,7 +264,7 @@ export default function LeadsClient() {
     const r = await fetch(`/api/scan/csv/${csvBatch.batch_id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     const j = await r.json().catch(() => ({}))
     setCsvBusy(false)
-    if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error || 'Could not resume'); return }
+    if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error === 'batch_budget_unknown' ? (j.message || 'This batch cannot be resumed. Re-import the file to run the remaining domains.') : j.error || 'Could not resume'); return }
     setCsvBatch(j)
   }
   // The cards open on what is left to decide; an approved card moves to Approved (it became a draft) and a rejected one to
