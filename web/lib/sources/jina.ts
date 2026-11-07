@@ -1,4 +1,4 @@
-import type { Evidence, SourceAdapter } from './types.ts'
+import { looksLikeHtml, statusNote, type Evidence, type SourceAdapter } from './types.ts'
 
 // Jina Reader (https://r.jina.ai) reads a public page and returns it as markdown. It is a third-party
 // service: the page URL is sent to it. Without a key it rate limits (about 20 requests/minute when this
@@ -31,6 +31,8 @@ export function pickQuote(content: string, keywords: string[]): string {
   return chosen.slice(0, 300)
 }
 
+export const isReaderEnvelope = (body: string): boolean => !looksLikeHtml(body) && /^Markdown Content:\s*$/m.test(body) && /^(Title|URL Source):/m.test(body)
+
 export const jinaAdapter: SourceAdapter = {
   id: 'web',
   label: 'Web pages (read via Jina Reader)',
@@ -45,11 +47,14 @@ export const jinaAdapter: SourceAdapter = {
       calls.push(now)
       const r = await http(`https://r.jina.ai/${page}`)
       if (!r) { note?.('unreachable'); continue }
-      if (r.status !== 200) { note?.('http_error'); continue }
+      if (r.status !== 200) { note?.(statusNote(r.status)); continue }
       if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
+      // #906: the reader's documented envelope (Title / URL Source / Markdown Content headers). An HTML page or arbitrary text
+      // is not a reading of the page; a page with no readable passage is noted, never a silent nothing.
+      if (!isReaderEnvelope(r.body)) { note?.(looksLikeHtml(r.body) ? 'challenge' : 'malformed'); continue }
       const { title, published, content } = parseReader(r.body)
       const quote = pickQuote(content, keywords)
-      if (quote.length < 20) continue
+      if (quote.length < 20) { note?.('no_readable_text'); continue }
       const items = [{ source: 'web', url: page, title: title || page, quote, date: published }]
       cache.set(page, { at: now, items })
       out.push(...items)
