@@ -27,6 +27,10 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
    - **published**: a person named on the site whose own address (any known format of their name) is printed on one of
      the site's crawled pages. Stored exactly as printed (domain kept, never rebuilt), `tier = 'published'`, with
      `source_url` = that page. Labelled "published" only with that page; otherwise "guessed". Never mailbox-checked.
+    Attribution needs the page to identify the person unambiguously: when two named people could both own a printed
+    address (e.g. `asmith@` for Anna and Alex Smith), it is attributed to neither, supports no pattern, and no guess
+    reuses it. Two people whose guesses collide under the pattern get no guess. A printed address is not proof of
+    who owns it, nor that its mailbox exists.
    - **pattern confidence**: `rankPattern` grades the learned format: `high` (2+ supporters, no rival format; score
      90/95), `medium` (2+ supporters but a rival format also seen; score 70 x share), `low` (one supporting address;
      score 35); a tie is no pattern. `email_patterns` stores `confidence`, `score`, `runner_up` and `evidence` (the

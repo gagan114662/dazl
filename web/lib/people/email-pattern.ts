@@ -81,7 +81,9 @@ export function inferPattern(locals: string[], people: Name[]): { format: Format
 export type Confidence = 'high' | 'medium' | 'low'
 export interface RankedPattern { format: Format; support: number; runnerUp: number; confidence: Confidence; score: number; supporters: Name[] }
 export function rankPattern(locals: string[], people: Name[]): RankedPattern | null {
-  const have = new Set(locals)
+  // A printed local part that two named people could both own (e.g. 'asmith' for Anna and Alex Smith) is ambiguous:
+  // it proves nothing about whose address it is, so it supports no format and cannot inflate a pattern's support.
+  const have = new Set(locals.filter(l => ownersOf(l, people).length <= 1))
   const support = new Map<Format, Map<string, Name>>()
   for (const p of people) for (const f of FORMATS) if (have.has(localFor(f, p))) {
     if (!support.has(f)) support.set(f, new Map())
@@ -96,11 +98,28 @@ export function rankPattern(locals: string[], people: Name[]): RankedPattern | n
   return { format: top.format, support: top.support, runnerUp, confidence, score, supporters: top.supporters }
 }
 
+const nameKey = (n: Name) => `${n.first} ${n.last}`
+// Every distinct named person with a known format that reproduces this local part. One owner = the page identifies
+// the person; two or more = ambiguous (the address could be either's); none = not a named person's address.
+export function ownersOf(local: string, people: Name[]): Name[] {
+  const out = new Map<string, Name>()
+  for (const p of people) if (FORMATS.some(f => localFor(f, p) === local)) out.set(nameKey(p), p)
+  return [...out.values()]
+}
+
 // Published tier: a person named on the confirmed site whose OWN address is printed on that site (its local part is one of
 // the known formats of their name). Stored exactly as printed, with the page it was printed on. Not a guess.
-export function publishedFor(name: Name, seen: { address: string; url: string }[]): { address: string; url: string } | null {
+// Attribution needs the page evidence to identify the person unambiguously: when another named person (people) could own
+// the same printed address, it is attributed to no one. A published address is never proof of a verified mailbox.
+export function publishedFor(name: Name, seen: { address: string; url: string }[], people: Name[] = [name]): { address: string; url: string } | null {
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
-  return seen.find(s => mine.has(s.address.split('@')[0])) ?? null
+  const all = people.some(p => nameKey(p) === nameKey(name)) ? people : [...people, name]
+  return seen.find(s => {
+    const local = s.address.split('@')[0]
+    if (!mine.has(local)) return false
+    const owners = ownersOf(local, all)
+    return owners.length === 1 && nameKey(owners[0]) === nameKey(name)
+  }) ?? null
 }
 
 export const candidateAddress = (n: Name, site: string, f: Format) => `${localFor(f, n)}@${site}`
@@ -208,20 +227,26 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 // Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople. seen: personal
 // addresses printed on the site's own pages, whole, with the page URL (published tier + pattern evidence).
 // Writes nothing when the flag is off or the lead is not shown to be in the US.
-export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number } | null {
+// Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
+// `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
+// printed address, so no address is ever filed under the wrong person.
+export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
   if (!emailGuessEnabled(ctx.env ?? process.env)) return null
   const us = usEvidence(ctx.homeText, ctx.where)
   if (!us.us) return null
   const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
-  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
-  const pattern = rankPattern(locals, names.map(x => x.name))
+  const allNames = names.map(x => x.name)
+  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
+  const ambiguousLocals = new Set([...locals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
+  const ambiguous = new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size
+  const pattern = rankPattern(locals, allNames)
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
   let pub = 0, n = 0
   const insPub = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?)")
   for (const x of published) pub += insPub.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
-  if (!pattern) return { format: null, confidence: null, candidates: 0, published: pub }
+  if (!pattern) return { format: null, confidence: null, candidates: 0, published: pub, ambiguous }
   const urlOf = (address: string) => seen.find(s => s.address === address)?.url ?? null
   const evidence: { person: string; address: string; url: string | null }[] = []
   for (const p of pattern.supporters) {
@@ -232,8 +257,20 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   }
   db.prepare('INSERT OR REPLACE INTO email_patterns (tenant_id, lead_id, site, format, support, confidence, score, runner_up, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(tenantId, leadId, site, pattern.format, pattern.support, pattern.confidence, pattern.score, pattern.runnerUp, JSON.stringify(evidence))
-  const hasPub = new Set(published.map(x => x.person))
+  const hasPub = new Set(published.map(x => nameKey(x.name)))
+  // Distinct people per guessed local part: a local two different people would both get is nobody's guess.
+  const guessOwners = new Map<string, Set<string>>()
+  for (const x of names) {
+    const l = localFor(pattern.format, x.name)
+    if (!guessOwners.has(l)) guessOwners.set(l, new Set())
+    guessOwners.get(l)!.add(nameKey(x.name))
+  }
   const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, ?, ?, 'guessed', ?)")
-  for (const x of names) if (!hasPub.has(x.person)) n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format, us.basis, pattern.confidence).changes
-  return { format: pattern.format, confidence: pattern.confidence, candidates: n, published: pub }
+  for (const x of names) {
+    if (hasPub.has(nameKey(x.name))) continue
+    const l = localFor(pattern.format, x.name)
+    if (guessOwners.get(l)!.size > 1 || ambiguousLocals.has(l)) continue
+    n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format, us.basis, pattern.confidence).changes
+  }
+  return { format: pattern.format, confidence: pattern.confidence, candidates: n, published: pub, ambiguous }
 }
