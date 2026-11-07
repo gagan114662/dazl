@@ -29,6 +29,12 @@ export function pickQuote(title: string, content: string, keywords: string[]): s
 }
 
 interface Topic { id: number; title: string; content: string; created: number }
+// Validate every field consumed below before mapping. One malformed row must not throw through the envelope catch and
+// discard its valid siblings. Missing/null optional fields keep the existing empty-text/unknown-date policy.
+const optionalText = (v: unknown) => v == null || typeof v === 'string'
+const topicId = (v: unknown) => (typeof v === 'string' || typeof v === 'number') && Number.isSafeInteger(Number(v)) && Number(v) > 0
+const optionalEpoch = (v: unknown) => v == null || (typeof v === 'number' && Number.isFinite(v) && Number.isFinite(new Date(v * 1000).getTime()))
+
 
 export function toEvidence(topics: Topic[], keywords: string[]): Evidence[] {
   const out: Evidence[] = []
@@ -71,7 +77,7 @@ export const v2exAdapter: SourceAdapter = {
         const json = JSON.parse(r.body) as unknown
         // the search envelope: an object with a hits ARRAY; a row needs an _id and a _source object
         if (!isRecord(json) || !Array.isArray(json.hits)) throw MALFORMED_ENVELOPE
-        const rows = (json.hits as unknown[]).filter((h): h is { _id: string; _source?: { title?: string; content?: string; created?: string } } => isRecord(h) && (typeof h._id === 'string' || typeof h._id === 'number') && isRecord(h._source))
+        const rows = (json.hits as unknown[]).filter((h): h is { _id: string; _source?: { title?: string; content?: string; created?: string } } => isRecord(h) && topicId(h._id) && isRecord(h._source) && optionalText(h._source.title) && optionalText(h._source.content) && optionalText(h._source.created))
         if (rows.length < json.hits.length) noting('malformed_rows')
         const topics = rows.map(h => ({ id: Number(h._id), title: h._source?.title ?? '', content: h._source?.content ?? '', created: Math.floor(new Date(h._source?.created ?? '').getTime() / 1000) })).filter(t => t.id > 0)
         items = toEvidence(topics, keywords)
@@ -87,7 +93,7 @@ export const v2exAdapter: SourceAdapter = {
         try {
           const parsed = JSON.parse(hot.body) as unknown
           if (!Array.isArray(parsed)) throw MALFORMED_ENVELOPE
-          const rows = parsed.filter((t): t is { id: number; title?: string; content?: string; created?: number } => isRecord(t) && typeof t.id === 'number' && t.id > 0)
+          const rows = parsed.filter((t): t is { id: number; title?: string; content?: string; created?: number } => isRecord(t) && typeof t.id === 'number' && topicId(t.id) && optionalText(t.title) && optionalText(t.content) && optionalEpoch(t.created))
           if (rows.length < parsed.length) noting('malformed_rows')
           const topics = rows.map(t => ({ id: t.id, title: t.title ?? '', content: t.content ?? '', created: t.created ?? 0 }))
           const kws = keywords.map(k => k.toLowerCase())

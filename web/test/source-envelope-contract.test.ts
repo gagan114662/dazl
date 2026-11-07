@@ -117,3 +117,54 @@ test('jina: a non-reader body or a challenge is noted and not cached; a page wit
   const r = await run('web', (async () => ok(good)) as Http, { pages })
   assert.equal(r.items.length, 1); assert.equal(r.run.status, 'ok')
 })
+
+for (const backend of ['v2ex-search', 'v2ex-hot', 'youtube-api', 'youtube-piped'] as const) {
+  test(`${backend}: malformed optional fields never discard valid siblings or cache the partial result`, async () => {
+    const saved = process.env.YOUTUBE_API_KEY
+    const title = 'Warehouse robotics teams are hiring engineers this quarter'
+    const search = { _id: '9', _source: { title, content: title, created: '2026-10-01T00:00:00Z' } }
+    const hot = { id: 9, title, content: title, created: 1730000000 }
+    const video = { id: { videoId: 'AAAAAAAAAAA' }, snippet: { title, publishedAt: '2026-10-01T00:00:00Z' } }
+    const piped = { type: 'stream', url: '/watch?v=AAAAAAAAAAA', title, uploaded: 1730000000000 }
+    const cases = backend === 'v2ex-search' ? [
+      { ...search, _source: { ...search._source, title: 5 } },
+      { ...search, _source: { ...search._source, content: 5 } },
+      { ...search, _source: { ...search._source, created: {} } },
+      { ...search, _id: 'Infinity' },
+    ] : backend === 'v2ex-hot' ? [
+      { ...hot, title: 5 }, { ...hot, content: 5 }, { ...hot, created: 'bad' }, { ...hot, created: 1e300 },
+    ] : backend === 'youtube-api' ? [
+      { ...video, snippet: { ...video.snippet, publishedAt: 5 } },
+      { ...video, snippet: { ...video.snippet, title: {} } },
+    ] : [
+      { ...piped, uploaded: 1e300 }, { ...piped, uploaded: 'bad' },
+      { ...piped, uploadDate: {} }, { ...piped, type: {} },
+    ]
+    try {
+      if (backend === 'youtube-api') process.env.YOUTUBE_API_KEY = 'test-key'
+      else delete process.env.YOUTUBE_API_KEY
+      for (const invalid of cases) {
+        reset()
+        let calls = 0
+        const http = (async (url: string) => {
+          calls++
+          if (backend === 'v2ex-search') return url.includes('sov2ex') ? ok({ hits: [search, invalid] }) : ok([])
+          if (backend === 'v2ex-hot') return url.includes('sov2ex') ? ok({ hits: [] }) : ok([hot, invalid])
+          return ok({ items: [backend === 'youtube-api' ? video : piped, invalid] })
+        }) as Http
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const result = await run(backend.startsWith('v2ex') ? 'v2ex' : 'youtube', http)
+          assert.equal(result.items.length, 1, JSON.stringify({ backend, invalid, run: result.run }))
+          assert.equal(result.run.status, 'partial')
+          assert.equal(result.run.notes?.malformed_rows, 1)
+          assert.equal(result.run.notes?.unparseable, undefined, 'a malformed row is not an invalid JSON envelope')
+          assert.equal(result.items[0].title, title)
+        }
+        assert.equal(calls, backend === 'v2ex-hot' ? 4 : 2, 'partial answers must be fetched again, not cached as complete')
+      }
+    } finally {
+      if (saved === undefined) delete process.env.YOUTUBE_API_KEY
+      else process.env.YOUTUBE_API_KEY = saved
+    }
+  })
+}

@@ -17,6 +17,11 @@ const latinRun = (s: string) => s.replace(/[^ -~]+/g, ' ').replace(/\s+/g, ' ').
 const usable = (s: string) => { const t = latinRun(s); return t.length >= 20 && /[a-z]{3}/i.test(t) }
 
 interface Video { id: string; title: string; published: string | null }
+// Optional does not mean an arbitrary JSON value. Check every consumed field before mapping so a bad date/title on one
+// row cannot throw into the whole-envelope catch and drop good siblings. Null/missing dates remain unknown.
+const optionalText = (v: unknown) => v == null || typeof v === 'string'
+const optionalUploaded = (v: unknown) => v == null || (typeof v === 'number' && Number.isFinite(v) && Number.isFinite(new Date(v).getTime()))
+
 
 export function toEvidence(videos: Video[]): Evidence[] {
   const out: Evidence[] = []
@@ -38,7 +43,7 @@ async function viaDataApi(q: string, key: string, http: Parameters<SourceAdapter
   try {
     const json = JSON.parse(r.body) as unknown
     if (!isRecord(json) || !Array.isArray(json.items)) { note?.('malformed'); return [] }
-    const rows = (json.items as unknown[]).filter((it): it is { id?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string } } => isRecord(it) && isRecord(it.id) && typeof it.id.videoId === 'string' && isRecord(it.snippet) && typeof it.snippet.title === 'string')
+    const rows = (json.items as unknown[]).filter((it): it is { id?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string } } => isRecord(it) && isRecord(it.id) && typeof it.id.videoId === 'string' && isRecord(it.snippet) && typeof it.snippet.title === 'string' && optionalText(it.snippet.publishedAt))
     if (rows.length < json.items.length) note?.('malformed_rows')
     return toEvidence(rows.map(it => ({ id: it.id?.videoId ?? '', title: it.snippet?.title ?? '', published: (it.snippet?.publishedAt ?? '').slice(0, 10) || null })))
   } catch { note?.('unparseable'); return [] }
@@ -54,7 +59,7 @@ async function viaPiped(q: string, http: Parameters<SourceAdapter['collect']>[0]
     try {
       const json = JSON.parse(r.body) as unknown
       if (!isRecord(json) || !Array.isArray(json.items)) { note?.('malformed'); continue }
-      const rows = (json.items as unknown[]).filter((it): it is { type?: string; url?: string; title?: string; uploaded?: number; uploadDate?: string } => isRecord(it) && typeof it.url === 'string' && typeof it.title === 'string')
+      const rows = (json.items as unknown[]).filter((it): it is { type?: string; url?: string; title?: string; uploaded?: number; uploadDate?: string } => isRecord(it) && typeof it.url === 'string' && typeof it.title === 'string' && optionalText(it.type) && optionalText(it.uploadDate) && optionalUploaded(it.uploaded))
       if (rows.length < json.items.length) note?.('malformed_rows')
       const items = toEvidence(rows.filter(it => (it.type ?? 'stream') === 'stream').map(it => {
         const id = (it.url ?? '').match(/[?&]v=([A-Za-z0-9_-]{11})/)?.[1] ?? ''
