@@ -53,7 +53,7 @@ const JOBS = [
 ]
 const state = { hasKey: false, sender: null, gmail: null, sent: 0, sourcesFail: false, news: false }
 const writes = []
-const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
+const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: Number(process.env.WIDTH || 1280), height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
 await ctx.route('**/*', async route => {
   const req = route.request(); const u = new URL(req.url()); const m = req.method(); const p = u.pathname
@@ -179,6 +179,10 @@ try {
   assert.equal(await page.getByTestId('ready-progress').textContent(), '10 of 11 done')
   await shot('sources-unknown')
   console.log('readiness UI check passed:', writes.join(', '))
+} catch (e) {
+  console.error('READINESS_DIAGNOSTIC', JSON.stringify({url:page.url(),body:(await page.locator('body').innerText().catch(()=>'' )).slice(0,6000)}))
+  await shot('failure-state').catch(()=>{})
+  throw e
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
