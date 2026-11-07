@@ -199,3 +199,41 @@ test('identity binding (record-shape check): a PDL claim never consumes another 
   const s = await report(db, jobId)
   assert.deepEqual([s.detail?.apollo_lookups, s.detail?.pdl_lookups, s.detail?.lookups], [1, 1, 2], 'PDL counted, Apollo people (unsent) not, Apollo org counted')
 })
+
+// Hashed (shortened, #922) Apollo identities cannot be paired with their org claim by text, so EVERY org-verdict kind the writer
+// can produce for an unsent people step must stay uncertain, never a completed lookup. Hand-built rows in the writer's shapes.
+const hashedKey = (step: string) => `${step} ${'Very Long Company Name '.repeat(8).slice(0, 150)}#h:${'a'.repeat(32)}`
+for (const [kind, reason] of [
+  ['domain', 'contact rejected: domain mismatch elsewhere.example vs harbordental.example'],
+  ['location mismatch', 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY'],
+  ['location unconfirmed', 'contact rejected: location unconfirmed Austin, TX vs New York, NY'],
+  ['address', 'contact rejected: address mismatch 12 main st vs 99 elm ave'],
+  ['organization', 'contact rejected: organization mismatch acme vs harbor dental'],
+  ['an unforeseen future wording', 'contact rejected: some verdict nobody wrote yet'],
+] as const) {
+  test(`hashed identity, unsent people step (${kind} rejection): uncertain, not a completed lookup`, async () => {
+    const { db, jobId } = seed([L1], ['apollo'])
+    const ins = (lookup: string, status: string, memo: string | null, auditStatus: string, results = 0) => {
+      db.prepare("INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at, settled_at, memo) VALUES ('u1', 'enrich:apollo', ?, ?, ?, 1, 1, ?)").run(jobId, lookup, status, memo)
+      db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES (?, 'u1', 'enrich:apollo', ?, ?, ?, ?)").run(crypto.randomUUID(), jobId, lookup, auditStatus, results)
+    }
+    ins(hashedKey('step:org'), 'ok', JSON.stringify({ v: 1, rejected: reason }), 'ok', 1)
+    ins(hashedKey('step:people'), 'rejected', null, reason)
+    const s = await report(db, jobId)
+    assert.equal(s.detail?.unconfirmed, 1, 'the unpairable people step is reported uncertain')
+    assert.equal(s.detail?.lookups, 1, 'only the org step is a completed lookup; the people step is not counted as a second one')
+    assert.equal(s.detail?.with_results, 0); assert.notEqual(s.status, 'ok')
+  })
+}
+test('unhashed identity still binds: the unsent people step is not a lookup and is not marked uncertain', async () => {
+  const { db, jobId } = seed([L1], ['apollo'])
+  const reason = 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY'
+  const ins = (lookup: string, status: string, memo: string | null, auditStatus: string, results = 0) => {
+    db.prepare("INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at, settled_at, memo) VALUES ('u1', 'enrich:apollo', ?, ?, ?, 1, 1, ?)").run(jobId, lookup, status, memo)
+    db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES (?, 'u1', 'enrich:apollo', ?, ?, ?, ?)").run(crypto.randomUUID(), jobId, lookup, auditStatus, results)
+  }
+  ins('step:org Harbor Dental (harbordental.example)', 'ok', JSON.stringify({ v: 1, rejected: reason }), 'ok', 1)
+  ins('step:people Harbor Dental (harbordental.example)', 'rejected', null, reason)
+  const s = await report(db, jobId)
+  assert.deepEqual([s.detail?.lookups, s.detail?.unconfirmed], [1, 0])
+})

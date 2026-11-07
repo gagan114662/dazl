@@ -181,7 +181,7 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
       const id = identityOf(c.lookup)
       if (a === NO_DOMAIN) sent = false
       else if (id !== null && orgRejected.get(key(c.connector, id)) === a) sent = false
-      else if (id === null && c.lookup.startsWith('step:people ') && a.startsWith('contact rejected: domain mismatch')) { out.unconfirmed++; out.failed++; continue } // a hashed Apollo key cannot be bound to its org claim: unknown, not a lookup
+      else if (id === null && c.lookup.startsWith('step:people ') && a.startsWith('contact rejected')) { out.unconfirmed++; out.failed++; continue } // a hashed Apollo key cannot be bound to its org claim, so ANY rejection verdict (domain, location, address, organization, role...) is unknown: not a lookup, whatever the wording
     }
     if (sent) { out.total++; out.byProvider[providerOf(c.connector)]++ }
     if (c.status === 'ok') out.ok++
