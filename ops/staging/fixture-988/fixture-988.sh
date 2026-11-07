@@ -30,9 +30,45 @@ restart_proven() {
   [ "${R_LOCAL_OK:-}" = 1 ] && [ "${R_LOCAL_COMMIT:-}" = "${R_BUILD:-?}" ] && [ "${R_READY_OK:-}" = 1 ] && [ "${R_READY_COMMIT:-}" = "${R_BUILD:-?}" ] || return 1
   [ "${R_PUBLIC_OK:-}" = 1 ] && [ "${R_PUBLIC_COMMIT:-}" = "${R_BUILD:-?}" ] && [ "${R_PUBLIC_INSTANCE:-}" = "${R_INSTANCE:-?}" ] && [ "${R_BANNER:-}" = 1 ] || return 1
   [ -n "${R_INSTANCE:-}" ] && [ "${R_INSTANCE:-}" != "${R_OLD_INSTANCE:-}" ] && [ "${R_MAINPID:-}" != "${R_OLD_MAINPID:-}" ] || return 1
-  [ "${R_ENV_STAGING:-}" = 1 ] && [ "${R_GMAIL_OFF:-}" = 1 ] && [ "${R_SAME_RELEASE:-}" = 1 ] && [ "${R_SAME_DB:-}" = 1 ]
+  [ "${R_DB_BOUND:-}" = 1 ] && [ "${R_ENV_STAGING:-}" = 1 ] && [ "${R_GMAIL_OFF:-}" = 1 ] && [ "${R_SAME_RELEASE:-}" = 1 ] && [ "${R_SAME_DB:-}" = 1 ]
 }
 jfield() { printf %s "$2" | grep -o "\"$1\":\"\{0,1\}[^\",}]*" | head -n 1 | sed 's/^[^:]*://; s/"//g'; }   # the FIRST (top-level) field of that name in an /api/health-style body, never a nested check's
+SERVICE=dazl-staging.service
+sv() { systemctl show "$SERVICE" -p "$1" --value 2>/dev/null; }
+# A pending systemd job: BOTH the unit's own Job property AND the manager's job list must say "none". A failed property read or a failed listing is never "none".
+list_jobs_unit() { local o; o=$(systemctl list-jobs --no-legend 2>&1) || { echo error; return; }; printf '%s\n' "$o" | grep -c "$SERVICE" || true; }
+pending_job_value() {   # what stop_confirmed receives as JOB: empty or 0 only when both sources say no job
+  local j l; j=$(systemctl show "$SERVICE" -p Job --value 2>/dev/null) || { printf error; return; }
+  l=$(list_jobs_unit); if [ "$l" = 0 ]; then printf '%s' "$j"; else printf 'listed'; fi
+}
+# The database the RUNNING app actually uses: its effective DB_PATH (the process environment, where release.env and the unit's own settings have already been applied) must be exactly
+# STAGING_DB, must canonicalise to it, and must be the same file (device:inode). A different or conflicting value, a missing one, or a path that resolves elsewhere is not the database being checked.
+effective_db_from_environ() {   # FILE (a NUL-separated environ): the single DB_PATH in it, "conflict" if different values, nothing if unreadable or absent
+  local v n
+  [ -r "$1" ] || return 0
+  v=$(tr '\0' '\n' < "$1" | sed -n 's/^DB_PATH=//p')
+  n=$(printf '%s\n' "$v" | sort -u | grep -c .)
+  if [ "$n" -gt 1 ]; then echo conflict; else printf '%s' "$(printf '%s\n' "$v" | sort -u)"; fi
+}
+effective_db_of_pid() { effective_db_from_environ "/proc/$1/environ"; }
+db_binding_ok() {   # EFFECTIVE CANONICAL EFFECTIVE_ID EXPECTED_PATH EXPECTED_ID
+  [ -n "$1" ] && [ "$1" != conflict ] && [ "$1" = "$4" ] && [ "$2" = "$4" ] && [ -n "$3" ] && [ "$3" = "$5" ]
+}
+# Open files: fuser's exit code alone cannot tell "nobody has it open" from "fuser could not look" (psmisc uses 1 for both). The ONLY accepted "none" is exit 1 with NO output at all; exit 0 is open;
+# a missing tool, any other exit code, or any message (permission, unreadable /proc, no such file) is UNKNOWN, and unknown refuses.
+holders_state() {   # RC OUTPUT -> none | open | unknown
+  case "$1" in 0) echo open;; 1) if [ -z "$2" ]; then echo none; else echo unknown; fi;; *) echo unknown;; esac
+}
+file_holders_clear() {   # all of the given files that exist: true only if every one is positively "none"
+  local f out rc st
+  command -v fuser >/dev/null 2>&1 || { echo "fuser is not available: cannot inspect open files" >&2; return 1; }
+  for f in "$@"; do
+    [ -e "$f" ] || continue
+    out=$(fuser -- "$f" 2>&1); rc=$?
+    st=$(holders_state "$rc" "$out")
+    [ "$st" = none ] || { echo "open-file check for $f: $st (exit $rc) ${out:+[$out]}" >&2; return 1; }
+  done
+}
 [ "${FIXTURE_988_SOURCE_ONLY:-}" = 1 ] && return 0 2>/dev/null
 MODE=${1:-}; case "$MODE" in preflight|plan|apply) ;; *) echo "usage: $0 preflight|plan|apply" >&2; exit 2;; esac
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -41,7 +77,6 @@ LOCK=/srv/dazl-staging/.deploy.lock          # the installed writer lock the dep
 CURRENT=/srv/dazl-staging/current            # symlink to the immutable compiled release
 RELEASE_ENV=/srv/dazl-staging/release.env    # the installed release environment the service reads
 ENV_FILE=/etc/dazl-staging/env
-SERVICE=dazl-staging.service
 RUN_AS=dazl-staging
 STAGING_DB=/var/lib/dazl-staging/app.db
 LOCAL=http://127.0.0.1:3200
@@ -54,7 +89,6 @@ STOP_WAIT=60 HEALTH_TRIES=60 HEALTH_SLEEP=2     # the only bounds; no retry loop
 fail() { echo "fixture-988: REFUSED: $*" >&2; exit 3; }
 note() { echo "fixture-988: $*"; }
 val() { sed -n "s/^\(export \)\{0,1\}$1=//p" "$2" 2>/dev/null | tail -n 1 | sed "s/^[\"']//; s/[\"']$//"; }
-sv() { systemctl show "$SERVICE" -p "$1" --value 2>/dev/null; }
 
 printf %s "$EXPECT_BUILD" | grep -Eq '^[0-9a-f]{40}$' || { echo "fixture-988: REFUSED: FIXTURE_EXPECT_BUILD must be the full 40-character commit of the release being qualified" >&2; exit 3; }
 printf %s "$EXPECT_INSTANCE" | grep -Eq '^[0-9a-f]{12}$' || { echo "fixture-988: REFUSED: FIXTURE_EXPECT_INSTANCE must be the 12-character instance id shown by /api/health" >&2; exit 3; }
@@ -64,6 +98,7 @@ printf %s "$EXPECT_INSTANCE" | grep -Eq '^[0-9a-f]{12}$' || { echo "fixture-988:
 (cd "$HERE" && sha256sum --check --quiet SHA256SUMS) || fail "package bytes do not match SHA256SUMS"
 case "$HERE" in "$ROOT"/*|/srv/dazl-staging-releases/*) fail "the package must live outside the service home and the releases";; esac
 [ -n "${PROD_DB_PATH:-}" ] || [ -n "${PROD_ENV_FILE:-}" ] || fail "PROD_DB_PATH or PROD_ENV_FILE is required (to prove production is another file)"
+command -v fuser >/dev/null 2>&1 || fail "fuser is required to inspect open files (psmisc)"
 NODE=$(command -v node) || fail "no node"; "$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=6)?0:1)' || fail "node $("$NODE" -v) cannot strip types (need >= 22.6)"
 
 # ---- 1. assert_state: EVERYTHING the operation depends on, read from the host and asserted. Run before the lock AND again under it. --------------------
@@ -85,6 +120,7 @@ assert_state() {
   [ "$(val DAZL_ENV "$ENV_FILE")" = staging ] || fail "[$where] $ENV_FILE: DAZL_ENV is not staging"
   [ "$(val DB_PATH "$ENV_FILE")" = "$STAGING_DB" ] || fail "[$where] $ENV_FILE: DB_PATH is not $STAGING_DB"
   g=$(val DAZL_COMMIT_SHA "$RELEASE_ENV"); [ -z "$g" ] || [ "$g" = "$EXPECT_BUILD" ] || fail "[$where] $RELEASE_ENV: DAZL_COMMIT_SHA=$g, expected $EXPECT_BUILD"
+  for f in "$ENV_FILE" "$RELEASE_ENV"; do g=$(val DB_PATH "$f"); [ -z "$g" ] || [ "$g" = "$STAGING_DB" ] || fail "[$where] $f sets DB_PATH=$g: a conflicting override of $STAGING_DB"; done
   for f in "$ENV_FILE" "$RELEASE_ENV"; do g=$(val DAZL_STAGING_REAL_GMAIL "$f"); [ -z "$g" ] || [ "$g" = 0 ] || fail "[$where] $f: DAZL_STAGING_REAL_GMAIL=$g (must be unset or 0)"; done
   pid=$(sv MainPID); [ "$pid" -gt 0 ] 2>/dev/null || fail "[$where] no main pid"; MAINPID=$pid       # the RUNNING service's own environment, not just the files
   [ -r "/proc/$pid/environ" ] || fail "[$where] cannot read /proc/$pid/environ"
@@ -101,6 +137,8 @@ assert_state() {
   # the database, production, the lock
   [ -f "$STAGING_DB" ] && [ ! -L "$STAGING_DB" ] && [ "$(readlink -f -- "$STAGING_DB")" = "$STAGING_DB" ] || fail "[$where] $STAGING_DB is not a plain file at that path"
   S_ID=$(stat -c '%d:%i' -- "$STAGING_DB"); [ "$(stat -c '%h' -- "$STAGING_DB")" = 1 ] || fail "[$where] $STAGING_DB has more than one hard link"
+  # bind the RUNNING process's effective DB_PATH to the database being checked (path, canonical path and file identity); re-run under the lock
+  E=$(effective_db_of_pid "$MAINPID"); db_binding_ok "$E" "$(readlink -f -- "${E:-/nonexistent}" 2>/dev/null)" "$(stat -c '%d:%i' -- "${E:-/nonexistent}" 2>/dev/null)" "$STAGING_DB" "$S_ID" || fail "[$where] the running service's effective DB_PATH is ${E:-unset} (canonical $(readlink -f -- "${E:-/nonexistent}" 2>/dev/null), id $(stat -c '%d:%i' -- "${E:-/nonexistent}" 2>/dev/null)); it must be exactly $STAGING_DB ($S_ID)"
   PROD=${PROD_DB_PATH:-}; [ -n "$PROD" ] || PROD=$(val DB_PATH "${PROD_ENV_FILE:-/nonexistent}")
   [ -n "$PROD" ] || fail "[$where] production's database path is unknown"
   if [ -e "$PROD" ]; then P_ID=$(stat -c '%d:%i' -- "$PROD"); [ "$S_ID" != "$P_ID" ] || fail "[$where] the staging file IS the production file"; else P_ID=; fi
@@ -132,7 +170,7 @@ note "READ-ONLY proof the package runs, before anything is stopped: the tool's d
 if ! PLAN=$(TOOL staging-fixture-988.mts 2>&1); then cleanup_rundir; echo "$PLAN" >&2; fail "the tool cannot run against the live database; nothing was stopped or changed"; fi
 echo "$PLAN" | tail -22
 if [ "$MODE" = preflight ]; then
-  note "WOULD DO at plan/apply: take $LOCK (flock -n, non-blocking), re-assert every fact above under the lock, systemctl stop $SERVICE (wait up to ${STOP_WAIT}s, no kill) and CONFIRM it from systemd (inactive/dead, no main or control pid, no pending job, full cgroup read and empty), verify no process has the database open, run the checks. Start $SERVICE once ONLY if every check passed or the database was never handed to the tool, then prove: local health, readiness, public HTTPS health + staging banner, a new instance and process."
+  note "WOULD DO at plan/apply: take $LOCK (flock -n, non-blocking), re-assert every fact above under the lock, systemctl stop $SERVICE (wait up to ${STOP_WAIT}s, no kill) and CONFIRM it from systemd (inactive/dead, no main or control pid, no pending job, full cgroup read and empty), verify no process has the database open, run the checks. Start $SERVICE once ONLY if every check passed or the database was never handed to the tool, then prove: local health, readiness, public HTTPS health + staging banner, a new instance and process, and that the new process's effective DB_PATH is the staging database."
   note "preflight passed. Nothing was written, stopped or locked."; cleanup_rundir; exit 0
 fi
 [ "$MODE" = plan ] || [ -n "${APPLY_TENANT_ID:-}" ] || { cleanup_rundir; fail "APPLY_TENANT_ID is required to apply"; }
@@ -158,7 +196,6 @@ cgroup_read() {   # prints "ok" then the pids, or "unreadable"
   elif [ -e /sys/fs/cgroup/cgroup.controllers ]; then echo ok      # cgroup v2 is mounted and the unit's group is gone: nothing runs in it
   else echo unreadable; fi
 }
-list_jobs_unit() { local o; o=$(systemctl list-jobs --no-legend 2>&1) || { echo error; return; }; printf '%s\n' "$o" | grep -c "$SERVICE" || true; }   # a failed listing is 'error', never 'none'
 prove_restart() {   # fills R_* from the host, then asks restart_proven. Local and public checks poll for up to HEALTH_TRIES * HEALTH_SLEEP seconds; nothing is retried or killed.
   R_BUILD=$EXPECT_BUILD R_OLD_INSTANCE=$OLD_INSTANCE R_OLD_MAINPID=$OLD_MAINPID
   local i h r p pid body
@@ -173,6 +210,7 @@ prove_restart() {   # fills R_* from the host, then asks restart_proven. Local a
       tr '\0' '\n' < "/proc/$pid/environ" | grep -qx 'DAZL_ENV=staging' && R_ENV_STAGING=1
       tr '\0' '\n' < "/proc/$pid/environ" | grep -qx 'DAZL_STAGING_REAL_GMAIL=1' || R_GMAIL_OFF=1
     fi
+    R_DB_BOUND=0; E=$(effective_db_of_pid "$R_MAINPID"); db_binding_ok "$E" "$(readlink -f -- "${E:-/nonexistent}" 2>/dev/null)" "$(stat -c '%d:%i' -- "${E:-/nonexistent}" 2>/dev/null)" "$STAGING_DB" "$S_ID" && R_DB_BOUND=1
     R_SAME_RELEASE=0; [ "$(readlink -f -- "$CURRENT")" = "$REL" ] && R_SAME_RELEASE=1
     R_SAME_DB=0; [ "$(stat -c '%d:%i:%h' -- "$STAGING_DB" 2>/dev/null)" = "$S_ID:1" ] && R_SAME_DB=1
     restart_proven && return 0
@@ -196,10 +234,10 @@ note "stopping $SERVICE (bounded ${STOP_WAIT}s; a service that does not stop is 
 STOPPED=1   # a stop was attempted: finish() reports it either way
 timeout "$STOP_WAIT" systemctl stop "$SERVICE" || true
 # CONFIRM, do not infer: systemd's own state, no main or control pid, no pending job, and the WHOLE control group read and empty. Only then does anything else run.
-CG=$(cgroup_read); CGS=$(printf '%s\n' "$CG" | sed -n 1p); CGP=$(printf '%s\n' "$CG" | sed -n '2,$p' | tr -d '[:space:]'); JOBS=$(sv Job); [ "$(list_jobs_unit)" = 0 ] || JOBS="${JOBS:-listed}"
+CG=$(cgroup_read); CGS=$(printf '%s\n' "$CG" | sed -n 1p); CGP=$(printf '%s\n' "$CG" | sed -n '2,$p' | tr -d '[:space:]'); JOBS=$(pending_job_value)
 stop_confirmed "$(sv ActiveState)" "$(sv SubState)" "$(sv MainPID)" "$(sv ControlPID)" "$JOBS" "$CGS" "$CGP" || { RESULT=5; fail "the service is NOT confirmed stopped (ActiveState=$(sv ActiveState) SubState=$(sv SubState) MainPID=$(sv MainPID) ControlPID=$(sv ControlPID) Job=${JOBS:-none} cgroup=$CGS procs=${CGP:-none}); nothing was done to the database"; }
 STOP_OK=1
-for f in "$STAGING_DB" "$STAGING_DB-wal" "$STAGING_DB-shm"; do [ -e "$f" ] || continue; if fuser -s -- "$f" 2>/dev/null; then RESULT=6; fail "a process still has $f open"; fi; done
+file_holders_clear "$STAGING_DB" "$STAGING_DB-wal" "$STAGING_DB-shm" || { RESULT=6; fail "an open-file check says a process has the database open or could not be inspected; unknown refuses"; }
 [ "$(stat -c '%d:%i:%h' -- "$STAGING_DB")" = "$S_ID:1" ] || { RESULT=6; fail "the staging file changed identity"; }
 
 DIR="$OUT_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-$$"
