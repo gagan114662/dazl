@@ -111,3 +111,33 @@ bothEngines('#912 leadSignals reads the home page only for a confirmed domain (D
   await add('e3', 'domain_check', 'acme.example|name+place'); assert.equal(await home(), true, 'passed homepage check')
   assert.equal(await home('u2'), null, 'another tenant gets nothing')
 })
+
+// #912 follow-up: the free lead reading rechecks the lead after its page reads, on both engines. A change DURING the fetch withdraws the stale
+// reading with a stated reason instead of returning it as current evidence; a confirmed, unchanged lead is untouched.
+bothEngines('#912 leadSignals rechecks the lead after its reads: lost confirmation, domain change, rename, source change and deletion withdraw stale readings; unchanged stays', async ({ db }) => {
+  let n = 0
+  const seed = async () => {
+    const job = `j912x${++n}`, lead = `${'b'.repeat(23)}${n}`
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, 'u1', 'S', 'x', 'y', 'running', 1)", [job])
+    await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, company_domain, confidence, score) VALUES (?, ?, 'Acme', 's', ?, 'acme.example', 80, 50)", [lead, job, POSTING])
+    await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'sitecrawl', 'domain', 'acme.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', NULL, 'https://acme.example/news', '2026-11-01', 10)", [`en${n}`, lead])
+    return lead
+  }
+  const during = (change: () => Promise<void>) => { let once = false; return async (url: string) => { if (!once) { once = true; await change() } return fetcher(true)(url) } }
+  const roles = (s: Awaited<ReturnType<typeof leadSignals>>) => s?.pages.map(p => `${p.role}:${p.status}`)
+  { const lead = await seed(); const s = await leadSignals(db, 'u1', lead, fetcher(true))
+    assert.deepEqual(roles(s), ['posting:read', 'company_home:read'], 'confirmed and unchanged: both readings stand (positive control)'); assert.equal(s?.company, 'Acme') }
+  { const lead = await seed(); const s = await leadSignals(db, 'u1', lead, during(async () => { await db.run("DELETE FROM lead_enrichments WHERE lead_id = ? AND kind = 'domain'", [lead]) }))
+    assert.deepEqual(roles(s), ['posting:read', 'company_home:not_used'], 'confirmation deleted during the fetch: only the home reading is withdrawn')
+    assert.match(s!.pages[1].why!, /no longer confirmed/); assert.equal(s!.pages[1].reading, undefined); assert.ok(s!.pages[0].reading, 'the posting reading, judged against an unchanged company, stands') }
+  { const lead = await seed(); const s = await leadSignals(db, 'u1', lead, during(async () => { await db.run("UPDATE leads SET company = 'Birch', company_domain = 'birch.example' WHERE id = ?", [lead]) }))
+    assert.equal(s?.company, 'Birch', 'the result names the CURRENT company, never Acme'); assert.deepEqual(roles(s), ['posting:not_used', 'company_home:not_used'])
+    for (const p of s!.pages) { assert.match(p.why!, /changed while the pages were being read/); assert.equal(p.reading, undefined) }
+    assert.ok(!JSON.stringify(s).includes('acme.example/') || s!.pages.every(p => p.status === 'not_used'), 'the Acme home page is not presented as a reading') }
+  { const lead = await seed(); const s = await leadSignals(db, 'u1', lead, during(async () => { await db.run("UPDATE leads SET company = 'Acme Holdings' WHERE id = ?", [lead]) }))
+    assert.equal(s?.company, 'Acme Holdings'); assert.deepEqual(roles(s), ['posting:not_used', 'company_home:not_used'], 'a rename withdraws the posting reading judged against the old name') }
+  { const lead = await seed(); const s = await leadSignals(db, 'u1', lead, during(async () => { await db.run("UPDATE leads SET source_url = 'https://weworkremotely.com/remote-jobs/other' WHERE id = ?", [lead]) }))
+    assert.deepEqual(roles(s), ['posting:not_used', 'company_home:not_used'], 'a changed source page withdraws both') }
+  { const lead = await seed(); const s = await leadSignals(db, 'u1', lead, during(async () => { await db.run("DELETE FROM lead_enrichments WHERE lead_id = ?", [lead]); await db.run("DELETE FROM leads WHERE id = ?", [lead]) }))
+    assert.equal(s, null, 'the lead is gone: nothing is returned') }
+})
