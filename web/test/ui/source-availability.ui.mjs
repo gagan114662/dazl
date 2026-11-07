@@ -148,6 +148,7 @@ try {
   const failed = await open({ sourcesFail: true })
   await failed.page.getByText('Could not check which sources are available. Reload to retry.').waitFor()
   assert.equal(await failed.page.getByTestId('sources-usable').count(), 0)
+  await shot(failed.page,'unknown')
   await failed.ctx.close()
   console.log('source availability UI check passed: only usable sources listed, unavailable ones with reason and fix, progress truthful, failed check says so')
 } finally {
