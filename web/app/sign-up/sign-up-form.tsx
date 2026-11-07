@@ -91,7 +91,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
           </button>
         </form>
         <p className="mt-4 text-sm text-[#666] text-center">
-          Already have an account? <a href="/sign-in" className="inline-flex items-center min-h-11 text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
+          Already have an account? <a href="/sign-in" className="inline-flex items-center justify-center min-h-11 min-w-11 text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
         </p>
         <p className="mt-3 text-xs text-[#6b6b6b] text-center">
           <a href="/terms" className="underline underline-offset-2 hover:text-[#111]">Terms of Service</a> · <a href="/privacy" className="underline underline-offset-2 hover:text-[#111]">Privacy Policy</a>

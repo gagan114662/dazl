@@ -47,10 +47,18 @@ jobs:
         run: SHOTS=preview/offer-question node test/ui/offer-question-binding.ui.mjs | tee /tmp/oq.out && ! grep -q '^NOT RUN' /tmp/oq.out
       # #673 follow-up: on every public page the skip link moves keyboard focus to <main id="main"> after hydration (desktop + iPhone 13). It must run, not skip.
       - name: Public skip link moves focus to main
-        run: node test/ui/public-skip-link-focus.ui.mjs | tee /tmp/psl.out && ! grep -q '^NOT RUN' /tmp/psl.out
+        run: |
+          set -o pipefail
+          node test/ui/public-skip-link-focus.ui.mjs | tee /tmp/psl.out
+          ! grep -q '^NOT RUN' /tmp/psl.out
+          grep -q '^Public skip link moves focus to #main:' /tmp/psl.out
       # #672 sign-up follow-up: every /sign-up control is at least 44x44 at 390px after hydration (inline sentence links excepted). It must run, not skip.
       - name: Sign-up touch targets at 390px
-        run: node test/ui/sign-up-touch-targets.ui.mjs | tee /tmp/sut.out && ! grep -q '^NOT RUN' /tmp/sut.out
+        run: |
+          set -o pipefail
+          node test/ui/sign-up-touch-targets.ui.mjs | tee /tmp/sut.out
+          ! grep -q '^NOT RUN' /tmp/sut.out
+          grep -q '^OK: every control on /sign-up' /tmp/sut.out
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out && ! grep -q '^NOT RUN' /tmp/it.out
