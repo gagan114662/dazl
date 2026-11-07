@@ -60,14 +60,14 @@ echo 'echo "$1" >> '"$T"'/alerts.log' > "$T/alert.sh"
 out=$(MIN_FREE_BYTES=999999999999999 STAGING_ALERT_CMD="bash $T/alert.sh" $D 2>&1) || die "a low-disk skip exited non-zero: $out"
 echo "$out" | grep -q "ALERT low_disk: skipped" || die "no low-disk alert: $out"
 grep -q '"reason":"low_disk"' "$T/alerts.log" || die "the alert command did not receive the alert"
-[ -z "$(ls -A "$T/root/releases")" ] || die "a release was created under the floor"
+[ -z "$(ls -A "$T/root-releases")" ] || die "a release was created under the floor"
 pass "under the disk floor: skipped with exit 0, alert sent ($(head -c 160 "$T/alerts.log")), no release created"
 
 # 2. first deploy as the service user
 $D
 s1=$(sha)
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q "\"commit\":\"$s1\"" || die "health does not report $s1"
-[ "$(stat -c %U "$T/root/releases/$s1/web/.next")" = "$U" ] || die "build output not owned by $U"
+[ "$(stat -c %U "$T/root-releases/$s1/web/.next")" = "$U" ] || die "build output not owned by $U"
 [ "$(stat -c '%U %a' "$T/etc/env")" = "root 600" ] || die "env file permissions changed"
 curl -fsS "http://127.0.0.1:$PORT/" | grep -q "Staging - test data" || die "no staging banner"
 runuser -u "$U" -- node -e "const D=require('$T/root/current/web/node_modules/better-sqlite3');const d=new D('$T/staging-data/app.db');if(!d.prepare(\"select 1 from users where email='demo@staging.dazl.test'\").get())process.exit(1)" || die "demo account not seeded"
@@ -76,7 +76,7 @@ pass "first deploy: live $s1 as $U, banner served, demo seeded, env file still r
 
 # 3. same commit again: nothing to do
 out=$($D 2>&1); [ -z "$out" ] || die "re-run printed: $out"
-[ "$(ls "$T/root/releases" | wc -l)" = 1 ] || die "a no-op run created a release"
+[ "$(ls "$T/root-releases" | wc -l)" = 1 ] || die "a no-op run created a release"
 pass "re-run on the same commit: no-op (lock free, nothing printed)"
 
 # 4. a new commit with the same lockfile: node_modules hard-linked from the live release
@@ -84,13 +84,13 @@ commit "echo >> README.md" "e2e second release"; s2=$(sha)
 $D
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q "\"commit\":\"$s2\"" || die "health does not report $s2"
 f=web/node_modules/next/package.json
-[ "$(stat -c %i "$T/root/releases/$s1/$f")" = "$(stat -c %i "$T/root/releases/$s2/$f")" ] || die "node_modules not hard-linked"
+[ "$(stat -c %i "$T/root-releases/$s1/$f")" = "$(stat -c %i "$T/root-releases/$s2/$f")" ] || die "node_modules not hard-linked"
 pass "second release: live $s2, node_modules hard-linked (shared inodes), previous release kept for rollback"
 
 # 5. a commit that does not build: removed, the live release keeps serving
 commit "echo 'export default function P() { return <div> }' > web/app/terms/page.tsx" "e2e broken build"; s3=$(sha)
 if $D > "$T/d5.log" 2>&1; then die "a broken build deployed"; fi; tail -1 "$T/d5.log"
-[ ! -e "$T/root/releases/$s3" ] || die "the failed release was left behind"
+[ ! -e "$T/root-releases/$s3" ] || die "the failed release was left behind"
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q "\"commit\":\"$s2\"" || die "live release changed after a failed build"
 pass "broken commit: build failed, its release removed, $s2 still live"
 
@@ -100,7 +100,7 @@ avail=$(df -B1 --output=avail "$T/root" | tail -1 | tr -d ' '); est=$(du -sb --e
 # a floor the pre-check just clears, which the build's own writes then cross
 if out=$(DISK_RESERVE_BYTES=0 MIN_FREE_BYTES=$(( avail - est - 5000000 )) $D 2>&1); then die "deployed although the build crossed the floor"; fi
 echo "$out" | grep -q "fell below the floor plus reserve" || die "no mid-build floor stop: $(echo "$out" | tail -3)"
-[ ! -e "$T/root/releases/$s4" ] || die "release left behind after the floor stop"
+[ ! -e "$T/root-releases/$s4" ] || die "release left behind after the floor stop"
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q "\"commit\":\"$s2\"" || die "live release changed after the floor stop"
 pass "floor reached during the build: build stopped, release removed, $s2 still live"
 
