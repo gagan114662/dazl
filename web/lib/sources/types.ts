@@ -16,6 +16,11 @@ export interface Evidence {
 }
 
 export interface HttpResult { status: number; body: string; truncated?: boolean } // truncated: the body hit the byte cap and was cut
+// #906: what a non-answer is. A 200 whose body is an HTML page (a bot challenge, a login wall, an error page) is not data;
+// 401/403/429 are auth or throttling, distinct from a generic HTTP error. Neither may ever read as a healthy empty.
+export const looksLikeHtml = (body: string): boolean => /^\s*(<!doctype html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(body)
+export const statusNote = (status: number): string => status === 401 || status === 403 ? 'auth_or_blocked' : status === 429 ? 'throttled' : 'http_error'
+export const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 export type SafeGet = (url: string, opts?: { accept?: string; headers?: Record<string, string> }) => Promise<HttpResult | null>
 
 export interface AdapterInput {

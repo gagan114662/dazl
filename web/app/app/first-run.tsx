@@ -276,12 +276,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
               {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); void loadUsage().then(() => readSite()) }} /></div>}
               <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
-                <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} autoFocus />
+                <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} />
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
               </form>
               <div className="mt-5 flex flex-col items-center gap-2 text-sm text-[var(--ink-2)]">
-                <button type="button" className="hover:text-[var(--ink)]" onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
-                <button type="button" className="text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
+                <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
+                <button type="button" className="min-h-11 px-2 text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
               </div>
             </div>}
 
@@ -465,7 +465,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>
       </form>}
 
-      <button type="button" className="text-xs text-[#666] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
+      <button type="button" className="min-h-11 px-2 text-xs text-[#666] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
     </div>
   )
 }
