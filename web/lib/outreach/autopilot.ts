@@ -264,7 +264,7 @@ function accountCapDueAt(db: Database.Database, tenantId: string, now: number): 
 // transient subset of those proven-not-sent refusals; every other named refusal is a permanent policy verdict and the
 // draft is skipped instead of stranded. Non-OutreachError exceptions are not classified here at all: they propagate
 // to the scheduler as failures.
-const TRANSIENT_RELEASE_CODES: ReadonlySet<string> = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap', 'already_sending', 'connection_replaced']) // classified in holdSendFailure: caps/claim-conflicts wait without consuming retries; provider faults get bounded backoff
+const TRANSIENT_RELEASE_CODES: ReadonlySet<string> = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap', 'already_sending']) // classified in holdSendFailure: caps/claim-conflicts wait without consuming retries; provider faults get bounded backoff
 function holdSendFailure(db: Database.Database, tenantId: string, msgId: string, leadId: string, code: string, now: number): 'held' | 'skipped' {
   // Claim conflict: another tick owns this send right now. The loser writes nothing (setHold's status filter excludes
   // a claimed row), consumes no attempt and never touches the winner's claim; it simply looks again later.
