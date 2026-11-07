@@ -140,7 +140,7 @@ export default function InboxClient() {
               <div className="text-xs text-[#6b6b6b] mt-2 flex items-center gap-3">
                 {r.replies > 1 && <span>{r.replies} replies</span>}
                 <span>{r.stopped === 'review' ? 'Follow-ups stopped: this reply needs your review' : r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}</span>
-                <button className="underline underline-offset-2" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
+                <button className="underline underline-offset-2 min-h-11 min-w-11 inline-flex items-center" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
               </div>
               {r.classification === 'positive' && (
                 <div className="mt-2 text-xs border border-black/10 p-2 space-y-1">

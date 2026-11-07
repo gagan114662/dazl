@@ -3,7 +3,13 @@
 // them is on record (Instinct check, 2026-11-04); treat them as builder-chosen and change them on the owner's word.
 // A contact is verified current only on dated evidence:
 //   (a) a first-party company page (the company's own site, read by dazl's crawl) names them in that role, and that
-//       reading is within FIRST_PARTY_DAYS (180) days;
+//       reading is within FIRST_PARTY_DAYS (180) days. "The company's own site" is the lead's canonical website identity
+//       (scan/opportunity.ts identityOf, the same rule as the card's identity line and the contact route): established as
+//       a fact (own-domain basis) or confirmed by the user's own, currently bound website review - and the person was
+//       read on THAT site. A recent reading proves a person was listed on that page, not that the page belongs to the
+//       target company (#781, audit 9379b162): with no recorded site, several recorded sites, a name-probe / link-text /
+//       linked / unrecorded basis without a current user review, or a page on some other host, the row stays
+//       search-result-only and says why;
 //   (b) the provider's own record (Apollo / People Data Labs) carries a last-confirmed or updated date within
 //       PROVIDER_DAYS (90) days;
 //   (c) a tenant LinkedIn session shows the title live: NOT counted yet. It waits for the #192 automated-actions
@@ -14,7 +20,10 @@
 
 export type Currency = 'verified_current' | 'search_only'
 export type VerifiedBasis = 'first_party_page' | 'provider_record'
-export interface ContactCurrency { currency: Currency; basis: VerifiedBasis | null; dated: string | null }
+export interface ContactCurrency { currency: Currency; basis: VerifiedBasis | null; dated: string | null; reason?: string }
+// The lead's website identity, as scan/opportunity.ts identityOf returns it (passed in by the caller: currency stays pure
+// and free of the outreach/identity imports). null: no website recorded for the lead.
+export interface SiteIdentity { state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null; text: string }
 
 export const FIRST_PARTY_DAYS = 180
 export const PROVIDER_DAYS = 90
@@ -59,11 +68,27 @@ function providerRecordDay(connector: string | undefined, label: string | null):
   return m && m[1] === name ? isoDay(m[2]) : null
 }
 
+const hostOf = (u: string | null | undefined) => { try { return u ? new URL(u).hostname.toLowerCase().replace(/^www\./, '').replace(/\.$/, '') : null } catch { return null } }
+// Why a crawled person's page is not established as the company's own site, or null when it is.
+function siteUnbound(sourceUrl: string | null | undefined, site: SiteIdentity | null): string | null {
+  if (!site) return "listed on a website not recorded as the company's own"
+  if (site.state === 'conflict' || !site.site) return `listed on a company-website candidate, but ${site.text}`
+  if (site.state === 'unconfirmed') return `listed on ${site.text}; not confirmed as the company's own website`
+  const host = hostOf(sourceUrl), own = site.site.toLowerCase()
+  if (!host || !(host === own || host.endsWith(`.${own}`))) return `listed on ${host ?? 'an unrecorded page'}, not on the company's identified website ${own}`
+  return null
+}
+
 const within = (whenMs: number, nowMs: number, days: number) => whenMs <= nowMs + SKEW_MS && nowMs - whenMs <= days * DAY_MS
 
-export interface CurrencyRow { kind: string; connector?: string; label: string | null; retrieved_at?: unknown }
+export interface CurrencyRow { kind: string; connector?: string; label: string | null; retrieved_at?: unknown; source_url?: string | null }
 // `roleHeld`: the row names a title and the title does not contradict the role (the caller knows the buyer roles).
-export function contactCurrency(r: CurrencyRow, roleHeld: boolean, nowMs: number = Date.now()): ContactCurrency {
+// `site`: the lead's website identity (identityOf). A crawled person is first-party only on an established or
+// user-confirmed site, read on that site; anything else is search-result-only with the reason.
+export function contactCurrency(r: CurrencyRow, roleHeld: boolean, nowMs: number = Date.now(), site: SiteIdentity | null = null): ContactCurrency {
+  // the site binding is read first, so a crawled row on an unestablished site carries its reason whatever its title
+  const unbound = r.connector === 'sitecrawl' && r.kind === 'person' ? siteUnbound(r.source_url, site) : null
+  if (unbound) return { ...SEARCH_ONLY, reason: unbound }
   if (!roleHeld || !Number.isFinite(nowMs)) return SEARCH_ONLY
   if (r.connector === 'sitecrawl' && r.kind === 'person') {
     const sec = typeof r.retrieved_at === 'number' ? r.retrieved_at : typeof r.retrieved_at === 'string' && /^\d{1,12}$/.test(r.retrieved_at) ? Number(r.retrieved_at) : NaN
@@ -81,7 +106,7 @@ export function contactCurrency(r: CurrencyRow, roleHeld: boolean, nowMs: number
 
 // Words for the leads page and the export.
 export function currencyText(c: ContactCurrency, connector: string): string {
-  if (c.currency !== 'verified_current') return 'search result only, not verified as current'
+  if (c.currency !== 'verified_current') return c.reason ? `search result only, not verified as current: ${c.reason}` : 'search result only, not verified as current'
   return c.basis === 'first_party_page' ? `verified current: named on the company's own website, read ${c.dated}` : `verified current: ${PROVIDER_NAME[connector] ?? connector} record dated ${c.dated}`
 }
 
