@@ -18,7 +18,7 @@ A database file alone does not bring the service back. Also needed, none of them
 - Other env secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, session-worker token).
 - Caddy config (`/etc/caddy/Caddyfile`), the systemd/pm2 unit, the repo checkout.
 - The session-worker stores nothing (verified: `session-worker/README.md`, `src/server.ts`),
-  so it needs no backup. The legacy Cloudflare `worker/` D1 stack never ran and is out of scope.
+  so it needs no backup. The legacy Cloudflare D1 stack never ran and was removed from `worker/` (#895).
 
 ## Current state (honest, as of 2026-10-22)
 

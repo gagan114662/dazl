@@ -1,3 +1,5 @@
+> HISTORICAL: describes the removed Cloudflare/Clicky worker (#895). Not current instructions; the code it references no longer exists.
+
 # Multitenancy
 
 Dazl's runtime is now tenant-isolated end to end: one worker deployment serves

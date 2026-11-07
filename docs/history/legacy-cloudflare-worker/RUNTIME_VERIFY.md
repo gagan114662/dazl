@@ -1,3 +1,5 @@
+> HISTORICAL: describes the removed Cloudflare/Clicky worker (#895). Not current instructions; the code it references no longer exists.
+
 # Runtime Verification — Phase 1 Durability Proof (Local)
 
 This is a **local-only** verification, run against `wrangler dev --local` (miniflare),

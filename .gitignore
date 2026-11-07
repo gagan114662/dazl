@@ -25,11 +25,6 @@ coding-plans/
 .claude/scheduled_tasks.json
 # END swamp managed section
 
-# worker/brain-repo is the Sandbox container's swamp seed repo (COPY'd into
-# the image by worker/Dockerfile) — its Claude tool enrollment files must be
-# committed, not treated as local developer Claude settings.
-!worker/brain-repo/.claude/
-!worker/brain-repo/.claude/settings.local.json
 
 # Scoreboard results hold lead and contact data: never commit them
 scoreboard/results/
