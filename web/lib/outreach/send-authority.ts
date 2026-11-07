@@ -26,13 +26,16 @@ export interface SendAuthorityInput {
   /** when set, the consent row must carry exactly this evidence_ref (e.g. 'sequence:<id>'), so a grant for another
    *  sequence or flow to the same recipient never authorises this send */
   consentEvidenceRef?: string
+  /** the refresh_ct generation the path's token was minted from (getAccessTokenBound): a replaced connection refuses, even at the same address */
+  expectRefreshCt?: string
 }
 
 export function recheckSendAuthority(db: Database.Database, tenantId: string, i: SendAuthorityInput): string | null {
   try {
-    const acct = db.prepare('SELECT email, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string } | undefined
+    const acct = db.prepare('SELECT email, status, refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string; refresh_ct: string } | undefined
     if (!acct || acct.status !== 'active') return 'gmail_not_connected'
     if (acct.email.toLowerCase() !== i.sender.toLowerCase()) return 'sender_changed'
+    if (i.expectRefreshCt !== undefined && acct.refresh_ct !== i.expectRefreshCt) return 'connection_replaced'
     if (db.prepare('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?').get(tenantId, norm(i.to))) return 'suppressed'
     if (i.consentScope) {
       const ok = i.consentEvidenceRef

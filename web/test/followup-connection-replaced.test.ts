@@ -54,7 +54,7 @@ for (const [label, reply] of [['old token success', () => json({ access_token: '
     }) as unknown as typeof fetch
     const base = { env, master, now: NOW, baseUrl: 'https://app.test', flags: { AUTOPILOT_ENABLED: '1' }, sendFn }
     const r1 = await runFollowups(db, T, 'Biz', { ...base, fetchImpl: replacing })
-    assert.equal(r1.stopped, 'gmail_unavailable')
+    assert.equal(r1.stopped, 'connection_replaced', '#739: reported as a replacement, not an outage')
     assert.equal(sends, 0, 'nothing is sent with a replaced connection')
     assert.equal((db.prepare("SELECT count(*) AS n FROM followup_messages WHERE tenant_id = ? AND status IN ('sending','uncertain')").get(T) as { n: number }).n, 0, 'claim released, nothing stuck in sending')
     assert.deepEqual(thread(db), { followups_sent: 0, stopped: null, last_followup_at: null }, 'the pending follow-up is still due')
