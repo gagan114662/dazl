@@ -116,7 +116,7 @@ test('icpFromWebsite: a keyless account gets the free read - extracted facts wit
   const tiny = (async () => htmlResponse('<html><body><script>app()</script></body></html>')) as unknown as typeof fetch
   assert.deepEqual(await icpFromWebsite(setup(), 'A', 'https://spa.example', { master, lookup: pubLookup, fetchImpl: tiny, providers: { anthropic: goodProvider } }), { error: 'js_only' })
   const junk: Provider = { research: async () => { throw new Error('unused') }, complete: async () => 'sorry, cannot help' }
-  assert.deepEqual(await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: junk } }), { error: 'key_rejected' })
+  assert.deepEqual(await icpFromWebsite(setup(), 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: junk } }), { error: 'draft_unreadable', reason: 'not_json' })
 })
 
 test('icpFromWebsite: the free read labels title and description with their source; a fetch failure stays a typed error (#409)', async () => {
