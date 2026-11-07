@@ -110,3 +110,56 @@ test('#922 legacy truncated HELD Apollo step claim: never auto-released, stays h
   const rr = await retryHeldEnrichment(db, 'u1', 'a', { provider: 'apollo', step: 'org' }, { fetchImpl: stub(c), master })
   assert.equal(rr.status, 'retried'); assert.equal(c.apolloOrg, 1, 'the owner retry runs on the new full-identity key')
 })
+
+test('#922 shared RESERVED truncated claim: neither owner retry can release it or enable ordinary B repayment', async () => {
+  const { db, jobId } = seed(PAIR, ['apollo']); const c = calls()
+  const t = legacyTruncatedKeysFor(PAIR[0]).stepOrg!
+  assert.equal(t, legacyTruncatedKeysFor(PAIR[1]).stepOrg)
+  assert.ok('id' in auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: t, status: 'reserved', results: 0 }))
+  db.prepare('UPDATE connector_claims SET claimed_at = 0').run()
+  const before = db.prepare('SELECT * FROM connector_claims WHERE lookup = ?').get(t)
+  const r = await enrichLeadContacts(db, 'u1', jobId, PAIR, { fetchImpl: stub(c), master })
+  assert.equal(r.skipped.filter(s => s.why === 'uncertain').length, 2)
+  assert.deepEqual(heldEnrichments(db, 'u1'), [], 'no arbitrary first-lead owner attribution')
+  for (const l of PAIR) {
+    assert.deepEqual(await retryHeldEnrichment(db, 'u1', l.id, { provider: 'apollo', step: 'org' }, { fetchImpl: stub(c), master }), { status: 'nothing_held' })
+  }
+  const after = await enrichLeadContacts(db, 'u1', jobId, [PAIR[1]], { fetchImpl: stub(c), master })
+  assert.equal(after.skipped[0]?.why, 'uncertain')
+  assert.deepEqual(c, calls(), 'no owner A or ordinary B provider calls')
+  assert.deepEqual(db.prepare('SELECT * FROM connector_claims WHERE lookup = ?').get(t), before, 'the shared private reservation is retained byte-for-byte')
+  db.close()
+})
+
+test('#922 shared RESERVED recovery is failclosed for legacy and per-step keys for both providers', async () => {
+  for (const provider of ['apollo', 'pdl'] as const) for (const step of ['org', 'people', 'legacy'] as const) {
+    const { db, jobId } = seed(PAIR, [provider]); const c = calls()
+    const keys = legacyTruncatedKeysFor(PAIR[0])
+    const t = (step === 'org' ? keys.stepOrg : step === 'people' ? keys.stepPeople : keys.legacyPeople)!
+    assert.ok('id' in auditTryReserve(db, { tenantId: 'u1', connector: `enrich:${provider}`, jobId, lookup: t, status: 'reserved', results: 0 }))
+    db.prepare('UPDATE connector_claims SET claimed_at = 0').run()
+    assert.deepEqual(heldEnrichments(db, 'u1'), [], `${provider}/${step} cannot choose first identity`)
+    for (const l of PAIR) assert.deepEqual(await retryHeldEnrichment(db, 'u1', l.id, { provider, step }, { fetchImpl: stub(c), master }), { status: 'nothing_held' })
+    assert.deepEqual(c, calls())
+    assert.deepEqual(db.prepare('SELECT status FROM connector_claims WHERE lookup = ?').get(t), { status: 'reserved' })
+    db.close()
+  }
+})
+
+test('#922 retry revalidates attribution inside release transaction after earlier held selection', async () => {
+  const { db, jobId } = seed([PAIR[0]], ['apollo']); const c = calls()
+  const t = legacyTruncatedKeysFor(PAIR[0]).stepOrg!
+  auditTryReserve(db, { tenantId: 'u1', connector: 'enrich:apollo', jobId, lookup: t, status: 'reserved', results: 0 })
+  db.prepare('UPDATE connector_claims SET claimed_at = 0').run()
+  assert.equal(heldEnrichments(db, 'u1').length, 1)
+  const transaction = db.transaction.bind(db)
+  // Simulate another writer adding the colliding identity after selection, before release's snapshot.
+  db.transaction = ((fn: (...args: never[]) => unknown) => {
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES (?, ?, '', ?, ?, 'opened', 'https://x.example/1')").run(PAIR[1].id, jobId, PAIR[1].company, PAIR[1].company_domain)
+    return transaction(fn)
+  }) as typeof db.transaction
+  assert.deepEqual(await retryHeldEnrichment(db, 'u1', 'a', { provider: 'apollo', step: 'org' }, { fetchImpl: stub(c), master }), { status: 'nothing_held' })
+  assert.deepEqual(c, calls())
+  assert.deepEqual(db.prepare('SELECT status FROM connector_claims WHERE lookup = ?').get(t), { status: 'reserved' })
+  db.close()
+})

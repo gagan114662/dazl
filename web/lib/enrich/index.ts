@@ -74,9 +74,17 @@ function readClaimCompat(db: Database.Database, a: { tenantId: string; connector
   const old = readOutcome(db, { ...a, lookup: trunc }, opts)
   if (!old) return null
   const jobLeads = db.prepare('SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?').all(a.jobId) as LeadRow[]
-  const sharers = new Set(jobLeads.map(raw).filter(r => truncatedKey(r) === trunc))
+  return unambiguousTruncatedIdentity(jobLeads, full, raw) ? old : { prior: 'uncertain', status: old.status, memo: null }
+}
+
+// A truncated label is attributable only when every matching lead has the same full identity.
+// Use this same decision for replay and owner recovery; recovery must not delete another identity's hold.
+function unambiguousTruncatedIdentity(leads: LeadRow[], full: string, raw: (l: LeadRow) => string): boolean {
+  const trunc = truncatedKey(full)
+  if (!trunc) return true
+  const sharers = new Set(leads.map(raw).filter(r => truncatedKey(r) === trunc))
   sharers.add(full)
-  return sharers.size === 1 ? old : { prior: 'uncertain', status: old.status, memo: null }
+  return sharers.size === 1
 }
 
 // The scan's geography (ICP "where"): what a candidate record must agree with when the company's domain does not settle it.
@@ -526,8 +534,10 @@ export function heldEnrichments(db: Database.Database, tenantId: string, nowSec 
   for (const r of rows) {
     if (!byJob.has(r.scan_job_id)) byJob.set(r.scan_job_id, db.prepare('SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?').all(r.scan_job_id) as LeadRow[])
     for (const lead of byJob.get(r.scan_job_id)!) {
-      const k = claimKeysFor(lead), t = legacyTruncatedKeysFor(lead) // #922: a pre-#922 truncated held row stays owner-resolvable
+      const k = claimKeysFor(lead), t = legacyTruncatedKeysFor(lead) // Only attributable old rows are owner-resolvable.
       const step = r.lookup === k.stepOrg || r.lookup === t.stepOrg ? 'org' : r.lookup === k.stepPeople || r.lookup === t.stepPeople ? 'people' : r.lookup === k.legacyPeople || r.lookup === t.legacyPeople ? 'legacy' : null
+      const raw = step === 'org' ? (l: LeadRow) => rawStep('org', l) : step === 'people' ? (l: LeadRow) => rawStep('people', l) : (l: LeadRow) => rawLookup('people', l)
+      if (step && r.lookup !== (step === 'org' ? k.stepOrg : step === 'people' ? k.stepPeople : k.legacyPeople) && !unambiguousTruncatedIdentity(byJob.get(r.scan_job_id)!, raw(lead), raw)) continue
       if (step) { out.push({ leadId: lead.id, company: lead.company, jobId: r.scan_job_id, provider: r.connector === ENRICH_APOLLO ? 'apollo' : 'pdl', step, lookup: r.lookup, claimedAt: r.claimed_at }); break }
     }
   }
@@ -564,7 +574,12 @@ export async function retryHeldEnrichment(db: Database.Database, tenantId: strin
   const disclosure = h.provider === 'apollo' && h.step === 'people'
     ? 'owner retry: people search resumed on the saved org memo; Apollo documents this endpoint as 0 credits (cost confirmed by the operator for this account)'
     : 'owner retry: the earlier attempt could not prove its outcome; the lookup may be charged again'
-  if (!releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)) return { status: 'nothing_held' }
+  const released = db.transaction(() => {
+    // Revalidate attribution next to the release under one snapshot, not a stale UI/earlier selection.
+    const current = heldEnrichments(db, tenantId).find(row => row.leadId === leadId && row.provider === h.provider && row.step === h.step && row.lookup === h.lookup)
+    return !!current && releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)
+  })()
+  if (!released) return { status: 'nothing_held' }
   // The re-run draws on the scan's own hard spend cap (lib/scan/spend-cap.ts), as the scan's first pass did.
   const r = await runWithJobSpend(db, tenantId, lead.scan_job_id, () => enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider }))
   return { status: 'retried', attached: r.attached, releases: [`${h.provider} ${h.step}`] }
