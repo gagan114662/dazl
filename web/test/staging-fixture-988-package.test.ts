@@ -25,7 +25,7 @@ test('#988 package: lib/staging.ts is self-contained (the package ships no web/ 
 test('#988 package: the host script is bound to the installed layout, asserts the real service, and never writes into the release', () => {
   const s = pkg('fixture-988.sh').toString()
   assert.equal(spawnSync('bash', ['-n', `${root}ops/staging/fixture-988/fixture-988.sh`]).status, 0, 'bash -n')
-  for (const needle of ['LOCK=/srv/dazl-staging/.deploy.lock', 'CURRENT=/srv/dazl-staging/current', 'EXPECT_BUILD=${FIXTURE_EXPECT_BUILD:-}', 'EXPECT_INSTANCE=${FIXTURE_EXPECT_INSTANCE:-}', 'STAGING_DB=/var/lib/dazl-staging/app.db', 'SERVICE=dazl-staging.service', 'sha256sum --check', '--preserve-symlinks --preserve-symlinks-main', '/proc/$PID/environ', 'install -d -m 0700 -o "$RUN_AS" -g "$RUN_AS" "$OUT_ROOT"', 'flock -n 9'])
+  for (const needle of ['LOCK=/srv/dazl-staging/.deploy.lock', 'CURRENT=/srv/dazl-staging/current', 'RELEASE_ENV=/srv/dazl-staging/release.env', 'EXPECT_BUILD=${FIXTURE_EXPECT_BUILD:-}', 'EXPECT_INSTANCE=${FIXTURE_EXPECT_INSTANCE:-}', 'STAGING_DB=/var/lib/dazl-staging/app.db', 'SERVICE=dazl-staging.service', 'sha256sum --check', '--preserve-symlinks --preserve-symlinks-main', '/proc/$pid/environ', 'install -d -m 0700 -o "$RUN_AS" -g "$RUN_AS" "$OUT_ROOT"', 'flock -n 9'])
     assert.ok(s.includes(needle), needle)
   assert.doesNotMatch(s, /var\/lib\/dazl-staging-deploy\/\.deploy\.lock/, 'not the wrong lock'); assert.doesNotMatch(s, /\$ROOT\/web|git -C/, 'no source-checkout assumption')
   const code = s.replace(/^\s*#.*$/gm, '').replace(/ #[^\n"']*$/gm, '').replace(/"(\\.|[^"\\])*"/g, '""')   // comments and message strings removed: what is left is what executes
@@ -48,11 +48,27 @@ test('#988 package: running the script without root, or from a mode it does not 
 // ---- operator-package safety gaps found in review: the stop must be CONFIRMED, and a failed data check must never restart the service ----
 const SCRIPT = fileURLToPath(new URL('../../ops/staging/fixture-988/fixture-988.sh', import.meta.url))
 const bash = (cmd: string) => spawnSync('bash', ['-c', `FIXTURE_988_SOURCE_ONLY=1 source "${SCRIPT}"; ${cmd}`], { encoding: 'utf8' })
-test('#988 package: stop_confirmed is true ONLY for inactive/dead, no main pid and an empty control group', () => {
-  const sc = (a: string, b: string, c: string, d: string) => bash(`stop_confirmed '${a}' '${b}' '${c}' '${d}'`).status === 0
-  assert.equal(sc('inactive', 'dead', '0', ''), true)
-  for (const [a, b, c, d] of [['active', 'running', '123', ''], ['deactivating', 'stop-sigterm', '0', ''], ['deactivating', 'dead', '0', ''], ['failed', 'failed', '0', ''], ['inactive', 'dead', '0', '4242'], ['inactive', 'dead', '77', ''], ['', '', '', ''], ['inactive', '', '0', ''], ['activating', 'start', '0', '']])
-    assert.equal(sc(a, b, c, d), false, `${a}/${b}/${c}/${JSON.stringify(d)} is not stopped`)
+test('#988 package: stop_confirmed needs inactive/dead, no main pid, no control pid, no pending job, and a cgroup that was READ and is empty; an unreadable cgroup or a pending job never passes', () => {
+  const sc = (...a: string[]) => bash(`stop_confirmed ${a.map(v => `'${v}'`).join(' ')}`).status === 0
+  assert.equal(sc('inactive', 'dead', '0', '0', '', 'ok', ''), true); assert.equal(sc('inactive', 'dead', '0', '0', '0', 'ok', ''), true, 'Job=0 is no job')
+  for (const a of [['active', 'running', '123', '0', '', 'ok', ''], ['deactivating', 'stop-sigterm', '0', '0', '', 'ok', ''], ['deactivating', 'dead', '0', '0', '', 'ok', ''], ['failed', 'failed', '0', '0', '', 'ok', ''],
+    ['inactive', 'dead', '0', '0', '', 'ok', '4242'], ['inactive', 'dead', '77', '0', '', 'ok', ''], ['inactive', 'dead', '0', '88', '', 'ok', ''], ['inactive', 'dead', '0', '0', '1234', 'ok', ''], ['inactive', 'dead', '0', '0', 'listed', 'ok', ''],
+    ['inactive', 'dead', '0', '0', '', 'unreadable', ''], ['inactive', 'dead', '0', '0', '', '', ''], ['inactive', 'dead', '0', '0', '', 'error', ''], ['', '', '', '', '', '', ''], ['inactive', '', '0', '0', '', 'ok', ''], ['activating', 'start', '0', '0', '', 'ok', '']])
+    assert.equal(sc(...a), false, `${JSON.stringify(a)} is not stopped`)
+})
+test('#988 package: restart_proven needs EVERY proof: running as a new process, a new instance, local health + readiness, public HTTPS health with the same commit and instance, the staging banner, staging environment, the same release and database', () => {
+  const GOOD: Record<string, string> = { R_ACTIVE: 'active', R_SUB: 'running', R_MAINPID: '555', R_OLD_MAINPID: '111', R_CONTROLPID: '0', R_JOB: '', R_BUILD: 'c17b', R_LOCAL_OK: '1', R_LOCAL_COMMIT: 'c17b', R_READY_OK: '1', R_READY_COMMIT: 'c17b',
+    R_PUBLIC_OK: '1', R_PUBLIC_COMMIT: 'c17b', R_PUBLIC_INSTANCE: 'bbbbbbbbbbbb', R_INSTANCE: 'bbbbbbbbbbbb', R_OLD_INSTANCE: 'aaaaaaaaaaaa', R_BANNER: '1', R_ENV_STAGING: '1', R_GMAIL_OFF: '1', R_SAME_RELEASE: '1', R_SAME_DB: '1' }
+  const proven = (over: Record<string, string>) => bash(Object.entries({ ...GOOD, ...over }).map(([k, v]) => `${k}='${v}'`).join('; ') + '; restart_proven').status === 0
+  assert.equal(proven({}), true)
+  for (const [k, v] of [['R_ACTIVE', 'activating'], ['R_SUB', 'start'], ['R_MAINPID', '0'], ['R_MAINPID', '111'], ['R_CONTROLPID', '9'], ['R_JOB', '55'], ['R_LOCAL_OK', '0'], ['R_LOCAL_COMMIT', 'old'], ['R_READY_OK', '0'], ['R_READY_COMMIT', 'old'],
+    ['R_PUBLIC_OK', '0'], ['R_PUBLIC_COMMIT', 'old'], ['R_PUBLIC_INSTANCE', 'cccccccccccc'], ['R_INSTANCE', 'aaaaaaaaaaaa'], ['R_BANNER', '0'], ['R_ENV_STAGING', '0'], ['R_GMAIL_OFF', '0'], ['R_SAME_RELEASE', '0'], ['R_SAME_DB', '0']])
+    assert.equal(proven({ [k]: v }), false, `${k}=${v}`)
+  assert.equal(bash('restart_proven').status === 0, false, 'with nothing set, nothing is proven')
+})
+test('#988 package: jfield returns the FIRST (top-level) field, so a nested passing check can never make a failing health look ok', () => {
+  const body = '{"ok":false,"commit":"c17b","instance":"6517513f7b26","db":"sqlite","checks":{"sqlite":{"ok":false,"ms":0},"postgres":{"ok":true,"skipped":"not_configured"}}}'
+  const r = bash(`h='${body}'; echo "$(jfield ok "$h")|$(jfield commit "$h")|$(jfield instance "$h")"`); assert.equal(r.stdout.trim(), 'false|c17b|6517513f7b26')
 })
 test('#988 package: should_start restarts only to restore a known-good state; a failed or unverified data check, or an unconfirmed stop, never restarts', () => {
   const ss = (stop: number, touched: number, verified: number) => bash(`should_start ${stop} ${touched} ${verified}`).status === 0
@@ -64,7 +80,7 @@ test('#988 package: should_start restarts only to restore a known-good state; a 
 test('#988 package: the script wires those decisions in, and every failure path after the database is handed over leaves VERIFIED=0', () => {
   const s = readFileSync(SCRIPT, 'utf8').replace(/^\s*#.*$/gm, '').replace(/ #[^\n"']*$/gm, '')   // executable lines only
   assert.ok(s.includes('if should_start "$STOP_OK" "$DB_TOUCHED" "$VERIFIED"; then'), 'the exit handler asks should_start')
-  assert.ok(s.includes('stop_confirmed "$(sv ActiveState)" "$(sv SubState)" "$(sv MainPID)" "$(cgroup_procs)"'), 'continues only after the stop is confirmed from systemd')
+  assert.ok(s.includes('stop_confirmed "$(sv ActiveState)" "$(sv SubState)" "$(sv MainPID)" "$(sv ControlPID)" "$JOBS" "$CGS" "$CGP"'), 'continues only after the stop is confirmed from systemd')
   assert.equal((s.match(/VERIFIED=1/g) ?? []).length, 1, 'VERIFIED is set in exactly one place, after the last check')
   assert.ok(s.indexOf('STOP_OK=1') < s.indexOf('DB_TOUCHED=1') && s.indexOf('DB_TOUCHED=1') < s.indexOf('VERIFIED=1'))
   assert.ok(/LEFT STOPPED ON PURPOSE/.test(s), 'a deliberate stop is announced')
@@ -79,4 +95,18 @@ test('#988 package: the release under test is an explicit input: no baked-in bui
     const r = run(env); assert.equal(r.status, 3, JSON.stringify(env)); assert.match(r.stderr, /FIXTURE_EXPECT_/)
   }
   const r = run({ FIXTURE_EXPECT_BUILD: 'c17bcb2af431e642c6be6452a5cab2f1ddc6810e', FIXTURE_EXPECT_INSTANCE: '6517513f7b26' }); if (process.getuid && process.getuid() !== 0) assert.match(r.stderr, /run as root/)
+})
+
+test('#988 package: the wrapper uses the installed release.env, re-asserts everything under the lock, and keeps its instructions honest about the guarded restart', () => {
+  const raw = readFileSync(SCRIPT, 'utf8'), s = raw.replace(/^\s*#.*$/gm, '').replace(/ #[^\n"']*$/gm, '')
+  assert.ok(!raw.includes('/var/lib/dazl-staging-deploy/release.env'), 'not the repository-default path'); assert.ok(s.includes('RELEASE_ENV=/srv/dazl-staging/release.env') && s.includes('service does not read $RELEASE_ENV'))
+  assert.ok(s.indexOf('flock -n 9') < s.indexOf('assert_state locked') && s.indexOf('assert_state locked') < s.indexOf('timeout "$STOP_WAIT" systemctl stop'), 'lock, then re-assert, then stop')
+  assert.ok(s.includes('assert_state preflight') && s.includes('changed between the preflight and the lock'), 'preflight and locked facts are compared')
+  for (const check of ['instance', 'MAINPID', 'RELENV_ID', 'LOCK_ID', 'S_ID', 'REL']) assert.ok(s.includes(`$${check}`) || s.includes(`${check}=`), check)
+  assert.ok(s.includes('find "$dir" -name cgroup.procs') && s.includes('echo unreadable'), 'the whole cgroup tree is read; a failed read is unreadable')
+  assert.ok(s.includes('sv ControlPID') && s.includes('list_jobs_unit') && s.includes('echo error'), 'control pid and pending jobs are checked, and a failed job listing is an error')
+  for (const url of ['$LOCAL/api/health', '$LOCAL/api/ready', '$PUBLIC/api/health', '$PUBLIC/']) assert.ok(s.includes(url), url)
+  assert.ok(s.includes("PUBLIC=https://staging.dazl.ai") && s.includes("BANNER='Staging - test data'"))
+  // the instructions do not promise an unconditional restart
+  assert.ok(/GUARDED RESTART/.test(raw) && /LEFT STOPPED ON PURPOSE/.test(raw)); assert.doesNotMatch(raw, /ALWAYS (systemctl )?start/i)
 })
