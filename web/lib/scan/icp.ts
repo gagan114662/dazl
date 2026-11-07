@@ -1,3 +1,4 @@
+import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
 import { quoteSupports } from './claim-quote.ts'
@@ -31,7 +32,8 @@ export interface Icp {
 
 // Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
 export interface ResearchedHyp { i: string; o: string; k: 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'; t: string; s: 'sourced' | 'hypothesis' | 'reviewed' | 'rejected'; u: string | null; q: string | null; at: number | null }
-export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null }
+// u: saved decisions whose offer could not be told (kept by the name(s) they may belong to, never moved onto a guess): n names (stored form), k kind, t text, s reviewed|rejected
+export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null; u?: { n: string[]; k: ResearchedHyp['k']; t: string; s: 'reviewed' | 'rejected'; w?: true; r?: string[]; v?: string[]; o?: true }[] }
 
 // scan_jobs.icp is TEXT CHECK (char_length <= 4000); PG counts characters, JS .length counts UTF-16 units, so the
 // budget stays under the column limit with margin. The budget covers the TOTAL document: flat user constraints are
@@ -49,7 +51,7 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   const site = clean(r.site, RCAPS.site)
   const offers = (Array.isArray(r.offers) ? r.offers : []).map(x => {
     const o = x as Record<string, unknown>
-    const i = clean(o?.i, RCAPS.offerId), n = clean(o?.n, RCAPS.offerName)
+    const i = clean(o?.i, RCAPS.offerId), n = storedOfferName(o?.n)
     return i && n && /^[a-z0-9][a-z0-9-]*$/.test(i) ? { i, n } : null
   }).filter((x): x is { i: string; n: string } => !!x).slice(0, RCAPS.offers)
   if (!site || offers.length === 0) return undefined
@@ -76,7 +78,14 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   const ansT = typeof ansRaw?.t === 'string' ? clean(ansRaw.t, RCAPS.answer) : ''
   const ans = ansRaw && typeof ansRaw.q === 'string' && typeof ansRaw.o === 'string' && ids.has(clean(ansRaw.o, RCAPS.offerId))
     ? { q: clean(ansRaw.q, RCAPS.question), o: clean(ansRaw.o, RCAPS.offerId), ...(ansT ? { t: ansT } : {}) } : null
-  return { v: 1, site, offers, hyps, q: question, ans }
+  const u: NonNullable<IcpResearch['u']> = []
+  for (const x of (Array.isArray(r.u) ? r.u : []).slice(0, 64) as Record<string, unknown>[]) {   // generous read bound; the STORED bound is capStoredHolds (never drops a hold)
+    const names = [...new Set((Array.isArray(x?.n) ? x.n : []).map(holdName).filter(Boolean))].slice(0, 6), k = String(x?.k ?? ''), st = String(x?.s ?? ''), tx = clean(x?.t, RCAPS.text)
+    if (x?.w === true && names.length) { const r = [...new Set((Array.isArray(x.r) ? x.r : []).filter(isRejDigest))].slice(0, MAX_REJ), v = [...new Set((Array.isArray(x.v) ? x.v : []).filter(isRejDigest))].filter(d => !r.includes(d)).slice(0, Math.max(0, MAX_REJ - r.length)); const cut = (Array.isArray(x.r) && x.r.length > r.length) || (Array.isArray(x.v) && x.v.length > v.length); u.push({ n: names, k: 'persona', t: '', s: 'reviewed', w: true, ...(r.length ? { r } : {}), ...(v.length ? { v } : {}), ...((x.o === true || cut) ? { o: true as const } : {}) }); continue }
+    if (names.length && tx && RKINDS.has(k) && k !== 'offer' && (st === 'reviewed' || st === 'rejected')) u.push({ n: names, k: k as ResearchedHyp['k'], t: tx, s: st })
+  }
+  const capped = capStoredHolds(u)
+  return { v: 1, site, offers, hyps, q: question, ans, ...(capped.length ? { u: capped } : {}) }
 }
 
 // Deterministic research fit: whole hypotheses only, best first - reviewed (a person's decision), sourced (page-verified),
@@ -84,7 +93,10 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
 // the site/offers skeleton cannot fit, the research block is omitted whole. Flat user constraints are never touched.
 function fitResearch(r: IcpResearch, room: number): IcpResearch | undefined {
   if (JSON.stringify(r).length <= room) return r   // the common case: the whole block fits, kept verbatim
-  const skeleton = { v: 1 as const, site: r.site, offers: r.offers, hyps: [] as ResearchedHyp[], q: r.q, ans: r.ans }
+  let skeleton = { v: 1 as const, site: r.site, offers: r.offers, hyps: [] as ResearchedHyp[], q: r.q, ans: r.ans, ...(r.u ? { u: r.u } : {}) }
+  // Holds are never traded for room: if the specific decisions do not fit, they collapse into ONE whole-group entry over the same names (the hold stays, the detail goes).
+  if (r.u && JSON.stringify(skeleton).length > room) skeleton = { ...skeleton, u: foldAll(r.u, true) }     // stage 2: one whole entry; names AND rejection digests kept
+  if (r.u && JSON.stringify(skeleton).length > room) skeleton = { ...skeleton, u: foldAll(r.u, false) }    // stage 3: names only, `open`: the rejected set is unknown and can never be released
   if (JSON.stringify(skeleton).length > room) return undefined
   const rank = (s: ResearchedHyp['s']) => s === 'reviewed' ? 0 : s === 'sourced' ? 1 : s === 'rejected' ? 2 : 3
   const byOffer = new Map<string, ResearchedHyp[]>()
@@ -113,7 +125,7 @@ export const flatProfile = (icp: unknown): unknown => {
   return flat
 }
 
-export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' }
+export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' | 'holds_too_large' }
 // Total-budget enforcement for every icp write. Research that cannot fit whole is omitted explicitly (never partially
 // parsed back); flat user constraints overflowing on their own are a typed refusal, never silent truncation.
 export function budgetedIcp(icp: Icp): IcpBudget {
@@ -122,6 +134,9 @@ export function budgetedIcp(icp: Icp): IcpBudget {
   if (!research) return { ok: true, icp, json: JSON.stringify(icp) }
   const room = ICP_JSON_BUDGET - JSON.stringify(flat).length - 16   // the ,"research":... wrapper
   const fitted = fitResearch(research, room)
+  // Unresolved decisions (holds, rejection identities) are the review requirement itself: if even the smallest record of them does not fit next to the profile, the save is REFUSED. A profile-only
+  // write that quietly lost every hold would let unreviewed statements target again. (Research with no holds may still be omitted, as before.)
+  if (!fitted && research.u?.length) return { ok: false, reason: 'holds_too_large' }
   const out = fitted ? { ...icp, research: fitted } : flat
   return { ok: true, icp: out, json: JSON.stringify(out) }
 }
@@ -311,4 +326,20 @@ export async function inferIcp(provider: Provider, apiKey: string, query: string
     if (err && typeof err === 'object' && 'kind' in err && (err as { kind: string }).kind === 'auth') throw err
   }
   return { icp: fallbackIcp(query), inferred: false }
+}
+
+// The stored bound on unresolved decisions (IcpResearch.u). Overflow folds into one whole-group entry that keeps every name held AND the identity of every rejection (digests); when even those
+// cannot be represented the entry is `open` (never released). A hold or a rejection is never dropped (offer-identity.ts capHolds/foldHolds).
+type StoredHold = NonNullable<IcpResearch['u']>[number]
+type HoldE = { names: string[]; kind: string; text: string; status: 'reviewed' | 'rejected'; whole?: boolean; rej?: string[]; rev?: string[]; open?: boolean; src: StoredHold }
+const toE = (x: StoredHold): HoldE => ({ names: x.n, kind: x.k, text: x.t, status: x.s, ...(x.w ? { whole: true } : {}), ...(x.r ? { rej: x.r } : {}), ...(x.v ? { rev: x.v } : {}), ...(x.o ? { open: true } : {}), src: x })
+const wholeStored = (names: string[], rej: string[], rev: string[], open: boolean): HoldE => toE({ n: names, k: 'persona', t: '', s: 'reviewed', w: true, ...(rej.length ? { r: rej } : {}), ...(rev.length ? { v: rev } : {}), ...(open ? { o: true as const } : {}) })
+const fromE = (e: HoldE): StoredHold => ({ n: e.names, k: e.src.k, t: e.text, s: e.status, ...(e.whole ? { w: true as const } : {}), ...(e.rej?.length ? { r: e.rej } : {}), ...(e.rev?.length ? { v: e.rev } : {}), ...(e.open ? { o: true as const } : {}) })
+export function capStoredHolds(u: NonNullable<IcpResearch['u']>): NonNullable<IcpResearch['u']> {
+  return capHolds<HoldE>(u.map(toE), wholeStored).map(fromE)
+}
+// Every hold folded into ONE whole entry (used when the column has no room for the specific ones): names and rejection digests kept; digests dropped to `open` only if they cannot fit either.
+const foldAll = (u: NonNullable<IcpResearch['u']>, keepDigests: boolean): NonNullable<IcpResearch['u']> => {
+  const f = foldHolds<HoldE>(u.map(toE), {}, wholeStored)
+  return [fromE(keepDigests ? f : { ...f, rej: undefined, rev: undefined, open: true })]
 }
