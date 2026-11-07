@@ -71,3 +71,14 @@ test('backfillWindowDays', () => {
   assert.equal(backfillWindowDays(180, NOW - 400 * DAY, NOW), 180, 'a longer play window is never shortened')
   assert.equal(backfillWindowDays(14, NOW + DAY, NOW), 14, 'a cursor in the future changes nothing')
 })
+
+test('backfillWindowDays rounds a fractional gap UP: the day the last check fell in is still read (pins ceil against floor and round)', () => {
+  const half = DAY / 2
+  assert.equal(backfillWindowDays(14, NOW - (36 * DAY + half), NOW), 37, '36.5 days -> 37 (floor gives 36, round-half-even may give 36)')
+  assert.equal(backfillWindowDays(14, NOW - (36 * DAY + 1), NOW), 37, 'one second past 36 whole days -> 37')
+  assert.equal(backfillWindowDays(14, NOW - (37 * DAY - 1), NOW), 37, 'one second short of 37 -> 37 (round would give 37 too, floor 36)')
+  assert.equal(backfillWindowDays(14, NOW - 36 * DAY, NOW), 36, 'a whole-day gap is not inflated')
+  assert.equal(backfillWindowDays(14, NOW - (14 * DAY + half), NOW), 15, 'just past the play window: a 14.5-day gap reads 15 days (floor gives 14: the gap day would be lost)')
+  assert.equal(backfillWindowDays(14, NOW - (13 * DAY + half), NOW), 14, 'a gap inside the window never shrinks it')
+  assert.equal(backfillWindowDays(14, NOW - (MAX_BACKFILL_DAYS * DAY + half), NOW), MAX_BACKFILL_DAYS, 'the cap still holds for a fractional gap past it')
+})
