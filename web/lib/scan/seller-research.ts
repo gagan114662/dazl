@@ -119,9 +119,11 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
   // Entries are kept only for candidates that a current offer still carries (a removed offer's decisions are not carried). A typed answer for an offer releases THAT candidate's share of a matching
   // answer entry; the other candidates stay held until their own explicit decision.
   const answeredName = answered ? holdNameOf(offersKept.find(x => x.id === answered.offer)?.name ?? '') : ''
-  const current = new Set(offersKept.map(x => holdNameOf(x.name)))
+  const groupSize = new Map<string, number>(); for (const x of offersKept) groupSize.set(holdNameOf(x.name), (groupSize.get(holdNameOf(x.name)) ?? 0) + 1)
+  const current = new Set(groupSize.keys())
   const heldEntries = carried.map(u => {
-    const names = u.names.map(holdName).filter(n => current.has(n) && !(answered?.text && u.kind === 'persona' && u.status === 'reviewed' && n === answeredName && exact(u.text, answered.text)))
+    // A name shared by more than one current offer (equal through the stored width, or the same name listed twice) cannot be told apart from persisted names alone: it is never released by an answer for one id.
+    const names = u.names.map(holdName).filter(n => current.has(n) && !(answered?.text && u.kind === 'persona' && u.status === 'reviewed' && n === answeredName && groupSize.get(n) === 1 && exact(u.text, answered.text)))
     return { ...u, names }
   }).filter(u => u.names.length)
   // An unattributable REJECTION is honoured on every candidate (fail closed): the same statement on an offer it might have belonged to stays rejected. An unattributable confirmation or
@@ -191,9 +193,12 @@ export function applyCorrections(r: SellerResearch, corrections: Correction[]): 
     if (!c) return h
     return c.action === 'reject' ? { ...h, status: 'rejected' as const } : c.action === 'edit' && c.value?.trim() ? { ...h, text: c.value.trim().slice(0, 160), status: 'reviewed' as const } : { ...h, status: 'reviewed' as const }
   })
-  // A new explicit decision on the same statement ends the hold for THAT candidate only: the other candidates of the entry stay held until their own explicit decision.
-  const decided = corrections.map(c => { const h = r.hypotheses.find(x => x.id === c.hypothesis && x.offer === c.offer); const o = r.offers.find(x => x.id === c.offer); return h && o ? { kind: h.kind, text: norm(h.text), name: holdNameOf(o.name) } : null }).filter((x): x is { kind: HypKind; text: string; name: string } => !!x)
-  const left = (r.unresolved ?? []).map(u => ({ ...u, names: u.names.map(holdName).filter(n => !decided.some(d => d.kind === u.kind && d.text === norm(u.text) && d.name === n)) })).filter(u => u.names.length)
+  // A new explicit decision on the same statement ends the hold for THAT candidate only. A hold is persisted as a NAME, so offers sharing a name key (equal through the stored width, or the same
+  // name listed twice) are one group that persisted state cannot tell apart: the group is released only when EVERY offer in it has its own explicit decision on that statement in this call.
+  const decided = corrections.map(c => { const h = r.hypotheses.find(x => x.id === c.hypothesis && x.offer === c.offer); const o = r.offers.find(x => x.id === c.offer); return h && o ? { kind: h.kind, text: norm(h.text), name: holdNameOf(o.name), offer: o.id } : null }).filter((x): x is { kind: HypKind; text: string; name: string; offer: string } => !!x)
+  const groupOf = (n: string) => r.offers.filter(o => holdNameOf(o.name) === n).map(o => o.id)
+  const releasable = (u: Unresolved, n: string) => { const who = new Set(decided.filter(d => d.kind === u.kind && d.text === norm(u.text) && d.name === n).map(d => d.offer)); return groupOf(n).length > 0 && groupOf(n).every(id => who.has(id)) }
+  const left = (r.unresolved ?? []).map(u => ({ ...u, names: u.names.map(holdName).filter(n => !releasable(u, n)) })).filter(u => u.names.length)
   const { unresolved: _drop, ...rest } = r; void _drop
   return { ...rest, hypotheses: hyps, question: null, ...(left.length ? { unresolved: left } : {}) }
 }

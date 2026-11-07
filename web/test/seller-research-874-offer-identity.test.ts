@@ -381,3 +381,44 @@ test('#874 the fix does not change what a person sees for a plain site: short un
   assert.deepEqual(roundTrip(r).unresolved, undefined)
   assert.deepEqual(targetingFor(r, 'acme-booking').who, [])
 })
+
+
+// ---- the ambiguous-name class: offers whose persisted hold NAME is the same (equal through the 60 stored characters, exact duplicates, case/width-equivalent) ----
+const X60 = 'Enterprise customer relationship management platform for retail'   // 63 chars
+const SAME60: [string, string][] = [[`${X60} Starter edition`, `${X60} Pro edition`], ['Booking', 'Booking'], ['Booking', 'BOOKING'], ['Ｂｏｏｋｉｎｇ', 'Booking']]
+const heldFor = (names: [string, string]): SellerResearch => {   // an unresolved decision whose name is the shared key: it holds BOTH offers
+  const base = build([...names]); return { ...base, unresolved: [{ names: [holdNameOf(names[0])], kind: 'industry', text: SOURCED.text, status: 'rejected' }] }
+}
+const extra = (names: [string, string], prior: SellerResearch): SellerResearch => {   // a rerun whose model also supplies statements nobody ever decided on
+  const items = names.flatMap((_, i) => [{ offer: `o${i + 1}`, kind: SOURCED.kind, text: SOURCED.text, url: QUOTE_PAGES[0].url, quote: SOURCED.quote, inferred: false }, { offer: `o${i + 1}`, kind: 'industry', text: 'distributors', url: QUOTE_PAGES[0].url, quote: 'retailers and distributors', inferred: false }, { offer: `o${i + 1}`, kind: 'persona', text: 'retailers', url: QUOTE_PAGES[0].url, quote: 'for retailers and distributors', inferred: false }])
+  const r = buildResearch({ offers: names.map((n, i) => ({ id: `o${i + 1}`, name: n })), items }, QUOTE_PAGES, SITE, prior); if ('error' in r) throw new Error('setup'); return r
+}
+for (const names of SAME60) {
+  test(`#874 shared hold key (${JSON.stringify(names.map(n => n.slice(0, 14)))}): deciding for A alone never releases B; persisted, reloaded and rerun, B's unrelated sourced statements stay blocked`, () => {
+    assert.equal(holdNameOf(names[0]), holdNameOf(names[1]), 'fixture: one shared hold key')
+    const r = extra(names, roundTrip(heldFor(names)))
+    const [A, B] = r.offers.map(o => o.id); assert.notEqual(A, B)
+    assert.deepEqual([...heldIds(r)].sort(), [A, B].sort(), 'both are held')
+    assert.ok(r.hypotheses.some(h => h.offer === B && h.status === 'sourced' && h.kind === 'industry'), 'fixture: B has a sourced statement nobody reviewed')
+    // decide ONLY A on the held statement
+    const afterA = applyCorrections(r, r.hypotheses.filter(h => h.offer === A && h.kind === 'industry' && norm(h.text) === norm(SOURCED.text)).map(h => ({ offer: A, hypothesis: h.id, action: 'reject' as const })))
+    assert.deepEqual([...heldIds(afterA)].sort(), [A, B].sort(), 'deciding A does not release the shared group')
+    // save, reload, rerun with new sourced statements
+    const again = extra(names, roundTrip(afterA))
+    assert.deepEqual([...heldIds(again)].sort(), again.offers.map(o => o.id).sort(), 'still held after reload and rerun')
+    for (const o of again.offers) { const tg = targetingFor(again, o.id); assert.deepEqual([tg.industries, tg.who], [[], []], `${o.name.slice(0, 20)}: no merely-sourced statement targets`) }
+    // control: only when EVERY offer in the group has its own explicit decision on the statement is the group released
+    const both = applyCorrections(again, again.offers.flatMap(o => again.hypotheses.filter(h => h.offer === o.id && h.kind === 'industry' && norm(h.text) === norm(SOURCED.text)).map(h => ({ offer: o.id, hypothesis: h.id, action: 'reject' as const }))))
+    assert.deepEqual(heldIds(both), [], 'every candidate decided: released')
+  })
+}
+test('#874 shared hold key: a typed answer for one offer id does not release a group it cannot tell apart', () => {
+  const names: [string, string] = SAME60[0]
+  const base = build([...names]), held: SellerResearch = { ...base, unresolved: [{ names: [holdNameOf(names[0])], kind: 'persona', text: ANSWER, status: 'reviewed' }] }
+  const r = build([...names], { ...roundTrip(held), answered: { question: WHO_QUESTION, offer: base.offers[0].id, text: ANSWER } })
+  assert.deepEqual([...heldIds(r)].sort(), r.offers.map(o => o.id).sort(), 'both stay held')
+  // control: a distinct-name candidate IS released by its own answer
+  const d = build(['Alpha Pro', 'Beta Pro']), dh: SellerResearch = { ...d, unresolved: [{ names: [holdNameOf('Alpha Pro'), holdNameOf('Beta Pro')], kind: 'persona', text: ANSWER, status: 'reviewed' }] }
+  const dr = build(['Alpha Pro', 'Beta Pro'], { ...roundTrip(dh), answered: { question: WHO_QUESTION, offer: d.offers[0].id, text: ANSWER } })
+  assert.deepEqual(heldIds(dr), [idOf(dr, 'Beta Pro')], 'Alpha released by its own answer, Beta still held')
+})
