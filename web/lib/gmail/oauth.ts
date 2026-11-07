@@ -156,19 +156,25 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
   // The connection can be replaced while the token call is in flight (disconnect and reconnect, even to the same address).
   // Whatever this call learned is about the connection it read, identified by its stored refresh ciphertext: it never
   // marks, and never hands a token to, a newer connection (#740).
-  const sameConnection = () => !!db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ? AND refresh_ct = ?').get(tenantId, acc.refresh_ct)
+  // What happened to the connection this call read: still there, deleted (a disconnect), or replaced by another row.
+  const changed = (): GmailError | null => {
+    const now = db.prepare('SELECT refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string } | undefined
+    if (!now) return new GmailError('retry', 'connection_gone')
+    return now.refresh_ct === acc.refresh_ct ? null : new GmailError('retry', 'connection_replaced')
+  }
   if (res.status === 400 || res.status === 401) {
     const j = (await res.json().catch(() => ({}))) as { error?: string }
     if (j.error === 'invalid_grant' || res.status === 401) {
       const r = db.prepare("UPDATE gmail_accounts SET status = 'needs_reconnect' WHERE tenant_id = ? AND refresh_ct = ?").run(tenantId, acc.refresh_ct)
-      if (r.changes !== 1) throw new GmailError('retry', 'connection_replaced')
+      if (r.changes !== 1) throw changed() ?? new GmailError('retry', 'connection_replaced')
       throw new GmailError('reconnect', 'grant_revoked')
     }
   }
   if (!res.ok) throw new GmailError('retry', `token_${res.status}`)
   const j = (await res.json()) as { access_token?: string }
   if (!j.access_token) throw new GmailError('retry', 'no_access_token')
-  if (!sameConnection()) throw new GmailError('retry', 'connection_replaced')
+  const moved = changed()
+  if (moved) throw moved
   return j.access_token
 }
 
@@ -194,7 +200,12 @@ export async function disconnectGmail(db: Database.Database, tenantId: string, d
 /** A token error caused by the connection being replaced mid-call: the new connection is fine, so callers retry later
  *  instead of pausing or asking the user to reconnect (#740). */
 export function connectionReplaced(e: unknown): boolean {
-  return e instanceof GmailError && e.kind === 'retry' && e.message === 'connection_replaced'
+  return e instanceof GmailError && e.kind === 'retry' && (e.message === 'connection_replaced' || e.message === 'connection_gone')
+}
+/** The connection was deleted (a disconnect) while the call was in flight, as opposed to replaced by another one. Still a
+ *  retry-later condition for callers (nothing to pause or reconnect), but truthfully reported as not connected. */
+export function connectionGone(e: unknown): boolean {
+  return e instanceof GmailError && e.kind === 'retry' && e.message === 'connection_gone'
 }
 
 // In staging (or with the stub token) nothing is sent: the message gets a stub id and its thread, as Gmail would return.

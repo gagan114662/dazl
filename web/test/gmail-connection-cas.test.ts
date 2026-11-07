@@ -8,7 +8,7 @@ import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { completeOAuth, disconnectGmail, getAccessToken, startOAuth, GmailError } from '../lib/gmail/oauth.ts'
+import { completeOAuth, connectionGone, connectionReplaced, disconnectGmail, getAccessToken, startOAuth, GmailError } from '../lib/gmail/oauth.ts'
 
 const master = randomBytes(32)
 const env = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
@@ -94,4 +94,27 @@ test('controls: an unreplaced connection still pauses on invalid_grant, hands ou
   assert.deepEqual(row(db), { email: 'me@acme.example', status: 'needs_reconnect' })
   await disconnectGmail(db, 'A', { env, master, fetchImpl: (async () => json({})) as unknown as typeof fetch })
   assert.equal(row(db), undefined)
+})
+
+// A deleted row is a disconnect, not a replacement: callers retry later either way (no pause), but only a real replacement
+// is reported as "replaced" (#740).
+for (const [label, status, body] of [['token success', 200, { access_token: 'x' }], ['invalid_grant', 400, { error: 'invalid_grant' }]] as const) {
+  test(`disconnect during the token call (${label}) is reported as gone, not replaced`, async () => {
+    const db = mk(); await connect(db, 'me@acme.example', 'rt-old')
+    const err = await getAccessToken(db, 'A', { env, master, now: NOW, fetchImpl: (async () => {
+      db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run()
+      return json(body, status)
+    }) as unknown as typeof fetch }).catch((e: unknown) => e)
+    assert.ok(err instanceof GmailError); assert.equal(err.message, 'connection_gone')
+    assert.equal(connectionGone(err), true); assert.equal(connectionReplaced(err), true, 'still a no-pause, retry-later condition')
+    assert.equal(row(db), undefined)
+  })
+}
+test('a replaced connection during the token call is reported as replaced, not gone', async () => {
+  const db = mk(); await connect(db, 'me@acme.example', 'rt-old')
+  const err = await getAccessToken(db, 'A', { env, master, now: NOW, fetchImpl: (async () => {
+    db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(); await connect(db, 'me@acme.example', 'rt-new')
+    return json({ access_token: 'x' })
+  }) as unknown as typeof fetch }).catch((e: unknown) => e)
+  assert.ok(err instanceof GmailError); assert.equal(err.message, 'connection_replaced'); assert.equal(connectionGone(err), false)
 })
