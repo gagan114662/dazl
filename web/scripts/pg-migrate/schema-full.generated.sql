@@ -112,7 +112,7 @@ CREATE TABLE calcom_bookings (
       attendee_email TEXT NOT NULL,
       attendee_name  TEXT,
       lead_id        TEXT,
-      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)),
+      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ended', 'held', 'no_show', 'cancelled', 'rescheduled')), start_at BIGINT, end_at BIGINT, ical_uid TEXT, ical_seq BIGINT, detail_ms BIGINT, attendees TEXT, cancelled_ms BIGINT, rescheduled_to TEXT, rescheduled_from TEXT, ended_at BIGINT, no_show_marks TEXT, manual_outcome TEXT CHECK (manual_outcome IS NULL OR manual_outcome IN ('held', 'no_show', 'cancelled')), manual_at BIGINT, manual_by TEXT, last_event_ms BIGINT, lead_prev_stage TEXT,
       PRIMARY KEY (tenant_id, booking_uid)
     );
 
