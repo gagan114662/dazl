@@ -24,21 +24,43 @@ const NAMED = [
   { page: '/sign-up', name: /^(Sign in|Terms|Privacy|Terms of Service|Privacy Policy)$/i, reason: 'sign-up footer links: sign-up-form.tsx owned by open PR #608; follow-up after it merges' },
 ]
 
+// Page-specific content that must be on screen before measuring: the shared header and sidebar alone would otherwise
+// let an unrendered page (empty fixture, API path or schema drift) pass with only the shared controls (#672 review).
+const MARKERS = {
+  '/app': '[data-testid="onboarding-screen"], #main h1',
+  '/app/plays': '[data-testid="saved-play"]',
+  '/app/leads': '[data-testid="lead-card"]',
+  '/app/inbox': '[data-testid="inbox-thread"]',
+  '/app/settings': '#main h1',
+  '/sign-in': 'main form',
+  '/sign-up': 'main form',
+}
+
 const MEASURE = () => {
-  const sel = 'a[href], button, input:not([type=hidden]), select, textarea, summary, label[for], [role="button"], [role="link"], [role="tab"], [tabindex]:not([tabindex="-1"])'
+  // Labels are not measured on their own: a label is part of its control's hit area (tapping it activates the control).
+  const sel = 'a[href], button, input:not([type=hidden]), select, textarea, summary, [role="button"], [role="link"], [role="tab"], [tabindex]:not([tabindex="-1"])'
   const out = []
   const name = el => (el.getAttribute('aria-label') || el.textContent || el.getAttribute('placeholder') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 60)
   const blockParent = el => { let p = el.parentElement; while (p && getComputedStyle(p).display.startsWith('inline')) p = p.parentElement; return p }
+  const visible = n => n.checkVisibility({ visibilityProperty: true, opacityProperty: false }) && (n.getBoundingClientRect().width > 1 || n.getBoundingClientRect().height > 1)
+  const score = r => Math.min(r.width, r.height)
+  let i = 0
   for (const el of document.querySelectorAll(sel)) {
     if (el.closest('[inert]') || el.classList.contains('skip-link')) continue
-    // A visually hidden native input (the CSS-only nav toggle, sr-only checkboxes) is hit through its visible label,
-    // which is measured as its own label[for] entry.
-    const r0 = el.getBoundingClientRect()
-    if (el.matches('input') && (r0.width < 2 || r0.height < 2 || getComputedStyle(el).opacity === '0')) continue
-    if (!el.checkVisibility({ visibilityProperty: true, opacityProperty: false })) continue
-    if (r0.width === 0 && r0.height === 0) continue
-    // Closed <details> contents and anything outside the page's own flow (e.g. a tooltip's hidden text) are not hit targets.
+    // Closed <details> contents are not hit targets until opened.
     if (el.closest('details:not([open])') && !el.matches('summary')) continue
+    let r0 = el.getBoundingClientRect(); let via = null
+    const hiddenInput = el.matches('input') && (r0.width < 2 || r0.height < 2 || getComputedStyle(el).opacity === '0')
+    // A form control's hit area includes its labels, explicit (for=) and implicit (wrapping), via el.labels: the best of
+    // the control and its visible labels is what a finger can hit. A visually hidden input (the CSS-only nav toggle,
+    // sr-only checkboxes) is hit only through its labels; without a visible one it is not a target.
+    if (el.matches('input, select, textarea')) {
+      const labels = [...(el.labels ?? [])].filter(visible)
+      if (hiddenInput && labels.length === 0) continue
+      for (const l of labels) { const lr = l.getBoundingClientRect(); if (hiddenInput && !via || score(lr) > score(r0)) { r0 = lr; via = l } }
+    }
+    if (!via && !visible(el)) continue
+    if (r0.width === 0 && r0.height === 0) continue
     let inline = false
     if (el.matches('a') && getComputedStyle(el).display === 'inline') {
       const bp = blockParent(el)
@@ -46,9 +68,31 @@ const MEASURE = () => {
       const all = (bp?.textContent || '').replace(/\s+/g, ' ').trim()
       inline = !!bp && all.length > own.length + 1
     }
-    out.push({ tag: el.tagName.toLowerCase(), name: name(el), w: Math.round(r0.width * 100) / 100, h: Math.round(r0.height * 100) / 100, inline })
+    const target = via ?? el
+    target.dataset.tt = `t${i++}`
+    out.push({ id: target.dataset.tt, tag: el.tagName.toLowerCase() + (via ? ' (via label)' : ''), name: name(el) || name(target), w: Math.round(r0.width * 100) / 100, h: Math.round(r0.height * 100) / 100, inline })
   }
   return out
+}
+
+// Occlusion (#672 review): another control's hit box must not cover part of this one. Each target is scrolled into
+// view and sampled 2px inside its edges and at its centre; a point that hits a DIFFERENT interactive control fails.
+const OCCLUDED = id => {
+  const sel = 'a[href], button, input:not([type=hidden]), select, textarea, summary, label, [role="button"], [role="link"], [role="tab"], [tabindex]:not([tabindex="-1"])'
+  const el = document.querySelector(`[data-tt="${id}"]`)
+  if (!el) return null
+  el.scrollIntoView({ block: 'center', inline: 'center' })
+  const r = el.getBoundingClientRect()
+  const xs = [r.left + 2, r.left + r.width / 2, r.right - 2], ys = [r.top + 2, r.top + r.height / 2, r.bottom - 2]
+  const own = n => el.contains(n) || n.contains(el) || (el.matches('label') && el.control && (el.control === n || el.control.contains(n))) || (n.matches?.('label') && n.control === el)
+  for (const x of xs) for (const y of ys) {
+    if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue
+    const hit = document.elementFromPoint(x, y)
+    if (!hit) continue
+    const ctl = hit.closest(sel)
+    if (ctl && !own(ctl) && !own(hit)) return `${ctl.tagName.toLowerCase()} "${(ctl.getAttribute('aria-label') || ctl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40)}" covers it at ${Math.round(x - r.left)},${Math.round(y - r.top)}`
+  }
+  return null
 }
 
 const { chromium } = loadPlaywright()
@@ -70,9 +114,12 @@ try {
     await page.waitForTimeout(800)
     await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
     const path = route.split('?')[0]
+    try { await page.locator(MARKERS[path]).first().waitFor({ state: 'visible', timeout: 15000 }) } catch { failures.push(`${path}: page content (${MARKERS[path]}) never rendered, so its own controls were not measured`); await c.close(); continue }
     const got = await page.evaluate(MEASURE)
     let checked = 0, excepted = 0
     for (const t of got) {
+      const cover = await page.evaluate(OCCLUDED, t.id)
+      if (cover) failures.push(`${path}: ${t.tag} "${t.name}" is partly covered: ${cover}`)
       if (t.w >= MIN && t.h >= MIN) { checked++; continue }
       if (t.inline) { excepted++; console.log(`     exception INLINE ${path} ${t.tag} "${t.name}" ${t.w}x${t.h} (link inside sentence text)`); continue }
       const named = NAMED.find(n => n.page === path && n.name.test(t.name))
@@ -98,7 +145,11 @@ async function stubApis(page, route) {
   const LEADS = [lead('a'.repeat(24), 'Bright Dental', { contact: 'hello@brightdental.example' }), lead('c'.repeat(24), 'Lakeside Smiles')]
   const ICP = { summary: 'Growing dental practices', who: ['Practice owner'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['new location'], exclude: [] }
   const THREADS = [{ thread_id: 't1', gmail_id: 'g1', lead_id: 'l1', job_id: JOB, from_email: 'ceo@older.example', excerpt: 'Yes - send details', classification: 'positive', received_at: now - 3600, replies: 2, company: 'Older Co', lead_name: 'Sam', followups_sent: 1, stopped: null, unread: true, needs_owner: true }]
+  const T = Math.floor(Date.UTC(2026, 9, 26, 12) / 1000)
+  const WATCHES = [{ id: 'e'.repeat(24), query: 'Dental practices in Leeds opening a second location', icp: { summary: 'Independent dental practices', who: ['Practice owner'], where: ['Leeds, UK'], signals: ['opening a second location'] }, active: true, next_run_at: T + 7 * 86400, last_run_at: T, paused_reason: null, last_job_id: JOB, last_status: 'done', new_leads: 3 }]
+  const MONITORS = [{ id: 'f'.repeat(24), query: 'Accounting firms in Bristol hiring payroll staff', icp: JSON.stringify({ summary: 'Accounting firms', where: ['Bristol, UK'], signals: ['hiring payroll staff'] }), interval_hours: 24, enabled: 1, paused_reason: null, last_run_at: null, next_run_at: T + 86400, last_new_count: null, run_count: 0, last_job_id: null }]
   const STUBS = {
+    '/app/plays': { '/api/watch': { watches: WATCHES }, '/api/monitors': { monitors: MONITORS } },
     '/app/leads': { '/api/scan/status': { status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location' }, '/api/leads': { job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS }, '/api/scan/jobs': { jobs: [] }, '/api/enrich/held': { held: [] } },
     '/app/inbox': { '/api/outreach/inbox': { available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', booking_url: null, threads: THREADS, next_cursor: null, counts: { threads: 1, needs_owner: 1, unread: 1, unread_needs_owner: 1 } } },
   }

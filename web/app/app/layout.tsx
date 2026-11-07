@@ -20,7 +20,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {/* #534: md:hidden keeps the invisible checkbox out of the desktop Tab order; its focus ring shows on the Menu label (globals.css) */}
       <input id="navtoggle" type="checkbox" className="peer sr-only md:hidden" aria-label="Menu" />
       <header className="md:hidden flex items-center justify-between border-b border-[var(--line)] bg-[var(--canvas)] px-4 py-2 shrink-0">
-        <Link href="/app" className="inline-flex items-center min-h-11 text-lg font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></Link>
+        <Link href="/app" className="inline-flex items-center justify-center min-h-11 min-w-11 text-lg font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></Link>
         <label htmlFor="navtoggle" className="cursor-pointer inline-flex items-center min-h-11 text-sm font-semibold border border-[var(--line-2)] rounded-full px-4">Menu</label>
       </header>
       <aside className="hidden peer-checked:flex md:flex md:w-60 shrink-0 border-b md:border-b-0 md:border-r border-[var(--line)] bg-[var(--canvas)] flex-col py-4 md:py-6 px-3 md:overflow-auto">

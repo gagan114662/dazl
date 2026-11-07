@@ -139,9 +139,10 @@ body { font-size: 16px; line-height: 1.5; }
 
 /* (i) info tooltips: caveats live here. Opens on hover, keyboard focus or click. */
 .infotip { position: relative; display: inline-flex; vertical-align: middle; }
-/* #672: the button is a 44x44 hit area; the visible 1.1rem circle is drawn by ::before, and the negative margin keeps
-   the (i) taking the same 1.1rem of layout as before. */
-.infotip > button { position: relative; isolation: isolate; width: 2.75rem; height: 2.75rem; margin: -.825rem; border-radius: 999px; border: 0; color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: transparent; }
+/* #672: the button is a 44x44 hit area; the visible 1.1rem circle is drawn by ::before. It reserves its full 44px
+   across (no negative side margins), so its hit box never covers the tab or action beside it (#672 review); only the
+   vertical margins are pulled in, so the (i) does not make its line taller. */
+.infotip > button { position: relative; isolation: isolate; width: 2.75rem; height: 2.75rem; margin: -.825rem 0; border-radius: 999px; border: 0; color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: transparent; }
 .infotip > button::before { content: ""; position: absolute; inset: .825rem; z-index: -1; border-radius: 999px; border: 1px solid var(--line-2); background: #fff; }
 .infotip > button:hover, .infotip > button:focus-visible { color: var(--ink); outline: none; }
 .infotip > button:hover::before, .infotip > button:focus-visible::before { border-color: var(--ink); }
