@@ -21,6 +21,8 @@ function seed() {
     const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'sitecrawl', ?, ?, 'x', NULL, ?, '2026-10-28', 1)")
     ins.run(`${id}p`, id, 'person', 'Jane Doe, Chief Executive Officer', `https://${domain}/team`)
     ins.run(`${id}e`, id, 'email', `hello@${domain}`, `https://${domain}/contact`)
+    // the domain is confirmed: the cited page is hosted on it (actionability reads confirmation, not a populated company_domain; #914)
+    ins.run(`${id}d`, id, 'domain', `${domain}|evidence_own_domain`, `https://${domain}/news`)
     // the required sales-hiring gate passed every lead here: its durable pass record (held-state.ts default-denies a lead without one)
     db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(`${id}g`, id)
   }

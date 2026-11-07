@@ -10,7 +10,8 @@ import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
 import { probeDomains } from '../connectors/sitecrawl.ts'
 import { resolveStructuredDate } from './structured-date.ts'
-import { NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf } from './actionable.ts'
+import { whoOf } from './actionable.ts'
+import { currentSiteContact, onCompanySite, type SiteRow } from './site-contact.ts'
 import { windowStatus } from './window.ts'
 import { parseWindowDays } from './window.ts'
 import { isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -69,15 +70,19 @@ export function resolveFacts(db: Database.Database, job: JobLike, tried: Map<str
     if (date === 'unconfirmed') reasons.push('event timing is unconfirmed (a season or "soon", no dated evidence)')
     // identity
     const codes = [...new Set(rows.filter(r => r.kind === 'contact_rejected' && r.label && CONFLICT.has(r.label)).map(r => r.label!))]
-    const identity: CandidateResolution['identity'] = codes.length > 0 && !l.company_domain ? 'conflict' : l.company_domain ? 'confirmed' : 'unconfirmed'
+    // A populated company_domain alone is a guess (#943): identity is confirmed only by the shared rule (own-domain evidence, a current review or a passed homepage check).
+    const who = whoOf(job.icp) || 'founder'
+    const site = currentSiteContact(db, job.user_id, l, who)
+    const identity: CandidateResolution['identity'] = site.confirmed ? 'confirmed' : codes.length > 0 && !l.company_domain ? 'conflict' : 'unconfirmed'
     if (identity === 'conflict') reasons.push(`contact page is a different company (${codes.join(', ')})`)
     if (identity === 'unconfirmed') reasons.push('company identity not confirmed: no domain agrees with the company name and place')
     // contact
-    const who = whoOf(job.icp) || 'founder'
-    const people = rows.filter(r => r.kind === 'person' && r.connector === 'sitecrawl')
-    const person = people.some(p => personMatchesRole(p.value, who))                       // the requested role (or a founder-level one), not just any named person
+    // Contacts count only from the confirmed company's own site (same rule as actionability); a person on a foreign page is not "attached".
+    const own = site.domain ? (rows as SiteRow[]).filter(r => onCompanySite(r, site.domain)) : []
+    const people = own.filter(r => r.kind === 'person')
+    const person = !!site.person
     const wrongRole = !person && people.length > 0
-    const route = rows.some(r => r.connector === 'sitecrawl' && (r.kind === 'phone' || (r.kind === 'email' && !NOT_A_FOUNDER_ROUTE.test(r.value.split('@')[0].replace(/[._-]/g, '')))))
+    const route = !!site.route
     const refused = rows.some(r => r.kind === 'contact_rejected')
     const contact: CandidateResolution['contact'] = person && route ? 'attached' : refused && !person && !route ? 'refused' : 'missing'
     if (contact === 'refused') reasons.push(`every contact found was refused (${[...new Set(rows.filter(r => r.kind === 'contact_rejected').map(r => r.label))].join(', ')})`)
