@@ -208,6 +208,8 @@ body { font-size: 16px; line-height: 1.5; }
 /* #534: skip link - visually hidden until keyboard focus. */
 .skip-link { position: absolute; left: -9999px; top: 0; z-index: 100; background: #111; color: #fff; padding: .75rem 1.25rem; border-radius: 0 0 6px 0; font-size: .875rem; }
 .skip-link:focus-visible { left: 0; outline: 2px solid #fff; outline-offset: 2px; }
+/* #673: the skip link's target shows where focus landed (inset, so the scrolling pane does not clip it). */
+#main:focus-visible { outline: 3px solid rgba(138,77,255,.4); outline-offset: -3px; }
 /* #534: marketing nav links meet the 44px touch target. */
 .lp-navlink { display: inline-flex; align-items: center; min-height: 2.75rem; }
 /* #534: the app's mobile Menu toggle is a visually hidden checkbox; show its keyboard focus on the visible label. */
