@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server'
 // @ts-expect-error test shim export
 import { flushAfter } from 'next/server'
 import { setScanDb } from './sequence-route-db.ts'
-import { migrateScan, createJob, getJob } from '../../lib/scan/store.ts'
+import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { GET } from '../../app/api/scan/status/route.ts'
 

@@ -10,9 +10,6 @@ import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
 const html = (b: string) => `<html><body>${b}</body></html>`
 const PROSE = '<p>We have served the community for many years and we care about every family that walks through our doors every single day.</p>'
 const ARTICLE = html('<h1>New dental practice opens on Greenpoint Avenue in Sunnyside</h1><p>Smile Avenue Dental has opened at 45-04 Greenpoint Ave in Sunnyside, offering state-of-the-art treatments.</p>')
-const CA_HOME = html(`Smile Avenue Dental Group - Dentist in Pico Rivera, CA ${PROSE}<a href="/team">Team</a><a href="/contact">Contact</a>`)
-const CA_TEAM = html(`${PROSE}<h3>Sophia Rozov</h3><p>Dentist</p>`)
-const CA_CONTACT = html('<a href="tel:+15629040400">(562) 904-0400</a> <a href="mailto:info@smileavenuedental.com">info</a>')
 
 async function run(homeBySite: Record<string, Record<string, string>>, icpWhere: string[], lead = { signal: 'Opened a new practice in Sunnyside', excerpt: 'Smile Avenue Dental has opened at 45-04 Greenpoint Ave in Sunnyside', article: ARTICLE }) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)

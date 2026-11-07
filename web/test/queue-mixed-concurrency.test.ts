@@ -7,8 +7,8 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { anthropicProvider, openaiProvider, type Provider } from '../lib/llm/provider.ts'
-import { migrateScan, createJob, getJob } from '../lib/scan/store.ts'
+import type { Provider } from '../lib/llm/provider.ts'
+import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { kickRunner } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)

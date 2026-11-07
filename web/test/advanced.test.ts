@@ -95,7 +95,7 @@ test('x via operator index: consent alone, no session, no worker call - mirrors 
   migrateTinyfish(db); resetTinyfishState()
   let workerCalled = false
   const worker: WorkerFetch = async () => { workerCalled = true; return { items: [item], unsupported: null } }
-  const fetchImpl = (async (u: string) => new Response(JSON.stringify({ results: [
+  const fetchImpl = (async () => new Response(JSON.stringify({ results: [
     { url: 'https://x.com/acme/status/12345', title: 't', snippet: 'we are dumping our current sales tool, it never works', date: '2026-10-20' },
   ] }), { status: 200 })) as unknown as typeof fetch
   const env = { ...ON, TINYFISH_API_KEY: 'tf-key' }

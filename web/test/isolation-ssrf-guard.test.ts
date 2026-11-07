@@ -34,7 +34,7 @@ test('pinnedLookup serves only the validated address - no second DNS answer can 
 })
 
 const pubLookup: Lookup = async (host) => host === 'internal.example' ? [{ address: '169.254.169.254', family: 4 }] : [{ address: '93.184.216.34', family: 4 }]
-const htmlResponse = (url: string) => new Response('<html><title>t</title></html>', { status: 200, headers: { 'content-type': 'text/html' } })
+const htmlResponse = (_url: string) => new Response('<html><title>t</title></html>', { status: 200, headers: { 'content-type': 'text/html' } })
 
 test('fetchPublicHtml blocks a redirect chain that hops to a non-public host', async () => {
   const redirects = async (url: string | URL | Request) => {
@@ -55,7 +55,7 @@ test('fetchPublicHtml rejects credentialed, nonstandard-port and non-http(s) URL
 
 test('fetchPublicHtml gives up after the redirect cap instead of following forever', async () => {
   let calls = 0
-  const loop = (async (url: string | URL | Request) => { calls++; return new Response(null, { status: 302, headers: { location: 'https://loop.example/' + calls } }) }) as typeof fetch
+  const loop = (async () => { calls++; return new Response(null, { status: 302, headers: { location: 'https://loop.example/' + calls } }) }) as typeof fetch
   const r = await fetchPublicHtml('https://loop.example/0', { lookup: pubLookup, fetchImpl: loop })
   assert.deepEqual(r, { error: 'blocked' })
   assert.ok(calls <= 5, `expected bounded redirect following, got ${calls}`)

@@ -10,7 +10,7 @@ import { batchStatus, queuePendingRows } from '@/lib/scan/csv-import'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
-async function load(req: NextRequest, batch: string, action: Action) {
+async function load(batch: string, action: Action) {
   const user = await requireUser()
   if (!user) return { res: NextResponse.json({ error: 'Not signed in' }, { status: 401 }) }
   const no = denied(user, action)
@@ -21,9 +21,9 @@ async function load(req: NextRequest, batch: string, action: Action) {
   return { user, status }
 }
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ batch: string }> }) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ batch: string }> }) {
   const { batch } = await params
-  const r = await load(req, batch, 'read')
+  const r = await load(batch, 'read')
   if ('res' in r) return r.res
   return NextResponse.json(r.status)
 }
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ batc
 // Failed jobs are not re-run - re-import the file to try those domains again.
 export async function POST(req: NextRequest, { params }: { params: Promise<{ batch: string }> }) {
   const { batch } = await params
-  const r = await load(req, batch, 'operate')
+  const r = await load(batch, 'operate')
   if ('res' in r) return r.res
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const rl = (await rateLimit(`csv-resume:${r.user.tenantId}`, 20, 24 * 60 * 60 * 1000))
