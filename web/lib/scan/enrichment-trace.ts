@@ -68,31 +68,101 @@ export function mergeIntoRunReport(db: Database.Database, jobId: string, attempt
 }
 
 // Paid contact enrichment (#923). The writers record connector 'enrich:apollo' / 'enrich:pdl' exactly, so match those, not a
-// bare provider prefix. Every row is classified; a failure row is never counted as a successful lookup.
+// bare provider prefix.
+//
+// One logical provider call = one CLAIM row (connector_claims; the writers settle exactly one claim per call):
+//   Apollo 'step:org ...'      the paid organization lookup  -> a COMPANY outcome (matched / not found / not this company)
+//   Apollo 'step:people ...'   the people search             -> a CONTACT outcome
+//   PDL    'people ...'        the people search             -> a CONTACT outcome
+// The audit table is a different shape: one attempt also writes a compatibility 'org X' row beside the org claim's own row, a
+// PDL rejection writes a second descriptive row, and a company rejected at the org step settles the people claim WITHOUT
+// calling the provider. Counting audit rows one-for-one therefore reported three lookups and two results for one or two
+// calls and let a company-only match read as a contact success. Company success and contact success are kept apart:
+// 'with_results' is the number of lookups that attached a contact, never a matched organization.
 export const PAID_ENRICH_CONNECTORS = ['enrich:apollo', 'enrich:pdl'] as const
 const HELD = new Set<string>([...ENRICH_SKIP_STATUSES, 'reserved', 'skipped', 'held'])
-export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, jobId: string): { ok: number; empty: number; held: number; failed: number; total: number; unreadable: boolean } {
-  const out = { ok: 0, empty: 0, held: 0, failed: 0, total: 0, unreadable: false }
-  let rows: { status: string; results: number }[]
+const NO_DOMAIN = 'contact rejected: no domain to confirm the company'
+export interface PaidEnrichmentOutcomes {
+  ok: number; empty: number; held: number; failed: number; total: number; unreadable: boolean
+  company: { ok: number; empty: number; rejected: number }
+}
+const claimMemoRejection = (memo: string | null): string | null => {
+  if (!memo) return null
+  try { const m = JSON.parse(memo) as { rejected?: unknown }; return typeof m.rejected === 'string' && m.rejected ? m.rejected : null } catch { return null }
+}
+export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, jobId: string): PaidEnrichmentOutcomes {
+  const out: PaidEnrichmentOutcomes = { ok: 0, empty: 0, held: 0, failed: 0, total: 0, unreadable: false, company: { ok: 0, empty: 0, rejected: 0 } }
+  const marks = PAID_ENRICH_CONNECTORS.map(() => '?').join(',')
+  let audit: { connector: string; lookup: string; status: string; results: number }[]
+  let claims: { connector: string; lookup: string; status: string; memo: string | null }[]
   try {
-    rows = db.prepare(`SELECT status, results FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector IN (${PAID_ENRICH_CONNECTORS.map(() => '?').join(',')})`).all(tenantId, jobId, ...PAID_ENRICH_CONNECTORS) as { status: string; results: number }[]
+    audit = db.prepare(`SELECT connector, lookup, status, results FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector IN (${marks}) ORDER BY rowid`).all(tenantId, jobId, ...PAID_ENRICH_CONNECTORS) as typeof audit
   } catch { out.unreadable = true; return out }
-  for (const r of rows) {
-    out.total++
-    if (r.status === 'ok' && r.results > 0) out.ok++
-    else if (r.status === 'ok' || r.status === 'empty') out.empty++
-    else if (HELD.has(r.status)) out.held++
-    else out.failed++ // rejected (name_mismatch ...), provider errors, anything unknown
+  try {
+    claims = db.prepare(`SELECT connector, lookup, status, memo FROM connector_claims WHERE tenant_id = ? AND scan_job_id = ? AND connector IN (${marks})`).all(tenantId, jobId, ...PAID_ENRICH_CONNECTORS) as typeof claims
+  } catch { claims = [] }
+
+  if (claims.length === 0) {
+    // No claim rows (a job from before per-call claims, or a database without them): the audit rows are all there is.
+    for (const r of audit) {
+      out.total++
+      if (r.status === 'ok' && r.results > 0) out.ok++
+      else if (r.status === 'ok' || r.status === 'empty') out.empty++
+      else if (HELD.has(r.status)) out.held++
+      else out.failed++ // rejected (name_mismatch ...), provider errors, anything unknown
+    }
+    return out
+  }
+
+  // The latest audit status per claimed lookup (the claim's own audit row is settled in place), and which audit rows belong to a claim.
+  const key = (c: string, l: string) => `${c}\u0000${l}`
+  const claimed = new Set(claims.map(c => key(c.connector, c.lookup)))
+  const statusOf = new Map<string, { status: string; results: number }>()
+  for (const r of audit) if (claimed.has(key(r.connector, r.lookup)) && !(statusOf.has(key(r.connector, r.lookup)) && r.status.startsWith('role-filtered'))) statusOf.set(key(r.connector, r.lookup), { status: r.status, results: r.results })
+
+  // Organization claims whose returned company was NOT this lead's: the people claim they settle was never sent to the provider.
+  const orgRejections = new Map<string, number>()
+  for (const c of claims) if (c.lookup.startsWith('step:org ')) { const why = claimMemoRejection(c.memo); if (why) orgRejections.set(why, (orgRejections.get(why) ?? 0) + 1) }
+
+  for (const c of claims) {
+    const a = statusOf.get(key(c.connector, c.lookup))
+    const heldOrFailed = () => { if (!a || HELD.has(a.status)) out.held++; else out.failed++ } // a reserved claim: held for review, or its failure code
+    if (c.lookup.startsWith('step:org ')) {
+      out.total++ // the paid organization lookup is a real call
+      if (c.status === 'ok') { if (claimMemoRejection(c.memo)) out.company.rejected++; else out.company.ok++ }
+      else if (c.status === 'empty') out.company.empty++
+      else if (c.status === 'reserved') heldOrFailed()
+      else out.failed++
+      continue
+    }
+    // A contact step. Settled 'rejected' without a provider call: no domain to confirm, or the company already rejected at the org step.
+    let called = true
+    if (c.status === 'rejected' && a) {
+      if (a.status === NO_DOMAIN) called = false
+      else { const left = orgRejections.get(a.status) ?? 0; if (left > 0) { orgRejections.set(a.status, left - 1); called = false } }
+    }
+    if (called) out.total++
+    if (c.status === 'ok') out.ok++
+    else if (c.status === 'empty') out.empty++
+    else if (c.status === 'reserved') heldOrFailed()
+    else out.failed++ // contact rejected (company/role contradiction), anything unknown
+  }
+  // Audit rows with no claim never reached a provider: a deliberate hold (budget, credits, circuit) or a setup failure. The
+  // compatibility 'org X' rows land here too (they only ever repeat an org claim) and are not events of their own.
+  for (const r of audit) {
+    if (claimed.has(key(r.connector, r.lookup)) || r.status === 'ok' || r.status === 'empty') continue
+    if (HELD.has(r.status)) out.held++; else out.failed++
   }
   return out
 }
 export function notePaidEnrichment(trace: EnrichmentTrace, db: Database.Database, tenantId: string, jobId: string): void {
   const o = paidEnrichmentOutcomes(db, tenantId, jobId)
-  const detail = { lookups: o.total, with_results: o.ok, empty: o.empty, held: o.held, failed: o.failed }
+  // lookups = logical provider calls; with_results = lookups that attached a contact (a matched company is company_ok, not a result).
+  const detail = { lookups: o.total, with_results: o.ok, empty: o.empty, held: o.held, failed: o.failed, company_ok: o.company.ok, company_empty: o.company.empty, company_rejected: o.company.rejected }
   if (o.unreadable) trace.note('paid_enrichment', 'failed', 'the paid-enrichment audit could not be read', detail)
-  else if (o.total === 0) trace.note('paid_enrichment', 'unavailable', 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
-  else if (o.ok > 0) trace.note('paid_enrichment', 'ok', null, detail)
+  else if (o.total === 0 && o.held === 0 && o.failed === 0) trace.note('paid_enrichment', 'unavailable', 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
+  else if (o.ok > 0) trace.note('paid_enrichment', 'ok', o.failed > 0 ? `${o.ok} lookup${o.ok === 1 ? '' : 's'} returned a contact; ${o.failed} ${o.failed === 1 ? 'was' : 'were'} rejected or failed` : null, detail)
   else if (o.failed > 0) trace.note('paid_enrichment', 'failed', 'paid lookups were rejected or failed; none returned a contact', detail)
-  else if (o.empty > 0) trace.note('paid_enrichment', 'attempted_no_result', 'paid lookups ran and found no contact', detail)
+  else if (o.empty > 0 || o.company.ok > 0 || o.company.empty > 0) trace.note('paid_enrichment', 'attempted_no_result', o.company.ok > 0 ? 'the company matched but no contact was found' : 'paid lookups ran and found no contact', detail)
   else trace.note('paid_enrichment', 'skipped', 'paid lookups were held (budget, credits, circuit or fallback off)', detail)
 }
