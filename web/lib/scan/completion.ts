@@ -3,6 +3,7 @@
 // lead's score is recomputed from the evidence it actually has (the model's candidate score is replaced; nothing is added that was not found). No gate is touched: the domain still passes the identity check,
 // the date is only ever a structured date on a page about the SAME event, and a lead is never promoted or demoted here.
 import type Database from 'better-sqlite3'
+import { getDomain } from 'tldts'
 import { addEnrichment } from '../connectors/store.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
 import { NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf } from './actionable.ts'
@@ -31,12 +32,23 @@ function kept(db: Database.Database, tenantId: string, jobId: string): (LeadRow 
 }
 // Site contacts count only while their SOURCE is the lead's confirmed domain (the page is on it; a published email is at it) and only for a lead that has a confirmed domain at all: a contact from a namesake's
 // site (or one that outlived a refused domain) is worth nothing here, however it got attached.
-const reg = (h: string | null | undefined): string | null => { const x = (h ?? '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, ''); const p = x.split('.'); return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(x) ? p.slice(-2).join('.') : null }
+// #910: ONE suffix-aware identity for a host (the same tldts registrable domain the site crawler uses), with an explicit policy: private suffixes count as
+// suffixes (alpha.github.io and beta.github.io are two owners, not one), so a.co.uk and unrelated.co.uk never share an identity and careers.alpha.co.uk is
+// alpha.co.uk. A malformed host, an IP, a bare suffix or a single label is no identity at all (null), so it can never match anything.
+const HOST_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
+export const reg = (h: string | null | undefined): string | null => {
+  const x = (h ?? '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '').replace(/\.$/, '').replace(/^www\./, '')
+  if (!HOST_RE.test(x)) return null
+  const d = getDomain(x, { allowPrivateDomains: true })
+  return d && HOST_RE.test(d) ? d : null
+}
+// The registrable domain of a published email address: exactly one '@', a non-empty local part, a well-formed host. Anything else is no identity.
+export const emailReg = (v: string | null | undefined): string | null => { const m = /^([^@\s]+)@([^@\s]+)$/.exec((v ?? '').trim()); return m ? reg(m[2]) : null }
 function factsOf(db: Database.Database, tenantId: string, l: LeadRow & { who: string }): Facts {
   const confirmed = domainConfirmed(db, tenantId, l.id, l.company_domain)
   const ld = confirmed ? reg(l.company_domain) : null   // contacts count only against a CONFIRMED domain
   const rows = (db.prepare("SELECT kind, value, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'phone', 'email')").all(l.id, tenantId) as { kind: string; value: string; source_url: string }[])
-    .filter(r => { if (!ld) return false; let h: string | null = null; try { h = reg(new URL(r.source_url).hostname) } catch { h = null }; return h === ld && (r.kind !== 'email' || reg(r.value.split('@').pop()) === ld) })
+    .filter(r => { if (!ld) return false; let h: string | null = null; try { h = reg(new URL(r.source_url).hostname) } catch { h = null }; return h === ld && (r.kind !== 'email' || emailReg(r.value) === ld) })
   return {
     date: realDay(l.event_date), domain: confirmed,
     person: rows.some(r => r.kind === 'person' && personMatchesRole(r.value, l.who)),
