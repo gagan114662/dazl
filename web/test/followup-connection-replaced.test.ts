@@ -38,7 +38,8 @@ async function setup() {
   db.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_outcome, consecutive_failures) VALUES (?, 'reply_sync', ?, ?, 'success', 0)").run(T, NOW, NOW)
   return db
 }
-const thread = (db: Database.Database) => db.prepare('SELECT followups_sent, stopped, last_followup_at FROM followup_threads WHERE tenant_id = ? AND thread_id = ?').get(T, TH)
+type ThreadRow = { followups_sent: number; stopped: string | null; last_followup_at: number | null }
+const thread = (db: Database.Database) => db.prepare('SELECT followups_sent, stopped, last_followup_at FROM followup_threads WHERE tenant_id = ? AND thread_id = ?').get(T, TH) as ThreadRow
 const autopilot = (db: Database.Database) => db.prepare('SELECT paused, pause_reason FROM autopilot_settings WHERE tenant_id = ?').get(T) as { paused: number; pause_reason: string | null }
 
 for (const [label, reply] of [['old token success', () => json({ access_token: 'old-at' })], ['old invalid_grant', () => json({ error: 'invalid_grant' }, 400)]] as const) {
@@ -55,10 +56,10 @@ for (const [label, reply] of [['old token success', () => json({ access_token: '
     const r1 = await runFollowups(db, T, 'Biz', { ...base, fetchImpl: replacing })
     assert.equal(r1.stopped, 'gmail_unavailable')
     assert.equal(sends, 0, 'nothing is sent with a replaced connection')
-    assert.equal(db.prepare("SELECT count(*) AS n FROM followup_messages WHERE tenant_id = ? AND status IN ('sending','uncertain')").get(T).n, 0, 'claim released, nothing stuck in sending')
+    assert.equal((db.prepare("SELECT count(*) AS n FROM followup_messages WHERE tenant_id = ? AND status IN ('sending','uncertain')").get(T) as { n: number }).n, 0, 'claim released, nothing stuck in sending')
     assert.deepEqual(thread(db), { followups_sent: 0, stopped: null, last_followup_at: null }, 'the pending follow-up is still due')
     assert.equal(autopilot(db).paused, 0, 'a replacement does not pause autopilot')
-    assert.equal(db.prepare("SELECT status FROM gmail_accounts WHERE tenant_id = ?").get(T).status, 'active')
+    assert.equal((db.prepare("SELECT status FROM gmail_accounts WHERE tenant_id = ?").get(T) as { status: string }).status, 'active')
 
     // The replacement grants read access again (a fresh connection starts without it), so reply safety can clear.
     db.prepare('UPDATE gmail_accounts SET read_granted = 1 WHERE tenant_id = ?').run(T)

@@ -45,15 +45,44 @@ for (const [label, newEmail] of [['another address', 'new@new.example'], ['the s
     assert.ok(err instanceof GmailError && err.message === 'connection_replaced')
     assert.deepEqual(row(db), { email: newEmail, status: 'active' })
   })
-  test(`old connection's disconnect does not delete a replacement (${label})`, async () => {
+  test(`disconnect/reconnect race: the old row is gone before the revoke, a reconnect during the revoke stays (${label})`, async () => {
     const db = mk(); await connect(db, 'me@acme.example', 'rt-old')
-    const err = await disconnectGmail(db, 'A', { env, master, fetchImpl: (async () => {
-      db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run()
-      await connect(db, newEmail, 'rt-new')
+    let revokes = 0, rowDuringRevoke: unknown = 'unset'
+    await disconnectGmail(db, 'A', { env, master, fetchImpl: (async (url: string) => {
+      revokes++
+      assert.match(String(url), /revoke/)
+      rowDuringRevoke = row(db)                 // #928: the local delete already happened, synchronously
+      await connect(db, newEmail, 'rt-new')     // the user reconnects while the old grant's revoke is in flight
       return json({})
-    }) as unknown as typeof fetch }).catch((e: unknown) => e)
+    }) as unknown as typeof fetch })
+    assert.equal(revokes, 1)
+    assert.equal(rowDuringRevoke, undefined, 'a sync racing the revoke already sees the old connection gone')
+    assert.deepEqual(row(db), { email: newEmail, status: 'active' }, 'the reconnect made during the revoke is intact')
+  })
+  test(`old connection's disconnect does not delete a replacement that landed before its delete (${label})`, async () => {
+    const db = mk(); await connect(db, 'me@acme.example', 'rt-old')
+    const old = db.prepare("SELECT refresh_ct FROM gmail_accounts WHERE tenant_id = 'A'").get() as { refresh_ct: string }
+    // Another process replaces the connection between this call's read and its delete (multi-process PG/SQLite).
+    let replaced = false
+    const racy = new Proxy(db, { get(t, k) {
+      if (k !== 'prepare') { const v = Reflect.get(t, k); return typeof v === 'function' ? v.bind(t) : v }
+      return (sql: string) => {
+        const st = t.prepare(sql)
+        if (!/^SELECT refresh_ct FROM gmail_accounts/.test(sql)) return st
+        return { get: (...a: unknown[]) => {
+          const r = st.get(...a)
+          if (!replaced) { replaced = true; t.prepare("UPDATE gmail_accounts SET refresh_ct = 'other-ct', email = ? WHERE tenant_id = 'A'").run(newEmail) }
+          return r
+        } }
+      }
+    } }) as Database.Database
+    let revokes = 0
+    const err = await disconnectGmail(racy, 'A', { env, master, fetchImpl: (async () => { revokes++; return json({}) }) as unknown as typeof fetch }).catch((e: unknown) => e)
+    assert.ok(replaced, 'the race was exercised')
     assert.ok(err instanceof GmailError && err.message === 'connection_replaced', 'a stale disconnect is not reported as success')
+    assert.equal(revokes, 0, 'the old grant is not revoked when it was replaced (same-account revoke could kill the replacement)')
     assert.deepEqual(row(db), { email: newEmail, status: 'active' })
+    assert.notEqual(old.refresh_ct, 'other-ct')
   })
 }
 
