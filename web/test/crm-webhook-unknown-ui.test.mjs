@@ -18,7 +18,7 @@ const load = (path, dependencies, globals = {}) => {
   return exports
 }
 class CrmPushError extends Error { outcome = 'unknown' }
-function route(provider, outcome = 'unknown') {
+function route(provider, outcome = 'unknown', unknownMessage) {
   const calls = []
   const lead = { id: 'lead-1', scan_job_id: 'job-1', company: 'Example', name: 'Owner' }
   const record = name => (...args) => { calls.push({ name, args }); return true }
@@ -28,7 +28,7 @@ function route(provider, outcome = 'unknown') {
     finishClaim: record('finish'), auditPush: record('auditPush'), resolveClaim: record('resolve'),
     claimState: () => ({ state: 'unknown', externalId: null }),
     disconnectCrm() {}, saveCrmConfig() {},
-    pushLead: async () => { calls.push({ name: 'push' }); if (outcome === 'unknown') throw new CrmPushError(provider === 'webhook' ? 'Webhook answered with a redirect; delivery is uncertain' : 'CRM delivery is uncertain'); return { message: 'Sent', externalId: null } },
+    pushLead: async () => { calls.push({ name: 'push' }); if (outcome === 'unknown') throw new CrmPushError(unknownMessage ?? (provider === 'webhook' ? 'Webhook answered with a redirect; delivery is uncertain' : 'CRM delivery is uncertain')); return { message: 'Sent', externalId: null } },
   }
   const api = load('../app/api/crm/route.ts', {
     'next/server': { NextResponse: { json: (body, options = {}) => ({ body, status: options.status ?? 200 }) } },
@@ -98,4 +98,23 @@ test('direct webhook success remains done with no native claim', async () => {
   assert.equal(reply.status, 200); assert.equal(reply.body.ok, true)
   const ui = component([reply]); await ui.click('Push to CRM'); assert.equal(ui.state.kind, 'done')
   assert.deepEqual(api.calls.map(x => x.name), ['push', 'auditPush'])
+})
+
+// This typed UNKNOWN is an upstream contract fixture, not a widening of transport-error classification.
+test('non-redirect typed webhook UNKNOWN preserves its cause and never asserts a redirect', async () => {
+  const cause = 'Webhook did not answer; delivery uncertain'
+  const api = route('webhook', 'unknown', cause)
+  const reply = await api.post({ action: 'push' })
+  assert.equal(reply.status, 502)
+  assert.equal(reply.body.outcome, 'unknown')
+  assert.equal(reply.body.error, cause)
+  assert.equal(reply.body.resolution, 'webhook_endpoint')
+  const ui = component([reply]); await ui.click('Push to CRM')
+  const html = renderToStaticMarkup(ui.render())
+  assert.match(html, /Webhook did not answer; delivery uncertain/)
+  assert.match(html, /If it redirected,/)
+  assert.doesNotMatch(html, /answered with a redirect|was redirected|<button|It is in my CRM|It is not there|Try again|Check again/)
+  assert.deepEqual(api.calls.map(x => x.name), ['push', 'auditPush'])
+  assert.deepEqual(ui.requests, [{ action: 'push', lead_id: 'lead-1' }])
+  await new Promise(resolve => setTimeout(resolve, 20)); ui.render(); assert.equal(ui.requests.length, 1)
 })
