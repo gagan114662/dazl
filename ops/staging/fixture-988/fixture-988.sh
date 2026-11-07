@@ -27,8 +27,9 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=/srv/dazl-staging                       # the service user's home
 LOCK=/srv/dazl-staging/.deploy.lock          # the installed writer lock the deploy takes
 CURRENT=/srv/dazl-staging/current            # symlink to the immutable compiled release
-EXPECT_BUILD=3fb1e7dfdcca1bdca65af3113b5aca3fa55551cf
-EXPECT_INSTANCE=786b801b2fa7
+# The build and instance are INPUTS, never defaults baked into the package: the operator names the exact release being qualified, and a staging that has moved on (a deploy since the review) refuses
+# instead of being run against code nobody reviewed. At the last check: FIXTURE_EXPECT_BUILD=c17bcb2af431e642c6be6452a5cab2f1ddc6810e FIXTURE_EXPECT_INSTANCE=6517513f7b26
+EXPECT_BUILD=${FIXTURE_EXPECT_BUILD:-}; EXPECT_INSTANCE=${FIXTURE_EXPECT_INSTANCE:-}
 SERVICE=dazl-staging.service
 RUN_AS=dazl-staging
 ENV_FILE=/etc/dazl-staging/env
@@ -41,6 +42,8 @@ fail() { echo "fixture-988: REFUSED: $*" >&2; exit 3; }
 note() { echo "fixture-988: $*"; }
 val() { sed -n "s/^\(export \)\{0,1\}$1=//p" "$2" 2>/dev/null | tail -n 1 | sed "s/^[\"']//; s/[\"']$//"; }
 
+printf %s "$EXPECT_BUILD" | grep -Eq '^[0-9a-f]{40}$' || { echo "fixture-988: REFUSED: FIXTURE_EXPECT_BUILD must be the full 40-character commit of the release being qualified" >&2; exit 3; }
+printf %s "$EXPECT_INSTANCE" | grep -Eq '^[0-9a-f]{12}$' || { echo "fixture-988: REFUSED: FIXTURE_EXPECT_INSTANCE must be the 12-character instance id shown by /api/health" >&2; exit 3; }
 # ---- 0. this package: root-owned, not writable by others, bytes match SHA256SUMS ------------------------------------------------------------------
 [ "$(id -u)" = 0 ] || fail "run as root"
 [ "$(stat -c '%u' -- "$HERE")" = 0 ] && [ -z "$(find "$HERE" -perm /022 -print -quit)" ] || fail "$HERE must be root-owned and not group/world writable"
@@ -72,7 +75,7 @@ REL=$(readlink -f -- "$CURRENT"); [ "$(basename "$REL")" = "$EXPECT_BUILD" ] || 
 NODE=$(command -v node) || fail "no node"; "$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=6)?0:1)' || fail "node $("$NODE" -v) cannot strip types (need >= 22.6)"
 H=$(curl -fsS --max-time 5 "$HEALTH" 2>/dev/null) || fail "health does not answer; nothing was changed"
 echo "$H" | grep -q "\"commit\":\"$EXPECT_BUILD\"" && echo "$H" | grep -q '"ok":true' || fail "health is not ok on $EXPECT_BUILD: $H"
-echo "$H" | grep -q "\"instance\":\"$EXPECT_INSTANCE\"" || note "NOTE: instance is not $EXPECT_INSTANCE (the service restarted since the review); build is still $EXPECT_BUILD"
+echo "$H" | grep -q "\"instance\":\"$EXPECT_INSTANCE\"" || fail "health reports a different instance than FIXTURE_EXPECT_INSTANCE=$EXPECT_INSTANCE (the service restarted or redeployed since it was read): $H"
 
 # ---- 3. the database, production, the lock, the output directory ----------------------------------------------------------------------------------
 [ -f "$STAGING_DB" ] && [ ! -L "$STAGING_DB" ] && [ "$(readlink -f -- "$STAGING_DB")" = "$STAGING_DB" ] || fail "$STAGING_DB is not a plain file at that path"

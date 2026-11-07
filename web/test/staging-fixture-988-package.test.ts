@@ -25,7 +25,7 @@ test('#988 package: lib/staging.ts is self-contained (the package ships no web/ 
 test('#988 package: the host script is bound to the installed layout, asserts the real service, and never writes into the release', () => {
   const s = pkg('fixture-988.sh').toString()
   assert.equal(spawnSync('bash', ['-n', `${root}ops/staging/fixture-988/fixture-988.sh`]).status, 0, 'bash -n')
-  for (const needle of ['LOCK=/srv/dazl-staging/.deploy.lock', 'CURRENT=/srv/dazl-staging/current', 'EXPECT_BUILD=3fb1e7dfdcca1bdca65af3113b5aca3fa55551cf', 'EXPECT_INSTANCE=786b801b2fa7', 'STAGING_DB=/var/lib/dazl-staging/app.db', 'SERVICE=dazl-staging.service', 'sha256sum --check', '--preserve-symlinks --preserve-symlinks-main', '/proc/$PID/environ', 'install -d -m 0700 -o "$RUN_AS" -g "$RUN_AS" "$OUT_ROOT"', 'flock -n 9'])
+  for (const needle of ['LOCK=/srv/dazl-staging/.deploy.lock', 'CURRENT=/srv/dazl-staging/current', 'EXPECT_BUILD=${FIXTURE_EXPECT_BUILD:-}', 'EXPECT_INSTANCE=${FIXTURE_EXPECT_INSTANCE:-}', 'STAGING_DB=/var/lib/dazl-staging/app.db', 'SERVICE=dazl-staging.service', 'sha256sum --check', '--preserve-symlinks --preserve-symlinks-main', '/proc/$PID/environ', 'install -d -m 0700 -o "$RUN_AS" -g "$RUN_AS" "$OUT_ROOT"', 'flock -n 9'])
     assert.ok(s.includes(needle), needle)
   assert.doesNotMatch(s, /var\/lib\/dazl-staging-deploy\/\.deploy\.lock/, 'not the wrong lock'); assert.doesNotMatch(s, /\$ROOT\/web|git -C/, 'no source-checkout assumption')
   const code = s.replace(/^\s*#.*$/gm, '').replace(/ #[^\n"']*$/gm, '').replace(/"(\\.|[^"\\])*"/g, '""')   // comments and message strings removed: what is left is what executes
@@ -40,7 +40,7 @@ test('#988 package: the host script is bound to the installed layout, asserts th
   assert.ok(!/(until|while) .*systemctl start/.test(s), 'no retry loop around start')
 })
 test('#988 package: running the script without root, or from a mode it does not know, refuses before touching anything', () => {
-  const run = (...a: string[]) => spawnSync('bash', [`${root}ops/staging/fixture-988/fixture-988.sh`, ...a], { encoding: 'utf8' })
+  const run = (...a: string[]) => spawnSync('bash', [`${root}ops/staging/fixture-988/fixture-988.sh`, ...a], { encoding: 'utf8', env: { ...process.env, FIXTURE_EXPECT_BUILD: 'c17bcb2af431e642c6be6452a5cab2f1ddc6810e', FIXTURE_EXPECT_INSTANCE: '6517513f7b26' } })
   assert.equal(run().status, 2); assert.equal(run('nonsense').status, 2)
   if (process.getuid && process.getuid() !== 0) { const r = run('preflight'); assert.equal(r.status, 3); assert.match(r.stderr, /run as root/) }
 })
@@ -69,4 +69,14 @@ test('#988 package: the script wires those decisions in, and every failure path 
   assert.ok(s.indexOf('STOP_OK=1') < s.indexOf('DB_TOUCHED=1') && s.indexOf('DB_TOUCHED=1') < s.indexOf('VERIFIED=1'))
   assert.ok(/LEFT STOPPED ON PURPOSE/.test(s), 'a deliberate stop is announced')
   assert.doesNotMatch(s.replace(/#.*$/gm, '').replace(/"(\\.|[^"\\])*"/g, '""'), /systemctl is-active/, 'no inferring a stop from is-active')
+})
+
+test('#988 package: the release under test is an explicit input: no baked-in build, and a missing or malformed build or instance refuses before anything else', () => {
+  const s = readFileSync(SCRIPT, 'utf8').replace(/^\s*#.*$/gm, '')
+  assert.doesNotMatch(s, /\b[0-9a-f]{40}\b/, 'no commit baked into the executable lines'); assert.doesNotMatch(s, /EXPECT_INSTANCE=[0-9a-f]{12}/)
+  const run = (env: Record<string, string | undefined>) => spawnSync('bash', [SCRIPT, 'preflight'], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', ...env } as unknown as NodeJS.ProcessEnv })
+  for (const env of [{}, { FIXTURE_EXPECT_BUILD: 'abc', FIXTURE_EXPECT_INSTANCE: '6517513f7b26' }, { FIXTURE_EXPECT_BUILD: 'c17bcb2af431e642c6be6452a5cab2f1ddc6810e' }, { FIXTURE_EXPECT_BUILD: 'c17bcb2af431e642c6be6452a5cab2f1ddc6810e', FIXTURE_EXPECT_INSTANCE: 'xyz' }]) {
+    const r = run(env); assert.equal(r.status, 3, JSON.stringify(env)); assert.match(r.stderr, /FIXTURE_EXPECT_/)
+  }
+  const r = run({ FIXTURE_EXPECT_BUILD: 'c17bcb2af431e642c6be6452a5cab2f1ddc6810e', FIXTURE_EXPECT_INSTANCE: '6517513f7b26' }); if (process.getuid && process.getuid() !== 0) assert.match(r.stderr, /run as root/)
 })
