@@ -63,6 +63,12 @@ jobs:
       # The #409 KeyInline nested-form regression: inside the first-run brain form, 'Save key' (click AND Enter) must run the real llm-key PUT with zero native document POSTs. It must run, not skip.
       - name: KeyInline save inside the brain form (no nested-form capture, click + Enter)
         run: SHOTS=preview/key-inline node test/ui/key-inline-save.ui.mjs | tee /tmp/ki.out && ! grep -q '^NOT RUN' /tmp/ki.out
+      # Refs #919: exact production entry/progress labels with all-off, trial, no-key and enrichment-only fixtures.
+      - name: Truthful discovery availability at desktop and mobile (no live sources)
+        run: |
+          mkdir -p preview/source-availability/1280 preview/source-availability/390
+          WIDTH=1280 SHOTS=preview/source-availability/1280 node test/ui/source-availability.ui.mjs
+          WIDTH=390 SHOTS=preview/source-availability/390 node test/ui/source-availability.ui.mjs
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
