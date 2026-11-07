@@ -14,7 +14,9 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
   const acc = db.prepare('SELECT read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number; status: string } | undefined
-  return NextResponse.json({ available: true, gmail_connected: !!acc, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.tenantId) }, bounce_scan: { version: BOUNCE_SCAN_CONSENT_VERSION, text: BOUNCE_SCAN_CONSENT_TEXT, accepted: hasBounceScanConsent(db, user.tenantId) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.tenantId), autopilot_on: getState(db, user.tenantId).enabled, inbound: recentInbound(db, user.tenantId) })
+  const gmail_status = !acc ? 'none' : acc.status === 'active' ? 'active' : 'needs_reconnect'
+  // #931: connected means an ACTIVE account; a needs_reconnect row is reported separately, not as connected
+  return NextResponse.json({ available: true, gmail_connected: gmail_status === 'active', gmail_status, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.tenantId) }, bounce_scan: { version: BOUNCE_SCAN_CONSENT_VERSION, text: BOUNCE_SCAN_CONSENT_TEXT, accepted: hasBounceScanConsent(db, user.tenantId) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.tenantId), autopilot_on: getState(db, user.tenantId).enabled, inbound: recentInbound(db, user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
