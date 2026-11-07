@@ -59,6 +59,7 @@ async function open({ server = { web_index: false, news: true, websites: true },
     if (p === '/api/settings/advanced') return json(ADV)
     if (p === '/api/settings/profile') return json({ business_name: '', sells: '', website: '', buyer: null })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
+    if (p === '/api/scan/estimate' && m === 'POST') return json({estimate:{rows:[],total:{min:0,max:0},unpriced:[],payer:'you',assumptions:['Synthetic UI only; no provider scan.'],cap:{max_usd:null,reserved_usd:0,remaining_usd:null,binding:null,month_cap_usd:null,month_reserved_usd:0,unknown:false,capped_total:{min:0,max:0}},verdict:{ok:true,reason:null,message:'Synthetic estimate',change:[],warning:null},ack:'synthetic-ui'}})
     if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'b'.repeat(24) }, 202) }
     if (p === '/api/scan/status') return json({ status: 'running', lead_count: 0, attempts: 1, max_attempts: 3 })
     return json({}, 404)
@@ -95,6 +96,7 @@ try {
   await page.getByText('Also search public GitHub repositories').click()
   await page.getByTestId('more-sources').locator('summary').first().click()
   await page.getByRole('button', { name: 'Find leads' }).click()
+  await page.getByTestId('estimate-confirm-run').click()
   const run = page.getByTestId('run-sources'); await run.waitFor({ state: 'attached' })
   await page.getByTestId('scan-progress').getByRole('button', { name: 'About this scan' }).click() // the sources line sits behind the progress card's (i)
   await run.waitFor()
@@ -103,7 +105,7 @@ try {
   assert.equal(await page.getByText('Searching sources...').count(), 0)
   assert.equal(await box.count(), 0, 'the entry list is not shown over a running scan')
   assert.deepEqual(scanBodies[0].sources?.adapters, ['github'])
-  assert.deepEqual(writes, ['POST /api/scan'])
+  assert.deepEqual(writes, ['POST /api/scan/estimate', 'POST /api/scan'])
   await shot(page, 'progress')
   await ctx.close()
   // No key and the free searches used up: research is unavailable, with Add key.
@@ -130,6 +132,7 @@ try {
     if (label !== 'no-key') {
       await off.page.getByLabel('Who do you want to reach?').fill('Synthetic request, no actual scan runs')
       await off.page.getByRole('button', {name:'Find leads'}).click()
+      await off.page.getByTestId('estimate-confirm-run').click()
       await off.page.getByTestId('scan-progress').getByRole('button', {name:'About this scan'}).click()
       assert.match(await off.page.getByTestId('run-sources').textContent(), /no usable primary discovery source/)
       assert.doesNotMatch(await off.page.getByTestId('run-sources').textContent(), /Web research with your AI key/)
