@@ -9,7 +9,8 @@ import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
-import { contactsFromEnrichments, PEOPLE_SOURCE, type RankedPerson } from '@/lib/people/rank'
+import { contactsFromEnrichments, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
+import { identityOf } from '@/lib/scan/opportunity'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
@@ -1108,13 +1109,14 @@ export default function LeadsClient() {
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
             {l.enrichments && l.enrichments.some(e => e.kind === 'contact' || e.kind === 'person') && (() => {
-              const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
+              // #781: a crawled person is verified current only on the lead's established / user-confirmed website (identityOf)
+              const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', Date.now(), identityOf({ id: l.id, contact: l.contact }, l.enrichments))
               // #383 criterion 4: two sections, each ordered by title match (lib/people/currency.ts has the owner's definition).
               const { verified, searchOnly } = splitByCurrency(people)
               const row = (p: RankedPerson) => (
                 <div key={p.name + (p.title ?? '')} className="text-gray-400">
                   <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
-                  <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && p.currency === 'verified_current' ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
+                  <span className="text-gray-500">via {peopleSourceText(p)}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && (p.currency === 'verified_current' || p.verified.reason) ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
                   {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
                   {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                 </div>
