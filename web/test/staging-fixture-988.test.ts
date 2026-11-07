@@ -5,13 +5,15 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { createQueryJob, finishJob, type LeadRow } from '../lib/scan/store-db.ts'
-import { apply, checkDbFile, plan, fixtureLeads, FixtureRefused, JOB_ID, QA_EMAIL, FIXTURE_TAG, STAGING_DB_PATH, type Env } from '../scripts/staging-fixture-988.mts'
-import { backupTo, compareAfter, restoreCheck, takeSnapshot } from '../scripts/staging-fixture-988-checks.mts'
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { apply as applyBound, checkBinding, checkDbFile, plan, fixtureLeads, FixtureRefused, JOB_ID, QA_EMAIL, FIXTURE_TAG, STAGING_DB_PATH, type Env } from '../scripts/staging-fixture-988.mts'
+import { backupTo, compareAfter, prepare, restoreCheck, takeSnapshot } from '../scripts/staging-fixture-988-checks.mts'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const NOW = 1_800_000_000
+// the suites below exercise the data rules against in-memory databases (no file identity exists); the binding itself has its own tests further down
+const apply = (db: Database.Database, env: Env, tenant: string | undefined, now: number) => applyBound(db, env, tenant, now, 'unbound-test-only')
 const STAGING: Env = { DAZL_ENV: 'staging', DB_PATH: '/var/lib/dazl-staging/app.db' }
 const user = (db: Database.Database, id: string, email: string) => db.prepare('INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?)').run(id, email, 'Owner', 'Biz', 'not-a-real-hash', 'salt')
 async function world() {
@@ -229,4 +231,90 @@ test('#988 checks: the unrelated-data check catches an unrelated change, an extr
 test('#988 checks: a snapshot ignores the fixture rows themselves, so before-apply and after-apply compare on unrelated data only', async () => {
   const db = await world(); const a = takeSnapshot(db); apply(db, STAGING, 'QA1', NOW); const b = takeSnapshot(db)
   assert.equal(a.tables.scan_jobs.hash, b.tables.scan_jobs.hash); assert.equal(a.tables.leads.hash, b.tables.leads.hash); assert.equal(b.tables.leads.fixtureRows, 4); assert.equal(b.tables.scan_jobs.fixtureRows, 1); db.close()
+})
+
+// ---- round 7 (review of a83a8801): complete snapshot, opened-handle binding, exact-or-nothing write ----
+test('#988 checks: nothing is excluded from the unrelated-data proof: changing an OLD row\'s insert_seq, an sqlite_* object, or a new row\'s counter is caught', async () => {
+  const db = await world(); const before = takeSnapshot(db)
+  apply(db, STAGING, 'QA1', NOW); assert.deepEqual(compareAfter(before, takeSnapshot(db)), [], 'baseline: clean')
+  db.exec("DROP TRIGGER scan_jobs_insert_seq"); db.prepare("UPDATE scan_jobs SET insert_seq = insert_seq + 100 WHERE user_id = 'OTHER'").run()
+  assert.ok(compareAfter(before, takeSnapshot(db)).some(p => /scan_jobs: unrelated rows changed/.test(p)), 'an old row\'s insert_seq change is caught')
+  const d2 = await world(); const b2 = takeSnapshot(d2); apply(d2, STAGING, 'QA1', NOW)
+  d2.exec("DROP TRIGGER leads_insert_seq"); d2.prepare("UPDATE leads SET insert_seq = insert_seq + 7 WHERE id = ?").run(LEAD(2))
+  assert.ok(compareAfter(b2, takeSnapshot(d2)).some(p => /new rows' insert_seq/.test(p)), 'a new row whose counter does not continue the old maximum is caught')
+  const d3 = await world(); const b3 = takeSnapshot(d3); apply(d3, STAGING, 'QA1', NOW); d3.exec('CREATE INDEX sneaky_idx ON users(email)')
+  assert.notEqual(takeSnapshot(d3).schema, b3.schema); assert.ok(compareAfter(b3, takeSnapshot(d3)).includes('schema changed'))
+  db.close(); d2.close(); d3.close()
+})
+test('#988 checks: a snapshot is ONE database state: it is taken inside a single read transaction', async () => {
+  const { dir, file } = await tmpDb()
+  try {
+    const live = new Database(file), writer = new Database(file); live.pragma('journal_mode = WAL'); writer.pragma('journal_mode = WAL')
+    let calls = 0; const orig = live.prepare.bind(live)
+    // a write that lands between the first and the last read of the snapshot must not be visible in it
+    ;(live as unknown as { prepare: typeof live.prepare }).prepare = ((sql: string) => { const st = orig(sql); if (/^SELECT \* FROM "users"/.test(sql) && calls++ === 0) writer.prepare("UPDATE users SET business_name = 'changed mid-snapshot' WHERE id = 'OTHER'").run(); return st }) as typeof live.prepare
+    const snap = takeSnapshot(live)
+    ;(live as unknown as { prepare: typeof live.prepare }).prepare = orig as typeof live.prepare
+    const settled = takeSnapshot(live)
+    assert.notEqual(snap.tables.users.hash, settled.tables.users.hash, 'the mid-snapshot write really happened afterwards')
+    assert.equal(calls, 1); live.close(); writer.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+test('#988 binding: the opened handle must be the staging file: wrong file, wrong identity, hard links, production identity, or no wrapper identity all refuse before any write', async () => {
+  const db = await world(); const before = dump(db)
+  const good = { expect: '16777230:424242', production: '16777230:999', stat: () => ({ dev: 16777230, ino: 424242, nlink: 1 }), opened: () => STAGING_DB_PATH }
+  assert.doesNotThrow(() => checkBinding(db, good))
+  const bad = (b: Parameters<typeof checkBinding>[1], reason: string) => assert.throws(() => checkBinding(db, b), (e: unknown) => e instanceof FixtureRefused && e.reason === reason, reason)
+  bad(undefined, 'identity_binding_missing'); bad({ ...good, expect: '' }, 'identity_binding_missing')
+  bad({ ...good, opened: () => '/var/lib/dazl/app.db' }, 'opened_handle_elsewhere'); bad({ ...good, opened: () => ':memory:' }, 'opened_handle_elsewhere')
+  bad({ ...good, stat: () => ({ dev: 16777230, ino: 7, nlink: 1 }) }, 'identity_mismatch'); bad({ ...good, stat: () => ({ dev: 1, ino: 424242, nlink: 1 }) }, 'identity_mismatch')
+  bad({ ...good, stat: () => ({ dev: 16777230, ino: 424242, nlink: 2 }) }, 'hard_linked')
+  bad({ ...good, production: '16777230:424242' }, 'is_production_file')
+  for (const b of [undefined, { ...good, opened: () => '/var/lib/dazl/app.db' }]) assert.throws(() => applyBound(db, STAGING, 'QA1', NOW, b as never), (e: unknown) => e instanceof FixtureRefused)
+  assert.deepEqual(dump(db), before, 'a refused binding wrote nothing')
+  assert.deepEqual(applyBound(db, STAGING, 'QA1', NOW, good).applied, { scan_jobs: 1, leads: 4 }, 'a correct binding applies')
+  db.close()
+})
+test('#988 binding: the identity is re-checked INSIDE the apply transaction: a file swapped after the first check rolls everything back', async () => {
+  const db = await world(); const before = dump(db); let n = 0
+  const swapping = { expect: '1:1', production: null, opened: () => STAGING_DB_PATH, stat: () => ({ dev: 1, ino: n++ === 0 ? 1 : 2, nlink: 1 }) }
+  assert.throws(() => applyBound(db, STAGING, 'QA1', NOW, swapping), (e: unknown) => e instanceof FixtureRefused && e.reason === 'identity_mismatch')
+  assert.deepEqual(dump(db), before, 'nothing written'); db.close()
+})
+test('#988 fixture: exactly one run and four leads or nothing: a silently skipped insert, a duplicate, or an incomplete final fixture rolls the whole change back', async () => {
+  // a trigger that swallows one lead insert (RAISE(IGNORE)) is the silent-conflict case the old ON CONFLICT DO NOTHING hid
+  const db = await world(); db.exec("CREATE TRIGGER skip_one BEFORE INSERT ON leads WHEN NEW.dedup_key = 'fixture-988:old' BEGIN SELECT RAISE(IGNORE); END")
+  const before = dump(db)
+  assert.throws(() => apply(db, STAGING, 'QA1', NOW), (e: unknown) => e instanceof FixtureRefused && e.reason === 'unexpected_write_count', 'three leads inserted instead of four')
+  assert.deepEqual(dump(db), before, 'the job and the three inserted leads were rolled back'); db.exec('DROP TRIGGER skip_one')
+  assert.deepEqual(apply(db, STAGING, 'QA1', NOW).applied, { scan_jobs: 1, leads: 4 }, 'once the obstacle is gone it applies completely')
+  // a trigger that rewrites a field of an inserted lead makes the final fixture differ from the owned one
+  const d2 = await world(); d2.exec("CREATE TRIGGER tamper AFTER INSERT ON leads WHEN NEW.dedup_key = 'fixture-988:recent' BEGIN UPDATE leads SET contact = 'real@gmail.com' WHERE id = NEW.id; END")
+  const b2 = dump(d2); assert.throws(() => apply(d2, STAGING, 'QA1', NOW), (e: unknown) => e instanceof FixtureRefused && e.reason === 'existing_fixture_conflict'); assert.deepEqual(dump(d2), b2)
+  db.close(); d2.close()
+})
+test('#988 checks: backups and snapshots are private and newly created: mode 0600, never overwritten', async () => {
+  const { dir, file } = await tmpDb()
+  try {
+    const live = new Database(file); const out = join(dir, 'private.db')
+    await backupTo(live, out); const { statSync } = await import('node:fs')
+    assert.equal(statSync(out).mode & 0o077, 0, 'no group/other access'); await assert.rejects(() => backupTo(live, out), (e: unknown) => e instanceof FixtureRefused && e.reason === 'backup_exists'); live.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('#988 checks: prepare = one serialized pre-change state: file hash, snapshot, backup, restore proof in a NEW private directory; a file that changes underneath, or an existing directory, refuses', async () => {
+  const { dir, file } = await tmpDb()
+  try {
+    const live = new Database(file); const out = join(dir, 'prep')
+    const r = await prepare(live, file, out); const { statSync, readFileSync } = await import('node:fs')
+    assert.equal(statSync(out).mode & 0o077, 0, 'directory is private'); assert.equal(statSync(r.snapshot).mode & 0o077, 0); assert.equal(statSync(r.backup).mode & 0o077, 0)
+    const saved = JSON.parse(readFileSync(r.snapshot, 'utf8')) as { snapshot: ReturnType<typeof takeSnapshot>; sha256: string }
+    assert.deepEqual(restoreCheck(r.backup, saved.snapshot), [], 'the saved snapshot is exactly what the backup restores to')
+    await assert.rejects(() => prepare(live, file, out), (e: unknown) => e instanceof FixtureRefused && e.reason === 'dir_exists')
+    // a writer slips in between the first hash and the second: the proof is refused
+    const writer = new Database(file); const orig = live.backup.bind(live)
+    ;(live as unknown as { backup: typeof live.backup }).backup = (async (...a: Parameters<typeof live.backup>) => { const res = await orig(...a); writer.prepare("UPDATE users SET business_name = 'moved' WHERE id = 'OTHER'").run(); return res }) as typeof live.backup
+    await assert.rejects(() => prepare(live, file, join(dir, 'prep2')), (e: unknown) => e instanceof FixtureRefused && e.reason === 'database_changed')
+    writer.close(); live.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

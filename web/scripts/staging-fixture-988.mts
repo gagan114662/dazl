@@ -15,7 +15,7 @@
 // so no runner can claim it, and no timer, provider call, send or network request is made. Contacts and evidence use reserved example.com / .test domains only.
 // No delete, replace or cleanup exists in this tool.
 import Database from 'better-sqlite3'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { posix } from 'node:path'
 import { isStaging } from '../lib/staging.ts'
 
@@ -55,6 +55,22 @@ export function checkEnvironment(env: Env): void {
 export function checkDbFile(p: string, real: (x: string) => string = realpathSync): void {
   let r: string; try { r = real(p) } catch { throw new FixtureRefused('db_missing', `cannot resolve ${p}; this tool never creates a database`) }
   if (r !== STAGING_DB_PATH) throw new FixtureRefused('db_path_resolves_elsewhere', `${p} resolves to ${r}`)
+}
+// The OPENED database must be the staging file, not just a path that looked right: its identity (device:inode, a single hard link) must equal the identity the reviewed host wrapper recorded for
+// the real staging file, differ from the production file's, and be the file this connection actually has open (PRAGMA database_list). It is re-checked INSIDE the apply transaction.
+export interface Identity { dev: number; ino: number; nlink: number }
+export interface Binding { expect: string; production: string | null; stat?: (p: string) => Identity; opened?: (raw: Database.Database) => string }
+const idOf = (i: Identity) => `${i.dev}:${i.ino}`
+const statId = (p: string): Identity => { const s = statSync(p); return { dev: s.dev, ino: s.ino, nlink: s.nlink } }
+const openedFile = (raw: Database.Database): string => ((raw.prepare('PRAGMA database_list').all() as { name: string; file: string }[]).find(d => d.name === 'main')?.file) ?? ''
+export function checkBinding(raw: Database.Database, b: Binding | undefined): void {
+  if (!b || !b.expect) throw new FixtureRefused('identity_binding_missing', 'the host wrapper must supply DAZL_FIXTURE_DB_IDENTITY (device:inode of the staging file)')
+  const file = (b.opened ?? openedFile)(raw)
+  if (file !== STAGING_DB_PATH) throw new FixtureRefused('opened_handle_elsewhere', `this connection has ${JSON.stringify(file)} open, not ${STAGING_DB_PATH}`)
+  const id = (b.stat ?? statId)(file)
+  if (id.nlink !== 1) throw new FixtureRefused('hard_linked', `the staging file has ${id.nlink} hard links`)
+  if (idOf(id) !== b.expect) throw new FixtureRefused('identity_mismatch', `the opened file is ${idOf(id)}, the wrapper recorded ${b.expect}`)
+  if (b.production && idOf(id) === b.production) throw new FixtureRefused('is_production_file', 'the opened file has the production database identity')
 }
 export function resolveTenant(raw: Database.Database): string {
   const rows = raw.prepare('SELECT id FROM users WHERE lower(email) = ?').all(QA_EMAIL) as { id: string }[]
@@ -127,13 +143,15 @@ export function plan(raw: Database.Database, env: Env, now: number, mode: 'dry-r
   if (ex.job && leads.some(l => !l.exists)) throw new FixtureRefused('partial_fixture', 'the fixture job exists but some of its leads are missing; this tool never reopens a finished job (review by hand)')
   return { tenant, email: QA_EMAIL, job: { id: JOB_ID, exists: ex.job }, leads, expected: { scan_jobs: ex.job ? 0 : 1, leads: leads.filter(l => !l.exists).length }, mode }
 }
-export function apply(raw: Database.Database, env: Env, tenantId: string | undefined, now: number): Plan & { applied: { scan_jobs: number; leads: number } } {
+export function apply(raw: Database.Database, env: Env, tenantId: string | undefined, now: number, binding?: Binding | 'unbound-test-only'): Plan & { applied: { scan_jobs: number; leads: number } } {
+  if (binding !== 'unbound-test-only') checkBinding(raw, binding)
   const p = plan(raw, env, now, 'apply')
   if (!tenantId) throw new FixtureRefused('tenant_id_required', `--tenant-id=${p.tenant} is required to apply`)
   if (tenantId !== p.tenant) throw new FixtureRefused('tenant_id_mismatch', 'the given tenant id is not the QA workspace')
   const applied = { scan_jobs: 0, leads: 0 }
   raw.transaction(() => {
     // re-read inside the transaction so the plan and the write cannot disagree
+    if (binding !== 'unbound-test-only') checkBinding(raw, binding)   // transaction-time recheck: the file is still the one that was bound
     const again = plan(raw, env, now, 'apply'); if (again.tenant !== p.tenant) throw new FixtureRefused('tenant_changed', 'tenant changed during apply')
     if (!again.job.exists) {
       // Same lifecycle as the production writer (finishJob): the job is 'running' only INSIDE this transaction (the leads trigger requires it), and is 'done' when the transaction commits. No other
@@ -145,10 +163,15 @@ export function apply(raw: Database.Database, env: Env, tenantId: string | undef
       for (const l of fixtureLeads(now)) {
         applied.leads += raw.prepare(
           `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signal_kind, source_kind, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 60, ?, ?, ?, ?, 80, ?, 3, 3, 3, ?, 'expansion', 'company_site', ?) ON CONFLICT DO NOTHING`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 60, ?, ?, ?, ?, 80, ?, 3, 3, 3, ?, 'expansion', 'company_site', ?)`)
           .run(l.id, JOB_ID, l.name, l.company, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.event_date, l.date_status, now - 7200, l.dedup_key, `${l.signal} (${FIXTURE_TAG})`, now - 3600).changes
       }
       raw.prepare("UPDATE scan_jobs SET status = 'done', error = NULL, claimed_at = NULL, candidates = 4, verified = 4, needs_review = 0, dropped = 0, finished_at = ? WHERE id = ? AND status = 'running'").run(now - 60, JOB_ID)
+      // All or nothing, asserted INSIDE this transaction: exactly one job and four leads were inserted (a trigger that silently skipped a row, or any other surprise, rolls everything back) and the final
+      // rows are exactly the owned fixture, field by field.
+      if (applied.scan_jobs !== 1 || applied.leads !== 4) throw new FixtureRefused('unexpected_write_count', `inserted ${applied.scan_jobs} job(s) and ${applied.leads} lead(s), expected exactly 1 and 4; rolled back`)
+      const final = verifyExisting(raw, p.tenant, now)
+      if (!final.job || final.present.size !== 4) throw new FixtureRefused('final_fixture_incomplete', 'the fixture is not complete after the write; rolled back')
     }
   }).immediate()
   return { ...p, applied }
@@ -165,7 +188,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     raw = new Database(env.DB_PATH!, { fileMustExist: true })
     raw.pragma('foreign_keys = ON')
     const now = Math.floor(Date.now() / 1000)
-    console.log(JSON.stringify(doApply ? apply(raw, env, tenantId, now) : plan(raw, env, now), null, 2))
+    const binding: Binding = { expect: process.env.DAZL_FIXTURE_DB_IDENTITY ?? '', production: process.env.DAZL_FIXTURE_PROD_DB_IDENTITY ?? null }
+    checkBinding(raw, binding)   // dry-run included: the plan is only ever shown for the bound staging file
+    console.log(JSON.stringify(doApply ? apply(raw, env, tenantId, now, binding) : plan(raw, env, now), null, 2))
     if (!doApply) console.log('DRY-RUN: nothing was written. Re-run with --apply --tenant-id=<tenant above> after review.')
   } catch (e) { console.error(e instanceof Error ? e.message : e); process.exitCode = e instanceof FixtureRefused ? 3 : 1 } finally { raw?.close() }
 }
