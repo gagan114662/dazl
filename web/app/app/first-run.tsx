@@ -280,8 +280,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
               </form>
               <div className="mt-5 flex flex-col items-center gap-2 text-sm text-[var(--ink-2)]">
-                <button type="button" className="hover:text-[var(--ink)]" onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
-                <button type="button" className="text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
+                <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
+                <button type="button" className="min-h-11 px-2 text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
               </div>
             </div>}
 
@@ -465,7 +465,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>
       </form>}
 
-      <button type="button" className="text-xs text-[#666] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
+      <button type="button" className="min-h-11 px-2 text-xs text-[#666] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
     </div>
   )
 }
