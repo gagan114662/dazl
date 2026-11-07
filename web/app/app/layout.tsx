@@ -4,6 +4,7 @@ import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { hasLiveSession } from '@/lib/auth-db'
 import Nav from './nav'
+import MainFocus from './main-focus'
 import { Icon } from './ui/icons'
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
@@ -30,14 +31,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <form action="/api/auth/signout" method="POST" className="mt-4"><button className="flex items-center gap-2.5 text-sm text-[var(--ink-3)] hover:text-[var(--ink)] px-3 py-2 transition"><Icon name="signout" className="w-[18px] h-[18px]" />Sign out</button></form>
       </aside>
       {/* #673: tabIndex -1 makes <main> a programmatic focus target, so the root layout's "Skip to content" link
-          (href="#main") moves focus here on every /app route. Without it, focus only landed on <main> when the page
-          was tall enough for Chromium to treat the scroller as focusable (Settings); Home and Inbox stayed on BODY.
-          outline-none: the skip link's own ring already showed where focus was; a ring round the whole pane adds noise. */}
-      <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto outline-none">
+          (href="#main") moves focus here on every /app route (Home, Inbox, Settings, ...). Without it, focus only
+          landed on <main> when the page was tall enough for Chromium to treat the scroller as focusable (Settings);
+          Home and Inbox stayed on BODY. Its visible focus ring is #main:focus-visible in globals.css. MainFocus keeps
+          that focus when the page swaps its loading view for the loaded one, or hydration re-creates the subtree. */}
+      <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto">
         <Suspense fallback={null}>
           <AuthGate>{children}</AuthGate>
         </Suspense>
       </main>
+      <MainFocus />
     </div>
   )
 }
