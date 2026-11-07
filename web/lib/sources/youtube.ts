@@ -1,4 +1,4 @@
-import type { Evidence, SourceAdapter } from './types.ts'
+import { isRecord, looksLikeHtml, statusNote, type Evidence, type SourceAdapter } from './types.ts'
 
 // YouTube public videos, two keyless-for-the-user backends:
 //  - the official YouTube Data API when the operator sets YOUTUBE_API_KEY (free daily quota, no per-lookup cost), or
@@ -17,6 +17,11 @@ const latinRun = (s: string) => s.replace(/[^ -~]+/g, ' ').replace(/\s+/g, ' ').
 const usable = (s: string) => { const t = latinRun(s); return t.length >= 20 && /[a-z]{3}/i.test(t) }
 
 interface Video { id: string; title: string; published: string | null }
+// Optional does not mean an arbitrary JSON value. Check every consumed field before mapping so a bad date/title on one
+// row cannot throw into the whole-envelope catch and drop good siblings. Null/missing dates remain unknown.
+const optionalText = (v: unknown) => v == null || typeof v === 'string'
+const optionalUploaded = (v: unknown) => v == null || (typeof v === 'number' && Number.isFinite(v) && Number.isFinite(new Date(v).getTime()))
+
 
 export function toEvidence(videos: Video[]): Evidence[] {
   const out: Evidence[] = []
@@ -32,11 +37,15 @@ export function toEvidence(videos: Video[]): Evidence[] {
 async function viaDataApi(q: string, key: string, http: Parameters<SourceAdapter['collect']>[0]['http'], note?: (code: string) => void): Promise<Evidence[]> {
   const r = await http(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&order=date&maxResults=15&q=${encodeURIComponent(q)}&key=${encodeURIComponent(key)}`, { accept: 'application/json' })
   if (!r) { note?.('unreachable'); return [] }
-  if (r.status !== 200) { note?.('http_error'); return [] }
+  if (r.status !== 200) { note?.(statusNote(r.status)); return [] }
   if (r.truncated) { note?.('oversize'); return [] } // never parse a prefix
+  if (looksLikeHtml(r.body)) { note?.('challenge'); return [] }
   try {
-    const json = JSON.parse(r.body) as { items?: { id?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string } }[] }
-    return toEvidence((json.items ?? []).map(it => ({ id: it.id?.videoId ?? '', title: it.snippet?.title ?? '', published: (it.snippet?.publishedAt ?? '').slice(0, 10) || null })))
+    const json = JSON.parse(r.body) as unknown
+    if (!isRecord(json) || !Array.isArray(json.items)) { note?.('malformed'); return [] }
+    const rows = (json.items as unknown[]).filter((it): it is { id?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string } } => isRecord(it) && isRecord(it.id) && typeof it.id.videoId === 'string' && isRecord(it.snippet) && typeof it.snippet.title === 'string' && optionalText(it.snippet.publishedAt))
+    if (rows.length < json.items.length) note?.('malformed_rows')
+    return toEvidence(rows.map(it => ({ id: it.id?.videoId ?? '', title: it.snippet?.title ?? '', published: (it.snippet?.publishedAt ?? '').slice(0, 10) || null })))
   } catch { note?.('unparseable'); return [] }
 }
 
@@ -44,11 +53,15 @@ async function viaPiped(q: string, http: Parameters<SourceAdapter['collect']>[0]
   for (const inst of PIPED) {
     const r = await http(`https://${inst}/search?q=${encodeURIComponent(q)}&filter=videos`, { accept: 'application/json' })
     if (!r) { note?.('unreachable'); continue }
-    if (r.status !== 200) { note?.('http_error'); continue }
+    if (r.status !== 200) { note?.(statusNote(r.status)); continue }
     if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
+    if (looksLikeHtml(r.body)) { note?.('challenge'); continue }
     try {
-      const json = JSON.parse(r.body) as { items?: { type?: string; url?: string; title?: string; uploaded?: number; uploadDate?: string }[] }
-      const items = toEvidence((json.items ?? []).filter(it => (it.type ?? 'stream') === 'stream').map(it => {
+      const json = JSON.parse(r.body) as unknown
+      if (!isRecord(json) || !Array.isArray(json.items)) { note?.('malformed'); continue }
+      const rows = (json.items as unknown[]).filter((it): it is { type?: string; url?: string; title?: string; uploaded?: number; uploadDate?: string } => isRecord(it) && typeof it.url === 'string' && typeof it.title === 'string' && optionalText(it.type) && optionalText(it.uploadDate) && optionalUploaded(it.uploaded))
+      if (rows.length < json.items.length) note?.('malformed_rows')
+      const items = toEvidence(rows.filter(it => (it.type ?? 'stream') === 'stream').map(it => {
         const id = (it.url ?? '').match(/[?&]v=([A-Za-z0-9_-]{11})/)?.[1] ?? ''
         const uploaded = typeof it.uploaded === 'number' && it.uploaded > 0 ? new Date(it.uploaded).toISOString().slice(0, 10) : null
         return { id, title: it.title ?? '', published: uploaded ?? (it.uploadDate ?? null) }

@@ -41,7 +41,10 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
   - is the same file under another name (same device and inode).
 
   It also refuses any `DATABASE_URL`, since staging is its own SQLite file.
+- **Root never writes by a name the service account controls (#972).** `/srv/dazl-staging` is the service account's home, so any file there can be swapped for a symlink. The deploy's own state (the lock, `current-sha`, `release.env`, alert stamps) lives in `STAGING_STATE_ROOT` (default `/var/lib/dazl-staging-deploy`): root-owned, mode 700, checked like the recovery root before anything runs. systemd reads `release.env` from there as root. In the home, root only replaces the `current` symlink (a symlink is never written through), creates each release's `.complete` exclusively without following a symlink, refuses a symlinked `STAGING_ROOT` or `releases` directory, skips and removes symlinks it finds inside `releases`, and takes the live release from `current` only when it names a real directory directly under `releases`. **Releases outside the home (#908 rename race).** Releases live in `STAGING_RELEASES` (default `/srv/dazl-staging-releases`, beside the home, never inside it): owned by root, group `dazl-staging`, mode 750, so the service can read and run them but cannot rename, replace or plant anything in that directory. Before anything is stopped the deploy refuses a releases directory that is a symlink, inside (or containing) the home or production's data directory, writable by anyone but root, or under a parent another user can change (a root-owned sticky directory like `/tmp` is allowed); it also refuses a `current` that is not a symlink, or that still points into the old in-home `releases` (see upgrading below). Root only creates and deletes whole releases there; reading, sizing, hard-linking and running a release's own files (`du`, `cp -al` of `node_modules`, `health-smoke.mjs`, `release-manifest.mjs`) runs as the service account, so a symlink it plants inside a release reaches nothing it couldn't read itself. In the home, root only replaces the `current` symlink.
+- **Recovery point before any schema change (#908).** The build no longer migrates. After the build and disk checks, the deploy stops the service (`STAGING_STOP`, default `systemctl stop`), so nothing writes, then `ops/staging/recovery_point.py create` takes a copy of `DB_PATH` with SQLite's online backup API, checks integrity, and writes a manifest binding the copy's sha256 to the database's canonical path and the live release's commit. It re-reads the copy before going on. Only then does `STAGING_MIGRATE` (migrate + seed) run. Fail closed: if the service can't be stopped or the copy can't be verified, nothing is migrated, the release is removed and the old release is restarted unchanged. A failed migration or partial seed restores the copy and restarts the old release. Recovery points live in `STAGING_RECOVERY_ROOT` (default `/var/lib/dazl-staging-recovery`): root-owned, mode 700, outside `STAGING_ROOT`, on a path no other user can write (the helper refuses otherwise, before anything is stopped), so the service account cannot rename, replace or remove one. Each attempt gets a new directory (`<sha>.<time>.<pid>`); its copy and manifest are created exclusively, read-only (0400) and fsynced, as are their directories. The newest three are kept. **Pending marker:** from just before the migration until the new release is healthy, `STAGING_RECOVERY_ROOT/pending` names the recovery point, its manifest sha256 and the previous release. If the deploy is killed, or a restore fails, the next run finishes that restore first (refusing a recovery point whose manifest is not the recorded one), puts the previous release back and only then deploys again; it never backs up the migrated database as a new recovery point while one is pending. The deploy commits when the marker is removed. Downtime: the service is down from the stop until the new release is healthy. The migration runs in its own process group without the deploy lock; anything it leaves running in that group is stopped (TERM, then KILL) before the deploy goes on or restores. A process that escapes the group is not reached by this step alone; #907's build containment (`contain.py`) is meant to wrap the migration the same way once both land. A restore removes stale `-wal`/`-shm`/`-journal` files beside the database so none can replay over the restored copy. The database directory belongs to the service account, so the restore works through a directory descriptor and never follows a symlink: the new file is created exclusively under an unpredictable name, its owner and mode set through its descriptor, renamed over `DB_PATH`, and checked to be that same file. It is durable and restartable: the sidecars are moved aside (not deleted), the copy is installed and fsynced, and only then are the moved files removed; re-running an interrupted restore finishes it.
 - **Cutover.** From switching `current` until the new release passes the smoke check (`ops/health-smoke.mjs`: `/api/health` answers 200, `ok: true`, every configured database reachable, with the new commit), any failure goes to one handler: the switch itself, a non-zero restart command, or readiness. The handler:
+  - stops the failed release and restores the pre-migration database from the recovery point (verified by hash) BEFORE any old code starts; if that restore fails it reports `NO LIVE STAGING SERVICE` and does not start old code against a migrated database. Writes the failed release made before rollback are discarded with it;
   - puts the previous complete release and its `release.env` back, restarts it, and checks it is really serving again before reporting `rolled back: <sha> is live again`;
   - reports `NO LIVE STAGING SERVICE` if that rollback restart or readiness fails, rather than claiming recovery;
   - on a failed first deployment, which has nothing to go back to, removes `current` and reports `NO LIVE STAGING SERVICE`.
@@ -62,7 +65,8 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
 2. **User and directories:**
    ```sh
    useradd --system --create-home --home-dir /srv/dazl-staging --shell /usr/sbin/nologin dazl-staging
-   install -d -o dazl-staging -g dazl-staging -m 750 /srv/dazl-staging/releases /var/lib/dazl-staging
+   install -d -o dazl-staging -g dazl-staging -m 750 /var/lib/dazl-staging
+   install -d -o root -g dazl-staging -m 750 /srv/dazl-staging-releases
    install -d -m 700 /etc/dazl-staging
    ```
 3. **Env file.** Copy `ops/staging/env.example` to `/etc/dazl-staging/env`, then `chmod 600` it.
@@ -79,12 +83,26 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
      ```
 4. **Units and the deploy script.** From a checkout of `main`:
    ```sh
-   install -m 755 ops/staging/deploy.sh /srv/dazl-staging/deploy.sh
+   install -d -o root -g root -m 755 /usr/local/lib/dazl-staging
+   install -o root -g root -m 755 ops/staging/deploy.sh ops/staging/recovery_point.py /usr/local/lib/dazl-staging/
+   install -d -o root -g root -m 700 /var/lib/dazl-staging-recovery /var/lib/dazl-staging-deploy
    install -m 644 ops/staging/dazl-staging.service ops/staging/dazl-staging-deploy.service ops/staging/dazl-staging-deploy.timer /etc/systemd/system/
    # set PROD_ENV_FILE in dazl-staging-deploy.service to production's real env file
    systemctl edit --full dazl-staging-deploy.service
    systemctl daemon-reload
    ```
+   Upgrading a box set up before #908: run the three `install` lines, reinstall `dazl-staging-deploy.service` (its `ExecStart` is now `/usr/local/lib/dazl-staging/deploy.sh`) keeping your `PROD_ENV_FILE`, `systemctl daemon-reload`, then `rm /srv/dazl-staging/deploy.sh`. Reinstall `dazl-staging.service` too (its `EnvironmentFile` is now `/var/lib/dazl-staging-deploy/release.env`) and then remove the old `/srv/dazl-staging/release.env`, `/srv/dazl-staging/current-sha`, `/srv/dazl-staging/.deploy.lock` and `/srv/dazl-staging/.alert-*`; the first run after the upgrade takes the deployed commit from the live complete release, so nothing is redeployed. `deploy.sh` refuses to stop anything when `recovery_point.py` is missing beside it, or it or its directory is writable by anyone but root.
+
+   Upgrading a box whose releases are still in `/srv/dazl-staging/releases` (#908 rename race): the deploy refuses to run, stopping nothing, while `current` points there. With the deploy timer stopped (`systemctl stop dazl-staging-deploy.timer`), as root:
+   ```sh
+   find /srv/dazl-staging/releases -mindepth 1 -maxdepth 1 ! -type d -print   # anything listed is not a release: inspect, then delete it
+   install -d -o root -g dazl-staging -m 750 /srv/dazl-staging-releases
+   mv /srv/dazl-staging/releases/* /srv/dazl-staging-releases/
+   ln -sfn "/srv/dazl-staging-releases/$(basename "$(readlink /srv/dazl-staging/current)")" /srv/dazl-staging/current
+   rmdir /srv/dazl-staging/releases
+   systemctl restart dazl-staging.service && systemctl start dazl-staging-deploy.timer
+   ```
+   The release directories keep their owner (the service account); only the directory holding them changes hands. The restart just re-reads `current` through its new path, same release.
 5. **First deploy.** It clones, builds, seeds, starts and health-checks; expect a few minutes:
    ```sh
    systemctl enable dazl-staging.service
@@ -193,7 +211,7 @@ Exit codes: 0 means all passed, 1 means a scenario failed (named), 2 means it re
   rm /var/lib/dazl-staging/app.db*
   systemctl start dazl-staging-deploy.service
   ```
-  The seed runs on every deploy and recreates the demo account. To force one now, `rm /srv/dazl-staging/current-sha` first.
+  The seed runs on every deploy and recreates the demo account. To force one now, `rm /var/lib/dazl-staging-deploy/current-sha` first.
 - **Load on the box:** each deploy runs a build at `nice 10` with a 2 GB heap cap, and the service is capped at 1.5 GB. `npm ci` runs only when the lockfile changed. If production feels it, lengthen the timer (`OnUnitActiveSec`) or build elsewhere.
 - **Remove staging:**
   ```sh

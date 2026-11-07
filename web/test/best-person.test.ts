@@ -31,6 +31,12 @@ test('best person follows the scan buyer roles; link and source in words; leads 
 
 test('different buyer roles pick a different person; a company-page person links to its source page', async () => {
   const { db } = setup(['CEO', 'Owner'])
+  // #781: with no recorded website identity the crawled page is not "the company website"
+  const held = await bestPeople(sqliteDb(db), 'A', exportLeads(db, 'A') as { lead_id: string; job_id: string }[])
+  assert.equal(held.get('L1')!.best_person, 'Dana Lee')
+  assert.match(held.get('L1')!.best_person_found_via, /^a crawled website page .*not established as the company website.*not recorded as the company's own/)
+  // the crawl recorded acmedental.com as the cited page's own domain: the company website
+  addEnrichment(db, 'A', 'L1', { connector: 'sitecrawl', kind: 'domain', value: 'acmedental.com|evidence_own_domain', label: 'domain-basis-v1:evidence_own_domain', confidence: null, source_url: 'https://acmedental.com/news', source_date: '2026-10-26', retrieved_at: 1 })
   const m = await bestPeople(sqliteDb(db), 'A', exportLeads(db, 'A') as { lead_id: string; job_id: string }[])
   assert.deepEqual(m.get('L1'), { best_person: 'Dana Lee', best_person_title: 'CEO', best_person_link: 'https://acmedental.com/team', best_person_found_via: 'the company website (listed with this title)' })
 })
