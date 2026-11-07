@@ -28,6 +28,13 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 // NOT part of `npm test`. Run:  cd web && npm run build && node test/ui/request-failures.ui.mjs   (SHOTS=<dir> for screenshots)
 const now = Math.floor(Date.now() / 1000)
 const b = await chromium.launch()
+// Viewport capture with the named element scrolled into view and its text asserted visible inside the viewport (a full-page image can show a tiny or off-screen error).
+const shotVisible = async (page, testid, name) => {
+  const el = page.getByTestId(testid).first(); await el.scrollIntoViewIfNeeded()
+  const box = await el.boundingBox(); const vp = page.viewportSize()
+  assert.ok(box && box.y >= 0 && box.y + box.height <= vp.height && box.x >= 0 && box.x + box.width <= vp.width, `${testid} is fully inside the ${vp.width}x${vp.height} viewport`)
+  if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: false })
+}
 const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 // handler(u, req, json) -> response | undefined (undefined = 404 {}); 'abort' = rejected fetch
 async function open(url, [width, height], handler) {
@@ -171,6 +178,7 @@ try {
       await page.getByTestId('inbox-thread').first().waitFor({ timeout: 15000 })
       await page.getByTestId('inbox-thread').nth(0).getByRole('button', { name: 'View thread' }).click()
       await page.getByTestId('thread-error').waitFor()
+      await shotVisible(page, 'thread-error', `inbox-thread-error-inview-${size}`)
       await page.getByTestId('thread-error').getByRole('button', { name: 'Try again' }).click()
       await page.getByTestId('inbox-thread').nth(0).getByText('Sounds good').nth(1).waitFor()
       await page.getByTestId('inbox-thread').nth(1).getByRole('button', { name: 'View thread' }).click()
@@ -192,6 +200,7 @@ try {
       await page.getByTestId('monitor-error').filter({ hasText: 'Could not delete the monitor' }).waitFor()
       assert.equal(count(hits, 'DELETE /api/monitors/m1'), 1)
       await shot(page, `leads-monitor-error-${size}`)
+      await shotVisible(page, 'monitor-error', `leads-monitor-error-inview-${size}`)
       await ctx.close()
     }
   }
