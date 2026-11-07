@@ -113,6 +113,7 @@ test('actionable yield: an explicit plan is a required gate - an unproven clause
     const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'sitecrawl', ?, ?, 'x', NULL, ?, '2026-10-28', 1)")
     ins.run(`${id}p`, id, 'person', 'Jane Doe, Chief Executive Officer', `https://${id}.example/team`)
     ins.run(`${id}e`, id, 'email', `hello@${id}.example`, `https://${id}.example/contact`)
+    ins.run(`${id}d`, id, 'domain', `${id}.example|evidence_own_domain`, `https://${id}.example/news`)   // a confirmed domain (#914)
     // the sales-hiring gate's durable pass (it runs before this and still applies its own reading of the request: see the PR's gap list)
     for (const v of ['sales_hiring', 'requested_role_v1']) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'scan:gate', 'gate_passed', ?, 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(`${id}g${v}`, id, v)
   }

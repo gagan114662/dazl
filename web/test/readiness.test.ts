@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { capNotice, readinessRows, recentPlays } from '../lib/readiness.ts'
+import { capNotice, readinessRows, recentPlays, type ReadinessInput } from '../lib/readiness.ts'
 
 const byId = (rows: ReturnType<typeof readinessRows>) => Object.fromEntries(rows.map(r => [r.id, r]))
 
@@ -24,7 +24,7 @@ test('a new account: the steps in order, each to-do with its fix; Gmail goes to 
 test('a ready account: all done, no fixes offered', () => {
   const r = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme', buyer: { summary: 'Independent dental practices', who: ['Practice owner'] } }, usage: { has_key: true, trial: null }, outreach: { gmail: { email: 'me@acme.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus OH' }, daily_cap: 12, sent_24h: 3 }, jobs: [job()], sources: { web_index: true, news: true, websites: true }, messages: [{ status: 'sent' }], campaigns: [{ id: 'j', qualification: { rejected: 0 } }] })
   assert.ok(r.every(x => x.state === 'done' && x.fix === null && !x.next))
-  assert.equal(byId(r).sources.detail, 'a scan can use Web research with your AI key, Web search index, News articles, Company websites')
+  assert.equal(byId(r).sources.detail, 'a scan can use Web search index, News articles. After discovery: Company website enrichment (enrichment only)')
   assert.equal(byId(r).gmail.detail, 'sending from me@acme.example')
   assert.equal(byId(r).site.detail, 'Acme - Booking software (acme.example)')
   assert.equal(byId(r).play.detail, '1 search written')
@@ -114,11 +114,11 @@ test('lead sources: capabilities, never "searched"; no usable key means a scan c
   const ON = { web_index: false, news: true, websites: false }
   // Instinct #255: enabled news must not make the row done when no scan can start.
   const nokey = src(ON, { has_key: false, trial: null })
-  assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start until you add an AI key. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', { kind: 'link', href: '/app/settings#model-key', label: 'Add key' }])
+  assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start until you add an AI key for analysis and extraction; a key does not enable discovery. Not available: Web search index (not set up on this server), Company website enrichment (not set up on this server)', { kind: 'link', href: '/app/settings#model-key', label: 'Add key' }])
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 0 } }).state, 'todo', 'free searches used up')
-  assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use Web research with your AI key, News articles. Not available: Web search index (not set up on this server), Company websites (not set up on this server)', fix: null })
+  assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use News articles. Not available: Web search index (not set up on this server), Company website enrichment (not set up on this server)', fix: null })
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 2 } }).state, 'done', 'free searches left')
-  assert.equal(src({ web_index: false, news: false, websites: false }, { has_key: true }).state, 'done', 'web research with the saved key')
+  assert.equal(src({ web_index: false, news: false, websites: false }, { has_key: true }).state, 'todo', 'a saved key cannot enable retired web research')
   for (const st of [src(ON, { has_key: true }), nokey]) assert.doesNotMatch(st.detail, /search(es|ed)\b/, 'never claims sources are searched')
   assert.deepEqual([src(null, { has_key: true }).state, src(undefined, { has_key: true }).state, src(ON, null).state], ['unknown', 'unknown', 'unknown'], 'a failed or missing check is never done')
 })
@@ -161,11 +161,11 @@ test('lead sources: only usable sources are named as usable; social sources that
   ] }
   const row = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, sources: ALL, advanced: adv as never })).sources
   assert.equal(row.state, 'done')
-  assert.equal(row.detail, 'a scan can use Web research with your AI key, Web search index, News articles, Company websites, X posts. Not available: LinkedIn (consent needed)')
+  assert.equal(row.detail, 'a scan can use Web search index, News articles, X posts. After discovery: Company website enrichment (enrichment only). Not available: LinkedIn (consent needed)')
   assert.deepEqual(row.fix, { kind: 'link', href: '/app/settings#social', label: 'Set up' })
   assert.doesNotMatch(row.detail, /Reddit/, 'a platform this server does not offer is not listed')
   const plain = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, sources: ALL, advanced: null })).sources
-  assert.deepEqual([plain.detail, plain.fix], ['a scan can use Web research with your AI key, Web search index, News articles, Company websites', null])
+  assert.deepEqual([plain.detail, plain.fix], ['a scan can use Web search index, News articles. After discovery: Company website enrichment (enrichment only)', null])
 })
 
 // The Pancake path after setup: first scan, leads reviewed, an email approved in Outreach. Positive evidence only.
@@ -236,4 +236,21 @@ test('manual path: website is asked only when there is no saved buyer profile ei
   assert.equal(rows({ sells: 'x', business_name: 'B', buyer: { summary: '', who: [] } }).site.detail, 'missing website', 'an empty buyer profile does not stand in for a website')
   assert.equal(rows({ sells: 'x', business_name: 'B', buyer: { summary: '', who: ['Owner'] } }).site.state, 'done', 'a buyer profile with roles but no summary still counts')
   assert.equal(rows({ website: 'https://acme.example', buyer: null }).site.detail, 'missing business name, what you sell', 'website-only stays partial as before')
+})
+
+test('#919 Home source capability matrix: funding, discovery/enrichment, social, rejection and unknown',()=>{
+ const row=(sources:ReadinessInput['sources'],usage:ReadinessInput['usage'],advanced:ReadinessInput['advanced']=null,rejection:ReadinessInput['rejection']=null)=>byId(readinessRows({profile:null,outreach:null,sources,usage,advanced,rejection})).sources
+ for(const usage of [{has_key:true},{has_key:false,trial:{funded:true,remaining:2}}]) {
+  for(const websites of [false,true]) {
+   const r=row({web_index:false,news:false,websites},usage)
+   assert.equal(r.state,'todo');assert.equal(r.fix,null);assert.match(r.detail,/no usable discovery/);assert.doesNotMatch(r.detail,/until you add/)
+  }
+  assert.equal(row({web_index:false,news:true,websites:true},usage).state,'done')
+  const social=row({web_index:false,news:false,websites:false},usage,{available:true,platforms:[{platform:'x',consent:true,connected:true,enabled:true}]})
+  assert.equal(social.state,'done');assert.match(social.detail,/X posts/)
+ }
+ assert.equal(row(null,{has_key:true}).state,'unknown')
+ assert.equal(row({web_index:true,news:false,websites:false},null).state,'unknown')
+ assert.equal(row({web_index:true,news:false,websites:false},{has_key:true},null,{error:'key_rejected'}).fix?.label,'Replace key')
+ for(const usage of [{has_key:false},{has_key:false,trial:{funded:true,remaining:0}}]) assert.equal(row({web_index:false,news:true,websites:false},usage).fix?.label,'Add key')
 })

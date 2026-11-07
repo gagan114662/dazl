@@ -111,7 +111,7 @@ test('v2ex: search and fallback failures are noted; fallback evidence still land
   const dispatch = (async (url: string) => url.includes('sov2ex') ? { status: 500, body: '' } : { status: 200, body: JSON.stringify([hotTopic]) }) as Http
   const items = await v2exAdapter.collect({ query: '', keywords: KW, feeds: [], http: dispatch, note: r.note })
   assert.equal(items.length, 1)
-  assert.deepEqual(r.codes, ['http_error'])
+  assert.deepEqual(r.codes, ['http_error', 'answered_by_hot_fallback']) // #906: the run says which backend answered
 
   resetV2exState()
   r = rec()
@@ -343,10 +343,10 @@ test('v2ex: search fails but the hot fallback answers - evidence with its note, 
   const dispatch = (async (url: string) => url.includes('sov2ex') ? { status: 500, body: '' } : { status: 200, body: JSON.stringify([hotTopic]) }) as Http
   const first = await v2exAdapter.collect({ query: '', keywords: KW, feeds: [], http: dispatch, note: r.note })
   assert.equal(first.length, 1)
-  assert.deepEqual(r.codes, ['http_error'])
+  assert.deepEqual(r.codes, ['http_error', 'answered_by_hot_fallback'])
   const second = await v2exAdapter.collect({ query: '', keywords: KW, feeds: [], http: dispatch, note: r.note })
   assert.equal(second.length, 1)
-  assert.deepEqual(r.codes, ['http_error', 'http_error'])
+  assert.deepEqual(r.codes, ['http_error', 'answered_by_hot_fallback', 'http_error', 'answered_by_hot_fallback'])
 })
 
 test('github: a failed fetch is not cached - the repeat call still notes', async () => {

@@ -2,8 +2,9 @@
 // -> editable targeting. This is NOT autonomous learning, lead qualification, consent or a source verifier.
 import { createHash } from 'node:crypto'
 import type { Db, Param } from '../db/client.ts'
-import type { Icp, IcpResearch, ResearchedHyp } from './icp.ts'
+import { capStoredHolds, type Icp, type IcpResearch, type ResearchedHyp } from './icp.ts'
 import { norm } from './evidence.ts'
+import { holdNameOf, rebindOfferId, selectOffer } from './offer-identity.ts'
 
 export const INTELLIGENCE_ONTOLOGY = {
   seller: 'The tenant selling an offer; not the prospect.',
@@ -106,18 +107,35 @@ const fields = { persona: 'who', industry: 'industries', size: 'sizes', location
 export function reuseSellerDecisions(icp: Icp, pack: DecisionPack, offerName: string): Icp {
   const r = icp.research
   if (!r || siteKey(r.site) !== pack.trace.site) return icp
-  const decisions = pack.decisions.filter(d => r.offers.some(o => o.i === d.offer_id))
+  // Saved rows carry only an offer id, and ids can change (a long name's hashed id, a colliding short name). Each row is rebound to the ONE current offer its id can mean (by name,
+  // see offer-identity.ts), or HELD when it could mean several: a held rejection still removes its text from every candidate, a held confirmation is applied to none. A row naming no
+  // current offer (the offer was removed) is not carried. Rows never cross sites or tenants (the pack is already scoped) and never move onto a guessed offer.
+  const offers = r.offers.map(o => ({ id: o.i, name: o.n }))
+  const decisions: SellerDecision[] = [], held: { d: SellerDecision; ids: string[] }[] = []
+  for (const d of pack.decisions) { const rb = rebindOfferId(offers, d.offer_id); if (!rb) continue; if ('offer' in rb) decisions.push({ ...d, offer_id: rb.offer }); else held.push({ d, ids: rb.held }) }
+  const heldRejects = held.filter(x => x.d.action === 'reject')
   const hyps = r.hyps.map(h => {
     const d = decisions.find(d => d.offer_id === h.o && (d.hypothesis_id === h.i || (d.kind === h.k && norm(d.text) === norm(h.t))))
-    return d ? { ...h, t: d.text, s: d.action === 'reject' ? 'rejected' as const : 'reviewed' as const, u: null, q: null, at: null } : h
+    if (d) return { ...h, t: d.text, s: d.action === 'reject' ? 'rejected' as const : 'reviewed' as const, u: null, q: null, at: null }
+    return heldRejects.some(x => x.ids.includes(h.o) && x.d.kind === h.k && norm(x.d.text) === norm(h.t)) ? { ...h, s: 'rejected' as const, u: null, q: null, at: null } : h
   })
   for (const d of decisions) if (!hyps.some(h => h.o === d.offer_id && (h.i === d.hypothesis_id || (h.k === d.kind && norm(h.t) === norm(d.text))))) hyps.push({ i: d.hypothesis_id, o: d.offer_id, k: d.kind, t: d.text,
     s: d.action === 'reject' ? 'rejected' : 'reviewed', u: null, q: null, at: null })
-  const matches = r.offers.filter(o => norm(o.n) === norm(offerName))
-  // No fuzzy selection. Multiple products never donate their buyer list to one flat draft.
-  const selected = matches.length === 1 ? matches[0] : r.offers.length === 1 && !offerName ? r.offers[0] : null
-  const out = { ...icp, research: { ...r, hyps } }
+  // The held rows stay visible to the research review block and keep the candidate offers held downstream (targetingFor).
+  const u = [...(r.u ?? [])]
+  for (const x of held) {
+    const n = x.ids.map(id => holdNameOf(r.offers.find(o => o.i === id)?.n ?? '')).filter(Boolean)
+    if (n.length && !u.some(e => e.k === x.d.kind && norm(e.t) === norm(x.d.text) && e.s === (x.d.action === 'reject' ? 'rejected' : 'reviewed') && e.n.join('|') === n.join('|'))) u.push({ n, k: x.d.kind as ResearchedHyp['k'], t: x.d.text.slice(0, 100), s: x.d.action === 'reject' ? 'rejected' : 'reviewed' })
+  }
+  // No fuzzy selection. Multiple products never donate their buyer list to one flat draft. One play-name contract with the reviewed draft and retrieval: the stored name.
+  const sel = selectOffer(offers, offerName, (a, b) => !!norm(a) && norm(a) === norm(b))
+  const selected = sel ? r.offers.find(o => o.i === sel) ?? null : r.offers.length === 1 && !offerName ? r.offers[0] : null
+  const out = { ...icp, research: { ...r, hyps, ...(u.length ? { u: capStoredHolds(u) } : {}) } }
   if (!selected) return out
+  for (const x of heldRejects.filter(x => x.ids.includes(selected.i))) {
+    const f = fields[x.d.kind as keyof typeof fields]
+    if (f) out[f] = out[f].filter(t => norm(t) !== norm(x.d.text))
+  }
   for (const d of decisions.filter(d => d.offer_id === selected.i)) {
     const f = fields[d.kind as keyof typeof fields]
     if (!f) continue
