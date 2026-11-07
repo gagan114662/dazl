@@ -115,6 +115,9 @@ try {
     await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
     const path = route.split('?')[0]
     try { await page.locator(MARKERS[path]).first().waitFor({ state: 'visible', timeout: 15000 }) } catch { failures.push(`${path}: page content (${MARKERS[path]}) never rendered, so its own controls were not measured`); await c.close(); continue }
+    // The app's nav lives behind the Menu label below md (hidden until the checkbox is on): open it the way a user does, so its
+    // rows are measured too (the closed-menu run missed 36px rows, #672 live review).
+    if (route.startsWith('/app')) { await page.locator('label[for="navtoggle"]').click(); await page.locator('nav[aria-label="Main"] a').first().waitFor({ state: 'visible', timeout: 15000 }) }
     const got = await page.evaluate(MEASURE)
     let checked = 0, excepted = 0
     for (const t of got) {

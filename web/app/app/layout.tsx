@@ -28,7 +28,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/app" className="hidden md:block text-xl font-bold tracking-tight mb-6 px-3">dazl<span className="text-[var(--pink)]">.</span></Link>
         <Suspense fallback={null}><Nav /></Suspense>
         <div className="hidden md:block flex-1" />
-        <form action="/api/auth/signout" method="POST" className="mt-4"><button className="flex items-center gap-2.5 text-sm text-[var(--ink-3)] hover:text-[var(--ink)] px-3 py-2 transition"><Icon name="signout" className="w-[18px] h-[18px]" />Sign out</button></form>
+        <form action="/api/auth/signout" method="POST" className="mt-4"><button className="flex items-center gap-2.5 text-sm text-[var(--ink-3)] hover:text-[var(--ink)] px-3 py-2 max-md:min-h-11 transition"><Icon name="signout" className="w-[18px] h-[18px]" />Sign out</button></form>
       </aside>
       {/* #673: tabIndex -1 makes <main> a programmatic focus target, so the root layout's "Skip to content" link
           (href="#main") moves focus here on every /app route (Home, Inbox, Settings, ...). Without it, focus only
