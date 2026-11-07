@@ -51,6 +51,7 @@ import { migrateTenantLifecycle } from './tenant-guard.ts'
 import { migratePreviewClaim } from '../scan/preview-claim.ts'
 import { migrateTraceStore } from '../evals/trace-tables.ts'
 import { migrateWorkers } from '../workers/store.ts'
+import { migratePipeline } from '../pipeline/tables.ts'
 import { migrateFirstParty } from '../signals/first-party.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
@@ -64,7 +65,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
     migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess,
-    migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers,
+    migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers, migratePipeline,
     migrateFirstParty,
   ]
   for (const m of migrates) m(db)

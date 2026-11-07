@@ -21,6 +21,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
   ] },
 ]
 const MORE: Item[] = [
+  { href: '/app/pipeline', label: 'Pipeline', icon: 'spark', match: p => p.startsWith('/app/pipeline') },
   { href: '/app/follow-ups', label: 'Follow-ups', icon: 'followups', match: p => p.startsWith('/app/follow-ups') },
   { href: '/app/social', label: 'Social opportunities', icon: 'social', match: p => p.startsWith('/app/social') },
   { href: '/app/seo', label: 'SEO', icon: 'seo', match: p => p.startsWith('/app/seo') },

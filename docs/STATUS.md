@@ -65,6 +65,9 @@ Updated by the builder on every branch. Newest first.
 - b/535-legal-policies (#535): Terms and Privacy pages render one checked text (`web/lib/legal/policy.ts`), still
   DRAFT; `test/legal-policy.test.ts` fails if a stated retention, provider, API host or opt-out behaviour drifts from
   the code. Owner/counsel items stay bracketed on the pages (NEEDS GAGAN list in the PR). Sign-up links both pages.
+- b/366-revenue-pipeline (#366): deals with an owner member, routing rules for new qualified conversations, audited
+  stage history, won/lost reasons and a history-rebuilt report (`lib/pipeline/`, `/api/pipeline/*`, `/app/pipeline`).
+  Migration: 0050_revenue_pipeline (main highest 0049 + 1 at the 2026-11-06 merge of main; renumbered again if another migration lands first). Refs #366 (accounts/contacts, tasks, CRM reconciliation not built).
 - b/355-fair-reply-sync (#355): reply reading is bounded and checkpointed per thread (due sequence/follow-up
   threads always read; background capped per call, oldest first; success recorded as of the oldest read). With
   `DAZL_SCAN_SHARED_QUEUE=1` (default OFF, deploy-time switch) scans run on the shared work queue, round-robin with
