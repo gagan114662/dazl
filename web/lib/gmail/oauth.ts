@@ -33,7 +33,7 @@ export class GmailError extends Error {
 // connection is healthy, so callers release and retry with a fresh token instead of asking for a reconnect (#739).
 // A disconnect (no active row left) is not a replacement: that still needs the user, so it stays a reconnect.
 export const isConnectionReplaced = (e: unknown, db: Database.Database, tenantId: string): boolean =>
-  e instanceof GmailError && e.kind === 'retry' && e.message === 'connection_replaced' &&
+  connectionReplaced(e) &&
   !!db.prepare("SELECT 1 FROM gmail_accounts WHERE tenant_id = ? AND status = 'active'").get(tenantId)
 
 export function redirectUri(env: OAuthEnv): string {
