@@ -14,4 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest discover -s ops -p 'test_*launch*.py'
+      # Every ops/test_*.py file runs here; ops/test_ci_discovery.py fails if a
+      # test file would fall outside this pattern (e.g. backup preflight, #901).
+      - run: python3 -m unittest discover -s ops -p 'test_*.py'
