@@ -6,7 +6,7 @@
 //
 // Guards (all must hold, each refuses with a named reason and writes nothing):
 //   - DAZL_ENV is exactly 'staging' (lib/staging.ts); production, unset or anything else refuses;
-//   - DB_PATH is set, names an existing file, and its path contains '/staging' or 'dazl-staging' (a production database path refuses);
+//   - DB_PATH is EXACTLY the staging database, /var/lib/dazl-staging/app.db (no pattern: a look-alike, relative, traversal or backup path refuses), and the file's real path (symlinks resolved) is that same path;
 //   - real staging Gmail is OFF (DAZL_STAGING_REAL_GMAIL must not be '1'): this tool never runs next to a live mail path;
 //   - the tenant is the one existing user whose email is exactly QA_EMAIL; it is never created, and exactly one must match;
 //   - --apply additionally needs --tenant-id equal to that user's id (a plan names the id; applying a different one refuses).
@@ -15,13 +15,16 @@
 // so no runner can claim it, and no timer, provider call, send or network request is made. Contacts and evidence use reserved example.com / .test domains only.
 // No delete, replace or cleanup exists in this tool.
 import Database from 'better-sqlite3'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
+import { posix } from 'node:path'
 import { isStaging } from '../lib/staging.ts'
 
 export const QA_EMAIL = 'instinct114114@gmail.com'
 export const FIXTURE_TAG = 'SYNTHETIC #988'
+export const STAGING_DB_PATH = '/var/lib/dazl-staging/app.db'
 export const JOB_ID = 'f988f988f988f988f988f9a0'   // 24 hex like production ids; fixed so a repeat is a no-op
 const DAY = 86_400
+const FIXTURE_ICP = { summary: `${FIXTURE_TAG} fixture profile (not a real buyer profile)`, who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
 export interface FixtureLead { id: string; name: string; company: string; contact: string; signal: string; source_url: string; evidence_excerpt: string; event_date: string | null; date_status: 'verified' | 'unverified' | 'undated'; dedup_key: string; case: 'future' | 'recent' | 'old' | 'missing' }
 export interface Env { DAZL_ENV?: string; DB_PATH?: string; DAZL_STAGING_REAL_GMAIL?: string }
 
@@ -45,27 +48,84 @@ export function checkEnvironment(env: Env): void {
   if (!isStaging(env as Record<string, string | undefined>)) throw new FixtureRefused('not_staging', `DAZL_ENV must be exactly 'staging' (got ${JSON.stringify(env.DAZL_ENV ?? null)})`)
   const p = env.DB_PATH ?? ''
   if (!p) throw new FixtureRefused('no_db_path', 'DB_PATH is not set')
-  if (!/staging/i.test(p)) throw new FixtureRefused('not_a_staging_database', `DB_PATH does not name the staging store: ${p}`)
+  if (p !== STAGING_DB_PATH || posix.normalize(p) !== STAGING_DB_PATH) throw new FixtureRefused('not_the_staging_database', `DB_PATH must be exactly ${STAGING_DB_PATH} (got ${JSON.stringify(p)})`)
   if (env.DAZL_STAGING_REAL_GMAIL === '1') throw new FixtureRefused('real_gmail_on', 'real staging Gmail must be OFF while this tool runs')
+}
+// The file the path resolves to must be that same database (a symlink or bind that points elsewhere refuses). `real` is injectable so the check is testable without that file.
+export function checkDbFile(p: string, real: (x: string) => string = realpathSync): void {
+  let r: string; try { r = real(p) } catch { throw new FixtureRefused('db_missing', `cannot resolve ${p}; this tool never creates a database`) }
+  if (r !== STAGING_DB_PATH) throw new FixtureRefused('db_path_resolves_elsewhere', `${p} resolves to ${r}`)
 }
 export function resolveTenant(raw: Database.Database): string {
   const rows = raw.prepare('SELECT id FROM users WHERE lower(email) = ?').all(QA_EMAIL) as { id: string }[]
   if (rows.length !== 1) throw new FixtureRefused(rows.length ? 'ambiguous_tenant' : 'tenant_missing', `expected exactly one ${QA_EMAIL} user, found ${rows.length}; this tool never creates a tenant`)
   return rows[0].id
 }
+const LEAD_CHECKED = ['id', 'scan_job_id', 'name', 'company', 'contact', 'signal', 'source_url', 'score', 'evidence_excerpt', 'date_status', 'confidence', 'dedup_key', 'fit', 'intent', 'action', 'why', 'signal_kind', 'source_kind', 'event_date', 'retrieved_at', 'created_at']
+const JOB_CHECKED = ['id', 'user_id', 'business_name', 'industry', 'location', 'query', 'icp', 'icp_inferred', 'status', 'attempts', 'claimed_at', 'error', 'candidates', 'verified', 'needs_review', 'dropped', 'created_at', 'finished_at']
+type Row = Record<string, unknown>
+// Columns this tool does not set must still be at their default (NULL, or the declared default): a row somebody else edited or enriched is not "ours".
+function unsetColumnsAtDefault(raw: Database.Database, table: string, row: Row, checked: string[]): string | null {
+  const cols = raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string; dflt_value: string | null }[]
+  for (const c of cols) {
+    if (checked.includes(c.name) || c.name === 'insert_seq') continue
+    const dflt = c.dflt_value === null ? null : c.dflt_value.replace(/^'(.*)'$/, '$1')
+    if (!(row[c.name] === null || row[c.name] === undefined || (dflt !== null && String(row[c.name]) === dflt))) return `${table}.${c.name} is ${JSON.stringify(row[c.name])}`
+  }
+  return null
+}
+// The event date is relative to the day the tool ran, so an existing row is checked by CLASS, not by the literal date.
+function dateClassOk(c: FixtureLead['case'], v: unknown, status: unknown, now: number): boolean {
+  if (c === 'missing') return v === null && status === 'undated'
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
+  const days = Math.floor((Date.parse(`${v}T00:00:00Z`) - now * 1000) / (DAY * 1000))
+  return c === 'future' ? days > 0 && status === 'unverified' : c === 'recent' ? days <= 0 && days >= -60 && status === 'verified' : days < -180 && status === 'verified'
+}
+// An existing fixture is accepted ONLY if every field of the job and each lead is exactly what this tool writes, it is owned by the QA tenant, and nothing else hangs off it.
+export function verifyExisting(raw: Database.Database, tenant: string, now: number): { job: boolean; present: Set<string> } {
+  const bad = (what: string): never => { throw new FixtureRefused('existing_fixture_conflict', what) }
+  const job = raw.prepare('SELECT * FROM scan_jobs WHERE id = ?').get(JOB_ID) as Row | undefined
+  const present = new Set<string>()
+  if (!job) {
+    for (const l of fixtureLeads(now)) if (raw.prepare('SELECT 1 FROM leads WHERE id = ?').get(l.id)) bad(`lead ${l.id} exists but the fixture job does not`)
+    return { job: false, present }
+  }
+  if (job.user_id !== tenant) throw new FixtureRefused('job_owned_by_other_tenant', 'the fixture job id already belongs to a different user')
+  const want: Row = { business_name: `${FIXTURE_TAG} saved run`, industry: '(from request)', location: '-', query: `${FIXTURE_TAG}: fixture run for the date cases (not a real search)`, icp: JSON.stringify(FIXTURE_ICP), icp_inferred: 0, status: 'done', attempts: 1, claimed_at: null, error: null, candidates: 4, verified: 4, needs_review: 0, dropped: 0 }
+  for (const [k, v] of Object.entries(want)) if (job[k] !== v) bad(`scan_jobs.${k} is ${JSON.stringify(job[k])}, expected ${JSON.stringify(v)}`)
+  const extra = unsetColumnsAtDefault(raw, 'scan_jobs', job, JOB_CHECKED); if (extra) bad(`fixture job was modified: ${extra}`)
+  // nothing else may hang off the fixture job: no other lead, and no row in any other table that references it
+  const ours = new Set(fixtureLeads(now).map(l => l.id))
+  for (const r of raw.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(JOB_ID) as { id: string }[]) if (!ours.has(r.id)) bad(`unexpected lead ${r.id} on the fixture job`)
+  for (const { name } of raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]) {
+    if (name === 'leads' || name === 'scan_jobs') continue
+    for (const fk of raw.prepare(`PRAGMA foreign_key_list(${name})`).all() as { table: string; from: string }[]) {
+      if (fk.table !== 'scan_jobs') continue
+      const n = (raw.prepare(`SELECT COUNT(*) AS n FROM "${name}" WHERE "${fk.from}" = ?`).get(JOB_ID) as { n: number }).n
+      if (n) bad(`${n} row(s) in ${name} reference the fixture job`)
+    }
+  }
+  for (const l of fixtureLeads(now)) {
+    const row = raw.prepare('SELECT * FROM leads WHERE id = ?').get(l.id) as Row | undefined
+    if (!row) continue
+    const w: Row = { scan_job_id: JOB_ID, name: l.name, company: l.company, contact: l.contact, signal: l.signal, source_url: l.source_url, score: 60, evidence_excerpt: l.evidence_excerpt, date_status: l.date_status, confidence: 80, dedup_key: l.dedup_key, fit: 3, intent: 3, action: 3, why: `${l.signal} (${FIXTURE_TAG})`, signal_kind: 'expansion', source_kind: 'company_site' }
+    for (const [k, v] of Object.entries(w)) if (row[k] !== v) bad(`lead ${l.id}: ${k} is ${JSON.stringify(row[k])}, expected ${JSON.stringify(v)}`)
+    if (!dateClassOk(l.case, row.event_date, row.date_status, now)) bad(`lead ${l.id}: event date ${JSON.stringify(row.event_date)} is not a ${l.case}-date value`)
+    const ex = unsetColumnsAtDefault(raw, 'leads', row, LEAD_CHECKED); if (ex) bad(`lead ${l.id} was modified: ${ex}`)
+    present.add(l.id)
+  }
+  return { job: true, present }
+}
 export function plan(raw: Database.Database, env: Env, now: number, mode: 'dry-run' | 'apply' = 'dry-run'): Plan {
   checkEnvironment(env)
   const tenant = resolveTenant(raw)
-  const job = raw.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(JOB_ID) as { user_id: string } | undefined
-  if (job && job.user_id !== tenant) throw new FixtureRefused('job_owned_by_other_tenant', 'the fixture job id already belongs to a different user')
-  const leads = fixtureLeads(now).map(l => {
-    const e = raw.prepare('SELECT scan_job_id FROM leads WHERE id = ?').get(l.id) as { scan_job_id: string } | undefined
-    if (e && e.scan_job_id !== JOB_ID) throw new FixtureRefused('lead_id_in_use', `lead id ${l.id} belongs to another job`)
-    return { id: l.id, case: l.case, exists: !!e }
-  })
+  // a lead id used by a foreign job refuses before anything else is judged
+  for (const l of fixtureLeads(now)) { const e = raw.prepare('SELECT scan_job_id FROM leads WHERE id = ?').get(l.id) as { scan_job_id: string } | undefined; if (e && e.scan_job_id !== JOB_ID) throw new FixtureRefused('lead_id_in_use', `lead id ${l.id} belongs to another job`) }
+  const ex = verifyExisting(raw, tenant, now)
+  const leads = fixtureLeads(now).map(l => ({ id: l.id, case: l.case, exists: ex.present.has(l.id) }))
   // The leads trigger only accepts leads for a RUNNING job, so a job that already exists is never reopened: a partial earlier state is reported, not repaired.
-  if (job && leads.some(l => !l.exists)) throw new FixtureRefused('partial_fixture', 'the fixture job exists but some of its leads are missing; this tool never reopens a finished job (review by hand)')
-  return { tenant, email: QA_EMAIL, job: { id: JOB_ID, exists: !!job }, leads, expected: { scan_jobs: job ? 0 : 1, leads: leads.filter(l => !l.exists).length }, mode }
+  if (ex.job && leads.some(l => !l.exists)) throw new FixtureRefused('partial_fixture', 'the fixture job exists but some of its leads are missing; this tool never reopens a finished job (review by hand)')
+  return { tenant, email: QA_EMAIL, job: { id: JOB_ID, exists: ex.job }, leads, expected: { scan_jobs: ex.job ? 0 : 1, leads: leads.filter(l => !l.exists).length }, mode }
 }
 export function apply(raw: Database.Database, env: Env, tenantId: string | undefined, now: number): Plan & { applied: { scan_jobs: number; leads: number } } {
   const p = plan(raw, env, now, 'apply')
@@ -81,7 +141,7 @@ export function apply(raw: Database.Database, env: Env, tenantId: string | undef
       applied.scan_jobs += raw.prepare(
         `INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, status, attempts, claimed_at, created_at)
          VALUES (?, ?, ?, '(from request)', '-', ?, ?, 0, 'running', 1, ?, ?)`)
-        .run(JOB_ID, p.tenant, `${FIXTURE_TAG} saved run`.slice(0, 150), `${FIXTURE_TAG}: fixture run for the date cases (not a real search)`, JSON.stringify({ summary: `${FIXTURE_TAG} fixture profile (not a real buyer profile)`, who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }), now - 3600, now - 3600).changes
+        .run(JOB_ID, p.tenant, `${FIXTURE_TAG} saved run`.slice(0, 150), `${FIXTURE_TAG}: fixture run for the date cases (not a real search)`, JSON.stringify(FIXTURE_ICP), now - 3600, now - 3600).changes
       for (const l of fixtureLeads(now)) {
         applied.leads += raw.prepare(
           `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signal_kind, source_kind, created_at)
@@ -101,6 +161,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     checkEnvironment(env)
     if (!existsSync(env.DB_PATH!)) throw new FixtureRefused('db_missing', 'DB_PATH does not exist; this tool never creates a database')
+    checkDbFile(env.DB_PATH!)
     raw = new Database(env.DB_PATH!, { fileMustExist: true })
     raw.pragma('foreign_keys = ON')
     const now = Math.floor(Date.now() / 1000)
