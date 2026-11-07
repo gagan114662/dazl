@@ -48,7 +48,7 @@ export STAGING_ROOT="$T/root" STAGING_ENV_FILE="$T/etc/env" STAGING_PORT=$PORT S
 mkdir -p "$T/root"; chown "$U" "$T/root"
 # installed as docs/STAGING.md says: root-owned scripts outside the service account's home, a root-only recovery root
 install -d -m 755 "$T/lib"; install -m 755 "$SRC/ops/staging/deploy.sh" "$SRC/ops/staging/recovery_point.py" "$T/lib/"
-install -d -m 700 "$T/recovery"; export STAGING_RECOVERY_ROOT="$T/recovery"
+install -d -m 700 "$T/recovery" "$T/state"; export STAGING_RECOVERY_ROOT="$T/recovery" STAGING_STATE_ROOT="$T/state"
 D="bash $T/lib/deploy.sh"
 sha() { git -C "$T/origin.git" rev-parse main; }
 commit() { # a new main commit on top of the current one, changing one file (made as the repo's owner)

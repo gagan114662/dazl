@@ -119,12 +119,12 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart,
-      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
+      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), STAGING_STATE_ROOT: path.join(T, 'state'), PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr }
   }
   const current = () => existsSync(path.join(root, 'current')) ? path.basename(readlinkSync(path.join(root, 'current'))) : null
-  const releaseEnv = () => existsSync(path.join(root, 'release.env')) ? readFileSync(path.join(root, 'release.env'), 'utf8').trim() : null
+  const releaseEnv = () => existsSync(path.join(T, 'state', 'release.env')) ? readFileSync(path.join(T, 'state', 'release.env'), 'utf8').trim() : null
   const releases = () => readdirSync(path.join(root, 'releases')).sort()
   const servedNow = () => readFileSync(served, 'utf8').trim()
   try {
@@ -206,7 +206,7 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
-      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
+      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), STAGING_STATE_ROOT: path.join(T, 'state'), PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
       ...over,
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr }
@@ -240,7 +240,8 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
   r = run({ MIN_FREE_BYTES: '1' })
   assert.equal(r.code, 1, 'the stub service never reports health, so the cutover rolls back; the deploy itself ran')
   assert.match(r.out, /deploying [0-9a-f]{40}/)
-  assert.deepEqual(readdirSync(root).filter(f => f.startsWith('.alert-low_disk')), [])
+  assert.deepEqual(readdirSync(path.join(T, 'state')).filter(f => f.startsWith('.alert-low_disk')), [])
+  assert.deepEqual(readdirSync(root).filter(f => f.startsWith('.alert')), [], 'no alert stamp in the service account\'s home')
 
   // 5. the staging root may not be inside, or contain, production's data directory
   for (const bad of [path.join(prodDir, 'staging'), dir]) {
@@ -270,7 +271,7 @@ test('low disk after or near the end of a build: never put live; the reserve abo
   // an existing live release (complete), which must stay live
   const old = 'a'.repeat(40)
   mkdirSync(path.join(root, 'releases', old, 'web'), { recursive: true }); writeFileSync(path.join(root, 'releases', old, '.complete'), '')
-  symlinkSync(path.join(root, 'releases', old), path.join(root, 'current')); writeFileSync(path.join(root, 'current-sha'), old + '\n')
+  symlinkSync(path.join(root, 'releases', old), path.join(root, 'current')); mkdirSync(path.join(T, 'state'), { mode: 0o700 }); writeFileSync(path.join(T, 'state', 'current-sha'), old + '\n')
   const env = path.join(T, 'env'); writeFileSync(env, good)
   const FLOOR = 2147483648, RESERVE = 268435456
   const run = (build: string, avail: number) => {
@@ -279,12 +280,12 @@ test('low disk after or near the end of a build: never put live; the reserve abo
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
-      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(FLOOR),
+      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: build, STAGING_HEALTH_TRIES: '1', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), STAGING_STATE_ROOT: path.join(T, 'state'), PROD_DB_PATH: prodDb, MIN_FREE_BYTES: String(FLOOR),
       STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`, STAGING_ALERT_EVERY_S: '0',
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr, ms: Date.now() - t0 }
   }
-  const live = () => [path.basename(readlinkSync(path.join(root, 'current'))), readFileSync(path.join(root, 'current-sha'), 'utf8').trim()]
+  const live = () => [path.basename(readlinkSync(path.join(root, 'current'))), readFileSync(path.join(T, 'state', 'current-sha'), 'utf8').trim()]
   const lastAlert = () => JSON.parse(readFileSync(alerts, 'utf8').trim().split('\n').at(-1)!)
 
   // 1. the build succeeds, then free space is 1 byte, between watcher polls: not put live, release removed
@@ -396,7 +397,7 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart, STAGING_STOP: stop,
-      STAGING_BUILD: 'true', STAGING_MIGRATE: MIGRATE, STAGING_HEALTH_TRIES: '2', STAGING_RECOVERY_ROOT: rroot, PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1', ...extra,
+      STAGING_BUILD: 'true', STAGING_MIGRATE: MIGRATE, STAGING_HEALTH_TRIES: '2', STAGING_RECOVERY_ROOT: rroot, STAGING_STATE_ROOT: path.join(T, 'state'), PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1', ...extra,
     } as unknown as NodeJS.ProcessEnv })
     return { code: r.status, out: r.stdout + r.stderr, order: readFileSync(log, 'utf8').trim().split('\n') }
   }
@@ -545,4 +546,92 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
 test('recovery_point.py scratch-database checks (WAL capture, orphaned WAL/SHM/journal, absent database, tamper, wrong database, corrupt source)', () => {
   const r = spawnSync('python3', ['-W', 'ignore', '-m', 'unittest', 'test_recovery_point'], { cwd: path.dirname(script), encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
   assert.equal(r.status, 0, r.stdout + r.stderr)
+})
+
+// #972 review: root must never write through a name the service account controls. Its home (STAGING_ROOT) is planted with
+// symlinks at every path an older deploy.sh wrote as root (.deploy.lock, release.env, current-sha, alert stamps), a
+// symlink inside releases/ pointing at a victim directory, a `current` pointing outside releases/, and a build that plants
+// its release's .complete as a symlink to a file that does not exist yet. A full deploy must leave every victim unchanged
+// (and never create the dangling target), keep its own state in the root-only state directory, and refuse a symlinked
+// releases directory or state directory before stopping anything.
+test('deploy state lives in a root-only directory; planted symlinks in the service home are never written through', async () => {
+  const { execFileSync, spawn } = await import('node:child_process')
+  const { existsSync, lstatSync, readdirSync, readlinkSync, rmSync, statSync } = await import('node:fs')
+  const net = await import('node:net')
+  const port = await new Promise<number>(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => r(p)) }) })
+  const T = mkdtempSync(path.join(tmpdir(), 'staging-symlink-'))
+  const root = path.join(T, 'root'), repo = path.join(T, 'repo'), victims = path.join(T, 'victims'), state = path.join(T, 'state')
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
+  const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', ...a], { encoding: 'utf8', env: gitEnv }).trim()
+  mkdirSync(path.join(repo, 'web'), { recursive: true }); execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
+  writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}'); git('add', '-A'); git('commit', '-qm', 'one')
+  const sha = git('rev-parse', 'HEAD')
+  const env = path.join(T, 'env'); writeFileSync(env, good)
+  const served = path.join(T, 'served')
+  writeFileSync(path.join(T, 'health.mjs'), `import http from 'node:http'; import fs from 'node:fs'
+http.createServer((q, s) => { let c = ''; try { c = fs.readFileSync(${JSON.stringify(served)}, 'utf8').trim() } catch {}
+  s.end(JSON.stringify({ ok: true, commit: c, checks: {} })) }).listen(${port}, '127.0.0.1')`)
+  const server = spawn(process.execPath, [path.join(T, 'health.mjs')], { stdio: 'ignore' })
+  const restart = path.join(T, 'restart.sh')
+  writeFileSync(restart, `#!/usr/bin/env bash\nbasename "$(readlink -f ${root}/current)" > ${served}\n`); execFileSync('chmod', ['+x', restart])
+  const deploy = (extra: Record<string, string> = {}) => {
+    const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port),
+      STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: restart,
+      STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_HEALTH_TRIES: '3', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), STAGING_STATE_ROOT: state,
+      PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
+      // the build (run as the service account) plants its release's .complete as a symlink to a file that does not exist
+      STAGING_BUILD: `ln -s ${path.join(victims, 'created-by-root')} ../.complete`, ...extra,
+    } as unknown as NodeJS.ProcessEnv })
+    return { code: r.status, out: r.stdout + r.stderr }
+  }
+  try {
+    mkdirSync(path.join(root, 'releases'), { recursive: true }); mkdirSync(path.join(victims, 'dir'), { recursive: true })
+    const names = ['.deploy.lock', 'release.env', 'current-sha', '.alert-low_disk', '.alert-low_disk_for_release']
+    for (const n of names) { writeFileSync(path.join(victims, n), `victim ${n}\n`); symlinkSync(path.join(victims, n), path.join(root, n)) }
+    writeFileSync(path.join(victims, 'dir', 'keep'), 'victim dir file\n')
+    symlinkSync(path.join(victims, 'dir'), path.join(root, 'releases', 'evil'))        // an incomplete-looking "release" that is a symlink
+    symlinkSync(path.join(victims, 'dir'), path.join(root, 'current'))                  // `current` outside releases/
+    const r = deploy()
+    assert.equal(r.code, 0, r.out); assert.match(r.out, /live: [0-9a-f]{40}/)
+    for (const n of names) {
+      assert.equal(readFileSync(path.join(victims, n), 'utf8'), `victim ${n}\n`, `${n} written through a planted symlink`)
+      assert.ok(lstatSync(path.join(root, n)).isSymbolicLink(), `${n} left alone`)
+    }
+    assert.equal(readFileSync(path.join(victims, 'dir', 'keep'), 'utf8'), 'victim dir file\n', 'the directory behind a planted releases/ symlink is untouched')
+    assert.equal(existsSync(path.join(root, 'releases', 'evil')), false, 'a symlink in releases/ is removed, not followed')
+    assert.equal(existsSync(path.join(victims, 'created-by-root')), false, 'root never creates a file through a planted .complete symlink')
+    const done = lstatSync(path.join(root, 'releases', sha, '.complete'))
+    assert.ok(done.isFile() && !done.isSymbolicLink(), '.complete is a fresh regular file')
+    assert.equal(path.basename(readlinkSync(path.join(root, 'current'))), sha)
+    // the deploy's own state: root-only directory, never in the home
+    assert.equal(statSync(state).mode & 0o777, 0o700)
+    assert.equal(readFileSync(path.join(state, 'current-sha'), 'utf8').trim(), sha)
+    assert.equal(readFileSync(path.join(state, 'release.env'), 'utf8').trim(), `DAZL_COMMIT_SHA=${sha}`)
+    assert.ok(existsSync(path.join(state, '.deploy.lock')))
+    assert.deepEqual(readdirSync(victims).sort(), [...names, 'dir'].sort(), 'nothing new beside the victims')
+
+    // the same commit again: nothing to do (current-sha read from the state directory, not the planted one)
+    const again = deploy(); assert.equal(again.code, 0, again.out); assert.doesNotMatch(again.out, /deploying/)
+
+    // upgrade path: no current-sha in the state directory; the validated complete live release names the deployed commit
+    rmSync(path.join(state, 'current-sha'))
+    const up = deploy(); assert.equal(up.code, 0, up.out); assert.doesNotMatch(up.out, /deploying/, 'no redeploy after the upgrade')
+
+    // refused before anything is stopped: a symlinked releases directory, a state directory open to others, a symlinked state directory
+    const stopLog = path.join(T, 'stopped')
+    rmSync(path.join(root, 'releases'), { recursive: true }); symlinkSync(path.join(victims, 'dir'), path.join(root, 'releases'))
+    let x = deploy({ STAGING_STOP: `touch ${stopLog}` })
+    assert.equal(x.code, 1); assert.match(x.out, /releases is not a plain directory/); assert.equal(existsSync(stopLog), false)
+    rmSync(path.join(root, 'releases')); mkdirSync(path.join(root, 'releases'))
+    execFileSync('chmod', ['755', state])
+    x = deploy({ STAGING_STOP: `touch ${stopLog}` })
+    assert.equal(x.code, 1); assert.match(x.out, /deploy state directory .* is not private/); assert.equal(existsSync(stopLog), false)
+    execFileSync('chmod', ['700', state])
+    const alt = path.join(T, 'state-link'); symlinkSync(state, alt)
+    x = deploy({ STAGING_STOP: `touch ${stopLog}`, STAGING_STATE_ROOT: alt })
+    assert.equal(x.code, 1); assert.match(x.out, /deploy state directory .* (is a symlink|is not private)/); assert.equal(existsSync(stopLog), false)
+  } finally {
+    server.kill()
+  }
 })
