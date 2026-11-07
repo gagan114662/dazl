@@ -5,15 +5,25 @@
 export const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/
 const EXPLICIT = /^test\/[A-Za-z0-9_.\/-]+\.(?:test|spec)\.[cm]?[jt]sx?$/
 
-// Exact explicit test paths in the script's --test argument list: tokens after `--test`, up to the first shell operator. Anything with a glob
-// character, a flag, or a path outside test/ is not an explicit registration.
+// Shell syntax this parser does NOT interpret. The first such character ends the command it will read: operators need no surrounding whitespace
+// (`a;b`, `a&&b`, `a|b`), `#` starts a comment, quotes/backslashes/`$`/backticks/parentheses/braces can hide or build arguments, and redirections or
+// newlines start something else. Everything after the first one is ignored, so it can never register a test. Unsupported syntax is rejected, not guessed at.
+const SHELL_SYNTAX = /[;&|#<>`$(){}\\'"\n\r]/
+
+// Exact explicit test paths named after `--test` in the FIRST simple command of the script. Rules, all conservative:
+//  - `--test` must be its own token in that command (the command ends at the first shell-syntax character);
+//  - paths count only up to the first option token (anything starting with `-`): an option's value can be path-shaped (`--import test/x.test.mjs`,
+//    `--test-reporter tap test/x.test.mjs`) and is not a test entry, and which options take a value is not guessed, so nothing after an option registers;
+//  - a path counts only as an exact, glob-free, clean file path under test/ naming a test file (not the root .test.ts glob).
 export function explicitlyRegistered(script: string): string[] {
-  const tokens = script.split(/\s+/).filter(Boolean)
+  const m = SHELL_SYNTAX.exec(script)
+  const command = m ? script.slice(0, m.index) : script
+  const tokens = command.split(/\s+/).filter(Boolean)
   const at = tokens.indexOf('--test')
   if (at < 0) return []
   const out: string[] = []
   for (const t of tokens.slice(at + 1)) {
-    if (/^(?:&&|\|\||\||;|&)$/.test(t)) break
+    if (t.startsWith('-')) break
     if (t.split('/').some(seg => seg === '' || seg === '.' || seg === '..')) continue   // a clean path only: no traversal, no empty segments
     if (EXPLICIT.test(t) && !/^test\/[^/]+\.test\.ts$/.test(t) && !out.includes(t)) out.push(t)
   }

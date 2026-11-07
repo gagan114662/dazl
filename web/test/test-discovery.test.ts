@@ -77,3 +77,33 @@ test('exempt own-entry-point suites are really wired into CI', () => {
   const wf = readFileSync(join(WEB, '..', '.github', 'workflows', 'static-quality.yml'), 'utf8')
   for (const f of OWN_ENTRY_POINTS) assert.ok(wf.includes(f), `${f} is exempt but not run by static-quality.yml`)
 })
+
+// #950 review: the command boundary is not whitespace-delimited, comments and option values are not test entries. Each case is a counterexample from the review.
+test('registration parser: adjacent shell operators, comments, quoting, substitution and path-shaped option values never register', () => {
+  const none = (script: string) => assert.deepEqual(explicitlyRegistered(script), [], script)
+  none(`${BASE};node other.js test/x.test.mjs`)                 // `;` with no whitespace
+  none(`${BASE} ;node other.js test/x.test.mjs`)
+  none(`${BASE}&&node other.js test/x.test.mjs`)                // `&&` adjacent
+  none(`${BASE}||node other.js test/x.test.mjs`)
+  none(`${BASE}|tee test/x.test.mjs`)                           // pipe adjacent
+  none(`${BASE} # note test/x.test.mjs`)                        // trailing comment
+  none(`${BASE}#test/x.test.mjs`)                               // comment with no space
+  none(`${BASE} > test/x.test.mjs`)                             // redirection target
+  none(`${BASE} $(echo test/x.test.mjs)`)                       // command substitution
+  none(`${BASE} \`echo test/x.test.mjs\``)
+  none(`${BASE} "test/x.test.mjs"`)                             // quoted: not interpreted, so not registered
+  none(`${BASE} test/a\\ b.test.mjs`)
+  none(`${BASE}\nnode other.js test/x.test.mjs`)               // newline starts another command
+  none('echo hi; node --experimental-strip-types --test test/x.test.mjs') // --test belongs to a later command
+  none('node --import test/x.test.mjs --test test/*.test.ts')   // path-shaped value of an option BEFORE --test
+  none(`${BASE} --import test/x.test.mjs`)                      // path-shaped option value AFTER --test
+  none(`${BASE} --test-reporter tap test/x.test.mjs`)           // nothing after an option registers (its value is not guessed)
+  none(`${BASE} --test-reporter=tap test/x.test.mjs`)
+  // the exact positive control still holds, and a path before an option still counts
+  assert.deepEqual(explicitlyRegistered(`${BASE} test/crm-webhook-unknown-ui.test.mjs`), ['test/crm-webhook-unknown-ui.test.mjs'])
+  assert.deepEqual(explicitlyRegistered(`${BASE} test/one.test.mjs --test-reporter=tap test/two.test.mjs`), ['test/one.test.mjs'])
+  // the real package.json script keeps working
+  const real = JSON.parse(readFileSync(join(WEB, 'package.json'), 'utf8')).scripts.test
+  assert.deepEqual(explicitlyRegistered(real), [], 'the canonical script today names no extra file')
+  assert.equal(discovery({ files: ['test/orphan.test.mjs'], script: `${BASE};node x.js test/orphan.test.mjs`, ...FIX }).stranded[0], 'test/orphan.test.mjs')
+})
