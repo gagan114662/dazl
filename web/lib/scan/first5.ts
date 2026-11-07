@@ -19,11 +19,16 @@ export interface First5View {
 }
 type LeadRow = { id: string; name: string; company: string; signal: string; source_url: string; event_date: string | null; published_at: string | null; fit: number | null }
 
-// Verifier-passed, not rejected by the user; best fit first, newest first. Scoped through the job's owner.
+// A lead a REQUIRED gate failed on whose review write was rejected still reads review_reason NULL; the gate's durable marker (lead_enrichments, connector 'scan:gate', kind 'gate_failed') holds it.
+// Canonical reads (listLeads / exportLeads) overlay that marker as held, so first5 excludes the same rows (#920). A store without the enrichments table reads the row as stored, as they do.
+const NOT_HELD = "AND NOT EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
+// Verifier-passed, not rejected by the user, not held by a failed required gate; best fit first, newest first. Scoped through the job's owner.
 export function verifiedLeads(db: Database.Database, userId: string, jobId: string, limit = FIRST5_TARGET): First5Lead[] {
-  const rows = db.prepare(`SELECT l.id, l.name, l.company, l.signal, l.source_url, l.event_date, l.published_at, l.fit FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-    WHERE j.id = ? AND j.user_id = ? AND l.review_reason IS NULL AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1)
-    ORDER BY (l.fit IS NULL), l.fit DESC, l.created_at DESC, l.insert_seq LIMIT ?`).all(jobId, userId, limit) as LeadRow[]
+  const sql = (held: string) => `SELECT l.id, l.name, l.company, l.signal, l.source_url, l.event_date, l.published_at, l.fit FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    WHERE j.id = ? AND j.user_id = ? AND l.review_reason IS NULL AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) ${held}
+    ORDER BY (l.fit IS NULL), l.fit DESC, l.created_at DESC, l.insert_seq LIMIT ?`
+  let rows: LeadRow[]
+  try { rows = db.prepare(sql(NOT_HELD)).all(jobId, userId, limit) as LeadRow[] } catch (e) { if (!/no such table/i.test(e instanceof Error ? e.message : '')) throw e; rows = db.prepare(sql('')).all(jobId, userId, limit) as LeadRow[] }
   return rows.map(r => ({ id: r.id, company: r.company || r.name, name: r.company && r.name ? r.name : null, signal: r.signal, source_url: r.source_url, event_date: r.event_date ?? null, published_at: r.published_at ?? null, provisional: false,
     fit_pct: typeof r.fit === 'number' && r.fit >= 0 && r.fit <= 5 ? Math.round((r.fit / 5) * 100) : null }))
 }
