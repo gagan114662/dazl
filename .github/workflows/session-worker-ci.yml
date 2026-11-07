@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths: ["session-worker/**", ".github/workflows/session-worker-ci.yml"]
 concurrency:
-  group: session-worker-ci-${{ github.event.pull_request.number || github.ref }}
+  group: session-worker-ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:

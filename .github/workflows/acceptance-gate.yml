@@ -11,7 +11,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: acceptance-gate-${{ github.event.pull_request.number || github.ref }}
+  group: acceptance-gate-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Builders never use GitHub closing keywords (repo rule; owner comment on #569, 2026-11-02): a merged PR must not

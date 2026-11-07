@@ -9,7 +9,7 @@ on:
   # can still carry the full required check set on its own SHA (checked_launch's gate).
   workflow_dispatch:
 concurrency:
-  group: web-ci-${{ github.event.pull_request.number || github.ref }}
+  group: web-ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Full suite on SQLite, today's runtime store. PG-only tests skip here.

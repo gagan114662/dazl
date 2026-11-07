@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths: ["load/**"]
 concurrency:
-  group: load-harness-${{ github.event.pull_request.number || github.ref }}
+  group: load-harness-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   harness:
