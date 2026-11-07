@@ -1,11 +1,16 @@
-// Email finder, part 1 (docs/design/email-finder.md). Learns a company's address FORMAT from personal addresses it
-// publishes on its own site, and prepares candidate addresses for people the crawl found on that site.
-// Nothing here is shown, stored as a contact, or sent: candidates are UNVERIFIED and live in their own tables
-// (email_patterns, email_candidates), which no page and no outreach path reads. Showing a guessed address needs
-// mailbox verification and the US-only rule (docs/DECISIONS.md), which are parts 2-3 and not built.
-// Off unless EMAIL_GUESS_ENABLED=1.
+// Email finder (docs/design/email-finder.md). Part 1 learns a company's address FORMAT from personal addresses it
+// publishes on its own site and prepares candidate addresses for people the crawl found on that site. Part 2 (US-only,
+// docs/DECISIONS.md 2026-10-26) records candidates only for a lead whose confirmed site states a US address, keeping that
+// basis as provenance. Part 3 (mailbox verification) runs a pluggable verifier under a code-enforced per-tenant daily cap
+// and fails closed: only an explicit "deliverable" answer from a real check makes a candidate verified; catch-all,
+// unknown, refused, errors and a check that never finished stay non-verified and are surfaced as such.
+// Nothing here is shown, stored as a contact, or sent: candidates live in their own tables (email_patterns,
+// email_candidates), which no page and no outreach path reads. No verifier provider is wired (verifierFromEnv returns
+// null): choosing and paying for one is the owner's call. Off unless EMAIL_GUESS_ENABLED=1.
 import type Database from 'better-sqlite3'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
+import { US_STATES } from '../scan/place-agreement.ts'
+import { countriesIn } from '../scan/countries.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -48,19 +53,73 @@ export function personalLocals(html: string, site: string): string[] {
   return [...out]
 }
 
+// The same addresses, kept whole (local part AND domain), for the published tier: a published address is stored lower-cased as
+// the site printed it, never rebuilt onto another domain.
+export function personalAddresses(html: string, site: string): { local: string; address: string }[] {
+  const out = new Map<string, { local: string; address: string }>()
+  for (const m of html.matchAll(/([A-Z0-9._%+-]{2,64})@([A-Z0-9.-]+\.[A-Z]{2,})/gi)) {
+    const local = m[1].toLowerCase(), domain = m[2].toLowerCase()
+    if (!sameSite(domain, site) || ROLE.test(local.replace(/[._-]/g, ''))) continue
+    const address = `${local}@${domain}`
+    if (address.length <= 254) out.set(address, { local, address })
+  }
+  return [...out.values()]
+}
+
 // A format counts only when it reproduces a published address for a person named on the same site. The best format
 // needs 2+ distinct supporting people and must be strictly ahead of the runner-up; anything else is no pattern.
 export function inferPattern(locals: string[], people: Name[]): { format: Format; support: number } | null {
-  const have = new Set(locals)
-  const support = new Map<Format, Set<string>>()
+  const r = rankPattern(locals, people)
+  return r && r.support >= 2 ? { format: r.format, support: r.support } : null
+}
+
+// Evidence-based confidence for the winning format (free-first finder, owner direction 2026-11-06):
+//   high   - 2+ people support it and no other format is supported at all (score 90, 95 with 3+);
+//   medium - 2+ people support it but another format has (fewer) supporters too: mixed formats (score 70 * share);
+//   low    - exactly one published address supports it (score 35).
+// A tie between formats is no pattern. Only 'high' guesses may ever reach the (optional, capped) mailbox check.
+export type Confidence = 'high' | 'medium' | 'low'
+export interface RankedPattern { format: Format; support: number; runnerUp: number; confidence: Confidence; score: number; supporters: Name[] }
+export function rankPattern(locals: string[], people: Name[]): RankedPattern | null {
+  // A printed local part that two named people could both own (e.g. 'asmith' for Anna and Alex Smith) is ambiguous:
+  // it proves nothing about whose address it is, so it supports no format and cannot inflate a pattern's support.
+  const have = new Set(locals.filter(l => ownersOf(l, people).length <= 1))
+  const support = new Map<Format, Map<string, Name>>()
   for (const p of people) for (const f of FORMATS) if (have.has(localFor(f, p))) {
-    if (!support.has(f)) support.set(f, new Set())
-    support.get(f)!.add(`${p.first} ${p.last}`)
+    if (!support.has(f)) support.set(f, new Map())
+    support.get(f)!.set(`${p.first} ${p.last}`, p)
   }
-  const ranked = [...support.entries()].map(([format, s]) => ({ format, support: s.size })).sort((a, b) => b.support - a.support)
-  if (!ranked.length || ranked[0].support < 2) return null
-  if (ranked[1] && ranked[1].support === ranked[0].support) return null // ambiguous (e.g. single-name people fit two formats)
-  return ranked[0]
+  const ranked = [...support.entries()].map(([format, s]) => ({ format, support: s.size, supporters: [...s.values()] })).sort((a, b) => b.support - a.support)
+  if (!ranked.length) return null
+  const top = ranked[0], runnerUp = ranked[1]?.support ?? 0
+  if (runnerUp === top.support) return null // ambiguous (e.g. single-name people fit two formats, or one each)
+  const confidence: Confidence = top.support >= 2 ? (runnerUp === 0 ? 'high' : 'medium') : 'low'
+  const score = confidence === 'high' ? (top.support >= 3 ? 95 : 90) : confidence === 'medium' ? Math.round(70 * top.support / (top.support + runnerUp)) : 35
+  return { format: top.format, support: top.support, runnerUp, confidence, score, supporters: top.supporters }
+}
+
+const nameKey = (n: Name) => `${n.first} ${n.last}`
+// Every distinct named person with a known format that reproduces this local part. One owner = the page identifies
+// the person; two or more = ambiguous (the address could be either's); none = not a named person's address.
+export function ownersOf(local: string, people: Name[]): Name[] {
+  const out = new Map<string, Name>()
+  for (const p of people) if (FORMATS.some(f => localFor(f, p) === local)) out.set(nameKey(p), p)
+  return [...out.values()]
+}
+
+// Published tier: a person named on the confirmed site whose OWN address is printed on that site (its local part is one of
+// the known formats of their name). Stored as printed (lower-cased), with the page it was printed on. Not a guess.
+// Attribution needs the page evidence to identify the person unambiguously: when another named person (people) could own
+// the same printed address, it is attributed to no one. A published address is never proof of a verified mailbox.
+export function publishedFor(name: Name, seen: { address: string; url: string }[], people: Name[] = [name]): { address: string; url: string } | null {
+  const mine = new Set(FORMATS.map(f => localFor(f, name)))
+  const all = people.some(p => nameKey(p) === nameKey(name)) ? people : [...people, name]
+  return seen.find(s => {
+    const local = s.address.split('@')[0]
+    if (!mine.has(local)) return false
+    const owners = ownersOf(local, all)
+    return owners.length === 1 && nameKey(owners[0]) === nameKey(name)
+  }) ?? null
 }
 
 export const candidateAddress = (n: Name, site: string, f: Format) => `${localFor(f, n)}@${site}`
@@ -74,17 +133,144 @@ export function migrateEmailGuess(db: Database.Database): void {
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified')),
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, address));`)
+  // Parts 2-3 (Postgres: lib/db/migrations/pg/0050_email_verification.sql; tiers and confidence: 0051_email_free_first.sql). status stays 'unverified' (never a contact);
+  // verification is the mailbox check outcome, checked_at / verifier its provenance, country_basis the US evidence.
+  const has = (c: string) => (db.prepare('PRAGMA table_info(email_candidates)').all() as { name: string }[]).some(r => r.name === c)
+  if (!has('verification')) db.exec(`ALTER TABLE email_candidates ADD COLUMN verification TEXT NOT NULL DEFAULT 'none' CHECK (verification IN (${VERIFICATIONS.map(v => `'${v}'`).join(',')}))`)
+  if (!has('verifier')) db.exec('ALTER TABLE email_candidates ADD COLUMN verifier TEXT CHECK (verifier IS NULL OR length(verifier) <= 40)')
+  if (!has('checked_at')) db.exec('ALTER TABLE email_candidates ADD COLUMN checked_at INTEGER')
+  if (!has('country_basis')) db.exec('ALTER TABLE email_candidates ADD COLUMN country_basis TEXT CHECK (country_basis IS NULL OR length(country_basis) <= 160)')
+  // Free-first tiers: 'published' = printed on the confirmed site (source_url is that page); 'guessed' = built from the
+  // learned pattern, with the pattern's confidence. Only tier 'guessed' + confidence 'high' is ever mailbox-checked.
+  if (!has('tier')) db.exec("ALTER TABLE email_candidates ADD COLUMN tier TEXT NOT NULL DEFAULT 'guessed' CHECK (tier IN ('published','guessed'))")
+  if (!has('source_url')) db.exec('ALTER TABLE email_candidates ADD COLUMN source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500)')
+  if (!has('confidence')) db.exec("ALTER TABLE email_candidates ADD COLUMN confidence TEXT CHECK (confidence IS NULL OR confidence IN ('high','medium','low'))")
+  const hasP = (c: string) => (db.prepare('PRAGMA table_info(email_patterns)').all() as { name: string }[]).some(r => r.name === c)
+  if (!hasP('confidence')) db.exec("ALTER TABLE email_patterns ADD COLUMN confidence TEXT CHECK (confidence IS NULL OR confidence IN ('high','medium','low'))")
+  if (!hasP('score')) db.exec('ALTER TABLE email_patterns ADD COLUMN score INTEGER CHECK (score IS NULL OR (score >= 0 AND score <= 100))')
+  if (!hasP('runner_up')) db.exec('ALTER TABLE email_patterns ADD COLUMN runner_up INTEGER')
+  if (!hasP('evidence')) db.exec('ALTER TABLE email_patterns ADD COLUMN evidence TEXT CHECK (evidence IS NULL OR length(evidence) <= 2000)')
 }
 
-// Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople.
-export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[]): { format: Format; candidates: number } | null {
-  const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
-  const pattern = inferPattern(locals, names.map(x => x.name))
-  if (!pattern) return null
+// ---- part 2: US only. Unknown country counts as not US (docs/DECISIONS.md). ----
+// The confirmed homepage must state a US street address ("City, ST 12345"), the scan geography must not name another
+// country, and the homepage addresses must not include a Canadian postal code. Returns the address as provenance.
+const US_ZIP_ADDRESS = /([A-Z][\p{L}'.-]+(?: [A-Z][\p{L}'.-]+){0,2}),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/gu
+const CA_POSTAL_ADDRESS = /,\s*(?:ON|QC|BC|AB|MB|SK|NS|NB|NL|PE|YT|NT|NU)\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d\b/
+export function usEvidence(homeText: string | undefined, where: string[] = []): { us: true; basis: string } | { us: false; reason: string } {
+  const foreign = [...new Set(where.flatMap(w => countriesIn(w)))].filter(c => c !== 'US')
+  if (foreign.length) return { us: false, reason: `scan geography names ${foreign.join(', ')}` }
+  if (!homeText) return { us: false, reason: 'no homepage text: country unknown' }
+  if (CA_POSTAL_ADDRESS.test(homeText)) return { us: false, reason: 'homepage states a Canadian address' }
+  for (const m of homeText.matchAll(US_ZIP_ADDRESS)) if (m[2] in US_STATES) return { us: true, basis: `homepage address: ${m[0]}`.slice(0, 160) }
+  return { us: false, reason: 'no US address on the homepage: country unknown' }
+}
+
+// ---- part 3: mailbox verification ----
+export const VERIFICATIONS = ['none', 'pending', 'verified', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
+export type Verification = typeof VERIFICATIONS[number]
+export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverable' | 'unknown' | 'refused'; detail?: string }
+// A provider adapter. Tests inject a fake; production has none until the owner picks and approves a provider.
+export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> }
+export function verifierFromEnv(env: Record<string, string | undefined> = process.env): MailboxVerifier | null { void env; return null }
+// Per-tenant checks per UTC day. Default 0: no check runs unless a cap is set explicitly.
+export function verifyDailyCap(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.EMAIL_VERIFY_DAILY_CAP ?? '0')
+  return Number.isInteger(n) && n > 0 ? Math.min(n, 1000) : 0
+}
+const OUTCOME: Record<VerifyAnswer['outcome'], Verification> = { deliverable: 'verified', catch_all: 'catch_all', undeliverable: 'undeliverable', unknown: 'uncertain', refused: 'refused' }
+
+export interface VerifyRun { checked: number; verified: number; capped: number; skipped: string | null }
+// Checks a lead's unchecked US candidates, one reserved slot at a time. The slot (verification='pending', checked_at)
+// is written and counted inside a transaction BEFORE the provider call, so the cap holds even if the call or the
+// process dies; a pending row is never verified.
+export async function verifyCandidates(db: Database.Database, tenantId: string, leadId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal } = {}): Promise<VerifyRun> {
+  const env = opts.env ?? process.env
+  const run: VerifyRun = { checked: 0, verified: 0, capped: 0, skipped: null }
+  if (!emailGuessEnabled(env)) return { ...run, skipped: 'EMAIL_GUESS_ENABLED is off' }
+  if (!verifier) return { ...run, skipped: 'no verifier configured' }
+  const cap = verifyDailyCap(env)
+  if (cap === 0) return { ...run, skipped: 'EMAIL_VERIFY_DAILY_CAP is 0' }
   migrateEmailGuess(db)
-  db.prepare('INSERT OR REPLACE INTO email_patterns (tenant_id, lead_id, site, format, support) VALUES (?, ?, ?, ?, ?)').run(tenantId, leadId, site, pattern.format, pattern.support)
-  const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format) VALUES (?, ?, ?, ?, ?)")
-  let n = 0
-  for (const x of names) n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format).changes
-  return { format: pattern.format, candidates: n }
+  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400)
+  const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
+  const reserve = db.transaction((address: string): boolean => {
+    const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(tenantId, dayStart) as { n: number }).n
+    if (used >= cap) return false
+    return db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, verifier.name.slice(0, 40), tenantId, leadId, address).changes === 1
+  })
+  for (const { address } of rows) {
+    if (opts.signal?.aborted) break
+    if (!reserve(address)) { run.capped = rows.length - run.checked; break }
+    let v: Verification = 'uncertain'
+    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch { v = 'uncertain' }
+    db.prepare("UPDATE email_candidates SET verification = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(v, tenantId, leadId, address)
+    run.checked++
+    if (v === 'verified') run.verified++
+  }
+  return run
+}
+
+export type CandidateLabel = 'published' | 'guessed' | 'guessed, verified' | 'guessed, catch-all' | 'guessed, undeliverable' | 'guessed, uncertain' | 'guessed, refused'
+// The only label a guessed address may carry. "verified" needs the check outcome AND its provenance; never "published".
+// 'published' needs tier 'published' AND the page it was printed on; a guess can never become 'published'.
+export function candidateLabel(r: { verification: string; checked_at: number | null; verifier: string | null; country_basis: string | null; tier?: string | null; source_url?: string | null }): CandidateLabel {
+  if (r.tier === 'published') return r.source_url ? 'published' : 'guessed'
+  if (r.verification === 'verified') return r.checked_at && r.verifier && r.country_basis ? 'guessed, verified' : 'guessed, uncertain'
+  if (r.verification === 'catch_all') return 'guessed, catch-all'
+  if (r.verification === 'undeliverable') return 'guessed, undeliverable'
+  if (r.verification === 'refused') return 'guessed, refused'
+  if (r.verification === 'uncertain' || r.verification === 'pending') return 'guessed, uncertain'
+  return 'guessed'
+}
+
+// Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople. seen: personal
+// addresses printed on the site's own pages, whole, with the page URL (published tier + pattern evidence).
+// Writes nothing when the flag is off or the lead is not shown to be in the US.
+// Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
+// `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
+// printed address, so no address is ever filed under the wrong person.
+export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
+  if (!emailGuessEnabled(ctx.env ?? process.env)) return null
+  const us = usEvidence(ctx.homeText, ctx.where)
+  if (!us.us) return null
+  const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
+  const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
+  const allNames = names.map(x => x.name)
+  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
+  const ambiguousLocals = new Set([...locals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
+  const ambiguous = new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size
+  const pattern = rankPattern(locals, allNames)
+  if (!pattern && !published.length) return null
+  migrateEmailGuess(db)
+  let pub = 0, n = 0
+  const insPub = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
+  for (const x of published) pub += insPub.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
+  if (!pattern) return { format: null, confidence: null, candidates: 0, published: pub, ambiguous }
+  const urlOf = (address: string) => seen.find(s => s.address === address)?.url ?? null
+  const evidence: { person: string; address: string; url: string | null }[] = []
+  for (const p of pattern.supporters) {
+    const address = candidateAddress(p, site, pattern.format)
+    const e = { person: `${p.first} ${p.last}`, address, url: urlOf(address) }
+    if (JSON.stringify([...evidence, e]).length > 2000) break
+    evidence.push(e)
+  }
+  db.prepare('INSERT OR REPLACE INTO email_patterns (tenant_id, lead_id, site, format, support, confidence, score, runner_up, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(tenantId, leadId, site, pattern.format, pattern.support, pattern.confidence, pattern.score, pattern.runnerUp, JSON.stringify(evidence))
+  const hasPub = new Set(published.map(x => nameKey(x.name)))
+  // Distinct people per guessed local part: a local two different people would both get is nobody's guess.
+  const guessOwners = new Map<string, Set<string>>()
+  for (const x of names) {
+    const l = localFor(pattern.format, x.name)
+    if (!guessOwners.has(l)) guessOwners.set(l, new Set())
+    guessOwners.get(l)!.add(nameKey(x.name))
+  }
+  const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, ?, ?, 'guessed', ?)")
+  for (const x of names) {
+    if (hasPub.has(nameKey(x.name))) continue
+    const l = localFor(pattern.format, x.name)
+    if (guessOwners.get(l)!.size > 1 || ambiguousLocals.has(l)) continue
+    n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format, us.basis, pattern.confidence).changes
+  }
+  return { format: pattern.format, confidence: pattern.confidence, candidates: n, published: pub, ambiguous }
 }

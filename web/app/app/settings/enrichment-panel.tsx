@@ -73,7 +73,7 @@ export default function EnrichmentPanel() {
               <span>{u.reserved} credits used{u.limit === null ? ', no limit set' : ` of ${u.limit}${u.source === 'operator' ? ' (set by the operator)' : ''}`}</span>
               {u.source !== 'operator' && (
                 <>
-                  <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-1 w-20 shrink-0" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? (u.source === 'tenant' && u.limit !== null ? String(u.limit) : '')} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
+                  <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-2 w-20 min-h-11 shrink-0" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? (u.source === 'tenant' && u.limit !== null ? String(u.limit) : '')} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
                   {(() => {
                     const key = u.provider + u.window, saved = u.source === 'tenant' && u.limit !== null ? String(u.limit) : ''
                     const v = (limits[key] ?? saved).trim()
@@ -81,8 +81,8 @@ export default function EnrichmentPanel() {
                     const canSave = /^[0-9]+$/.test(v) && v !== saved
                     return (
                       <>
-                        <button aria-label={`Save ${u.provider} ${u.window} credit limit`} className="underline disabled:opacity-40 disabled:no-underline" disabled={!canSave} onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: Number(v) } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Save</button>
-                        {u.limit !== null && <button aria-label={`Clear ${u.provider} ${u.window} credit limit`} className="underline" onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: null } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Clear</button>}
+                        <button aria-label={`Save ${u.provider} ${u.window} credit limit`} className="min-h-11 min-w-11 px-2 underline disabled:opacity-40 disabled:no-underline" disabled={!canSave} onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: Number(v) } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Save</button>
+                        {u.limit !== null && <button aria-label={`Clear ${u.provider} ${u.window} credit limit`} className="min-h-11 min-w-11 px-2 underline" onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: null } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Clear</button>}
                       </>
                     )
                   })()}

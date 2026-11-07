@@ -18,7 +18,7 @@ export interface PersonContact {
 }
 
 // Connectors whose people are history, not current buyers. An SEC Form D names officers AS OF the filing: that is research, not an outreach target.
-import { contactCurrency, type ContactCurrency, type Currency } from './currency.ts'
+import { contactCurrency, type ContactCurrency, type Currency, type SiteIdentity } from './currency.ts'
 
 export const HISTORICAL_CONNECTORS = new Set(['signals:sec-form-d'])
 
@@ -54,7 +54,20 @@ const PAST = /\b(?:former|formerly|ex|previous|previously|past|retired|retiree|e
 const NEGATED = /\b(?:not|no longer|never|isn't|was not)\b/i
 const ASSISTANT_OF = /\b(?:assistant|secretary|aide|pa|ea)\s+(?:to|of|for)\b|['\u2019]s\s+(?:assistant|secretary|aide)\b/i
 const ASSISTANT = /\b(?:assistant|secretary|aide)\b/i
+// An explicit END DATE on the role: "until 2023", "through Mar 2023", "(2019 - 2023)". Bare "to <year>", "was" and open
+// ranges ("2019 - present", "since 2019") are NOT an end date. A range ending in the current year or later is still
+// running, so it is not past (as-of: nowYear).
+const END_UNTIL = /\b(?:until|till|thru|through)\s+(?:(?:early|late|mid)\s+)?(?:[a-z]{3,9}\.?\s+)?((?:19|20)\d{2})\b/i
+const YEAR_RANGE = /\b(?:19|20)\d{2}\s*(?:-|\u2013|\u2014|to)\s*((?:19|20)\d{2})\b/i
+// "was <title>" inside the row's own title text (a title field, not page prose): a past tense copula is a past role.
+const WAS_TITLE = /\bwas\s+(?:the\s+|a\s+|an\s+)?[A-Za-z]/i
+export function roleEndedByDate(title: string, nowYear: number = new Date().getUTCFullYear()): boolean {
+  const m = END_UNTIL.exec(title) ?? YEAR_RANGE.exec(title)
+  return !!m && Number(m[1]) < nowYear
+}
+
 export function roleContradicted(title: string, icpText = ''): boolean {
+  if (roleEndedByDate(title) || WAS_TITLE.test(title)) return true
   if (PAST.test(title) || NEGATED.test(title) || ASSISTANT_OF.test(title)) return true
   return ASSISTANT.test(title) && !ASSISTANT.test(icpText)
 }
@@ -102,12 +115,22 @@ export interface ContactEnrichment {
 // Where a listed person came from, in words (leads page and CSV export). Unknown connectors show their id.
 export const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company website (listed with this title)', 'search:people': 'a public LinkedIn search result (not verified as current)', 'adv:linkedin': 'LinkedIn, through your session', 'signals:sec-form-d': 'an SEC Form D filing (as of the filing date, not verified as current)', 'enrich:apollo': 'Apollo (provider search result, not verified as current)', 'enrich:pdl': 'People Data Labs (provider search result, not verified as current)' }
 
+// Where a listed person came from, for one ranked contact: a crawled person whose page is not established as the
+// company's own website (currency reason set) is NOT "the company website" (#781).
+export function peopleSourceText(p: { connector: string; verified?: ContactCurrency }): string {
+  if (p.connector === 'sitecrawl' && p.verified?.reason) return 'a crawled website page (listed with this title; not established as the company website)'
+  return PEOPLE_SOURCE[p.connector] ?? p.connector
+}
+
 // People dazl finds itself are 'person' rows valued "Name, Title" (company-site crawl, public profile search). They
 // belong in the same "right people" list as paid-enrichment contacts, not in the generic enrichment list. Their
 // profile link is source_url only when it IS a public profile; a company page stays a plain source link.
 const PROFILE_URL = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\//
 // Each contact also carries its currency class (verified current / search result only, lib/people/currency.ts) at nowMs.
-export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: string, nowMs: number = Date.now()): RankedPerson[] {
+// `site`: the lead's website identity (scan/opportunity.ts identityOf over the lead's rows). Without it no crawled
+// person is first-party verified (fail closed, #781): pass identityOf({ id, contact }, rows) from every caller that shows
+// or exports currency.
+export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: string, nowMs: number = Date.now(), site: SiteIdentity | null = null): RankedPerson[] {
   const contacts: PersonContact[] = rows
     .filter(r => r.kind === 'contact' || r.kind === 'person')
     .map(r => {
@@ -115,7 +138,7 @@ export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: stri
       const i = r.value.indexOf(sep)
       const title = i === -1 ? null : r.value.slice(i + sep.length).trim()
       const historical = !!(r.connector && HISTORICAL_CONNECTORS.has(r.connector))
-      const verified = contactCurrency(r, !!title && !historical && !roleContradicted(title, icpText), nowMs)
+      const verified = contactCurrency(r, !!title && !historical && !roleContradicted(title, icpText), nowMs, site)
       return {
         name: (i === -1 ? r.value : r.value.slice(0, i)).trim(),
         title,
