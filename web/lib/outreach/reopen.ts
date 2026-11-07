@@ -6,7 +6,7 @@
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, connectionGone, connectionReplaced, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
 import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
@@ -160,7 +160,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(orig.id, master)}`
   const now = d.now ?? Math.floor(Date.now() / 1000)
   let token: string
-  try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { throw new OutreachError('gmail_reconnect_needed') }
+  try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch (e) { throw new OutreachError(connectionGone(e) ? 'gmail_not_connected' : connectionReplaced(e) ? 'connection_replaced' : 'gmail_reconnect_needed') }
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')

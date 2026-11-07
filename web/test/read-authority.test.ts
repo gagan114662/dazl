@@ -178,7 +178,9 @@ test('disconnect racing a sync: the account is gone before provider revocation r
   const revokeFetch = (async () => { await new Promise<void>(r => { release = r }); return json({}) }) as unknown as typeof fetch
   let pending: Promise<void> | undefined
   const r = await syncReplies(db, 'A', opts(hooked({ [p.thread]: [reply('m1')] }, { onToken: () => { pending = disconnectGmail(db, 'A', { env: genv, master, fetchImpl: revokeFetch }) } }, calls)))
-  assert.equal(r.error, 'reading_not_enabled')
+  // #740/#930: the token fetch itself now refuses a connection deleted mid-call (gmail_unavailable), before the
+  // read-authority recheck would (reading_not_enabled). Either way: no thread read, nothing stored.
+  assert.ok(r.error === 'gmail_unavailable' || r.error === 'reading_not_enabled', String(r.error))
   assert.equal(calls.filter(u => /threads\//.test(u)).length, 0)
   assert.equal(count(db, 'SELECT count(*) n FROM inbound_messages'), 0)
   assert.equal(count(db, "SELECT count(*) n FROM gmail_accounts WHERE tenant_id = 'A'"), 0) // deleted while revoke still pending
