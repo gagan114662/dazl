@@ -53,7 +53,7 @@ export function personalLocals(html: string, site: string): string[] {
   return [...out]
 }
 
-// The same addresses, kept whole (local part AND domain), for the published tier: a published address is stored exactly as
+// The same addresses, kept whole (local part AND domain), for the published tier: a published address is stored lower-cased as
 // the site printed it, never rebuilt onto another domain.
 export function personalAddresses(html: string, site: string): { local: string; address: string }[] {
   const out = new Map<string, { local: string; address: string }>()
@@ -108,7 +108,7 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 }
 
 // Published tier: a person named on the confirmed site whose OWN address is printed on that site (its local part is one of
-// the known formats of their name). Stored exactly as printed, with the page it was printed on. Not a guess.
+// the known formats of their name). Stored as printed (lower-cased), with the page it was printed on. Not a guess.
 // Attribution needs the page evidence to identify the person unambiguously: when another named person (people) could own
 // the same printed address, it is attributed to no one. A published address is never proof of a verified mailbox.
 export function publishedFor(name: Name, seen: { address: string; url: string }[], people: Name[] = [name]): { address: string; url: string } | null {

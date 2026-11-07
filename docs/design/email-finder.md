@@ -25,7 +25,7 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
 
 4. **Free-first tiers (built).** Before any paid check, use what the confirmed site already prints:
    - **published**: a person named on the site whose own address (any known format of their name) is printed on one of
-     the site's crawled pages. Stored exactly as printed (domain kept, never rebuilt), `tier = 'published'`, with
+     the site's crawled pages. Stored as printed but lower-cased (its own domain kept, never rebuilt onto another); the domain must be the confirmed site or a subdomain of it, compared case-insensitively, `tier = 'published'`, with
      `source_url` = that page. Labelled "published" only with that page; otherwise "guessed". Never mailbox-checked.
     Attribution needs the page to identify the person unambiguously: when two named people could both own a printed
     address (e.g. `asmith@` for Anna and Alex Smith), it is attributed to neither, supports no pattern, and no guess

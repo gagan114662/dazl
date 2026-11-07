@@ -303,3 +303,13 @@ test('two people whose guesses collide under the pattern get no guess; a guess n
   const addrs = (db.prepare('SELECT address FROM email_candidates ORDER BY address').all() as { address: string }[]).map(x => x.address)
   assert.deepEqual(addrs, ['bortiz@acme.com', 'dlee@acme.com']) // no jpark@ filed under either Park
 })
+
+test('published is never eligible for the mailbox check, even with confidence high from an inconsistent write', async () => {
+  const db = new Database(':memory:'); migrateEmailGuess(db); const on = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '50' }
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url, confidence) VALUES ('A','L1','Dana Lee, CEO','dana.lee@acme.com','published','homepage address: Austin, TX 78701','published','https://acme.com/team','high')").run()
+  const calls: string[] = []
+  const r = await verifyCandidates(db, 'A', 'L1', fake({}, calls), { env: on })
+  assert.deepEqual(calls, [])
+  assert.equal(r.checked, 0)
+  assert.equal((db.prepare('SELECT verification FROM email_candidates').get() as { verification: string }).verification, 'none')
+})
