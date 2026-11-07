@@ -10,7 +10,7 @@
 import { loadPlaywright, startServer } from '../smoke/harness.mjs'
 
 const MIN = 44
-const PAGES = ['/app', '/app/plays', '/app/leads?job_id=' + 'b'.repeat(24) + '&passive=1', '/app/inbox', '/app/settings', '/sign-in', '/sign-up']
+const PAGES = ['/app', '/app?known=1', '/app/plays', '/app/leads?job_id=' + 'b'.repeat(24) + '&passive=1', '/app/inbox', '/app/settings', '/sign-in', '/sign-up']
 const VIEWPORT = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2, reducedMotion: 'reduce' }
 
 // Explicit exceptions (the #672 acceptance allows a written list with reasons). Each rule names what it matches.
@@ -115,6 +115,16 @@ try {
     await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
     const path = route.split('?')[0]
     try { await page.locator(MARKERS[path]).first().waitFor({ state: 'visible', timeout: 15000 }) } catch { failures.push(`${path}: page content (${MARKERS[path]}) never rendered, so its own controls were not measured`); await c.close(); continue }
+    // The app's nav lives behind the Menu label below md (hidden until the checkbox is on): open it the way a user does, so its
+    // rows are measured too (the closed-menu run missed 36px rows, #672 live review). Plain /app is the first-run onboarding
+    // screen, a fixed full-screen overlay that legitimately covers the shell, so it has no Menu to open; the returning-account
+    // Home (/app?known=1, profile stubbed as a known business) is measured with the Menu open instead.
+    if (route.startsWith('/app') && route !== '/app') {
+      try {
+        await page.locator('label[for="navtoggle"]').click({ timeout: 15000 })
+        await page.locator('nav[aria-label="Main"] a').first().waitFor({ state: 'visible', timeout: 15000 })
+      } catch (e) { failures.push(`${path}: the Menu could not be opened by a click on its visible label, so the nav rows were not measured (${String(e.message).split('\n')[0].slice(0, 160)})`) }
+    }
     const got = await page.evaluate(MEASURE)
     let checked = 0, excepted = 0
     for (const t of got) {
@@ -149,11 +159,13 @@ async function stubApis(page, route) {
   const WATCHES = [{ id: 'e'.repeat(24), query: 'Dental practices in Leeds opening a second location', icp: { summary: 'Independent dental practices', who: ['Practice owner'], where: ['Leeds, UK'], signals: ['opening a second location'] }, active: true, next_run_at: T + 7 * 86400, last_run_at: T, paused_reason: null, last_job_id: JOB, last_status: 'done', new_leads: 3 }]
   const MONITORS = [{ id: 'f'.repeat(24), query: 'Accounting firms in Bristol hiring payroll staff', icp: JSON.stringify({ summary: 'Accounting firms', where: ['Bristol, UK'], signals: ['hiring payroll staff'] }), interval_hours: 24, enabled: 1, paused_reason: null, last_run_at: null, next_run_at: T + 86400, last_new_count: null, run_count: 0, last_job_id: null }]
   const STUBS = {
+    // A returning account: the business is known, so Home shows the journey, not the first-run overlay.
+    '/app': { '/api/settings/profile': { website: 'https://harborledger.example', sells: 'Payment tooling for clinics', business_name: 'Harbor Ledger', buyer: null }, '/api/scan/jobs': { jobs: [] } },
     '/app/plays': { '/api/watch': { watches: WATCHES }, '/api/monitors': { monitors: MONITORS } },
     '/app/leads': { '/api/scan/status': { status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location' }, '/api/leads': { job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS }, '/api/scan/jobs': { jobs: [] }, '/api/enrich/held': { held: [] } },
     '/app/inbox': { '/api/outreach/inbox': { available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', booking_url: null, threads: THREADS, next_cursor: null, counts: { threads: 1, needs_owner: 1, unread: 1, unread_needs_owner: 1 } } },
   }
-  const stubs = STUBS[route.split('?')[0]]
+  const stubs = route === '/app' ? undefined : STUBS[route.split('?')[0]]
   if (!stubs) return
   await page.route('**/api/**', r => {
     const body = stubs[new URL(r.request().url()).pathname]
