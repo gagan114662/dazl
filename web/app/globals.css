@@ -109,8 +109,12 @@ body { font-size: 16px; line-height: 1.5; }
 .ask:focus-within { border-color: var(--ink); box-shadow: 0 0 0 4px rgba(138,77,255,.12), 0 10px 30px -18px rgba(44,0,42,.35); }
 .ask textarea { display: block; width: 100%; background: transparent; border: 0; outline: 0; resize: none; padding: 1.05rem 4.25rem 1.05rem 1.25rem; font-size: 1.05rem; line-height: 1.5; color: var(--ink); }
 .ask textarea::placeholder { color: var(--ink-3); }
-.app-ui .ask .send { padding: 0; position: absolute; right: .7rem; bottom: .6rem; width: 2.75rem; height: 2.75rem; /* #672: 44px touch target */ border-radius: 999px; background: var(--ink); color: #fff; display: inline-flex; align-items: center; justify-content: center; transition: background .15s, opacity .15s; }
-.app-ui .ask .send:hover { background: #4a1347; }
+.app-ui .ask .send { padding: 0; position: absolute; right: .7rem; bottom: .6rem; width: 2.75rem; height: 2.75rem; /* #672: 44px touch target */ border-radius: 0; isolation: isolate; background: transparent; color: #fff; display: inline-flex; align-items: center; justify-content: center; transition: opacity .15s; }
+/* #672: the hit box is a full 44px SQUARE (a border-radius clips hit-testing, so the textarea under a round button's
+   corner answered a probe at its corner and read as occluding it); the visible circle is drawn by ::before. */
+.app-ui .ask .send::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: 999px; background: var(--ink); transition: background .15s; }
+.app-ui .ask .send:hover { background: transparent; }
+.app-ui .ask .send:hover::before { background: #4a1347; }
 .app-ui .ask .send:disabled { opacity: .35; cursor: not-allowed; }
 
 /* Key/value table rows (play cards: Who / Signal / Pace). */
