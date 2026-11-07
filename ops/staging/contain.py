@@ -120,7 +120,12 @@ def main(argv):
     try:
         child = subprocess.Popen(cmd)
     except Abort:
-        contain(grace, kill_wait); return 128 + aborted[0]
+        # A signal during startup still owes the same cleanup contract: only a CONFIRMED-empty tree may report the signal
+        # status, because deploy.sh treats every status except BLOCKED as safe to delete the release.
+        if not contain(grace, kill_wait):
+            print(f'contain: build processes survived SIGKILL: {sorted(alive(descendants(os.getpid())))}; cleanup BLOCKED', file=sys.stderr)
+            return BLOCKED
+        return 128 + aborted[0]
     status = None
     while status is None and not aborted:
         try:

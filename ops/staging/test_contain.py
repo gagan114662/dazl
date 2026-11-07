@@ -46,4 +46,40 @@ class ContainTest(unittest.TestCase):
         self.assertEqual(subprocess.run([sys.executable, C]).returncode, 2)
 
 
+class StartupAbortStatusTest(unittest.TestCase):
+    """#907 review: a signal that lands while the build command is still starting must keep the blocked status when
+    cleanup cannot confirm every descendant is gone (deploy.sh only refuses to delete the release for status 125).
+    Isolated and deterministic: no process is spawned or signalled, prctl/Popen/contain are replaced in-process."""
+
+    def run_main(self, cleanup_ok):
+        import contextlib, importlib.util, io
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location('contain_under_test', C); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        handlers = {}
+        def fake_popen(*_a, **_k):                       # the signal arrives during Popen: run the handler main() installed
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+        libc = mock.Mock(); libc.prctl.return_value = 0
+        err = io.StringIO()
+        with mock.patch.object(mod.ctypes, 'CDLL', return_value=libc), \
+             mock.patch.object(mod.signal, 'signal', side_effect=lambda s, h: handlers.__setitem__(s, h)), \
+             mock.patch.object(mod.subprocess, 'Popen', side_effect=fake_popen), \
+             mock.patch.object(mod, 'contain', return_value=cleanup_ok) as cleanup, \
+             mock.patch.object(mod, 'descendants', return_value={4242}), \
+             mock.patch.object(mod, 'alive', return_value=[] if cleanup_ok else [4242]), \
+             contextlib.redirect_stderr(err):
+            status = mod.main(['--grace', '0.1', '--kill-wait', '0.1', '--', 'true'])
+        return status, cleanup.call_count, err.getvalue(), mod.BLOCKED
+
+    def test_blocked_cleanup_after_startup_abort_returns_blocked_not_the_signal_status(self):
+        status, cleanups, err, blocked = self.run_main(cleanup_ok=False)
+        self.assertEqual(cleanups, 1)
+        self.assertEqual(status, blocked); self.assertEqual(status, 125, 'deploy.sh treats every other status as cleanup-safe')
+        self.assertIn('cleanup BLOCKED', err); self.assertIn('4242', err, 'the surviving descendant is named for the operator')
+
+    def test_confirmed_cleanup_after_startup_abort_keeps_the_signal_status(self):
+        status, cleanups, err, _ = self.run_main(cleanup_ok=True)
+        self.assertEqual((status, cleanups), (128 + signal.SIGTERM, 1)); self.assertEqual(status, 143)
+        self.assertNotIn('BLOCKED', err)
+
+
 if __name__ == '__main__': unittest.main()
