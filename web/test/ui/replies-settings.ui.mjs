@@ -16,12 +16,31 @@ const Database = require('better-sqlite3'); const { createHash, randomBytes } = 
 // Lifetime: everything created below (temp dir, server process, browser) is released by ONE idempotent cleanup that runs on success, on any throw (including a
 // startup failure before the first assertion), on SIGINT/SIGTERM and on a hard deadline. The hard deadline bounds the whole run; readiness is bounded and fails loudly.
 const HARD_DEADLINE_MS = 300_000; const READY_MS = 60_000
-let tmp = null, srv = null, b = null, cleaned = false
-async function cleanup() {
-  if (cleaned) return; cleaned = true
-  try { if (b) await Promise.race([b.close(), new Promise(r => setTimeout(r, 5000))]) } catch {}
-  try { if (srv && srv.exitCode === null) { srv.kill('SIGTERM'); await new Promise(r => { const t = setTimeout(() => { try { srv.kill('SIGKILL') } catch {} r() }, 3000); srv.once('exit', () => { clearTimeout(t); r() }) }) } } catch {}
-  try { if (tmp) rmSync(tmp, { recursive: true, force: true }) } catch {}
+let tmp = null, srv = null, b = null, cleanupPromise = null
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+// resolves true only when the child has actually exited (exit event or already exited); false after ms
+const exited = (proc, ms) => (proc.exitCode !== null || proc.signalCode !== null) ? Promise.resolve(true) : new Promise(res => { const h = () => { clearTimeout(t); res(true) }; const t = setTimeout(() => { proc.off('exit', h); res(false) }, ms); proc.once('exit', h) })
+// ONE shared promise: every caller (finally, signal, hard deadline, a second signal during cleanup) waits for the same cleanup. Returns the list of unverified items.
+const cleanup = () => (cleanupPromise ??= doCleanup())
+async function doCleanup() {
+  const issues = []
+  if (b) {
+    try { const closed = await Promise.race([b.close().then(() => true), sleep(5000).then(() => false)]); if (!closed) issues.push('browser close timed out: termination not confirmed') }
+    catch (e) { issues.push(`browser close failed (${String(e.message).split('\n')[0].slice(0, 80)}): termination not confirmed`) }
+  }
+  let serverGone = true
+  if (srv) {
+    if (!(await exited(srv, 0))) {
+      srv.kill('SIGTERM')
+      if (!(await exited(srv, 3000))) { try { srv.kill('SIGKILL') } catch {} ; serverGone = await exited(srv, 3000) }   // a sent signal is not proof: wait for the exit event
+      if (!serverGone) issues.push('server exit not confirmed after SIGKILL within 3 s')
+    }
+  }
+  // the temp dir is removed only once the server that may be using it is confirmed gone
+  if (tmp) { if (serverGone) { try { rmSync(tmp, { recursive: true, force: true }) } catch (e) { issues.push(`temp dir not removed: ${String(e.message).slice(0, 80)}`) } } else issues.push(`temp dir left in place (server may still hold it): ${tmp}`) }
+  console.log(issues.length ? `cleanup UNVERIFIED: ${issues.join('; ')}` : 'cleanup verified: browser closed, server exited, temp dir removed')
+  if (issues.length) process.exitCode = 1
+  return issues
 }
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { void cleanup().finally(() => process.exit(130)) })
 setTimeout(() => { console.error(`replies-settings UI check: hard deadline ${HARD_DEADLINE_MS} ms reached`); void cleanup().finally(() => process.exit(1)) }, HARD_DEADLINE_MS).unref()
