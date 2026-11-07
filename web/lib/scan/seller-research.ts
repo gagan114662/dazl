@@ -14,7 +14,7 @@ export interface ResearchedPage { url: string; title: string; fetched_at: number
 export interface AnsweredQuestion { question: string; offer: string; text?: string }
 // A saved decision (a reviewed or rejected statement, or a typed answer) whose OFFER can no longer be told: it is kept here by the name(s) it might belong to, never moved onto a guess.
 // Every current offer whose stored name is in `names` is HELD: only statements the person explicitly reviewed target for it (see targetingFor) until none of its statements is left unreviewed.
-export interface Unresolved { names: string[]; kind: HypKind; text: string; status: 'reviewed' | 'rejected'; whole?: boolean }   // whole: capacity overflow collapsed to a group-level hold (see capHolds)
+export interface Unresolved { names: string[]; kind: HypKind; text: string; status: 'reviewed' | 'rejected'; whole?: boolean; rej?: string[]; rev?: string[]; open?: boolean }   // whole: capacity overflow folded to a group-level hold; rej/rev: identities (digests) of the rejected / reviewed statements folded into it; open: the set is unknown, never released
 export interface SellerResearch { site: string; pages: ResearchedPage[]; offers: { id: string; name: string }[]; hypotheses: Hypothesis[]; question: string | null; answered: AnsweredQuestion | null; unresolved?: Unresolved[] }
 export type PageKind = 'home' | 'product' | 'pricing' | 'customers' | 'industries'
 
@@ -27,7 +27,7 @@ const KINDS: [PageKind, RegExp][] = [
 const registrable = (h: string) => h.toLowerCase().replace(/^www\./, '')
 
 // Offer identity lives in ./offer-identity.ts (one contract for construction, storage, the reviewed draft, retrieval titles and decision reuse).
-import { capHolds, holdName, holdNameOf, offerId, offerIds, offerKey, selectOffer, storedKey } from './offer-identity.ts'
+import { capHolds, holdName, holdNameOf, holdTag, offerId, offerIds, offerKey, rejDigest, selectOffer, storedKey } from './offer-identity.ts'
 export { offerId, offerIds, offerKey }
 
 // Hypothesis ids are content-keyed (offer + kind + the model's original text), so a recrawl that finds the same
@@ -124,12 +124,19 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
   const heldEntries = carried.map(u => {
     // A name shared by more than one current offer (equal through the stored width, or the same name listed twice) cannot be told apart from persisted names alone: it is never released by an answer for one id.
     const names = u.names.map(holdName).filter(n => current.has(n) && !(answered?.text && u.kind === 'persona' && u.status === 'reviewed' && n === answeredName && groupSize.get(n) === 1 && exact(u.text, answered.text)))
-    return { ...u, names }
+    const tags = new Set(names.map(holdTag))
+    // a typed answer for an unambiguous offer re-decides that persona: it resolves the folded reviewed digest of the same text
+    const typed = answered?.text && groupSize.get(answeredName) === 1 ? rejDigest(answeredName, 'persona', answered.text) : null
+    const f = (l?: string[], drop?: string | null) => l?.filter(d => tags.has(d.split('.')[0]) && d !== drop)
+    return { ...u, names, ...(u.rej ? { rej: f(u.rej) } : {}), ...(u.rev ? { rev: f(u.rev, typed) } : {}) }
   }).filter(u => u.names.length)
   // An unattributable REJECTION is honoured on every candidate (fail closed): the same statement on an offer it might have belonged to stays rejected. An unattributable confirmation or
   // edit is applied to none; it stays recorded in `unresolved` until the person reviews the offer.
   const rejects = heldEntries.filter(u => u.status === 'rejected')
   if (rejects.length) corrected = corrected.map(h => h.kind !== 'offer' && h.status !== 'unknown' && rejects.some(u => u.kind === h.kind && norm(u.text) === norm(h.text) && offersKept.some(x => x.id === h.offer && u.names.includes(holdNameOf(x.name)))) ? { ...h, status: 'rejected' as const } : h)
+  // Rejections folded into a whole-group entry keep their identity as digests: the same statement, however it returns (a later quote, a different crawl), stays rejected on the offers that name carries.
+  const digests = new Set(heldEntries.flatMap(u => u.rej ?? []))
+  if (digests.size) corrected = corrected.map(h => h.kind !== 'offer' && h.status !== 'unknown' && h.status !== 'rejected' && offersKept.some(x => x.id === h.offer && digests.has(rejDigest(holdNameOf(x.name), h.kind, h.text))) ? { ...h, status: 'rejected' as const } : h)
   // Offers an old decision could not be attributed to are HELD: a page-supported (sourced) statement alone does not count as a buyer for them, and they are asked about again.
   const heldNow = new Set(heldIds({ offers: offersKept, unresolved: heldEntries }))
   const sourcedBuyer = (id: string) => corrected.some(h => h.offer === id && h.kind === 'persona' && (h.status === 'reviewed' || (h.status === 'sourced' && !heldNow.has(id))))
@@ -141,6 +148,7 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
 }
 
 // ---- held (unresolved) identity ----
+const wholeEntry = (names: string[], rej: string[], rev: string[], open: boolean): Unresolved => ({ names, kind: 'persona', text: '', status: 'reviewed', whole: true, ...(rej.length ? { rej } : {}), ...(rev.length ? { rev } : {}), ...(open ? { open: true } : {}) })
 const decisionsOf = (prior: SellerResearch, id: string): Unresolved[] => [
   ...prior.hypotheses.filter(h => h.offer === id && h.kind !== 'offer' && (h.status === 'reviewed' || h.status === 'rejected')).map(h => ({ names: [], kind: h.kind, text: h.text, status: h.status as 'reviewed' | 'rejected' })),
   ...(prior.answered?.offer === id && prior.answered.text ? [{ names: [], kind: 'persona' as const, text: prior.answered.text, status: 'reviewed' as const }] : []),
@@ -159,7 +167,7 @@ function carryUnresolved(prior: SellerResearch | null | undefined, offers: { id:
       for (const d of decisionsOf(prior, id)) out.push({ ...d, names })
     }
   }
-  return capHolds(out, names => ({ names, kind: 'persona', text: '', status: 'reviewed', whole: true }), norm)
+  return capHolds(out, wholeEntry)
 }
 // Current offers that are held: their stored name is in an unresolved decision. The hold ends only by an explicit new decision on the same statement (applyCorrections) or, for a typed answer,
 // by the person answering again; a rerun, an unanswered question and a rejection the hold itself applied never end it.
@@ -194,13 +202,25 @@ export function applyCorrections(r: SellerResearch, corrections: Correction[]): 
   })
   // A new explicit decision on the same statement ends the hold for THAT candidate only. A hold is persisted as a NAME, so offers sharing a name key (equal through the stored width, or the same
   // name listed twice) are one group that persisted state cannot tell apart: the group is released only when EVERY offer in it has its own explicit decision on that statement in this call.
-  const decided = corrections.map(c => { const h = r.hypotheses.find(x => x.id === c.hypothesis && x.offer === c.offer); const o = r.offers.find(x => x.id === c.offer); return h && o ? { kind: h.kind, text: norm(h.text), name: holdNameOf(o.name), offer: o.id } : null }).filter((x): x is { kind: HypKind; text: string; name: string; offer: string } => !!x)
+  const decided = corrections.map(c => { const h = r.hypotheses.find(x => x.id === c.hypothesis && x.offer === c.offer); const o = r.offers.find(x => x.id === c.offer); return h && o ? { kind: h.kind, text: norm(h.text), raw: h.text, name: holdNameOf(o.name), offer: o.id } : null }).filter((x): x is { kind: HypKind; text: string; raw: string; name: string; offer: string } => !!x)
   const groupOf = (n: string) => r.offers.filter(o => holdNameOf(o.name) === n).map(o => o.id)
   const releasable = (u: Unresolved, n: string) => { const who = new Set(decided.filter(d => d.kind === u.kind && d.text === norm(u.text) && d.name === n).map(d => d.offer)); return groupOf(n).length > 0 && groupOf(n).every(id => who.has(id)) }
-  // A whole-group entry (capacity overflow) stands for decisions that could not be kept one by one: it is released for a name only when every offer carrying that name has NO statement left that
-  // the person has not explicitly reviewed or rejected.
+  // A whole-group entry (capacity overflow) stands for decisions that could not be kept one by one. Its rejected statements keep their identity (rej digests): a digest is resolved only by an
+  // explicit decision on that same statement from EVERY offer carrying the name (never by absence, an empty call or a decision elsewhere). An `open` entry has no identifiable set: never released.
+  // Once no digest is left, the name is released when no statement is left unreviewed.
   const unreviewed = (n: string) => groupOf(n).some(id => hyps.some(h => h.offer === id && h.kind !== 'offer' && (h.status === 'sourced' || h.status === 'hypothesis')))
-  const left = (r.unresolved ?? []).map(u => ({ ...u, names: u.names.map(holdName).filter(n => (u.whole ? unreviewed(n) : !releasable(u, n))) })).filter(u => u.names.length)
+  const decidedDigests = decided.map(d => ({ name: d.name, offer: d.offer, dg: rejDigest(d.name, d.kind, d.raw) }))
+  const resolved = new Set(decidedDigests.filter(x => groupOf(x.name).every(id => decidedDigests.some(y => y.name === x.name && y.offer === id && y.dg === x.dg))).map(x => x.dg))
+  const left: Unresolved[] = []
+  for (const u of r.unresolved ?? []) {
+    if (!u.whole) { const names = u.names.map(holdName).filter(n => !releasable(u, n)); if (names.length) left.push({ ...u, names }); continue }
+    const rej = (u.rej ?? []).filter(d => !resolved.has(d)), rev = (u.rev ?? []).filter(d => !resolved.has(d))
+    const names = u.names.map(holdName).filter(n => u.open || [...rej, ...rev].some(d => d.startsWith(`${holdTag(n)}.`)) || unreviewed(n))
+    if (!names.length) continue
+    const tags = new Set(names.map(holdTag)), keepR = rej.filter(d => tags.has(d.split('.')[0])), keepV = rev.filter(d => tags.has(d.split('.')[0]))
+    const { rej: _a, rev: _b, ...base } = u; void _a; void _b
+    left.push({ ...base, names, ...(keepR.length ? { rej: keepR } : {}), ...(keepV.length ? { rev: keepV } : {}) })
+  }
   const { unresolved: _drop, ...rest } = r; void _drop
   return { ...rest, hypotheses: hyps, question: null, ...(left.length ? { unresolved: left } : {}) }
 }
@@ -220,13 +240,13 @@ export function toStored(r: SellerResearch): IcpResearch {
   return {
     v: 1, site: r.site, q: r.question, ans: r.answered ? { q: r.answered.question, o: r.answered.offer, ...(r.answered.text ? { t: r.answered.text } : {}) } : null,
     offers: r.offers.map(o => ({ i: o.id, n: o.name })),
-    ...(r.unresolved?.length ? { u: r.unresolved.map(x => ({ n: x.names, k: x.kind, t: x.text, s: x.status, ...(x.whole ? { w: true as const } : {}) })) } : {}),
+    ...(r.unresolved?.length ? { u: r.unresolved.map(x => ({ n: x.names, k: x.kind, t: x.text, s: x.status, ...(x.whole ? { w: true as const } : {}), ...(x.rej?.length ? { r: x.rej } : {}), ...(x.rev?.length ? { v: x.rev } : {}), ...(x.open ? { o: true as const } : {}) })) } : {}),
     hyps: r.hypotheses.filter(h => h.status !== 'unknown').map(h => ({ i: h.id, o: h.offer, k: h.kind, t: h.text, s: h.status as ResearchedHyp['s'], u: h.url, q: h.quote, at: h.fetched_at })),
   }
 }
 export function fromStored(s: IcpResearch): SellerResearch {
   return {
-    ...(s.u?.length ? { unresolved: s.u.map(x => ({ names: x.n.map(holdName), kind: x.k, text: x.t, status: x.s, ...(x.w ? { whole: true as const } : {}) })) } : {}),
+    ...(s.u?.length ? { unresolved: s.u.map(x => ({ names: x.n.map(holdName), kind: x.k, text: x.t, status: x.s, ...(x.w ? { whole: true as const } : {}), ...(x.r?.length ? { rej: x.r } : {}), ...(x.v?.length ? { rev: x.v } : {}), ...(x.o ? { open: true as const } : {}) })) } : {}),
     site: s.site, question: s.q, answered: s.ans ? { question: s.ans.q, offer: s.ans.o, ...(s.ans.t ? { text: s.ans.t } : {}) } : null,
     pages: [], offers: s.offers.map(o => ({ id: o.i, name: o.n })),
     hypotheses: s.hyps.map(h => ({ id: h.i, offer: h.o, kind: h.k, text: h.t, status: h.s, url: h.u, quote: h.q, fetched_at: h.at })),

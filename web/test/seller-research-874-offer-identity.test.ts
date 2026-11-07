@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, heldIds, offerId, offerIds, targetingFor, toStored, OFFER_QUESTION, WHO_QUESTION, type FetchedPage, type SellerResearch, type Unresolved } from '../lib/scan/seller-research.ts'
 import { budgetedIcp, normalizeResearch, type Icp } from '../lib/scan/icp.ts'
 import { norm } from '../lib/scan/evidence.ts'
-import { holdNameOf } from '../lib/scan/offer-identity.ts'
+import { holdNameOf, MAX_REJ, rejDigest } from '../lib/scan/offer-identity.ts'
 import { assembleDecisionPack, decisionRows, reuseSellerDecisions, type SellerDecision } from '../lib/scan/intelligence.ts'
 import { reviewedBuyerTitles } from '../lib/enrich/index.ts'
 import { captureSellerDecisions, createJob, migrateScan } from '../lib/scan/store.ts'
@@ -475,7 +475,11 @@ test('#874 overflow control: a product is released only when ITS statements are 
   let r = buildOverflow({ ...build(P), unresolved: OVERFLOW() })
   const decideAll = (rr: SellerResearch, name: string) => applyCorrections(rr, rr.hypotheses.filter(h => h.offer === idOf(rr, name) && h.kind !== 'offer').map(h => ({ offer: h.offer, hypothesis: h.id, action: 'reject' as const })))
   r = decideAll(r, P[2]); assert.ok(!heldIds(r).includes(idOf(r, P[2])), 'Gamma released: every one of its statements was explicitly decided'); assert.ok(heldIds(r).includes(idOf(r, P[0])) && heldIds(r).includes(idOf(r, P[1])))
-  const rerun = buildOverflow(roundTrip(r)); assert.ok(!heldIds(rerun).includes(idOf(rerun, P[2])) || (rerun.unresolved ?? []).some(u => u.names.includes(holdNameOf(P[2]))), 'consistent after reload')
+  const rerun = buildOverflow(roundTrip(r))
+  assert.deepEqual([...heldIds(rerun)].sort(), [idOf(rerun, P[0]), idOf(rerun, P[1])].sort(), 'after reload and rerun: exactly Alpha and Beta are held, Gamma stays released')
+  assert.ok(!(rerun.unresolved ?? []).some(u => u.names.includes(holdNameOf(P[2]))), 'and no unresolved entry names Gamma any more')
+  for (const k of [1, 2, 3]) assert.equal(hyp(rerun, P[0], 'industry', `statement ${k}`).status, 'rejected', `Alpha's rejected statement ${k} stays rejected after the rerun`)
+  assert.equal(hyp(rerun, P[1], 'industry', 'statement 1').status, 'rejected', 'Beta\'s rejection stays rejected')
   r = decideAll(r, P[1]); r = decideAll(r, P[0])
   assert.deepEqual(heldIds(r), [], 'all products decided: nothing held'); assert.deepEqual(r.unresolved ?? [], [])
 })
@@ -489,4 +493,109 @@ test('#874 overflow through saved-decision reuse: more than eight held rows acro
   const rerun = (prior: SellerResearch) => { const m = { offers: names.map((n, i) => ({ id: `o${i + 1}`, name: n })), items: names.map((_, i) => ({ offer: `o${i + 1}`, kind: SOURCED.kind, text: SOURCED.text, url: QUOTE_PAGES[0].url, quote: SOURCED.quote, inferred: false })) }; const r = buildResearch(m, QUOTE_PAGES, SITE, prior); if ('error' in r) throw new Error('setup'); return r }
   persisted = rerun(roundTrip(persisted))
   for (const n of names) assert.deepEqual(targetingFor(persisted, idOf(persisted, n)).industries, [], `${n}: still not targeting after a persisted rerun`)
+})
+
+
+// =====================================================================================================================================================
+// Review round 5 on #1000: compression must keep the AUTHORITY of a rejection, not only the hold. More than seven rejected entries, and the column's character limit, fold into a whole-group
+// entry that carries the rejections' identities (digests). Omitting the statement from a later crawl, an empty or unrelated correction, or a fresh quote that brings it back must not
+// release the hold or revive the text; only an explicit decision on that statement does, and only for what was resolved.
+// =====================================================================================================================================================
+const REJ = Array.from({ length: 10 }, (_, i) => `rejected claim ${i + 1}`)
+const rejHolds = (name: string): Unresolved[] => REJ.map(t => hold(name, t, 'rejected'))
+// a crawl whose model offers the given statements for every product (as sourced claims with a real quote), nothing else
+const crawl = (names: string[], texts: string[], prior: SellerResearch | null): SellerResearch => {
+  const items = names.flatMap((_, i) => texts.map(t => ({ offer: `o${i + 1}`, kind: 'industry', text: t, url: QUOTE_PAGES[0].url, quote: 'retailers and distributors', inferred: false })))
+  const r = buildResearch({ offers: names.map((n, i) => ({ id: `o${i + 1}`, name: n })), items }, QUOTE_PAGES, SITE, prior); if ('error' in r) throw new Error('setup'); return r
+}
+const NAMES2 = ['Alpha Pro', 'Beta Pro']
+test('#874 rejection authority: more than seven REJECTED entries fold to digests; omitting them, empty/unrelated corrections and a reappearing fresh quote cannot release or revive them (save, reload, rerun)', () => {
+  const base = build(NAMES2)
+  let r = crawl(NAMES2, ['unrelated claim'], { ...base, unresolved: [...rejHolds(NAMES2[0]), hold(NAMES2[1], 'beta decision')] })
+  const whole = (r.unresolved ?? []).find(u => u.whole)!
+  assert.ok(whole && (whole.rej ?? []).length >= 3, 'the folded rejections keep their identity as digests')
+  assert.ok((r.unresolved ?? []).length <= 8)
+  const heldBoth = () => [idOf(r, NAMES2[0]), idOf(r, NAMES2[1])].sort()
+  assert.deepEqual([...heldIds(r)].sort(), heldBoth(), 'both held; the crawl omitted every rejected statement')
+  // empty / unrelated corrections, repeated through save+reload
+  r = applyCorrections(r, []); r = crawl(NAMES2, ['unrelated claim'], roundTrip(r))
+  const unrelated = r.hypotheses.filter(h => h.offer === idOf(r, NAMES2[1]) && h.text === 'unrelated claim')
+  r = applyCorrections(r, unrelated.map(h => ({ offer: h.offer, hypothesis: h.id, action: 'confirm' as const })))   // a decision on another offer's different statement
+  r = crawl(NAMES2, ['unrelated claim'], roundTrip(r))
+  assert.deepEqual([...heldIds(r)].sort(), heldBoth(), 'still held after empty and unrelated corrections')
+  assert.ok((r.unresolved ?? []).some(u => u.whole && (u.rej ?? []).length >= 3), 'and the rejection identities are still there')
+  // the rejected statements come back in a later crawl, backed by a real quote
+  const back = crawl(NAMES2, [...REJ, 'unrelated claim'], roundTrip(r))
+  for (const t of REJ) assert.equal(hyp(back, NAMES2[0], 'industry', t).status, 'rejected', `${t}: a fresh quote does not revive it`)
+  assert.deepEqual(industries(back, NAMES2[0]), [], 'and nothing sourced targets for the held offer')
+  assert.ok(heldIds(back).includes(idOf(back, NAMES2[0])))
+})
+test('#874 rejection authority: an explicit decision on a reappeared rejected statement resolves exactly that statement and nothing else', () => {
+  const base = build(NAMES2)
+  const folded = crawl(NAMES2, ['unrelated claim'], { ...base, unresolved: [...rejHolds(NAMES2[0]), hold(NAMES2[1], 'beta decision')] })
+  const back = crawl(NAMES2, [...REJ, 'unrelated claim'], roundTrip(folded))
+  const before = (back.unresolved ?? []).find(u => u.whole)!.rej!
+  const target = hyp(back, NAMES2[0], 'industry', REJ[9])   // a statement that was folded (rejections beyond the specific slots)
+  const dg = rejDigest(holdNameOf(NAMES2[0]), 'industry', target.text)
+  const folded9 = before.includes(dg)
+  const one = applyCorrections(back, [{ offer: target.offer, hypothesis: target.id, action: 'reject' }])
+  const after = (one.unresolved ?? []).find(u => u.whole)?.rej ?? []
+  if (folded9) { assert.ok(!after.includes(dg), 'that digest is resolved'); assert.equal(after.length, before.length - 1, 'and only that one') } else assert.equal(after.length, before.length, 'a specific entry was resolved instead; the digests are untouched')
+  assert.ok(heldIds(one).includes(idOf(one, NAMES2[0])), 'the offer is still held: other rejections are unresolved')
+  // deciding EVERY listed statement of the offer (each reappeared rejection) releases it
+  const all = applyCorrections(back, back.hypotheses.filter(h => h.offer === idOf(back, NAMES2[0]) && h.kind !== 'offer').map(h => ({ offer: h.offer, hypothesis: h.id, action: 'reject' as const })))
+  assert.ok(!heldIds(all).includes(idOf(all, NAMES2[0])), 'every rejection resolved explicitly: Alpha released')
+  assert.deepEqual(heldIds(all), [idOf(all, NAMES2[1])], 'Beta (untouched) is still held, exactly')
+})
+test('#874 rejection authority: when the column budget forces the specific rejections to collapse, their identity survives (budget -> reload -> rerun omitting them -> corrections -> return)', () => {
+  const names = ['Alpha ' + 'x'.repeat(50), 'Beta ' + 'y'.repeat(50)]
+  const long = (i: number) => `${'long rejected statement '.repeat(4).trim()} ${i}`
+  const LONGS = Array.from({ length: 6 }, (_, i) => long(i))
+  const base = build(names)
+  const research = toStored({ ...base, unresolved: [...LONGS.map(t => hold(names[0], t, 'rejected')), hold(names[1], long(99))] })
+  // a profile so full that the specific holds cannot fit next to the flat fields
+  const icp: Icp = { summary: 's'.repeat(300), who: Array.from({ length: 6 }, (_, i) => `buyer title number ${i} `.repeat(6).slice(0, 100)), industries: Array.from({ length: 6 }, (_, i) => `industry ${i} `.repeat(10).slice(0, 100)), sizes: [], where: [], signals: Array.from({ length: 6 }, (_, i) => `signal ${i} `.repeat(10).slice(0, 100)), exclude: [], research }
+  const out = budgetedIcp(icp); assert.ok(out.ok, 'the profile fits'); if (!out.ok) return
+  const stored = out.icp.research!
+  assert.deepEqual([...new Set((stored.u ?? []).flatMap(u => u.n))].sort(), names.map(holdNameOf).sort(), 'both products still held after the budget fit')
+  assert.ok((stored.u ?? []).some(u => u.w) && (stored.u ?? []).length < 7, 'fixture check: the column budget really forced a collapse into a whole entry')
+  const r0 = fromStored(normalizeResearch(JSON.parse(JSON.stringify(stored)))!)
+  const kept = (r0.unresolved ?? []).filter(u => u.whole)
+  const digests = new Set(kept.flatMap(u => u.rej ?? [])), open = kept.some(u => u.open)
+  assert.ok(digests.size > 0 || open, 'either the rejection identities or an explicit `open` marker survives the collapse')
+  // rerun omitting the rejected statements, empty/unrelated corrections, then the rejected text returns
+  let r = crawl(names, ['unrelated claim'], r0); r = applyCorrections(r, []); r = crawl(names, ['unrelated claim'], roundTrip(r))
+  assert.deepEqual([...heldIds(r)].sort(), r.offers.map(o => o.id).sort(), 'held after omitting the statements and empty corrections')
+  const back = crawl(names, [...LONGS, 'unrelated claim'], roundTrip(r))
+  for (const t of LONGS) { const h = hyp(back, names[0], 'industry', t); assert.notEqual(h.status, 'sourced', `${t.slice(-3)}: not a sourced, targeting statement`); if (!open) assert.equal(h.status, 'rejected', 'and identified rejections stay rejected') }
+  assert.deepEqual(industries(back, names[0]), [])
+})
+test('#874 rejection authority: more rejections than a digest list can hold make the entry OPEN: no correction, empty or complete, releases it', () => {
+  const many = Array.from({ length: MAX_REJ + 12 }, (_, i) => `rejected claim number ${i}`)
+  const base = build(NAMES2)
+  const r0 = crawl(NAMES2, ['unrelated claim'], { ...base, unresolved: many.map(t => hold(NAMES2[0], t, 'rejected')) })
+  const w = (r0.unresolved ?? []).find(u => u.whole)!
+  assert.ok(w.open, 'the rejected set is unrepresentable: the entry is open'); assert.ok((w.rej ?? []).length <= MAX_REJ, 'and bounded')
+  const round = fromStored(normalizeResearch(JSON.parse(JSON.stringify(toStored(r0))))!)
+  assert.ok((round.unresolved ?? []).some(u => u.whole && u.open), 'open survives storage')
+  const everything = applyCorrections(round, round.hypotheses.filter(h => h.kind !== 'offer').map(h => ({ offer: h.offer, hypothesis: h.id, action: 'reject' as const })))
+  assert.ok(heldIds(everything).includes(idOf(everything, NAMES2[0])), 'deciding every current statement does not release an open hold')
+  assert.ok(heldIds(applyCorrections(round, [])).includes(idOf(round, NAMES2[0])))
+  assert.deepEqual(industries(crawl(NAMES2, [...many.slice(0, 5), 'unrelated claim'], roundTrip(everything)), NAMES2[0]), [], 'and nothing the crawl offers targets')
+})
+
+test('#874 reviewed decisions folded into a whole entry keep their identity too: an unrelated or empty correction does not release them; a decision on the same statement does', () => {
+  const base = build(NAMES2)
+  const holdsAll: Unresolved[] = [...rejHolds(NAMES2[0]), hold(NAMES2[1], 'beta decision')]   // 10 rejections + 1 reviewed: the reviewed one folds
+  let r = crawl(NAMES2, ['unrelated claim'], { ...base, unresolved: holdsAll })
+  const w = (r.unresolved ?? []).find(u => u.whole)!
+  assert.ok((w.rev ?? []).length >= 1 && w.names.includes(holdNameOf(NAMES2[1])), 'the folded reviewed decision for Beta keeps its identity')
+  const unrelated = r.hypotheses.filter(h => h.offer === idOf(r, NAMES2[1]) && h.text === 'unrelated claim')
+  r = applyCorrections(r, unrelated.map(h => ({ offer: h.offer, hypothesis: h.id, action: 'confirm' as const })))
+  r = crawl(NAMES2, ['unrelated claim'], roundTrip(r))
+  assert.ok(heldIds(r).includes(idOf(r, NAMES2[1])), 'every CURRENT Beta statement is reviewed, yet Beta stays held: its original decision was never re-decided')
+  const again = crawl(NAMES2, ['unrelated claim', 'beta decision'], roundTrip(r))
+  const same = again.hypotheses.filter(h => h.offer === idOf(again, NAMES2[1]) && h.text === 'beta decision')
+  const done = applyCorrections(again, same.map(h => ({ offer: h.offer, hypothesis: h.id, action: 'confirm' as const })))
+  assert.ok(!(done.unresolved ?? []).some(u => u.names.includes(holdNameOf(NAMES2[1])) && (u.rev ?? []).length), 'the explicit decision on the same statement resolves exactly that digest')
 })

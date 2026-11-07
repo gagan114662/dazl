@@ -72,24 +72,42 @@ export function rebindOfferId(offers: Named[], x: string): Rebind {
 }
 
 // ---- bounded hold storage ----
-// Unresolved decisions are persisted, and persistence is bounded. The bound must never drop a HOLD: when the specific decisions do not fit, the overflow collapses into ONE whole-group entry that keeps
-// every affected name held (and so keeps merely-sourced statements out of targeting) until each of those offers has been reviewed statement by statement. Specific rejections are kept first, so the
-// statement-level authority survives as long as it can; what cannot be kept specifically is still held, never discarded.
+// Unresolved decisions are persisted, and persistence is bounded (entry count AND the research column's characters). A bound must never drop a HOLD or the authority of a REJECTION:
+//  - the overflow folds into ONE whole-group entry that keeps every affected name held;
+//  - every rejection folded into it keeps its IDENTITY as a short digest (rej: name-tag + statement digest), so a later crawl that omits the statement, an empty or unrelated correction,
+//    or a fresh quote that brings it back cannot release the hold or revive the text: the entry is released for a rejection only by an explicit decision on that same statement;
+//  - when even the digests cannot be represented (more than MAX_REJ, or no room in the column) the entry is `open`: the set of rejected statements is unknown, so it can never be released
+//    by absence or by corrections. Held stays held; the review requirement is not discarded.
 export const MAX_HOLDS = 8
-export interface HoldEntry { names: string[]; kind: string; text: string; status: 'reviewed' | 'rejected'; whole?: boolean }
-export function capHolds<T extends HoldEntry>(list: T[], whole: (names: string[]) => T, norm: (s: string) => string = s => s.toLowerCase().trim()): T[] {
-  const seen = new Set<string>(), specific: T[] = []
-  let wholeNames: string[] = []
+export const MAX_REJ = 40
+export const stmtKey = (kind: string, text: string): string => `${kind}|${text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()}`
+export const holdTag = (name: string): string => digest(holdName(name)).slice(0, 6)
+export const rejDigest = (name: string, kind: string, text: string): string => `${holdTag(name)}.${digest(stmtKey(kind, text)).slice(0, 10)}`
+export const isRejDigest = (x: unknown): x is string => typeof x === 'string' && /^[0-9a-f]{6}\.[0-9a-f]{10}$/.test(x)
+export interface HoldEntry { names: string[]; kind: string; text: string; status: 'reviewed' | 'rejected'; whole?: boolean; rej?: string[]; rev?: string[]; open?: boolean }   // rej/rev: identities of the rejected / reviewed statements folded into a whole entry
+export function foldHolds<T extends HoldEntry>(dropped: T[], base: { names?: string[]; rej?: string[]; rev?: string[]; open?: boolean }, whole: (names: string[], rej: string[], rev: string[], open: boolean) => T): T {
+  const names = new Set<string>(base.names ?? []), rej = new Set<string>(base.rej ?? []), rev = new Set<string>(base.rev ?? [])
+  let open = !!base.open
+  for (const e of dropped) {
+    if (e.whole) { e.names.forEach(n => names.add(holdName(n))); (e.rej ?? []).forEach(d => rej.add(d)); (e.rev ?? []).forEach(d => rev.add(d)); if (e.open) open = true; continue }
+    for (const n of e.names.map(holdName).filter(Boolean)) { names.add(n); (e.status === 'rejected' ? rej : rev).add(rejDigest(n, e.kind, e.text)) }
+  }
+  let a = [...rej].sort(), b = [...rev].filter(d => !rej.has(d)).sort()
+  if (a.length + b.length > MAX_REJ) { a = a.slice(0, MAX_REJ); b = b.slice(0, Math.max(0, MAX_REJ - a.length)); open = true }
+  return whole([...names], a, b, open)
+}
+export function capHolds<T extends HoldEntry>(list: T[], whole: (names: string[], rej: string[], rev: string[], open: boolean) => T): T[] {
+  const seen = new Set<string>(), specific: T[] = [], wholes: T[] = []
   for (const e of list) {
     const names = [...new Set(e.names.map(holdName).filter(Boolean))]
     if (!names.length) continue
-    if (e.whole) { wholeNames = [...new Set([...wholeNames, ...names])]; continue }
-    const k = `${[...names].sort().join('|')}#${e.kind}#${norm(e.text)}#${e.status}`
+    if (e.whole) { wholes.push({ ...e, names }); continue }
+    const k = `${[...names].sort().join('|')}#${stmtKey(e.kind, e.text)}#${e.status}`
     if (!seen.has(k)) { seen.add(k); specific.push({ ...e, names }) }
   }
   const ordered = [...specific.filter(e => e.status === 'rejected'), ...specific.filter(e => e.status !== 'rejected')]
-  const room = MAX_HOLDS - (wholeNames.length ? 1 : 0)
-  if (ordered.length <= room) return [...ordered, ...(wholeNames.length ? [whole(wholeNames)] : [])]
+  if (!wholes.length && ordered.length <= MAX_HOLDS) return ordered
+  if (wholes.length && ordered.length <= MAX_HOLDS - 1) return [...ordered, foldHolds(wholes, {}, whole)]
   const keep = ordered.slice(0, MAX_HOLDS - 1), dropped = ordered.slice(MAX_HOLDS - 1)
-  return [...keep, whole([...new Set([...wholeNames, ...dropped.flatMap(e => e.names)])])]
+  return [...keep, foldHolds([...wholes, ...dropped], {}, whole)]
 }
