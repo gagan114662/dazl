@@ -128,7 +128,13 @@ export function modelUsage(db: Database.Database, tenantId: string, jobId: strin
   const none: ModelUsage = { recorded: false, requests_recorded: 0, requests_with_reported_tokens: 0, requests_without_reported_tokens: 0, by_stage: {}, input_tokens: null, output_tokens: null, tokens_complete: false, served_models: [], requested_models: [], errors: 0, unknown: MODEL_USAGE_UNKNOWN, note: 'No model usage was recorded for this scan (older scan, recording off, or no model request was made). This is not a zero.' }
   try {
     const rows = db.prepare('SELECT c.* FROM scan_model_calls c JOIN scan_jobs j ON j.id=c.job_id WHERE j.user_id=? AND j.id=? ORDER BY c.attempt,c.seq').all(tenantId, jobId) as (ModelCall & Record<string, unknown>)[]
-    if (rows.length === 0) return none
+    return modelUsageOf(rows)
+  } catch { return none }
+}
+// Shared projection for the raw and Db production readers; no provider request is made here.
+export function modelUsageOf(rows: (ModelCall & Record<string, unknown>)[]): ModelUsage {
+  const none: ModelUsage = { recorded: false, requests_recorded: 0, requests_with_reported_tokens: 0, requests_without_reported_tokens: 0, by_stage: {}, input_tokens: null, output_tokens: null, tokens_complete: false, served_models: [], requested_models: [], errors: 0, unknown: MODEL_USAGE_UNKNOWN, note: 'No model usage was recorded for this scan (older scan, recording off, or no model request was made). This is not a zero.' }
+  if (rows.length === 0) return none
     const sum = (k: 'input_tokens' | 'output_tokens') => rows.some(r => r[k] != null) ? rows.reduce((a, r) => a + (r[k] ?? 0), 0) : null
     const by_stage: Record<string, number> = {}; for (const r of rows) by_stage[r.stage] = (by_stage[r.stage] ?? 0) + 1
     const withTokens = rows.filter(r => r.input_tokens != null && r.output_tokens != null).length
@@ -139,5 +145,4 @@ export function modelUsage(db: Database.Database, tenantId: string, jobId: strin
       errors: rows.filter(r => r.outcome === 'error').length, unknown: MODEL_USAGE_UNKNOWN,
       note: 'Recorded requests and the tokens the provider reported for them. Totals are a lower bound whenever tokens_complete is false. Not an invoice.',
     }
-  } catch { return none }
 }
