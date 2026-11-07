@@ -28,11 +28,11 @@ bothEngines('whole scan status: tenant scope, same-id poison other store, record
   await db.run("INSERT INTO scan_source_runs (job_id, attempt, collector, status, evidence_count, candidate_count, verified_count, review_count, inserted_count) VALUES (?, 1, 'search:news', 'ok', 0, NULL, 0, NULL, 0)", [job])
   await db.run("INSERT INTO scan_source_stats (job_id, attempt, collector, queries, searches_attempted, searches_ok, hits_raw, searches_failed, searches_not_attempted, per_query) VALUES (?, 1, 'search:news', '[]', 0, 0, 0, '{}', '{}', '[]')", [job])
   await db.run("INSERT INTO scan_model_calls (tenant_id, job_id, attempt, seq, stage, method, model_requested, model_served, input_tokens, output_tokens, outcome, prompt_chars) VALUES ('A', ?, 1, 0, 'extraction', 'complete', 'test', 'test', 0, 0, 'ok', 0)", [job])
-  await db.run("INSERT INTO connector_audit (tenant_id, connector, scan_job_id, lookup, status, results, created_at) VALUES ('A', 'enrich:apollo', ?, 'not disclosed', 'auth', 0, 1)", [job])
+  await db.run("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results, created_at) VALUES ('real-audit', 'A', 'enrich:apollo', ?, 'not disclosed', 'auth', 0, 1)", [job])
   // A separately selected Db has same tenant/job id but contradictory data. The service must never consult it.
   const poisonRaw = new Database(':memory:'); migrateAllSqlite(poisonRaw)
   poisonRaw.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query) VALUES (?, 'A', 'poison', 'x', 'x', 'POISON')").run(job)
-  poisonRaw.prepare("INSERT INTO connector_audit (tenant_id, connector, scan_job_id, lookup, status, results) VALUES ('A', 'enrich:pdl', ?, 'poison', 'rate_limited', 0)").run(job)
+  poisonRaw.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES ('poison-audit', 'A', 'enrich:pdl', ?, 'poison', 'rate_limited', 0)").run(job)
   setDb(sqliteDb(poisonRaw))
   try {
     const active = await readScanStatus(db, 'A', job)
