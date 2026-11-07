@@ -107,22 +107,41 @@ Rules: use every page, not just the first. Only what the pages support, no inven
 export const PROFILE_MAX_OUTPUT_TOKENS = 1200
 export type DraftReason = 'truncated' | 'not_json' | 'no_profile'
 const CUT = new Set(['max_tokens', 'max_output_tokens', 'length'])
-// The complete JSON value that follows `"key":` in a possibly cut-off object text (string-aware matching); null if it is not complete.
+// The complete JSON value of the TOP-LEVEL field `key` of a possibly cut-off object text (an optional ```json fence before the object is allowed).
+// Only keys of the root object count: the scan walks the root's members, skipping each non-matching value whole (string-aware, depth-aware), so a
+// same-named key nested inside another field (an "offers" entry with its own "draft") is never taken for the profile's. null if the key is not at the
+// top level, its value is not of the expected kind, or the text ends before the value is complete.
 function leadingValue(text: string, key: string, open: '{' | '"'): string | null {
-  const at = new RegExp(`"${key}"\\s*:\\s*`).exec(text); if (!at) return null
-  const start = at.index + at[0].length; if (text[start] !== open) return null
-  let depth = 0, inStr = false, esc = false
-  for (let i = start; i < text.length; i++) {
-    const c = text[i]
-    if (inStr) {
-      if (esc) esc = false
-      else if (c === '\\') esc = true
-      else if (c === '"') { inStr = false; if (open === '"') return text.slice(start, i + 1) }
-      continue
+  const root = text.indexOf('{'); if (root < 0 || !/^\s*(?:```(?:json)?\s*)?$/.test(text.slice(0, root))) return null
+  const n = text.length
+  const ws = (i: number) => { while (i < n && /\s/.test(text[i])) i++; return i }
+  // end index (exclusive) of the string starting at i (text[i] is the opening quote), or -1 if it is cut off
+  const strEnd = (i: number) => { for (let j = i + 1; j < n; j++) { if (text[j] === '\\') j++; else if (text[j] === '"') return j + 1 } return -1 }
+  // end index (exclusive) of the value starting at i, or -1 if it is cut off
+  const valEnd = (i: number): number => {
+    if (text[i] === '"') return strEnd(i)
+    if (text[i] === '{' || text[i] === '[') {
+      let depth = 0
+      for (let j = i; j < n; j++) {
+        const c = text[j]
+        if (c === '"') { const e = strEnd(j); if (e < 0) return -1; j = e - 1 } else if (c === '{' || c === '[') depth++
+        else if (c === '}' || c === ']') { depth--; if (depth === 0) return j + 1 }
+      }
+      return -1
     }
-    if (c === '"') { inStr = true; continue }
-    if (c === '{') depth++
-    else if (c === '}') { depth--; if (depth === 0 && open === '{') return text.slice(start, i + 1) }
+    let j = i; while (j < n && !/[,}\s]/.test(text[j])) j++
+    return j < n ? j : -1   // a bare literal at the very end may be cut off
+  }
+  let i = ws(root + 1)
+  while (i < n && text[i] === '"') {
+    const ke = strEnd(i); if (ke < 0) return null
+    let name: unknown; try { name = JSON.parse(text.slice(i, ke)) } catch { return null }
+    i = ws(ke); if (text[i] !== ':') return null
+    i = ws(i + 1); if (i >= n) return null
+    const ve = valEnd(i); if (ve < 0) return null
+    if (name === key) return text[i] === open ? text.slice(i, ve) : null
+    i = ws(ve); if (text[i] !== ',') return null
+    i = ws(i + 1)
   }
   return null
 }

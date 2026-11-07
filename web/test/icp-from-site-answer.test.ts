@@ -104,3 +104,27 @@ test('the copy for these errors is truthful: an unreadable answer is not a key p
   assert.match(knownErrorCopy('draft_unreadable')!, /key worked|key is fine/i); assert.match(knownErrorCopy('provider_failed')!, /not rejected/i)
   assert.equal(knownErrorCopy('key_rejected'), 'Your AI key was rejected. Check it in Settings.')
 })
+
+test('recovery is anchored to the TOP-LEVEL draft only: a nested "draft" inside an offer or item is never the profile (cut off before, or with no, top-level draft)', async () => {
+  const nested = { summary: 'A nested summary that is not the profile.', who: ['CTO'], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+  // the root has NO "draft" of its own; an offer carries one; the answer is cut off
+  const noTop = `{"sells":"Prospect lists","offers":[{"id":"o1","name":"Lists","draft":${JSON.stringify(nested)}}],"items":[{"offer":"o1","ki`
+  assert.deepEqual(readProfileAnswer(noTop, 'max_tokens', 1200), { ok: false, reason: 'truncated' })
+  // the nested draft comes BEFORE the (cut-off) top-level one
+  const early = `{"sells":"x","offers":[{"id":"o1","draft":${JSON.stringify(nested)}}],"draft":{"summary":"The real one is cut o`
+  assert.deepEqual(readProfileAnswer(early, 'max_tokens', 1200), { ok: false, reason: 'truncated' })
+  // inside an item's quote text, as data
+  const inQuote = `{"sells":"x","items":[{"text":"he said \\"draft\\": {\\"summary\\": \\"fake\\"}","quote":"q"}],"offers":[`
+  assert.deepEqual(readProfileAnswer(inQuote, 'max_tokens', 1200), { ok: false, reason: 'truncated' })
+  // through icpFromWebsite: one call, an honest error, not a profile
+  const { provider, seen } = modelAnswering(noTop, { stop: 'max_tokens', out: PROFILE_MAX_OUTPUT_TOKENS })
+  assert.deepEqual(await run(provider), { error: 'draft_unreadable', reason: 'truncated' }); assert.equal(seen.calls, 1)
+  // controls: a complete top-level draft after a nested one is the one used; escaped quotes/braces in a LATER field do not matter; a fenced cut-off answer recovers too
+  const real = { summary: 'Teams that say "move {fast}".', who: ['CEO'], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+  const ok = `{"offers":[{"id":"o1","draft":${JSON.stringify(nested)}}],"sells":"S","draft":${JSON.stringify(real)},"items":[{"text":"a \\"} {\\" b","qu`
+  const r = readProfileAnswer(ok, 'max_tokens', 1200); assert.ok(r.ok && r.truncated); if (r.ok) { assert.equal(r.icp.summary, real.summary); assert.equal(r.parsed.sells, 'S') }
+  const fenced = readProfileAnswer('```json\n' + ok, 'max_tokens', 1200); assert.ok(fenced.ok && fenced.truncated)
+  assert.deepEqual(readProfileAnswer('prose first {"sells":"S","draft":' + JSON.stringify(real), 'max_tokens', 1200), { ok: false, reason: 'truncated' }, 'text before the object that is not a fence is not recovered')
+  // prior decisions still refuse recovery
+  assert.deepEqual(readProfileAnswer(ok, 'max_tokens', 1200, false), { ok: false, reason: 'truncated' })
+})
