@@ -13,6 +13,15 @@
 # The facts below are Instinct's review of 1be52e2e: change them only with the review. Each is ASSERTED, never assumed.
 set -uo pipefail
 umask 077
+# Pure decisions (unit-tested by sourcing this file with FIXTURE_988_SOURCE_ONLY=1; no host access here).
+# stop_confirmed ACTIVE_STATE SUB_STATE MAIN_PID CGROUP_PROCS: the service is stopped ONLY if systemd says inactive/dead, has no main pid, and its control group holds no process.
+# "deactivating", "failed", an empty answer, a leftover process: all NOT stopped.
+stop_confirmed() { [ "$1" = inactive ] && [ "$2" = dead ] && [ "$3" = 0 ] && [ -z "$4" ]; }
+# should_start STOP_CONFIRMED DB_TOUCHED VERIFIED: restart only when it restores a known-good state: (a) every check passed (VERIFIED=1), or (b) the service was stopped and the database was
+# never handed to the tool (DB_TOUCHED=0), so the failure left the data exactly as it was. A failed or unverified data check (DB_TOUCHED=1, VERIFIED=0), or a stop that was never confirmed, leaves
+# the service where it is and says so.
+should_start() { [ "$1" = 1 ] && { [ "$3" = 1 ] || [ "$2" = 0 ]; }; }
+[ "${FIXTURE_988_SOURCE_ONLY:-}" = 1 ] && return 0 2>/dev/null
 MODE=${1:-}; case "$MODE" in preflight|plan|apply) ;; *) echo "usage: $0 preflight|plan|apply" >&2; exit 2;; esac
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=/srv/dazl-staging                       # the service user's home
@@ -104,10 +113,11 @@ fi
 # ---- 4. the bounded window --------------------------------------------------------------------------------------------------------------------------
 exec 9>>"$LOCK"; flock -n 9 || { cleanup_rundir; fail "the deploy (or another run) holds $LOCK"; }
 [ "$(stat -c '%d:%i' -- "$LOCK")" = "$LOCK_ID" ] || { cleanup_rundir; fail "the lock file was replaced"; }
-STOPPED=0; RESULT=1
-finish() {   # runs once on every exit after the stop: one start, one bounded health wait, an honest verdict. No retry loop, no kill.
+STOPPED=0 STOP_OK=0 DB_TOUCHED=0 VERIFIED=0 RESULT=1
+cgroup_procs() { local cg; cg=$(systemctl show "$SERVICE" -p ControlGroup --value); [ -n "$cg" ] && [ -r "/sys/fs/cgroup$cg/cgroup.procs" ] && cat "/sys/fs/cgroup$cg/cgroup.procs" || true; }
+finish() {   # runs once on every exit after the lock. One start at most, and only when should_start says it restores a known-good state. No retry loop, no kill.
   trap - EXIT
-  if [ "$STOPPED" = 1 ]; then
+  if should_start "$STOP_OK" "$DB_TOUCHED" "$VERIFIED"; then
     note "starting $SERVICE (single start, no retry)"; systemctl start "$SERVICE" || note "systemctl start returned non-zero"
     ok=0; for _ in $(seq 1 "$HEALTH_TRIES"); do
       h=$(curl -fsS --max-time 5 "$HEALTH" 2>/dev/null || true)
@@ -116,19 +126,24 @@ finish() {   # runs once on every exit after the stop: one start, one bounded he
     [ "$(readlink -f -- "$CURRENT")" = "$REL" ] || ok=0
     if [ "$ok" = 1 ]; then note "HEALTH OK on $EXPECT_BUILD, same release $REL: $(echo "$h" | cut -c1-200)"
     else echo "fixture-988: !!! SERVICE IS NOT HEALTHY ON THE SAME CODE after the window. Nothing was retried or killed. Operator action needed: systemctl status $SERVICE; journalctl -u $SERVICE -n 80. Backup (if made): $OUT_ROOT" >&2; RESULT=4; fi
+  elif [ "$STOPPED" = 1 ]; then
+    echo "fixture-988: !!! THE SERVICE IS LEFT STOPPED ON PURPOSE (stop_confirmed=$STOP_OK db_touched=$DB_TOUCHED verified=$VERIFIED). The data check did not pass or the stop was not confirmed, so restarting would run the app on unverified data or on a service that may still be running. Nothing was restarted, retried or killed. Backup (if made): $OUT_ROOT. Operator decision needed." >&2
   fi
   cleanup_rundir; exit "$RESULT"
 }
 trap finish EXIT
 note "stopping $SERVICE (bounded ${STOP_WAIT}s; a service that does not stop is reported, never killed)"
-STOPPED=1   # from here on, exactly one start is attempted on exit, whatever happens
-timeout "$STOP_WAIT" systemctl stop "$SERVICE" || { systemctl is-active --quiet "$SERVICE" && { note "stop did not complete; the service is still active; nothing was done to the database"; RESULT=5; exit 5; }; }
-systemctl is-active --quiet "$SERVICE" && { RESULT=5; fail "service is still active after stop"; }
+STOPPED=1   # a stop was attempted: finish() reports it either way
+timeout "$STOP_WAIT" systemctl stop "$SERVICE" || true
+# CONFIRM, do not infer: systemd's own state, no main pid, an empty control group. Only then does anything else run.
+stop_confirmed "$(sv ActiveState)" "$(sv SubState)" "$(sv MainPID)" "$(cgroup_procs)" || { RESULT=5; fail "the service is NOT confirmed stopped (ActiveState=$(sv ActiveState) SubState=$(sv SubState) MainPID=$(sv MainPID)); nothing was done to the database"; }
+STOP_OK=1
 for f in "$STAGING_DB" "$STAGING_DB-wal" "$STAGING_DB-shm"; do [ -e "$f" ] || continue; if fuser -s -- "$f" 2>/dev/null; then RESULT=6; fail "a process still has $f open"; fi; done
 [ "$(stat -c '%d:%i:%h' -- "$STAGING_DB")" = "$S_ID:1" ] || { RESULT=6; fail "the staging file changed identity"; }
 
 DIR="$OUT_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 note "prepare: file hash, snapshot, backup, restore proof, file hash again -> $DIR"
+DB_TOUCHED=1   # from here the database is in the tool's hands: a failure leaves the service stopped
 TOOL staging-fixture-988-checks.mts prepare --dir="$DIR" || { RESULT=7; exit 7; }
 note "the tool's dry-run plan on the stopped database"; TOOL staging-fixture-988.mts || { RESULT=7; exit 7; }
 if [ "$MODE" = apply ]; then
@@ -138,5 +153,5 @@ if [ "$MODE" = apply ]; then
   TOOL staging-fixture-988-checks.mts after --snapshot="$DIR/snapshot.json" || { RESULT=9; exit 9; }
   [ "$(stat -c '%d:%i:%h' -- "$STAGING_DB")" = "$S_ID:1" ] || { RESULT=9; fail "the staging file changed identity during the operation"; }
 fi
-RESULT=0; note "window complete; restarting. Restore, if ever needed, is a manual copy of $DIR/backup.db with the service stopped."
+VERIFIED=1; RESULT=0; note "window complete (every check passed); restarting. Restore, if ever needed, is a manual copy of $DIR/backup.db with the service stopped."
 exit 0

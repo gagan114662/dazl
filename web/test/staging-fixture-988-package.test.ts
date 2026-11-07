@@ -44,3 +44,29 @@ test('#988 package: running the script without root, or from a mode it does not 
   assert.equal(run().status, 2); assert.equal(run('nonsense').status, 2)
   if (process.getuid && process.getuid() !== 0) { const r = run('preflight'); assert.equal(r.status, 3); assert.match(r.stderr, /run as root/) }
 })
+
+// ---- operator-package safety gaps found in review: the stop must be CONFIRMED, and a failed data check must never restart the service ----
+const SCRIPT = fileURLToPath(new URL('../../ops/staging/fixture-988/fixture-988.sh', import.meta.url))
+const bash = (cmd: string) => spawnSync('bash', ['-c', `FIXTURE_988_SOURCE_ONLY=1 source "${SCRIPT}"; ${cmd}`], { encoding: 'utf8' })
+test('#988 package: stop_confirmed is true ONLY for inactive/dead, no main pid and an empty control group', () => {
+  const sc = (a: string, b: string, c: string, d: string) => bash(`stop_confirmed '${a}' '${b}' '${c}' '${d}'`).status === 0
+  assert.equal(sc('inactive', 'dead', '0', ''), true)
+  for (const [a, b, c, d] of [['active', 'running', '123', ''], ['deactivating', 'stop-sigterm', '0', ''], ['deactivating', 'dead', '0', ''], ['failed', 'failed', '0', ''], ['inactive', 'dead', '0', '4242'], ['inactive', 'dead', '77', ''], ['', '', '', ''], ['inactive', '', '0', ''], ['activating', 'start', '0', '']])
+    assert.equal(sc(a, b, c, d), false, `${a}/${b}/${c}/${JSON.stringify(d)} is not stopped`)
+})
+test('#988 package: should_start restarts only to restore a known-good state; a failed or unverified data check, or an unconfirmed stop, never restarts', () => {
+  const ss = (stop: number, touched: number, verified: number) => bash(`should_start ${stop} ${touched} ${verified}`).status === 0
+  assert.equal(ss(1, 1, 1), true, 'every check passed: start')
+  assert.equal(ss(1, 0, 0), true, 'stopped and the database was never handed to the tool: start restores the original state')
+  assert.equal(ss(1, 1, 0), false, 'the data check failed or is unverified: stay stopped')
+  for (const touched of [0, 1]) for (const verified of [0, 1]) assert.equal(ss(0, touched, verified), false, `stop not confirmed (touched=${touched} verified=${verified}): never start`)
+})
+test('#988 package: the script wires those decisions in, and every failure path after the database is handed over leaves VERIFIED=0', () => {
+  const s = readFileSync(SCRIPT, 'utf8').replace(/^\s*#.*$/gm, '').replace(/ #[^\n"']*$/gm, '')   // executable lines only
+  assert.ok(s.includes('if should_start "$STOP_OK" "$DB_TOUCHED" "$VERIFIED"; then'), 'the exit handler asks should_start')
+  assert.ok(s.includes('stop_confirmed "$(sv ActiveState)" "$(sv SubState)" "$(sv MainPID)" "$(cgroup_procs)"'), 'continues only after the stop is confirmed from systemd')
+  assert.equal((s.match(/VERIFIED=1/g) ?? []).length, 1, 'VERIFIED is set in exactly one place, after the last check')
+  assert.ok(s.indexOf('STOP_OK=1') < s.indexOf('DB_TOUCHED=1') && s.indexOf('DB_TOUCHED=1') < s.indexOf('VERIFIED=1'))
+  assert.ok(/LEFT STOPPED ON PURPOSE/.test(s), 'a deliberate stop is announced')
+  assert.doesNotMatch(s.replace(/#.*$/gm, '').replace(/"(\\.|[^"\\])*"/g, '""'), /systemctl is-active/, 'no inferring a stop from is-active')
+})
