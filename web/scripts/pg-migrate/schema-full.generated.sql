@@ -202,7 +202,7 @@ CREATE TABLE email_candidates (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (char_length(person) <= 120),
       address TEXT NOT NULL CHECK (char_length(address) <= 254), format TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified')),
-      created_at BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), PRIMARY KEY (lead_id, address));
+      created_at BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), verification TEXT NOT NULL DEFAULT 'none' CHECK (verification IN ('none','pending','verified','catch_all','undeliverable','uncertain','refused')), verifier TEXT CHECK (verifier IS NULL OR char_length(verifier) <= 40), checked_at BIGINT, country_basis TEXT CHECK (country_basis IS NULL OR char_length(country_basis) <= 160), PRIMARY KEY (lead_id, address));
 
 CREATE TABLE email_patterns (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, site TEXT NOT NULL, format TEXT NOT NULL, support BIGINT NOT NULL,
