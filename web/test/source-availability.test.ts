@@ -1,23 +1,23 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { coreSources, socialLabel, socialSources, usableLabels, type SourceRow } from '../lib/scan/source-availability.ts'
+import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type SourceRow } from '../lib/scan/source-availability.ts'
 
 const ALL_ON = { web_index: true, news: true, websites: true }
 const byId = (rows: SourceRow[]): Record<string, SourceRow> => Object.fromEntries(rows.map(r => [r.id, r]))
 
-test('core sources: operator switches and the key decide; off ones say why, and only the key has a user fix', () => {
-  const r = byId(coreSources({ web_index: false, news: true, websites: false }, { has_key: true })!)
-  assert.deepEqual(r.research, { id: 'research', label: 'Web research with your AI key', usable: true })
-  assert.equal(r.web_index.fix, undefined, 'an operator switch has no user fix link')
+test('discovery uses operator switches only; model funding is a separate analysis prerequisite', () => {
+  const r = byId(coreSources({ web_index: false, news: true, websites: true }, { has_key: true })!)
+  assert.equal(r.research, undefined)
+  assert.equal(r.web_index.fix, undefined)
   assert.deepEqual(r.web_index, { id: 'web_index', label: 'Web search index', usable: false, reason: 'not set up on this server' })
   assert.equal(r.news.usable, true)
-  assert.equal(r.websites.reason, 'not set up on this server')
-})
-
-test('no key: research is unavailable with a link to add one; free searches left count as usable', () => {
-  assert.deepEqual(byId(coreSources(ALL_ON, { has_key: false, trial: null })!).research, { id: 'research', label: 'Web research with your AI key', usable: false, reason: 'no key', fix: { href: '/app/settings#model-key', label: 'Add key' } })
-  assert.equal(byId(coreSources(ALL_ON, { has_key: false, trial: { funded: true, remaining: 0 } })!).research.reason, 'free searches used up; no key')
-  assert.equal(byId(coreSources(ALL_ON, { has_key: false, trial: { funded: true, remaining: 2 } })!).research.usable, true)
+  assert.equal(usableLabels(Object.values(r)), 'News articles')
+  assert.equal(enrichmentLabels(Object.values(r)), 'Company website enrichment')
+  assert.equal(analysisPrerequisite({has_key:true})?.usable,true)
+  assert.equal(analysisPrerequisite({has_key:false,trial:{funded:true,remaining:2}})?.usable,true)
+  assert.equal(analysisPrerequisite({has_key:false,trial:{funded:true,remaining:0}})?.reason,'free searches used up; no key')
+  assert.equal(analysisPrerequisite({has_key:false})?.fix?.href,'/app/settings#model-key')
+  assert.equal(analysisPrerequisite(null),null)
 })
 
 test('nothing is claimed when the checks could not load', () => {
@@ -53,6 +53,45 @@ test('social platform names are proper names, never raw ids', () => {
 })
 
 test('usable labels list only usable sources, in order', () => {
-  assert.equal(usableLabels(coreSources({ web_index: false, news: true, websites: true }, { has_key: true })!), 'Web research with your AI key, News articles, Company websites')
+  assert.equal(usableLabels(coreSources({ web_index: false, news: true, websites: true }, { has_key: true })!), 'News articles')
   assert.equal(usableLabels(coreSources({ web_index: false, news: false, websites: false }, { has_key: false })!), '')
+})
+
+// Couple UI capability claims to both actual provider implementations, not a model-key proxy or mocked provider.
+import { anthropicProvider, openaiProvider } from '../lib/llm/provider.ts'
+import { SpendRefused, guardProvider } from '../lib/llm/spend-guard.ts'
+import { readFileSync } from 'node:fs'
+import { normalizeScanBudget } from '../lib/scan/run-budget.ts'
+const OFF = {web_index:false, news:false, websites:false}
+for (const [name,key] of Object.entries({byok:{has_key:true},trial:{has_key:false,trial:{funded:true,remaining:2}},exhausted:{has_key:false,trial:{funded:true,remaining:0}},nokey:{has_key:false},unfunded:{has_key:false,trial:{funded:false,remaining:2}}})) {
+  test(`${name}: no primary discovery with all switches off, regardless of analysis funding or budget form`, async () => {
+    for (const budget of [null, {max_usd:1}, {paid_fallback:false}, {first5:true}]) {
+      // Availability has no budget opt-in: none may restore a retired provider capability.
+      const checked=normalizeScanBudget(budget,budget!==null)
+      assert.equal(checked.ok,true)
+      const rows=coreSources(OFF,key)!
+      assert.equal(usableLabels(rows),''); assert.equal(enrichmentLabels(rows),'')
+      assert.equal(rows.some(r=>r.id==='research'),false)
+      let calls=0
+      const fetcher=(async ()=>{calls++;throw new Error('no network')}) as typeof fetch
+      for(const provider of [anthropicProvider,openaiProvider]) {
+        await assert.rejects(provider.research('synthetic-key','synthetic prompt',fetcher),e=>e instanceof SpendRefused && e.reason==='research_unbounded')
+        // Guarded budget routes refuse too; a legacy research allowance cannot bypass the actual provider retirement.
+        const guarded=guardProvider(provider,[],undefined,budget && 'max_usd' in budget ? undefined : {reserveUsd:0})
+        await assert.rejects(guarded.research('synthetic-key','synthetic prompt',fetcher),e=>e instanceof SpendRefused && e.reason==='research_unbounded')
+      }
+      assert.equal(calls,0)
+    }
+    assert.equal(usableLabels(coreSources({...OFF,news:true},key)!), 'News articles')
+    assert.equal(usableLabels(coreSources({...OFF,websites:true},key)!), '', 'website crawl enriches existing leads, not discovery')
+  })
+}
+test('entry and progress bind discovery and enrichment separately, key requirement never inferred from research row',()=>{
+  const ui=readFileSync(new URL('../app/app/leads/leads-client.tsx',import.meta.url),'utf8')
+  assert.match(ui,/analysisPrerequisite\(keyState\)/)
+  assert.match(ui,/Discovery sources a scan here can use/)
+  assert.match(ui,/Discovery sources this scan can use: \$\{\[usableLabels\(core\)/)
+  assert.match(ui,/enrichmentLabels\(core\)/)
+  assert.doesNotMatch(ui,/id === 'research'/)
+  assert.match(ui,/Could not check which sources this scan can use/)
 })

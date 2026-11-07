@@ -67,7 +67,7 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { findPeople } from '../people/people-search.ts'
-import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport } from './enrichment-trace.ts'
+import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
@@ -1611,7 +1611,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     if (process.env.SIGNALS_ENRICH === '0') trace.note('signals', 'skipped', 'SIGNALS_ENRICH=0')
     else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
-    else { const a = auditSummary(db, job.user_id, job.id, 'apollo%').total + auditSummary(db, job.user_id, job.id, 'pdl%').total; trace.note('paid_enrichment', a > 0 ? 'ok' : 'unavailable', a > 0 ? null : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', { lookups: a }) }
+    else notePaidEnrichment(trace, db, job.user_id, job.id)
   } finally {
     clearTimeout(postTimer)
   }

@@ -37,7 +37,7 @@ export default function AccountPanel() {
         {s.verified && !s.google && <a className="underline underline-offset-2" href="/api/auth/google?link=1">Add Google sign-in</a>}
       </div>
       <div className="flex flex-wrap gap-2 mt-3 text-sm">
-        <input className="field flex-1 min-w-0" type="email" placeholder="New email address" value={next} onChange={e => setNext(e.target.value)} />
+        <input className="field flex-1 min-w-[12rem]" type="email" placeholder="New email address" value={next} onChange={e => setNext(e.target.value)} />
         <button className="btn-primary" disabled={!next.trim()} onClick={() => void post('/api/auth/email', { email: next }, j => { setNext(''); return j.message ?? 'Check the new address for a link.' })}>Change email</button>
       </div>
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
