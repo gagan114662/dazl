@@ -212,16 +212,6 @@ export default function LeadsClient() {
     } catch { setMonLoadError('Could not load your monitors. Check your connection.') }
   }
   useEffect(() => { void Promise.resolve().then(loadMonitors) }, [])
-  const addMonitor = async () => {
-    if (!query.trim()) return
-    setMonError('')
-    try {
-      const r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) })
-      const j = await r.json().catch(() => ({}))
-      if (!r.ok) return setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || `Could not create the monitor (error ${r.status}).`)
-    } catch { setMonError('Could not reach dazl, so the monitor may not have been created. Check the list before trying again.') }
-    void loadMonitors()
-  }
   const mutateMonitor = async (id: string, init: RequestInit, what: string) => {
     setMonError('')
     try {

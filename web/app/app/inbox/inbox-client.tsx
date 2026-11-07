@@ -56,7 +56,7 @@ export default function InboxClient() {
       .then((j: Info) => { if (!c.signal.aborted) setList({ ...j, key }) })
       .catch(() => { if (!c.signal.aborted) setFailedKey(key) })
     return () => { c.abort(); moreCtl.current?.abort() }
-  }, [key, retryTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [status, jobId, key, retryTick]) // status and jobId are what key is made of; retryTick is the explicit Try again
   const current = list && list.key === key ? list : null
   function loadMore() {
     if (!current?.next_cursor || moreKey === key) return
