@@ -1,3 +1,4 @@
+import { storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
 import { quoteSupports } from './claim-quote.ts'
@@ -31,7 +32,8 @@ export interface Icp {
 
 // Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
 export interface ResearchedHyp { i: string; o: string; k: 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'; t: string; s: 'sourced' | 'hypothesis' | 'reviewed' | 'rejected'; u: string | null; q: string | null; at: number | null }
-export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null }
+// u: saved decisions whose offer could not be told (kept by the name(s) they may belong to, never moved onto a guess): n names (stored form), k kind, t text, s reviewed|rejected
+export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null; u?: { n: string[]; k: ResearchedHyp['k']; t: string; s: 'reviewed' | 'rejected' }[] }
 
 // scan_jobs.icp is TEXT CHECK (char_length <= 4000); PG counts characters, JS .length counts UTF-16 units, so the
 // budget stays under the column limit with margin. The budget covers the TOTAL document: flat user constraints are
@@ -49,7 +51,7 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   const site = clean(r.site, RCAPS.site)
   const offers = (Array.isArray(r.offers) ? r.offers : []).map(x => {
     const o = x as Record<string, unknown>
-    const i = clean(o?.i, RCAPS.offerId), n = clean(o?.n, RCAPS.offerName)
+    const i = clean(o?.i, RCAPS.offerId), n = storedOfferName(o?.n)
     return i && n && /^[a-z0-9][a-z0-9-]*$/.test(i) ? { i, n } : null
   }).filter((x): x is { i: string; n: string } => !!x).slice(0, RCAPS.offers)
   if (!site || offers.length === 0) return undefined
@@ -76,7 +78,12 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   const ansT = typeof ansRaw?.t === 'string' ? clean(ansRaw.t, RCAPS.answer) : ''
   const ans = ansRaw && typeof ansRaw.q === 'string' && typeof ansRaw.o === 'string' && ids.has(clean(ansRaw.o, RCAPS.offerId))
     ? { q: clean(ansRaw.q, RCAPS.question), o: clean(ansRaw.o, RCAPS.offerId), ...(ansT ? { t: ansT } : {}) } : null
-  return { v: 1, site, offers, hyps, q: question, ans }
+  const u: NonNullable<IcpResearch['u']> = []
+  for (const x of (Array.isArray(r.u) ? r.u : []).slice(0, 8) as Record<string, unknown>[]) {
+    const names = (Array.isArray(x?.n) ? x.n : []).map(storedOfferName).filter(Boolean).slice(0, 6), k = String(x?.k ?? ''), st = String(x?.s ?? ''), tx = clean(x?.t, RCAPS.text)
+    if (names.length && tx && RKINDS.has(k) && k !== 'offer' && (st === 'reviewed' || st === 'rejected')) u.push({ n: names, k: k as ResearchedHyp['k'], t: tx, s: st })
+  }
+  return { v: 1, site, offers, hyps, q: question, ans, ...(u.length ? { u } : {}) }
 }
 
 // Deterministic research fit: whole hypotheses only, best first - reviewed (a person's decision), sourced (page-verified),
@@ -84,7 +91,7 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
 // the site/offers skeleton cannot fit, the research block is omitted whole. Flat user constraints are never touched.
 function fitResearch(r: IcpResearch, room: number): IcpResearch | undefined {
   if (JSON.stringify(r).length <= room) return r   // the common case: the whole block fits, kept verbatim
-  const skeleton = { v: 1 as const, site: r.site, offers: r.offers, hyps: [] as ResearchedHyp[], q: r.q, ans: r.ans }
+  const skeleton = { v: 1 as const, site: r.site, offers: r.offers, hyps: [] as ResearchedHyp[], q: r.q, ans: r.ans, ...(r.u ? { u: r.u } : {}) }
   if (JSON.stringify(skeleton).length > room) return undefined
   const rank = (s: ResearchedHyp['s']) => s === 'reviewed' ? 0 : s === 'sourced' ? 1 : s === 'rejected' ? 2 : 3
   const byOffer = new Map<string, ResearchedHyp[]>()
