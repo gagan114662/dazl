@@ -147,8 +147,8 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['CopyRefused', 'C
   'WorkerError', 'HandlerTimeout',
   // lib/scan/feedback.ts (#385): a lead verdict that cannot be recorded as asked; a feedback store that cannot be read.
   'FeedbackError', 'FeedbackUnreadable',
-  // lib/evals (docs/design/agent-evals.md): a malformed World or case file. Offline eval tooling only.
-  'WorldError', 'CaseError', 'JudgeCorpusError',
+  // lib/evals (docs/design/agent-evals.md): a malformed World or case file; lib/evals/contract.ts (#394): a malformed evaluation contract. Offline eval tooling only.
+  'WorldError', 'CaseError', 'JudgeCorpusError', 'ContractError',
   // lib/benchmark/runner.ts (#397): a batch that cannot run as asked (no preset budget, mixed origins). Offline benchmark tooling only.
   'BenchmarkRunError',
   // lib/benchmark/superiority.ts (#398): an analysis refused (plan changed after registration, stop rule, mixed origins).

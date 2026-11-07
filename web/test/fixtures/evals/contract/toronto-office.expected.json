@@ -1,0 +1,583 @@
+{
+  "contract": "eval-contract-toronto-office-v1",
+  "contract_v": 1,
+  "as_of": "2026-10-20T12:00:00.000Z",
+  "scorer": {
+    "id": "dazl.eval-contract-scorer",
+    "version": 1
+  },
+  "evaluations": [
+    {
+      "contract": "eval-contract-toronto-office-v1",
+      "contract_v": 1,
+      "lead": "Maple Leaf Digital",
+      "verdicts": [
+        {
+          "field": "identity.entity",
+          "status": "pass",
+          "rationale": "entity bound to mapleleafdigital.ca",
+          "evidence": [
+            "mapleleafdigital.ca"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "source.on_page",
+          "status": "pass",
+          "rationale": "the quote is on the cited page",
+          "evidence": [
+            "https://news.example/toronto/maple-leaf-office"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_real",
+          "status": "pass",
+          "rationale": "event date 2026-10-19 is a real calendar day",
+          "evidence": [
+            "https://news.example/toronto/maple-leaf-office"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_in_window",
+          "status": "pass",
+          "rationale": "event is 2 days before as_of, inside the 90-day window",
+          "evidence": [
+            "https://news.example/toronto/maple-leaf-office"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.predicate",
+          "status": "pass",
+          "rationale": "event kind office_opening is a hunted predicate",
+          "evidence": [
+            "https://news.example/toronto/maple-leaf-office"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "place.matches",
+          "status": "pass",
+          "rationale": "place Toronto satisfies the constraint",
+          "evidence": [
+            "https://news.example/toronto/maple-leaf-office"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "industry.matches",
+          "status": "pass",
+          "rationale": "industry marketing agency satisfies the constraint",
+          "evidence": [
+            "https://news.example/toronto/maple-leaf-office"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "contact.usable",
+          "status": "pass",
+          "rationale": "contact domain mapleleafdigital.ca binds to the company",
+          "evidence": [
+            "https://news.example/toronto/maple-leaf-office"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "consent.status",
+          "status": "pass",
+          "rationale": "consent granted under b2b-legitimate-interest-v1",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "outcome.evidence",
+          "status": "unknown",
+          "rationale": "no outcome in the evidence",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        }
+      ],
+      "tier": "actionable_opportunity",
+      "validated_rate": 0.9,
+      "unknown_rate": 0.1,
+      "contradicted_rate": 0,
+      "status": "unknown",
+      "as_of": "2026-10-20T12:00:00.000Z",
+      "scorer": {
+        "id": "dazl.eval-contract-scorer",
+        "version": 1
+      }
+    },
+    {
+      "contract": "eval-contract-toronto-office-v1",
+      "contract_v": 1,
+      "lead": "Northern Lights Media",
+      "verdicts": [
+        {
+          "field": "identity.entity",
+          "status": "pass",
+          "rationale": "entity bound to northernlightsmedia.ca",
+          "evidence": [
+            "northernlightsmedia.ca"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "source.on_page",
+          "status": "pass",
+          "rationale": "the quote is on the cited page",
+          "evidence": [
+            "https://news.example/toronto/northern-lights-profile"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_real",
+          "status": "unknown",
+          "rationale": "no event date in the evidence",
+          "evidence": [
+            "https://news.example/toronto/northern-lights-profile"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_in_window",
+          "status": "unknown",
+          "rationale": "no usable event date",
+          "evidence": [
+            "https://news.example/toronto/northern-lights-profile"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.predicate",
+          "status": "pass",
+          "rationale": "event kind office_opening is a hunted predicate",
+          "evidence": [
+            "https://news.example/toronto/northern-lights-profile"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "place.matches",
+          "status": "pass",
+          "rationale": "place Toronto satisfies the constraint",
+          "evidence": [
+            "https://news.example/toronto/northern-lights-profile"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "industry.matches",
+          "status": "pass",
+          "rationale": "industry marketing agency satisfies the constraint",
+          "evidence": [
+            "https://news.example/toronto/northern-lights-profile"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "contact.usable",
+          "status": "pass",
+          "rationale": "contact domain northernlightsmedia.ca binds to the company",
+          "evidence": [
+            "https://news.example/toronto/northern-lights-profile"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "consent.status",
+          "status": "pass",
+          "rationale": "consent granted under b2b-legitimate-interest-v1",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "outcome.evidence",
+          "status": "unknown",
+          "rationale": "no outcome in the evidence",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        }
+      ],
+      "tier": null,
+      "validated_rate": 0.7,
+      "unknown_rate": 0.3,
+      "contradicted_rate": 0,
+      "status": "unknown",
+      "as_of": "2026-10-20T12:00:00.000Z",
+      "scorer": {
+        "id": "dazl.eval-contract-scorer",
+        "version": 1
+      }
+    },
+    {
+      "contract": "eval-contract-toronto-office-v1",
+      "contract_v": 1,
+      "lead": "Lakeshore Creative",
+      "verdicts": [
+        {
+          "field": "identity.entity",
+          "status": "pass",
+          "rationale": "entity bound to lakeshorecreative.ca",
+          "evidence": [
+            "lakeshorecreative.ca"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "source.on_page",
+          "status": "pass",
+          "rationale": "the quote is on the cited page",
+          "evidence": [
+            "https://news.example/toronto/lakeshore-creative"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_real",
+          "status": "pass",
+          "rationale": "event date 2026-10-14 is a real calendar day",
+          "evidence": [
+            "https://news.example/toronto/lakeshore-creative"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_in_window",
+          "status": "pass",
+          "rationale": "event is 7 days before as_of, inside the 90-day window",
+          "evidence": [
+            "https://news.example/toronto/lakeshore-creative"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.predicate",
+          "status": "pass",
+          "rationale": "event kind office_opening is a hunted predicate",
+          "evidence": [
+            "https://news.example/toronto/lakeshore-creative"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "place.matches",
+          "status": "pass",
+          "rationale": "place Toronto satisfies the constraint",
+          "evidence": [
+            "https://news.example/toronto/lakeshore-creative"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "industry.matches",
+          "status": "pass",
+          "rationale": "industry marketing agency satisfies the constraint",
+          "evidence": [
+            "https://news.example/toronto/lakeshore-creative"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "contact.usable",
+          "status": "fail",
+          "rationale": "contact talent@lakeshorecreative.ca is a recruiting inbox",
+          "evidence": [
+            "https://news.example/toronto/lakeshore-creative"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "consent.status",
+          "status": "pass",
+          "rationale": "consent granted under b2b-legitimate-interest-v1",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "outcome.evidence",
+          "status": "unknown",
+          "rationale": "no outcome in the evidence",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        }
+      ],
+      "tier": "plausible_buyer",
+      "validated_rate": 0.8,
+      "unknown_rate": 0.1,
+      "contradicted_rate": 0,
+      "status": "fail",
+      "as_of": "2026-10-20T12:00:00.000Z",
+      "scorer": {
+        "id": "dazl.eval-contract-scorer",
+        "version": 1
+      }
+    },
+    {
+      "contract": "eval-contract-toronto-office-v1",
+      "contract_v": 1,
+      "lead": "Harbourfront Studio",
+      "verdicts": [
+        {
+          "field": "identity.entity",
+          "status": "pass",
+          "rationale": "entity bound to harbourfrontstudio.ca",
+          "evidence": [
+            "harbourfrontstudio.ca"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "source.on_page",
+          "status": "pass",
+          "rationale": "the quote is on the cited page",
+          "evidence": [
+            "https://news.example/toronto/harbourfront-studio"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_real",
+          "status": "pass",
+          "rationale": "event date 2026-10-18 is a real calendar day",
+          "evidence": [
+            "https://news.example/toronto/harbourfront-studio"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.date_in_window",
+          "status": "pass",
+          "rationale": "event is 3 days before as_of, inside the 90-day window",
+          "evidence": [
+            "https://news.example/toronto/harbourfront-studio"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "event.predicate",
+          "status": "pass",
+          "rationale": "event kind office_opening is a hunted predicate",
+          "evidence": [
+            "https://news.example/toronto/harbourfront-studio"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "place.matches",
+          "status": "contradicted",
+          "rationale": "evidence says Toronto but the cited page says Montreal",
+          "evidence": [
+            "https://news.example/toronto/harbourfront-studio"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "industry.matches",
+          "status": "pass",
+          "rationale": "industry marketing agency satisfies the constraint",
+          "evidence": [
+            "https://news.example/toronto/harbourfront-studio"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "contact.usable",
+          "status": "pass",
+          "rationale": "contact domain harbourfrontstudio.ca binds to the company",
+          "evidence": [
+            "https://news.example/toronto/harbourfront-studio"
+          ],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "consent.status",
+          "status": "pass",
+          "rationale": "consent granted under b2b-legitimate-interest-v1",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        },
+        {
+          "field": "outcome.evidence",
+          "status": "unknown",
+          "rationale": "no outcome in the evidence",
+          "evidence": [],
+          "as_of": "2026-10-20T12:00:00.000Z",
+          "scorer": {
+            "id": "dazl.eval-contract-scorer",
+            "version": 1
+          }
+        }
+      ],
+      "tier": "source_checked",
+      "validated_rate": 0.8,
+      "unknown_rate": 0.1,
+      "contradicted_rate": 0.1,
+      "status": "fail",
+      "as_of": "2026-10-20T12:00:00.000Z",
+      "scorer": {
+        "id": "dazl.eval-contract-scorer",
+        "version": 1
+      }
+    }
+  ]
+}

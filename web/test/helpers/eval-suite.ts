@@ -3,6 +3,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadCase } from '../../lib/evals/case.ts'
+import type { Contract } from '../../lib/evals/contract.ts'
 import { replayCase } from './eval-replay.ts'
 import type { ReplayResult } from '../../lib/evals/result.ts'
 import { scoreCase, EVAL_CONTRACT, type CaseScore, type Verdict } from '../../lib/evals/evaluators.ts'
@@ -12,7 +13,7 @@ import { totals } from '../../lib/evals/trace.ts'
 // Deleting a case therefore needs its entry removed and min_cases lowered, both visible in review; neither leaves the gate green
 // by itself.
 export interface Baseline { contract: string; min_cases: number; cases: Record<string, { status: string; non_pass: string[]; why?: string }> }
-export interface SuiteRow { case: string; score: CaseScore; totals: ReturnType<typeof totals>; result: ReplayResult; nonPass: string[] }
+export interface SuiteRow { case: string; score: CaseScore; totals: ReturnType<typeof totals>; result: ReplayResult; nonPass: string[]; contract?: Contract }
 export interface BaselineDiff { case: string; regressions: string[]; fixed: string[] }
 
 export const verdictKey = (v: Verdict) => `${v.evaluator}|${v.subject}|${v.status}`
@@ -20,10 +21,10 @@ export const verdictKey = (v: Verdict) => `${v.evaluator}|${v.subject}|${v.statu
 export async function runSuite(casesDir: string, opts: { commit?: string | null; agentLabel?: string } = {}): Promise<SuiteRow[]> {
   const rows: SuiteRow[] = []
   for (const f of readdirSync(casesDir).filter(f => f.endsWith('.case.json')).sort()) {
-    const { kase, world } = loadCase(join(casesDir, f))
+    const { kase, world, contract } = loadCase(join(casesDir, f))
     const result = await replayCase(kase, world, opts)
     const score = scoreCase({ kase, world, result })
-    rows.push({ case: kase.id, score, totals: totals(result.trace), result, nonPass: score.verdicts.filter(v => v.status !== 'pass').map(verdictKey).sort() })
+    rows.push({ case: kase.id, score, totals: totals(result.trace), result, nonPass: score.verdicts.filter(v => v.status !== 'pass').map(verdictKey).sort(), contract })
   }
   return rows
 }
