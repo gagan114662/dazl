@@ -68,7 +68,7 @@ test('lifecycle: read scope missing and a needs_reconnect account are distinct s
 
 test('lifecycle: a refused sync says not checked; unauthenticated and cross-site requests change nothing', async () => {
   as('t4'); connect('t4')
-  let r = await post({ action: 'sync' }); assert.equal(r.status, 200)
+  const r = await post({ action: 'sync' }); assert.equal(r.status, 200)
   const refused = await r.json() as { ok: boolean; sync: { error?: string } }
   assert.equal(refused.sync.error, 'reading_not_enabled', 'no consent: the route refuses inside a 200')
   assert.equal(actionMessage('sync', true, refused), 'Replies were not checked: reply reading is off.', 'the panel text for the real route response')
