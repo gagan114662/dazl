@@ -317,7 +317,7 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   if (!(rootTest && testFixtureSend(db, tenantId, { to_email: s.to_email, test: rootTest.test })) && domainReviewHeld(db, tenantId, s.lead_id, s.to_email)) throw new SequenceError(domainHoldCode(db, tenantId, s.lead_id, s.to_email))
   db.transaction(() => {
   const first = steps.find(st => st.step === 1)!
-  db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(first.subject, first.body, s.message_id, tenantId)
+  db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1, status = 'draft', approved_hash = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(first.subject, first.body, s.message_id, tenantId)
   approveStep1(s.message_id) // throws the same OutreachError codes as single-message approval
   for (const st of steps)
     db.prepare("UPDATE sequence_steps SET approved_hash = ?, status = 'approved' WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(hash(s.to_email, st.subject, st.body), tenantId, sequenceId, st.step)
