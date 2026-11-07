@@ -62,6 +62,8 @@ import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
+import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
+import { writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -1005,6 +1007,7 @@ export interface RunDeps {
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
   // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
   trace?: import('../evals/trace.ts').TraceRecorder
+  linkedinTransport?: import('../signals/linkedin-people.ts').LinkedInTransport   // a reviewed LinkedIn transport (#192); none by default, so nothing is requested
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
@@ -1311,6 +1314,28 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
         // any other complaint-search failure only means no extra candidates
+      }
+    }
+    // LinkedIn people (#192): buyer-role matches and competitor engagers, ONLY through an injected, reviewed transport (deps.linkedinTransport). dazl itself holds no member
+    // session or cookie on this path; with no transport nothing is requested. Same gates as every LinkedIn call; candidates are login-walled, so they land in the review lane.
+    if (job.query && icpForSources && complete && !trial) {
+      try {
+        assertOwned(db, job)
+        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport: deps.linkedinTransport })
+        if (li.length > 0) {
+          ledger.record(PEOPLE_CONNECTOR, 'ok', li.length)
+          assertOwned(db, job)
+          const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, li), deps.fetchImpl, 3000)
+          const extra = parseLeads(text, li.map(i => i.url)) ?? []
+          ledger.evidenceCandidates(li, extra)
+          walledLeads.push(...extra)
+        }
+      } catch (e) {
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+        if (e instanceof ProviderError && e.kind === 'auth') throw e // a rejected key still fails the scan
+        // For a gated connector the audit trail is the control surface: any other failure is recorded, never swallowed silently.
+        ledger.record(PEOPLE_CONNECTOR, 'error')
+        try { await writeAudit(sqliteDb(db), { tenantId: job.user_id, connector: PEOPLE_CONNECTOR, jobId: job.id, lookup: 'linkedin people', status: 'connector_error', results: 0 }) } catch { /* the audit write itself failed: the ledger row above still records it */ }
       }
     }
     // #386: a lookalike scan drops the accounts the tenant supplied before any page is fetched for them.
