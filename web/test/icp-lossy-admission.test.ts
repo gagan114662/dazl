@@ -62,7 +62,7 @@ test('source order: the scan route refuses a lossy profile before offers, reserv
 
 test('POST /api/scan refuses each lossy profile with zero jobs and zero provider requests (real handler, stubbed)', () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
-  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/scan-route-loader.mjs', '--test', './test/helpers/icp-lossy-route-runtime.mts'],
+  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/scan-route-loader.mjs', '--test-reporter=tap', '--test', './test/helpers/icp-lossy-route-runtime.mts'],
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(result.error, undefined); assert.equal(result.status, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /# pass 9/); assert.match(result.stdout, /# fail 0/)
