@@ -244,7 +244,7 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
   let pub = 0, n = 0
-  const insPub = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?)")
+  const insPub = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
   for (const x of published) pub += insPub.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
   if (!pattern) return { format: null, confidence: null, candidates: 0, published: pub, ambiguous }
   const urlOf = (address: string) => seen.find(s => s.address === address)?.url ?? null
