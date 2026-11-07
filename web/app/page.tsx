@@ -27,7 +27,7 @@ const PROOF = [
 
 export default function Home() {
   return (
-    <main id="main" className="app-ui lp min-h-screen flex flex-col">
+    <main id="main" tabIndex={-1} className="outline-none app-ui lp min-h-screen flex flex-col">
       <Banner />
       <nav className="flex items-center justify-between gap-4 px-4 sm:px-6 md:px-10 py-5 max-w-6xl mx-auto w-full">
         <span className="text-[22px] font-semibold tracking-tight">dazl</span>
