@@ -72,7 +72,7 @@ export function CrmPush({ leadId }: { leadId: string }) {
     case 'pushing': return <span data-testid="crm-push"><button disabled aria-busy="true" className={btn}>Pushing…</button></span>
     case 'done': return <span data-testid="crm-push">{note(view.text)}</span>
     case 'failed': return <span data-testid="crm-push">{note(view.text)}<button onClick={() => void push()} className={btn}>Try again</button></span>
-    case 'webhook_unknown': return <span data-testid="crm-push">{note(view.text)}{' '}<span className="text-gray-500 text-xs ml-2">Check whether the original webhook endpoint received this lead before sending it again. If it redirected, update the webhook URL in Settings to its final address. Dazl cannot confirm delivery for this webhook.</span></span>
+    case 'webhook_unknown': return <span data-testid="crm-push">{note(view.text)}<br /><span className="text-gray-500 text-xs ml-2">Check whether the original webhook endpoint received this lead before sending it again. If it redirected, update the webhook URL in Settings to its final address. Dazl cannot confirm delivery for this webhook.</span></span>
     case 'unknown': return <span data-testid="crm-push">{note(view.text)} <button onClick={() => void resolve(true)} className="underline text-xs ml-1">It is in my CRM</button> <button onClick={() => void resolve(false)} className="underline text-xs ml-1">It is not there</button></span>
     case 'in_progress': return <span data-testid="crm-push">{note(view.text)}<button onClick={() => { rechecks.current = RECHECKS; void check() }} className={btn}>Check again</button></span>
     case 'checking': return <span data-testid="crm-push">{note(view.text)}<button disabled aria-busy="true" className={btn}>Checking…</button></span>
