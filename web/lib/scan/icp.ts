@@ -125,7 +125,7 @@ export const flatProfile = (icp: unknown): unknown => {
   return flat
 }
 
-export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' }
+export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' | 'holds_too_large' }
 // Total-budget enforcement for every icp write. Research that cannot fit whole is omitted explicitly (never partially
 // parsed back); flat user constraints overflowing on their own are a typed refusal, never silent truncation.
 export function budgetedIcp(icp: Icp): IcpBudget {
@@ -134,6 +134,9 @@ export function budgetedIcp(icp: Icp): IcpBudget {
   if (!research) return { ok: true, icp, json: JSON.stringify(icp) }
   const room = ICP_JSON_BUDGET - JSON.stringify(flat).length - 16   // the ,"research":... wrapper
   const fitted = fitResearch(research, room)
+  // Unresolved decisions (holds, rejection identities) are the review requirement itself: if even the smallest record of them does not fit next to the profile, the save is REFUSED. A profile-only
+  // write that quietly lost every hold would let unreviewed statements target again. (Research with no holds may still be omitted, as before.)
+  if (!fitted && research.u?.length) return { ok: false, reason: 'holds_too_large' }
   const out = fitted ? { ...icp, research: fitted } : flat
   return { ok: true, icp: out, json: JSON.stringify(out) }
 }

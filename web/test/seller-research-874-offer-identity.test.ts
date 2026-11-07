@@ -5,7 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, heldIds, offerId, offerIds, targetingFor, toStored, OFFER_QUESTION, WHO_QUESTION, type FetchedPage, type SellerResearch, type Unresolved } from '../lib/scan/seller-research.ts'
-import { budgetedIcp, normalizeResearch, type Icp } from '../lib/scan/icp.ts'
+import { budgetedIcp, ICP_JSON_BUDGET, normalizeResearch, type Icp } from '../lib/scan/icp.ts'
 import { norm } from '../lib/scan/evidence.ts'
 import { holdNameOf, MAX_REJ, rejDigest } from '../lib/scan/offer-identity.ts'
 import { assembleDecisionPack, decisionRows, reuseSellerDecisions, type SellerDecision } from '../lib/scan/intelligence.ts'
@@ -598,4 +598,32 @@ test('#874 reviewed decisions folded into a whole entry keep their identity too:
   const same = again.hypotheses.filter(h => h.offer === idOf(again, NAMES2[1]) && h.text === 'beta decision')
   const done = applyCorrections(again, same.map(h => ({ offer: h.offer, hypothesis: h.id, action: 'confirm' as const })))
   assert.ok(!(done.unresolved ?? []).some(u => u.names.includes(holdNameOf(NAMES2[1])) && (u.rev ?? []).length), 'the explicit decision on the same statement resolves exactly that digest')
+})
+
+
+// =====================================================================================================================================================
+// Review round 6 on #1000: a profile that fits by itself but leaves no room for even the smallest hold record must REFUSE the save (prior state untouched), never write the profile alone.
+// =====================================================================================================================================================
+test('#874 size limit: flat profile fits but the smallest hold record does not -> the save is refused (holds_too_large); with no holds the same profile is saved; reload and rerun keep the prior state', () => {
+  const names = ['Alpha Pro', 'Beta Pro']
+  const held = { ...build(names), unresolved: [hold(names[0], 'a rejected claim', 'rejected'), hold(names[1], 'b decision')] }
+  const research = toStored(held)
+  const profile = (pad: number): Icp => ({ summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], ...({ pad: 'p'.repeat(pad) } as object), research } as unknown as Icp)
+  // grow the flat profile until it just fits with no research at all, leaving less room than the smallest open record needs
+  const flatLen = (pad: number) => { const { research: _r, ...f } = profile(pad); void _r; return JSON.stringify(f).length }
+  let pad = 0; while (flatLen(pad + 1) <= ICP_JSON_BUDGET - 20) pad++
+  const icp = profile(pad)
+  assert.ok(flatLen(pad) <= ICP_JSON_BUDGET && ICP_JSON_BUDGET - flatLen(pad) < 60, 'fixture: the flat profile fits, with almost no room left')
+  const refused = budgetedIcp(icp)
+  assert.equal(refused.ok, false); if (refused.ok) return
+  assert.equal(refused.reason, 'holds_too_large', 'a clear, typed refusal; nothing profile-only is returned')
+  // control: the very same profile with NO unresolved decisions is not refused (research that cannot fit is omitted, as before)
+  const noHolds = budgetedIcp({ ...icp, research: toStored(build(names)) })
+  assert.equal(noHolds.ok, true, 'no holds: the profile saves')
+  // the prior state is what reload and rerun still see: the refusal returns no profile, so the previous stored value is the only one there is
+  const prior = roundTrip(held), again = build(names, prior)
+  assert.deepEqual([...heldIds(again)].sort(), again.offers.map(o => o.id).sort(), 'reload and rerun on the prior state: both still held')
+  // and a profile with room is saved WITH its holds
+  const roomy = budgetedIcp({ ...icp, ...({ pad: 'p'.repeat(10) } as object), research } as unknown as Icp)
+  assert.ok(roomy.ok && (roomy.icp.research?.u ?? []).length > 0, 'with room, the holds are stored')
 })
