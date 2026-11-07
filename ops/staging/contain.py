@@ -97,6 +97,26 @@ def contain(grace, kill_wait):
     return False
 
 
+class Abort(Exception):
+    pass
+
+
+def quiet(aborted):
+    """Make cleanup uninterruptible: from here on TERM/INT/HUP are blocked, and any that still reaches a handler is only
+    recorded. The throwing handler exists solely to break out of waitpid/Popen (PEP 475 would resume them); once cleanup
+    starts, a second signal must wait for it, never raise out of it before the blocked-125 result can be returned."""
+    sigs = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    while True:
+        try:
+            for s_ in sigs:
+                signal.signal(s_, lambda *_: aborted.append(0))
+            try: signal.pthread_sigmask(signal.SIG_BLOCK, sigs)
+            except (AttributeError, OSError, ValueError): pass
+            return
+        except Abort:
+            continue   # a signal landed while switching handlers (already recorded): switch again
+
+
 def main(argv):
     grace, kill_wait = 10.0, 10.0
     while argv and argv[0] != '--':
@@ -111,7 +131,6 @@ def main(argv):
     if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         print('contain: cannot become a subreaper; refusing to build uncontained', file=sys.stderr); return BLOCKED
     aborted = []
-    class Abort(Exception): pass
     def on_signal(signum, _frame):
         aborted.append(signum)
         raise Abort()   # PEP 475 would otherwise resume waitpid after the handler
@@ -120,8 +139,12 @@ def main(argv):
     try:
         child = subprocess.Popen(cmd)
     except Abort:
+        child = None
+    if child is None:
         # A signal during startup still owes the same cleanup contract: only a CONFIRMED-empty tree may report the signal
-        # status, because deploy.sh treats every status except BLOCKED as safe to delete the release.
+        # status, because deploy.sh treats every status except BLOCKED as safe to delete the release. Cleanup itself is not
+        # interruptible, so a second TERM/INT/HUP cannot escape before the blocked result is returned.
+        quiet(aborted)
         if not contain(grace, kill_wait):
             print(f'contain: build processes survived SIGKILL: {sorted(alive(descendants(os.getpid())))}; cleanup BLOCKED', file=sys.stderr)
             return BLOCKED
@@ -135,10 +158,9 @@ def main(argv):
             pass
         except ChildProcessError:
             status = 1
+    quiet(aborted)   # already cleaning up: a second signal just waits for it
     if aborted:
         status = 128 + aborted[0]
-    for s_ in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(s_, lambda *_: aborted.append(0))   # already cleaning up: a second signal just waits for it
     if not contain(grace, kill_wait):
         print(f'contain: build processes survived SIGKILL: {sorted(alive(descendants(os.getpid())))}; cleanup BLOCKED', file=sys.stderr)
         return BLOCKED

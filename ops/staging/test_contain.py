@@ -82,4 +82,57 @@ class StartupAbortStatusTest(unittest.TestCase):
         self.assertNotIn('BLOCKED', err)
 
 
+class RepeatedAbortTest(unittest.TestCase):
+    """#907 review: once cleanup has started, a second (third...) TERM/INT/HUP must not raise out of it. Cleanup has to reach
+    its result - blocked 125 when exit cannot be confirmed - whatever signals keep arriving. Fully mocked: no process is
+    spawned and no real signal is sent; the installed handlers are called directly, the way the interpreter would."""
+
+    def run_main(self, cleanup_ok, startup):
+        import contextlib, importlib.util, io
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location('contain_repeat', C); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        handlers, events = {}, []
+        def fire(sig):                                   # a signal arriving now: whatever handler is installed right now runs
+            handlers[sig](sig, None)
+        def fake_signal(sig, handler): handlers[sig] = handler; events.append(('handler', sig))
+        def fake_mask(how, sigs): events.append(('mask', how))
+        def fake_popen(*_a, **_k):
+            fire(signal.SIGTERM)                          # startup abort: raises out of Popen
+        def fake_waitpid(*_a, **_k):
+            fire(signal.SIGTERM)                          # abort while waiting for a running build: raises out of waitpid
+        def fake_contain(grace, kill_wait):
+            events.append(('contain', None))
+            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
+                fire(sig)                                 # repeated signals DURING cleanup must not raise
+            return cleanup_ok
+        libc = mock.Mock(); libc.prctl.return_value = 0
+        child = mock.Mock(pid=4321)
+        err = io.StringIO()
+        with mock.patch.object(mod.ctypes, 'CDLL', return_value=libc), \
+             mock.patch.object(mod.signal, 'signal', side_effect=fake_signal), \
+             mock.patch.object(mod.signal, 'pthread_sigmask', side_effect=fake_mask), \
+             mock.patch.object(mod.subprocess, 'Popen', side_effect=fake_popen if startup else (lambda *a, **k: child)), \
+             mock.patch.object(mod.os, 'waitpid', side_effect=fake_waitpid), \
+             mock.patch.object(mod, 'contain', side_effect=fake_contain), \
+             mock.patch.object(mod, 'descendants', return_value={4242}), \
+             mock.patch.object(mod, 'alive', return_value=[] if cleanup_ok else [4242]), \
+             contextlib.redirect_stderr(err):
+            status = mod.main(['--grace', '0.1', '--kill-wait', '0.1', '--', 'true'])   # an escaped Abort would fail the test here
+        return status, events, err.getvalue()
+
+    def check(self, startup):
+        status, events, err = self.run_main(cleanup_ok=False, startup=startup)
+        self.assertEqual(status, 125, 'repeated signals during cleanup must not replace the blocked status')
+        self.assertIn('cleanup BLOCKED', err); self.assertIn('4242', err)
+        kinds = [e[0] for e in events]
+        self.assertLess(kinds.index('mask'), kinds.index('contain'), 'abort signals are blocked before cleanup starts')
+        status, events, err = self.run_main(cleanup_ok=True, startup=startup)
+        self.assertEqual(status, 143, 'with cleanup confirmed, the first signal status is kept despite the repeats')
+        self.assertNotIn('BLOCKED', err)
+
+    def test_repeated_abort_during_startup_cleanup_still_returns_blocked_125(self): self.check(startup=True)
+
+    def test_repeated_abort_during_normal_cleanup_still_returns_blocked_125(self): self.check(startup=False)
+
+
 if __name__ == '__main__': unittest.main()
