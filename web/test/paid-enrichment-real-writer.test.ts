@@ -110,6 +110,8 @@ test('Apollo: an organization call that fails keeps the failure and does not rea
   await enrichLeadContacts(db, 'u1', jobId, [L1], { fetchImpl: a.fetchImpl, master })
   const s = await report(db, jobId)
   assert.notEqual(s.status, 'ok'); assert.equal(s.detail?.with_results, 0); assert.equal(s.detail?.company_ok, 0); assert.ok((s.detail?.failed ?? 0) >= 1)
+  // the unsettled org claim may or may not have reached the provider / been charged: reported, never a completed lookup
+  assert.equal(s.detail?.unconfirmed, 1); assert.equal(s.detail?.lookups, 1, 'only the settled people step is a completed lookup')
 })
 
 test('PDL: contact success, empty and an all-rejected pass are each ONE logical call (a rejection writes two audit rows)', async () => {
@@ -131,4 +133,69 @@ test('PDL: success beside a rejected lead is ok with the rejection still counted
   await enrichLeadContacts(db, 'u1', jobId, [L1, L2], { fetchImpl: p.fetchImpl, master })
   const s = await report(db, jobId)
   assert.deepEqual([s.status, s.detail?.lookups, s.detail?.with_results, s.detail?.failed], ['ok', 2, 1, 1])
+})
+
+// ---- second review pass: historical rows, unreadable records, unconfirmed claims, identity binding ----
+test('historical job (no claim rows): org success + the duplicate compatibility row is NOT a contact success', async () => {
+  const { db, jobId } = seed([L1], ['apollo']); const a = apollo({ [L1.company_domain]: { org: orgOf(L1), people: [] } })
+  await enrichLeadContacts(db, 'u1', jobId, [L1], { fetchImpl: a.fetchImpl, master })
+  db.prepare('DELETE FROM connector_claims').run() // the job as it was recorded before per-step claims: only the writer's audit rows remain
+  const rows = db.prepare("SELECT lookup, status, results FROM connector_audit WHERE connector = 'enrich:apollo' ORDER BY rowid").all()
+  assert.equal(rows.length, 3, 'the real writer shape: step:org + compatibility org + people rows')
+  const s = await report(db, jobId)
+  assert.equal(s.status, 'attempted_no_result'); assert.equal(s.detail?.with_results, 0, 'zero contacts attached')
+  assert.equal(s.detail?.company_ok, 1, 'the two org rows are one company outcome'); assert.equal(s.detail?.empty, 1)
+  assert.equal(s.detail?.basis, 'audit_rows', 'an audit-row reading says so; it is not presented as an exact lookup count')
+})
+test('historical job: a genuine contact still reads ok, and a rejected org is a failure, not a success', async () => {
+  let r = seed([L1], ['apollo']); let a = apollo({ [L1.company_domain]: { org: orgOf(L1), people: [personOf(L1)] } })
+  await enrichLeadContacts(r.db, 'u1', r.jobId, [L1], { fetchImpl: a.fetchImpl, master }); r.db.prepare('DELETE FROM connector_claims').run()
+  let s = await report(r.db, r.jobId); assert.deepEqual([s.status, s.detail?.with_results, s.detail?.company_ok], ['ok', 1, 1])
+  r = seed([L1], ['apollo']); a = apollo({ [L1.company_domain]: { org: orgOf(L1, 'https://other-company.example'), people: [] } })
+  await enrichLeadContacts(r.db, 'u1', r.jobId, [L1], { fetchImpl: a.fetchImpl, master }); r.db.prepare('DELETE FROM connector_claims').run()
+  s = await report(r.db, r.jobId); assert.equal(s.status, 'failed'); assert.equal(s.detail?.with_results, 0)
+})
+test('unreadable claim records: the stage is unknown (failed), never a success from an org-only audit row', async () => {
+  const { db, jobId } = seed([L1], ['apollo']); const a = apollo({ [L1.company_domain]: { org: orgOf(L1), people: [] } })
+  await enrichLeadContacts(db, 'u1', jobId, [L1], { fetchImpl: a.fetchImpl, master })
+  db.exec('DROP TABLE connector_claims') // the claims query now fails; the audit still holds an org row with results = 1
+  const s = await report(db, jobId)
+  assert.equal(s.status, 'failed'); assert.match(s.reason ?? '', /could not be read/); assert.notEqual(s.status, 'ok'); assert.equal(s.detail?.with_results, 0)
+})
+test('an unsettled (reserved) claim is unconfirmed: never a completed lookup and never a success', async () => {
+  const { db, jobId } = seed([L1], ['pdl']); const p = pdl({ [L1.company]: [pdlPerson(L1)] })
+  await enrichLeadContacts(db, 'u1', jobId, [L1], { fetchImpl: p.fetchImpl, master })
+  // a request may have been sent but the writer never settled it: put the real claim back to its unsettled state
+  db.prepare("UPDATE connector_claims SET status = 'reserved', settled_at = NULL").run(); db.prepare("UPDATE connector_audit SET status = 'reserved', results = 0 WHERE connector = 'enrich:pdl'").run()
+  const s = await report(db, jobId)
+  assert.equal(s.detail?.unconfirmed, 1); assert.equal(s.detail?.lookups, 0, 'not counted as a verified lookup'); assert.equal(s.detail?.with_results, 0)
+  assert.notEqual(s.status, 'ok'); assert.match(s.reason ?? '', /not confirmed/)
+})
+test('identity binding: Apollo org-rejected lead + PDL fallback rejection with the SAME reason text stay attributed to their own provider step', async () => {
+  // Same lead, both providers, and a PDL candidate from the same wrong site: the Apollo people claim (never sent) and the PDL
+  // claim (sent) carry the identical rejection text. Reason text alone cannot tell them apart; identity + provider can.
+  const { db, jobId } = seed([L1], ['apollo', 'pdl'])
+  const a = apollo({ [L1.company_domain]: { org: orgOf(L1, 'https://elsewhere.example'), people: [] } })
+  const p = pdl({ [L1.company]: [pdlPerson(L1, 'elsewhere.example')] })
+  const fetchImpl = (async (u: RequestInfo | URL, init?: RequestInit) => String(u).includes('apollo.io') ? a.fetchImpl(u, init) : p.fetchImpl(u, init)) as typeof fetch
+  await enrichLeadContacts(db, 'u1', jobId, [L1], { fetchImpl, master })
+  const reasons = db.prepare("SELECT connector, status FROM connector_claims c WHERE lookup LIKE '%people%' ORDER BY rowid").all() as { connector: string; status: string }[]
+  const s = await report(db, jobId)
+  assert.deepEqual([a.calls.org, a.calls.people, p.calls.pdl], [1, 0, 1], 'what was really sent: one Apollo org call, no Apollo people call, one PDL call')
+  assert.equal(s.detail?.apollo_lookups, 1, 'Apollo: the org lookup only'); assert.equal(s.detail?.pdl_lookups, 1, 'PDL: its own lookup'); assert.equal(s.detail?.lookups, 2)
+  assert.ok(reasons.length >= 1)
+})
+test('identity binding (record-shape check): a PDL claim never consumes another identity or provider\'s org rejection', async () => {
+  // Hand-built rows, labelled as such: PDL claim first in rowid order carries the same text as Apollo\'s unsent people claim for a DIFFERENT lead.
+  const { db, jobId } = seed([L1, L2], ['apollo'])
+  const reason = 'contact rejected: domain mismatch elsewhere.example vs harbordental.example'
+  const ins = (connector: string, lookup: string, status: string, memo: string | null, auditStatus: string, results = 0) => {
+    db.prepare("INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at, settled_at, memo) VALUES ('u1', ?, ?, ?, ?, 1, 1, ?)").run(connector, jobId, lookup, status, memo)
+    db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results) VALUES (?, 'u1', ?, ?, ?, ?, ?)").run(crypto.randomUUID(), connector, jobId, lookup, auditStatus, results)
+  }
+  ins('enrich:pdl', 'people Ridge Vision (ridgevision.example)', 'rejected', null, reason)            // sent: PDL candidate from the same wrong site
+  ins('enrich:apollo', 'step:org Harbor Dental (harbordental.example)', 'ok', JSON.stringify({ v: 1, rejected: reason }), 'ok', 1)
+  ins('enrich:apollo', 'step:people Harbor Dental (harbordental.example)', 'rejected', null, reason) // unsent: bound to its own org claim
+  const s = await report(db, jobId)
+  assert.deepEqual([s.detail?.apollo_lookups, s.detail?.pdl_lookups, s.detail?.lookups], [1, 1, 2], 'PDL counted, Apollo people (unsent) not, Apollo org counted')
 })
