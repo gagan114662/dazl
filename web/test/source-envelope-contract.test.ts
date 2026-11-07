@@ -51,7 +51,7 @@ test('github: explicit empty and policy-filtered rows are healthy empty; malform
   reset()
   let calls = 0
   const mixed = (async () => { calls++; return ok({ items: [REPO, null, 'x', { html_url: 7 }] }) }) as Http
-  for (const _ of [1, 2]) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     const { items, run: r } = await run('github', mixed)
     assert.equal(items.length, 1); assert.equal(r.status, 'partial'); assert.equal(r.notes?.malformed_rows, 1)
   }
