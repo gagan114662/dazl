@@ -1,0 +1,255 @@
+{
+  "sourceCommit": "0053e060860401ad118e7396e93070b478d19817",
+  "migrations": [
+    {
+      "version": 1,
+      "name": "baseline",
+      "checksum": "614700662d872c0aeae69d7c6737156c65a13315990cb5a072e486edd15a6ba6"
+    },
+    {
+      "version": 2,
+      "name": "users_buyer_profile",
+      "checksum": "0215b9a255c2c8843a6cebcab9abb0d7de444238b1d886caad088590eb5f4eb0"
+    },
+    {
+      "version": 3,
+      "name": "shared_state",
+      "checksum": "ddbe824aeedfb62cef3131e721e90142287fe2086ef11ef68c605174f98f3e14"
+    },
+    {
+      "version": 4,
+      "name": "lease_generation",
+      "checksum": "1c22cf500cacb76609f2719d84f871f7206a160eba8d8149eb34f3727f2ffb68"
+    },
+    {
+      "version": 5,
+      "name": "scan_run_report",
+      "checksum": "5b3cc31e98c4e5be7f269e7b634889b198b55b3349b713a844d12a6a1441e6e5"
+    },
+    {
+      "version": 6,
+      "name": "lead_timing_note_published_at",
+      "checksum": "99fdebd44a2765f4bbb9c791e20e9679246f1e462f5e19dc7bc9f14eb1d1c116"
+    },
+    {
+      "version": 7,
+      "name": "stripe_event_order",
+      "checksum": "ebfcdf03524b4a66d736d2b88e72b7febc793b2b85a12502cfc116f960513b02"
+    },
+    {
+      "version": 8,
+      "name": "scan_job_enrichment",
+      "checksum": "f633d4676b606375b4532c7f5b1c10b2723b17c3db12283e3d5d85ea83ba2ef1"
+    },
+    {
+      "version": 9,
+      "name": "subscription_status",
+      "checksum": "bed0829f86cd24af5e6c883ebc1da10b3ba7afcd5f86251c19f6b9dc56b815b9"
+    },
+    {
+      "version": 10,
+      "name": "insertion_order",
+      "checksum": "7680e01506b7bdd6578cd612c45dd8a13629ecadc3510e0ccea0ba96f1f5abf5"
+    },
+    {
+      "version": 11,
+      "name": "insertion_order_more",
+      "checksum": "475bd7eaa964ed7f23e56937a8160ebbae989a74d326a56a353c8d211102eb46"
+    },
+    {
+      "version": 12,
+      "name": "trial_budget",
+      "checksum": "e40da764a80accdf8235bf348daf1f35405e460883de87329b7a00516f8975f2"
+    },
+    {
+      "version": 13,
+      "name": "play_offer",
+      "checksum": "5b08a528ab1f9da508315beb1639abe7826432dd40af1ad1bf2093d87c01a724"
+    },
+    {
+      "version": 14,
+      "name": "crm_push_claims",
+      "checksum": "e9d20997dd6e0108c13a8113dae27318ce0fd33d17f787d9b63199f99cd0d102"
+    },
+    {
+      "version": 15,
+      "name": "workspaces",
+      "checksum": "a23b039a707bb1cce534fd4d900bce3ec92da1cdc932bd84d46e79dfa305f071"
+    },
+    {
+      "version": 16,
+      "name": "inbox_thread_reads",
+      "checksum": "b7183b2faee297d86ffbef7af28f5314d61faa65474677ac9bb9eb5d398ee8a4"
+    },
+    {
+      "version": 17,
+      "name": "tenant_spend_pools",
+      "checksum": "f4d39321de9334fad26d80a14ea7449d32c4a1c6bb564661c73889f06dbf5ed9"
+    },
+    {
+      "version": 18,
+      "name": "scan_estimate",
+      "checksum": "fd3d3864da30adaf476fd7043d917fd1aed41f062e7aa87d52a81d1c6b89e288"
+    },
+    {
+      "version": 19,
+      "name": "scheduler_runs",
+      "checksum": "d651f8cd860bb688b620f6f3ab45e8f4bb23f879f4399ec13846decb9835cf46"
+    },
+    {
+      "version": 20,
+      "name": "invitations",
+      "checksum": "17c8891534283c03f72a4f8474091632366fb6c32c48f0cf9ea17713c07abe2f"
+    },
+    {
+      "version": 21,
+      "name": "session_inventory",
+      "checksum": "a0bfe0aa273aac3eeef7e24fa05affaf7ac1236ceebcde6c327d8fd35286e857"
+    },
+    {
+      "version": 22,
+      "name": "session_fresh_auth",
+      "checksum": "96762ed20f8e63a2d0550c1f13b682e7735e80f0121731e533b077cbd2e7ae96"
+    },
+    {
+      "version": 23,
+      "name": "email_ownership",
+      "checksum": "14f863bcf4d562f35346c23c761d53f9c35970bedc14b93317be4d168d2185db"
+    },
+    {
+      "version": 24,
+      "name": "play_research_sources",
+      "checksum": "eaf2d0eaa33f326e0c9646038aa32833c0e9c315041f7e9cb0c49ffc6341d4fa"
+    },
+    {
+      "version": 25,
+      "name": "event_date_proof",
+      "checksum": "a96bb4c1e9a7ad34e2bdfbb32b73d8a658817c36c0b98f10602fd7a9cd27bdbd"
+    },
+    {
+      "version": 26,
+      "name": "first_touch_progress",
+      "checksum": "9602f180e7bdeb3e54ec283d6574f1f06fa7f84aadb9a9c1eb69bcbdbc0aecc2"
+    },
+    {
+      "version": 27,
+      "name": "first_touch_holds",
+      "checksum": "a2939f501c612ef28b1975163ba047cd220ac6606f2737dab20c4af26d76ebdb"
+    },
+    {
+      "version": 28,
+      "name": "cold_sequence_enroll",
+      "checksum": "e1337484a55c1dbcd06266c447be080390e003758762235845bd99406501cfcc"
+    },
+    {
+      "version": 29,
+      "name": "lifecycle_events",
+      "checksum": "0c282148cf96a76ac55a89f9a08eda300e4d0900ba4201b18094faac4e7bbdb9"
+    },
+    {
+      "version": 30,
+      "name": "preview_claims",
+      "checksum": "128d818b2d1e19a23c9d3df7eee95ce572e329cd3026321d62063341e63920ca"
+    },
+    {
+      "version": 31,
+      "name": "preview_claim_events",
+      "checksum": "6299508308c928c92a3e8af2dc30d8aaa2e3a041fe665ad46df0ce0d5e39a90f"
+    },
+    {
+      "version": 32,
+      "name": "autopilot_work",
+      "checksum": "050713aa1136462e2a18216c55acfeecf29bc0d7eda26ee4759434a073b0a6d8"
+    },
+    {
+      "version": 33,
+      "name": "scheduler_progress_autopilot",
+      "checksum": "5001eb71f529974df533ac14fc49448d89bc40238e652255c31a470ead6a90aa"
+    },
+    {
+      "version": 34,
+      "name": "seller_decisions",
+      "checksum": "b43ca636fa6b843424a5358f1b073c4ef702752b0cde9972e1ac1cf53c610237"
+    },
+    {
+      "version": 35,
+      "name": "connector_claims",
+      "checksum": "16ddea362c7553576c8b1c0eb9ca2a2ffe58e5d83133297f7dfe7a751eb16d67"
+    },
+    {
+      "version": 36,
+      "name": "connector_claim_memo",
+      "checksum": "b3052941e5ee5efdd58eaf15d6b3111f839d720ab310e991b8dfe2fa520c5f8d"
+    },
+    {
+      "version": 37,
+      "name": "trial_site_reads",
+      "checksum": "9ce8a9de60277bed0636d4006d4b1e19266e754423ca520547942603b8170478"
+    },
+    {
+      "version": 38,
+      "name": "launch_policy",
+      "checksum": "7a46bc6e7d94716997f4873b9ee9c4fa29c1d1f86f379fcbd27145fa234ec9eb"
+    },
+    {
+      "version": 39,
+      "name": "tenant_lifecycle",
+      "checksum": "129ef92b2807a17cfa5dad8e2a93e0fcb8cb36c8be667e26463ca97b275d10b4"
+    },
+    {
+      "version": 40,
+      "name": "scan_traces",
+      "checksum": "18f37b1080276fcc0f2555049a18a31f1f7e22db78f69e1331355447b0e2aaf3"
+    },
+    {
+      "version": 41,
+      "name": "audit_events",
+      "checksum": "033b3b0aa681b9bd1bc69dca8ee3a54c0500fcf4184a31e7eb2829de9cbe0487"
+    },
+    {
+      "version": 42,
+      "name": "bounce_scan",
+      "checksum": "e9ab5d4835c76aba26d6e8c830eb18d478e4c28df7f4f90222912d88d93bb5bd"
+    },
+    {
+      "version": 43,
+      "name": "onboarding_policy",
+      "checksum": "a6a434c524aaa8ebd3ac17dfb7caceb65c75683b046393dd4efc314fe93de751"
+    },
+    {
+      "version": 44,
+      "name": "lead_feedback",
+      "checksum": "3bd24a5311870fcb40265cf2da5a24b06d6db27a317bbb7240687ccde1aa8aa4"
+    },
+    {
+      "version": 45,
+      "name": "runtime_workers",
+      "checksum": "5e18f918e1bc7a6a020eab34ee2299163724bd91a2de7000d8191c2daf06583e"
+    },
+    {
+      "version": 46,
+      "name": "monitor_events",
+      "checksum": "e39c68f7f22f3a266a56cf78e4ab8439f5be91f5f52899c8f7b1b435ac13e2c5"
+    },
+    {
+      "version": 47,
+      "name": "reply_checkpoints",
+      "checksum": "2c39ef7645263c59ffe1e97777d7429a0a0eb8b06683074bf0c862cc6e9d29f0"
+    },
+    {
+      "version": 48,
+      "name": "scan_spend_cap",
+      "checksum": "b8ba9ba78308347caabb280f12a3d683f87632a4327046db3eab6b4c453b04d9"
+    },
+    {
+      "version": 49,
+      "name": "first_party_withdrawals",
+      "checksum": "bf96385dcd7c8f2b8e9eaac3538d595aad584ffdf1eb8f920441f185622f58b4"
+    },
+    {
+      "version": 50,
+      "name": "email_verification",
+      "checksum": "0d1991d9ea6bba2c2c1f742af9f28812baafbc886d56a0b45b515505645c2c4e"
+    }
+  ]
+}

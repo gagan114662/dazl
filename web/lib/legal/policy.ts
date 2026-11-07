@@ -14,10 +14,14 @@ export const POLICY_STATUS = 'draft' as const
 export const DRAFT_NOTICE = 'DRAFT - not yet approved by the site owner or reviewed by a lawyer. The statements below describe how the software behaves today; bracketed items are open decisions. Not legal advice.'
 
 // Owner-supplied facts that are not in the code. Each stays a visible placeholder until the owner provides it.
+// legalName, companyRegistration and privacyContact: owner-confirmed 2026-11-06 (#535) and checked against the
+// Ajman Free Zone licence and Commercial Registry. Only document-verified fields are used here.
+// NEEDS COUNSEL: the licence activity is 'Management Consultancies'; counsel to confirm it covers operating dazl.
 export const OWNER_PLACEHOLDERS = {
-  legalName: '[COMPANY LEGAL NAME - NEEDS OWNER]',
+  legalName: 'Mathematricks - F.Z.E',
+  companyRegistration: 'a Free Zone Establishment with limited liability in the Ajman Free Zone, United Arab Emirates (licence and registration no. 47839, first issued 23 July 2025; authorized capital AED 100,000), with its premises at Office C1-1F-SF11592, Ajman Free Zone C1 Building, Ajman, United Arab Emirates',
   lastUpdated: '[DATE - set when the owner approves this text]',
-  privacyContact: '[PRIVACY CONTACT EMAIL - NEEDS OWNER]',
+  privacyContact: 'privacy@dazl.ai',
   systemMailProvider: '[SYSTEM EMAIL PROVIDER - NEEDS OWNER]',
 } as const
 
@@ -180,7 +184,7 @@ const P = OWNER_PLACEHOLDERS
 
 export const PRIVACY: Section[] = [
   { heading: 'Who we are', paragraphs: [
-    `Last updated: ${P.lastUpdated}. ${P.legalName} ("dazl", "we") operates dazl.ai.`,
+    `Last updated: ${P.lastUpdated}. ${P.legalName}, ${P.companyRegistration} ("dazl", "we"), operates dazl.ai. Privacy questions and requests: ${P.privacyContact}.`,
   ] },
   { heading: 'What we collect about you (customers)', paragraphs: [
     'Account details: your name, email address, optional business name, and a salted scrypt hash of your password (never the password itself). If you sign in with Google, the email address and account identifier Google returns.',
@@ -234,7 +238,7 @@ export const PRIVACY: Section[] = [
 
 export const TERMS: Section[] = [
   { heading: 'Agreement', paragraphs: [
-    `Last updated: ${P.lastUpdated}. These terms are between you and ${P.legalName}. [NEEDS COUNSEL: how acceptance is recorded at sign-up.]`,
+    `Last updated: ${P.lastUpdated}. These terms are between you and ${P.legalName}, ${P.companyRegistration}. [NEEDS COUNSEL: how acceptance is recorded at sign-up.]`,
   ] },
   { heading: 'The service', paragraphs: [
     'dazl finds prospects from public sources, shows the source for each one, and drafts outreach with AI models. You are the sender of the messages you approve and send, and you are responsible for them.',
