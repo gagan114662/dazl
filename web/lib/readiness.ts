@@ -1,5 +1,5 @@
 import { scanOutcome } from './scan/scan-outcome.ts'
-import { coreSources, socialSources, type Advanced, type ServerSources } from './scan/source-availability.ts'
+import { coreSources, socialSources, analysisPrerequisite, enrichmentLabels, type Advanced, type ServerSources } from './scan/source-availability.ts'
 
 // Home readiness checklist and recent plays. Pure and client-safe: it only reads the existing status endpoints'
 // responses (profile, usage, outreach settings, scan jobs) and never decides anything the server enforces.
@@ -85,19 +85,22 @@ export function readinessRows(i: ReadinessInput): Row[] {
   // usable AI key no scan can start, so that is a to-do whatever else is switched on. Unknown unless both checks loaded;
   // adding a key is the only fix a user can make, so it is the one link offered.
   const core = coreSources(i.sources ?? null, u ? { has_key: u.has_key, trial: u.trial } : null)
-  const research = core?.find(r => r.id === 'research')
+  const analysis = analysisPrerequisite(u ? {has_key:u.has_key,trial:u.trial} : null)
   // Only usable sources are named as usable; every other source is listed as not available, with its reason. Social
   // sources are added only when they loaded (a failed read never lists them either way).
   const all = core ? [...core, ...socialSources(i.advanced ?? null)] : []
-  const usableSources = all.filter(r => r.usable)
-  const off = all.filter(r => !r.usable && r.id !== 'research')
+  const usableSources = all.filter(r => r.usable && r.purpose !== 'enrichment')
+  const off = all.filter(r => !r.usable)
   const offText = off.length ? `. Not available: ${off.map(r => `${r.label} (${r.reason})`).join(', ')}` : ''
   const offFix = off.find(r => r.fix)?.fix
+  const enrichment = core ? enrichmentLabels(core) : ''
+  const enrichText = enrichment ? `. After discovery: ${enrichment} (enrichment only)` : ''
   const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check - the source settings did not load', fix: null }
     // The key row's evidence that the saved key stopped working means web research cannot run either.
     : keyError ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan may not run until you save your AI key again${offText}`, fix: { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' } }
-    : !research?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start until you add an AI key${offText}`, fix: research?.fix ? { kind: 'link', href: research.fix.href, label: research.fix.label } : null }
-    : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
+    : !analysis?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start until you add an AI key for analysis and extraction; a key does not enable discovery${offText}`, fix: analysis?.fix ? { kind: 'link', href: analysis.fix.href, label: analysis.fix.label } : null }
+    : usableSources.length === 0 ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `no usable discovery source is available; adding an AI key does not enable web research${enrichText}${offText}`, fix: offFix ? {kind:'link',href:offFix.href,label:offFix.label} : null }
+    : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${enrichText}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check - your sending settings did not load', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
     : { id: 'gmail', label: 'Gmail', state: 'todo', detail: o.gmail ? 'needs reconnecting' : 'not connected (signing in with Google does not connect it)', fix: { kind: 'link', href: '/app/settings#gmail', label: o.gmail ? 'Reconnect' : 'Connect' } }

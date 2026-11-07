@@ -9,14 +9,15 @@ import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
-import { contactsFromEnrichments, PEOPLE_SOURCE, type RankedPerson } from '@/lib/people/rank'
+import { contactsFromEnrichments, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
+import { identityOf } from '@/lib/scan/opportunity'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
 import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
-import { coreSources, socialLabel, socialSources, usableLabels, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
+import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
@@ -117,15 +118,17 @@ function extraLabels(body: Record<string, unknown> | null): string[] {
 // website reads when no lead qualifies), so the entry names what a scan here CAN use. Without an AI key no scan can
 // start at all, so that prerequisite comes first. Opt-in social sources are never listed; unavailable core and social
 // sources are listed with their reason, and a fix link only where the user can fix it.
-function SourceAvailability({ core, social }: { core: SourceRow[] | null; social: SourceRow[] }) {
+function SourceAvailability({ core, social, keyState }: { core: SourceRow[] | null; social: SourceRow[]; keyState: KeyState | null }) {
   if (!core) return <p className="text-xs text-[#555] mt-2" data-testid="source-availability">Could not check which sources are available. Reload to retry.</p>
   const off = [...core, ...social].filter(r => !r.usable)
   const on = usableLabels(core)
+  const analysis = analysisPrerequisite(keyState)
+  const enrichment = enrichmentLabels(core)
   return (
     <div className="text-xs text-[#555] mt-2 space-y-1" data-testid="source-availability">
-      <p data-testid="sources-usable">{!core.find(r => r.id === 'research')?.usable
-        ? <>A scan cannot start until you add an AI key{on ? <>. Then it can use: {on}</> : ''}.</>
-        : on ? <>Sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No source is available for a scan yet.</>}</p>
+      {analysis && !analysis.usable && <p data-testid="analysis-prerequisite">A scan needs an AI key for analysis and extraction ({analysis.reason}). <a className="underline text-[#111]" href={analysis.fix!.href}>Add key</a>. Adding a key does not enable discovery sources.</p>}
+      <p data-testid="sources-usable">{on ? <>Discovery sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No usable primary discovery source is available on this server. Optional sources can be chosen under More sources; an AI key does not enable web research.</>}</p>
+      {enrichment && <p data-testid="sources-enrichment">After discovery: {enrichment}. This enriches leads already found; it does not discover leads.</p>}
       {off.length > 0 && <p data-testid="sources-unavailable">Not available: {off.map((r, i) => <span key={r.id} data-testid={`source-off-${r.id}`}>{i > 0 && '; '}{r.label} ({r.reason}{r.fix && <>, <a className="underline text-[#111]" href={r.fix.href}>{r.fix.label}</a></>})</span>)}.</p>}
     </div>
   )
@@ -676,7 +679,7 @@ export default function LeadsClient() {
       <details className={`drawer card ${jobId ? 'order-last' : 'mb-6'}`} data-testid="play-settings">
         <summary><span className="flex items-center gap-2"><Icon name="sliders" className="w-4 h-4" />Settings for this play</span><span className="ml-auto text-xs font-normal text-[var(--ink-3)] hidden sm:inline">Sources, imports, profile, warm paths</span></summary>
         <div className="px-5 pb-5 space-y-4 text-sm border-t border-[var(--line)] pt-4">
-          {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
+          {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} keyState={keyState} />}
           <details className="mb-4 text-sm" data-testid="more-sources">
             <summary className="cursor-pointer text-[#555]">More sources</summary>
             <div className="mt-3 space-y-4 border-l border-black/10 pl-4">
@@ -835,7 +838,7 @@ export default function LeadsClient() {
           )
         })()}
         <details className="text-sm text-gray-400 mb-4">
-          <summary className="cursor-pointer">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
+          <summary className="cursor-pointer min-h-11 flex items-center">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
           <ul className="mt-2 ml-4 list-disc text-xs">
             {icp.icp.who.length > 0 && <li>Who: {icp.icp.who.join('; ')}</li>}
             {icp.icp.where.length > 0 && <li>Where: {icp.icp.where.join('; ')}</li>}
@@ -873,7 +876,7 @@ export default function LeadsClient() {
               <span className="font-semibold">{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</span>
               <InfoTip label="About this scan">
                 <span className="block">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Running'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</span>
-                <span className="block mt-1" data-testid="run-sources">{core ? `Sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'none'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.` : 'Could not check which sources this scan can use.'}</span>
+                <span className="block mt-1" data-testid="run-sources">{core ? `Discovery sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'no usable primary discovery source'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.${enrichmentLabels(core) ? ` After discovery: ${enrichmentLabels(core)} (enrichment only).` : ''}` : 'Could not check which sources this scan can use.'}</span>
                 <span className="block mt-1">A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</span>
               </InfoTip>
             </div>
@@ -1077,7 +1080,7 @@ export default function LeadsClient() {
                 </div>}
                 <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
                 {c.timing && <p className="text-xs text-[var(--ink-2)] mt-1" data-testid="card-timing">{c.timing}</p>}
-                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)]" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
+                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
@@ -1085,7 +1088,7 @@ export default function LeadsClient() {
               </div>
             })()}
             <details className="mt-2 text-sm">
-              <summary className="text-xs text-[#555] cursor-pointer">Details</summary>
+              <summary className="text-xs text-[#555] cursor-pointer min-h-11 flex items-center">Details</summary>
               <div className="mt-2">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason === 'policy_stop' ? 'stopped by policy' : l.sequence.stop_reason})` : ''}</p>}
             {!l.quarantined_at && <p className="text-xs mb-1"><button className="underline text-[#555]" onClick={() => quarantine(l.id)}>Quarantine (wrong company or contacts)</button></p>}
@@ -1108,13 +1111,14 @@ export default function LeadsClient() {
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
             {l.enrichments && l.enrichments.some(e => e.kind === 'contact' || e.kind === 'person') && (() => {
-              const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
+              // #781: a crawled person is verified current only on the lead's established / user-confirmed website (identityOf)
+              const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', Date.now(), identityOf({ id: l.id, contact: l.contact }, l.enrichments))
               // #383 criterion 4: two sections, each ordered by title match (lib/people/currency.ts has the owner's definition).
               const { verified, searchOnly } = splitByCurrency(people)
               const row = (p: RankedPerson) => (
                 <div key={p.name + (p.title ?? '')} className="text-gray-400">
                   <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
-                  <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && p.currency === 'verified_current' ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
+                  <span className="text-gray-500">via {peopleSourceText(p)}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && (p.currency === 'verified_current' || p.verified.reason) ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
                   {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
                   {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                 </div>
