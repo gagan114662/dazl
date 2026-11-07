@@ -133,7 +133,7 @@ export function migrateEmailGuess(db: Database.Database): void {
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified')),
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, address));`)
-  // Parts 2-3 (Postgres: lib/db/migrations/pg/0050_email_verification.sql). status stays 'unverified' (never a contact);
+  // Parts 2-3 (Postgres: lib/db/migrations/pg/0050_email_verification.sql; tiers and confidence: 0051_email_free_first.sql). status stays 'unverified' (never a contact);
   // verification is the mailbox check outcome, checked_at / verifier its provenance, country_basis the US evidence.
   const has = (c: string) => (db.prepare('PRAGMA table_info(email_candidates)').all() as { name: string }[]).some(r => r.name === c)
   if (!has('verification')) db.exec(`ALTER TABLE email_candidates ADD COLUMN verification TEXT NOT NULL DEFAULT 'none' CHECK (verification IN (${VERIFICATIONS.map(v => `'${v}'`).join(',')}))`)
