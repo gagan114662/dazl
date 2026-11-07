@@ -49,7 +49,9 @@ bothEngines('first5 production reader: rejected review write + durable marker ne
 
 test('status route uses the production first5 reader on the same scan handle, not independent DATABASE_URL selection', () => {
   const route = readFileSync(new URL('../app/api/scan/status/route.ts', import.meta.url), 'utf8')
-  assert.match(route, /await readFirst5\(sqliteDb\(getScanDb\(\)\), user\.tenantId, job\.id,/)
+  assert.match(route, /await readScanStatus\(sqliteDb\(raw\), user\.tenantId, jobId\)/)
+  const service = readFileSync(new URL('../lib/scan/status-read-service.ts', import.meta.url), 'utf8')
+  assert.match(service, /await readFirst5\(db, tenantId, job\.id,/)
   const reader = readFileSync(new URL('../lib/scan/first5-db.ts', import.meta.url), 'utf8')
   assert.doesNotMatch(reader, /\bgetDb\s*\(/)
 })
