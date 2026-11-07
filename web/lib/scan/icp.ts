@@ -146,6 +146,8 @@ export type IcpLoss =
   | { field: 'summary'; kind: 'too_long'; limit: number; actual: number }
   | { field: IcpListField; kind: 'too_many_items'; limit: number; actual: number }
   | { field: IcpListField; kind: 'item_too_long'; index: number; limit: number; actual: number }
+  | { field: IcpListField; kind: 'wrong_type'; expected: 'array'; actual: string }
+  | { field: IcpListField; kind: 'item_not_text'; index: number; actual: string }
 export type IcpListField = 'who' | 'industries' | 'sizes' | 'where' | 'signals' | 'exclude'
 const squash = (v: unknown): string => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim() : ''
 export function icpLoss(raw: unknown): IcpLoss[] {
@@ -153,12 +155,22 @@ export function icpLoss(raw: unknown): IcpLoss[] {
   const r = raw as Record<string, unknown>, out: IcpLoss[] = []
   const summary = squash(r.summary)
   if (summary.length > caps.summary) out.push({ field: 'summary', kind: 'too_long', limit: caps.summary, actual: summary.length })
+  const typeOf = (x: unknown) => x === null ? 'null' : Array.isArray(x) ? 'array' : typeof x
   for (const field of ['who', 'industries', 'sizes', 'where', 'signals', 'exclude'] as const) {
     const v = r[field]
-    if (!Array.isArray(v)) continue
-    const items = v.map(squash).filter(Boolean)   // blanks are not criteria: dropping them loses nothing
-    if (items.length > caps[field]) out.push({ field, kind: 'too_many_items', limit: caps[field], actual: items.length })
-    items.forEach((t, index) => { if (t.length > caps.item) out.push({ field, kind: 'item_too_long', index, limit: caps.item, actual: t.length }) })
+    if (v === undefined || v === null) continue   // absent: the criterion was never given
+    // A list field of the wrong shape (a string, an object...) is normalized to [] - an explicit criterion silently erased. Refuse it by name.
+    if (!Array.isArray(v)) { out.push({ field, kind: 'wrong_type', expected: 'array', actual: typeOf(v) }); continue }
+    let kept = 0
+    v.forEach((raw, index) => {   // index is the position in the array the caller sent
+      if (raw === undefined || raw === null) return   // an empty slot is not a criterion
+      if (typeof raw !== 'string') { out.push({ field, kind: 'item_not_text', index, actual: typeOf(raw) }); return }
+      const t = squash(raw)
+      if (!t) return   // blanks are not criteria: dropping them loses nothing
+      kept++
+      if (t.length > caps.item) out.push({ field, kind: 'item_too_long', index, limit: caps.item, actual: t.length })
+    })
+    if (kept > caps[field]) out.push({ field, kind: 'too_many_items', limit: caps[field], actual: kept })
   }
   return out
 }

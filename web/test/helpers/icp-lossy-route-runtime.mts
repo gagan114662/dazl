@@ -28,6 +28,9 @@ const CASES: [string, Record<string, unknown>, string, string][] = [
   ['7th location', { where: ['Toronto', 'Ottawa', 'Montreal', 'Calgary', 'Vancouver', 'Halifax', 'Winnipeg'] }, 'where', 'too_many_items'],
   ['item > 160', { signals: [long(161)] }, 'signals', 'item_too_long'],
   ['summary > 300', { summary: long(301) }, 'summary', 'too_long'],
+  ['string-typed who (an explicit criterion normalization would erase)', { who: 'VP Sales at SaaS' }, 'who', 'wrong_type'],
+  ['object-typed industries', { industries: { a: 'dental' } }, 'industries', 'wrong_type'],
+  ['non-text list item (a number at raw position 1)', { exclude: ['chains', 42] }, 'exclude', 'item_not_text'],
 ]
 for (const [name, patch, field, kind] of CASES) {
   test(`refused before admission: ${name} -> 400 profile_lossy with field detail, no job, no provider request`, async () => {

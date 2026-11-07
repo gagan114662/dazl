@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   // a 161-char item, a 301-char summary) is refused here, with field/item detail, before any offer read, reservation,
   // trial admission or queue insert - never silently narrowed into a wider scan.
   const lost = body?.icp && typeof body.icp === 'object' ? icpLoss(body.icp) : []
-  if (lost.length) return NextResponse.json({ error: 'profile_lossy', message: 'Part of this profile would be cut to fit. Shorten or split the listed fields - nothing was dropped silently.', loss: lost }, { status: 400 })
+  if (lost.length) return NextResponse.json({ error: 'profile_lossy', message: 'Part of this profile would be cut or ignored. Fix the listed fields - nothing was dropped silently.', loss: lost }, { status: 400 })
   const icp = body?.icp === undefined || body?.icp === null ? null : normalizeIcp(body.icp)
   if (body?.icp !== undefined && body?.icp !== null && !icp) return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
   // Legacy input, still accepted for older clients.
