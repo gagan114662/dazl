@@ -29,7 +29,7 @@ export default async function Settings() {
       <h1 className="text-2xl font-semibold tracking-tight mb-1">Settings</h1>
       <p className="text-[#555] text-sm mb-4">Your plan, your team, your AI key and optional connectors.</p>
       <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 mb-6 text-xs font-mono uppercase tracking-wider">
-        {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="inline-flex items-center min-h-11 underline underline-offset-4 text-[#111]">{label}</a>)}
+        {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="inline-flex items-center justify-center min-h-11 min-w-11 underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
       <ReauthGate />
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>

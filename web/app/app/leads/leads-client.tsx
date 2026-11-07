@@ -835,7 +835,7 @@ export default function LeadsClient() {
           )
         })()}
         <details className="text-sm text-gray-400 mb-4">
-          <summary className="cursor-pointer">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
+          <summary className="cursor-pointer min-h-11 flex items-center">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
           <ul className="mt-2 ml-4 list-disc text-xs">
             {icp.icp.who.length > 0 && <li>Who: {icp.icp.who.join('; ')}</li>}
             {icp.icp.where.length > 0 && <li>Where: {icp.icp.where.join('; ')}</li>}
@@ -1077,7 +1077,7 @@ export default function LeadsClient() {
                 </div>}
                 <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
                 {c.timing && <p className="text-xs text-[var(--ink-2)] mt-1" data-testid="card-timing">{c.timing}</p>}
-                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)]" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
+                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
@@ -1085,7 +1085,7 @@ export default function LeadsClient() {
               </div>
             })()}
             <details className="mt-2 text-sm">
-              <summary className="text-xs text-[#555] cursor-pointer">Details</summary>
+              <summary className="text-xs text-[#555] cursor-pointer min-h-11 flex items-center">Details</summary>
               <div className="mt-2">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason === 'policy_stop' ? 'stopped by policy' : l.sequence.stop_reason})` : ''}</p>}
             {!l.quarantined_at && <p className="text-xs mb-1"><button className="underline text-[#555]" onClick={() => quarantine(l.id)}>Quarantine (wrong company or contacts)</button></p>}

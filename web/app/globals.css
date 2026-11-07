@@ -134,7 +134,7 @@ body { font-size: 16px; line-height: 1.5; }
 
 /* Tabs (segmented). */
 .seg { display: inline-flex; gap: .25rem; padding: .25rem; border-radius: 12px; background: #f1ebe5; }
-.seg button { font-size: .82rem; font-weight: 600; padding: .4rem .9rem; border-radius: 9px; color: var(--ink-2); }
+.seg button { min-height: 2.75rem; min-width: 2.75rem; font-size: .82rem; font-weight: 600; padding: .4rem .9rem; border-radius: 9px; color: var(--ink-2); }
 .seg button[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(44,0,42,.12); }
 
 /* (i) info tooltips: caveats live here. Opens on hover, keyboard focus or click. */
@@ -142,7 +142,10 @@ body { font-size: 16px; line-height: 1.5; }
 /* #672: the button is a 44x44 hit area; the visible 1.1rem circle is drawn by ::before. It reserves its full 44px
    across (no negative side margins), so its hit box never covers the tab or action beside it (#672 review); only the
    vertical margins are pulled in, so the (i) does not make its line taller. */
-.infotip > button { position: relative; isolation: isolate; width: 2.75rem; height: 2.75rem; margin: -.825rem 0; border-radius: 999px; border: 0; color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: transparent; }
+.infotip > button { position: relative; isolation: isolate; width: 2.75rem; height: 2.75rem; margin: 0; border-radius: 999px; border: 0; color: var(--ink-2); font: 600 .65rem/1 ui-serif, Georgia, serif; font-style: italic; display: inline-flex; align-items: center; justify-content: center; background: transparent; }
+/* #672: at 390px the 44px button reserves its own line space so it never overlaps a control above or below; from 1024px
+   the vertical margins are pulled in so the (i) does not make its line taller. */
+@media (min-width: 1024px) { .infotip > button { margin: -.825rem 0; } }
 .infotip > button::before { content: ""; position: absolute; inset: .825rem; z-index: -1; border-radius: 999px; border: 1px solid var(--line-2); background: #fff; }
 .infotip > button:hover, .infotip > button:focus-visible { color: var(--ink); outline: none; }
 .infotip > button:hover::before, .infotip > button:focus-visible::before { border-color: var(--ink); }

@@ -1,5 +1,6 @@
 "use client"
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
@@ -38,7 +39,7 @@ export default function SignIn() {
   return (
     <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
-        <a href="/" className="text-xl font-medium tracking-tight flex items-center justify-center min-h-11 mb-4">dazl<span className="text-[#111]">.</span></a>
+        <Link href="/" className="text-xl font-medium tracking-tight flex items-center justify-center min-h-11 mb-4">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Sign in</h1>
         <p className="text-[#555] text-sm mb-6 text-center">Enter your email to continue</p>
         <ClaimContextBanner business={claim.business} action="Sign in" />
