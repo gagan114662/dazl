@@ -13,7 +13,8 @@ import { effectiveStatus, enrichState } from '@/lib/scan/enrichment'
 import { emptyExtractionReason } from '@/lib/scan/extraction-note'
 import { progressOf, outcomeInputs } from '@/lib/scan/progress'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
-import { first5Of, isFirst5, verifiedLeads } from '@/lib/scan/first5'
+import { readFirst5 } from '@/lib/scan/first5-db'
+import { sqliteDb } from '@/lib/db/client'
 
 // What a scan never stored, so a reader cannot mistake absence for a zero. Fixed list, not derived from data.
 const NOT_RECORDED = ['search_queries', 'raw_search_hits', 'fetched_pages']
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest) {
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.
-  const first5 = isFirst5(getScanDb(), user.tenantId, job.id) ? first5Of({ status: effectiveStatus(job), leads: verifiedLeads(getScanDb(), user.tenantId, job.id), progress, outcome }) : undefined
+  const first5 = await readFirst5(sqliteDb(getScanDb()), user.tenantId, job.id, { status: effectiveStatus(job), progress, outcome })
   // Cost: what the user confirmed at the start, and only once the scan has ended, what was actually recorded beside it (reported tokens at the listed price; searches attempted). Absent for scans started before estimates existed.
   const saved = jobCost(getScanDb(), user.tenantId, job.id)
   let cost: unknown = null
