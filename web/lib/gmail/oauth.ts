@@ -170,13 +170,15 @@ export async function disconnectGmail(db: Database.Database, tenantId: string, d
   const acc = db.prepare('SELECT refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { refresh_ct: string } | undefined
   if (!acc) return
   if (stagingGmail(E((deps.env ?? process.env) as OAuthEnv)).mode === 'stub') { db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId); return }
+  // Delete the local connection BEFORE awaiting provider revocation (Refs #928): a sync racing the revoke must already see
+  // the account gone at its next authority recheck. Revocation is best effort from the copied ciphertext.
+  db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId)
   try {
     const token = decryptSecret(acc.refresh_ct, ctx(tenantId), deps.master)
     await (deps.fetchImpl ?? fetch)('https://oauth2.googleapis.com/revoke', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token }), signal: AbortSignal.timeout(10_000) })
   } catch {
-    // best effort: the local copy is deleted either way
+    // best effort: the local copy is already deleted
   }
-  db.prepare('DELETE FROM gmail_accounts WHERE tenant_id = ?').run(tenantId)
 }
 
 // In staging (or with the stub token) nothing is sent: the message gets a stub id and its thread, as Gmail would return.
