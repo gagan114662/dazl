@@ -107,3 +107,24 @@ test('registration parser: adjacent shell operators, comments, quoting, substitu
   assert.deepEqual(explicitlyRegistered(real), [], 'the canonical script today names no extra file')
   assert.equal(discovery({ files: ['test/orphan.test.mjs'], script: `${BASE};node x.js test/orphan.test.mjs`, ...FIX }).stranded[0], 'test/orphan.test.mjs')
 })
+
+// #950 review follow-up: a shell word that merely CONTAINS an unsupported character is not the path in front of it.
+test('registration parser: a word with a quoted/escaped/expanded/operator suffix is dropped whole, never read as its clean prefix', () => {
+  const none = (script: string) => assert.deepEqual(explicitlyRegistered(script), [], script)
+  none(`${BASE} test/x.test.mjs"suffix"`)                       // the shell argument is test/x.test.mjssuffix
+  none(`${BASE} test/x.test.mjs'suffix'`)
+  none(`${BASE} test/x.test.mjs\\suffix`)                       // adjacent backslash
+  none(`${BASE} test/x.test.mjs$SUFFIX`)                        // expansion
+  none(`${BASE} test/x.test.mjs$(echo y)`)
+  none(`${BASE} test/x.test.mjs\`echo y\``)
+  none(`${BASE} test/x.test.mjs{,y}`)                           // brace expansion
+  none(`${BASE} test/x.test.mjs;node other.js`)                 // operator glued to the path
+  none(`${BASE} test/x.test.mjs&&node other.js`)
+  none(`${BASE} test/x.test.mjs#comment`)
+  none(`${BASE} test/x.test.mjs>out.txt`)
+  // complete words before the offending word still count; the offending word and everything after it do not
+  assert.deepEqual(explicitlyRegistered(`${BASE} test/one.test.mjs test/two.test.mjs"s" test/three.test.mjs`), ['test/one.test.mjs'])
+  assert.deepEqual(explicitlyRegistered(`${BASE} test/one.test.mjs;node other.js test/two.test.mjs`), [])
+  // the plain positive case is unchanged
+  assert.deepEqual(explicitlyRegistered(`${BASE} test/crm-webhook-unknown-ui.test.mjs`), ['test/crm-webhook-unknown-ui.test.mjs'])
+})

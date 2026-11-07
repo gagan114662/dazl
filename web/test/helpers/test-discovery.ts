@@ -16,8 +16,10 @@ const SHELL_SYNTAX = /[;&|#<>`$(){}\\'"\n\r]/
 //    `--test-reporter tap test/x.test.mjs`) and is not a test entry, and which options take a value is not guessed, so nothing after an option registers;
 //  - a path counts only as an exact, glob-free, clean file path under test/ naming a test file (not the root .test.ts glob).
 export function explicitlyRegistered(script: string): string[] {
+  // The word that CONTAINS the first shell-syntax character is dropped whole, not cut at that character: `test/x.test.mjs"suffix"` is the argument
+  // test/x.test.mjssuffix to the shell, `test/x.test.mjs\\y` and `test/x.test.mjs$V` are not test/x.test.mjs either. Only complete words before it are read.
   const m = SHELL_SYNTAX.exec(script)
-  const command = m ? script.slice(0, m.index) : script
+  const command = m ? script.slice(0, Math.max(script.slice(0, m.index).search(/\S+$/), 0)) : script
   const tokens = command.split(/\s+/).filter(Boolean)
   const at = tokens.indexOf('--test')
   if (at < 0) return []
