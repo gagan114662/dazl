@@ -54,7 +54,20 @@ const PAST = /\b(?:former|formerly|ex|previous|previously|past|retired|retiree|e
 const NEGATED = /\b(?:not|no longer|never|isn't|was not)\b/i
 const ASSISTANT_OF = /\b(?:assistant|secretary|aide|pa|ea)\s+(?:to|of|for)\b|['\u2019]s\s+(?:assistant|secretary|aide)\b/i
 const ASSISTANT = /\b(?:assistant|secretary|aide)\b/i
+// An explicit END DATE on the role: "until 2023", "through Mar 2023", "(2019 - 2023)". Bare "to <year>", "was" and open
+// ranges ("2019 - present", "since 2019") are NOT an end date. A range ending in the current year or later is still
+// running, so it is not past (as-of: nowYear).
+const END_UNTIL = /\b(?:until|till|thru|through)\s+(?:(?:early|late|mid)\s+)?(?:[a-z]{3,9}\.?\s+)?((?:19|20)\d{2})\b/i
+const YEAR_RANGE = /\b(?:19|20)\d{2}\s*(?:-|\u2013|\u2014|to)\s*((?:19|20)\d{2})\b/i
+// "was <title>" inside the row's own title text (a title field, not page prose): a past tense copula is a past role.
+const WAS_TITLE = /\bwas\s+(?:the\s+|a\s+|an\s+)?[A-Za-z]/i
+export function roleEndedByDate(title: string, nowYear: number = new Date().getUTCFullYear()): boolean {
+  const m = END_UNTIL.exec(title) ?? YEAR_RANGE.exec(title)
+  return !!m && Number(m[1]) < nowYear
+}
+
 export function roleContradicted(title: string, icpText = ''): boolean {
+  if (roleEndedByDate(title) || WAS_TITLE.test(title)) return true
   if (PAST.test(title) || NEGATED.test(title) || ASSISTANT_OF.test(title)) return true
   return ASSISTANT.test(title) && !ASSISTANT.test(icpText)
 }
