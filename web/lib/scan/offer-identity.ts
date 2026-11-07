@@ -11,6 +11,10 @@ export const storedOfferName = (name: unknown): string => (typeof name === 'stri
 const fold = (s: string): string => s.normalize('NFKC').toLowerCase()
 // Identity of a name as persistence will return it: canonicalize like storage FIRST, then cap, then fold.
 export const storedKey = (name: string): string => fold(storedOfferName(name))
+// The one spelling a HOLD uses for an offer name (hold names are compared as sets of strings, so writer and reader must canonicalize alike). holdName() re-canonicalizes any stored spelling
+// (case, width, whitespace, controls); holdNameOf() is the hold name of a current offer's name.
+export const holdName = (n: unknown): string => (typeof n === 'string' ? fold(n.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()) : '')
+export const holdNameOf = (offerName: string): string => holdName(storedKey(offerName))
 // Identity of a name as read from a page (up to 120 characters): canonicalize, fold; not capped at the stored width.
 export const offerKey = (name: string): string => fold(name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120))
 function digest(s: string): string {   // cyrb53, 12 hex digits; pure JS so the core stays runtime-agnostic

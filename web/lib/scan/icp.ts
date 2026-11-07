@@ -1,4 +1,4 @@
-import { storedOfferName } from './offer-identity.ts'
+import { holdName, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
 import { quoteSupports } from './claim-quote.ts'
@@ -80,7 +80,7 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
     ? { q: clean(ansRaw.q, RCAPS.question), o: clean(ansRaw.o, RCAPS.offerId), ...(ansT ? { t: ansT } : {}) } : null
   const u: NonNullable<IcpResearch['u']> = []
   for (const x of (Array.isArray(r.u) ? r.u : []).slice(0, 8) as Record<string, unknown>[]) {
-    const names = (Array.isArray(x?.n) ? x.n : []).map(storedOfferName).filter(Boolean).slice(0, 6), k = String(x?.k ?? ''), st = String(x?.s ?? ''), tx = clean(x?.t, RCAPS.text)
+    const names = [...new Set((Array.isArray(x?.n) ? x.n : []).map(holdName).filter(Boolean))].slice(0, 6), k = String(x?.k ?? ''), st = String(x?.s ?? ''), tx = clean(x?.t, RCAPS.text)
     if (names.length && tx && RKINDS.has(k) && k !== 'offer' && (st === 'reviewed' || st === 'rejected')) u.push({ n: names, k: k as ResearchedHyp['k'], t: tx, s: st })
   }
   return { v: 1, site, offers, hyps, q: question, ans, ...(u.length ? { u } : {}) }

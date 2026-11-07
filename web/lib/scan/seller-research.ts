@@ -27,7 +27,7 @@ const KINDS: [PageKind, RegExp][] = [
 const registrable = (h: string) => h.toLowerCase().replace(/^www\./, '')
 
 // Offer identity lives in ./offer-identity.ts (one contract for construction, storage, the reviewed draft, retrieval titles and decision reuse).
-import { offerId, offerIds, offerKey, selectOffer, storedKey } from './offer-identity.ts'
+import { holdName, holdNameOf, offerId, offerIds, offerKey, selectOffer, storedKey } from './offer-identity.ts'
 export { offerId, offerIds, offerKey }
 
 // Hypothesis ids are content-keyed (offer + kind + the model's original text), so a recrawl that finds the same
@@ -116,13 +116,18 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
   // from the draft on the next play records an explicit rejection, like any reviewed statement.
   if (answered?.text && !corrected.some(h => h.offer === answered.offer && h.kind === 'persona' && exact(h.text, answered.text!)))
     corrected = [...corrected, { id: hypId(answered.offer, 'persona', answered.text), offer: answered.offer, kind: 'persona', text: answered.text, status: 'reviewed', url: null, quote: null, fetched_at: null }]
-  // Entries kept only while a current offer carries one of their names (a removed offer's decisions are not carried); a typed answer for such an offer releases the answer entries.
-  const answeredName = answered ? storedKey(offersKept.find(x => x.id === answered.offer)?.name ?? '') : ''
-  const heldEntries = carried.filter(u => offersKept.some(x => u.names.includes(storedKey(x.name))) && !(answered?.text && u.kind === 'persona' && u.status === 'reviewed' && u.names.includes(answeredName) && exact(u.text, answered.text)))
+  // Entries are kept only for candidates that a current offer still carries (a removed offer's decisions are not carried). A typed answer for an offer releases THAT candidate's share of a matching
+  // answer entry; the other candidates stay held until their own explicit decision.
+  const answeredName = answered ? holdNameOf(offersKept.find(x => x.id === answered.offer)?.name ?? '') : ''
+  const current = new Set(offersKept.map(x => holdNameOf(x.name)))
+  const heldEntries = carried.map(u => {
+    const names = u.names.map(holdName).filter(n => current.has(n) && !(answered?.text && u.kind === 'persona' && u.status === 'reviewed' && n === answeredName && exact(u.text, answered.text)))
+    return { ...u, names }
+  }).filter(u => u.names.length)
   // An unattributable REJECTION is honoured on every candidate (fail closed): the same statement on an offer it might have belonged to stays rejected. An unattributable confirmation or
   // edit is applied to none; it stays recorded in `unresolved` until the person reviews the offer.
   const rejects = heldEntries.filter(u => u.status === 'rejected')
-  if (rejects.length) corrected = corrected.map(h => h.kind !== 'offer' && h.status !== 'unknown' && rejects.some(u => u.kind === h.kind && norm(u.text) === norm(h.text) && offersKept.some(x => x.id === h.offer && u.names.includes(storedKey(x.name)))) ? { ...h, status: 'rejected' as const } : h)
+  if (rejects.length) corrected = corrected.map(h => h.kind !== 'offer' && h.status !== 'unknown' && rejects.some(u => u.kind === h.kind && norm(u.text) === norm(h.text) && offersKept.some(x => x.id === h.offer && u.names.includes(holdNameOf(x.name)))) ? { ...h, status: 'rejected' as const } : h)
   // Offers an old decision could not be attributed to are HELD: a page-supported (sourced) statement alone does not count as a buyer for them, and they are asked about again.
   const heldNow = new Set(heldIds({ offers: offersKept, unresolved: heldEntries }))
   const sourcedBuyer = (id: string) => corrected.some(h => h.offer === id && h.kind === 'persona' && (h.status === 'reviewed' || (h.status === 'sourced' && !heldNow.has(id))))
@@ -147,8 +152,8 @@ function carryUnresolved(prior: SellerResearch | null | undefined, offers: { id:
       const group = prior.offers.filter(p => p.id === id)
       // bound only when this id is one unique saved offer that some current offer was matched to
       if (group.length === 1 && bound.has(id)) continue
-      const names = [...new Set(group.map(p => storedKey(p.name)))]
-      if (!offers.some(o => names.includes(storedKey(o.name)))) continue   // no current offer carries any of these names: the offer was removed, its decisions are not carried
+      const names = [...new Set(group.map(p => holdNameOf(p.name)))]
+      if (!offers.some(o => names.includes(holdNameOf(o.name)))) continue   // no current offer carries any of these names: the offer was removed, its decisions are not carried
       for (const d of decisionsOf(prior, id)) out.push({ ...d, names })
     }
   }
@@ -158,8 +163,8 @@ function carryUnresolved(prior: SellerResearch | null | undefined, offers: { id:
 // Current offers that are held: their stored name is in an unresolved decision. The hold ends only by an explicit new decision on the same statement (applyCorrections) or, for a typed answer,
 // by the person answering again; a rerun, an unanswered question and a rejection the hold itself applied never end it.
 export function heldIds(r: Pick<SellerResearch, 'offers' | 'unresolved'>): string[] {
-  const names = new Set((r.unresolved ?? []).flatMap(u => u.names))
-  return r.offers.filter(o => names.has(storedKey(o.name))).map(o => o.id)
+  const names = new Set((r.unresolved ?? []).flatMap(u => u.names.map(holdName)))
+  return r.offers.filter(o => names.has(holdNameOf(o.name))).map(o => o.id)
 }
 
 // Which saved offer is THIS offer? Only a saved offer whose stored name equals this one's (the stored form, see offer-identity.ts) and that nothing else in either list
@@ -186,9 +191,9 @@ export function applyCorrections(r: SellerResearch, corrections: Correction[]): 
     if (!c) return h
     return c.action === 'reject' ? { ...h, status: 'rejected' as const } : c.action === 'edit' && c.value?.trim() ? { ...h, text: c.value.trim().slice(0, 160), status: 'reviewed' as const } : { ...h, status: 'reviewed' as const }
   })
-  // A new explicit decision on the same statement ends the hold entry that statement was waiting on.
-  const decided = corrections.map(c => { const h = r.hypotheses.find(x => x.id === c.hypothesis && x.offer === c.offer); const o = r.offers.find(x => x.id === c.offer); return h && o ? { kind: h.kind, text: norm(h.text), name: storedKey(o.name) } : null }).filter((x): x is { kind: HypKind; text: string; name: string } => !!x)
-  const left = (r.unresolved ?? []).filter(u => !decided.some(d => d.kind === u.kind && d.text === norm(u.text) && u.names.includes(d.name)))
+  // A new explicit decision on the same statement ends the hold for THAT candidate only: the other candidates of the entry stay held until their own explicit decision.
+  const decided = corrections.map(c => { const h = r.hypotheses.find(x => x.id === c.hypothesis && x.offer === c.offer); const o = r.offers.find(x => x.id === c.offer); return h && o ? { kind: h.kind, text: norm(h.text), name: holdNameOf(o.name) } : null }).filter((x): x is { kind: HypKind; text: string; name: string } => !!x)
+  const left = (r.unresolved ?? []).map(u => ({ ...u, names: u.names.map(holdName).filter(n => !decided.some(d => d.kind === u.kind && d.text === norm(u.text) && d.name === n)) })).filter(u => u.names.length)
   const { unresolved: _drop, ...rest } = r; void _drop
   return { ...rest, hypotheses: hyps, question: null, ...(left.length ? { unresolved: left } : {}) }
 }
@@ -214,7 +219,7 @@ export function toStored(r: SellerResearch): IcpResearch {
 }
 export function fromStored(s: IcpResearch): SellerResearch {
   return {
-    ...(s.u?.length ? { unresolved: s.u.map(x => ({ names: x.n, kind: x.k, text: x.t, status: x.s })) } : {}),
+    ...(s.u?.length ? { unresolved: s.u.map(x => ({ names: x.n.map(holdName), kind: x.k, text: x.t, status: x.s })) } : {}),
     site: s.site, question: s.q, answered: s.ans ? { question: s.ans.q, offer: s.ans.o, ...(s.ans.t ? { text: s.ans.t } : {}) } : null,
     pages: [], offers: s.offers.map(o => ({ id: o.i, name: o.n })),
     hypotheses: s.hyps.map(h => ({ id: h.i, offer: h.o, kind: h.k, text: h.t, status: h.s, url: h.u, quote: h.q, fetched_at: h.at })),

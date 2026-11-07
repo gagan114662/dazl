@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 import { applyCorrections, applyReviewedDraft, buildResearch, fromStored, heldIds, offerId, offerIds, targetingFor, toStored, OFFER_QUESTION, WHO_QUESTION, type FetchedPage, type SellerResearch } from '../lib/scan/seller-research.ts'
 import { normalizeResearch, type Icp } from '../lib/scan/icp.ts'
 import { norm } from '../lib/scan/evidence.ts'
+import { holdNameOf } from '../lib/scan/offer-identity.ts'
 import { assembleDecisionPack, decisionRows, reuseSellerDecisions, type SellerDecision } from '../lib/scan/intelligence.ts'
 import { reviewedBuyerTitles } from '../lib/enrich/index.ts'
 import { captureSellerDecisions, createJob, migrateScan } from '../lib/scan/store.ts'
@@ -258,16 +259,51 @@ test('#874 held identity is a PERSISTED, fail-closed state: a previously rejecte
   assert.deepEqual(industries(buildSourced([STARTER, PRO]), STARTER), [SOURCED.text])
 })
 
-test('#874 the hold is released only by a new explicit decision on the same statement (or a typed answer), never by a rerun', () => {
-  const legacy = legacyState([{ id: BASE40, name: STARTER }, { id: `${BASE40}-2`, name: PRO }], { answered: BASE40, edited: `${BASE40}-2`, rejected: BASE40 })
-  legacy.hypotheses = legacy.hypotheses.map(h => h.kind === 'industry' ? { ...h, text: SOURCED.text } : h)
-  let r = buildSourced([STARTER, PRO], roundTrip(legacy)); assert.equal(heldIds(r).length, 2)
-  r = buildSourced([STARTER, PRO], roundTrip(r)); assert.equal(heldIds(r).length, 2, 'a plain rerun does not release it')
-  // the person explicitly re-decides the statements the unresolved decisions were about, on STARTER only
-  const mine = r.hypotheses.filter(h => h.offer === idOf(r, STARTER) && h.kind === 'industry')
-  const done = applyCorrections(r, mine.map(h => ({ offer: h.offer, hypothesis: h.id, action: 'reject' as const })))
-  assert.ok((done.unresolved ?? []).length < (r.unresolved ?? []).length, 'the entry for the decided statement is released')
-  assert.ok(!(done.unresolved ?? []).some(u => u.kind === 'industry'), 'only that statement\'s entry')
+const legacyPair = (): SellerResearch => { const l = legacyState([{ id: BASE40, name: STARTER }, { id: `${BASE40}-2`, name: PRO }], { answered: BASE40, edited: `${BASE40}-2`, rejected: BASE40 }); l.hypotheses = l.hypotheses.map(h => h.kind === 'industry' ? { ...h, text: SOURCED.text } : h); return l }
+// only the rejection is unresolved: every other saved decision is removed, so the candidates' ONLY hold is that one entry
+const legacyRejectionOnly = (): SellerResearch => { const l = legacyPair(); return { ...l, answered: null, hypotheses: l.hypotheses.filter(h => h.status !== 'reviewed') } }
+const holds = (r: SellerResearch, name: string) => heldIds(r).includes(idOf(r, name))
+const decide = (r: SellerResearch, name: string, kind: string, action: 'confirm' | 'reject' = 'reject') => applyCorrections(r, r.hypotheses.filter(h => h.offer === idOf(r, name) && h.kind === kind).map(h => ({ offer: h.offer, hypothesis: h.id, action })))
+test('#874 a hold is released per CANDIDATE: deciding for A leaves B held through storage and reruns, until B\'s own explicit decision', () => {
+  let r = buildSourced([STARTER, PRO], roundTrip(legacyRejectionOnly())); assert.ok(holds(r, STARTER) && holds(r, PRO))
+  r = buildSourced([STARTER, PRO], roundTrip(r)); assert.ok(holds(r, STARTER) && holds(r, PRO), 'a plain rerun releases neither')
+  const a = decide(r, STARTER, 'industry')   // the person explicitly re-decides STARTER's statement the unresolved rejection was about
+  assert.ok(!holds(a, STARTER), 'STARTER\'s share of that entry is released')
+  assert.ok(holds(a, PRO), 'PRO is still held right after STARTER was decided')
+  // persisted rerun: PRO still held, and a NEWLY sourced statement does not become PRO targeting
+  const m = { offers: [STARTER, PRO].map((n, i) => ({ id: `o${i + 1}`, name: n })), items: [STARTER, PRO].flatMap((_, i) => [{ offer: `o${i + 1}`, kind: SOURCED.kind, text: SOURCED.text, url: QUOTE_PAGES[0].url, quote: SOURCED.quote, inferred: false }, { offer: `o${i + 1}`, kind: 'industry', text: 'distributors', url: QUOTE_PAGES[0].url, quote: 'retailers and distributors', inferred: false }]) }
+  const again = buildResearch(m, QUOTE_PAGES, SITE, roundTrip(a)); if ('error' in again) throw new Error('setup')
+  assert.ok(holds(again, PRO), 'PRO is still held after a persisted rerun')
+  assert.ok(!industries(again, PRO).includes('distributors'), 'a newly sourced statement is not PRO targeting while PRO is held')
+  // control: PRO's own explicit decision releases PRO's share
+  const both = decide(again, PRO, 'industry')
+  assert.ok(!holds(both, PRO) && !holds(both, STARTER) && !(both.unresolved ?? []).length, 'after both candidates decided, the entry is gone')
+})
+test('#874 typed-answer release is candidate-scoped too: answering for A does not release B\'s share of a multi-candidate answer entry', () => {
+  const r0 = buildSourced([STARTER, PRO], roundTrip(legacyPair())); assert.ok((r0.unresolved ?? []).some(u => u.kind === 'persona' && u.status === 'reviewed' && u.text === ANSWER && u.names.length === 2), 'fixture: one answer entry, two candidates')
+  const answeredA = { question: WHO_QUESTION, offer: idOf(r0, STARTER), text: ANSWER }
+  const r1 = buildSourced([STARTER, PRO], { ...roundTrip(r0), answered: answeredA })
+  const entry = (r1.unresolved ?? []).find(u => u.kind === 'persona' && u.text === ANSWER)
+  assert.deepEqual(entry?.names, [holdNameOf(PRO)], 'only PRO remains a candidate for the answer entry')
+  assert.ok(holds(r1, PRO), 'PRO stays held'); assert.ok(!(r1.unresolved ?? []).some(u => u.names.includes(holdNameOf(STARTER)) && u.text === ANSWER), 'STARTER\'s share of the answer entry is released')
+})
+test('#874 hold names are one canonical spelling on write AND read: saved ambiguous rows -> reuse -> storage -> fromStored -> heldIds/targetingFor, in mixed case, width and controls', () => {
+  const names = ['Café Pro', 'Caf Pro']
+  const base = build(names), rows = [row('caf-pro', 'Owner B', 'reject', { at: 200 }), row('caf-pro', 'Owner A', 'confirm', { at: 100 })]
+  const out = reuseSellerDecisions({ summary: 's', who: ['Owner A', 'Owner B'], industries: [], sizes: [], where: [], signals: [], exclude: [], research: toStored(base) }, assembleDecisionPack(rows, T, SITE), names[0])
+  const persisted = fromStored(normalizeResearch(JSON.parse(JSON.stringify(out.research)))!)
+  assert.deepEqual(heldIds(persisted).sort(), persisted.offers.map(o => o.id).sort(), 'both candidates are held after reuse + storage + fromStored')
+  for (const n of names) assert.deepEqual(targetingFor(persisted, idOf(persisted, n)).who, [], `${n}: held, nothing merely sourced targets`)
+  // the same hold, written in other spellings, still resolves to the same offers
+  for (const spelling of [['CAFÉ PRO', 'CAF PRO'], ['cafe\u0301  pro', 'caf\u0000 pro'], ['Ｃａｆé Ｐｒｏ', 'Ｃａｆ Ｐｒｏ']]) {
+    const w = { ...base, unresolved: [{ names: spelling, kind: 'persona' as const, text: 'x', status: 'reviewed' as const }] }
+    const back = fromStored(normalizeResearch(JSON.parse(JSON.stringify(toStored(w))))!)
+    assert.equal(heldIds(back).length, names.length === 2 && spelling[0].toLowerCase().includes('cafe') ? 2 : heldIds(back).length, JSON.stringify(spelling))
+    assert.ok(heldIds(back).includes(idOf(back, names[1])), `${JSON.stringify(spelling)}: the plain "Caf Pro" is held`)
+  }
+  // a newly sourced statement does not become targeting merely because the hold was spelled differently
+  const sourced = buildSourced(names, { ...persisted, unresolved: persisted.unresolved!.map(u => ({ ...u, names: u.names.map(n => n.toUpperCase()) })) })
+  for (const n of names) assert.deepEqual(industries(sourced, n), [], `${n}: still not targeting`)
 })
 
 // ---- already-saved seller_decisions rows, through real storage and both real consumers ----

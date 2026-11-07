@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import type { Db, Param } from '../db/client.ts'
 import type { Icp, IcpResearch, ResearchedHyp } from './icp.ts'
 import { norm } from './evidence.ts'
-import { rebindOfferId, selectOffer, storedOfferName } from './offer-identity.ts'
+import { holdNameOf, rebindOfferId, selectOffer } from './offer-identity.ts'
 
 export const INTELLIGENCE_ONTOLOGY = {
   seller: 'The tenant selling an offer; not the prospect.',
@@ -124,7 +124,7 @@ export function reuseSellerDecisions(icp: Icp, pack: DecisionPack, offerName: st
   // The held rows stay visible to the research review block and keep the candidate offers held downstream (targetingFor).
   const u = [...(r.u ?? [])]
   for (const x of held) {
-    const n = x.ids.map(id => storedOfferName(r.offers.find(o => o.i === id)?.n)).filter(Boolean)
+    const n = x.ids.map(id => holdNameOf(r.offers.find(o => o.i === id)?.n ?? '')).filter(Boolean)
     if (n.length && !u.some(e => e.k === x.d.kind && norm(e.t) === norm(x.d.text) && e.s === (x.d.action === 'reject' ? 'rejected' : 'reviewed') && e.n.join('|') === n.join('|'))) u.push({ n, k: x.d.kind as ResearchedHyp['k'], t: x.d.text.slice(0, 100), s: x.d.action === 'reject' ? 'rejected' : 'reviewed' })
   }
   // No fuzzy selection. Multiple products never donate their buyer list to one flat draft. One play-name contract with the reviewed draft and retrieval: the stored name.
