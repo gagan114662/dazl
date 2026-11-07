@@ -40,10 +40,10 @@ export default function SeoClient() {
       const r = await fetch('/api/seo/audit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ domain }) })
       const j = await r.json().catch(() => null)
       if (!r.ok) { setMsg(j?.error || `Audit failed (error ${r.status}).`); return }
-      if (!j || !Array.isArray(j.checks)) { setMsg('Audit failed (unexpected response).'); return }
+      if (!j || !Array.isArray(j.checks)) { setMsg('dazl answered, but the reply could not be read, so it is not known whether the audit was saved. Past audits were reloaded below; check there before running it again.'); void loadAudits(); return }
       setAudits(a => [{ id: `new-${Date.now()}`, domain: j.domain, results: j, created_at: j.fetched_at }, ...a].slice(0, 10))
     } catch {
-      setMsg('Could not reach dazl, so the audit did not finish. Check your connection and run it again.')
+      setMsg('Lost the connection before dazl answered, so it is not known whether the audit finished. Past audits were reloaded below; check there before running it again.'); void loadAudits()
     } finally { setBusy(false) }
   }
 

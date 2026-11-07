@@ -1321,7 +1321,7 @@ export default function LeadsClient() {
           <p className="text-gray-500 text-xs mb-2">Re-runs your search on a schedule. New companies show up here automatically.</p>
           <div className="space-y-1">
             {monitors.map(m => (
-              <div key={m.id} className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">
+              <div key={m.id} data-testid="monitor-row" className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">
                 <span className="flex-1 truncate">{m.query}</span>
                 {m.last_new_count != null && <span className="text-green-400">+{runNewLabel('monitor', m.last_new_count)}</span>}
                 <span>{m.run_count ?? 0} runs</span>

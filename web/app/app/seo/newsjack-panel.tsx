@@ -26,8 +26,10 @@ export default function NewsjackPanel() {
     setBusy(true); setMsg('')
     try {
       const r = await fetch('/api/seo/newsjack', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) })
-      const j = await r.json().catch(() => ({}))
-      if (!r.ok) { setMsg(j.error || `Could not draft (error ${r.status}).`); return }
+      const j = await r.json().catch(() => null)
+      if (!r.ok) { setMsg(j?.error || `Could not draft (error ${r.status}).`); return }
+      // A 2xx only counts once the body is the draft: otherwise the draft may exist, so keep the URL and point at the list.
+      if (!j || typeof j.id !== 'string' || typeof j.draft !== 'string') { setMsg('dazl answered, but the reply could not be read, so the draft may or may not exist. Your link is kept. Reload the list below before trying again.'); void load(); return }
       setUrl('')
     } catch {
       setMsg('Could not reach dazl, so the draft may or may not exist. Check the list below before trying again.')

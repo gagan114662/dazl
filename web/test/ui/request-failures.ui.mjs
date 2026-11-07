@@ -59,7 +59,7 @@ const SIZES = { phone: [390, 844], desktop: [1280, 900] }
 try {
   for (const [size, vp] of Object.entries(SIZES)) {
     // Send readiness: each failure mode shows "readiness unknown" with Try again; retry recovers.
-    for (const [mode, fail] of [['reject', () => 'abort'], ['401', () => ({ status: 401, body: { error: 'unauthorized' } })], ['500', () => ({ status: 500 })], ['malformed', () => ({ raw: '<html>' })]]) {
+    for (const [mode, fail] of [['reject', () => 'abort'], ['401', () => ({ status: 401, body: { error: 'unauthorized' } })], ['500', () => ({ status: 500 })], ['malformed', () => ({ raw: '<html>' })], ['array-shapes', () => ({ body: { gmail: [], sender: [] } })], ['bad-field-types', () => ({ body: { gmail: { email: { x: 1 }, status: 'active', read_granted: true }, sender: { sender_name: {}, postal_address: [] } } })], ['malformed-json-2xx', () => ({ raw: '{"gmail":' })]]) {
       let ok = false
       const { ctx, page } = await open('/app/outreach', vp, u => u.pathname === '/api/outreach/settings' ? (ok ? { body: SETTINGS } : fail()) : undefined)
       await page.getByTestId('send-readiness-error').waitFor({ timeout: 15000 })
@@ -125,6 +125,38 @@ try {
       await page.getByRole('button', { name: 'Save domain' }).waitFor()
       await ctx.close()
     }
+    // SEO: a 2xx whose body cannot be read must not clear the typed link / look like a confirmed result, and a lost response
+    // after the server may have saved must say the outcome is unknown and reload saved results, not advise a blind rerun.
+    for (const [label, reply] of [['unreadable', { raw: 'not json' }], ['wrong-shape', { raw: '{"ok":true}' }]]) {
+      const { ctx, page, hits } = await open('/app/seo', vp, (u, req) => {
+        if (u.pathname === '/api/seo/newsjack') return req.method() === 'POST' ? reply : { body: { newsjacks: [] } }
+        if (u.pathname === '/api/seo/audit') return { body: { audits: [] } }
+      })
+      const link = page.getByPlaceholder('https://news-site.example/big-story')
+      await link.fill('https://news.example/story')
+      await page.getByRole('button', { name: 'Draft take' }).click()
+      await page.getByTestId('newsjack-error').filter({ hasText: 'may or may not exist' }).waitFor()
+      assert.equal(await link.inputValue(), 'https://news.example/story', `${label}: link kept`)
+      assert.equal(count(hits, 'POST /api/seo/newsjack'), 1, `${label}: sent once`)
+      assert.ok(count(hits, 'GET /api/seo/newsjack') >= 2, `${label}: list reloaded for the owner to check`)
+      await shot(page, `newsjack-unreadable-${label}-${size}`)
+      await ctx.close()
+    }
+    {
+      const { ctx, page, hits } = await open('/app/seo', vp, (u, req) => {
+        if (u.pathname === '/api/seo/audit') return req.method() === 'POST' ? 'abort' : { body: { audits: [] } }
+        if (u.pathname === '/api/seo/newsjack') return { body: { newsjacks: [] } }
+      })
+      await page.getByPlaceholder('yourdomain.com').fill('example.com')
+      await page.getByRole('button', { name: 'Run audit' }).click()
+      const err = page.getByTestId('audit-error'); await err.waitFor()
+      assert.match(await err.textContent(), /not known whether the audit finished/); assert.doesNotMatch(await err.textContent(), /run it again\./)
+      assert.equal(count(hits, 'POST /api/seo/audit'), 1, 'never auto-reissued')
+      assert.ok(count(hits, 'GET /api/seo/audit') >= 2, 'saved audits reloaded after the lost response')
+      assert.equal(await page.getByRole('button', { name: 'Run audit' }).isEnabled(), true)
+      await shot(page, `audit-outcome-unknown-${size}`)
+      await ctx.close()
+    }
     // Inbox: a failed thread read and a successful-empty read each get a terminal state; failed load-more is reported.
     {
       let th1 = 0
@@ -155,7 +187,7 @@ try {
         if (u.pathname === '/api/monitors') return { body: { monitors: [{ id: 'm1', query: 'saas founders', enabled: true, run_count: 2, last_new_count: null }] } }
         if (u.pathname === '/api/monitors/m1' && req.method() === 'DELETE') return { status: 500, body: { error: 'server error' } }
       })
-      await page.getByText('saas founders').waitFor({ timeout: 15000 })
+      await page.getByTestId('monitor-row').filter({ hasText: 'saas founders' }).waitFor({ timeout: 15000 })
       await page.getByRole('button', { name: 'Delete' }).click()
       await page.getByTestId('monitor-error').filter({ hasText: 'Could not delete the monitor' }).waitFor()
       assert.equal(count(hits, 'DELETE /api/monitors/m1'), 1)

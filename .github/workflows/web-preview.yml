@@ -39,7 +39,11 @@ jobs:
       # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
       # #902 request-lifecycle failures (stubbed: no Gmail, posting, sends or provider calls; phone + desktop). It must run, not skip.
       - name: Rendered request-failure states (send readiness, social, SEO, inbox, lead monitors)
-        run: SHOTS=preview/request-failures node test/ui/request-failures.ui.mjs | tee /tmp/rf.out && ! grep -q '^NOT RUN' /tmp/rf.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/request-failures node test/ui/request-failures.ui.mjs | tee /tmp/rf.out
+          ! grep -q '^NOT RUN' /tmp/rf.out
+          grep -q '^request-failures UI check passed' /tmp/rf.out
       - name: Rendered research-review checks (first-run + leads draft editor)
         run: SHOTS=preview/research-review node test/ui/research-review.ui.mjs | tee /tmp/rr1.out && ! grep -q '^NOT RUN' /tmp/rr1.out && SHOTS=preview/research-review node test/ui/leads-research-review.ui.mjs | tee /tmp/rr2.out && ! grep -q '^NOT RUN' /tmp/rr2.out
       # The #436 unsupported-adapter gates in Settings > Connectors (stubbed: no worker, session or network; screenshots into preview/settings-advanced). It must run, not skip.

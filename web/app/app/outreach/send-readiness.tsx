@@ -11,7 +11,12 @@ type Load = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: '
 function isSettings(v: unknown): v is S {
   if (!v || typeof v !== 'object') return false
   const o = v as Record<string, unknown>
-  return 'gmail' in o && 'sender' in o && (o.gmail === null || typeof o.gmail === 'object') && (o.sender === null || typeof o.sender === 'object')
+  const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x)
+  if (!('gmail' in o && 'sender' in o)) return false
+  const g = o.gmail, s = o.sender
+  if (g !== null && !(obj(g) && typeof g.email === 'string' && typeof g.status === 'string' && typeof g.read_granted === 'boolean')) return false
+  if (s !== null && !(obj(s) && typeof s.sender_name === 'string' && typeof s.postal_address === 'string' && (s.booking_url == null || typeof s.booking_url === 'string'))) return false
+  return true
 }
 
 // Plain status of what is needed before anything can be sent. Signing in with Google proves identity only;
