@@ -13,19 +13,40 @@ let chromium
 try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.split('\n')[0]) }
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 const Database = require('better-sqlite3'); const { createHash, randomBytes } = require('crypto')
-const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-replies-ui-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
+// Lifetime: everything created below (temp dir, server process, browser) is released by ONE idempotent cleanup that runs on success, on any throw (including a
+// startup failure before the first assertion), on SIGINT/SIGTERM and on a hard deadline. The hard deadline bounds the whole run; readiness is bounded and fails loudly.
+const HARD_DEADLINE_MS = 300_000; const READY_MS = 60_000
+let tmp = null, srv = null, b = null, cleaned = false
+async function cleanup() {
+  if (cleaned) return; cleaned = true
+  try { if (b) await Promise.race([b.close(), new Promise(r => setTimeout(r, 5000))]) } catch {}
+  try { if (srv && srv.exitCode === null) { srv.kill('SIGTERM'); await new Promise(r => { const t = setTimeout(() => { try { srv.kill('SIGKILL') } catch {} r() }, 3000); srv.once('exit', () => { clearTimeout(t); r() }) }) } } catch {}
+  try { if (tmp) rmSync(tmp, { recursive: true, force: true }) } catch {}
+}
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { void cleanup().finally(() => process.exit(130)) })
+setTimeout(() => { console.error(`replies-settings UI check: hard deadline ${HARD_DEADLINE_MS} ms reached`); void cleanup().finally(() => process.exit(1)) }, HARD_DEADLINE_MS).unref()
+try {
+tmp = mkdtempSync(path.join(tmpdir(), 'dazl-replies-ui-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
 db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
 const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
-const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
-for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
+srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
+{ // bounded readiness: the server must answer /sign-in within READY_MS and must not have exited; otherwise fail (cleanup runs in finally)
+  const t0 = Date.now(); let ready = false
+  while (Date.now() - t0 < READY_MS) {
+    if (srv.exitCode !== null) throw new Error(`next start exited early (code ${srv.exitCode}) before it was ready`)
+    try { const r = await fetch(base + '/sign-in', { signal: AbortSignal.timeout(2000) }); if (r.status < 500) { ready = true; break } } catch {}
+    await new Promise(r => setTimeout(r, 200))
+  }
+  if (!ready) throw new Error(`server not ready within ${READY_MS} ms`)
+}
 // #931 Settings "Replies and follow-ups" panel, rendered on the production build at phone (390x844) and desktop (1280x900).
 // The panel is the REAL component on the real /app/settings page; only /api/* is stubbed, by one stateful fake server that behaves like the
 // route (revoke/accept/consent/sync change what the next GET returns). No Gmail, no mailbox, no sends, no provider call. Local test with
 // simulated API responses, NOT live-site acceptance. The route's own behavior is covered by test/replies-lifecycle.test.ts (actual route).
 // NOT part of `npm test`. Run:  cd web && npm run build && SHOTS=<dir> node test/ui/replies-settings.ui.mjs
-const b = await chromium.launch()
+b = await chromium.launch()
 const TEXT = ['Read replies to the threads dazl started, to stop emailing people who unsubscribe.', 'Revoke any time; Gmail stays connected.']
 const BOUNCE = ['Scan for delivery-failure notices that match an email dazl sent.']
 const base0 = { available: true, gmail_connected: true, gmail_status: 'active', consent: { version: 'v1', text: TEXT, accepted: true }, bounce_scan: { version: 'b1', text: BOUNCE, accepted: false }, read_granted: true, followups_enabled: false, autopilot_on: false, inbound: [] }
@@ -66,7 +87,7 @@ const routeLike = (s, body) => {
   }
 }
 const has = async (page, text) => (await page.locator('#replies').innerText()).includes(text)
-try {
+{
   for (const [size, vp] of Object.entries({ phone: [390, 844], desktop: [1280, 900] })) {
     // The five reading states, each from its own server state, with the right control and no false "on".
     for (const [name, initial, want, control, notWant] of [
@@ -127,4 +148,5 @@ try {
     }
   }
   console.log('replies-settings UI check passed (#931): all five reading states, revoke -> reload -> re-accept, sync refusal and malformed 2xx never say Checked replies, no overflow, at phone and desktop (simulated API, local)')
-} finally { await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true }) }
+}
+} finally { await cleanup() }
