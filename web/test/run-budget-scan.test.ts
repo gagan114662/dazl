@@ -85,7 +85,7 @@ async function run(budget: string | null, opts: { reserved?: number; model?: str
 
 test('the research fallback is refused on every guarded query job, flag or not (#379)', async () => {
   const off = await run('{"paid_fallback":false}')
-  assert.equal(off.c.research, 0); assert.equal(off.row.error, 'budget_stopped'); assert.equal(off.row.status, 'failed')
+  assert.equal(off.c.research, 0); assert.equal(off.row.error, 'unbounded_fallback_hold', 'the held fallback is named, not mislabelled a budget stop'); assert.equal(off.row.status, 'failed')
   // An unguarded run against INJECTED providers keeps the fixture's own behavior (research runs once, finds nothing):
   // injection is test-only. The production wiring refuses research at the real provider boundary with zero requests on
   // the wire - pinned by cost-bounds.test.ts's #379 test and csv-import.test.ts's nothing-found test.
@@ -101,12 +101,12 @@ test('judge=false on a QUERY job (previously ignored) switches the judge off; th
   assert.ok(control.c.judge >= 1, 'fixture precondition: without the flag the judge runs')
 })
 
-test('max_usd refuses research (disclosed as refused) and a budget stop is distinct from zero leads', async () => {
+test('max_usd does not enable the unpriceable research fallback: the refusal is named (not a budget stop) and is distinct from zero leads', async () => {
   const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5' })
-  assert.equal(x.c.research, 0); assert.equal(x.row.error, 'budget_stopped')
+  assert.equal(x.c.research, 0); assert.equal(x.row.error, 'unbounded_fallback_hold')
   // Unguarded + injected providers: searches find nothing, the fixture's research also finds nothing -> the honest
   // zero-leads outcome 'no_candidates' (same as ats-source/campaigns/first5/csv-import). Against production wiring the
-  // research call never happens and the job ends budget_stopped - asserted in cost-bounds/csv-import (#379).
+  // research call never happens and the job ends unbounded_fallback_hold - asserted in cost-bounds/csv-import (#379).
   const nothing = await run(null, { empty: true })
   assert.equal(nothing.row.error, 'no_candidates'); assert.equal(nothing.c.research, 1)
 })
@@ -128,10 +128,10 @@ test('the job reservation is saved after every reserved call and a re-run contin
 
 // Instinct #216 review (0a0876d): saving the reservation failed open - the paid call still ran. Now the reservation must be
 // SAVED, by the current attempt of a running job, before the provider call is allowed.
-test('reservation cannot be saved (storage error): ZERO provider calls, budget_stopped, the saved reservation is unchanged', async () => {
+test('reservation cannot be saved (storage error): ZERO provider calls, spend_accounting_unavailable (not a budget stop), the saved reservation is unchanged', async () => {
   const x = await run('{"max_usd":5}', { model: 'claude-sonnet-4-5', tinyfish: true, reserved: 1.25, beforeRun: db => db.exec("CREATE TRIGGER fail_save BEFORE UPDATE OF spend_reserved_usd ON scan_jobs BEGIN SELECT RAISE(ABORT, 'SQLITE_FULL'); END") })
   assert.equal(x.c.complete + x.c.research, 0, 'no paid provider call without a saved reservation')
-  assert.equal(x.row.error, 'budget_stopped'); assert.equal(x.row.status, 'failed'); assert.equal(x.row.spend_reserved_usd, 1.25)
+  assert.equal(x.row.error, 'spend_accounting_unavailable', 'a reservation that cannot be saved is an accounting stop, not a budget stop'); assert.equal(x.row.status, 'failed'); assert.equal(x.row.spend_reserved_usd, 1.25)
 })
 
 test('ownership lost BEFORE the first reservation (job re-claimed by a newer attempt): zero provider calls and the new owner\'s reservation is untouched', async () => {

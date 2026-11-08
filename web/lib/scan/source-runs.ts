@@ -76,6 +76,8 @@ export class SourceRunLedger {
     } catch { /* live progress never affects the scan */ }
   }
   has(collector: string): boolean { return this.runs.has(collector) }
+  // The status a source last recorded (as the run stands now), or null when it never reported. Read-only; used by the stop classification.
+  statusOf(collector: string): string | null { return this.runs.get(collector)?.status ?? null }
   stats(collector: string, s: SourceStats): void { this.diag.set(collector, s) }
   record(collector: string, status: string, evidence: number | null = null): void {
     const old = this.runs.get(collector)

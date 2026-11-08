@@ -23,6 +23,12 @@ export interface ReportParts {
   dropCounts?: Record<string, number>
   model?: { requests_recorded: number; requests_with_reported_tokens: number; input_tokens: number | null; output_tokens: number | null; tokens_complete: boolean }
   observed?: { search: boolean; extraction: boolean; verification: boolean }
+  // The free news search's request truth (lib/search/news.ts): per-class failure counts, the non-200 statuses seen and the
+  // per-query outcome classes. Counts and status codes only - never payloads, URLs or response bodies.
+  news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number> } | null
+  // Why the scan stopped when it did: the bounded stop code written as the job error, and the exact spend-refusal reason
+  // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean.
+  stop?: { code: string; spend_refusal_reason: string | null } | null
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
@@ -71,6 +77,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     candidates: fates.slice(0, MAX_CANDIDATES),
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
+    news: p.news ?? null, stop: p.stop ?? null,
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
   }
 }

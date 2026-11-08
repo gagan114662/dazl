@@ -50,7 +50,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
     const est = saved.estimate ? JSON.parse(saved.estimate) as Pick<RunEstimate, 'total' | 'rows' | 'payer' | 'cap'> : null
     if (est) {
       const ended = job.status === 'done' || job.status === 'failed'
-      const actual = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd }) : null
+      const actual = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd }) : null
       // Cost per verification pass: the scan's own verified counter as denominator, model cost as
       // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead
       // claim. Unknowns (running, unrecorded cost or count, zero passes) stay named, never 0/Infinity.

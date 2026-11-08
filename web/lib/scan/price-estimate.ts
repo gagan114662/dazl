@@ -154,16 +154,25 @@ export function estimateRun(i: EstimateInput): RunEstimate {
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
-export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null }
-export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
+export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; capReservedUsd?: number | null }
+export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
 export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput): ActualVsEstimate {
   const p = a.model ? PRICES_USD_PER_M[a.model] : undefined
   const usd = p && a.inputTokens !== null && a.outputTokens !== null ? (a.inputTokens * p.in + a.outputTokens * p.out) / 1e6 : null
   const modelEst = est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 })
   const within = usd === null ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
-  const summary = usd === null ? `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
-    : `Actual model cost ${a.tokensComplete ? '' : 'at least '}${money(usd)} from the tokens the provider reported, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)} (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'}). Not an invoice.`
-  return { model_usd: usd, model_usd_complete: usd !== null && a.tokensComplete, searches: a.searches, reserved_usd: a.reservedUsd, estimate: est.total, within, summary }
+  const reqs = a.requests ?? null, reqsWithTokens = a.requestsWithTokens ?? null
+  // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
+  // what IS known (call count, reported tokens, why no USD) and that the actual cost is unknown - never $0 or free.
+  let summary: string
+  if (usd !== null) summary = `Actual model cost ${a.tokensComplete ? '' : 'at least '}${money(usd)} from the tokens the provider reported, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)} (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'}). Not an invoice.`
+  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else summary = `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
+  // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
+  const capRes = a.capReservedUsd ?? null
+  if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
+  return { model_usd: usd, model_usd_complete: usd !== null && a.tokensComplete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: est.total, within, summary }
 }
 
 // The one line under the menu that states the limits and what is left. Unreadable budget is "remaining unknown" (never $0.00); the daily and monthly limits are labelled,
