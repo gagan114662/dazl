@@ -25,6 +25,7 @@
 // Engine-neutral (Db layer, docs/PLATFORM.md): SQLite and Postgres. SQLite schema here; PG twin:
 // lib/db/migrations/pg/0052_lead_need_evidence.sql.
 import type Database from 'better-sqlite3'
+import { createHash } from 'node:crypto'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { companyKey } from './evidence.ts'
 import { compileTargeting, type PlanNode, type QueryPlan } from './targeting.ts'
@@ -66,12 +67,29 @@ export function migrateNeedEvidence(db: Database.Database): void {
       author_headline   TEXT,
       author_company    TEXT,
       published_at      TEXT,
+      lead_digest       TEXT,
       plan_support      TEXT NOT NULL,
       created_at        INTEGER NOT NULL,
       PRIMARY KEY (tenant_id, lead_id)
     );
     CREATE INDEX IF NOT EXISTS lead_need_evidence_job ON lead_need_evidence (tenant_id, job_id);
   `)
+  try { db.exec('ALTER TABLE lead_need_evidence ADD COLUMN lead_digest TEXT') } catch { /* column already present */ }
+}
+
+// The lead's own citation triple at write time (source URL, quote, the source's date): a verified record is bound to
+// THAT artifact, not merely to the company name. Any later change to the lead's source, excerpt or date - same
+// company, same domain - breaks the digest and reads unproven. (reviewer #401/#379: same-artifact binding)
+export type ArtifactLead = { source_url: string | null; evidence_excerpt: string | null; published_at: string | null }
+export function leadArtifactDigest(lead: ArtifactLead): string {
+  return createHash('sha256').update(JSON.stringify([lead.source_url ?? '', lead.evidence_excerpt ?? '', lead.published_at ?? ''])).digest('hex')
+}
+// Shared pure revalidation (sync gate + async reader): the CURRENT lead row must still cite the exact artifact the
+// verdict was recorded from. A record written before the digest existed has no binding: fail closed.
+export function revalidateArtifactBinding(rec: { lead_digest: string | null }, lead: ArtifactLead): { ok: true } | { ok: false; reason: string } {
+  if (!rec.lead_digest) return { ok: false, reason: 'buying_need_unproven:artifact_digest_missing' }
+  if (rec.lead_digest !== leadArtifactDigest(lead)) return { ok: false, reason: 'buying_need_unproven:artifact_changed' }
+  return { ok: true }
 }
 
 // ---------------------------------------------------------------------------------------------------- plan semantics
@@ -240,21 +258,21 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
     for (const r of rows) {
       yield* t.run(
         `INSERT INTO lead_need_evidence (tenant_id, job_id, lead_id, basis, verdict, reason, qualifier_version, offer, window_days, rubric_reason,
-           demand_class, demand_tier, scores, families, reasons, missing, requester, mentioned_orgs, source_url, source_title, source_text, author_name, author_headline, author_company, published_at, plan_support, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           demand_class, demand_tier, scores, families, reasons, missing, requester, mentioned_orgs, source_url, source_title, source_text, author_name, author_headline, author_company, published_at, lead_digest, plan_support, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (tenant_id, lead_id) DO UPDATE SET job_id = excluded.job_id, basis = excluded.basis, verdict = excluded.verdict, reason = excluded.reason,
            qualifier_version = excluded.qualifier_version, offer = excluded.offer, window_days = excluded.window_days, rubric_reason = excluded.rubric_reason,
            demand_class = excluded.demand_class, demand_tier = excluded.demand_tier, scores = excluded.scores, families = excluded.families,
            reasons = excluded.reasons, missing = excluded.missing, requester = excluded.requester, mentioned_orgs = excluded.mentioned_orgs,
            source_url = excluded.source_url, source_title = excluded.source_title, source_text = excluded.source_text, author_name = excluded.author_name, author_headline = excluded.author_headline, author_company = excluded.author_company,
-           published_at = excluded.published_at, plan_support = excluded.plan_support, created_at = excluded.created_at`,
+           published_at = excluded.published_at, lead_digest = excluded.lead_digest, plan_support = excluded.plan_support, created_at = excluded.created_at`,
         [tenantId, jobId, r.lead.id, r.basis, r.verdict, r.reason,
           r.demand ? DEMAND_QUALIFIER_VERSION : null, rubric?.offer ?? null, rubric?.window_days ?? null, rubric ? null : rubricReason,
           r.demand?.class ?? null, r.demand?.tier ?? null, r.demand?.scores ?? null, r.demand?.families ?? null, r.demand?.reasons ?? null,
           r.demand?.missing ?? null, r.demand?.requester ?? null, r.demand?.mentioned_orgs ?? null,
           clip(r.lead.source_url, 500), clip(r.artifact?.title ?? null, 300), r.artifact ? clip(r.artifact.text, TEXT_MAX) : null,
           clip(r.artifact?.author?.name ?? null, 200), clip(r.artifact?.author?.headline ?? null, 300), clip(r.artifact?.author?.company ?? null, 200), clip(r.artifact?.published_at ?? null, 40),
-          supportKey, now])
+          leadArtifactDigest(r.lead), supportKey, now])
       // The card row beside the lead (lead_enrichments), same verdict in the existing per-lead channel.
       yield* t.run('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ?', [r.lead.id, tenantId, NEED_CONNECTOR])
       yield* t.run(
@@ -299,7 +317,7 @@ export interface NeedRecord {
   missing: string | null; requester: string | null; mentioned_orgs: string | null
   source_url: string | null; source_title: string | null; source_text: string | null
   author_name: string | null; author_headline: string | null; author_company: string | null; published_at: string | null
-  plan_support: string; created_at: number
+  lead_digest: string | null; plan_support: string; created_at: number
 }
 export type BuyingNeed =
   | { status: 'verified_buying_need'; record: NeedRecord }
@@ -381,9 +399,12 @@ export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string,
     const c = revalidateDemandContext(record, { rubric: ctx.rubric, rubricReason: ctx.rubricReason, planSupportKey: ctx.planSupportKey, asOf: opts.asOf ?? new Date() })
     if (!c.ok) return { status: 'unproven', reason: c.reason }
     if (record.verdict === 'verified_buying_need') {
-      const lead = await db.get<{ company: string; company_domain: string | null; review_reason: string | null; confidence: number | null; quarantined_at: number | null }>(
-        'SELECT company, company_domain, review_reason, confidence, quarantined_at FROM leads WHERE id = ? AND scan_job_id = ?', [leadId, jobId])
+      const lead = await db.get<{ company: string; company_domain: string | null; review_reason: string | null; confidence: number | null; quarantined_at: number | null; source_url: string | null; evidence_excerpt: string | null; published_at: string | null }>(
+        'SELECT company, company_domain, review_reason, confidence, quarantined_at, source_url, evidence_excerpt, published_at FROM leads WHERE id = ? AND scan_job_id = ?', [leadId, jobId])
       if (!lead || lead.review_reason !== null || lead.confidence === null || lead.quarantined_at !== null) return { status: 'unproven', reason: 'buying_need_unproven:lead_withdrawn' }
+      // The SAME artifact: the lead's current citation/quote/date must be the ones the verdict was recorded from.
+      const art = revalidateArtifactBinding(record, lead)
+      if (!art.ok) return { status: 'unproven', reason: art.reason }
       const held = await db.get<{ x: number }>("SELECT 1 AS x FROM lead_enrichments h WHERE h.lead_id = ? AND h.connector = 'scan:gate' AND h.kind = 'gate_failed'", [leadId])
       if (held) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
       const b = revalidateVerifiedBinding(record, lead.company, !!lead.company_domain && await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))

@@ -17,7 +17,7 @@ import { compileTargeting, evaluatePlan, type ClauseProof } from './targeting.ts
 import { planProofs } from './targeting-proof.ts'
 import { listCompetitors } from '../signals/competitor-reddit.ts'
 import { type DemandRubric } from './demand-qualifier.ts'
-import { planNeedSupport, revalidateDemandContext, revalidateVerifiedBinding, type NeedRecord } from './need-evidence.ts'
+import { planNeedSupport, revalidateArtifactBinding, revalidateDemandContext, revalidateVerifiedBinding, type NeedRecord } from './need-evidence.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
 
 const GATES = new Set<string>(['sales_hiring_check_failed', 'quarantined', 'excluded', 'fit_below_threshold', 'not_graded', 'targeting_not_proven'])
@@ -43,21 +43,27 @@ export interface NeedGate { rubric: DemandRubric | null }
 // plan semantics, the current rubric's offer and window, the classifier re-run on the STORED source artifact, the
 // source author's own company matching the lead's company, and the domain confirmed now. A missing table (older
 // store), a missing or failed writer record, a read error, or any drift is NOT proven. Reads here never write.
-type NeedRow = Pick<NeedRecord, 'basis' | 'verdict' | 'qualifier_version' | 'offer' | 'window_days' | 'plan_support' | 'demand_class' | 'demand_tier' | 'source_url' | 'source_title' | 'source_text' | 'author_name' | 'author_headline' | 'author_company' | 'published_at'>
-export function needProven(db: Database.Database, job: { id: string; user_id: string }, l: { id: string; company: string; company_domain: string | null }, ctx: { rubric: DemandRubric | null; planSupportKey: string; asOf: Date }): boolean {
+type NeedRow = Pick<NeedRecord, 'job_id' | 'basis' | 'verdict' | 'qualifier_version' | 'offer' | 'window_days' | 'plan_support' | 'demand_class' | 'demand_tier' | 'source_url' | 'source_title' | 'source_text' | 'author_name' | 'author_headline' | 'author_company' | 'published_at' | 'lead_digest'>
+export function needProven(db: Database.Database, job: { id: string; user_id: string }, l: { id: string; company: string; company_domain: string | null; source_url: string | null; evidence_excerpt: string | null; published_at: string | null }, ctx: { rubric: DemandRubric | null; planSupportKey: string; asOf: Date }): boolean {
   let rec: NeedRow | undefined
   try {
-    rec = db.prepare('SELECT basis, verdict, qualifier_version, offer, window_days, plan_support, demand_class, demand_tier, source_url, source_title, source_text, author_name, author_headline, author_company, published_at FROM lead_need_evidence WHERE tenant_id = ? AND lead_id = ?').get(job.user_id, l.id) as NeedRow | undefined
+    rec = db.prepare('SELECT job_id, basis, verdict, qualifier_version, offer, window_days, plan_support, demand_class, demand_tier, source_url, source_title, source_text, author_name, author_headline, author_company, published_at, lead_digest FROM lead_need_evidence WHERE tenant_id = ? AND lead_id = ?').get(job.user_id, l.id) as NeedRow | undefined
   } catch { return false }  // an older store without the evidence table: hold, never a bypass
   if (!rec) return false    // the writer failed or never ran for this lead: hold
+  // The SAME parity the async reader enforces, BEFORE any verdict bypass: the record belongs to THIS job and the
+  // plan semantics have not changed since the writer ran. A stale-plan or misbound-job record can never promote.
+  if (rec.job_id !== job.id) return false
+  if (rec.plan_support !== ctx.planSupportKey) return false
   if (rec.verdict === 'trigger_only') return true // the trigger gate already ran; trigger-only is never "verified buying need"
   if (rec.verdict !== 'verified_buying_need' || rec.basis !== 'demand_post') return false
   if (!revalidateDemandContext(rec, { rubric: ctx.rubric, rubricReason: null, planSupportKey: ctx.planSupportKey, asOf: ctx.asOf }).ok) return false
+  // The SAME artifact binding as the async reader: the lead's current citation/quote/date are the recorded ones.
+  if (!revalidateArtifactBinding(rec, l).ok) return false
   return revalidateVerifiedBinding(rec, l.company, domainConfirmed(db, job.user_id, l.id, l.company_domain)).ok
 }
 
 export function classifyLeads(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map(), need: NeedGate = { rubric: null }): LeadYield[] {
-  const leads = db.prepare("SELECT id, company, company_domain, contact, fit, quarantined_at, source_url, evidence_excerpt, signal, event_date FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC").all(job.id) as { id: string; company: string; company_domain: string | null; contact: string | null; fit: number | null; quarantined_at: number | null; source_url: string; evidence_excerpt: string | null; signal: string | null; event_date: string | null }[]
+  const leads = db.prepare("SELECT id, company, company_domain, contact, fit, quarantined_at, source_url, evidence_excerpt, published_at, signal, event_date FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC").all(job.id) as { id: string; company: string; company_domain: string | null; contact: string | null; fit: number | null; quarantined_at: number | null; source_url: string; evidence_excerpt: string | null; published_at: string | null; signal: string | null; event_date: string | null }[]
   let memory: ReturnType<typeof getMemory> | null = null
   try { memory = getMemory(db, job.user_id) } catch { memory = null } // the table may predate this deploy
   const needVacancy = salesHiringRequired(job.query, job.icp), who = whoOf(job.icp) || 'founder'

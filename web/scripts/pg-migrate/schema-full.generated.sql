@@ -375,6 +375,7 @@ CREATE TABLE lead_need_evidence (
       author_headline   TEXT,
       author_company    TEXT,
       published_at      TEXT,
+      lead_digest       TEXT,
       plan_support      TEXT NOT NULL,
       created_at        BIGINT NOT NULL,
       PRIMARY KEY (tenant_id, lead_id)

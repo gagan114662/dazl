@@ -517,7 +517,7 @@ test('[sqlite] parity: the sync gate and the async reader agree across the whole
     const j = (await db.get<{ query: string | null; icp: string | null }>('SELECT query, icp FROM scan_jobs WHERE id = ?', [job]))!
     return { rubric: (await loadPlayDemandRubric(db, A, job)).rubric, planSupportKey: JSON.stringify(planNeedSupport(compileTargeting(j.query, j.icp))), asOf: AS_OF }
   }
-  const leadRow = { id: 'p1', company: 'Tallyline', company_domain: 'tallyline.example' }
+  const leadRow = { id: 'p1', company: 'Tallyline', company_domain: 'tallyline.example', source_url: url, evidence_excerpt: null, published_at: '2026-10-28' }
   const both = async () => [
     (await need(db, A, job, 'p1')).status,
     needProven(raw, { id: job, user_id: A }, leadRow, await ctx()),
@@ -544,5 +544,70 @@ test('[sqlite] parity: the sync gate and the async reader agree across the whole
   await write()
   await db.run("DELETE FROM lead_enrichments WHERE lead_id = 'p1' AND connector = 'sitecrawl'", [])
   await expectParity('unproven', false, 'domain withdrawn: both hold')
+  await db.close()
+})
+
+// ---------------------------------------------------------------------------------------------------- same-artifact binding (reviewer #401/#379): citation + quote + date
+bothEngines('the verified record is bound to the SAME artifact: a changed source URL, quote or date after the writer reads unproven', async ({ db }) => {
+  const job = await basePlay(db, A)
+  await lead(db, job, 'L9', { company: 'Tallyline', domain: 'tallyline.example', published: '2026-10-28' })
+  await confirmDomain(db, A, 'L9', 'tallyline.example')
+  const url = 'https://forum.example.test/t/L9'
+  await recordNeedEvidence(db, A, job, { asOf: AS_OF, demandArtifacts: [artifact(url, { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' })] })
+  assert.equal((await need(db, A, job, 'L9')).status, 'verified_buying_need', 'baseline: bound and verified')
+
+  // the lead is re-pointed at a DIFFERENT source, same company and domain: the old verdict must not follow
+  await db.run("UPDATE leads SET source_url = 'https://forum.example.test/t/elsewhere' WHERE id = 'L9'", [])
+  assert.deepEqual(await need(db, A, job, 'L9'), { status: 'unproven', reason: 'buying_need_unproven:artifact_changed' })
+  await db.run('UPDATE leads SET source_url = ? WHERE id = ?', [url, 'L9'])
+  assert.equal((await need(db, A, job, 'L9')).status, 'verified_buying_need', 'restored URL: bound again')
+
+  // the quote changes after the writer: not the artifact the verdict came from
+  await db.run("UPDATE leads SET evidence_excerpt = 'some other quote' WHERE id = 'L9'", [])
+  assert.deepEqual(await need(db, A, job, 'L9'), { status: 'unproven', reason: 'buying_need_unproven:artifact_changed' })
+  await db.run('UPDATE leads SET evidence_excerpt = NULL WHERE id = ?', ['L9'])
+  // the date moves: the dated need is not the dated artifact anymore
+  await db.run("UPDATE leads SET published_at = '2026-11-06' WHERE id = 'L9'", [])
+  assert.deepEqual(await need(db, A, job, 'L9'), { status: 'unproven', reason: 'buying_need_unproven:artifact_changed' })
+  await db.run("UPDATE leads SET published_at = '2026-10-28' WHERE id = 'L9'", [])
+  assert.equal((await need(db, A, job, 'L9')).status, 'verified_buying_need', 'fully restored: verified again')
+
+  // a record written before the digest existed has no binding at all: fail closed, never grandfathered
+  await db.run('UPDATE lead_need_evidence SET lead_digest = NULL WHERE lead_id = ?', ['L9'])
+  assert.deepEqual(await need(db, A, job, 'L9'), { status: 'unproven', reason: 'buying_need_unproven:artifact_digest_missing' })
+})
+
+// ---------------------------------------------------------------------------------------------------- sync gate parity: trigger_only bypass also binds job + plan first
+test('sync gate: a trigger-only record with a mutated job binding or plan no longer passes (async reader agrees)', async () => {
+  const { default: Database } = await import('better-sqlite3')
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const { needProven } = await import('../lib/scan/actionable.ts')
+  const raw = new Database(':memory:')
+  migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  const C = 'c'.repeat(32)
+  await tenant(db, C, '')
+  const job = await play(db, C, 'companies hiring sales reps in Ohio', null, null)
+  await lead(db, job, 't1', { company: 'Acme Corp' })
+  await recordNeedEvidence(db, C, job, { asOf: AS_OF })
+  assert.equal((await need(db, C, job, 't1')).status, 'trigger_only', 'baseline async: trigger-only')
+  const ctx = async () => {
+    const j = (await db.get<{ query: string | null; icp: string | null }>('SELECT query, icp FROM scan_jobs WHERE id = ?', [job]))!
+    return { rubric: null, planSupportKey: JSON.stringify(planNeedSupport(compileTargeting(j.query, j.icp))), asOf: AS_OF }
+  }
+  const leadRow = { id: 't1', company: 'Acme Corp', company_domain: null, source_url: 'https://forum.example.test/t/t1', evidence_excerpt: null, published_at: null }
+  assert.equal(needProven(raw, { id: job, user_id: C }, leadRow, await ctx()), true, 'baseline sync: trigger-only passes the need gate')
+  // misbound job: the record belongs to another job - no bypass on either path
+  await db.run("UPDATE lead_need_evidence SET job_id = 'aaaaaaaaaaaaaaaaaaaaaaaa' WHERE lead_id = 't1'", [])
+  assert.equal(needProven(raw, { id: job, user_id: C }, leadRow, await ctx()), false, 'sync: misbound job holds')
+  assert.deepEqual(await need(db, C, job, 't1'), { status: 'unproven', reason: 'buying_need_unproven:scope_mismatch' }, 'async: misbound job reads unproven')
+  await db.run('UPDATE lead_need_evidence SET job_id = ? WHERE lead_id = ?', [job, 't1'])
+  // plan mutation after the writer (the plan loses its hiring condition): stale plan, both paths hold
+  await db.run("UPDATE scan_jobs SET query = 'dentists in Ohio' WHERE id = ?", [job])
+  assert.equal(needProven(raw, { id: job, user_id: C }, leadRow, await ctx()), false, 'sync: stale plan holds')
+  assert.deepEqual(await need(db, C, job, 't1'), { status: 'unproven', reason: 'buying_need_unproven:stale_plan' }, 'async: stale plan reads unproven')
+  await db.run("UPDATE scan_jobs SET query = 'companies hiring sales reps in Ohio' WHERE id = ?", [job])
+  assert.equal(needProven(raw, { id: job, user_id: C }, leadRow, await ctx()), true, 'restored: trigger-only passes again')
   await db.close()
 })
