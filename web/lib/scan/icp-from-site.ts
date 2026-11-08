@@ -148,8 +148,8 @@ function leadingValue(text: string, key: string, open: '{' | '"'): string | null
 }
 export type ProfileAnswer = { ok: true; parsed: Record<string, unknown>; icp: Icp; truncated: boolean } | { ok: false; reason: DraftReason }
 // `recover`: false when saved decisions or a prior research block exist - a draft without a research block could not carry them forward, so it is not offered (a cut-off answer then stays an honest error).
-export function readProfileAnswer(text: string, stop: string | undefined, outputTokens: number | undefined, recover = true): ProfileAnswer {
-  const cut = (stop !== undefined && CUT.has(stop)) || (stop === undefined && typeof outputTokens === 'number' && outputTokens >= PROFILE_MAX_OUTPUT_TOKENS)
+export function readProfileAnswer(text: string, stop: string | undefined, outputTokens: number | undefined, recover = true, maxOutput = PROFILE_MAX_OUTPUT_TOKENS): ProfileAnswer {
+  const cut = (stop !== undefined && CUT.has(stop)) || (stop === undefined && typeof outputTokens === 'number' && outputTokens >= maxOutput)
   const whole = jsonOnly(text) as Record<string, unknown> | null
   if (whole !== null && (typeof whole !== 'object' || Array.isArray(whole))) return { ok: false, reason: 'no_profile' }   // valid JSON, but not a profile object
   if (whole) {
@@ -214,15 +214,23 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     try {
       // One guarded call, its usage kept: settles the reservation to what the vendor reported (never a second call).
       const det = await guarded.completeDetailed!(adm.key.key, fitPromptBytes(site, homePage, TRIAL_SITE_READ_PROMPT_MAX_BYTES), deps.fetchImpl, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
-      const parsed = jsonOnly(det.text) as Record<string, unknown> | null
-      const draft = parsed && typeof parsed === 'object' ? (parsed.draft ?? parsed) : null
-      const icp = normalizeIcp(draft)
+      // The same truth rules as the own-key read (#1002): an answer cut off at the trial cap can still hold a
+      // complete leading draft (recovered, flagged truncated); a malformed or profile-less answer is a failed
+      // read, never a silent free read and never "AI key rejected". The same refusal to recover applies too:
+      // with a prior research block or saved decisions on file, a cut-off draft could not carry them forward,
+      // so the read fails honestly instead of displacing saved research with an incomplete replacement.
+      const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, !deps.prior && !(deps.decisions && deps.decisions.decisions.length), TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
       const costUsd = researchCostUsd(det.usage, det.model ?? trialProvider.configuredModel?.())
       await adm.settle(costUsd).catch((e) => captureError(e, { source: 'route', where: '/api/scan/icp-from-url', tenantId }))
-      // A funded call that answered nothing usable cost what it cost (settled above); the free read still answers.
-      if (!icp) return free
+      if (!answer.ok) {
+        // The funded call completed and its usage settled: the read RAN and failed - the page is told (the reason
+        // renders from 'read_failed'), and the operator gets the reason, never the answer text.
+        captureError(new Error(`trial site read answer unusable: ${answer.reason} (stop ${det.stop ?? 'unreported'}, ${det.usage?.output_tokens ?? 'unreported'} output tokens, ${det.text.length} chars)`), { source: 'process', where: 'scan:icp-from-site:trial-answer', tenantId })
+        return { ...free, trial: 'read_failed' }
+      }
+      const { parsed, icp, truncated } = answer
       const sells = typeof parsed?.sells === 'string' ? parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150) : ''
-      return { icp, source: page.finalUrl, sells, funded: 'trial' }
+      return { icp, source: page.finalUrl, sells, funded: 'trial', ...(truncated ? { truncated: true } : {}) }
     } catch (e) {
       if (spendRefused(e)) {
         // Refused before any call (the read's own ceiling, or an unpriced operator model): nothing was spent, so the
