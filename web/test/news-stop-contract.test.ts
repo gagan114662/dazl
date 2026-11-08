@@ -74,6 +74,7 @@ test('refusalCode: only a real numeric refusal is a budget stop; every other rea
   const ledger = new SourceRunLedger()
   assert.equal(refusalCode(new SpendRefused('over_limit'), ledger), 'budget_stopped')
   assert.equal(refusalCode(new SpendRefused('over_cap'), ledger), 'budget_stopped')
+  assert.equal(refusalCode(new SpendRefused('owner_pool_limit'), ledger), 'budget_stopped', 'the shared pool refusal is a numeric limit stop - with its OWN typed reason')
   assert.equal(refusalCode(new SpendRefused('trial_budget_reached'), ledger), 'budget_stopped')
   assert.equal(refusalCode(new SpendRefused('research_unbounded'), ledger), 'unbounded_fallback_hold')
   assert.equal(refusalCode(new SpendRefused('model_unpriced'), ledger), 'model_unpriced')
@@ -196,6 +197,11 @@ test('scanOutcome: a legacy budget_stopped (no recorded reason) never claims a b
   assert.equal(overLimit.next?.text, 'Run it again with a larger budget')
   const overCap = scanOutcome({ ...base, stop_refusal_reason: 'over_cap' })
   assert.equal(overCap.label, 'Stopped by its budget - not an empty search')
+  const pool = scanOutcome({ ...base, stop_refusal_reason: 'owner_pool_limit' })
+  assert.equal(pool.label, 'Stopped by the shared account spending limit - not an empty search')
+  assert.match(pool.detail ?? '', /day\/month spending limit/)
+  assert.doesNotMatch(`${pool.label} ${pool.detail} ${pool.next?.text}`, /larger budget|raising or removing the (per-scan )?budget would|without.*budget/i, 'the pool stop never advises touching the per-scan budget')
+  assert.match(pool.detail ?? '', /raising or removing it would not have searched further/)
   const trial = scanOutcome({ ...base, stop_refusal_reason: 'trial_budget_reached' })
   assert.equal(trial.label, 'This free scan found no companies within its spending limit')
   const unknownReason = scanOutcome({ ...base, stop_refusal_reason: 'something_not_numeric' })
@@ -378,4 +384,16 @@ test('readJobCost returns BOTH reservation columns (the cap reservation was invi
   const j = await readJobCost(db, 'A', id)
   assert.equal(j.reserved_usd, null, 'no max_usd reservation was made')
   assert.equal(j.cap_reserved_usd, 0.002214, 'the cap reservation is read, not dropped')
+})
+
+// The reviewer's 03:04 repro corrected end to end: the shared pool's refusal carries its OWN typed reason through the
+// real PooledGuard.reserveShared, so report provenance can never read a pool stop as the per-run budget's refusal.
+test('PooledGuard: a shared-pool refusal reports owner_pool_limit, never over_limit', async () => {
+  const { PooledGuard, SpendRefused } = await import('../lib/llm/spend-guard.ts')
+  const { OWNER_POOL_LIMIT_REASON } = await import('../lib/llm/spend-pool.ts')
+  const pool = { now: () => 1000, reserve: async () => { throw new SpendRefused('over_limit') } }
+  const g = new PooledGuard(pool as never)
+  g.label = OWNER_POOL_LIMIT_REASON   // what runner.ts sets at construction
+  await assert.rejects(g.reserveShared(0.01), (e: unknown) => (e as InstanceType<typeof SpendRefused>).reason === 'owner_pool_limit')
+  assert.equal(refusalCode(new SpendRefused('owner_pool_limit')), 'budget_stopped')
 })

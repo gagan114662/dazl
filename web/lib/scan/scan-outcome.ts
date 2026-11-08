@@ -81,8 +81,10 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
         const r = j.stop_refusal_reason ?? null
         if (r === 'trial_budget_reached')   // TRIAL_BUDGET_REASON (trial-budget.ts); a free scan searches the web only in fixed-price calls
           return { kind: 'stopped', label: 'This free scan found no companies within its spending limit', detail: 'A free scan searches the web only in ways whose cost is fixed in advance, so this does not show that no company matches.', next: { text: 'Try a broader search', href: NEW_SCAN } }
-        if (r === 'over_limit' || r === 'over_cap')
+        if (r === 'over_limit' || r === 'over_cap')   // the run's OWN numeric control refused: the per-run remedy is true
           return { kind: 'stopped', label: 'Stopped by its budget - not an empty search', next: { text: 'Run it again with a larger budget', href: NEW_SCAN } }
+        if (r === 'owner_pool_limit')   // OWNER_POOL_LIMIT_REASON (spend-pool.ts): the shared day/month pool refused, NOT this run's budget - never advise touching the per-scan budget
+          return { kind: 'stopped', label: 'Stopped by the shared account spending limit - not an empty search', detail: 'The account-wide day/month spending limit refused the next paid step before it ran. The per-scan budget did not cause this: raising or removing it would not have searched further.', next: { text: 'Try again later', href: NEW_SCAN } }
         return { kind: 'stopped', label: 'Stopped before it could conclude', detail: 'This run was recorded as a budget stop, but its exact reason was not kept: it may not have been a budget limit, so raising or removing the budget may not change anything. Nothing was concluded about whether leads exist.', next: { text: 'Run the search again', href: NEW_SCAN } }
       }
       case 'source_error': return sourcesFailed(j)

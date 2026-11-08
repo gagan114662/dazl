@@ -41,7 +41,7 @@ import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLog
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
-import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
+import { OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
@@ -670,6 +670,7 @@ export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
   switch (e.reason) {
     case 'over_limit':
     case 'over_cap':   // the per-job spend cap's own numeric refusal (spend-cap.ts)
+    case OWNER_POOL_LIMIT_REASON:   // the owner pool's numeric refusal: still a limit stop, but NOT the run's own budget
     case TRIAL_BUDGET_REASON: return 'budget_stopped'   // a real numeric budget refused the next paid step
     case 'research_unbounded': return ledger ? fallbackStopCode(ledger) : 'unbounded_fallback_hold'
     case 'model_unpriced': return 'model_unpriced'
@@ -1155,7 +1156,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     }
     // The owner pool admits one unsettled ownerGuarded call at a time (lib/llm/spend-pool.ts): a scan waits for one in
     // flight up to its deadline rather than stopping, and stops (budget_stopped) on one that never settled.
-    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(owner ? [new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000))] : [])]
+    // The pool guard's label is its typed refusal reason: a pool refusal reports owner_pool_limit, never the per-run
+    // budget's over_limit, so the stop provenance says WHICH numeric control refused (#1006).
+    const poolGuard = owner ? new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000)) : null
+    if (poolGuard) poolGuard.label = OWNER_POOL_LIMIT_REASON
+    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(poolGuard ? [poolGuard] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
@@ -1860,7 +1865,7 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     // is reached, or the spend record could not be checked. Nothing was charged; say which, and never retry blind.
     if (spendRefused(e)) {
       if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
-      if (e.reason === 'over_limit') return { error: 'spend_limit' }
+      if (e.reason === 'over_limit' || e.reason === OWNER_POOL_LIMIT_REASON) return { error: 'spend_limit' }
       return { error: 'spend_unavailable' }
     }
     console.error('icp preview failed:', e instanceof Error ? e.message : e)
