@@ -118,7 +118,7 @@ const EXPECT = {
   holdErr: ['stopped', /Stopped - the free sources could not conclude/, 'Try again', '/app/leads'],
   legacyBudget: ['stopped', /Stopped before it could conclude/, 'Run the search again', '/app/leads'],
   poolStop: ['stopped', /Stopped by the shared account spending limit - not an empty search/, 'Try again later', '/app/leads'],
-  hardCap: ['stopped', /Stopped by its spending cap - not an empty search/, 'Run the search again', '/app/leads'],
+  hardCap: ['stopped', /Stopped by its spending cap - not an empty search/, 'View search options', '/app/leads'],
 }
 try {
   // An enriching scan is the active one (#254): Leads opens its progress instead of the history, so the history is

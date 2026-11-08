@@ -199,6 +199,7 @@ test('scanOutcome: a legacy budget_stopped (no recorded reason) never claims a b
   assert.equal(overCap.label, 'Stopped by its spending cap - not an empty search')
   assert.match(overCap.detail ?? '', /may be the run's own budget or the service's per-scan limit; which one was binding was not kept/)
   assert.doesNotMatch(`${overCap.label} ${overCap.detail} ${overCap.next?.text}`, /larger budget|fixed per-scan|raising or removing/i, 'cap origin is not retained: no fixed-cap claim, no budget-change advice')
+  assert.equal(overCap.next?.text, 'View search options', 'no same-cap rerun affordance: the CTA opens the search options, never restarts the capped scan')
   const pool = scanOutcome({ ...base, stop_refusal_reason: 'owner_pool_limit' })
   assert.equal(pool.label, 'Stopped by the shared account spending limit - not an empty search')
   assert.match(pool.detail ?? '', /day\/month spending limit/)
