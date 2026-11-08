@@ -107,8 +107,10 @@ export type IndexCheck = { keyword: string; indexed: boolean; top_url: string | 
 export type IndexResult = IndexCheck & { domain: string; checked_at: number }
 
 // Runs one batch: every saved keyword once, bounded by the remaining weekly allowance.
-// Returns null when there is nothing to do (no config/keywords) or the allowance is spent.
-export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | null> {
+// Returns null when there is nothing to do (no config/keywords) or the allowance is spent, and 'stale_domain' when the
+// domain was edited while the searches were in flight (results discarded, searches stay spent). [] is reserved for a
+// provider failure so callers can tell an outage from a concurrent edit.
+export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | null> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const env = deps.env ?? process.env
   const cfg = await getConfig(db, tenantId)
@@ -160,7 +162,7 @@ export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?:
       yield* t.run('UPDATE seo_index_configs SET next_run_at = ? WHERE tenant_id = ? AND domain = ?', [now + WEEK_S, tenantId, cfg.domain])
       return true
     })
-    if (!committed) return []
+    if (!committed) return 'stale_domain'
   }
   return out
 }

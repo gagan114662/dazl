@@ -3,7 +3,7 @@
 // local fake (fetchImpl); nothing leaves the process.
 import assert from 'node:assert/strict'
 import { pgDb } from '../lib/db/client.ts'
-import { saveDomain, getConfig, addKeyword, removeKeyword, listKeywords, runIndexChecks, latestResults, weeklySpend, dueTenants, WEEKLY_ALLOWANCE, MAX_KEYWORDS } from '../lib/seo/indexing.ts'
+import { saveDomain, getConfig, addKeyword, removeKeyword, listKeywords, runIndexChecks, type IndexCheck, latestResults, weeklySpend, dueTenants, WEEKLY_ALLOWANCE, MAX_KEYWORDS } from '../lib/seo/indexing.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { bothEngines } from './helpers/engines.ts'
 
@@ -31,7 +31,7 @@ bothEngines('indexing: runIndexChecks: site: query, host match counts subdomains
   const out = await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW })
   assert.equal(out!.length, 2)
   assert.ok(queries.every(q => decodeURIComponent(q).includes('site:acme.com')))
-  assert.ok(out!.every(c => c.indexed && c.top_url === 'https://blog.acme.com/post')) // subdomain counts
+  assert.ok((out as IndexCheck[]).every((c: IndexCheck) => c.indexed && c.top_url === 'https://blog.acme.com/post')) // subdomain counts
   assert.equal(await weeklySpend(db, 'u1', NOW), 2)
   assert.equal((await latestResults(db, 'u1')).length, 2)
   assert.ok(((await getConfig(db, 'u1'))?.next_run_at ?? 0) > NOW)
@@ -208,7 +208,7 @@ bothEngines('indexing #904: a domain edit during the awaited search fences the c
     if (!edited) { edited = true; await saveDomain(db, 'u1', 'bravo.example') }
     return hits(['https://alpha.example/p'])(u)
   }) as unknown as typeof fetch
-  assert.deepEqual(await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW }), [])
+  assert.equal(await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW }), 'stale_domain', 'distinct from [] (provider failure)')
   assert.deepEqual(await latestResults(db, 'u1'), [])
   const cfg = await getConfig(db, 'u1')
   assert.equal(cfg?.domain, 'bravo.example')
