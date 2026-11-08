@@ -87,3 +87,20 @@ bothEngines('a website-only seller on a subdomain still excludes its own CEO thr
   assert.notEqual(own.tier, 'high_intent'); assert.equal(own.class, 'competitor')
   assert.equal(qualifyDemand({ ...base, author: { name: 'B', headline: 'CEO, Buyer Inc', company: 'Buyer Inc' } }, rubric, asOf).tier, 'high_intent')
 })
+
+// #401 review, fail-closed exclusions: an older/drifted store whose exclusion state cannot be READ must not promote
+// an excluded vendor or the seller's own offer as if there were no exclusions. No rubric => every lead holds.
+bothEngines('unreadable exclusion state means NO rubric: competitors list unreadable, seller identity unreadable', async ({ db }) => {
+  const A = 'e'.repeat(32)
+  await tenant(db, A, 'Verified prospect lists for outbound teams')
+  assert.equal((await setCompetitors(db, A, ['LeadForge'])).ok, true)
+  const play = await createQueryJob(db, A, { query: 'B2B SaaS founders asking for lead sources', icp: null, seller: 'Verified prospect lists for outbound teams - https://seller.example', offer: 'Verified B2B prospect lists and sales leads' })
+  assert.ok((await loadPlayDemandRubric(db, A, play)).rubric, 'control: a healthy store loads the rubric')
+
+  await db.run('ALTER TABLE tenant_competitors RENAME TO tenant_competitors_gone', [])
+  assert.deepEqual(await loadPlayDemandRubric(db, A, play), { rubric: null, reason: 'competitors_unreadable' })
+  await db.run('ALTER TABLE tenant_competitors_gone RENAME TO tenant_competitors', [])
+
+  await db.run('ALTER TABLE users RENAME TO users_gone', [])
+  assert.deepEqual(await loadPlayDemandRubric(db, A, play), { rubric: null, reason: 'identity_unreadable' })
+})

@@ -103,6 +103,9 @@ export function parseReddit(raw: unknown): WorkerItem[] {
     const permalink = typeof d.permalink === 'string' ? d.permalink : ''
     const quote = latinRun(typeof d.selftext === 'string' && d.selftext.length >= 20 ? d.selftext : String(d.title ?? ''))
     const it = item(`https://www.reddit.com${permalink}`, String(d.title ?? ''), quote, epochDay(d.created_utc))
+    // The listing carries the post's own username; a search result carries no headline or company (never invented).
+    const an = typeof d.author === 'string' && d.author && d.author !== '[deleted]' && d.author !== '[removed]' ? d.author.slice(0, 200) : null
+    if (it && an) it.author = { name: an, headline: null, company: null }
     if (it) out.push(it)
   }
   return out

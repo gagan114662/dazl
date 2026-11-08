@@ -1,6 +1,8 @@
 // Shared helpers for the session worker. No dependencies, Node 22+.
 
-export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }
+// The post's own author as the platform reports it; fields the platform does not carry are null, never inferred.
+export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null }
+export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean; author?: WorkerAuthor }
 
 // The app's verifier works on latin text (its normalizer strips CJK), so CJK-only quotes can never
 // verify. Fetchers for Chinese platforms filter to latin-usable quotes, same as the V2EX adapter.

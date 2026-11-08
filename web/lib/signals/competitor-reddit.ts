@@ -9,7 +9,7 @@ import type { Db, Tx, TxBody } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
 import { audit, getEnabledCredential, readEnabledCredential, writeAudit, type AuditEntry } from '../connectors/store.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
-import { hasConsent, httpWorker, readConsent, type WorkerFetch } from '../advanced/index.ts'
+import { hasConsent, httpWorker, readConsent, type WorkerAuthor, type WorkerFetch } from '../advanced/index.ts'
 
 export const MAX_COMPETITORS = 5
 const MAX_POST_AGE_DAYS = 30
@@ -35,6 +35,13 @@ export async function readCompetitors(db: Db, tenantId: string): Promise<string[
   try { return (await db.all<{ name: string }>(COMPETITORS_SQL, [tenantId])).map(r => r.name) }
   catch (e) { if (e instanceof Error && /no such table|does not exist/i.test(e.message)) return [] /* a store that predates the table: no list */ ; throw e }
 }
+// Strict variant for rubric/exclusion reads: null when the list is UNREADABLE (a missing/drifted table, any store
+// error); [] only when it is genuinely empty. An unreadable exclusion list must never read as "no exclusions"
+// (#401 review: fail closed, never promote an excluded vendor while the exclusion state cannot be read).
+export async function readCompetitorsStrict(db: Db, tenantId: string): Promise<string[] | null> {
+  try { return (await db.all<{ name: string }>(COMPETITORS_SQL, [tenantId])).map(r => r.name) }
+  catch { return null }
+}
 
 // On the Db layer: the list is replaced in one transaction.
 export async function setCompetitors(db: Db, tenantId: string, names: string[]): Promise<{ ok: boolean; error?: string; names: string[] }> {
@@ -54,7 +61,7 @@ export const complaintQuery = (name: string): string => `${name} (complaint OR a
 // fetcher: complaint searches count as adv:reddit calls so the two never stack.
 const CALLS_LAST_HOUR_SQL = "SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector IN ('adv:reddit', 'adv:reddit-competitor') AND created_at > ?"
 
-export interface ComplaintItem extends Evidence { login_walled: boolean; complaint_of: string }
+export interface ComplaintItem extends Evidence { login_walled: boolean; complaint_of: string; author?: WorkerAuthor }
 type ComplaintDeps = { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
 
 // The store reads and writes one complaint search needs; a sync raw handle or the Db layer behind the same steps.
@@ -88,7 +95,7 @@ async function complaints(store: ComplaintStore, tenantId: string, jobId: string
     const items = r.items
     const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff)
     await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: fresh.length ? 'ok' : 'empty', results: fresh.length })
-    for (const it of fresh.slice(0, 10)) out.push({ source: COMPLAINT_CONNECTOR, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled, complaint_of: name })
+    for (const it of fresh.slice(0, 10)) out.push({ source: COMPLAINT_CONNECTOR, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled, complaint_of: name, ...(it.author ? { author: it.author } : {}) })
   }
   return out
 }

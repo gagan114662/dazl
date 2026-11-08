@@ -611,3 +611,30 @@ test('sync gate: a trigger-only record with a mutated job binding or plan no lon
   assert.equal(needProven(raw, { id: job, user_id: C }, leadRow, await ctx()), true, 'restored: trigger-only passes again')
   await db.close()
 })
+
+import { complaintDemandArtifact } from '../lib/scan/need-evidence.ts'
+import { COMPLAINT_CONNECTOR, type ComplaintItem } from '../lib/signals/competitor-reddit.ts'
+
+// #401 review, intake positive path: artifacts built by the REAL intake mapping from collector items. The post whose
+// OWN author (as the source reported it) belongs to the lead's company verifies; the authorless post never does.
+bothEngines('intake: the artifact\'s own author binds the post to the lead; an authorless post can never verify', async ({ db }) => {
+  const job = await basePlay(db, A)
+  await lead(db, job, 'L1', { company: 'Tallyline', domain: 'tallyline.example', published: '2026-10-28' })
+  await confirmDomain(db, A, 'L1', 'tallyline.example')
+  await lead(db, job, 'L2', { company: 'Nodo', domain: 'nodo.example', published: '2026-10-28' })
+  await confirmDomain(db, A, 'L2', 'nodo.example')
+  const collected: ComplaintItem[] = [
+    { source: COMPLAINT_CONNECTOR, url: 'https://forum.example.test/t/L1', title: 'LeadForge keeps failing us', quote: FOUNDER_POST, date: '2026-10-28', login_walled: false, complaint_of: 'LeadForge', author: { name: 'Maya Chen', headline: 'Co-founder, Tallyline', company: 'Tallyline' } },
+    { source: COMPLAINT_CONNECTOR, url: 'https://forum.example.test/t/L2', title: 'anonymous ask', quote: FOUNDER_POST, date: '2026-10-28', login_walled: false, complaint_of: 'LeadForge' },
+  ]
+  const s = await recordNeedEvidence(db, A, job, { asOf: AS_OF, demandArtifacts: collected.map(complaintDemandArtifact) })
+  assert.equal(s.leads, 2)
+  assert.equal(s.verified_buying_need, 1, 'the authentic author from the SAME artifact binds the post to the lead')
+  const bound = (await record(db, A, 'L1'))!
+  assert.equal(bound.verdict, 'verified_buying_need')
+  assert.equal(bound.author_name, 'Maya Chen')
+  assert.equal(bound.author_company, 'Tallyline')
+  const anon = (await record(db, A, 'L2'))!
+  assert.notEqual(anon.verdict, 'verified_buying_need')
+  assert.equal(anon.author_name, null, 'no author on the artifact: none on the record (never inferred)')
+})

@@ -2,7 +2,7 @@ import test from 'node:test'
 import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateCompetitors, setCompetitors, listCompetitors, collectCompetitorComplaints, badgeComplaintLeads, complaintQuery, COMPLAINT_CONNECTOR } from '../lib/signals/competitor-reddit.ts'
+import { migrateCompetitors, setCompetitors, listCompetitors, readCompetitorsStrict, collectCompetitorComplaints, badgeComplaintLeads, complaintQuery, COMPLAINT_CONNECTOR } from '../lib/signals/competitor-reddit.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
 
@@ -67,4 +67,26 @@ test('badge: lead citing a complaint post gets the tag merged, never duplicated'
   assert.equal(n2, 0)
   const row = d.prepare("SELECT signals FROM leads WHERE id = 'l1'").get() as { signals: string }
   assert.deepEqual(JSON.parse(row.signals), ['raised_funding', 'complained about Acme'])
+})
+
+test('collect: the post author the worker captured rides on the complaint item; none when the source has none', async () => {
+  const d = db()
+  await setCompetitors(sqliteDb(d), 't1', ['Acme'])
+  acceptConsent(d, 't1', 'advanced')
+  const recent = new Date(Date.now() - 5 * 86400_000).toISOString().slice(0, 10)
+  const worker = async () => ({ unsupported: null, items: [
+    { url: 'https://www.reddit.com/r/saas/c', title: 'Acme pricing is wild', quote: 'Acme doubled our bill overnight, need an alternative.', date: recent, login_walled: false, author: { name: 'maya-c', headline: null, company: null } },
+    { url: 'https://www.reddit.com/r/saas/d', title: 'anonymous post', quote: 'Acme support never answers, who else is good?', date: recent, login_walled: false },
+  ] })
+  const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker, env: ENV_ON })
+  assert.equal(out.length, 2)
+  assert.deepEqual(out[0].author, { name: 'maya-c', headline: null, company: null })
+  assert.equal(out[1].author, undefined, 'no author on the source: none on the item (never inferred)')
+})
+
+test('readCompetitorsStrict: a genuinely empty list is [], an UNREADABLE one is null (never "no exclusions")', async () => {
+  const d = db()
+  assert.deepEqual(await readCompetitorsStrict(sqliteDb(d), 't1'), [], 'table exists, no rows: genuinely empty')
+  d.exec('ALTER TABLE tenant_competitors RENAME TO tenant_competitors_gone')
+  assert.equal(await readCompetitorsStrict(sqliteDb(d), 't1'), null, 'unreadable exclusion state reads as unknown, not empty')
 })

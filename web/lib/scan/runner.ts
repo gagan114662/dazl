@@ -71,7 +71,7 @@ import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
-import { recordNeedEvidence, type NeedSummary } from './need-evidence.ts'
+import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
@@ -1543,9 +1543,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         need = await recordNeedEvidence(adb, job.user_id, job.id, {
           asOf: deps.now ?? new Date(),
           windowDays: icpForSources?.window_days ?? undefined,
-          // Demand-signal posts this search collected, bound to leads by their exact source URL. The Reddit complaint
-          // collector does not capture the post's author, and none is inferred: authorless posts can never verify need.
-          demandArtifacts: complaints.map(c => ({ source_url: c.url, author: null, title: c.title ?? null, text: c.quote ?? '', published_at: c.date ?? null })),
+          // Demand-signal posts this search collected, bound to leads by their exact source URL. The intake carries
+          // the post's OWN author exactly as the source reported it (never inferred): an authorless post can never
+          // verify need, and only the artifact's own author can bind it to the lead's company.
+          demandArtifacts: complaints.map(complaintDemandArtifact),
           held: heldByGate,
         })
         trace.note('buying_need', 'ok', null, { verified_buying_need: need.verified_buying_need, trigger_only: need.trigger_only, unproven: need.unproven, rubric: need.rubric, plan: need.plan_support })

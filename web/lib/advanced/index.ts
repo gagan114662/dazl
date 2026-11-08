@@ -40,7 +40,10 @@ export async function readConsent(db: Db, tenantId: string, scope: ConsentScope)
   return (await db.get<{ version: string }>(CONSENT_SQL, [tenantId, scope]))?.version === CONSENT_VERSION
 }
 
-export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }
+// The post's OWN author exactly as the source page reports it; a field the source does not carry is null, never
+// inferred. No author on the source = no author field at all.
+export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null }
+export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean; author?: WorkerAuthor }
 // The worker's structured outcome: the item list plus an explicit refusal. `unsupported` means the
 // worker build cannot fetch this platform at all (its reason says why); it is not an error and
 // never counts as a zero-result search. When it is null the list is the whole outcome: non-empty is
@@ -53,7 +56,7 @@ export const WORKER_FAILURES = ['auth_failed', 'throttled', 'schema_error', 'ups
 export type WorkerFailure = { failed: (typeof WORKER_FAILURES)[number] }
 export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerOutcome | WorkerFailure | null>
 
-// Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled}]}.
+// Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled,author?}]}.
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
 export function httpWorker(env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): WorkerFetch {
   return async req => {
@@ -105,7 +108,14 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
     if (typeof o?.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url)) continue
     if (typeof o.title !== 'string' || typeof o.quote !== 'string' || o.quote.length < 20) continue
     const date = typeof o.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.date) ? o.date : null
-    out.push({ url: o.url, title: o.title.slice(0, 200), quote: o.quote.slice(0, 300), date, login_walled: o.login_walled === true })
+    const ra = o.author
+    const ao = ra !== null && typeof ra === 'object' && !Array.isArray(ra) ? ra as Record<string, unknown> : null
+    const author: WorkerAuthor | undefined = ao ? {
+      name: typeof ao.name === 'string' && ao.name.trim() ? ao.name.slice(0, 200) : null,
+      headline: typeof ao.headline === 'string' && ao.headline.trim() ? ao.headline.slice(0, 300) : null,
+      company: typeof ao.company === 'string' && ao.company.trim() ? ao.company.slice(0, 200) : null,
+    } : undefined
+    out.push({ url: o.url, title: o.title.slice(0, 200), quote: o.quote.slice(0, 300), date, login_walled: o.login_walled === true, ...(author && (author.name || author.headline || author.company) ? { author } : {}) })
   }
   return out
 }

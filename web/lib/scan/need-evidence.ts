@@ -31,6 +31,7 @@ import { companyKey } from './evidence.ts'
 import { compileTargeting, type PlanNode, type QueryPlan } from './targeting.ts'
 import { qualifyDemand, DEMAND_QUALIFIER_VERSION, type DemandClass, type DemandPost, type Tier } from './demand-qualifier.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
+import type { ComplaintItem } from '../signals/competitor-reddit.ts'
 import { domainConfirmedDb } from '../signals/domain-basis.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 
@@ -137,6 +138,18 @@ export interface DemandArtifact {
   title?: string | null
   text: string
   published_at: string | null
+}
+// Intake from the competitor-complaint collector: the post's OWN author exactly as the source reported it (name,
+// headline, company), or null when the source does not carry one. NEVER inferred from the lead, the tenant or the
+// text - name canonicalization is not authentication, and an authorless post can never verify buying need.
+export function complaintDemandArtifact(c: ComplaintItem): DemandArtifact {
+  return {
+    source_url: c.url,
+    author: c.author ? { name: c.author.name, headline: c.author.headline, company: c.author.company } : null,
+    title: c.title ?? null,
+    text: c.quote ?? '',
+    published_at: c.date ?? null,
+  }
 }
 export interface RecordNeedInput {
   asOf: Date

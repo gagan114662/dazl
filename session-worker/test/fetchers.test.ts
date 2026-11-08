@@ -70,3 +70,14 @@ test('unsupported stubs never make a network call and return nothing', async () 
   assert.deepEqual(await FETCHERS.facebook('q', 's', {}), [])
   assert.deepEqual(await FETCHERS.xiaohongshu('q', 's', {}), [])
 })
+
+test('parseReddit: the post\'s own username rides as the author; deleted/removed authors and missing fields are omitted', () => {
+  const items = parseReddit({ data: { children: [
+    { data: { permalink: '/r/saas/1', title: 'Acme is terrible, alternatives?', selftext: 'Acme keeps raising prices and support never answers.', created_utc: 1762000000, author: 'maya-c' } },
+    { data: { permalink: '/r/saas/2', title: 'another complaint post here', selftext: 'Acme doubled our bill and we are leaving soon.', created_utc: 1762000000, author: '[deleted]' } },
+    { data: { permalink: '/r/saas/3', title: 'third complaint post here', selftext: 'Support has not answered us in three weeks now.', created_utc: 1762000000 } },
+  ] } })
+  assert.deepEqual(items[0]?.author, { name: 'maya-c', headline: null, company: null })
+  assert.equal(items[1]?.author, undefined)
+  assert.equal(items[2]?.author, undefined)
+})

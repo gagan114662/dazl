@@ -5,7 +5,7 @@
 // own people is excluded as own_seller instead of reaching high_intent (#401 blocker: own_names was hardcoded []).
 import type { Db } from '../db/client.ts'
 import { readPlayOffer } from './play-offer.ts'
-import { readCompetitors } from '../signals/competitor-reddit.ts'
+import { readCompetitorsStrict } from '../signals/competitor-reddit.ts'
 import { rubricForPlay, type DemandRubric } from './demand-qualifier.ts'
 
 // Generic labels that would exclude real buyers if treated as a brand ("Sales", "Group"): never an own name on their own.
@@ -36,8 +36,13 @@ export function ownNamesFrom(businessName: string | null | undefined, website: s
 export async function loadPlayDemandRubric(db: Db, tenantId: string, jobId: string, windowDays?: number): Promise<{ rubric: DemandRubric | null; reason: string | null }> {
   const offer = await readPlayOffer(db, tenantId, jobId)
   if (!offer) return rubricForPlay(null, [])
+  // Exclusion state is fail-closed: an UNREADABLE competitors list or seller identity means the exclusions cannot be
+  // known, so the play has NO rubric and every lead holds - never an empty exclusion list that lets an excluded
+  // vendor or the seller's own post promote (#401 review).
   let me: { business_name: string | null; website: string | null } | undefined
   try { me = await db.get<{ business_name: string | null; website: string | null }>('SELECT business_name, website FROM users WHERE id = ?', [tenantId]) }
-  catch (e) { if (e instanceof Error && /no such table|does not exist/i.test(e.message)) me = undefined /* no profile table yet: no own names (play-offer treats the same table the same way) */; else throw e }
-  return rubricForPlay(offer, await readCompetitors(db, tenantId), ownNamesFrom(me?.business_name, me?.website), windowDays)
+  catch (e) { if (e instanceof Error && /no such table|does not exist/i.test(e.message)) return { rubric: null, reason: 'identity_unreadable' }; throw e }
+  const competitors = await readCompetitorsStrict(db, tenantId)
+  if (competitors === null) return { rubric: null, reason: 'competitors_unreadable' }
+  return rubricForPlay(offer, competitors, ownNamesFrom(me?.business_name, me?.website), windowDays)
 }
