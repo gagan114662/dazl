@@ -34,7 +34,9 @@ const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
-const J = c => c.repeat(24)
+// Fixture ids must satisfy the production isJobId check (/^[a-f0-9]{24}$/): derive each from its label as sha256 hex.
+// A repeated letter silently breaks the campaign route for any label past 'f' (the 03:52 CI pixel failure).
+const J = c => createHash('sha256').update('scan-outcomes:' + c).digest('hex').slice(0, 24)
 const job = (id, query, o) => ({ id: J(id), query, business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, error: null, funded_by: 'user', candidates: null, verified: null, needs_review: null, dropped: null, enrich_started_at: null, enrich_finished_at: null, lead_count: 0, test_only: false, empty_reason: null, ...o })
 // Diagnostics exactly as the server writes them (lib/scan/extraction-note.ts emptyExtractionReason).
 const NO_HITS = 'The search returned 0 results; dazl asked to read 0 pages and read 0. The extraction step was given 0 items and returned 0 candidates. That is what is known: it does not show that no matching companies exist. Try rewording the request or widening the place or window.'
@@ -63,6 +65,13 @@ const ALL = {
   noDisc: job('h', 'Bookbinders in Ghent', { status: 'failed', error: 'no_discovery' }),
   holdErr: job('i', 'Chandlers in York', { status: 'failed', error: 'unbounded_fallback_hold' }),
 }
+// Fail fast, before the browser: every fixture id is a valid production job id and unique.
+{
+  const ids = Object.values(ALL).map(j => j.id)
+  for (const id of ids) assert.match(id, /^[a-f0-9]{24}$/, `fixture id must pass the production isJobId check: ${id}`)
+  assert.equal(new Set(ids).size, ids.length, 'fixture ids must be unique')
+}
+
 let JOBS = Object.values(ALL)
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1100 } })
@@ -144,7 +153,7 @@ try {
   for (const k of ['dropped', 'readNone', 'noHits', 'ownKey', 'trialKey', 'unknownKey', 'enriching', 'interrupted', 'sourceErr', 'noDisc', 'holdErr', 'budget', 'legacyBudget', 'poolStop', 'hardCap']) {
     await page.goto(`${base}/app/campaigns/${ALL[k].id}`, { waitUntil: 'networkidle' })
     const st = page.getByTestId('campaign-status'); await st.waitFor({ timeout: 15000 })
-    if (['dropped', 'readNone', 'ownKey'].includes(k)) await shot(`campaign-${k}`)
+    if (['dropped', 'readNone', 'ownKey', 'sourceErr', 'budget', 'legacyBudget', 'poolStop', 'hardCap', 'noDisc', 'holdErr'].includes(k)) await shot(`campaign-${k}`)
     if (before) continue
     const [kind, label, next, href] = EXPECT[k]
     assert.equal(await st.getAttribute('data-outcome'), kind, k)
