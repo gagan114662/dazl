@@ -168,7 +168,7 @@ export async function POST(req: NextRequest) {
     if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
     const jid = job_id
     db.transaction(() => {
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value, icpReviewed: body?.reviewed !== false })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
       if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))

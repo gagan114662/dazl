@@ -27,7 +27,7 @@ export async function createJob(db: Db, userId: string, input: ScanInput, runBud
 const QUERY_JOB_SQL = "INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget, created_at) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 const queryJobParams = (id: string, userId: string, input: QueryInput, now: number): Param[] => {
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
-  return [id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? 0 : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? now : null, input.watchId ?? null, input.runBudget ?? null, now]
+  return [id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? (input.icpReviewed === false ? 3 : 0) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? now : null, input.watchId ?? null, input.runBudget ?? null, now]
 }
 export async function createQueryJob(db: Db, userId: string, input: QueryInput, now = nowS()): Promise<string> {
   const id = randomBytes(12).toString('hex')

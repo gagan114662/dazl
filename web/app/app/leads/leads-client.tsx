@@ -632,13 +632,18 @@ export default function LeadsClient() {
   // reviewed profile instead of letting the server work out a new one (which silently discarded the review). A changed
   // sentence, or a profile dazl only inferred, still gets a fresh profile; Review profile first always rebuilds it.
   const reuseIcp = icp && icp.source === 'user' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
+  // A job whose profile was committed reviewed: false reads back as source 'carried' (durable, icp_inferred = 3):
+  // repeating its exact sentence carries it raw again. The default reviewed semantics would promote its sourced
+  // statements with no review event - the stored origin is what prevents that, not the client's memory of the flag.
+  const carriedIcp = icp && icp.source === 'carried' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
   // A first scan (no earlier play's profile to repeat): run with the reviewed business profile instead of letting the
   // server work out a new one, which silently discarded the review. The estimate step shows it before anything starts;
   // Review profile first still builds a fresh one from the sentence.
-  const businessIcp = !reuseIcp && !icp && savedBuyer ? savedBuyer : null
+  const businessIcp = reuseIcp ? null : carriedIcp ?? (!icp && savedBuyer ? savedBuyer : null)
   const startIcp = reuseIcp ?? businessIcp
-  // A saved business profile is carried as stored, NOT as a fresh review: nothing in it is confirmed or rejected by
-  // this run alone (reviewed: false). A repeated reviewed play profile IS a review and keeps the default semantics.
+  // A saved or carried business profile runs as stored, NOT as a fresh review: nothing in it is confirmed or rejected
+  // by this run alone (reviewed: false). Only a profile whose job was itself submitted from the review flow (source
+  // 'user') is a review and keeps the default semantics.
   const startReviewed = reuseIcp ? undefined : businessIcp ? false : undefined
 
   const input = 'field'

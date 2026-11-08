@@ -14,7 +14,9 @@
 //   3. no saved buyer: no note, and the scan request carries no profile (the server works one out);
 //   4. an autosaved, never-reviewed buyer (no decisions, statements only sourced): same honest note, still
 //      reviewed: false, and NO research decisions are claimed;
-//   5. Home > Build (?setup=brain) reopen + save: the POST /api/settings/profile keeps the research block and its
+//   5. reload after that carried first scan (latest reads icp_source 'carried'): the exact-sentence repeat carries
+//      the stored profile raw again - reviewed: false, never the default semantics that would promote it;
+//   6. Home > Build (?setup=brain) reopen + save: the POST /api/settings/profile keeps the research block and its
 //      rejections whole, and the canonical fields (country/language/window/lookalike) with it (fail-before: the save
 //      dropped research and every non-flat field entirely).
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -141,7 +143,17 @@ try {
   assert.equal(f.scanBodies[0].reviewed, false, 'autosaved is carried as stored, never as approval')
   assert.deepEqual(f.scanBodies[0].research_decisions, [], 'no review act ever happened, so no decisions are claimed')
   await f.ctx.close()
-  // 5. Home > Build reopen: the editor re-saves the research block and the canonical fields whole.
+  // 5. Reload + exact-sentence repeat of a carried scan: the stored origin ('carried') keeps the repeat raw.
+  const g = await open({ buyer: BUYER, latest: { query: Q, icp: BUYER, icp_source: 'carried' } })
+  await g.page.getByLabel('Who do you want to reach?').waitFor({ timeout: 15000 })
+  await g.page.getByLabel('Who do you want to reach?').fill(Q)
+  await g.page.getByRole('button', { name: 'Find leads' }).click()
+  await g.page.getByTestId('estimate-confirm-run').click()
+  await g.page.getByText('Queued - waiting to start.').waitFor()
+  assert.deepEqual(g.scanBodies[0].icp, BUYER, 'the restored carried profile runs whole on the repeat')
+  assert.equal(g.scanBodies[0].reviewed, false, 'a carried job is never re-read as a review')
+  await g.ctx.close()
+  // 6. Home > Build reopen: the editor re-saves the research block and the canonical fields whole.
   const e = await open({ buyer: BUYER, page: '/app?setup=brain' })
   await e.page.getByRole('button', { name: /Looks right|continue/i }).first().waitFor({ timeout: 15000 })
   await e.page.getByRole('button', { name: /Looks right|continue/i }).first().click()
