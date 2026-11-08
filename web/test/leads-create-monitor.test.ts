@@ -21,3 +21,15 @@ test('addMonitor posts the search to /api/monitors and surfaces plan refusals', 
   assert.match(fn, /monitor_limit/)
   assert.match(fn, /interval_too_short/)
 })
+
+// Review finding on #962: "Monitoring ..." must only show on a positively confirmed create (201 with an id); a lost
+// connection or a 2xx body that is not JSON / has no id explains the unknown outcome, never retries, and sends the user
+// to the list instead of claiming success.
+test('addMonitor requires a confirmed id and reports network loss instead of throwing', () => {
+  const fn = src.slice(src.indexOf('const addMonitor'), src.indexOf('const toggleMonitor'))
+  assert.match(fn, /try \{ r = await fetch\('\/api\/monitors'/)
+  assert.match(fn, /catch \{ setMonError\('Connection lost/)
+  assert.match(fn, /j\.id === undefined/)
+  assert.match(fn, /did not confirm the monitor/)
+  assert.doesNotMatch(fn, /setTimeout|retry/i)
+})
