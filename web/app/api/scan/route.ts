@@ -83,13 +83,15 @@ export async function POST(req: NextRequest) {
     try { tenantContext = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
     bindOffer = effectiveOffer({ seller, query }, tenantContext).offer ?? ''
   }
-  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer) : icp
+  // reviewed: false = the profile is carried exactly as stored (a saved business profile reused for a first scan):
+  // nothing in it is confirmed or rejected by this request alone (applyReviewedDraft).
+  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed === true }) : icp
   // Capture only explicit Add/Dismiss events, not inferred statuses or a profile's mere presence.
   let decisions: ReturnType<typeof decisionRows>
   try { decisions = decisionRows(body?.research_decisions, effective?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, effective ?? undefined) }
   catch { return NextResponse.json({ error: 'invalid_research_decisions' }, { status: 400 }) }
   const sized = effective ? budgetedIcp(effective) : null
-  if (sized && !sized.ok) return NextResponse.json({ error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
+  if (sized && !sized.ok) return NextResponse.json(sized.reason === 'holds_too_large' ? { error: 'holds_too_large', message: 'This profile leaves no room to keep the decisions you have not finished reviewing, so nothing was saved or started. Shorten the profile a little.' } : { error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
 
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not
   // strictly valid is rejected, never ignored, so a caller expecting a restricted run is never widened into a full one.
@@ -166,7 +168,7 @@ export async function POST(req: NextRequest) {
     if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
     const jid = job_id
     db.transaction(() => {
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value, icpReviewed: body?.reviewed === true })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
       if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))

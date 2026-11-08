@@ -22,6 +22,7 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { bestPeople } from '../lib/people/best-person.ts'
 import { contactsFromEnrichments, PEOPLE_SOURCE } from '../lib/people/rank.ts'
+import { identityOf } from '../lib/scan/opportunity.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { contactCurrency, isoDay, providerContactLabel, splitByCurrency, FIRST_PARTY_DAYS, PROVIDER_DAYS } from '../lib/people/currency.ts'
 import { readFileSync } from 'node:fs'
@@ -141,7 +142,9 @@ test('criterion 4b: a first-party company page read within 180 days is verified 
     { kind: 'person', value: 'Fil Filing, VP Sales', label: 'named in SEC Form D', source_url: 'https://sec.gov/x', connector: 'signals:sec-form-d', retrieved_at: sec(1) },
     { kind: 'person', value: 'Lin Session, VP Sales', label: 'LinkedIn', source_url: 'https://linkedin.com/in/lin', connector: 'adv:linkedin', retrieved_at: sec(1) },
   ]
-  const ranked = contactsFromEnrichments(rows, 'VP Sales', now)
+  // #781: first-party means the lead's established website identity (identityOf); acme.com is the cited page's own domain
+  const domainRow = { kind: 'domain', value: 'acme.com|evidence_own_domain', label: 'domain-basis-v1:evidence_own_domain', source_url: 'https://acme.com/news', connector: 'sitecrawl' }
+  const ranked = contactsFromEnrichments(rows, 'VP Sales', now, identityOf({ id: 'lead1', contact: null }, [...rows, domainRow]))
   const cur = Object.fromEntries(ranked.map(r => [r.name, r.verified]))
   assert.deepEqual(cur['Cara Crawl'], { currency: 'verified_current', basis: 'first_party_page', dated: '2026-10-25' })
   for (const n of ['Stale Stan', 'Sam Search', 'Fil Filing', 'Lin Session']) assert.equal(cur[n]?.currency, 'search_only', `${n} is search-result-only`)
@@ -156,7 +159,8 @@ test('criterion 4c: malformed, forged, future or contradicted evidence fails clo
   assert.ok(apollo.length === bad.length && apollo.every(p => p.recordDay === null), 'no malformed provider date becomes a record date')
   assert.ok(apollo.every(p => providerContactLabel('enrich:apollo', p.recordDay ?? null) === 'Apollo'))
   const fresh = dayAgo(1, now)
-  const C = (connector: string, label: string | null, kind = 'contact', retrieved_at?: unknown) => contactCurrency({ kind, connector, label, retrieved_at }, true, now).currency
+  const OWN_SITE = { state: 'fact' as const, site: 'acme.com', text: 'acme.com: the cited page is on this site' }
+  const C = (connector: string, label: string | null, kind = 'contact', retrieved_at?: unknown) => contactCurrency({ kind, connector, label, retrieved_at, source_url: 'https://acme.com/team' }, true, now, OWN_SITE).currency
   assert.equal(C('enrich:apollo', `Apollo, record dated ${fresh}`), 'verified_current', 'control: the genuine label verifies')
   assert.equal(C('search:people', `Apollo, record dated ${fresh}`, 'person'), 'search_only', 'a provider-style label on another connector is ignored')
   assert.equal(C('enrich:pdl', `Apollo, record dated ${fresh}`), 'search_only', 'a label naming the other provider is ignored')

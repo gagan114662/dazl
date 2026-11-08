@@ -111,10 +111,10 @@ test('competitor complaints: the same searches, sessions, budget and audit rows;
       for (const [t, names] of [[A, ['Zed', 'Bee', 'Cee', 'Dee']], [B, ['Other']]] as const) {
         for (const [i, n] of names.entries()) await s.db.run('INSERT INTO tenant_competitors (tenant_id, name, position) VALUES (?, ?, ?)', [t, n, i])
       }
-      if (s.raw) { acceptConsent(s.raw, A, 'advanced'); acceptConsent(s.raw, B, 'advanced'); saveCredential(s.raw, A, 'adv:reddit', 'session-of-A', master); saveCredential(s.raw, B, 'adv:reddit', 'session-of-B', master) }
+      if (s.raw) { acceptConsent(s.raw, A, 'advanced'); acceptConsent(s.raw, B, 'advanced'); saveCredential(s.raw, A, 'adv:reddit', 'session-of-A', master); saveCredential(s.raw, A, 'adv:x', 'x-session-of-A', master); saveCredential(s.raw, B, 'adv:reddit', 'session-of-B', master); saveCredential(s.raw, B, 'adv:x', 'x-session-of-B', master) }
       else {
         const scratch = new Database(':memory:'); migrateAllSqlite(scratch)
-        acceptConsent(scratch, A, 'advanced'); acceptConsent(scratch, B, 'advanced'); saveCredential(scratch, A, 'adv:reddit', 'session-of-A', master); saveCredential(scratch, B, 'adv:reddit', 'session-of-B', master)
+        acceptConsent(scratch, A, 'advanced'); acceptConsent(scratch, B, 'advanced'); saveCredential(scratch, A, 'adv:reddit', 'session-of-A', master); saveCredential(scratch, A, 'adv:x', 'x-session-of-A', master); saveCredential(scratch, B, 'adv:reddit', 'session-of-B', master); saveCredential(scratch, B, 'adv:x', 'x-session-of-B', master)
         for (const r of scratch.prepare('SELECT * FROM advanced_consent').all() as Record<string, unknown>[]) await s.db.run('INSERT INTO advanced_consent (tenant_id, scope, version, accepted_at) VALUES (?, ?, ?, ?)', [r.tenant_id, r.scope, r.version, r.accepted_at] as (string | number)[])
         for (const r of scratch.prepare('SELECT * FROM tenant_connectors').all() as Record<string, unknown>[]) await s.db.run('INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?)', [r.tenant_id, r.connector, r.ciphertext, r.last4, r.enabled, r.created_at] as (string | number)[])
         scratch.close()
@@ -131,13 +131,19 @@ test('competitor complaints: the same searches, sessions, budget and audit rows;
       }
       const deps = { worker: worker as never, master, env, now }
       const items = impl === 'sync' ? await collectCompetitorComplaints(s.raw!, A, 'job1', deps) : await gatherCompetitorComplaints(s.db, A, 'job1', deps)
-      out.push({ items, calls, audit: await s.db.all("SELECT tenant_id, connector, scan_job_id, lookup, status, results FROM connector_audit WHERE connector = 'adv:reddit-competitor' ORDER BY insert_seq") })
+      out.push({ items, calls,
+        audit: await s.db.all("SELECT tenant_id, connector, scan_job_id, lookup, status, results FROM connector_audit WHERE connector = 'adv:reddit-competitor' ORDER BY insert_seq"),
+        auditX: await s.db.all("SELECT tenant_id, connector, scan_job_id, lookup, status, results FROM connector_audit WHERE connector = 'adv:x-competitor' ORDER BY insert_seq") })
     } finally { await s.done() }
   }
-  const first = out[0] as { items: { complaint_of: string }[]; calls: { session: string }[]; audit: unknown[] }
-  assert.deepEqual(first.items.map(i => i.complaint_of), ['Zed'], 'budget 3 - 1 recent call = 2 searches (Zed, Bee); Bee failed; old posts dropped')
-  assert.deepEqual(first.calls.map(c => c.session), ['session-of-A', 'session-of-A'], 'only A\'s session is ever sent')
-  assert.equal(first.audit.length, 2)
+  const first = out[0] as { items: { complaint_of: string }[]; calls: { session: string }[]; audit: { status: string; results: number }[]; auditX: { status: string; results: number }[] }
+  // #401/#379: complaint search runs per platform. Reddit: budget 3 - 1 recent call = 2 searches (Zed, Bee); Bee
+  // failed; old posts dropped; Dee beyond budget. X: no recent call, so the full budget 3 (Zed, Bee, Cee); Bee
+  // failed; Dee still beyond budget. Same searches, sessions, budget and audit rows - per platform.
+  assert.deepEqual(first.items.map(i => i.complaint_of), ['Zed', 'Zed', 'Cee'])
+  assert.deepEqual(first.calls.map(c => c.session), ['session-of-A', 'session-of-A', 'x-session-of-A', 'x-session-of-A', 'x-session-of-A'], 'only A\'s own sessions are ever sent, on either platform')
+  assert.deepEqual(first.audit.map(r => [r.status, r.results]), [['ok', 1], ['worker_error', 0]])
+  assert.deepEqual(first.auditX.map(r => [r.status, r.results]), [['ok', 1], ['worker_error', 0], ['ok', 1]])
   for (const r of out.slice(1)) assert.deepEqual(r, out[0])
 })
 
