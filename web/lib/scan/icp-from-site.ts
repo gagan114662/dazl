@@ -8,6 +8,7 @@ import { normalizeIcp, type Icp, type IcpResearch } from './icp.ts'
 import { buildResearch, fromStored, jsonOnly, offerId, researchLinks, toStored, type FetchedPage } from './seller-research.ts'
 import { pickVendor } from './runner.ts'
 import { guardProvider, researchCostUsd, SpendGuard } from '../llm/spend-guard.ts'
+import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { captureError } from '../ops/errors.ts'
 import { TRIAL_SITE_READ_RESERVE_USD } from '../billing/trial-budget.ts'
 import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
@@ -281,7 +282,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     if (spendRefused(e)) {
       // Refused BEFORE any call: the configured model has no listed price (nothing chargeable, not a limit).
       if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
-      if (e.reason === 'over_limit') return { error: 'spend_limit' } // the owner's spend limit: no call was made
+      if (e.reason === 'over_limit' || e.reason === OWNER_POOL_LIMIT_REASON) return { error: 'spend_limit' } // the owner's spend limit: no call was made
       return { error: 'spend_unavailable' } // busy / unsettled / unsaved reservation / count failure: nothing charged
     }
     // The owner's own key made the call. Only a provider authentication refusal is a key problem; any other failure (timeout, 5xx, rate limit,

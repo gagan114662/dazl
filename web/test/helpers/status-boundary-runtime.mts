@@ -98,7 +98,7 @@ bothEngines('actual status HTTP: real session tenant, divergent control/domain, 
       await flushAfter()
       for(let i=0;i<800 && (hasInFlight() || raw.prepare<[string], { status: string }>('SELECT status FROM scan_jobs WHERE id=?').get(id)?.status!=='failed');i++) await sleep()
       const row=raw.prepare('SELECT status,error,attempts,claimed_at FROM scan_jobs WHERE id=?').get(id)
-      assert.deepEqual(row,{status:'failed',error:'budget_stopped',attempts:1,claimed_at:null})
+      assert.deepEqual(row,{status:'failed',error:'unbounded_fallback_hold',attempts:1,claimed_at:null})
       const separateQueue = kind === 'pg' && mode === 'shared' && Boolean(process.env.DATABASE_URL)
       const queue=separateQueue?control:sqliteDb(raw)
       const item=await queue.get('SELECT status,tenant_id FROM work_queue WHERE id=?',[id])

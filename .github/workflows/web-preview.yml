@@ -118,6 +118,15 @@ jobs:
       - name: Production smoke checks against the same build
         if: success() || failure()
         run: npm run test:smoke && npm run test:smoke:chunks
+      # #1006 scan outcomes on the production build: every stop class in Past scans, the campaign page and Home, the
+      # deep-link long copy (per-run budget / fixed cap origin-unknown / shared pool / trial / legacy neutral), and the
+      # QA cost truth (recorded-token component, cache unknown, reservation named as itself). Screenshots into
+      # preview/scan-outcomes for review. pipefail: a harness failure or a silent NOT RUN fails the job.
+      - name: Scan outcomes on the production build (stop classes + cost truth)
+        run: |
+          set -o pipefail
+          SHOTS=preview/scan-outcomes node test/ui/scan-outcomes.ui.mjs | tee /tmp/scan-outcomes.out
+          ! grep -q '^NOT RUN' /tmp/scan-outcomes.out
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
