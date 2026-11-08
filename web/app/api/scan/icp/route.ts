@@ -4,7 +4,7 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { previewIcp } from '@/lib/scan/runner'
-import { MAX_QUERY, mergePriorDecisions, normalizeIcp } from '@/lib/scan/icp'
+import { MAX_QUERY, guardedPreviewResearch, normalizeIcp } from '@/lib/scan/icp'
 import { denied } from '@/lib/workspace-access'
 import { PROVIDER_FAILED_COPY } from '@/lib/error-copy'
 
@@ -34,10 +34,10 @@ export async function POST(req: NextRequest) {
     if (out.error === 'provider_failed') return NextResponse.json({ error: 'provider_failed', message: PROVIDER_FAILED_COPY }, { status: 502 })
     return NextResponse.json({ error: out.error }, { status: out.error === 'no_api_key' || out.error === 'key_unreadable' ? 400 : out.error === 'trial_key_invalid' ? 503 : 402 })
   }
-  // The fresh fields are the inference's; the review DECISIONS are the prior profile's and always take precedence -
-  // merged in whether or not the fresh inference produced research of its own, so model output can never silently
-  // replace a reviewed statement, a rejection, a hold or the typed answer. Presence here is NOT a review; the editor
-  // shows every decision and Run (the explicit review event) applies the canonical semantics.
-  if (out.icp && prior?.research) out.icp = { ...out.icp, research: mergePriorDecisions(out.icp.research, prior.research) }
+  // The fresh fields are the inference's; the research block is the prior profile's, WHOLE - fresh model research
+  // is not new provenance, and the prior block's decisions (reviewed statements, rejections, holds, typed answer)
+  // keep their exact bindings, always: no merge, no conditional, no silent replacement. Presence here is NOT a
+  // review; the editor shows every decision and Run (the explicit review event) applies the canonical semantics.
+  if (out.icp && prior?.research) out.icp = { ...out.icp, research: guardedPreviewResearch(out.icp.research, prior.research) }
   return NextResponse.json(out)
 }

@@ -82,31 +82,27 @@ test('POST /api/scan/icp: spend and provider failures map to their own names and
     assert.equal(cr.u?.length, 1, 'the held offer carries')
     assert.equal(cr.u?.[0].w, true)
     assert.deepEqual(cr.u?.[0].n, ['acme booking'])
-    // The fresh inference produced research of its OWN: the prior decisions still take precedence - the reviewed
-    // statement, the rejection (remapped onto the fresh offer id by offer name), the hold and the typed answer all
-    // carry; a fresh hypothesis restating the rejected statement is dropped (never resurrected); other fresh
-    // hypotheses survive.
+    // The fresh inference produced research of its OWN: fresh model research is not new provenance (no site
+    // recrawl), so the prior block carries WHOLE - every decision with its exact binding, the hold, the typed
+    // answer - and the fresh research is discarded outright. No merge, no conditional.
     const FRESH_RESEARCH = {
       v: 1, site: 'acme.example', q: null, ans: null,
       offers: [{ i: 'f1', n: 'Acme Booking' }],
-      hyps: [
-        { i: 'g1', o: 'f1', k: 'persona', t: 'Clinic owners', s: 'hypothesis', u: null, q: null, at: null },
-        { i: 'g2', o: 'f1', k: 'persona', t: 'Dental influencers', s: 'hypothesis', u: null, q: null, at: null },
-      ],
+      hyps: [{ i: 'g1', o: 'f1', k: 'persona', t: 'Clinic owners', s: 'hypothesis', u: null, q: null, at: null }],
     }
     setPreviewIcp(async () => ({ icp: { summary: 'Fresh inference', who: ['Owner'], industries: [], sizes: [], where: [], signals: [], exclude: [], research: FRESH_RESEARCH }, inferred: true }) as never)
     const merged = await POST(request({ query: 'orthodontists in Texas', prior_icp: prior }))
     assert.equal(merged.status, 200)
     const mj = (await merged.json() as { icp: { research: { offers: { i: string; n: string }[]; hyps: { i: string; o: string; t: string; s: string }[]; u?: { n: string[]; w?: boolean }[]; q?: string | null; ans?: { o: string; t?: string } | null } } }).icp.research
     const byText = new Map(mj.hyps.map(h => [h.t, h]))
-    assert.equal(byText.get('Practice managers')?.s, 'reviewed', 'the reviewed statement carries onto fresh research')
-    assert.equal(byText.get('Dental influencers')?.s, 'rejected', 'the rejection carries and is never resurrected as a hypothesis')
-    assert.equal(byText.get('Clinic owners')?.s, 'hypothesis', 'an unrelated fresh hypothesis survives')
-    assert.equal(byText.get('Practice managers')?.o, 'f1', 'decisions remap onto the fresh offer id by offer name')
-    assert.deepEqual(mj.offers.map(o => o.i), ['f1'], 'the name-matched prior offer is not duplicated')
+    assert.equal(byText.get('Practice managers')?.s, 'reviewed', 'the reviewed statement carries verbatim')
+    assert.equal(byText.get('Dental influencers')?.s, 'rejected', 'the rejection carries verbatim')
+    assert.equal(byText.get('Practice managers')?.o, 'o1', 'the ORIGINAL binding is kept - no remap onto fresh offer ids')
+    assert.deepEqual(mj.offers.map(o => o.i), ['o1'], 'the prior offers, not the fresh ones')
+    assert.equal(byText.has('Clinic owners'), false, 'fresh model research is discarded: not new provenance')
     assert.equal(mj.ans?.t, 'Practice managers')
-    assert.equal(mj.ans?.o, 'f1', 'the typed answer remaps too')
-    assert.equal(mj.q, 'Who buys this?', 'the answered question stays the prior one')
+    assert.equal(mj.ans?.o, 'o1')
+    assert.equal(mj.q, 'Who buys this?')
     assert.equal(mj.u?.length, 1)
     assert.equal(mj.u?.[0].w, true)
     // A prior whose block is absent adds nothing (the fresh research passes through as it is); a malformed prior is
