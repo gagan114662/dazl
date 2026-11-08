@@ -616,6 +616,10 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   else if (uncertainSpend.has(job) || spendAttemptUncertain()) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }
   else if (spendAttemptRejected() !== null && status === 'done') { status = 'failed'; error = rejectionCode(spendAttemptRejected()!); out = null; candidates = null }
+  // The report contract: stop.code IS the code written as the job error. The overrides above are authoritative, so a
+  // stop block staged earlier (source_error, a refusal class, ...) is reconciled to the final terminal code here; the
+  // staged classification survives as superseded_stop_code and the refusal reason is never touched.
+  if (ledger && status === 'failed' && error) ledger.finalizeStop(error)
   // Provenance is recorded at each call site: a step refused BEFORE it ran (SpendRefused) reads skipped_hold; a step that
   // ran and failed reads error. A row still 'started' here can only come from a rethrown stop/auth/accounting failure - it
   // ran or was interrupted - and write() converts it to error. There is no finish-time blanket conversion.
@@ -1265,10 +1269,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // (error:model_<kind>); anything else is this source's own error. The request-level classes persist in the report below.
         ledger.record('search:news', e instanceof ProviderError ? `error:model_${e.kind}` : 'error')
         leads = null
+      } finally {
+        // The request truth of the free news search survives the run EVEN when a later step rethrows (an extraction
+        // refusal, accounting failure, auth error or stop): per-class failure counts, the non-200 statuses seen and the
+        // per-query outcome classes - counts and status codes only, never payloads. A persisted News ERROR stays
+        // distinguishable, and a refusal after a searched query never erases the query's recorded truth.
+        if (note.searched) ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) } } })
       }
-      // The request truth of the free news search survives the run: per-class failure counts, the non-200 statuses seen and the
-      // per-query outcome classes - counts and status codes only, never payloads. A persisted News ERROR stays distinguishable.
-      if (note.searched) ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) } } })
       if (leads && leads.length === 0) leads = null
     }
     if (!leads) {
@@ -1278,7 +1285,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // zero from every source this run could use (no_discovery), or sources that could not conclude with the fallback
       // held (unbounded_fallback_hold). Only an earlier real budget refusal is a budget stop; the fallback's absence is not one.
       if (deps.paidFallback === false) {
-        const code = budgetRefused ? 'budget_stopped' : fallbackStopCode(ledger)
+        // An earlier SpendRefused names the stop by its OWN reason (refusalCode): only a real numeric cap refusal is a
+        // budget stop - count_failed / model_unpriced / accounting / ownership refusals refuse at ANY budget, so
+        // calling them budget_stopped would send the user to raise a budget that cannot fix it.
+        const code = budgetRefused ? refusalCode(new SpendRefused(budgetRefusal!), ledger) : fallbackStopCode(ledger)
         ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal } })
         finish(db, job, 'failed', code, null, 0, ledger)
         return 'failed'

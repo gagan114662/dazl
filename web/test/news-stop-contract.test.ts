@@ -14,10 +14,14 @@ import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob, newsStatus, refusalCode, fallbackStopCode } from '../lib/scan/runner.ts'
 import { SourceRunLedger } from '../lib/scan/source-runs.ts'
 import { SpendRefused } from '../lib/llm/spend-guard.ts'
-import { compareActual } from '../lib/scan/price-estimate.ts'
+import { compareActual, type RunEstimate } from '../lib/scan/price-estimate.ts'
 import { readJobCost } from '../lib/scan/status-reads.ts'
 import { sqliteDb } from '../lib/db/client.ts'
-import type { Provider } from '../lib/llm/provider.ts'
+import { ProviderError, type Provider } from '../lib/llm/provider.ts'
+import { resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { migratePlans } from '../lib/plans.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateEvents } from '../lib/events/store.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
 const master = randomBytes(32)
@@ -41,9 +45,9 @@ test('news failure classes: timeout=network, 429=http+status, empty 200=empty_bo
   for (const c of cases) {
     const r = await newsSearch(c.http, ['q'], 'en', noWait)
     assert.equal(r.failed, c.want.failed, c.name)
-    for (const [k, v] of c.want.fc) assert.equal((r.failure_classes as Record<string, number>)[k], v, `${c.name}: ${k}`)
+    for (const [k, v] of c.want.fc) assert.equal(r.failure_classes[k as keyof typeof r.failure_classes], v, `${c.name}: ${k}`)
     for (const k of ['network', 'http', 'empty_body', 'parse'] as const) if (!c.want.fc.some(([kk]) => kk === k)) assert.equal(r.failure_classes[k], 0, `${c.name}: ${k} stays 0`)
-    assert.equal((r.query_classes as Record<string, number>)[c.want.qc[0]], c.want.qc[1], `${c.name}: query class`)
+    assert.equal(r.query_classes[c.want.qc[0] as keyof typeof r.query_classes], c.want.qc[1], `${c.name}: query class`)
     if (c.want.statuses) assert.deepEqual(r.http_statuses, c.want.statuses, c.name)
     if (c.want.hits !== undefined) assert.equal(r.hits.length, c.want.hits, c.name)
     if (c.want.malformed !== undefined) assert.equal(r.malformed, c.want.malformed, c.name)
@@ -151,7 +155,7 @@ test('clean-empty News + fallback disabled: no_discovery (searched-and-found-not
 // --- Truthful cost: recorded usage is never "not recorded", unsettled USD is never $0, a reservation is not a charge ---
 
 test('compareActual: recorded calls with unsettled USD are stated truthfully; the cap reservation is named as a reservation', () => {
-  const est = { total: { min: 0.09, max: 0.63 }, rows: [] as { kind: string; usd?: { min: number; max: number } }[] }
+  const est: Pick<RunEstimate, 'total' | 'rows'> = { total: { min: 0.09, max: 0.63 }, rows: [] }
   // The QA shape: 1 call, 368 in / 74 out tokens reported, but no priced model -> USD unknown.
   const a = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-future-unlisted', searches: null, reservedUsd: null, requests: 1, requestsWithTokens: 1, capReservedUsd: 0.002214 })
   assert.equal(a.model_usd, null, 'no fabricated USD')
@@ -174,6 +178,160 @@ test('compareActual: recorded calls with unsettled USD are stated truthfully; th
   const d = compareActual(est, { inputTokens: 1000, outputTokens: 100, tokensComplete: true, model: 'claude-sonnet-4-5', searches: 3, reservedUsd: null, requests: 1, requestsWithTokens: 1 })
   assert.ok(d.model_usd !== null && d.model_usd > 0)
   assert.match(d.summary, /from the tokens the provider reported/)
+})
+
+// --- The combined branch: an earlier SpendRefused + paid fallback disabled -------------------------------------
+// Reviewer repro (own-news-refusal): the TinyFish path's spend refusal used to end as budget_stopped for ANY reason.
+// Only a real numeric refusal is a budget stop on this branch too; every other reason keeps its own class end to end.
+async function earlierRefusalRun(budgetJson: string, model: string, countMode: 'ok' | 'huge' | 'fail' = 'ok') {
+  resetTinyfishState()
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  saveKey(db, 'A', 'anthropic', KEY, master)
+  const id = createQueryJob(db, 'A', { query: 'Toronto dental clinics expanding', icp: JSON.stringify(icp) } as never)
+  db.prepare('UPDATE scan_jobs SET run_budget = ?').run(budgetJson)
+  const fetchImpl = (async (u: string) => {
+    if (u.startsWith('https://api.search.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://news.example.test/a', title: 'Dental expansion', snippet: 'Dental clinic expands in Toronto' }] }), { status: 200 })
+    if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: 'https://news.example.test/a', title: 'Dental expansion', text: 'Dental clinic expands in Toronto.' }] }), { status: 200 })
+    if (u === 'https://api.anthropic.com/v1/messages/count_tokens') {
+      if (countMode === 'fail') return new Response('{}', { status: 500 })
+      return new Response(JSON.stringify({ input_tokens: countMode === 'huge' ? 5_000_000 : 1000 }), { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }) as unknown as typeof fetch
+  const prov: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: { research: async () => { throw new Error('the paid fallback is disabled: research must not run') }, complete: async () => '[]', configuredModel: () => model },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  const realFetch = globalThis.fetch
+  globalThis.fetch = fetchImpl
+  process.env.TINYFISH_API_KEY = 'tf-test'
+  try {
+    const r = await runJob(db, claimKeyedJob(db, id)!, { providers: prov, master, score: false, judge: null, fetchImpl, paidFallback: false })
+    const job = db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string }
+    const tf = db.prepare("SELECT status FROM scan_source_runs WHERE job_id = ? AND collector = 'search:tinyfish'").get(id) as { status: string } | undefined
+    const row = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(id) as { report: string } | undefined
+    const stop = row ? (JSON.parse(row.report) as { stop: { code: string; spend_refusal_reason: string | null; superseded_stop_code?: string | null } | null }).stop : null
+    return { r, job, tf, stop }
+  } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
+}
+
+test('earlier refusal + fallback disabled: every non-numeric reason keeps its class; only a numeric refusal is a budget stop', async () => {
+  // The reviewer's exact repro: the guard's count_tokens preflight fails -> count_failed. Never a budget stop.
+  const c = await earlierRefusalRun('{"max_usd":5,"paid_fallback":false}', 'claude-sonnet-4-5', 'fail')
+  assert.equal(c.job.error, 'spend_count_failed')
+  assert.equal(c.tf?.status, 'partial_hold:count_failed', 'the source row keeps the exact refusal reason')
+  assert.deepEqual(c.stop, { code: 'spend_count_failed', spend_refusal_reason: 'count_failed' }, 'report and job agree, reason kept')
+  // An unpriced model refuses at ANY budget.
+  const m = await earlierRefusalRun('{"max_usd":5,"paid_fallback":false}', 'unpriced-review-model')
+  assert.equal(m.job.error, 'model_unpriced')
+  assert.equal(m.stop?.code, 'model_unpriced')
+  assert.equal(m.stop?.spend_refusal_reason, 'model_unpriced')
+  // The numeric controls: a budget too small for the first paid call, and an estimate over the budget, stay budget_stopped.
+  const small = await earlierRefusalRun('{"max_usd":0.0001,"paid_fallback":false}', 'claude-sonnet-4-5')
+  assert.equal(small.job.error, 'budget_stopped', 'a real numeric refusal is still a budget stop')
+  assert.equal(small.stop?.spend_refusal_reason, 'over_limit')
+  const huge = await earlierRefusalRun('{"max_usd":5,"paid_fallback":false}', 'claude-sonnet-4-5', 'huge')
+  assert.equal(huge.job.error, 'budget_stopped', 'a real estimate over the numeric budget is still a budget stop')
+  assert.equal(huge.stop?.spend_refusal_reason, 'over_limit')
+})
+
+// --- The free search's request truth survives a later failure --------------------------------------------------
+// Reviewer repro (own-news-diagnostic-loss): a SpendRefused from the extraction step rethrew before the note was
+// staged, dropping the already-recorded query truth (report.news null despite a searched, successful query).
+test('a refusal AFTER the free search ran still persists the bounded news note (counts/statuses, never payloads)', async () => {
+  resetNewsQueue()
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db)
+  saveKey(db, 'A', 'anthropic', KEY, master)
+  const id = createQueryJob(db, 'A', { query: 'Toronto dental clinics expanding', icp: JSON.stringify(icp) } as never)
+  let calls = 0
+  const prov: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: {
+      research: async () => { throw new Error('must not run') },
+      complete: async () => { calls++; if (calls === 1) return '["dental Toronto"]'; throw new SpendRefused('count_failed') },
+    },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  const r = await runJob(db, claimKeyedJob(db, id)!, {
+    providers: prov, master, score: false, judge: null,
+    newsHttp: async () => ({ status: 200, body: JSON.stringify({ articles: [{ url: 'https://news.example.test/a', title: 'Dental expansion' }] }) }),
+    fetchPage: async () => ({ text: 'Dental clinic is opening a Toronto office. '.repeat(20), title: 'Expansion', retrievedAt: 1 }),
+  })
+  assert.equal(r, 'failed')
+  const job = db.prepare('SELECT error FROM scan_jobs WHERE id = ?').get(id) as { error: string }
+  assert.equal(job.error, 'spend_count_failed', 'the refusal keeps its own class')
+  const news = db.prepare("SELECT status FROM scan_source_runs WHERE job_id = ? AND collector = 'search:news'").get(id) as { status: string }
+  assert.match(news.status, /^partial_hold:count_failed/, 'the source row names the hold-stopped partial with its reason')
+  const row = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(id) as { report: string }
+  const report = JSON.parse(row.report) as { news: { attempted: number; query_classes: Record<string, number> } | null; stop: { code: string; spend_refusal_reason: string | null } }
+  assert.ok(report.news, 'the searched query truth is NOT dropped by the later refusal')
+  assert.equal(report.news!.attempted, 1)
+  assert.equal(report.news!.query_classes.ok, 1)
+  assert.equal(report.stop.code, 'spend_count_failed')
+  assert.equal(report.stop.spend_refusal_reason, 'count_failed')
+  resetNewsQueue()
+})
+
+// --- Terminal truth: finish()'s authoritative overrides reconcile the staged stop block ------------------------
+// Reviewer repro (own-news-report): an uncertain (maybe-billed) extraction failure with the fallback held ended the
+// job accounting_uncertain while report.stop still said source_error. stop.code must be the FINAL job error.
+test('an uncertain paid failure overrides the staged stop: report.stop carries the final code AND the superseded one', async () => {
+  resetNewsQueue()
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db)
+  saveKey(db, 'A', 'anthropic', KEY, master)
+  const id = createQueryJob(db, 'A', { query: 'Toronto dental clinics expanding', icp: JSON.stringify(icp), runBudget: '{"paid_fallback":false}' } as never)
+  let calls = 0
+  const prov: Record<'anthropic' | 'openai', Provider> = {
+    anthropic: {
+      research: async () => { throw new Error('must not run') },
+      complete: async () => { calls++; if (calls === 1) return '["dental Toronto"]'; throw new ProviderError('retry', 'network_or_timeout', 'uncertain') },
+    },
+    openai: { research: async () => ({ text: '', citedUrls: [] }) },
+  }
+  const r = await runJob(db, claimKeyedJob(db, id)!, {
+    providers: prov, master, score: false, judge: null,
+    newsHttp: async () => ({ status: 200, body: JSON.stringify({ articles: [{ url: 'https://news.example.test/a', title: 'Dental expansion' }] }) }),
+    fetchPage: async () => ({ text: 'Dental clinic is opening a Toronto office. '.repeat(20), title: 'Expansion', retrievedAt: 1 }),
+  })
+  assert.equal(r, 'failed')
+  const job = db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string }
+  assert.equal(job.error, 'accounting_uncertain', 'a maybe-billed call ends the run accounting_uncertain')
+  const row = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(id) as { report: string }
+  const stop = (JSON.parse(row.report) as { stop: { code: string; spend_refusal_reason: string | null; superseded_stop_code?: string | null } }).stop
+  assert.equal(stop.code, 'accounting_uncertain', 'stop.code is the code written as the job error')
+  assert.equal(stop.superseded_stop_code, 'source_error', 'the staged classification is preserved, not lost')
+  assert.equal(stop.spend_refusal_reason, null, 'no spend refusal happened; nothing invented')
+  const news = db.prepare("SELECT status FROM scan_source_runs WHERE job_id = ? AND collector = 'search:news'").get(id) as { status: string }
+  assert.equal(news.status, 'error:model_retry', 'the source row names the failed stage independently')
+  resetNewsQueue()
+})
+
+// --- Canonical cost truth: dated served ids price via the settlement normalization -----------------------------
+test('compareActual: a dated KNOWN served model prices (the QA token shape settles to $0.002214), genuinely-unlisted and mixed models stay honestly unknown, cache tokens price at the shared factors', () => {
+  const modelRow: RunEstimate['rows'][number] = { id: 'model', label: 'Model', provider: 'anthropic', kind: 'model', unit: '1M input tokens', unit_usd: '$3.00 in / $15.00 out per 1M tokens', units: { min: 0, max: 1 }, usd: { min: 0, max: 0.01 }, capped: true, note: '' }
+  const est: Pick<RunEstimate, 'total' | 'rows'> = { total: { min: 0.001, max: 0.01 }, rows: [modelRow] }
+  // Dated known id: the settlement path's priceOf strips the -YYYYMMDD suffix; an exact-map lookup lied "no listed price".
+  const dated = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1, capReservedUsd: 0.002214 })
+  assert.equal(dated.model_usd, 0.002214, '368in/74out at the sonnet price')
+  assert.match(dated.summary, /from the tokens the provider reported/)
+  assert.doesNotMatch(dated.summary, /no listed price|unknown/, 'a priced dated model is never reported unknown')
+  assert.match(dated.summary, /a reservation, not a settled charge/, 'the reservation is still named as itself, never folded into the cost')
+  assert.equal(dated.within, 'within')
+  // Genuinely unlisted model: honestly unknown with the real reason.
+  const unlisted = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-future-unlisted', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1 })
+  assert.equal(unlisted.model_usd, null)
+  assert.match(unlisted.summary, /no listed price/)
+  assert.match(unlisted.summary, /unknown, not \$0/)
+  // Mixed served models with different prices: the stored sums cannot be priced as one total - never fabricated.
+  const mixed = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', servedModels: ['claude-sonnet-4-5-20250929', 'claude-opus-4-1'], searches: 0, reservedUsd: null, requests: 2, requestsWithTokens: 2 })
+  assert.equal(mixed.model_usd, null)
+  assert.match(mixed.summary, /more than one served model/)
+  assert.match(mixed.summary, /not \$0/)
+  // Mixed ids that normalize to the SAME price entry price fine (dated + undated sonnet).
+  const samePrice = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', servedModels: ['claude-sonnet-4-5-20250929', 'claude-sonnet-4-5'], searches: 0, reservedUsd: null, requests: 2, requestsWithTokens: 2 })
+  assert.equal(samePrice.model_usd, 0.002214)
+  // Cache tokens at the shared factors (writes 2x, reads 0.1x the input price) via the same completionCost the settlement uses.
+  const cached = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1, cacheWriteTokens: 1000, cacheReadTokens: 2000 })
+  assert.equal(cached.model_usd, (368 * 3 + 74 * 15 + 1000 * 3 * 2 + 2000 * 3 * 0.1) / 1e6)
 })
 
 test('readJobCost returns BOTH reservation columns (the cap reservation was invisible to the cost read)', async () => {

@@ -76,8 +76,11 @@ await ctx.route('**/*', async route => {
   // unknown (never $0/free) and the reservation is named a reservation (never an invoice or a settled charge).
   if (u.pathname === '/api/scan/status') {
     const id = u.searchParams.get('job_id')
-    if (id === ALL.sourceErr.id) return json({ status: 'failed', error: 'source_error', provider_issues: [], cost: { estimate: { total: { min: 0.001, max: 0.01 } }, actual: { summary: "1 model call recorded (368 input / 74 output tokens), but no USD cost could be settled (the served model has no listed price) - the actual cost is unknown, not $0. Estimate was $0.00-$0.01. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", model_usd: null, within: 'unknown' } } })
-    if (id === ALL.holdErr.id) return json({ status: 'failed', error: 'unbounded_fallback_hold', provider_issues: [] })
+    // The QA truth (job 70a6111e): the served id claude-sonnet-4-5-20250929 is a KNOWN dated model - priceOf strips the
+    // date, so 368in/74out prices to $0.002214, never "no listed price". The cap reservation is named as itself.
+    if (id === ALL.sourceErr.id) return json({ status: 'failed', error: 'source_error', provider_issues: [], cost: { estimate: { total: { min: 0.001, max: 0.01 } }, actual: { summary: "Actual model cost $0.0022 from the tokens the provider reported, against an estimate of $0.00-$0.01 (inside the range). Not an invoice. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", model_usd: 0.002214, within: 'within' } } })
+    // The genuinely-unlisted case separately: recorded calls, no priced model -> honestly unknown, never $0.
+    if (id === ALL.holdErr.id) return json({ status: 'failed', error: 'unbounded_fallback_hold', provider_issues: [], cost: { estimate: { total: { min: 0.001, max: 0.01 } }, actual: { summary: '1 model call recorded (368 input / 74 output tokens), but no USD cost could be settled (the served model has no listed price) - the actual cost is unknown, not $0. Estimate was $0.00-$0.01.', model_usd: null, within: 'unknown' } } })
     if (id === ALL.noDisc.id) return json({ status: 'failed', error: 'no_discovery', provider_issues: [] })
   }
   const one = Object.values(ALL).find(j => u.pathname === `/api/campaigns/${j.id}`)
@@ -164,11 +167,13 @@ try {
   await page.getByText(/A source this run depends on failed, so the run stopped before it could conclude/).waitFor({ timeout: 15000 })
   await shot('deep-source-error-cost')
   if (!before) {
-    assert.equal(await costEl.getAttribute('data-within'), 'unknown', 'unsettled cost stays within=unknown')
-    assert.equal((await costEl.textContent()).trim(), "Estimated $0.00 - $0.01 at start. 1 model call recorded (368 input / 74 output tokens), but no USD cost could be settled (the served model has no listed price) - the actual cost is unknown, not $0. Estimate was $0.00-$0.01. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", 'unsettled known-call cost + reservation, verbatim')
+    assert.equal(await costEl.getAttribute('data-within'), 'within', 'the dated known model prices inside the estimate range')
+    assert.equal((await costEl.textContent()).trim(), "Estimated $0.00 - $0.01 at start. Actual model cost $0.0022 from the tokens the provider reported, against an estimate of $0.00-$0.01 (inside the range). Not an invoice. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", 'the QA cost truth, verbatim: priced dated model, reservation named as itself')
     await page.goto(`${base}/app/leads?job_id=${ALL.holdErr.id}`, { waitUntil: 'networkidle' })
     await page.getByText(/the broader paid research step has no price bound, so the run stopped instead of starting it/).waitFor({ timeout: 15000 })
-    assert.equal(await page.getByTestId('scan-cost').count(), 0, 'no cost record: no cost line')
+    const holdCost = page.getByTestId('scan-cost')
+    assert.equal(await holdCost.getAttribute('data-within'), 'unknown', 'a genuinely unlisted model stays unknown')
+    assert.match((await holdCost.textContent()) ?? '', /no listed price.*unknown, not \$0/s, 'unknown is named, never $0')
     await shot('deep-unbounded-hold')
     await page.goto(`${base}/app/leads?job_id=${ALL.noDisc.id}`, { waitUntil: 'networkidle' })
     await page.getByText(/The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope/).waitFor({ timeout: 15000 })

@@ -45,6 +45,14 @@ export class SourceRunLedger {
   private parts: ReportParts = {}
   // Stage facts for the run report (scan/run-report.ts); merged, written once with the job.
   report(p: ReportParts): void { this.parts = { ...this.parts, ...p } }
+  // The report contract: stop.code IS the code written as the job error. finish() applies the authoritative terminal
+  // overrides (accounting_failed / accounting_uncertain / provider rejection) AFTER stop blocks are staged, so it
+  // reconciles a staged stop to the final code here. The staged classification survives as superseded_stop_code and
+  // the refusal reason and superseded refusal reason are never touched - the record keeps the whole truth.
+  finalizeStop(finalCode: string): void {
+    const s = this.parts.stop
+    if (s && s.code !== finalCode) this.parts = { ...this.parts, stop: { ...s, code: finalCode, superseded_stop_code: s.code } }
+  }
   // Whole-attempt usage from the canonical call list (research calls count as requests with unknown tokens): never a TinyFish-stage snapshot.
   private modelSummary(): NonNullable<ReportParts['model']> {
     const known = this.calls.filter(c => c.input_tokens !== null && c.output_tokens !== null)

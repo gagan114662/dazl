@@ -29,8 +29,10 @@ export interface ReportParts {
   // Why the scan stopped when it did: the bounded stop code written as the job error, and the exact spend-refusal reason
   // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean. When an
   // earlier refusal names the stop but a later refusal also happened (e.g. the trailing research_unbounded), the later
-  // reason is preserved too - the record keeps BOTH, never only the code's priority winner.
-  stop?: { code: string; spend_refusal_reason: string | null; superseded_refusal_reason?: string | null } | null
+  // reason is preserved too - the record keeps BOTH, never only the code's priority winner. When finish()'s
+  // authoritative terminal overrides (accounting_failed / accounting_uncertain / provider rejection) replace the
+  // staged classification, code is the FINAL job error and the staged one is kept as superseded_stop_code.
+  stop?: { code: string; spend_refusal_reason: string | null; superseded_refusal_reason?: string | null; superseded_stop_code?: string | null } | null
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
