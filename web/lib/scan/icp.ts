@@ -90,19 +90,24 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
 
 // "Review profile first" with an existing profile: the fresh inference's research is a draft, but the prior
 // profile's EXPLICIT decisions - reviewed statements, rejections, held groups, the typed answer - are the person's
-// and always take precedence, whether or not the fresh inference produced research of its own. Decisions are
-// remapped onto the fresh offer-id space by stored offer name (a prior offer the fresh block lacks is carried whole,
-// so no decision loses its binding), and a fresh unreviewed hypothesis restating a decided statement is dropped: a
-// rejection never resurfaces as a new hypothesis. Decisions outrank fresh hypotheses under the storage caps.
+// and always take precedence, whether or not the fresh inference produced research of its own. Binding rules:
+//   - A prior offer remaps onto a fresh offer ONLY by a unique stored-name match. A name two fresh offers share is
+//     not an identity: the PRIOR offer carries whole and the decision keeps its exact binding, never a positional
+//     guess. Names the fresh block lacks carry whole too.
+//   - Caps: fresh-only content yields first. A prior decision, the offer it binds to and the typed answer's offer
+//     are never truncated by the storage caps.
+//   - A fresh unreviewed hypothesis restating a decided statement is dropped: a rejection never resurfaces.
 // Presence is not a review: no status changes here; only the review editor's explicit submit does that.
 export function mergePriorDecisions(fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
   if (!fresh) return prior
-  const carriedOffers: { i: string; n: string }[] = []
-  const idByName = new Map(fresh.offers.map(o => [storedKey(o.n), o.i]))
+  const nameCount = new Map<string, number>()
+  for (const o of fresh.offers) { const k = storedKey(o.n); nameCount.set(k, (nameCount.get(k) ?? 0) + 1) }
+  const idByUniqueName = new Map(fresh.offers.filter(o => nameCount.get(storedKey(o.n)) === 1).map(o => [storedKey(o.n), o.i]))
   const usedIds = new Set(fresh.offers.map(o => o.i))
   const remap = new Map<string, string>()
+  const carriedOffers: { i: string; n: string }[] = []
   for (const o of prior.offers) {
-    const hit = idByName.get(storedKey(o.n))
+    const hit = idByUniqueName.get(storedKey(o.n))
     if (hit) { remap.set(o.i, hit); continue }
     let id = o.i
     for (let n = 2; usedIds.has(id); n++) id = `${o.i}-${n}`
@@ -121,11 +126,15 @@ export function mergePriorDecisions(fresh: IcpResearch | undefined, prior: IcpRe
     carried.push({ ...h, i, o })
     decided.add(keyOf(o, h.k, h.t))
   }
-  const hyps = [...carried, ...fresh.hyps.filter(h => !decided.has(keyOf(h.o, h.k, h.t)))]
   const seenU = new Set<string>()
   const u = [...(fresh.u ?? []), ...(prior.u ?? [])].filter(x => { const k = JSON.stringify(x); if (seenU.has(k)) return false; seenU.add(k); return true })
   const ans = prior.ans ? { ...prior.ans, o: remap.get(prior.ans.o) ?? prior.ans.o } : fresh.ans
-  const merged: IcpResearch = { v: 1, site: fresh.site, offers: [...carriedOffers, ...fresh.offers], hyps, q: prior.ans ? prior.q : fresh.q, ans, ...(u.length ? { u } : {}) }
+  // Every offer a decision binds to is protected; fresh-only offers fill the remaining room.
+  const protectedIds = new Set([...remap.values(), ...(prior.ans ? [remap.get(prior.ans.o) ?? ''] : [])])
+  const offers = [...carriedOffers, ...fresh.offers.filter(o => protectedIds.has(o.i)), ...fresh.offers.filter(o => !protectedIds.has(o.i))].slice(0, RCAPS.offers)
+  const keepIds = new Set(offers.map(o => o.i))
+  const hyps = [...carried, ...fresh.hyps.filter(h => keepIds.has(h.o) && !decided.has(keyOf(h.o, h.k, h.t)))].slice(0, RCAPS.hyps)
+  const merged: IcpResearch = { v: 1, site: fresh.site, offers, hyps, q: prior.ans ? prior.q : fresh.q, ans: ans && keepIds.has(ans.o) ? ans : null, ...(u.length ? { u } : {}) }
   return normalizeResearch(merged) ?? prior
 }
 

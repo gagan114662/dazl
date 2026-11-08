@@ -417,3 +417,27 @@ test('mergePriorDecisions: unreviewed prior hypotheses do NOT carry - only expli
   const m = mergePriorDecisions(fresh, prior)!
   assert.deepEqual(m.hyps.map(h => h.t), ['Clinic owners'], 'a prior unreviewed hypothesis is the old draft, not a decision')
 })
+
+// Reviewer merge probes (revision 6 review): ambiguity and caps must never silently move or drop a prior decision.
+test('mergePriorDecisions: a duplicate fresh offer name is not authority - the prior offer carries whole, no positional bind', () => {
+  const prior = { v: 1 as const, site: 'example.test', q: null, ans: null, offers: [{ i: 'old', n: 'Booking' }], hyps: [{ i: 'reject', o: 'old', k: 'persona' as const, t: 'Dental influencers', s: 'rejected' as const, u: null, q: null, at: null }] }
+  const fresh = { v: 1 as const, site: 'example.test', q: null, ans: null, offers: [{ i: 'a', n: 'Booking' }, { i: 'b', n: 'Booking' }], hyps: [] }
+  const out = mergePriorDecisions(fresh, prior)!
+  assert.ok(!out.hyps.some(h => h.o === 'b'), 'an ambiguous fresh name never binds a rejection to one of the duplicates')
+  const bound = out.hyps.find(h => h.t === 'Dental influencers')
+  const boundOffer = out.offers.find(o => o.i === bound?.o)
+  assert.equal(boundOffer?.n, 'Booking')
+  assert.ok(bound?.o === 'old' || bound?.o === 'a' ? bound?.o === 'old' : true, 'binds to the carried prior offer')
+  assert.equal(bound?.o, 'old', 'the prior offer carries whole with its own id')
+})
+
+test('mergePriorDecisions: caps drop fresh-only content first - a prior decision on a matched offer survives', () => {
+  const priorOffers = Array.from({ length: 5 }, (_, i) => ({ i: `old${i}`, n: `Old ${i}` }))
+  priorOffers.push({ i: 'matched', n: 'Booking' })
+  const prior = { v: 1 as const, site: 'example.test', q: null, ans: null, offers: priorOffers, hyps: [{ i: 'reject', o: 'matched', k: 'persona' as const, t: 'Dental influencers', s: 'rejected' as const, u: null, q: null, at: null }] }
+  const fresh = { v: 1 as const, site: 'example.test', q: null, ans: null, offers: [{ i: 'other', n: 'Fresh extra' }, { i: 'new', n: 'Booking' }], hyps: [] }
+  const out = mergePriorDecisions(fresh, prior)!
+  assert.equal(out.hyps.length, 1, 'the prior rejection survives the caps')
+  assert.equal(out.hyps[0].o, 'new', 'bound to the name-matched fresh offer, which is protected from the cap')
+  assert.ok(!out.offers.some(o => o.i === 'other'), 'the fresh-only offer yields to the cap')
+})
