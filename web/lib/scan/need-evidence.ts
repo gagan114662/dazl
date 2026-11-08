@@ -132,40 +132,11 @@ export function planNeedSupport(plan: QueryPlan): PlanNeedSupport {
 }
 
 // ---------------------------------------------------------------------------------------------------- writer
-// The registrable domain of a URL or bare host, lowercased: the comparison key for the author's profile-website
-// binding. Same second-level-suffix rule as the rubric's own-name resolution (co.uk, com.au move one label more).
-const DOMAIN_SECOND_LEVEL = new Set(['co', 'com', 'org', 'net', 'gov', 'edu', 'ac', 'or', 'ne', 'go', 'gob', 'nom', 'mil'])
-export function registrableDomain(v: string | null | undefined): string | null {
-  const raw = (v ?? '').trim()
-  if (!raw) return null
-  try {
-    const host = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.toLowerCase().replace(/^www\./, '')
-    const parts = host.split('.')
-    if (parts.length < 2) return null
-    const sld = parts.length >= 3 && parts[parts.length - 1].length === 2 && DOMAIN_SECOND_LEVEL.has(parts[parts.length - 2])
-    return parts.slice(-(sld ? 3 : 2)).join('.')
-  } catch { return null }
-}
-
-// Shared/platform hosts: the registrable domain is the PLATFORM, not the author's site, so a subdomain-level
-// comparison is unsound there (any wordpress.com blog would bind any other). On a shared host the author's site
-// binds only on FULL normalized host equality (tallyline.wordpress.com == tallyline.wordpress.com).
-const SHARED_HOSTS = new Set(['wordpress.com', 'blogspot.com', 'github.io', 'gitlab.io', 'netlify.app', 'vercel.app', 'webflow.io', 'wixsite.com', 'square.site', 'linktr.ee', 'substack.com', 'medium.com', 'notion.site', 'carrd.co', 'myshopify.com', 'google.com'])
-function normalizedHost(v: string | null | undefined): string | null {
-  const raw = (v ?? '').trim()
-  if (!raw) return null
-  try { return new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.toLowerCase().replace(/^www\./, '') || null } catch { return null }
-}
-// The website binding, ONE function shared by the writer and the reader revalidation: the author's source-reported
-// profile website IS the lead's company domain - full-host equal, or registrable equal OFF shared platforms.
-export function websiteBindingMatches(authorUrl: string | null | undefined, leadDomain: string | null | undefined): boolean {
-  const a = normalizedHost(authorUrl), l = normalizedHost(leadDomain)
-  if (!a || !l) return false
-  if (a === l) return true
-  const ra = registrableDomain(a), rl = registrableDomain(l)
-  if (!ra || ra !== rl) return false
-  return !SHARED_HOSTS.has(ra)
-}
+// The author's profile website is captured and stored as ATTRIBUTED DATA (author_url) - the poster's own claim,
+// never authority. Reviewer decision 2026-11-07 23:16 EST: a self-asserted website matching the confirmed domain
+// is NOT independent verification of affiliation (an impersonator, customer or agency can post the same website),
+// so it never promotes to verified_buying_need; only a source-reported company binds. The capture stays because
+// the claim is legitimate evidence context for a human reviewer.
 
 // A demand-signal post the search's own intake collected, bound to the lead that cites it by the EXACT source URL.
 // author/published_at are the source's own values; null when the source does not carry them (never inferred).
@@ -269,15 +240,9 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
         // row, and the company domain is confirmed NOW. high_intent without all three stays needs_evidence.
         const authorName = (q.requester.name ?? '').trim()
         const authorCompany = (q.requester.company ?? '').trim()
-        const authorSite = normalizedHost(artifact.author?.url)
-        const companyBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(lead.company)
-        // The second supported same-source binding: the author's profile website - reported verbatim in the same
-        // platform payload (today only X carries one) - IS the lead's own domain. Never parsed from free text,
-        // never inferred; shared-platform hosts bind only on full-host equality, and the domain itself must still
-        // be confirmed NOW by the lead's own evidence below. Self-asserted: it attests the poster's OWN claim, and
-        // reviewer qualification decides whether that claim meets the verified-company bar.
-        const websiteBound = websiteBindingMatches(artifact.author?.url, lead.company_domain)
-        const authorBound = companyBound || websiteBound
+        // ONLY a source-reported company binds (reviewer 2026-11-07 23:16): the author's profile website is the
+        // poster's self-asserted claim, kept as attributed data, never authority.
+        const authorBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(lead.company)
         const leadVerified = lead.review_reason === null && lead.confidence !== null && lead.quarantined_at === null && !heldReason
         const domainNow = authorBound && leadVerified && !!lead.company_domain ? await domainConfirmedDb(db, tenantId, lead.id, lead.company_domain) : false
         const ok = authorBound && leadVerified && domainNow
@@ -285,7 +250,7 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
         // author (today every worker platform - Reddit reports only a username) can never verify, and company is
         // NEVER inferred from the lead, the post text or the seller profile. Such a lead ends at needs_evidence
         // with the reason saying exactly why, not at a silent dead end.
-        const unbound = !authorCompany && !authorSite
+        const unbound = !authorCompany
           ? authorName ? 'author_company_unavailable_from_source' : 'author_unavailable_from_source'
           : 'author_company_mismatch'
         rows.push({
@@ -365,8 +330,8 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
 // missing, never a generic gap (reviewer #401/#379).
 const NEED_REASON_TEXT: Record<string, string> = {
   author_unavailable_from_source: 'the source does not identify the poster',
-  author_company_unavailable_from_source: "the source does not report the poster's company or website",
-  author_company_mismatch: "the poster's reported company or website does not match this lead",
+  author_company_unavailable_from_source: "the source does not report the poster's company",
+  author_company_mismatch: 'the poster belongs to a different company than this lead',
   lead_not_verified: 'the lead itself is not a verified row',
   domain_unconfirmed_now: 'the company domain is not confirmed now',
 }
@@ -435,16 +400,13 @@ export function revalidateDemandContext(rec: DemandBindingRecord, ctx: DemandRea
 // belongs to the lead's company, and the company domain is confirmed NOW. Name canonicalization is not authority: it
 // only compares the source-reported author company to the lead's company; decision-maker authority was scored by the
 // classifier from the artifact's own headline at write time and re-scored on re-read (revalidateDemandContext).
-export function revalidateVerifiedBinding(rec: DemandBindingRecord, leadCompany: string, leadCompanyDomain: string | null, domainConfirmedNow: boolean): { ok: true } | { ok: false; reason: string } {
+export function revalidateVerifiedBinding(rec: DemandBindingRecord, leadCompany: string, domainConfirmedNow: boolean): { ok: true } | { ok: false; reason: string } {
   const authorName = (rec.author_name ?? '').trim()
   const authorCompany = (rec.author_company ?? '').trim()
-  const authorSite = normalizedHost(rec.author_url)
-  const companyBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(leadCompany)
-  const websiteBound = websiteBindingMatches(rec.author_url, leadCompanyDomain)
-  if (!companyBound && !websiteBound) {
+  if (!authorCompany || companyKey(authorCompany) === '' || companyKey(authorCompany) !== companyKey(leadCompany)) {
     // The same split the writer records (need-evidence.ts recordNeedEvidence): the unavailable-vs-mismatch
     // distinction survives a re-read, so a stored verified row whose binding broke says which way it broke.
-    const unbound = !authorCompany && !authorSite
+    const unbound = !authorCompany
       ? authorName ? 'author_company_unavailable_from_source' : 'author_unavailable_from_source'
       : 'author_company_mismatch'
     return { ok: false, reason: `buying_need_unproven:${unbound}` }
@@ -493,7 +455,7 @@ export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string,
       if (!art.ok) return { status: 'unproven', reason: art.reason }
       const held = await db.get<{ x: number }>("SELECT 1 AS x FROM lead_enrichments h WHERE h.lead_id = ? AND h.connector = 'scan:gate' AND h.kind = 'gate_failed'", [leadId])
       if (held) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
-      const b = revalidateVerifiedBinding(record, lead.company, lead.company_domain, !!lead.company_domain && await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))
+      const b = revalidateVerifiedBinding(record, lead.company, !!lead.company_domain && await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))
       if (!b.ok) return { status: 'unproven', reason: b.reason }
     }
     if (record.verdict === 'unproven') return { status: 'unproven', reason: record.reason ?? 'buying_need_unproven' }

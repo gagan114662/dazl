@@ -59,7 +59,7 @@ export function needProven(db: Database.Database, job: { id: string; user_id: st
   if (!revalidateDemandContext(rec, { rubric: ctx.rubric, rubricReason: null, planSupportKey: ctx.planSupportKey, asOf: ctx.asOf }).ok) return false
   // The SAME artifact binding as the async reader: the lead's current citation/quote/date are the recorded ones.
   if (!revalidateArtifactBinding(rec, l).ok) return false
-  return revalidateVerifiedBinding(rec, l.company, l.company_domain, domainConfirmed(db, job.user_id, l.id, l.company_domain)).ok
+  return revalidateVerifiedBinding(rec, l.company, domainConfirmed(db, job.user_id, l.id, l.company_domain)).ok
 }
 
 export function classifyLeads(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map(), need: NeedGate = { rubric: null }): LeadYield[] {
