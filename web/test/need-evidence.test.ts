@@ -256,6 +256,36 @@ bothEngines('a source-reported author profile website matching the confirmed dom
   assert.equal((await need(db, A, job, 's1')).status, 'unproven')
 })
 
+// The negative set the evidence contract must hold (reviewer #401/#379): the profile website is SELF-ASSERTED, so
+// every shape where it does not specifically IS the lead's own domain stays needs_evidence - a personal site, a
+// customer's or agency's site, and any shared-platform host where the registrable domain is the platform's.
+bothEngines('personal, customer, agency and shared-platform websites never bind the author to the lead', async ({ db }) => {
+  const job = await basePlay(db, A)
+  const xurl = (id: string) => `https://x.com/poster/status/${id}`
+  const mk = async (id: string, domain = 'tallyline.example') => { await lead(db, job, id, { company: 'Tallyline', domain, url: xurl(id), published: '2026-10-28' }); await confirmDomain(db, A, id, domain) }
+  await mk('n1') // personal site
+  await mk('n2') // the poster is a CUSTOMER of the lead: their own company's site
+  await mk('n3') // an agency posting for clients: the agency's site
+  await mk('n4') // a site on a shared platform whose registrable domain is the platform
+  await mk('n5', 'tallyline.wordpress.com') // even when the LEAD's domain is on the shared host: a different blog there
+  const s = await recordNeedEvidence(db, A, job, {
+    asOf: AS_OF,
+    demandArtifacts: [
+      artifact(xurl('n1'), { author: { name: 'Kai L', headline: 'Co-founder at Tallyline', company: null, url: 'https://kailund.dev' }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(xurl('n2'), { author: { name: 'Pat M', headline: 'Ops lead, happy Tallyline customer', company: null, url: 'https://patsco.example' }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(xurl('n3'), { author: { name: 'Agency Ana', headline: 'Growth agency for B2B startups', company: null, url: 'https://an.agency.example' }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(xurl('n4'), { author: { name: 'Sam W', headline: 'Founder at Tallyline', company: null, url: 'https://tallyline.wordpress.com' }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(xurl('n5'), { author: { name: 'Vic B', headline: 'Founder at Tallyline', company: null, url: 'https://otherblog.wordpress.com' }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+    ],
+  })
+  assert.equal(s.verified_buying_need, 0)
+  assert.equal(s.needs_evidence, 5)
+  for (const id of ['n1', 'n2', 'n3', 'n4', 'n5']) {
+    assert.equal((await record(db, A, id))!.reason, 'author_company_mismatch', id)
+    assert.notEqual((await need(db, A, job, id)).status, 'verified_buying_need', id)
+  }
+})
+
 // ---------------------------------------------------------------------------------------------------- source dates: own, old, future, missing
 bothEngines('only the source artifact\'s OWN date counts: missing, future or stale dates never verify', async ({ db }) => {
   const job = await basePlay(db, A)

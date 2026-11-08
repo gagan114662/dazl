@@ -147,6 +147,26 @@ export function registrableDomain(v: string | null | undefined): string | null {
   } catch { return null }
 }
 
+// Shared/platform hosts: the registrable domain is the PLATFORM, not the author's site, so a subdomain-level
+// comparison is unsound there (any wordpress.com blog would bind any other). On a shared host the author's site
+// binds only on FULL normalized host equality (tallyline.wordpress.com == tallyline.wordpress.com).
+const SHARED_HOSTS = new Set(['wordpress.com', 'blogspot.com', 'github.io', 'gitlab.io', 'netlify.app', 'vercel.app', 'webflow.io', 'wixsite.com', 'square.site', 'linktr.ee', 'substack.com', 'medium.com', 'notion.site', 'carrd.co', 'myshopify.com', 'google.com'])
+function normalizedHost(v: string | null | undefined): string | null {
+  const raw = (v ?? '').trim()
+  if (!raw) return null
+  try { return new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.toLowerCase().replace(/^www\./, '') || null } catch { return null }
+}
+// The website binding, ONE function shared by the writer and the reader revalidation: the author's source-reported
+// profile website IS the lead's company domain - full-host equal, or registrable equal OFF shared platforms.
+export function websiteBindingMatches(authorUrl: string | null | undefined, leadDomain: string | null | undefined): boolean {
+  const a = normalizedHost(authorUrl), l = normalizedHost(leadDomain)
+  if (!a || !l) return false
+  if (a === l) return true
+  const ra = registrableDomain(a), rl = registrableDomain(l)
+  if (!ra || ra !== rl) return false
+  return !SHARED_HOSTS.has(ra)
+}
+
 // A demand-signal post the search's own intake collected, bound to the lead that cites it by the EXACT source URL.
 // author/published_at are the source's own values; null when the source does not carry them (never inferred).
 export interface DemandArtifact {
@@ -249,13 +269,14 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
         // row, and the company domain is confirmed NOW. high_intent without all three stays needs_evidence.
         const authorName = (q.requester.name ?? '').trim()
         const authorCompany = (q.requester.company ?? '').trim()
-        const authorSite = registrableDomain(artifact.author?.url)
-        const leadSite = registrableDomain(lead.company_domain)
+        const authorSite = normalizedHost(artifact.author?.url)
         const companyBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(lead.company)
         // The second supported same-source binding: the author's profile website - reported verbatim in the same
         // platform payload (today only X carries one) - IS the lead's own domain. Never parsed from free text,
-        // never inferred; the domain itself must still be confirmed NOW by the lead's own evidence below.
-        const websiteBound = !!authorSite && !!leadSite && authorSite === leadSite
+        // never inferred; shared-platform hosts bind only on full-host equality, and the domain itself must still
+        // be confirmed NOW by the lead's own evidence below. Self-asserted: it attests the poster's OWN claim, and
+        // reviewer qualification decides whether that claim meets the verified-company bar.
+        const websiteBound = websiteBindingMatches(artifact.author?.url, lead.company_domain)
         const authorBound = companyBound || websiteBound
         const leadVerified = lead.review_reason === null && lead.confidence !== null && lead.quarantined_at === null && !heldReason
         const domainNow = authorBound && leadVerified && !!lead.company_domain ? await domainConfirmedDb(db, tenantId, lead.id, lead.company_domain) : false
@@ -417,10 +438,9 @@ export function revalidateDemandContext(rec: DemandBindingRecord, ctx: DemandRea
 export function revalidateVerifiedBinding(rec: DemandBindingRecord, leadCompany: string, leadCompanyDomain: string | null, domainConfirmedNow: boolean): { ok: true } | { ok: false; reason: string } {
   const authorName = (rec.author_name ?? '').trim()
   const authorCompany = (rec.author_company ?? '').trim()
-  const authorSite = registrableDomain(rec.author_url)
-  const leadSite = registrableDomain(leadCompanyDomain)
+  const authorSite = normalizedHost(rec.author_url)
   const companyBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(leadCompany)
-  const websiteBound = !!authorSite && !!leadSite && authorSite === leadSite
+  const websiteBound = websiteBindingMatches(rec.author_url, leadCompanyDomain)
   if (!companyBound && !websiteBound) {
     // The same split the writer records (need-evidence.ts recordNeedEvidence): the unavailable-vs-mismatch
     // distinction survives a re-read, so a stored verified row whose binding broke says which way it broke.
