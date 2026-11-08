@@ -423,6 +423,8 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
   // CANCELS the in-flight native fetch (signal-honoring Gets) instead of abandoning it.
   const ctrl = new AbortController()
   const deadlineTimer = setTimeout(() => ctrl.abort(), Math.max(1, deadline - Date.now())); deadlineTimer.unref?.()
+  type CrawlOutcome = { found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }
+  const finish = (v: CrawlOutcome): CrawlOutcome => { clearTimeout(deadlineTimer); return v }
   const fetchSignal = (): AbortSignal | undefined => (signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, ctrl.signal]) : ctrl.signal)
   const polite = async (url: string, delay: number) => {
     const h = new URL(url).hostname
@@ -442,30 +444,35 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     let timer: ReturnType<typeof setTimeout> | undefined
     let onAbort: (() => void) | undefined
     const interrupted = new Promise<null>(res => {
-      timer = setTimeout(() => res(null), left)
-      if (signal) { onAbort = () => res(null); if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
+      // The deadline's OWN interruption: it marks the time stop and cancels the fetch BEFORE the race can resolve,
+      // so the label and the cancel never depend on timer-jitter against Date.now().
+      timer = setTimeout(() => { timeStop = true; ctrl.abort(); res(null) }, left)
+      if (signal) { onAbort = () => { abortStop = true; res(null) }; if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
     })
     const r = await Promise.race([get(url, { signal: fetchSignal() }), interrupted])
     clearTimeout(timer)
     if (signal && onAbort) signal.removeEventListener('abort', onAbort)
     if (stopped()) abortStop = true
-    else if (r === null && Date.now() >= deadline) timeStop = true // the fetch outlived the budget (and was handed the cancel signal)
+    // ctrl is aborted ONLY by the deadline (its timer or the per-fetch race timer), so an interrupted fetch under an
+    // aborted ctrl is the deadline's own act - no Date.now() jitter decides the label. A self-failing get keeps neither flag.
+    else if (r === null && ctrl.signal.aborted) timeStop = true
+    else if (r === null && Date.now() >= deadline) timeStop = true // backstop: the fetch outlived the budget (and was handed the cancel signal)
     return r
   }
   const rob = await polite(`${origin}/robots.txt`, 0)
   let robots: Robots
-  if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
-  if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
+  if (!rob) return finish(timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 })
+  if (rob.status >= 500) return finish({ found: [], reason: 'robots_error', pages: 0 })
   robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
-  if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
+  if (!robots.allows('/')) return finish({ found: [], reason: 'robots_disallow', pages: 0 })
   const home = await polite(`${origin}/`, robots.delayMs)
-  if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
+  if (!home || home.status >= 400) return finish(timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 })
   // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
   const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
   const homeNorm = norm(homePlain)
   // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
   const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
-  if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
+  if (expectName && !homeNorm.includes(norm(expectName))) return finish({ found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText })
   const found = new Map<string, Found>(); let pages = 1
   onPage?.(home.body, home.finalUrl, home.status)
   for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
@@ -499,7 +506,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
   const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
+  return finish({ found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) })
 }
 
 // #389: one dated tech_scan row per crawl of a confirmed company homepage, and a tech_change row on this lead for every adoption / removal
