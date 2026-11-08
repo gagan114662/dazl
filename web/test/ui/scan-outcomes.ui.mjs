@@ -148,6 +148,14 @@ try {
     assert.equal(row('readNone').detail, READ_NONE, 'the recorded diagnostic is kept: pages were read, nothing extracted')
     assert.equal(row('noHits').detail, NO_HITS, 'truly no search hits reads differently')
     assert.doesNotMatch(rows.map(r => r.text).join(' '), /No matches|scan service had trouble|found no companies|rejected your key/)
+    // Pixel evidence per new stop-class card: Past scans scrolls internally, so the single fullPage shot above
+    // captures only the first cards. Each new-class card is scrolled into view and captured as a full element
+    // shot - the actual rendered card, whole, for inspection.
+    if (process.env.SHOTS) for (const k of ['budget', 'legacyBudget', 'poolStop', 'hardCap', 'noDisc', 'holdErr', 'sourceErr']) {
+      const card = page.locator('[data-testid=past-scan]', { hasText: ALL[k].query }).first()
+      await card.scrollIntoViewIfNeeded()
+      await card.screenshot({ path: path.join(process.env.SHOTS, `history-${k}.png`) })
+    }
   }
   // Campaign page: same outcome, next step and diagnostic, from the campaign read.
   for (const k of ['dropped', 'readNone', 'noHits', 'ownKey', 'trialKey', 'unknownKey', 'enriching', 'interrupted', 'sourceErr', 'noDisc', 'holdErr', 'budget', 'legacyBudget', 'poolStop', 'hardCap']) {
