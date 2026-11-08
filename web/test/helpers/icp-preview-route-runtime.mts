@@ -1,6 +1,9 @@
 // Route boundary for /api/scan/icp: the preview's spend and provider failures keep their truthful names and statuses
 // (the same mapping as the website profile read), never a blanket 402 "key_rejected". previewIcp is stubbed at the
 // module boundary; no runner, no network, no provider.
+// The shared rate-limit store is the file app DB by default: counts would persist across test runs and eventually
+// refuse (30/hour). An in-memory store keeps each run's counting real but fresh.
+process.env.DB_PATH = ':memory:'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -37,9 +40,16 @@ test('POST /api/scan/icp: spend and provider failures map to their own names and
       const j = await r.json() as { error?: string; message?: string }
       assert.equal(r.status, status, `${name}: ${JSON.stringify(j)}`)
       assert.equal(j.error, name)
-      if (name === 'spend_limit' || name === 'model_unpriced' || name === 'accounting_pending' || name === 'spend_unavailable') {
+      if (name === 'spend_limit' || name === 'model_unpriced' || name === 'spend_unavailable') {
         assert.ok(typeof j.message === 'string' && /nothing was charged|no new charge/i.test(j.message), `${name}: honest no-charge copy`)
         assert.ok(!/key was rejected|rejected your key|invalid key/i.test(j.message!), `${name}: never mislabeled as a key problem`)
+      }
+      if (name === 'accounting_pending') {
+        // The unsettled call may be THIS request's (the provider was called, then the settle failed): the copy must
+        // be safe for current OR earlier uncertain accounting, never a false "no new charge was made for this request".
+        assert.ok(typeof j.message === 'string' && /may still be billed/i.test(j.message), 'accounting_pending: says a call may still be billed')
+        assert.ok(!/no new charge was made for this request|nothing was charged/i.test(j.message!), 'accounting_pending: never claims this request was not billed')
+        assert.ok(!/key was rejected|rejected your key|invalid key/i.test(j.message!), 'accounting_pending: never mislabeled as a key problem')
       }
       if (name === 'provider_failed') assert.ok(/key was not rejected/i.test(j.message ?? ''), 'provider_failed: says the key is fine')
     }
@@ -72,9 +82,41 @@ test('POST /api/scan/icp: spend and provider failures map to their own names and
     assert.equal(cr.u?.length, 1, 'the held offer carries')
     assert.equal(cr.u?.[0].w, true)
     assert.deepEqual(cr.u?.[0].n, ['acme booking'])
-    // A prior whose block is absent adds nothing; a malformed prior is ignored, never fatal.
+    // The fresh inference produced research of its OWN: the prior decisions still take precedence - the reviewed
+    // statement, the rejection (remapped onto the fresh offer id by offer name), the hold and the typed answer all
+    // carry; a fresh hypothesis restating the rejected statement is dropped (never resurrected); other fresh
+    // hypotheses survive.
+    const FRESH_RESEARCH = {
+      v: 1, site: 'acme.example', q: null, ans: null,
+      offers: [{ i: 'f1', n: 'Acme Booking' }],
+      hyps: [
+        { i: 'g1', o: 'f1', k: 'persona', t: 'Clinic owners', s: 'hypothesis', u: null, q: null, at: null },
+        { i: 'g2', o: 'f1', k: 'persona', t: 'Dental influencers', s: 'hypothesis', u: null, q: null, at: null },
+      ],
+    }
+    setPreviewIcp(async () => ({ icp: { summary: 'Fresh inference', who: ['Owner'], industries: [], sizes: [], where: [], signals: [], exclude: [], research: FRESH_RESEARCH }, inferred: true }) as never)
+    const merged = await POST(request({ query: 'orthodontists in Texas', prior_icp: prior }))
+    assert.equal(merged.status, 200)
+    const mj = (await merged.json() as { icp: { research: { offers: { i: string; n: string }[]; hyps: { i: string; o: string; t: string; s: string }[]; u?: { n: string[]; w?: boolean }[]; q?: string | null; ans?: { o: string; t?: string } | null } } }).icp.research
+    const byText = new Map(mj.hyps.map(h => [h.t, h]))
+    assert.equal(byText.get('Practice managers')?.s, 'reviewed', 'the reviewed statement carries onto fresh research')
+    assert.equal(byText.get('Dental influencers')?.s, 'rejected', 'the rejection carries and is never resurrected as a hypothesis')
+    assert.equal(byText.get('Clinic owners')?.s, 'hypothesis', 'an unrelated fresh hypothesis survives')
+    assert.equal(byText.get('Practice managers')?.o, 'f1', 'decisions remap onto the fresh offer id by offer name')
+    assert.deepEqual(mj.offers.map(o => o.i), ['f1'], 'the name-matched prior offer is not duplicated')
+    assert.equal(mj.ans?.t, 'Practice managers')
+    assert.equal(mj.ans?.o, 'f1', 'the typed answer remaps too')
+    assert.equal(mj.q, 'Who buys this?', 'the answered question stays the prior one')
+    assert.equal(mj.u?.length, 1)
+    assert.equal(mj.u?.[0].w, true)
+    // A prior whose block is absent adds nothing (the fresh research passes through as it is); a malformed prior is
+    // ignored, never fatal.
     const bare = await POST(request({ query: 'orthodontists in Texas', prior_icp: { who: [] } }))
     assert.equal(bare.status, 200)
-    assert.equal((await bare.json() as { icp: { research?: unknown } }).icp.research, undefined)
+    assert.deepEqual((await bare.json() as { icp: { research?: unknown } }).icp.research, FRESH_RESEARCH, 'no prior decisions: the fresh research is the draft as inferred')
+    setPreviewIcp(async () => ({ icp: { summary: 'Fresh inference', who: ['Owner'], industries: [], sizes: [], where: [], signals: [], exclude: [] }, inferred: true }) as never)
+    const bare2 = await POST(request({ query: 'orthodontists in Texas', prior_icp: { who: [] } }))
+    assert.equal(bare2.status, 200)
+    assert.equal((await bare2.json() as { icp: { research?: unknown } }).icp.research, undefined)
   } finally { setPreviewIcp(null); db.close() }
 })

@@ -4,7 +4,7 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { previewIcp } from '@/lib/scan/runner'
-import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
+import { MAX_QUERY, mergePriorDecisions, normalizeIcp } from '@/lib/scan/icp'
 import { denied } from '@/lib/workspace-access'
 import { PROVIDER_FAILED_COPY } from '@/lib/error-copy'
 
@@ -29,14 +29,15 @@ export async function POST(req: NextRequest) {
     // accounting pause is never mislabeled as a key problem, and a refused call was never made or charged.
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     if (out.error === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: 'The AI model configured for this workspace has no price bound, so the preview was refused before it ran. Nothing was charged.' }, { status: 503 })
-    if (out.error === 'accounting_pending') return NextResponse.json({ error: 'accounting_pending', message: 'The cost of an earlier AI call could not be recorded, so paid generation is paused until that record settles. That call may still be billed to your key; no new charge was made for this request.' }, { status: 503 })
+    if (out.error === 'accounting_pending') return NextResponse.json({ error: 'accounting_pending', message: 'The cost of an AI call could not be recorded, so paid generation is paused until that record settles. A recent call - possibly this request - may still be billed to your key.' }, { status: 503 })
     if (out.error === 'spend_unavailable') return NextResponse.json({ error: 'spend_unavailable', message: 'Your spend budget could not be checked just now, so nothing was generated and nothing was charged. Try again shortly.' }, { status: 503 })
     if (out.error === 'provider_failed') return NextResponse.json({ error: 'provider_failed', message: PROVIDER_FAILED_COPY }, { status: 502 })
     return NextResponse.json({ error: out.error }, { status: out.error === 'no_api_key' || out.error === 'key_unreadable' ? 400 : out.error === 'trial_key_invalid' ? 503 : 402 })
   }
-  // The fresh fields are the inference's; the review state is the prior profile's. A fresh inference has no research
-  // block of its own, so the carried one attaches whole; the editor shows it and Run (the explicit review event)
-  // applies the canonical semantics with every decision visible.
-  if (out.icp && !out.icp.research && prior?.research) out.icp = { ...out.icp, research: prior.research }
+  // The fresh fields are the inference's; the review DECISIONS are the prior profile's and always take precedence -
+  // merged in whether or not the fresh inference produced research of its own, so model output can never silently
+  // replace a reviewed statement, a rejection, a hold or the typed answer. Presence here is NOT a review; the editor
+  // shows every decision and Run (the explicit review event) applies the canonical semantics.
+  if (out.icp && prior?.research) out.icp = { ...out.icp, research: mergePriorDecisions(out.icp.research, prior.research) }
   return NextResponse.json(out)
 }

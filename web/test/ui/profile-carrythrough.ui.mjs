@@ -179,6 +179,18 @@ try {
   assert.equal(h.previews.length, 1)
   assert.deepEqual(h.previews[0].prior_icp, BUYER, 'the preview carries the saved profile whole so the server can keep its decisions')
   assert.deepEqual(h.scanBodies, [], 'a preview never starts a scan')
+  // ...and the explicit editor submit ("Run scan with this profile") posts the draft WITH the carried decisions:
+  // the rejection and the hold are still there, and reviewed is true - the one explicit review event.
+  await h.page.locator('#play-offer').fill('Acme Booking')
+  await h.page.getByRole('button', { name: 'Run scan with this profile' }).first().click()
+  await h.page.getByTestId('estimate-confirm-run').click()
+  for (let i = 0; i < 50 && h.scanBodies.length === 0; i++) await new Promise(r => setTimeout(r, 100))
+  assert.equal(h.scanBodies.length, 1, 'the editor submit starts the scan')
+  assert.equal(h.scanBodies[0].reviewed, true, 'only the editor submit is the explicit review event')
+  const sr = h.scanBodies[0].icp.research
+  assert.ok(sr.hyps.some(x => x.s === 'rejected'), 'the submitted profile keeps the rejection')
+  assert.ok(sr.hyps.some(x => x.s === 'reviewed'), 'the submitted profile keeps the reviewed statement')
+  assert.equal(sr.u?.length, 1, 'the submitted profile keeps the hold')
   await h.ctx.close()
   console.log('profile carry-through UI check passed: first scan uses the saved reviewed business profile with its decisions; reopen + save keeps the research whole')
 } finally {

@@ -107,3 +107,19 @@ test('another tenant has no pool and no key: unchanged no_api_key, and tenant is
     assert.equal(fetches.length, 0, 'no key: the trial preview path needs an ip; here the provider is never called')
   })
 })
+
+test('a settle failure AFTER the provider call is accounting_pending: the call was made and may be billed, and the next preview refuses closed', async () => {
+  const db = setup()
+  fetches.length = 0
+  // Fault injection: the reservation's INSERT/UPDATEs land, but the settle's pending-marker DELETE aborts, so the
+  // call's cost cannot be recorded. sqlite trigger on the real store - no stub of the accounting path itself.
+  db.exec("CREATE TRIGGER fail_settle BEFORE DELETE ON tenant_spend_pools WHEN OLD.period LIKE 'p:%' BEGIN SELECT RAISE(ABORT, 'settle store down'); END")
+  await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:5' }, async () => {
+    const out = await previewIcp(db, 'A', 'fintech founders', { master, providers: realProviders, fetchImpl: answering(GOOD) })
+    assert.deepEqual(out, { error: 'accounting_pending' })
+    assert.equal(fetches.length, 1, 'the provider WAS called: this preview itself may be billed (wallet-truthful copy, never "no new charge")')
+    const again = await previewIcp(db, 'A', 'fintech founders', { master, providers: realProviders, fetchImpl: answering(GOOD) })
+    assert.deepEqual(again, { error: 'spend_unavailable' })
+    assert.equal(fetches.length, 1, 'no second provider call while the earlier cost is unrecorded')
+  })
+})

@@ -1,4 +1,4 @@
-import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedOfferName } from './offer-identity.ts'
+import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedKey, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
 import { quoteSupports } from './claim-quote.ts'
@@ -86,6 +86,47 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   }
   const capped = capStoredHolds(u)
   return { v: 1, site, offers, hyps, q: question, ans, ...(capped.length ? { u: capped } : {}) }
+}
+
+// "Review profile first" with an existing profile: the fresh inference's research is a draft, but the prior
+// profile's EXPLICIT decisions - reviewed statements, rejections, held groups, the typed answer - are the person's
+// and always take precedence, whether or not the fresh inference produced research of its own. Decisions are
+// remapped onto the fresh offer-id space by stored offer name (a prior offer the fresh block lacks is carried whole,
+// so no decision loses its binding), and a fresh unreviewed hypothesis restating a decided statement is dropped: a
+// rejection never resurfaces as a new hypothesis. Decisions outrank fresh hypotheses under the storage caps.
+// Presence is not a review: no status changes here; only the review editor's explicit submit does that.
+export function mergePriorDecisions(fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
+  if (!fresh) return prior
+  const carriedOffers: { i: string; n: string }[] = []
+  const idByName = new Map(fresh.offers.map(o => [storedKey(o.n), o.i]))
+  const usedIds = new Set(fresh.offers.map(o => o.i))
+  const remap = new Map<string, string>()
+  for (const o of prior.offers) {
+    const hit = idByName.get(storedKey(o.n))
+    if (hit) { remap.set(o.i, hit); continue }
+    let id = o.i
+    for (let n = 2; usedIds.has(id); n++) id = `${o.i}-${n}`
+    usedIds.add(id); carriedOffers.push({ i: id, n: o.n }); remap.set(o.i, id)
+  }
+  const hypIds = new Set(fresh.hyps.map(h => h.i))
+  const keyOf = (o: string, k: string, t: string) => `${o} ${k} ${t.replace(/\s+/g, ' ').trim().toLowerCase()}`
+  const decided = new Set<string>()
+  const carried: ResearchedHyp[] = []
+  for (const h of prior.hyps) {
+    if (h.s !== 'reviewed' && h.s !== 'rejected') continue
+    const o = remap.get(h.o); if (!o) continue
+    let i = h.i
+    for (let n = 2; hypIds.has(i); n++) i = `${h.i}-${n}`
+    hypIds.add(i)
+    carried.push({ ...h, i, o })
+    decided.add(keyOf(o, h.k, h.t))
+  }
+  const hyps = [...carried, ...fresh.hyps.filter(h => !decided.has(keyOf(h.o, h.k, h.t)))]
+  const seenU = new Set<string>()
+  const u = [...(fresh.u ?? []), ...(prior.u ?? [])].filter(x => { const k = JSON.stringify(x); if (seenU.has(k)) return false; seenU.add(k); return true })
+  const ans = prior.ans ? { ...prior.ans, o: remap.get(prior.ans.o) ?? prior.ans.o } : fresh.ans
+  const merged: IcpResearch = { v: 1, site: fresh.site, offers: [...carriedOffers, ...fresh.offers], hyps, q: prior.ans ? prior.q : fresh.q, ans, ...(u.length ? { u } : {}) }
+  return normalizeResearch(merged) ?? prior
 }
 
 // Deterministic research fit: whole hypotheses only, best first - reviewed (a person's decision), sourced (page-verified),

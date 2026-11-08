@@ -383,3 +383,37 @@ test('excluded ranges followed by ordinary context still exclude B and every lat
   const r = keepStatedFundingStage(q, { ...base, summary: 'London Series C companies with funding' })
   assert.notEqual(r.summary, 'London Series C companies with funding'); assert.equal(r.summary, q)
 })
+
+import { mergePriorDecisions } from '../lib/scan/icp.ts'
+
+test('mergePriorDecisions: no fresh research attaches the prior block whole', () => {
+  const prior = { v: 1 as const, site: 'acme.example', q: null, ans: null, offers: [{ i: 'o1', n: 'Acme Booking' }], hyps: [{ i: 'h1', o: 'o1', k: 'persona' as const, t: 'Practice managers', s: 'reviewed' as const, u: null, q: null, at: null }] }
+  assert.deepEqual(mergePriorDecisions(undefined, prior), prior)
+})
+
+test('mergePriorDecisions: a prior offer the fresh block lacks is carried whole so its decisions keep their binding', () => {
+  const prior = { v: 1 as const, site: 'acme.example', q: null, ans: null,
+    offers: [{ i: 'o1', n: 'Acme Booking' }, { i: 'o2', n: 'Acme Analytics' }],
+    hyps: [{ i: 'h9', o: 'o2', k: 'persona' as const, t: 'Data leads', s: 'rejected' as const, u: null, q: null, at: null }] }
+  const fresh = { v: 1 as const, site: 'acme.example', q: null, ans: null,
+    offers: [{ i: 'f1', n: 'Acme Booking' }],
+    hyps: [{ i: 'g1', o: 'f1', k: 'persona' as const, t: 'Clinic owners', s: 'hypothesis' as const, u: null, q: null, at: null }] }
+  const m = mergePriorDecisions(fresh, prior)!
+  const o2 = m.offers.find(o => o.n === 'Acme Analytics')
+  assert.ok(o2, 'the unmapped prior offer carries')
+  const rej = m.hyps.find(h => h.t === 'Data leads')
+  assert.equal(rej?.s, 'rejected')
+  assert.equal(rej?.o, o2!.i, 'the rejection keeps its offer binding')
+  assert.equal(m.hyps.find(h => h.t === 'Clinic owners')?.s, 'hypothesis', 'fresh hypotheses survive')
+})
+
+test('mergePriorDecisions: unreviewed prior hypotheses do NOT carry - only explicit decisions do', () => {
+  const prior = { v: 1 as const, site: 'acme.example', q: null, ans: null,
+    offers: [{ i: 'o1', n: 'Acme Booking' }],
+    hyps: [{ i: 'h1', o: 'o1', k: 'persona' as const, t: 'Maybe owners', s: 'hypothesis' as const, u: null, q: null, at: null }] }
+  const fresh = { v: 1 as const, site: 'acme.example', q: null, ans: null,
+    offers: [{ i: 'f1', n: 'Acme Booking' }],
+    hyps: [{ i: 'g1', o: 'f1', k: 'persona' as const, t: 'Clinic owners', s: 'hypothesis' as const, u: null, q: null, at: null }] }
+  const m = mergePriorDecisions(fresh, prior)!
+  assert.deepEqual(m.hyps.map(h => h.t), ['Clinic owners'], 'a prior unreviewed hypothesis is the old draft, not a decision')
+})
