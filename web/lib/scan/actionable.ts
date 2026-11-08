@@ -16,11 +16,15 @@ import { requiredGateHeld } from './held-state.ts'
 import { compileTargeting, evaluatePlan, type ClauseProof } from './targeting.ts'
 import { planProofs } from './targeting-proof.ts'
 import { listCompetitors } from '../signals/competitor-reddit.ts'
+import { DEMAND_QUALIFIER_VERSION, qualifyDemand, type DemandRubric } from './demand-qualifier.ts'
+import { planNeedSupport } from './need-evidence.ts'
+import { companyKey } from './evidence.ts'
+import { domainConfirmed } from '../signals/domain-basis.ts'
 
 const GATES = new Set<string>(['sales_hiring_check_failed', 'quarantined', 'excluded', 'fit_below_threshold', 'not_graded', 'targeting_not_proven'])
 export const TARGETING_CONNECTOR = 'scan:targeting'
 export const ACTIONABLE_CONNECTOR = 'scan:actionable'
-export type Missing = 'sales_hiring_check_failed' | 'targeting_not_proven' | 'quarantined' | 'excluded' | 'fit_below_threshold' | 'not_graded' | 'no_domain' | 'domain_unconfirmed' | 'no_sales_vacancy' | 'no_contact_person' | 'no_published_contact'
+export type Missing = 'sales_hiring_check_failed' | 'targeting_not_proven' | 'buying_need_unproven' | 'quarantined' | 'excluded' | 'fit_below_threshold' | 'not_graded' | 'no_domain' | 'domain_unconfirmed' | 'no_sales_vacancy' | 'no_contact_person' | 'no_published_contact'
 // The person / route rule lives in site-contact.ts (one rule for actionability, the timing proof and completion); re-exported for existing callers.
 export { NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf }
 // `targeting`: the clause-by-clause proof of the request's compiled plan (#380), present only when the plan says more than one flat signal.
@@ -30,7 +34,40 @@ export interface YieldSummary { held_leads?: { id: string; company: string; url:
 
 // `held`: leads a REQUIRED gate failed on, kept in memory by the caller. They are held even when the database still says verified (the recovery write was rejected too).
 export type HeldIds = ReadonlyMap<string, string>   // lead id -> reason
-export function classifyLeads(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map()): LeadYield[] {
+// #401/#379: the buying-need promotion gate. `rubric` is the play's CURRENT demand rubric, resolved by the CALLER
+// through the canonical ASYNC loader (loadPlayDemandRubric): classifyLeads stays sync and never bypasses a load
+// error - a null rubric simply means no demand-post record can verify, so those leads hold. A trigger-only record
+// passes this gate (the sales-hiring gate already ran) but never claims verified buying need.
+export interface NeedGate { rubric: DemandRubric | null }
+type NeedRow = { basis: string; verdict: string; qualifier_version: string | null; offer: string | null; window_days: number | null; plan_support: string; source_url: string | null; source_title: string | null; source_text: string | null; author_name: string | null; author_headline: string | null; author_company: string | null; published_at: string | null }
+// The sync twin of need-evidence.currentBuyingNeed's revalidation, on the same rows and the same rules: a recorded
+// verified_buying_need is believed only while every binding holds NOW - qualifier version, plan semantics, the
+// current rubric's offer and window, the classifier re-run on the STORED source artifact, the source author's own
+// company matching the lead's company, and the domain confirmed now. A missing table (older store), a missing or
+// failed writer record, a read error, or any drift is NOT proven. Reads here never write.
+function needProven(db: Database.Database, job: { id: string; user_id: string }, l: { id: string; company: string; company_domain: string | null }, rubric: DemandRubric | null, supportKey: string): boolean {
+  let rec: NeedRow | undefined
+  try {
+    rec = db.prepare('SELECT basis, verdict, qualifier_version, offer, window_days, plan_support, source_url, source_title, source_text, author_name, author_headline, author_company, published_at FROM lead_need_evidence WHERE tenant_id = ? AND lead_id = ?').get(job.user_id, l.id) as NeedRow | undefined
+  } catch { return false }  // an older store without the evidence table: hold, never a bypass
+  if (!rec) return false    // the writer failed or never ran for this lead: hold
+  if (rec.verdict === 'trigger_only') return true // the trigger gate already ran; trigger-only is never "verified buying need"
+  if (rec.verdict !== 'verified_buying_need' || rec.basis !== 'demand_post') return false
+  if (rec.qualifier_version !== DEMAND_QUALIFIER_VERSION || rec.plan_support !== supportKey) return false
+  if (!rubric || rec.offer !== rubric.offer || rec.window_days !== rubric.window_days) return false
+  if (!rec.source_url || !rec.source_text) return false
+  const q = qualifyDemand({
+    source_url: rec.source_url, published_at: rec.published_at,
+    author: rec.author_name || rec.author_company ? { name: rec.author_name, headline: rec.author_headline, company: rec.author_company } : null,
+    title: rec.source_title, text: rec.source_text,
+  }, rubric, new Date())
+  if (q.tier !== 'high_intent') return false
+  const ac = (q.requester.company ?? '').trim()
+  if (!ac || companyKey(ac) === '' || companyKey(ac) !== companyKey(l.company)) return false
+  return domainConfirmed(db, job.user_id, l.id, l.company_domain)
+}
+
+export function classifyLeads(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map(), need: NeedGate = { rubric: null }): LeadYield[] {
   const leads = db.prepare("SELECT id, company, company_domain, contact, fit, quarantined_at, source_url, evidence_excerpt, signal, event_date FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC").all(job.id) as { id: string; company: string; company_domain: string | null; contact: string | null; fit: number | null; quarantined_at: number | null; source_url: string; evidence_excerpt: string | null; signal: string | null; event_date: string | null }[]
   let memory: ReturnType<typeof getMemory> | null = null
   try { memory = getMemory(db, job.user_id) } catch { memory = null } // the table may predate this deploy
@@ -38,6 +75,7 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
   // #380: an explicit plan (two or more conditions, a NOT, an exclusion, a completed hire or separate clocks) is a REQUIRED gate on top of the
   // others: only a plan that evaluates to 'pass' on verified facts qualifies the lead. Unknown holds it. A single flat signal stays with the gates above.
   const plan = compileTargeting(job.query, job.icp)
+  const supportKey = JSON.stringify(planNeedSupport(plan))
   const planGated = plan.explicit && plan.root !== null
   let competitors: string[] | null = null
   if (planGated) { try { competitors = listCompetitors(db, job.user_id) } catch { competitors = null } } // no table: no list, so a competitor exclusion stays unknown
@@ -55,6 +93,9 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
       if (ev.truth !== 'pass') return { lead_id: l.id, company: l.company, actionable: false, missing: ['targeting_not_proven'], person: null, route: null, targeting: ev.clauses }
       targeting = ev.clauses
     }
+    // #401/#379: no proven buying need, no promotion - the company, person and route below stay OUTER requirements
+    // on top, never substitutes for it.
+    if (!needProven(db, job, l, need.rubric, supportKey)) return { lead_id: l.id, company: l.company, actionable: false, missing: ['buying_need_unproven'], person: null, route: null, ...(targeting ? { targeting } : {}), url: l.source_url }
     // The sales-hiring half is enforced by the gate (applySalesHiringGate runs before this): a lead that is still verified has the proof.
     void needVacancy
     // Domain, person and route are read from the CURRENT rows through the shared rule (#914): a confirmed domain, and a person / route
@@ -71,8 +112,8 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
 }
 
 // Writes one enrichment row per verified lead (replacing an earlier call's) and returns the summary for the run report.
-export function recordActionability(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map()): YieldSummary {
-  const rows = classifyLeads(db, job, held)
+export function recordActionability(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map(), need: NeedGate = { rubric: null }): YieldSummary {
+  const rows = classifyLeads(db, job, held, need)
   const del = db.prepare("DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ?")
   const missing: Record<string, number> = {}
   for (const r of rows) {

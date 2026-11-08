@@ -8,6 +8,7 @@ import { failClosedBuyerFit } from '../lib/scan/buyer-fit.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { migrateMemory, saveMemory } from '../lib/memory.ts'
+import { seedNeedVerified, NEED_GATE } from './helpers/need.ts'
 
 const ICP = JSON.stringify({ summary: 's', who: ['Founder'], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: ['agencies'] })
 function seed() {
@@ -27,6 +28,9 @@ function seed() {
     db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(`${id}g`, id)
   }
   lead('ok', 'Brightloop', 'brightloop.io', 5)
+  // #401/#379: the 'ok' lead also carries the search's recorded, still-valid verified buying-need verdict - the
+  // promotion gate classifyLeads applies holds every lead without one.
+  seedNeedVerified(db, 'u1', jobId, 'ok', 'Brightloop', { query: 'Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', icp: ICP })
   lead('fit0', 'Fitzero', 'fitzero.io', 0)
   lead('fit3', 'Fitthree', 'fitthree.io', 3)
   lead('ungraded', 'Ungraded Labs', 'ungraded.io', null)
@@ -38,7 +42,7 @@ function seed() {
 
 test('buyer gates come before domain / contact fields: fit-0, below-threshold, ungraded, quarantined and excluded leads are NOT actionable; a qualifying lead with contact still is', () => {
   const { db, job } = seed()
-  const by = Object.fromEntries(classifyLeads(db, job).map(r => [r.lead_id, r]))
+  const by = Object.fromEntries(classifyLeads(db, job, new Map(), NEED_GATE).map(r => [r.lead_id, r]))
   assert.deepEqual([by.ok.actionable, by.ok.missing], [true, []], 'a qualifying lead with domain, founder and mailbox is actionable')
   assert.deepEqual([by.fit0.actionable, by.fit0.missing], [false, ['fit_below_threshold']])
   assert.deepEqual([by.fit3.actionable, by.fit3.missing], [false, ['fit_below_threshold']], 'fit 3 is below the 4-of-5 threshold')
@@ -49,7 +53,7 @@ test('buyer gates come before domain / contact fields: fit-0, below-threshold, u
 
 test('the summary and the card agree: only the qualifying lead counts; gated leads say why and carry no contact claim', () => {
   const { db, job } = seed()
-  const y = recordActionability(db, job)
+  const y = recordActionability(db, job, new Map(), NEED_GATE)
   assert.equal(y.actionable, 1); assert.equal(y.verified, 6)
   assert.deepEqual([y.missing.fit_below_threshold, y.missing.not_graded, y.missing.quarantined, y.missing.excluded], [2, 1, 1, 1])
   const row = (id: string) => (enrichmentsForLeads(db, 'u1', [id])[id] ?? []).find(e => e.connector === 'scan:actionable')!
@@ -62,15 +66,15 @@ test('FAIL-CLOSED buyer fit: when the fit check itself fails, hiring leads grade
   const { db, job } = seed()
   db.prepare("UPDATE leads SET signal = 'is hiring an account executive' WHERE id IN ('ok', 'fit3')").run()
   assert.equal(failClosedBuyerFit(db, job.id, 'database is locked'), 1, 'only the hiring lead graded >= 4 (fit3 was already below the bar)')
-  const by = Object.fromEntries(classifyLeads(db, job).map(r => [r.lead_id, r]))
+  const by = Object.fromEntries(classifyLeads(db, job, new Map(), NEED_GATE).map(r => [r.lead_id, r]))
   assert.deepEqual([by.ok.actionable, by.ok.missing], [false, ['fit_below_threshold']])
   assert.match((db.prepare("SELECT why FROM leads WHERE id = 'ok'").get() as { why: string }).why, /Buyer fit unconfirmed: the check failed \(database is locked\)/)
 })
 
 test('held in memory: a lead a required gate failed on is not actionable even though its stored row still reads verified', () => {
   const { db, job } = seed()
-  const by = Object.fromEntries(classifyLeads(db, job, new Map([['ok', 'sales_hiring_check_failed']])).map(r => [r.lead_id, r]))
+  const by = Object.fromEntries(classifyLeads(db, job, new Map([['ok', 'sales_hiring_check_failed']]), NEED_GATE).map(r => [r.lead_id, r]))
   assert.deepEqual([by.ok.actionable, by.ok.missing], [false, ['sales_hiring_check_failed']])
-  const y = recordActionability(db, job, new Map([['ok', 'sales_hiring_check_failed']]))
+  const y = recordActionability(db, job, new Map([['ok', 'sales_hiring_check_failed']]), NEED_GATE)
   assert.equal(y.actionable, 0); assert.equal(y.verified, 5, 'the held lead is not counted as verified'); assert.equal(y.missing.sales_hiring_check_failed, 1)
 })
