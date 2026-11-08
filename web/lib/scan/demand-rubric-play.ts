@@ -36,6 +36,8 @@ export function ownNamesFrom(businessName: string | null | undefined, website: s
 export async function loadPlayDemandRubric(db: Db, tenantId: string, jobId: string, windowDays?: number): Promise<{ rubric: DemandRubric | null; reason: string | null }> {
   const offer = await readPlayOffer(db, tenantId, jobId)
   if (!offer) return rubricForPlay(null, [])
-  const me = await db.get<{ business_name: string | null; website: string | null }>('SELECT business_name, website FROM users WHERE id = ?', [tenantId])
+  let me: { business_name: string | null; website: string | null } | undefined
+  try { me = await db.get<{ business_name: string | null; website: string | null }>('SELECT business_name, website FROM users WHERE id = ?', [tenantId]) }
+  catch (e) { if (e instanceof Error && /no such table|does not exist/i.test(e.message)) me = undefined /* no profile table yet: no own names (play-offer treats the same table the same way) */; else throw e }
   return rubricForPlay(offer, await readCompetitors(db, tenantId), ownNamesFrom(me?.business_name, me?.website), windowDays)
 }

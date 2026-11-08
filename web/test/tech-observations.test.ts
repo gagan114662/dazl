@@ -190,6 +190,6 @@ test('through the crawl: four dated crawls of one domain; an unreadable crawl ch
   assert.equal(c1.source_url, 'https://brightloop.com/'); assert.equal(c1.date, '2026-10-01')
   // technology fit is not the buying reason: the lead still needs its own contact proof (no person / published route
   // here). The buying-need verdict itself is recorded and valid, so the need gate passes and the contact gaps show.
-  seedNeedVerified(db, 'u1', j4.id, 'l4', 'Brightloop', j4)
+  await seedNeedVerified(db, 'u1', j4.id, 'l4', 'Brightloop')
   assert.deepEqual(classifyLeads(db, j4, new Map(), NEED_GATE)[0].missing, ['no_contact_person', 'no_published_contact'])
 })
