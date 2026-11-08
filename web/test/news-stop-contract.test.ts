@@ -180,6 +180,28 @@ test('compareActual: recorded calls with unsettled USD are stated truthfully; th
   assert.match(d.summary, /from the tokens the provider reported/)
 })
 
+// --- Legacy budget_stopped renders neutrally; only typed provenance names a numeric control ----------------------
+test('scanOutcome: a legacy budget_stopped (no recorded reason) never claims a budget cause; typed numeric reasons keep the specific copy', async () => {
+  const { scanOutcome } = await import('../lib/scan/scan-outcome.ts')
+  const base = { id: 'x'.repeat(24), status: 'failed', error: 'budget_stopped', created_at: 1, finished_at: 2, candidates: 0, verified: 0, needs_review: 0, dropped: 0, lead_count: 0 }
+  const legacy = scanOutcome({ ...base, stop_refusal_reason: null })
+  assert.equal(legacy.kind, 'stopped')
+  assert.equal(legacy.label, 'Stopped before it could conclude')
+  assert.match(legacy.detail ?? '', /exact reason was not kept/)
+  assert.doesNotMatch(`${legacy.label} ${legacy.detail} ${legacy.next?.text}`, /larger budget|without.*budget|per-run budget refused/i, 'no budget cause claim, no budget-change advice')
+  const missing = scanOutcome({ ...base }) // legacy row: the field is absent entirely
+  assert.equal(missing.label, 'Stopped before it could conclude')
+  const overLimit = scanOutcome({ ...base, stop_refusal_reason: 'over_limit' })
+  assert.equal(overLimit.label, 'Stopped by its budget - not an empty search')
+  assert.equal(overLimit.next?.text, 'Run it again with a larger budget')
+  const overCap = scanOutcome({ ...base, stop_refusal_reason: 'over_cap' })
+  assert.equal(overCap.label, 'Stopped by its budget - not an empty search')
+  const trial = scanOutcome({ ...base, stop_refusal_reason: 'trial_budget_reached' })
+  assert.equal(trial.label, 'This free scan found no companies within its spending limit')
+  const unknownReason = scanOutcome({ ...base, stop_refusal_reason: 'something_not_numeric' })
+  assert.equal(unknownReason.label, 'Stopped before it could conclude', 'an unrecorded-shape reason is never read as a budget cause')
+})
+
 // --- The combined branch: an earlier SpendRefused + paid fallback disabled -------------------------------------
 // Reviewer repro (own-news-refusal): the TinyFish path's spend refusal used to end as budget_stopped for ANY reason.
 // Only a real numeric refusal is a budget stop on this branch too; every other reason keeps its own class end to end.
@@ -313,9 +335,13 @@ test('compareActual: a dated KNOWN served model prices (the QA token shape settl
   const dated = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1, capReservedUsd: 0.002214 })
   assert.equal(dated.model_usd, 0.002214, '368in/74out at the sonnet price')
   assert.match(dated.summary, /from the tokens the provider reported/)
-  assert.doesNotMatch(dated.summary, /no listed price|unknown/, 'a priced dated model is never reported unknown')
+  assert.doesNotMatch(dated.summary, /no listed price/, 'a priced dated model is never reported unpriced')
+  // Cache usage is not stored, so $0.002214 is the recorded-token component: at-least, not complete, no range claim.
+  assert.equal(dated.model_usd_complete, false)
+  assert.equal(dated.within, 'unknown')
+  assert.match(dated.summary, /at least \$0\.0022/)
+  assert.match(dated.summary, /cache token usage was not recorded, so this is the recorded-token component, not the full cost/)
   assert.match(dated.summary, /a reservation, not a settled charge/, 'the reservation is still named as itself, never folded into the cost')
-  assert.equal(dated.within, 'within')
   // Genuinely unlisted model: honestly unknown with the real reason.
   const unlisted = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-future-unlisted', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1 })
   assert.equal(unlisted.model_usd, null)
@@ -326,12 +352,22 @@ test('compareActual: a dated KNOWN served model prices (the QA token shape settl
   assert.equal(mixed.model_usd, null)
   assert.match(mixed.summary, /more than one served model/)
   assert.match(mixed.summary, /not \$0/)
-  // Mixed ids that normalize to the SAME price entry price fine (dated + undated sonnet).
+  // Mixed ids that normalize to the SAME price entry price fine (dated + undated sonnet) - still the recorded-token
+  // component while cache usage is unrecorded.
   const samePrice = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', servedModels: ['claude-sonnet-4-5-20250929', 'claude-sonnet-4-5'], searches: 0, reservedUsd: null, requests: 2, requestsWithTokens: 2 })
   assert.equal(samePrice.model_usd, 0.002214)
+  assert.equal(samePrice.model_usd_complete, false)
+  assert.equal(samePrice.within, 'unknown')
+  // Explicit cache zeros are a real record: complete, placed in the range, no at-least wording.
+  const knownZero = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0 })
+  assert.equal(knownZero.model_usd, 0.002214)
+  assert.equal(knownZero.model_usd_complete, true)
+  assert.equal(knownZero.within, 'within')
+  assert.match(knownZero.summary, /^Actual model cost \$0\.0022 from/)
   // Cache tokens at the shared factors (writes 2x, reads 0.1x the input price) via the same completionCost the settlement uses.
   const cached = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1, cacheWriteTokens: 1000, cacheReadTokens: 2000 })
   assert.equal(cached.model_usd, (368 * 3 + 74 * 15 + 1000 * 3 * 2 + 2000 * 3 * 0.1) / 1e6)
+  assert.equal(cached.model_usd_complete, true)
 })
 
 test('readJobCost returns BOTH reservation columns (the cap reservation was invisible to the cost read)', async () => {

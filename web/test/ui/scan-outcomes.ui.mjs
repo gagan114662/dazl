@@ -45,7 +45,9 @@ const ALL = {
   dropped: job('b', 'Roofers in Texas hiring estimators', { status: 'done', candidates: 6, verified: 0, needs_review: 0, dropped: 6 }),
   readNone: job('c', 'Breweries in Maine that just raised a round', { status: 'failed', error: 'no_candidates', candidates: 0, empty_reason: READ_NONE }),
   noHits: job('1', 'Lighthouse keepers in Kansas', { status: 'failed', error: 'no_candidates', candidates: 0, empty_reason: NO_HITS }),
-  budget: job('d', 'Law firms in Denver moving offices', { status: 'failed', error: 'budget_stopped' }),
+  budget: job('d', 'Law firms in Denver moving offices', { status: 'failed', error: 'budget_stopped', stop_refusal_reason: 'over_limit' }),
+  // A legacy budget_stopped row kept no reason: neutral words, never a budget-cause claim or budget-change advice.
+  legacyBudget: job('j', 'Roofers in Boise', { status: 'failed', error: 'budget_stopped', stop_refusal_reason: null }),
   failed: job('e', 'Gyms in Austin switching software', { status: 'failed', error: 'upstream 502' }),
   old: job('f', 'Cafes in Leeds', { status: 'done' }),
   ownKey: job('7', 'Florists in Bristol', { status: 'failed', error: 'key_rejected', funded_by: 'user' }),
@@ -78,14 +80,16 @@ await ctx.route('**/*', async route => {
     const id = u.searchParams.get('job_id')
     // The QA truth (job 70a6111e): the served id claude-sonnet-4-5-20250929 is a KNOWN dated model - priceOf strips the
     // date, so 368in/74out prices to $0.002214, never "no listed price". The cap reservation is named as itself.
-    if (id === ALL.sourceErr.id) return json({ status: 'failed', error: 'source_error', provider_issues: [], cost: { estimate: { total: { min: 0.001, max: 0.01 } }, actual: { summary: "Actual model cost $0.0022 from the tokens the provider reported, against an estimate of $0.00-$0.01 (inside the range). Not an invoice. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", model_usd: 0.002214, within: 'within' } } })
+    if (id === ALL.sourceErr.id) return json({ status: 'failed', error: 'source_error', provider_issues: [], cost: { estimate: { total: { min: 0.001, max: 0.01 } }, actual: { summary: "Actual model cost at least $0.0022 from the tokens the provider reported; cache token usage was not recorded, so this is the recorded-token component, not the full cost, against an estimate of $0.00-$0.01. Not an invoice. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", model_usd: 0.002214, model_usd_complete: false, within: 'unknown' } } })
     // The genuinely-unlisted case separately: recorded calls, no priced model -> honestly unknown, never $0.
     if (id === ALL.holdErr.id) return json({ status: 'failed', error: 'unbounded_fallback_hold', provider_issues: [], cost: { estimate: { total: { min: 0.001, max: 0.01 } }, actual: { summary: '1 model call recorded (368 input / 74 output tokens), but no USD cost could be settled (the served model has no listed price) - the actual cost is unknown, not $0. Estimate was $0.00-$0.01.', model_usd: null, within: 'unknown' } } })
     if (id === ALL.noDisc.id) return json({ status: 'failed', error: 'no_discovery', provider_issues: [] })
+    if (id === ALL.budget.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: 'over_limit' })
+    if (id === ALL.legacyBudget.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: null })
   }
   const one = Object.values(ALL).find(j => u.pathname === `/api/campaigns/${j.id}`)
   // The campaign read: stored status (never 'enriching') plus the enrichment marks, and the server's empty_reason.
-  if (one) return json({ job: { id: one.id, query: one.query, status: one.status === 'enriching' ? 'done' : one.status, error: one.error, funded_by: one.funded_by, created_at: one.created_at, candidates: one.candidates, verified: one.verified, needs_review: one.needs_review, dropped: one.dropped, enrich_started_at: one.status === 'enriching' ? Math.floor(Date.now() / 1000) - 20 : one.enrich_started_at, enrich_finished_at: null, empty_reason: one.empty_reason, failed_sources: one.failed_sources ?? null }, leads: [], messages: [] })
+  if (one) return json({ job: { id: one.id, query: one.query, status: one.status === 'enriching' ? 'done' : one.status, error: one.error, funded_by: one.funded_by, created_at: one.created_at, candidates: one.candidates, verified: one.verified, needs_review: one.needs_review, dropped: one.dropped, enrich_started_at: one.status === 'enriching' ? Math.floor(Date.now() / 1000) - 20 : one.enrich_started_at, enrich_finished_at: null, empty_reason: one.empty_reason, failed_sources: one.failed_sources ?? null, stop_refusal_reason: one.stop_refusal_reason ?? null }, leads: [], messages: [] })
   return json({}, 404)
 })
 const page = await ctx.newPage()
@@ -108,6 +112,7 @@ const EXPECT = {
   sourceErr: ['failed', /Failed - News had an error/, 'Try again', '/app/leads'],
   noDisc: ['stopped', /Nothing found in the sources this run could use/, 'Run a broader search', '/app/leads'],
   holdErr: ['stopped', /Stopped - the free sources could not conclude/, 'Try again', '/app/leads'],
+  legacyBudget: ['stopped', /Stopped before it could conclude/, 'Run the search again', '/app/leads'],
 }
 try {
   // An enriching scan is the active one (#254): Leads opens its progress instead of the history, so the history is
@@ -130,7 +135,7 @@ try {
     assert.doesNotMatch(rows.map(r => r.text).join(' '), /No matches|scan service had trouble|found no companies|rejected your key/)
   }
   // Campaign page: same outcome, next step and diagnostic, from the campaign read.
-  for (const k of ['dropped', 'readNone', 'noHits', 'ownKey', 'trialKey', 'unknownKey', 'enriching', 'interrupted', 'sourceErr', 'noDisc', 'holdErr']) {
+  for (const k of ['dropped', 'readNone', 'noHits', 'ownKey', 'trialKey', 'unknownKey', 'enriching', 'interrupted', 'sourceErr', 'noDisc', 'holdErr', 'budget', 'legacyBudget']) {
     await page.goto(`${base}/app/campaigns/${ALL[k].id}`, { waitUntil: 'networkidle' })
     const st = page.getByTestId('campaign-status'); await st.waitFor({ timeout: 15000 })
     if (['dropped', 'readNone', 'ownKey'].includes(k)) await shot(`campaign-${k}`)
@@ -157,7 +162,7 @@ try {
   await shot('home-plays-keys')
   // Home short words for the stop classes (lib/readiness.ts outcomeOf over scanOutcome): source error is 'failed',
   // in-scope-empty and the unbounded fallback hold are 'stopped' - never 'stopped by budget' words.
-  await home(['sourceErr', 'noDisc', 'holdErr'], ['failed', 'stopped'])
+  await home(['sourceErr', 'noDisc', 'holdErr', 'legacyBudget'], ['failed', 'stopped'])
   await page.getByTestId('play-campaign-link').first().scrollIntoViewIfNeeded()
   await shot('home-plays-stop-classes')
   // Deep links: the long per-class copy (leads-client.tsx) and the cost states. sourceErr carries the QA-shaped
@@ -167,8 +172,8 @@ try {
   await page.getByText(/A source this run depends on failed, so the run stopped before it could conclude/).waitFor({ timeout: 15000 })
   await shot('deep-source-error-cost')
   if (!before) {
-    assert.equal(await costEl.getAttribute('data-within'), 'within', 'the dated known model prices inside the estimate range')
-    assert.equal((await costEl.textContent()).trim(), "Estimated $0.00 - $0.01 at start. Actual model cost $0.0022 from the tokens the provider reported, against an estimate of $0.00-$0.01 (inside the range). Not an invoice. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", 'the QA cost truth, verbatim: priced dated model, reservation named as itself')
+    assert.equal(await costEl.getAttribute('data-within'), 'unknown', 'cache usage is not stored: the component is never placed in the range')
+    assert.equal((await costEl.textContent()).trim(), "Estimated $0.00 - $0.01 at start. Actual model cost at least $0.0022 from the tokens the provider reported; cache token usage was not recorded, so this is the recorded-token component, not the full cost, against an estimate of $0.00-$0.01. Not an invoice. Reserved under this run's spend cap: $0.0022 (a reservation, not a settled charge).", 'the QA cost truth, verbatim: priced dated model as at-least component, cache unknown, reservation named as itself')
     await page.goto(`${base}/app/leads?job_id=${ALL.holdErr.id}`, { waitUntil: 'networkidle' })
     await page.getByText(/the broader paid research step has no price bound, so the run stopped instead of starting it/).waitFor({ timeout: 15000 })
     const holdCost = page.getByTestId('scan-cost')
@@ -178,6 +183,12 @@ try {
     await page.goto(`${base}/app/leads?job_id=${ALL.noDisc.id}`, { waitUntil: 'networkidle' })
     await page.getByText(/The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope/).waitFor({ timeout: 15000 })
     await shot('deep-no-discovery')
+    // Legacy vs typed budget stops in the long copy: typed over_limit names the per-run control; legacy stays neutral.
+    await page.goto(`${base}/app/leads?job_id=${ALL.budget.id}`, { waitUntil: 'networkidle' })
+    await page.getByText(/its per-run budget refused the next paid step/).waitFor({ timeout: 15000 })
+    await page.goto(`${base}/app/leads?job_id=${ALL.legacyBudget.id}`, { waitUntil: 'networkidle' })
+    await page.getByText(/recorded as a budget stop, but its exact reason was not kept/).waitFor({ timeout: 15000 })
+    await shot('deep-legacy-budget-neutral')
   }
   assert.deepEqual(writes, [], 'loading writes nothing')
   console.log(before ? 'screenshots taken (BEFORE_ONLY)' : 'scan outcomes UI check passed: failed, none-extracted (read-but-none vs no hits, diagnostic kept), all-dropped, stopped, unrecorded, enriching/interrupted and key-rejected (own/trial/unknown) scans are distinct in Past scans, on the campaign page and on Home, each with one next step; the stop classes (source error, in-scope empty, unbounded fallback hold) read as themselves in all three views, never as budget stops; the deep-link cost line names an unsettled known-call cost as unknown (never $0) and a spend-cap reservation as a reservation (never an invoice); no writes')

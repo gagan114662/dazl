@@ -30,6 +30,9 @@ export interface ScanRecord {
   evidence_sources?: { source: string; evidence: number }[] | null; unknown_sources?: string[] | null
   // Sources that answered only in part (some requests / entries failed): named beside whatever the scan ended as - never read as ok, never as an empty result.
   partial_sources?: string[] | null
+  // From the run report's stop block, when recorded: the exact spend-refusal reason that caused the stop. NULL means
+  // not recorded (legacy rows) - never proof of any particular reason.
+  stop_refusal_reason?: string | null
 }
 const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
 // Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
@@ -72,10 +75,16 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
   if (j.status === 'failed') {
     switch (j.error) {
       case 'no_candidates': return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : emptyResult(j, open)
-      case 'budget_stopped': return j.funded_by === 'trial'
-        // a free scan searches the web only through calls with a fixed price, never the AI's own web search (trial-budget.ts)
-        ? { kind: 'stopped', label: 'This free scan found no companies within its spending limit', detail: 'A free scan searches the web only in ways whose cost is fixed in advance, so this does not show that no company matches.', next: { text: 'Try a broader search', href: NEW_SCAN } }
-        : { kind: 'stopped', label: 'Stopped by its budget - not an empty search', next: { text: 'Run it again with a larger budget', href: NEW_SCAN } }
+      case 'budget_stopped': {
+        // Only the typed report provenance (the run report's stop.spend_refusal_reason) may name a specific numeric
+        // control. A legacy budget_stopped row kept no reason: never claim a limit refused, never advise changing one.
+        const r = j.stop_refusal_reason ?? null
+        if (r === 'trial_budget_reached')   // TRIAL_BUDGET_REASON (trial-budget.ts); a free scan searches the web only in fixed-price calls
+          return { kind: 'stopped', label: 'This free scan found no companies within its spending limit', detail: 'A free scan searches the web only in ways whose cost is fixed in advance, so this does not show that no company matches.', next: { text: 'Try a broader search', href: NEW_SCAN } }
+        if (r === 'over_limit' || r === 'over_cap')
+          return { kind: 'stopped', label: 'Stopped by its budget - not an empty search', next: { text: 'Run it again with a larger budget', href: NEW_SCAN } }
+        return { kind: 'stopped', label: 'Stopped before it could conclude', detail: 'This run was recorded as a budget stop, but its exact reason was not kept: it may not have been a budget limit, so raising or removing the budget may not change anything. Nothing was concluded about whether leads exist.', next: { text: 'Run the search again', href: NEW_SCAN } }
+      }
       case 'source_error': return sourcesFailed(j)
         ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the run stopped before it could conclude. The budget did not cause this: raising or removing it would not have searched further. This is not an empty search.', next: { text: 'Try again', href: NEW_SCAN } }
         : { kind: 'failed', label: 'Failed - a source had an error', detail: 'A source failed, so the run stopped before it could conclude. The budget did not cause this. This is not an empty search.', next: { text: 'Try again', href: NEW_SCAN } }
