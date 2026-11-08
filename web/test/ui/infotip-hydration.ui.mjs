@@ -113,13 +113,15 @@ for (const p of PAGES) {
   for (const w of wiring) assert.ok(w.has && w.paired, `${p}: every tooltip button's aria-describedby must point at its own tooltip text`)
   if (wiring.length > 0) {
     const first = page.locator('[data-testid="infotip"] button').first()
-    // A pointer click hovers first: mouseenter opens the tip, then the click toggles it shut. That is the component's
-    // true toggle behavior, so assert each documented open path on its own terms instead of one impossible click:
+    // A pointer click hovers first: mouseenter opens the tip, then the click toggles it shut - the component's true
+    // toggle behavior under a mouse, so the old single 'click opens' assertion could never pass. Assert the two
+    // documented open paths that are deterministic in this harness. Touch tap is NOT claimed: a real tap fires
+    // compatibility mouseenter/focus before click, whose interplay with the toggle needs device grounding.
     await first.hover(); assert.equal(await first.getAttribute('aria-expanded'), 'true', `${p}: hover opens the tooltip`)
     await first.press('Escape'); assert.equal(await first.getAttribute('aria-expanded'), 'false', `${p}: Escape still closes the tooltip`)
-    // The touch path: a click with no preceding mouseenter toggles the closed tip open (el.click() fires no hover).
-    await first.evaluate(b => b.click()); assert.equal(await first.getAttribute('aria-expanded'), 'true', `${p}: click (touch) still opens the tooltip`)
-    await first.evaluate(b => b.click()); assert.equal(await first.getAttribute('aria-expanded'), 'false', `${p}: the same click toggles it shut again`)
+    await first.evaluate(b => b.blur()); await page.mouse.move(0, 0)
+    await first.focus(); assert.equal(await first.getAttribute('aria-expanded'), 'true', `${p}: keyboard focus opens the tooltip`)
+    await first.press('Escape'); assert.equal(await first.getAttribute('aria-expanded'), 'false', `${p}: Escape closes it again`)
   }
   await page.close()
 }
