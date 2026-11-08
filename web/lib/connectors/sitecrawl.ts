@@ -423,90 +423,95 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
   // CANCELS the in-flight native fetch (signal-honoring Gets) instead of abandoning it.
   const ctrl = new AbortController()
   const deadlineTimer = setTimeout(() => ctrl.abort(), Math.max(1, deadline - Date.now())); deadlineTimer.unref?.()
-  type CrawlOutcome = { found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }
-  const finish = (v: CrawlOutcome): CrawlOutcome => { clearTimeout(deadlineTimer); return v }
-  const fetchSignal = (): AbortSignal | undefined => (signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, ctrl.signal]) : ctrl.signal)
-  const polite = async (url: string, delay: number) => {
-    const h = new URL(url).hostname
-    if (stopped()) { abortStop = true; return null } // a pre-aborted caller starts nothing
-    if (Date.now() >= deadline) { timeStop = true; return null } // never start a fetch after the budget
-    const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now()
-    if (wait > 0) {
-      if (Date.now() + wait >= deadline) { timeStop = true; return null } // the polite gap itself would outlive the budget
-      if (!(await sleepAbort(wait, signal))) { abortStop = true; return null }
-      if (stopped()) { abortStop = true; return null }
-      if (Date.now() >= deadline) { timeStop = true; return null }
+  try {
+    const fetchSignal = (): AbortSignal | undefined => (signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, ctrl.signal]) : ctrl.signal)
+    const polite = async (url: string, delay: number) => {
+      const h = new URL(url).hostname
+      if (stopped()) { abortStop = true; return null } // a pre-aborted caller starts nothing
+      if (Date.now() >= deadline) { timeStop = true; return null } // never start a fetch after the budget
+      const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now()
+      if (wait > 0) {
+        if (Date.now() + wait >= deadline) { timeStop = true; return null } // the polite gap itself would outlive the budget
+        if (!(await sleepAbort(wait, signal))) { abortStop = true; return null }
+        if (stopped()) { abortStop = true; return null }
+        if (Date.now() >= deadline) { timeStop = true; return null }
+      }
+      lastHit.set(h, Date.now())
+      // The race bounds the WAIT for any Get; the combined signal CANCELS the operation for signal-honoring Gets.
+      // A caller abort interrupts immediately; it never waits out the deadline.
+      const left = Math.max(1, deadline - Date.now())
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let onAbort: (() => void) | undefined
+      const interrupted = new Promise<null>(res => {
+        // The deadline's OWN interruption: it marks the time stop and cancels the fetch BEFORE the race can resolve,
+        // so the label and the cancel never depend on timer-jitter against Date.now().
+        timer = setTimeout(() => { timeStop = true; ctrl.abort(); res(null) }, left)
+        if (signal) { onAbort = () => { abortStop = true; res(null) }; if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
+      })
+      try {
+        const r = await Promise.race([get(url, { signal: fetchSignal() }), interrupted])
+        if (stopped()) abortStop = true
+        // ctrl is aborted ONLY by the deadline (its timer or the per-fetch race timer), so an interrupted fetch under an
+        // aborted ctrl is the deadline's own act - no Date.now() jitter decides the label. A self-failing get keeps neither flag.
+        else if (r === null && ctrl.signal.aborted) timeStop = true
+        else if (r === null && Date.now() >= deadline) timeStop = true // backstop: the fetch outlived the budget (and was handed the cancel signal)
+        return r
+      } finally {
+        clearTimeout(timer) // cleared on resolve, throw AND reject: a settled race never leaves its budget timer or listener behind
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort)
+      }
     }
-    lastHit.set(h, Date.now())
-    // The race bounds the WAIT for any Get; the combined signal CANCELS the operation for signal-honoring Gets.
-    // A caller abort interrupts immediately; it never waits out the deadline.
-    const left = Math.max(1, deadline - Date.now())
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let onAbort: (() => void) | undefined
-    const interrupted = new Promise<null>(res => {
-      // The deadline's OWN interruption: it marks the time stop and cancels the fetch BEFORE the race can resolve,
-      // so the label and the cancel never depend on timer-jitter against Date.now().
-      timer = setTimeout(() => { timeStop = true; ctrl.abort(); res(null) }, left)
-      if (signal) { onAbort = () => { abortStop = true; res(null) }; if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
-    })
-    const r = await Promise.race([get(url, { signal: fetchSignal() }), interrupted])
-    clearTimeout(timer)
-    if (signal && onAbort) signal.removeEventListener('abort', onAbort)
-    if (stopped()) abortStop = true
-    // ctrl is aborted ONLY by the deadline (its timer or the per-fetch race timer), so an interrupted fetch under an
-    // aborted ctrl is the deadline's own act - no Date.now() jitter decides the label. A self-failing get keeps neither flag.
-    else if (r === null && ctrl.signal.aborted) timeStop = true
-    else if (r === null && Date.now() >= deadline) timeStop = true // backstop: the fetch outlived the budget (and was handed the cancel signal)
-    return r
-  }
-  const rob = await polite(`${origin}/robots.txt`, 0)
-  let robots: Robots
-  if (!rob) return finish(timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 })
-  if (rob.status >= 500) return finish({ found: [], reason: 'robots_error', pages: 0 })
-  robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
-  if (!robots.allows('/')) return finish({ found: [], reason: 'robots_disallow', pages: 0 })
-  const home = await polite(`${origin}/`, robots.delayMs)
-  if (!home || home.status >= 400) return finish(timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 })
-  // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
-  const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
-  const homeNorm = norm(homePlain)
-  // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
-  const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
-  if (expectName && !homeNorm.includes(norm(expectName))) return finish({ found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText })
-  const found = new Map<string, Found>(); let pages = 1
-  onPage?.(home.body, home.finalUrl, home.status)
-  for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
-  for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
-    if (stopped()) { stoppedBy = 'aborted'; break }
-    if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
-    if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
-    if (!robots.allows(p)) continue
-    const r = await polite(origin + p, robots.delayMs)
-    if (!r || r.status >= 400) continue
-    pages++
-    onPage?.(r.body, r.finalUrl, r.status)
-    for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
-  }
-  // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
-  // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
-  if (social) {
-    const links = new Set<string>()
-    for (const m of home.body.matchAll(/href\s*=\s*["'](https:\/\/(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|linkedin\.com\/company|instagram\.com)\/[^"'#?\s]{1,80})["']/gi)) links.add(m[1])
-    for (const link of [...links].slice(0, 3)) {
-      const u = new URL(link)
-      const rr = await polite(`https://${u.hostname}/robots.txt`, 0)
-      if (!rr || rr.status >= 500) continue
-      const rob2 = rr.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rr.body, u.hostname)
-      if (!rob2.allows(u.pathname, u.hostname)) continue // hard rule
-      const pg = await polite(link, rob2.delayMs)
-      if (!pg || pg.status >= 400) continue
-      for (const f of extractContacts(pg.body, pg.finalUrl, site)) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, { ...f, label: 'published on the company social profile' })
+    const rob = await polite(`${origin}/robots.txt`, 0)
+    let robots: Robots
+    if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
+    if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
+    robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
+    if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
+    const home = await polite(`${origin}/`, robots.delayMs)
+    if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
+    // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
+    const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
+    const homeNorm = norm(homePlain)
+    // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
+    const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
+    if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
+    const found = new Map<string, Found>(); let pages = 1
+    onPage?.(home.body, home.finalUrl, home.status)
+    for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
+    for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
+      if (stopped()) { stoppedBy = 'aborted'; break }
+      if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
+      if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
+      if (!robots.allows(p)) continue
+      const r = await polite(origin + p, robots.delayMs)
+      if (!r || r.status >= 400) continue
+      pages++
+      onPage?.(r.body, r.finalUrl, r.status)
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
+    // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
+    // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
+    if (social) {
+      const links = new Set<string>()
+      for (const m of home.body.matchAll(/href\s*=\s*["'](https:\/\/(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|linkedin\.com\/company|instagram\.com)\/[^"'#?\s]{1,80})["']/gi)) links.add(m[1])
+      for (const link of [...links].slice(0, 3)) {
+        const u = new URL(link)
+        const rr = await polite(`https://${u.hostname}/robots.txt`, 0)
+        if (!rr || rr.status >= 500) continue
+        const rob2 = rr.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rr.body, u.hostname)
+        if (!rob2.allows(u.pathname, u.hostname)) continue // hard rule
+        const pg = await polite(link, rob2.delayMs)
+        if (!pg || pg.status >= 400) continue
+        for (const f of extractContacts(pg.body, pg.finalUrl, site)) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, { ...f, label: 'published on the company social profile' })
+      }
+    }
+    // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
+    const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
+    const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
+  } finally {
+    clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
-  // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
-  const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-  return finish({ found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) })
 }
 
 // #389: one dated tech_scan row per crawl of a confirmed company homepage, and a tech_change row on this lead for every adoption / removal
