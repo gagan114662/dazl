@@ -352,11 +352,24 @@ export function addEnrichment(db: Database.Database, tenantId: string, leadId: s
   db.prepare(ADD_ENRICHMENT_SQL).run(...addEnrichmentParams(tenantId, leadId, e))
 }
 
-// One row per page the crawler fetched (#871). Idempotent per tenant/job/site/url: a re-run of the same
-// crawl updates nothing and never duplicates; the first fetch's timestamp stands as when the page was read.
-export function recordCrawlPage(db: Database.Database, tenantId: string, jobId: string, site: string, url: string, status: number, fetchedAt: number): void {
-  db.prepare(`INSERT INTO crawl_pages (id, tenant_id, scan_job_id, site, url, status, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (tenant_id, scan_job_id, site, url) DO NOTHING`).run(randomBytes(12).toString('hex'), tenantId, jobId, site, url.slice(0, 500), status, fetchedAt)
+const ADD_CRAWL_PAGE_SQL = `INSERT INTO crawl_pages (id, tenant_id, scan_job_id, site, url, status, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, scan_job_id, site, url) DO NOTHING`
+const crawlPageParams = (tenantId: string, jobId: string, site: string, url: string, status: number, fetchedAt: number): Param[] =>
+  [randomBytes(12).toString('hex'), tenantId, jobId, site, url, status, fetchedAt]
+const crawlPageStorable = (url: string) => url.length <= 500 && url.startsWith('http')
+// One row per page the crawler fetched, with the EXACT url and that page's own fetch time (#871). A page address
+// outside the 500-char bound is REFUSED (false), never truncated: a sliced prefix would silently alias distinct
+// pages into one row. Idempotent per tenant/job/site/url: a re-run never duplicates; the first fetch's time stands.
+export function recordCrawlPage(db: Database.Database, tenantId: string, jobId: string, site: string, url: string, status: number, fetchedAt: number): boolean {
+  if (!crawlPageStorable(url)) return false
+  db.prepare(ADD_CRAWL_PAGE_SQL).run(...crawlPageParams(tenantId, jobId, site, url, status, fetchedAt))
+  return true
+}
+// The same write on the Db layer (Postgres in production): one statement, same conflict rule, same refusal (#871).
+export async function recordCrawlPageDb(db: Db, tenantId: string, jobId: string, site: string, url: string, status: number, fetchedAt: number): Promise<boolean> {
+  if (!crawlPageStorable(url)) return false
+  await db.run(ADD_CRAWL_PAGE_SQL, crawlPageParams(tenantId, jobId, site, url, status, fetchedAt))
+  return true
 }
 // addEnrichment inside a Db-layer transaction (SQLite or Postgres), the same statement: for setDomainReviewDb (#354).
 export function* addEnrichmentTx(t: Tx, tenantId: string, leadId: string, e: Enrichment): TxBody<void> {

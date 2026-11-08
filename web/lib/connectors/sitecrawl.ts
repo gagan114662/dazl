@@ -401,23 +401,43 @@ const lastHit = new Map<string, number>()
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
 // buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
 // payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
-// budgetMs (optional): an intrinsic wall-clock bound for the whole crawl, checked before each new page fetch (#871). Without it the
-// page loop is bounded only by MAX_PAGES and the caller's AbortSignal; with it a slow polite-gap or slow host stops the crawl at the
-// budget instead of running unbounded, and the return names which bound stopped it (stoppedBy).
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs?: number): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+// budgetMs: an intrinsic wall-clock bound for the WHOLE crawl (#871) - robots, home, every polite wait, every own-site page and the
+// social branch. A fetch never starts once the budget is spent, a polite gap that would outlive it is not waited out, and an in-flight
+// fetch is raced against it. Defaults to CRAWL_BUDGET_MS so every caller is bounded; pass budgetMs <= 0 to disable explicitly.
+// The return names which bound stopped the crawl (stoppedBy); a crawl the budget stopped before the homepage finished reads reason
+// 'time_budget' and is treated as unread.
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = budgetMs && budgetMs > 0 ? Date.now() + budgetMs : null
   let stoppedBy: 'pages' | 'time' | 'aborted' | undefined
-  const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
+  let timeStop = false
+  const polite = async (url: string, delay: number) => {
+    const h = new URL(url).hostname
+    if (deadline && Date.now() >= deadline) { timeStop = true; return null } // never start a fetch after the budget
+    const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now()
+    if (wait > 0) {
+      if (deadline && Date.now() + wait >= deadline) { timeStop = true; return null } // the polite gap itself would outlive the budget
+      if (!(await sleepAbort(wait, signal))) return null
+      if (deadline && Date.now() >= deadline) { timeStop = true; return null }
+    }
+    lastHit.set(h, Date.now())
+    if (!deadline) return get(url)
+    const left = Math.max(1, deadline - Date.now())
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const r = await Promise.race([get(url), new Promise<null>(res => { timer = setTimeout(() => res(null), left) })])
+    clearTimeout(timer)
+    if (r === null && Date.now() >= deadline) timeStop = true // the fetch outlived the budget (its own socket still settles on its own timeout)
+    return r
+  }
   const rob = await polite(`${origin}/robots.txt`, 0)
   let robots: Robots
-  if (!rob) return { found: [], reason: 'robots_unreachable', pages: 0 }
+  if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : { found: [], reason: 'robots_unreachable', pages: 0 }
   if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
   robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
   if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
   const home = await polite(`${origin}/`, robots.delayMs)
-  if (!home || home.status >= 400) return { found: [], reason: 'site_unreachable', pages: 0 }
+  if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : { found: [], reason: 'site_unreachable', pages: 0 }
   // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
   const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
   const homeNorm = norm(homePlain)
@@ -456,7 +476,8 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(stoppedBy ? { stoppedBy } : {}) }
+  const sb = stoppedBy ?? (timeStop ? 'time' as const : undefined)
+  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
 }
 
 // #389: one dated tech_scan row per crawl of a confirmed company homepage, and a tech_change row on this lead for every adoption / removal
@@ -572,6 +593,9 @@ export const placeConsistent = (homeNorm: string | undefined, places: string[]) 
 export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
+    // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
+    const envBudget = Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS)
+    const crawlBudgetMs = Number.isFinite(envBudget) && envBudget > 0 ? envBudget : CRAWL_BUDGET_MS
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
     // own 40s per-call bound (outer deadline does not reach it yet - tracked).
     const get = deps.get ?? (deps.signal && !deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL
@@ -610,15 +634,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
       const seen = new Map<string, { address: string; url: string }>(); seenBySite.set(cand, seen)
-      // Every page the crawl fetches is recorded with its URL and fetch time (#871); the email finder keeps
-      // riding the same callback when enabled. The crawl itself runs under an intrinsic wall-clock budget so a
+      // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
+      // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
-      const pageAt = Math.floor((deps.now ?? Date.now()) / 1000)
       const onPage = (html: string, url: string, status: number) => {
-        recordCrawlPage(db, tenantId, jobId, cand, url, status, pageAt)
+        recordCrawlPage(db, tenantId, jobId, cand, url, status, Math.floor((deps.now ?? Date.now()) / 1000))
         if (guessing) for (const a of personalAddresses(html, cand)) { locals.add(a.local); if (!seen.has(a.address) && seen.size < 200) seen.set(a.address, { address: a.address, url }) }
       }
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, CRAWL_BUDGET_MS)
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
       siteRead.set(cand, r)
       return r
     }
@@ -648,12 +671,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
+      // Nothing usable was read: wrong company, unreachable, or the time budget stopped the crawl before the homepage (#871).
+      const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget'
       // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
       const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? ev.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ') : ''].join(' '), l.company)
       for (const cand of sites) {
         site = cand
         r = await readSite(cand, l.company)
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
@@ -664,14 +689,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // Place agreement against the scan's geography (city-scoped for New York City / London): a same-name practice in another state or
         // another UK city names its own address on its homepage and is refused; a guessed (name_probe) domain must also AGREE for a city ask.
         // A street address in the lead's own evidence: a homepage that lists street addresses and none of them is the lead's is another business with the same name.
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && basisOf.get(cand) !== 'evidence_own_domain' && addressAgreement(r.homeText, `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'conflict') {
+        if (!unread(r) && basisOf.get(cand) !== 'evidence_own_domain' && addressAgreement(r.homeText, `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'conflict') {
           const reason = `contact rejected: address mismatch ${(streetKeys(r.homeText)[0] ?? 'another address')} vs ${(streetKeys(`${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`)[0] ?? 'the lead\'s address')}`.slice(0, 180)
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: reason, results: 0 })
           if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason, sourceUrl: `https://${cand}/` })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
+        if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
           const v = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
           if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
@@ -681,12 +706,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             continue
           }
         }
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable') break
+        if (!unread(r)) break
         audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: r.reason, results: 0 })
       }
       // A deadline that fired during this crawl leaves a partial read: record nothing (no domain, tech, contacts or audit row) rather than a result that looks complete.
       if (deps.signal?.aborted) return
-      if (r.reason === 'name_mismatch' || r.reason === 'site_unreachable') continue
+      if (unread(r)) continue
+      // The crawl's own time budget stopping it mid-read is the same class of partial read (#871): the pages actually
+      // fetched stay recorded in crawl_pages (facts with their own times), but NO derived domain/tech/contact rows.
+      if (r.stoppedBy === 'time') continue
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
