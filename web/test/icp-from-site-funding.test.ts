@@ -175,3 +175,37 @@ test('trial: a completed funded answer that is malformed or holds no acceptable 
   assert.ok(records.every(r => r.where === 'scan:icp-from-site:trial-answer'), JSON.stringify(records.map(r => r.where)))
   assert.ok(records.every(r => !r.error.message.includes('not json at all')), 'the record carries the reason, never the answer text')
 })
+
+// #1002 review: recovery on the trial path obeys the SAME predicate as the own-key read. With a prior research
+// block or saved decisions on file, a draft cut at the trial cap could not carry them forward - so the read
+// REFUSES to recover: it ran and failed honestly (read_failed, usage settled, an operator record with the
+// reason only), and the saved research is never displaced by an incomplete replacement. Without either, the
+// very same answer recovers and is flagged truncated (the control).
+test('trial: a cut answer is NOT recovered when a prior research block or saved decisions exist (saved research is never displaced by an incomplete replacement); one call, settled, no retry', async () => {
+  const DRAFT = { summary: 'Sales operations teams buying CRM cleanup.', who: ['Sales operations'], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+  const FULL = JSON.stringify({ sells: 'CRM cleanup', draft: DRAFT, items: [{ offer: 'o1', kind: 'persona', text: 'x', url: 'https://acme.example/', quote: 'we sell crm tools', inferred: false }] })
+  const cutText = FULL.slice(0, FULL.indexOf('"items"') - 1) // the draft closed; the answer was cut after it, at the trial cap
+  const cases: { name: string; deps: Record<string, unknown> }[] = [
+    { name: 'prior research block', deps: { prior: { site: 'acme.example', offers: [], items: [] } as never } },
+    { name: 'saved decisions', deps: { decisions: { decisions: [{}], trace: {} } as never } },
+    { name: 'neither (control)', deps: {} },
+  ]
+  for (const c of cases) {
+    const records: ErrorRecord[] = []
+    const restore = setErrorSinks([r => { records.push(r) }])
+    try {
+      const db = store(false), seen: string[] = [], calls = { n: 0 }, settled: (number | null)[] = [], released = { n: 0 }
+      const out = await icpFromWebsite(db, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: page, providers: { anthropic: provider(seen, { text: cutText, usage: { input_tokens: 2000, output_tokens: 700 } }) }, trial: admitted(calls, settled, released), ...c.deps })
+      if (c.name === 'neither (control)') {
+        assert.ok('icp' in out && out.funded === 'trial' && out.truncated === true && out.icp.summary === DRAFT.summary, `${c.name}: ${JSON.stringify(out)}`)
+        assert.ok(records.every(r => r.where !== 'scan:icp-from-site:trial-answer'), 'no failure record on the recovered control')
+      } else {
+        assert.ok('free' in out && out.trial === 'read_failed', `${c.name}: saved research must prevent an incomplete replacement: ${JSON.stringify(out)}`)
+        const msgs = records.map(r => r.error.message)
+        assert.ok(msgs.some(m => m.includes('truncated')), `${c.name}: the operator record carries the reason: ${JSON.stringify(msgs)}`)
+        assert.ok(records.every(r => r.where === 'scan:icp-from-site:trial-answer' && !r.error.message.includes(cutText)), 'the record carries the reason, never the answer text')
+      }
+      assert.deepEqual([seen, calls.n, settled, released.n], [[OP], 1, [(2000 * 3 + 700 * 15) / 1e6], 0], `${c.name}: one admission, one call, settled to the reported usage, no retry, nothing released`)
+    } finally { restore() }
+  }
+})

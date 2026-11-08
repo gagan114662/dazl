@@ -216,8 +216,10 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
       const det = await guarded.completeDetailed!(adm.key.key, fitPromptBytes(site, homePage, TRIAL_SITE_READ_PROMPT_MAX_BYTES), deps.fetchImpl, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
       // The same truth rules as the own-key read (#1002): an answer cut off at the trial cap can still hold a
       // complete leading draft (recovered, flagged truncated); a malformed or profile-less answer is a failed
-      // read, never a silent free read and never "AI key rejected".
-      const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, true, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
+      // read, never a silent free read and never "AI key rejected". The same refusal to recover applies too:
+      // with a prior research block or saved decisions on file, a cut-off draft could not carry them forward,
+      // so the read fails honestly instead of displacing saved research with an incomplete replacement.
+      const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, !deps.prior && !(deps.decisions && deps.decisions.decisions.length), TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
       const costUsd = researchCostUsd(det.usage, det.model ?? trialProvider.configuredModel?.())
       await adm.settle(costUsd).catch((e) => captureError(e, { source: 'route', where: '/api/scan/icp-from-url', tenantId }))
       if (!answer.ok) {
