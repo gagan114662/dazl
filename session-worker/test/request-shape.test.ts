@@ -5,7 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
-import { once } from 'node:events'
+import { reap } from './boot-util.ts'
 
 const TOKEN = 'test-token-933'
 let child: ChildProcess | undefined
@@ -21,16 +21,6 @@ const STUB_BODY = JSON.stringify(redditListing)
 // hosted #933 run failed all 12 cases in this hook with stdio:'ignore' and there was nothing to diagnose.
 const freePort = () => new Promise<number>((resolve, reject) => { const srv = createServer(); srv.once('error', reject); srv.listen(0, '127.0.0.1', () => { const a = srv.address(); srv.close(() => resolve(typeof a === 'object' && a ? a.port : 0)) }) })
 const scrub = (s: string) => s.split(TOKEN).join('<token>').split(STUB_BODY).join('<stub-body>')
-// Terminate and REAP a spawned worker, bounded: SIGTERM, up to 2s, then SIGKILL and wait for the exit the kernel
-// guarantees. Never fire-and-forget: an unreaped child can still hold its port when the next attempt starts.
-async function reap(c: ChildProcess): Promise<void> {
-  if (c.exitCode !== null || c.signalCode !== null) return
-  c.kill()
-  if (!await Promise.race([once(c, 'exit').then(() => true), new Promise(r => setTimeout(() => r(false), 2000))])) {
-    c.kill('SIGKILL')
-    await once(c, 'exit')
-  }
-}
 test.before(async () => {
   const diags: string[] = []
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -50,7 +40,7 @@ test.before(async () => {
     // responds cannot hang the loop past the budget.
     const deadline = Date.now() + 30_000
     while (Date.now() < deadline && gone === null && spawnError === null) {
-      try { const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) }); if (r.ok) { up = true; break } } catch { /* not up yet */ }
+      try { const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(Math.min(2000, Math.max(1, deadline - Date.now()))) }); if (r.ok) { up = true; break } } catch { /* not up yet */ }
       await new Promise(r => setTimeout(r, 100))
     }
     if (up) { child = c; base = `http://127.0.0.1:${port}`; child.on('error', () => {}); child.on('exit', code => { exited = code ?? -1 }); return }
