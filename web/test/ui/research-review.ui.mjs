@@ -124,7 +124,10 @@ try {
   const hyps = Object.fromEntries(saved.buyer.research.hyps.map(h => [h.i, h]))
   assert.equal(hyps.h2.s, 'rejected', 'the dismissal is saved as an explicit rejection')
   assert.equal(hyps.h4.s, 'rejected', 'the add-then-dismissal is saved as an explicit rejection')
-  assert.equal(hyps.h1.s, 'sourced', 'an un-acted statement keeps its truth status')
+  assert.equal(hyps.h1.s, 'reviewed', 'the Added statement is saved as the explicit confirmation it was (Add = confirm, research-review.tsx)')
+  assert.equal(hyps.h1.q, 'lets practice managers fill their appointment book', 'a confirmed statement keeps its page quote')
+  assert.equal(hyps.h1.u, SITE, 'a confirmed statement keeps its page URL')
+  assert.ok(saved.buyer.research.decisions?.some(d => d.offer === 'o1' && d.hypothesis === 'h1' && d.action === 'confirm'), 'the Add confirm decision is saved with the block')
   assert.deepEqual(saved.buyer.research.ans, { q: 'Who buys this?', o: 'o1', t: 'office managers' }, 'the answer is saved with its WORDS, recrawl-durable')
   console.log('PASS research-review: render, add, dismiss, answer, and saved reviewed block')
 } finally {
