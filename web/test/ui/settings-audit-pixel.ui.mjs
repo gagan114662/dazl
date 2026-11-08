@@ -14,7 +14,7 @@ const bundle = await esbuild.build({
   stdin: { contents: `import React from 'react'; import { createRoot } from 'react-dom/client'; import EnrichmentPanel from '@/app/app/settings/enrichment-panel'; createRoot(document.getElementById('root')).render(<EnrichmentPanel />)`, resolveDir: root, loader: 'tsx' },
   bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'error',
   alias: { '@': root },
-  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = (n) => ({ toString: () => "x".repeat(n * 2) })', loader: 'js' })) } }], define: { 'process.env.NODE_ENV': '"development"' }, external: [],
+  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = n => new Uint8Array(n); export const randomBytes = (n) => ({ toString: () => "x".repeat(n * 2) })', loader: 'js' })) } }], define: { 'process.env.NODE_ENV': '"development"' }, external: [],
 })
 // Real app styles: compile globals.css with the repo's own Tailwind v4 (candidates scanned from app/), inline <style>.
 import fs from 'node:fs'

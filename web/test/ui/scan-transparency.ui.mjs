@@ -32,7 +32,7 @@ const bundle = await esbuild.build({
   stdin: { contents: `import React from 'react'; import { createRoot } from 'react-dom/client'; import LeadsClient from '@/app/app/leads/leads-client'; createRoot(document.getElementById('root')).render(<LeadsClient />)`, resolveDir: root, loader: 'tsx' },
   bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'error',
   alias: { '@': root },
-  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = (n) => ({ toString: () => "shim".repeat(n).slice(0, n) })', loader: 'js' })) } }], define: { 'process.env.NODE_ENV': '"development"' }, external: [],
+  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = n => new Uint8Array(n); export const randomBytes = (n) => ({ toString: () => "shim".repeat(n).slice(0, n) })', loader: 'js' })) } }], define: { 'process.env.NODE_ENV': '"development"' }, external: [],
 })
 const js = bundle.outputFiles[0].text
 

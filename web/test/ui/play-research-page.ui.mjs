@@ -14,7 +14,7 @@ const bundle = await esbuild.build({
   bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'error',
   alias: { '@': root },
   // node:crypto is only used by the draft-review binding hash, which this check never exercises: a browser shim keeps the bundle self-contained.
-  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const randomBytes = () => ({toString:()=>"test"}); export const createHash = () => ({ update() { return this }, digest() { return "shim" } })', loader: 'js' })) } }], define: { 'process.env.NODE_ENV': '"development"' }, external: [],
+  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const randomBytes = () => ({toString:()=>"test"}); export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = n => new Uint8Array(n)', loader: 'js' })) } }], define: { 'process.env.NODE_ENV': '"development"' }, external: [],
 })
 const js = bundle.outputFiles[0].text
 
