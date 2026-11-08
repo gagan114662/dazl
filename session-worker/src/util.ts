@@ -2,7 +2,8 @@
 
 // The post's own author as the platform reports it; fields the platform does not carry are null, never inferred.
 // url is the author's profile website exactly as the platform payload reports it (the expanded link, never a
-// redirect wrapper): the only affiliation field X carries, and a source-reported binding, not an inference.
+// redirect wrapper): the only affiliation-adjacent field X carries - the poster's SELF-ASSERTED claim, captured as
+// attributed context for review, never verification of affiliation or a company.
 export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null; url: string | null }
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean; author?: WorkerAuthor }
 

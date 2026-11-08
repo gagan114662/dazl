@@ -15,9 +15,10 @@ export const MAX_COMPETITORS = 5
 const MAX_POST_AGE_DAYS = 30
 export const COMPLAINT_CONNECTOR = 'adv:reddit-competitor'
 export const COMPLAINT_CONNECTOR_X = 'adv:x-competitor'
-// Complaint search runs on each platform whose fetcher can carry the post's own author. X is the one current
-// source whose payload reports an author affiliation binding (the profile website); Reddit carries only a
-// username, so Reddit complaints still land at needs_evidence with the explicit unavailable reason (#401/#379).
+// Complaint search runs on each platform whose fetcher can carry the post's own author. X's payload carries the
+// author's profile website - the poster's SELF-ASSERTED claim, captured as attributed context for review, never
+// verification of affiliation; Reddit carries only a username. On both platforms a post ends at needs_evidence
+// with the explicit unavailable reason unless the source reports an actual company (#401/#379 reviewer decision).
 const COMPLAINT_PLATFORMS: { platform: 'reddit' | 'x'; connector: string }[] = [
   { platform: 'reddit', connector: COMPLAINT_CONNECTOR },
   { platform: 'x', connector: COMPLAINT_CONNECTOR_X },
