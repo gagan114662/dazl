@@ -78,10 +78,11 @@ try {
   await block.waitFor({ timeout: 10000 })
   const card = page.locator('.card', { has: block })
   const who = card.locator('textarea').nth(1) // after the summary textarea: who, then the other fields
-  // The review panel sits under Settings > More sources: scroll to it and capture the whole container, never
-  // wherever the fill interaction left the viewport (the mis-scrolled Settings-only shot from review).
-  await card.scrollIntoViewIfNeeded()
-  await shot('leads-draft-research-review', card)
+  // The review panel sits under Settings > More sources. The card is taller than the viewport inside main's own
+  // scroll container, where an element shot still clips - so capture the SOURCE PANEL whole (it fits) and the
+  // bottom controls as a separate visible shot; neither claims to be the whole card.
+  await block.scrollIntoViewIfNeeded()
+  await shot('leads-draft-research-review', block)
 
   // 1. Statements render with quotes/URLs; inferred marked.
   const h1 = page.getByTestId('hyp-h1'), h2 = page.getByTestId('hyp-h2'), h3 = page.getByTestId('hyp-h3')
@@ -104,8 +105,8 @@ try {
   await q.getByRole('button', { name: 'Save' }).click()
   for (let i = 0; i < 50 && !(await who.inputValue()).includes('office managers'); i++) await page.waitForTimeout(100)
   assert.match(await who.inputValue(), /office managers/, 'typed answer lands in the Who field')
-  await card.scrollIntoViewIfNeeded()
-  await shot('leads-draft-research-reviewed', card)
+  await block.scrollIntoViewIfNeeded()
+  await shot('leads-draft-research-reviewed', block)
 
   // 3. Estimate, confirm, run: the POST carries the reviewed draft with the answer's words and the play's offer.
   // #379: the play's offer is prefilled after a site read - request first, then the business profile (null in this
@@ -117,6 +118,9 @@ try {
   await offerInput.scrollIntoViewIfNeeded()
   await page.waitForTimeout(200)
   await shot('leads-draft-offer-prefilled')
+  // The run controls, visibly on screen (the element shots above never claim them).
+  await page.getByRole('button', { name: 'Run scan with this profile' }).last().scrollIntoViewIfNeeded()
+  await shot('leads-draft-run-controls')
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   await page.getByTestId('estimate-confirm').waitFor()
   await page.getByTestId('estimate-confirm-run').click()

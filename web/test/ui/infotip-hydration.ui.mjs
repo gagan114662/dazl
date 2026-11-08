@@ -117,7 +117,12 @@ for (const p of PAGES) {
     // toggle behavior under a mouse, so the old single 'click opens' assertion could never pass. Assert the two
     // documented open paths that are deterministic in this harness. Touch tap is NOT claimed: a real tap fires
     // compatibility mouseenter/focus before click, whose interplay with the toggle needs device grounding.
+    await first.scrollIntoViewIfNeeded()
     await first.hover(); assert.equal(await first.getAttribute('aria-expanded'), 'true', `${p}: hover opens the tooltip`)
+    // Whole-tooltip capture: the button is scrolled into view first so the tooltip is vertically inside the
+    // viewport. A tooltip near main's LEFT edge can still be clipped by main's overflow-auto (it centers under
+    // the (i) and the edge-shift only considers the viewport, not the scrolling container) - that is real UI
+    // behavior and the shot must show it, never crop it away.
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${p.replace(/[^a-z0-9]+/gi, '-')}-tooltip-open.png`) })
     await first.press('Escape'); assert.equal(await first.getAttribute('aria-expanded'), 'false', `${p}: Escape still closes the tooltip`)
     await first.evaluate(b => b.blur()); await page.mouse.move(0, 0)

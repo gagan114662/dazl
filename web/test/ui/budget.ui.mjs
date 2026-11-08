@@ -19,6 +19,8 @@ const js = bundle.outputFiles[0].text
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 // Pixel evidence after the assertions (SHOTS=<dir>): the disclosure container, the estimate panel at both widths,
 // the blocked panel, and the server-rejection message. Container shots capture the whole element, scroll-proof.
+// HONEST SCOPE: this harness bundles the component with esbuild WITHOUT the app stylesheet - these pixels are
+// UNSTYLED component-mount evidence (content and behavior), never production-CSS or responsive-rendering proof.
 const shot = async (page, name, target) => { if (!process.env.SHOTS) return; if (target) await target.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }); else await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
 const ICP = { summary: 'Toronto dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Toronto'], signals: [], exclude: [] }
 const browser = await chromium.launch()
