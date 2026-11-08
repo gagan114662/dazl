@@ -63,7 +63,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // The source-backed research block from the website read (#379): carried untouched through the reviewed profile
   // into the scan, so the play keeps its provenance and per-offer corrections.
   const [research, setResearch] = useState<unknown>(null)
-  // The saved profile's canonical fields that have no editor box here (country, language, window_days, lookalike):
+  // The saved profile's fixed fields that have no editor box here (country, language, window_days, lookalike):
   // kept verbatim through a reopen/edit/save, never silently dropped by the flat form.
   const [buyerRest, setBuyerRest] = useState<Record<string, unknown>>({})
   const [error, setError] = useState('')
