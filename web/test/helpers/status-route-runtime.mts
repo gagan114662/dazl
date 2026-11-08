@@ -31,7 +31,7 @@ const get = (id: string, passive: boolean) =>
 const row = (db: Database.Database, id: string) =>
   db.prepare('SELECT status, error, attempts, claimed_at FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null; attempts: number; claimed_at: number | null }
 // Wait until the kicked runner's claim is visible. One kick = one claim: with research
-// retired (#379) the attempt ends budget_stopped - terminal, no re-pend, no silent
+// retired (#379) the attempt ends unbounded_fallback_hold - terminal, no re-pend, no silent
 // spend. The kick observable (attempts bump, honest error, released claim) is unchanged.
 async function settle(db: Database.Database, id: string, wantAttempts: number, timeoutMs = 8000) {
   const t0 = Date.now()
@@ -39,7 +39,7 @@ async function settle(db: Database.Database, id: string, wantAttempts: number, t
     const r = row(db, id)
     if (r.attempts >= wantAttempts && r.claimed_at === null && r.error !== null) {
       assert.equal(r.status, 'failed', 'research is retired: the attempt fails honestly instead of re-pending into unpriced spend (#379)')
-      assert.equal(r.error, 'budget_stopped')
+      assert.equal(r.error, 'unbounded_fallback_hold', 'the retired research refusal is named, never mislabelled a budget stop')
       assert.equal(r.claimed_at, null, 'runner released the job after the failed attempt')
       return r
     }
