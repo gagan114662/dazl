@@ -11,6 +11,7 @@ import { migrateMemory } from '../lib/memory.ts'
 import { recordActionability, classifyLeads } from '../lib/scan/actionable.ts'
 import { recordTimingProof, timingProofGap } from '../lib/scan/timing-proof.ts'
 import { domainConfirmed } from '../lib/signals/domain-basis.ts'
+import { seedNeedVerified, NEED_GATE } from './helpers/need.ts'
 
 const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
 const D = 'acme-dental.test'
@@ -28,7 +29,10 @@ function setup(opts: { domainBasis?: string | null } = {}) {
   put('person', 'Dana Lee, Owner', `https://${D}/team`)
   put('email', `hello@${D}`, `https://${D}/contact`)
   const job = { id, user_id: 'A', query: 'dental groups in Austin that opened a new clinic in the last 30 days', icp: JSON.stringify({ window_days: 30, who: ['owner'] }) }
-  const run = () => { const y = recordActionability(db, job); const t = recordTimingProof(db, job); return { actionable: y.actionable, proven: t.proven } }
+  // #401/#379: the lead carries the search's recorded, still-valid verified buying-need verdict, so the promotion
+  // gate passes and the facts under test (domain / person / route) decide actionability.
+  seedNeedVerified(db, 'A', id, 'L1', 'Acme Dental', job)
+  const run = () => { const y = recordActionability(db, job, new Map(), NEED_GATE); const t = recordTimingProof(db, job); return { actionable: y.actionable, proven: t.proven } }
   const summary = () => (db.prepare("SELECT value FROM lead_enrichments WHERE connector = 'scan:actionable' AND lead_id = 'L1'").get() as { value: string } | undefined)?.value ?? null
   return { db, run, summary, put }
 }

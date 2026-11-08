@@ -480,5 +480,6 @@ test('[sqlite] older store without lead_need_evidence: classification fails clos
   raw.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, confidence, score, fit) VALUES ('L', ?, '', 'Acme', 'acme.example', 's', 'https://x.example/', 80, 80, 5)").run(jobId)
   raw.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('Lg', 'L', 'u1', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-11-01', 1)").run()
   const rows = classifyLeads(raw, { id: jobId, user_id: 'u1', query: 'dentists in Ohio', icp: null })
-  assert.deepEqual([rows[0].actionable, rows[0].missing], [false, ['buying_need_unproven']])
+  assert.equal(rows[0].actionable, false)
+  assert.equal(rows[0].missing[0], 'buying_need_unproven', 'the missing evidence table holds the lead first')
 })

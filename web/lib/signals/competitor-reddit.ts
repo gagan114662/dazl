@@ -32,7 +32,8 @@ export function listCompetitors(db: Database.Database, tenantId: string): string
   return (db.prepare(COMPETITORS_SQL).all(tenantId) as { name: string }[]).map(r => r.name)
 }
 export async function readCompetitors(db: Db, tenantId: string): Promise<string[]> {
-  return (await db.all<{ name: string }>(COMPETITORS_SQL, [tenantId])).map(r => r.name)
+  try { return (await db.all<{ name: string }>(COMPETITORS_SQL, [tenantId])).map(r => r.name) }
+  catch (e) { if (e instanceof Error && /no such table|does not exist/i.test(e.message)) return [] /* a store that predates the table: no list */ ; throw e }
 }
 
 // On the Db layer: the list is replaced in one transaction.

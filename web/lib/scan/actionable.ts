@@ -93,9 +93,9 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
       if (ev.truth !== 'pass') return { lead_id: l.id, company: l.company, actionable: false, missing: ['targeting_not_proven'], person: null, route: null, targeting: ev.clauses }
       targeting = ev.clauses
     }
-    // #401/#379: no proven buying need, no promotion - the company, person and route below stay OUTER requirements
-    // on top, never substitutes for it.
-    if (!needProven(db, job, l, need.rubric, supportKey)) return { lead_id: l.id, company: l.company, actionable: false, missing: ['buying_need_unproven'], person: null, route: null, ...(targeting ? { targeting } : {}), url: l.source_url }
+    // #401/#379: no proven buying need, no promotion - collected with the other current gaps so the lead says
+    // everything that is missing, while the company, person and route below stay OUTER requirements, never substitutes.
+    if (!needProven(db, job, l, need.rubric, supportKey)) missing.push('buying_need_unproven')
     // The sales-hiring half is enforced by the gate (applySalesHiringGate runs before this): a lead that is still verified has the proof.
     void needVacancy
     // Domain, person and route are read from the CURRENT rows through the shared rule (#914): a confirmed domain, and a person / route
