@@ -37,11 +37,11 @@ function store(ownKey: boolean) {
   return db
 }
 // Records the key of every call. Reports usage as the real providers do, so each path has a cost to settle.
-const provider = (seen: string[], o: { model?: string; usage?: typeof USAGE | null; fail?: boolean } = {}): Provider => ({
+const provider = (seen: string[], o: { model?: string; usage?: typeof USAGE | null; fail?: boolean; text?: string; stop?: string } = {}): Provider => ({
   research: async () => { throw new Error('unused') },
   configuredModel: () => o.model ?? 'claude-sonnet-4-5',
-  complete: async k => { seen.push(k); if (o.fail) throw new Error('provider 500'); return ICP },
-  completeDetailed: async k => { seen.push(k); if (o.fail) throw new Error('provider 500'); return { text: ICP, model: o.model ?? 'claude-sonnet-4-5', ...(o.usage === null ? {} : { usage: o.usage ?? USAGE }) } },
+  complete: async k => { seen.push(k); if (o.fail) throw new Error('provider 500'); return o.text ?? ICP },
+  completeDetailed: async k => { seen.push(k); if (o.fail) throw new Error('provider 500'); return { text: o.text ?? ICP, model: o.model ?? 'claude-sonnet-4-5', ...(o.usage === null ? {} : { usage: o.usage ?? USAGE }), ...(o.stop ? { stop: o.stop } : {}) } },
 })
 const read = (db: Database.Database, p: Provider, trial?: () => Promise<SiteReadAdmission>) =>
   icpFromWebsite(db, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: page, providers: { anthropic: p }, ...(trial ? { trial } : {}) })
@@ -138,4 +138,40 @@ test('the two refusals are distinct and never cross: owner pool -> spend_limit; 
     const rows = await pool(own)
     assert.deepEqual(rows.map(r => [r[0], (r[1] as number) > 0, r[2], r[3]]), [['d:', true, 0, 1]], `the failed call's worst-case reservation is kept: ${JSON.stringify(rows)}`)
   })
+})
+
+// #1002 on the trial path: a funded answer obeys the same truth rules as the own-key read. An answer cut off at the
+// trial's own 700-token cap with a complete leading draft is recovered (flagged truncated) - never read_failed; a
+// completed answer that is malformed or holds no acceptable profile is a READ THAT RAN AND FAILED (read_failed,
+// settled usage, operator record with the reason) - never a silent free read and never "AI key rejected".
+test('trial: a funded answer cut at the trial cap with a complete leading draft is recovered and flagged truncated (stop unreported, cap known by the read)', async () => {
+  const DRAFT = { summary: 'Sales ops teams at B2B SaaS companies that need CRM cleanup.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: ['Hiring a CRM admin'], exclude: [] }
+  const FULL = JSON.stringify({ sells: 'CRM cleanup', draft: DRAFT, offers: [{ id: 'o1', name: 'CRM cleanup' }], items: [{ offer: 'o1', kind: 'persona', text: 'x', url: 'https://acme.example/', quote: 'we sell crm tools', inferred: false }] })
+  const cutText = FULL.slice(0, FULL.indexOf('"offers"') - 1) // the draft closed; the answer was cut after it
+  const db = store(false), seen: string[] = [], calls = { n: 0 }, settled: (number | null)[] = []
+  // stop UNREPORTED, output at the trial cap: the cut is told by the read's own ceiling, not the vendor's word.
+  const out = await read(db, provider(seen, { text: cutText, usage: { input_tokens: 2000, output_tokens: 700 } }), admitted(calls, settled))
+  assert.ok('icp' in out && out.funded === 'trial' && out.truncated === true, JSON.stringify(out))
+  if ('icp' in out) { assert.equal(out.icp.summary, DRAFT.summary); assert.equal(out.sells, 'CRM cleanup') }
+  assert.deepEqual([seen, calls.n, settled], [[OP], 1, [(2000 * 3 + 700 * 15) / 1e6]], 'one admission, one call, settled to the reported usage')
+})
+
+test('trial: a completed funded answer that is malformed or holds no acceptable profile is read_failed - settled, recorded with the reason, never silent, never key_rejected', async () => {
+  const records: ErrorRecord[] = []
+  const restore = setErrorSinks([r => { records.push(r) }])
+  try {
+    const db = store(false), settled: (number | null)[] = []
+    const bad = await read(db, provider([], { text: 'not json at all', stop: 'end_turn' }), admitted({ n: 0 }, settled))
+    assert.ok('free' in bad && bad.trial === 'read_failed', JSON.stringify(bad))
+    assert.deepEqual(settled, [(2000 * 3 + 300 * 15) / 1e6], 'the completed funded call settles its reported usage')
+    assert.ok(bad.facts.length >= 1, 'the free read still answers with the page facts')
+    // A JSON object without a profile the rules accept: same honest failure, its own reason.
+    const nop = await read(store(false), provider([], { text: '{"unrelated": true}', stop: 'end_turn' }), admitted({ n: 0 }))
+    assert.ok('free' in nop && nop.trial === 'read_failed', JSON.stringify(nop))
+  } finally { restore() }
+  const msgs = records.map(r => r.error.message)
+  assert.ok(msgs.some(m => m.includes('not_json')), JSON.stringify(msgs))
+  assert.ok(msgs.some(m => m.includes('no_profile')), JSON.stringify(msgs))
+  assert.ok(records.every(r => r.where === 'scan:icp-from-site:trial-answer'), JSON.stringify(records.map(r => r.where)))
+  assert.ok(records.every(r => !r.error.message.includes('not json at all')), 'the record carries the reason, never the answer text')
 })
