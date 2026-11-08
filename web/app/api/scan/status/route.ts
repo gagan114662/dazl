@@ -10,6 +10,13 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
   const raw = getScanDb()
+  // readonly=1: a pure read - getJob's reap and the runner kick are both skipped, so this request writes nothing
+  // (#1006: a genuine read-only status surface for a terminal job). Same auth and tenant scoping; readScanStatus
+  // reads only. Ordinary pollers (no readonly) keep the legacy reap + dispatch semantics below, unchanged.
+  if (req.nextUrl.searchParams.get('readonly') === '1') {
+    const payload = /^[a-f0-9]{24}$/.test(jobId) ? await readScanStatus(sqliteDb(raw), user.tenantId, jobId) : null
+    return payload ? NextResponse.json(payload) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
   // Legacy getJob reaps before the owner read. Preserve that behavior and runner dispatch on this SAME raw scan store.
   const job = /^[a-f0-9]{24}$/.test(jobId) ? getJob(raw, user.tenantId, jobId) : undefined
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })

@@ -97,3 +97,29 @@ test('after the same stale reap, a non-passive poll does re-claim (recovery path
   await settle(db, id, 2)
   db.close()
 })
+
+test('readonly=1 reaps nothing: a stale-running job is served pure and its row is untouched', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', { business_name: 'Acme', industry: 'i', location: 'l' })
+  db.prepare("UPDATE scan_jobs SET status='running', attempts=1, claimed_at=CAST(strftime('%s','now') AS INTEGER)-3600 WHERE id=?").run(id)
+  const before = row(db, id)
+  const res = await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${id}&readonly=1`))
+  assert.equal(res.status, 200)
+  await flushAfter()
+  assert.deepEqual(row(db, id), before, 'no reap, no claim release, no kick: the readonly request wrote nothing')
+  db.close()
+})
+
+test('readonly=1 keeps tenant isolation and never kicks a pending job', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', { business_name: 'Acme', industry: 'i', location: 'l' })
+  const other = await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${'f'.repeat(24)}&readonly=1`))
+  assert.equal(other.status, 404, 'a job outside the tenant is not found, same as the legacy path')
+  const res = await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${id}&readonly=1`))
+  assert.equal(res.status, 200)
+  const j = await res.json() as { status: string; attempts: number }
+  assert.equal(j.status, 'pending'); assert.equal(j.attempts, 0)
+  await flushAfter()
+  assert.equal(row(db, id).attempts, 0, 'readonly never dispatches the runner')
+  db.close()
+})
