@@ -7,6 +7,8 @@ import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migrateScan, createJob, createQueryJob } from '../../lib/scan/store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
+import { migrateNeedEvidence } from '../../lib/scan/need-evidence.ts'
+import { migrateCompetitors } from '../../lib/signals/competitor-reddit.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateAuth } from '../../lib/auth-db.ts'
 import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
@@ -56,7 +58,7 @@ export interface Fixture {
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
-  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateCompetitors(db); migrateNeedEvidence(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
   migrateAuth(db) // the actual current users schema; a hand-rolled shape drifts (email_verified_at broke the #417 drain here)
   db.prepare("INSERT INTO users (id, email, business_name, password_hash, salt) VALUES ('A', 'acme@example.test', 'Acme', 'h', 's')").run()

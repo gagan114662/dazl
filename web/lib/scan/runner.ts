@@ -69,7 +69,9 @@ import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
-import { recordActionability } from './actionable.ts'
+import { recordActionability, type NeedGate } from './actionable.ts'
+import { loadPlayDemandRubric } from './demand-rubric-play.ts'
+import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
@@ -1526,7 +1528,30 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // Actionable yield (domain + sales proof + named person + published contact) is measured here, at the END of enrichment, apart from the source-checked counts.
     // The same facts go beside each lead and into the run report, so the card and the report agree.
     try {
-      const y = recordActionability(db, job, heldByGate)
+      // #401/#379 buying-need evidence comes FIRST: classification below reads these records and fails closed
+      // (buying_need_unproven) when they are missing, stale or unreadable. Per-lead verdicts are recorded at the
+      // search's own write stage (demand posts through the existing qualifyDemand under the play rubric; the
+      // hiring-only classification from the compiled plan). The rubric context classification revalidates against
+      // is resolved here through the canonical ASYNC loader and handed down - a load failure leaves a null rubric,
+      // which fails closed, never bypasses. A writer failure leaves NO records, which holds every affected lead;
+      // it never fails the scan.
+      let need: NeedSummary | null = null
+      let needGate: NeedGate = { rubric: null }
+      try {
+        const adb = sqliteDb(db)
+        needGate = { rubric: (await loadPlayDemandRubric(adb, job.user_id, job.id, icpForSources?.window_days ?? undefined)).rubric }
+        need = await recordNeedEvidence(adb, job.user_id, job.id, {
+          asOf: deps.now ?? new Date(),
+          windowDays: icpForSources?.window_days ?? undefined,
+          // Demand-signal posts this search collected, bound to leads by their exact source URL. The intake carries
+          // the post's OWN author exactly as the source reported it (never inferred): an authorless post can never
+          // verify need, and only the artifact's own author can bind it to the lead's company.
+          demandArtifacts: complaints.map(complaintDemandArtifact),
+          held: heldByGate,
+        })
+        trace.note('buying_need', 'ok', null, { verified_buying_need: need.verified_buying_need, trigger_only: need.trigger_only, unproven: need.unproven, rubric: need.rubric, plan: need.plan_support })
+      } catch (e) { trace.note('buying_need', 'failed', e instanceof Error ? e.message : 'error'); console.error('buying-need record failed', e instanceof Error ? e.message : 'error') }
+      const y = recordActionability(db, job, heldByGate, needGate)
       // #377: the durable timing proof is written from the actionability verdict just recorded; a failed write leaves no record, which holds.
       try { recordTimingProof(db, job) } catch (e) { console.error('timing proof record failed', e instanceof Error ? e.message : 'error') }
       // A lead the gate passed whose durable pass record could not be saved is held by the draft guard (default-deny); the report says so too, with the same reason.
@@ -1542,7 +1567,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       try { resolution = await resolveBounded(db, job, { fetchPage: (u, signal) => (deps.fetchPage ? (deps.fetchPage as (u: string, s?: AbortSignal) => ReturnType<typeof fetchPageDetailed>)(u, signal) : fetchPageDetailed(u, async () => null, signal)), where: icpForSources?.where ?? [], signal: resCtrl.signal }) } catch (e) { console.error('resolution failed', e instanceof Error ? e.message : 'error') } finally { clearInterval(poll) }
       // Completion: what the pass filled and what is still missing per kept lead, and the score recomputed from the evidence it actually has.
       const completion = completeLeads(db, job, completionBefore, { windowed: !!icpForSources?.window_days, resolution, datesFilled: datesFinished.map(d => d.company) })
-      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, completion, ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
+      mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, completion, ...(need ? { need } : {}), ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
     } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
