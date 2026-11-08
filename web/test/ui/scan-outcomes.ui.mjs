@@ -49,6 +49,7 @@ const ALL = {
   // A legacy budget_stopped row kept no reason: neutral words, never a budget-cause claim or budget-change advice.
   legacyBudget: job('j', 'Roofers in Boise', { status: 'failed', error: 'budget_stopped', stop_refusal_reason: null }),
   poolStop: job('k', 'Dentists in Akron', { status: 'failed', error: 'budget_stopped', stop_refusal_reason: 'owner_pool_limit' }),
+  hardCap: job('m', 'Plumbers in Reno', { status: 'failed', error: 'budget_stopped', stop_refusal_reason: 'over_cap' }),
   failed: job('e', 'Gyms in Austin switching software', { status: 'failed', error: 'upstream 502' }),
   old: job('f', 'Cafes in Leeds', { status: 'done' }),
   ownKey: job('7', 'Florists in Bristol', { status: 'failed', error: 'key_rejected', funded_by: 'user' }),
@@ -88,6 +89,7 @@ await ctx.route('**/*', async route => {
     if (id === ALL.budget.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: 'over_limit' })
     if (id === ALL.legacyBudget.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: null })
     if (id === ALL.poolStop.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: 'owner_pool_limit' })
+    if (id === ALL.hardCap.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: 'over_cap' })
   }
   const one = Object.values(ALL).find(j => u.pathname === `/api/campaigns/${j.id}`)
   // The campaign read: stored status (never 'enriching') plus the enrichment marks, and the server's empty_reason.
@@ -116,6 +118,7 @@ const EXPECT = {
   holdErr: ['stopped', /Stopped - the free sources could not conclude/, 'Try again', '/app/leads'],
   legacyBudget: ['stopped', /Stopped before it could conclude/, 'Run the search again', '/app/leads'],
   poolStop: ['stopped', /Stopped by the shared account spending limit - not an empty search/, 'Try again later', '/app/leads'],
+  hardCap: ['stopped', /Stopped by the fixed per-scan spending cap - not an empty search/, 'Run a narrower search', '/app/leads'],
 }
 try {
   // An enriching scan is the active one (#254): Leads opens its progress instead of the history, so the history is
@@ -138,7 +141,7 @@ try {
     assert.doesNotMatch(rows.map(r => r.text).join(' '), /No matches|scan service had trouble|found no companies|rejected your key/)
   }
   // Campaign page: same outcome, next step and diagnostic, from the campaign read.
-  for (const k of ['dropped', 'readNone', 'noHits', 'ownKey', 'trialKey', 'unknownKey', 'enriching', 'interrupted', 'sourceErr', 'noDisc', 'holdErr', 'budget', 'legacyBudget', 'poolStop']) {
+  for (const k of ['dropped', 'readNone', 'noHits', 'ownKey', 'trialKey', 'unknownKey', 'enriching', 'interrupted', 'sourceErr', 'noDisc', 'holdErr', 'budget', 'legacyBudget', 'poolStop', 'hardCap']) {
     await page.goto(`${base}/app/campaigns/${ALL[k].id}`, { waitUntil: 'networkidle' })
     const st = page.getByTestId('campaign-status'); await st.waitFor({ timeout: 15000 })
     if (['dropped', 'readNone', 'ownKey'].includes(k)) await shot(`campaign-${k}`)
@@ -165,7 +168,7 @@ try {
   await shot('home-plays-keys')
   // Home short words for the stop classes (lib/readiness.ts outcomeOf over scanOutcome): source error is 'failed',
   // in-scope-empty and the unbounded fallback hold are 'stopped' - never 'stopped by budget' words.
-  await home(['sourceErr', 'noDisc', 'holdErr', 'legacyBudget', 'poolStop'], ['failed', 'stopped'])
+  await home(['sourceErr', 'noDisc', 'holdErr', 'legacyBudget', 'poolStop', 'hardCap'], ['failed', 'stopped'])
   await page.getByTestId('play-campaign-link').first().scrollIntoViewIfNeeded()
   await shot('home-plays-stop-classes')
   // Deep links: the long per-class copy (leads-client.tsx) and the cost states. sourceErr carries the QA-shaped
@@ -195,6 +198,9 @@ try {
     await page.goto(`${base}/app/leads?job_id=${ALL.poolStop.id}`, { waitUntil: 'networkidle' })
     await page.getByText(/shared account spending limit \(its day\/month pool\) refused the next paid step/).waitFor({ timeout: 15000 })
     await shot('deep-pool-limit')
+    await page.goto(`${base}/app/leads?job_id=${ALL.hardCap.id}`, { waitUntil: 'networkidle' })
+    await page.getByText(/fixed per-scan spending cap refused the next paid step/).waitFor({ timeout: 15000 })
+    await shot('deep-hard-cap')
   }
   assert.deepEqual(writes, [], 'loading writes nothing')
   console.log(before ? 'screenshots taken (BEFORE_ONLY)' : 'scan outcomes UI check passed: failed, none-extracted (read-but-none vs no hits, diagnostic kept), all-dropped, stopped, unrecorded, enriching/interrupted and key-rejected (own/trial/unknown) scans are distinct in Past scans, on the campaign page and on Home, each with one next step; the stop classes (source error, in-scope empty, unbounded fallback hold) read as themselves in all three views, never as budget stops; the deep-link cost line names an unsettled known-call cost as unknown (never $0) and a spend-cap reservation as a reservation (never an invoice); no writes')

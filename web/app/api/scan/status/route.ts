@@ -10,9 +10,12 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
   const raw = getScanDb()
-  // readonly=1: a pure read - getJob's reap and the runner kick are both skipped, so this request writes nothing
-  // (#1006: a genuine read-only status surface for a terminal job). Same auth and tenant scoping; readScanStatus
-  // reads only. Ordinary pollers (no readonly) keep the legacy reap + dispatch semantics below, unchanged.
+  // readonly=1: no SCAN-STORE writes - getJob's reap and the runner kick are both skipped, and readScanStatus only
+  // SELECTs, so this request writes no job, source-run, report, ledger or schema row (#1006: a read-only status
+  // surface for a terminal job). Boundary, stated exactly: authentication is the ordinary path, so the caller's OWN
+  // session row may be touched (throttled last_seen, as on every authenticated request), and a cold process still
+  // runs its one-time migrations on first DB open; neither is a scan-data write and neither is caused per request.
+  // Ordinary pollers (no readonly) keep the legacy reap + dispatch semantics below, unchanged.
   if (req.nextUrl.searchParams.get('readonly') === '1') {
     const payload = /^[a-f0-9]{24}$/.test(jobId) ? await readScanStatus(sqliteDb(raw), user.tenantId, jobId) : null
     return payload ? NextResponse.json(payload) : NextResponse.json({ error: 'Not found' }, { status: 404 })

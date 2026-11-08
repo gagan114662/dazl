@@ -133,6 +133,17 @@ bothEngines('status read: dated known model prices as the recorded-token compone
   assert.equal(numericStatus?.stop_refusal_reason, 'over_limit')
   assert.equal((numericStatus?.outcome as { label: string }).label, 'Stopped by its budget - not an empty search')
 
+  // Fixed cap: over_cap names the service's per-scan cap and never advises a larger budget (reviewer repro:
+  // run_budget NULL, default cap 3.3333 refusing cost 4).
+  const capped = await createJob(db, 'A', { business_name: 'capped', industry: 'software', location: 'Toronto' })
+  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [capped])
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = 'budget_stopped', query = 'capped query', icp = '{}', run_budget = NULL WHERE id = ?", [capped])
+  await db.run("INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)", [capped, JSON.stringify({ v: 1, attempt: 1, stop: { code: 'budget_stopped', spend_refusal_reason: 'over_cap' } })])
+  const cappedStatus = await readScanStatus(db, 'A', capped)
+  assert.equal(cappedStatus?.stop_refusal_reason, 'over_cap')
+  assert.equal((cappedStatus?.outcome as { label: string }).label, 'Stopped by the fixed per-scan spending cap - not an empty search')
+  assert.doesNotMatch(`${(cappedStatus?.outcome as { detail?: string }).detail} ${(cappedStatus?.outcome as { next?: { text: string } }).next?.text}`, /larger budget/i)
+
   // Pool origin: the typed owner_pool_limit reason names the shared day/month limit and never the per-run control.
   const pooled = await createJob(db, 'A', { business_name: 'pooled', industry: 'software', location: 'Toronto' })
   await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [pooled])
