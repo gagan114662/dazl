@@ -106,7 +106,7 @@ test('trial: a keyless account reads on the trial key under the read\'s own guar
   })
 })
 
-test('the two refusals are distinct and never cross: owner pool -> spend_limit; trial guard refusal -> free read + spend_unavailable; trial call failure -> free read + read_failed; own-key failure -> key_rejected', async () => {
+test('the two refusals are distinct and never cross: owner pool -> spend_limit; trial guard refusal -> free read + spend_unavailable; trial call failure -> free read + read_failed; own-key failure -> provider_failed (key_rejected only for an authentication refusal)', async () => {
   const own = store(true), trial = store(false), seen: string[] = []
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:0.001' }, async () => {
     // Own key, pool refuses: spend_limit (and never a trial reason, which would blame dazl for the owner's limit).
@@ -127,11 +127,11 @@ test('the two refusals are distinct and never cross: owner pool -> spend_limit; 
     assert.deepEqual(seen, [OP], 'the only call made was the failed trial one')
   })
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:5' }, async () => {
-    // Own key, the provider fails: key_rejected, as on main; the pool's reservation stands (the vendor may have billed it).
+    // Own key, the provider fails (not an authentication refusal): provider_failed, never key_rejected; the pool's reservation stands (the vendor may have billed it).
     seen.length = 0
     const records: ErrorRecord[] = []
     const restore = setErrorSinks([r => { records.push(r) }])
-    try { assert.deepEqual(await read(own, provider(seen, { fail: true }), neverTrial), { error: 'key_rejected' }) } finally { restore() }
+    try { assert.deepEqual(await read(own, provider(seen, { fail: true }), neverTrial), { error: 'provider_failed' }) } finally { restore() }
     assert.deepEqual(records.map(r => [r.source, r.where]), [['process', 'scan:icp-from-site:own']], 'the own-key failure is recorded (R4-8)')
     assert.deepEqual(seen, [KEY])
     // Only a day limit is set here: one window row, holding the failed call's worst-case reservation, nothing reported.
