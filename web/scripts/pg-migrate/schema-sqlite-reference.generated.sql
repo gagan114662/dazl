@@ -172,6 +172,17 @@ CREATE TABLE consent_ledger (
       revoke_reason TEXT CHECK (revoke_reason IS NULL OR length(revoke_reason) <= 60)
     );
 
+CREATE TABLE crawl_pages (
+      id          TEXT PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      scan_job_id TEXT NOT NULL,
+      site        TEXT NOT NULL,
+      url         TEXT NOT NULL CHECK (length(url) <= 500 AND url LIKE 'http%'),
+      status      INTEGER NOT NULL,
+      fetched_at  INTEGER NOT NULL,
+      UNIQUE (tenant_id, scan_job_id, site, url)
+    );
+
 CREATE TABLE crm_push_claims (
       tenant_id   TEXT NOT NULL,
       destination TEXT NOT NULL,
@@ -1203,6 +1214,8 @@ CREATE INDEX connector_audit_tenant ON connector_audit (tenant_id, created_at);
 
 CREATE INDEX consent_ledger_lookup ON consent_ledger (tenant_id, contact, channel, scope);
 
+CREATE INDEX crawl_pages_job ON crawl_pages (scan_job_id);
+
 CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
@@ -1418,6 +1431,8 @@ CREATE TRIGGER tomb_connector_claims BEFORE INSERT ON connector_claims BEGIN SEL
 
 CREATE TRIGGER tomb_consent_ledger BEFORE INSERT ON consent_ledger BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_crawl_pages BEFORE INSERT ON crawl_pages BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_crm_push_claims BEFORE INSERT ON crm_push_claims BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_csv_batches BEFORE INSERT ON csv_batches BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
@@ -1611,6 +1626,8 @@ CREATE TRIGGER tomb_upd_connector_audit BEFORE UPDATE OF tenant_id ON connector_
 CREATE TRIGGER tomb_upd_connector_claims BEFORE UPDATE OF tenant_id ON connector_claims BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_consent_ledger BEFORE UPDATE OF tenant_id ON consent_ledger BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_crawl_pages BEFORE UPDATE OF tenant_id ON crawl_pages BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_crm_push_claims BEFORE UPDATE OF tenant_id ON crm_push_claims BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

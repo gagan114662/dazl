@@ -6,7 +6,7 @@ import { getDomain } from 'tldts'
 import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
-import { audit, addEnrichment, type Enrichment } from './store.ts'
+import { audit, addEnrichment, recordCrawlPage, type Enrichment } from './store.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { emailGuessEnabled, personalAddresses, recordEmailGuesses } from '../people/email-pattern.ts'
@@ -28,6 +28,8 @@ const MAX_BYTES = 800_000
 const TIMEOUT_MS = 10_000
 export const MAX_SITES_PER_SCAN = Number(process.env.SITECRAWL_MAX_SITES || 8)
 const GAP_MS = Number(process.env.SITECRAWL_GAP_MS ?? 2000)
+// Intrinsic per-site crawl bound (#871): robots + home + up to MAX_PAGES pages under the polite gap must fit.
+const CRAWL_BUDGET_MS = Number(process.env.SITECRAWL_CRAWL_BUDGET_MS ?? 45000)
 
 export const sitecrawlEnabled = (env: Record<string, string | undefined> = process.env) => env.SITECRAWL_ENABLED !== '0'
 
@@ -399,9 +401,14 @@ const lastHit = new Map<string, number>()
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
 // buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
 // payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string }> {
+// budgetMs (optional): an intrinsic wall-clock bound for the whole crawl, checked before each new page fetch (#871). Without it the
+// page loop is bounded only by MAX_PAGES and the caller's AbortSignal; with it a slow polite-gap or slow host stops the crawl at the
+// budget instead of running unbounded, and the return names which bound stopped it (stoppedBy).
+export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs?: number): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
+  const deadline = budgetMs && budgetMs > 0 ? Date.now() + budgetMs : null
+  let stoppedBy: 'pages' | 'time' | 'aborted' | undefined
   const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
   const rob = await polite(`${origin}/robots.txt`, 0)
   let robots: Robots
@@ -418,16 +425,17 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
   if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
   const found = new Map<string, Found>(); let pages = 1
-  onPage?.(home.body, home.finalUrl)
+  onPage?.(home.body, home.finalUrl, home.status)
   for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
   for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
-    if (stopped()) break
-    if (pages >= MAX_PAGES) break
+    if (stopped()) { stoppedBy = 'aborted'; break }
+    if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
+    if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
     if (!robots.allows(p)) continue
     const r = await polite(origin + p, robots.delayMs)
     if (!r || r.status >= 400) continue
     pages++
-    onPage?.(r.body, r.finalUrl)
+    onPage?.(r.body, r.finalUrl, r.status)
     for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
   }
   // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
@@ -448,7 +456,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText }
+  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(stoppedBy ? { stoppedBy } : {}) }
 }
 
 // #389: one dated tech_scan row per crawl of a confirmed company homepage, and a tech_change row on this lead for every adoption / removal
@@ -602,7 +610,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
       const seen = new Map<string, { address: string; url: string }>(); seenBySite.set(cand, seen)
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? (html, url) => { for (const a of personalAddresses(html, cand)) { locals.add(a.local); if (!seen.has(a.address) && seen.size < 200) seen.set(a.address, { address: a.address, url }) } } : undefined, buyerRoles)
+      // Every page the crawl fetches is recorded with its URL and fetch time (#871); the email finder keeps
+      // riding the same callback when enabled. The crawl itself runs under an intrinsic wall-clock budget so a
+      // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
+      const pageAt = Math.floor((deps.now ?? Date.now()) / 1000)
+      const onPage = (html: string, url: string, status: number) => {
+        recordCrawlPage(db, tenantId, jobId, cand, url, status, pageAt)
+        if (guessing) for (const a of personalAddresses(html, cand)) { locals.add(a.local); if (!seen.has(a.address) && seen.size < 200) seen.set(a.address, { address: a.address, url }) }
+      }
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, CRAWL_BUDGET_MS)
       siteRead.set(cand, r)
       return r
     }
