@@ -34,3 +34,23 @@ CREATE TABLE lead_need_evidence (
   );
 
 CREATE INDEX lead_need_evidence_job ON lead_need_evidence (tenant_id, job_id);
+
+-- Tenant-tombstone guards, matching the sqlite lifecycle guards on this table (and the pattern from 0044).
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_lead_need_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_lead_need_evidence ON lead_need_evidence;
+CREATE TRIGGER tomb_lead_need_evidence BEFORE INSERT ON lead_need_evidence FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_lead_need_evidence();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_lead_need_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  PERFORM pg_advisory_xact_lock_shared(hashtext(OLD.tenant_id));
+  IF (NEW.tenant_id IS DISTINCT FROM OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_lead_need_evidence ON lead_need_evidence;
+CREATE TRIGGER tomb_upd_lead_need_evidence BEFORE UPDATE OF tenant_id ON lead_need_evidence FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_lead_need_evidence();

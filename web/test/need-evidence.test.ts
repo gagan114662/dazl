@@ -29,7 +29,7 @@ async function tenant(db: Db, id: string, sells: string) {
   await db.run('UPDATE users SET website = ? WHERE id = ?', ['https://dazl.ai', id])
 }
 async function play(db: Db, tenantId: string, query = QUERY, offer: string | null = OFFER, seller: string | null = 'Dazl finds B2B sales leads - https://dazl.ai') {
-  const id = await createQueryJob(db, tenantId, { query, icp: null, seller, offer })
+  const id = await createQueryJob(db, tenantId, { query, icp: null, seller: seller ?? undefined, offer: offer ?? undefined })
   await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?", [NOW, id])
   return id
 }

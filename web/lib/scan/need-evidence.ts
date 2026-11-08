@@ -295,6 +295,8 @@ export interface NeedRecord {
   verdict: NeedVerdict; reason: string | null
   qualifier_version: string | null; offer: string | null; window_days: number | null; rubric_reason: string | null
   demand_class: string | null; demand_tier: string | null
+  scores: string | null; families: string | null; reasons: string | null
+  missing: string | null; requester: string | null; mentioned_orgs: string | null
   source_url: string | null; source_title: string | null; source_text: string | null
   author_name: string | null; author_headline: string | null; author_company: string | null; published_at: string | null
   plan_support: string; created_at: number
