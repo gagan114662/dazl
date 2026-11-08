@@ -17,6 +17,9 @@ const bundle = await esbuild.build({
 })
 const js = bundle.outputFiles[0].text
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+// Pixel evidence after the assertions (SHOTS=<dir>): the disclosure container, the estimate panel at both widths,
+// the blocked panel, and the server-rejection message. Container shots capture the whole element, scroll-proof.
+const shot = async (page, name, target) => { if (!process.env.SHOTS) return; if (target) await target.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }); else await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
 const ICP = { summary: 'Toronto dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Toronto'], signals: [], exclude: [] }
 const browser = await chromium.launch()
 
@@ -80,6 +83,7 @@ async function open(scanReply, estimateReply = route => json(route, EST())) {
   assert.match(text, /worst case at the highest listed price/); assert.match(text, /an unlisted model is not covered/); assert.match(text, /bounded by COUNT, not dollars/); assert.match(text, /does NOT start autopilot/); assert.match(text, /NOT BOUNDED AT ALL: retries below dazl/)
   assert.match(text, /fallback research: refused/); assert.match(text, /judge: off/)
   assert.equal(posts.length, 0, 'the disclosure was on the page before anything was sent')
+  await shot(page, 'budget-disclosure', disc)
   for (const b of await run.all()) assert.equal(await b.isDisabled(), false)
   await run.last().click(); await page.getByTestId('estimate-confirm').waitFor()
   assert.equal(posts.length, 0); await page.getByTestId('estimate-confirm-run').click(); await page.waitForTimeout(400)
@@ -94,6 +98,7 @@ async function open(scanReply, estimateReply = route => json(route, EST())) {
   await page.getByTestId('budget-max-usd').fill('5')
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   await page.getByText(/The spend limit was not accepted: budget\.max_usd must be a number/).waitFor({ timeout: 5000 })
+  await shot(page, 'budget-rejection')
   await page.close()
 }
 // 4. the menu and the total are on the page before anything runs, at desktop and 390px; Cancel starts nothing
@@ -108,6 +113,7 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   assert.equal(await page.getByTestId('estimate-total').innerText(), '$0.05 - $0.40')
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${tag}: no horizontal page scroll`)
   assert.equal(await panel.getAttribute('data-verdict'), 'ok')
+  await shot(page, `budget-estimate-${tag}`, panel)
   await page.getByTestId('estimate-cancel').click(); await page.waitForTimeout(200)
   assert.equal(await page.getByTestId('estimate-confirm').count(), 0); assert.equal(posts.length, 0, `${tag}: cancel starts nothing`)
   await page.close()
@@ -124,6 +130,7 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   assert.match(await page.getByTestId('estimate-verdict').innerText(), /^Blocked:/); assert.match(await page.getByTestId('estimate-change').innerText(), /Raise the dollar limit to at least \$0\.05/)
   assert.match(await page.getByTestId('estimate-cap').innerText(), /Daily limit: \$0\.02.*\$0\.02 left \(daily limit binds\)/)
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${tag}: no horizontal page scroll`)
+  await shot(page, `budget-blocked-${tag}`, panel)
   assert.equal(posts.length, 0); await page.close()
 }
 // 6. the limit changed after the estimate was confirmed: the server answers 409 estimate_changed and the NEW estimate is shown for a fresh confirmation

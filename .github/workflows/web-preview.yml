@@ -37,7 +37,8 @@ jobs:
       - name: Rendered price-estimate and budget check
         run: |
           set -o pipefail
-          node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out
+          mkdir -p preview/budget
+          SHOTS=preview/budget node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out
           ! grep -q '^SKIP' /tmp/budget-ui.out
       # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
       - name: Rendered research-review checks (first-run + leads draft editor)
@@ -63,7 +64,8 @@ jobs:
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: |
           set -o pipefail
-          node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out
+          mkdir -p preview/infotip
+          SHOTS=preview/infotip node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out
           ! grep -q '^NOT RUN' /tmp/it.out
       # The #420 manual-profile ready card and readiness panel: a saved-by-hand profile completes both surfaces without a website and the panel must not contradict the card. They must run, not skip.
       - name: Ready card and readiness panel (manual profile without a website)
