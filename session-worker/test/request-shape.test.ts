@@ -48,8 +48,9 @@ test.before(async () => {
     // again. The retry exists only for the alive-but-never-served startup/port race.
     diags.push(`attempt ${attempt}: port ${port}, exited ${gone}, spawn error: ${spawnError ?? 'none'}, stderr tail: ${scrub(errTail.trim()) || '<empty>'}`)
     const crashed = gone !== null || spawnError !== null // snapshot BEFORE reap: reaping fires the exit listener
-    await reap(c)
-    if (crashed) break
+    let reaped = true
+    try { await reap(c) } catch (e) { reaped = false; diags.push(`reap: ${String(e)}`) }
+    if (crashed || !reaped) break // a child that will not die is not the port-race class - never retry under it
   }
   throw new Error(`worker did not start - ${diags.join(' | ')}`)
 })
