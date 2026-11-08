@@ -26,7 +26,7 @@
 // lib/db/migrations/pg/0052_lead_need_evidence.sql.
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import type { Db, Tx, TxBody } from '../db/client.ts'
+import type { Db, TxBody } from '../db/client.ts'
 import { companyKey } from './evidence.ts'
 import { compileTargeting, type PlanNode, type QueryPlan } from './targeting.ts'
 import { qualifyDemand, DEMAND_QUALIFIER_VERSION, type DemandClass, type DemandPost, type Tier } from './demand-qualifier.ts'
@@ -107,7 +107,7 @@ export type PlanNeedSupport =
 export function planNeedSupport(plan: QueryPlan): PlanNeedSupport {
   if (!plan.root) return { support: 'none', reason: 'no_plan_conditions' }
   if (plan.ambiguities.length > 0) return { support: 'none', reason: 'plan_ambiguous' }
-  let positiveHiring: string[] = []
+  const positiveHiring: string[] = []
   let negatedHiring = false
   let choiceHiring = false
   let completedHire = false
