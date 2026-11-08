@@ -67,6 +67,14 @@ jobs:
           mkdir -p preview/infotip
           SHOTS=preview/infotip node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out
           ! grep -q '^NOT RUN' /tmp/it.out
+      # #1010: an open tooltip is never clipped by the scrolling container (main overflow-auto) - every settings
+      # tooltip, desktop + mobile, hover + keyboard, bottom edge opens upward. It must run, not skip.
+      - name: InfoTip visible-bounds clipping regression (desktop + mobile)
+        run: |
+          set -o pipefail
+          mkdir -p preview/infotip-clipping
+          SHOTS=preview/infotip-clipping node test/ui/infotip-clipping.ui.mjs | tee /tmp/ic.out
+          ! grep -q '^NOT RUN' /tmp/ic.out
       # The #420 manual-profile ready card and readiness panel: a saved-by-hand profile completes both surfaces without a website and the panel must not contradict the card. They must run, not skip.
       - name: Ready card and readiness panel (manual profile without a website)
         run: |
