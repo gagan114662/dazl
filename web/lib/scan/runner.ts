@@ -15,7 +15,7 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
-import { fallbackIcp, flatProfile, inferIcp, normalizeIcp, type Icp } from './icp.ts'
+import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -66,6 +66,7 @@ import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE } from '../search/n
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
+import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { findPeople } from '../people/people-search.ts'
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability } from './actionable.ts'
@@ -1698,15 +1699,29 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
-export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'trial_key_invalid' | 'key_unreadable' }> {
+export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'provider_failed' | 'trial_key_invalid' | 'key_unreadable' | 'spend_limit' | 'spend_unavailable' | 'model_unpriced' | 'accounting_pending' }> {
   const vendor = pickVendor(db, tenantId)
   const read = vendor ? readKey(db, tenantId, vendor, deps.master) : { key: null, unreadable: false }
   const key = read.key
   // Profile generation happens before any job exists: its model request is recorded by tenant (job_id null), including a
   // failed one, so the first paid step of a customer run is not invisible. Same call, same result.
+  // The preview is a paid call outside a scan, so it runs through the SAME owner spend pool as every other non-runner
+  // call (lib/llm/owner-guard.ts, #363): with an operator limit set, the call reserves its worst case first and a
+  // refusal means the request was never made - no click can bypass the day/month caps, and an unpriced model or an
+  // unsettled earlier call fails closed with its own name, never mislabeled as a key problem.
   const metered = async (v: Vendor, q: string) => {
     const calls: ModelCall[] = []
-    try { return await inferIcp(meterProvider((deps.providers ?? providers)[v], c => calls.push(c)), key!, q, deps.fetchImpl) }
+    const raw = (deps.providers ?? providers)[v]
+    try {
+      const guarded = ownerGuarded(db, tenantId, meterProvider(raw, c => calls.push(c)))
+      // NOT inferIcp: it swallows a thrown error into the plain-word fallback, which would hide a spend refusal or an
+      // accounting pause behind a successful-looking preview. Same steps, but errors propagate to the named mapping
+      // below; only an unreadable ANSWER (received and billed) still falls back to the request as it is.
+      const complete = guarded.complete
+      if (!complete) return { icp: fallbackIcp(q), inferred: false }
+      const icp = parseIcp(await complete.call(guarded, key!, icpPrompt(q), deps.fetchImpl, 800))
+      return icp ? { icp: keepStatedFundingStage(q, icp), inferred: true } : { icp: fallbackIcp(q), inferred: false }
+    }
     finally { writeModelCalls(db, tenantId, null, 0, calls) }
   }
   if ((!vendor || !key) && ip !== undefined && trialStatus(db, tenantId, ip).funded) {
@@ -1721,7 +1736,19 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
   try {
     return await metered(vendor, query)
   } catch (e) {
+    // A call MAY have been made and billed, but its cost could not be recorded: the pool refuses every later call until
+    // an operator settles the marker. Never surface this as a key problem - re-entering the key cannot help.
+    if (spendAccountingFailed(e)) return { error: 'accounting_pending' }
+    // Refused BEFORE any call: the model has no listed price (nothing chargeable, not a limit), the owner's spend limit
+    // is reached, or the spend record could not be checked. Nothing was charged; say which, and never retry blind.
+    if (spendRefused(e)) {
+      if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
+      if (e.reason === 'over_limit') return { error: 'spend_limit' }
+      return { error: 'spend_unavailable' }
+    }
     console.error('icp preview failed:', e instanceof Error ? e.message : e)
-    return { error: 'key_rejected' }
+    // Only a provider authentication refusal is a key problem; any other failure (timeout, 5xx, rate limit, unreadable
+    // reply) is the provider not answering, and is said so. Recorded either way.
+    return { error: e instanceof ProviderError && e.kind === 'auth' ? 'key_rejected' : 'provider_failed' }
   }
 }

@@ -621,7 +621,10 @@ export default function LeadsClient() {
   // One-sentence play suggestions from the saved business details (examples when there are none). Filling the box is all
   // a click does; the scan starts only from the existing buttons.
   const [plays, setPlays] = useState<PlaySuggestions | null>(null)
-  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => setPlays(playSuggestions(p))) }, [])
+  // The saved business buyer profile (Home > Build, reviewed there): carried whole - with its research decisions,
+  // rejections and holds - into a first scan, so the first run never re-infers what the person already reviewed.
+  const [savedBuyer, setSavedBuyer] = useState<Icp | null>(null)
+  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => { setPlays(playSuggestions(p)); const b = p && typeof p === 'object' ? (p as { buyer?: unknown }).buyer : null; if (b && typeof b === 'object' && typeof (b as { summary?: unknown }).summary === 'string') setSavedBuyer(b as Icp) }) }, [])
 
   const core = coreSources(serverSrc, keyState)
 
@@ -629,6 +632,11 @@ export default function LeadsClient() {
   // reviewed profile instead of letting the server work out a new one (which silently discarded the review). A changed
   // sentence, or a profile dazl only inferred, still gets a fresh profile; Review profile first always rebuilds it.
   const reuseIcp = icp && icp.source === 'user' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
+  // A first scan (no earlier play's profile to repeat): run with the reviewed business profile instead of letting the
+  // server work out a new one, which silently discarded the review. The estimate step shows it before anything starts;
+  // Review profile first still builds a fresh one from the sentence.
+  const businessIcp = !reuseIcp && !icp && savedBuyer ? savedBuyer : null
+  const startIcp = reuseIcp ?? businessIcp
 
   const input = 'field'
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
@@ -650,7 +658,7 @@ export default function LeadsClient() {
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
       {pendingEst && <EstimateConfirm est={pendingEst.est} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer)} onCancel={() => setPendingEst(null)} />}
-      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
+      <form onSubmit={e => { e.preventDefault(); void run(startIcp) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
@@ -669,8 +677,9 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
-        {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => { setOfferConflict(null); void run(reuseIcp, o) }} /></div>}
+        {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => { setOfferConflict(null); void run(startIcp, o) }} /></div>}
         {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads reuses this stored profile (approval is not recorded here): {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
+        {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile">Find leads uses your saved business profile, with the review decisions you made on it: {businessIcp.summary.replace(/[.\s]+$/, '')}. Use Review profile first to build a new one from your sentence.</p>}
         </div>
       </form>
       {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}

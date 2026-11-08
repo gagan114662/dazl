@@ -76,10 +76,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // per-source progress, candidates so far and the verified leads. null for a job without it (then the leads read is used).
   const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string } | null>(null)
 
-  // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read).
-  const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[] }) => {
+  // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read). The saved profile's
+  // research block comes back too: reopening the editor (?setup=brain) must keep every Add/Dismiss, hold and answer it
+  // carries, or the next save would silently drop them. Loading is never an approval - only the person's own
+  // Add/Dismiss clicks change decisions.
+  const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[]; research?: unknown }) => {
     const j = (v?: string[]) => (v ?? []).join('; ')
     setSummary(b.summary ?? ''); setWho(j(b.who)); setIndustries(j(b.industries)); setWhere(j(b.where)); setSignals(j(b.signals)); setSizes(j(b.sizes)); setExclude(j(b.exclude))
+    const rb = asResearchBlock(b.research)
+    if (rb) setResearch(rb)
   }
   const loadUsage = () => fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j) setUsage(j) }).catch(() => {})
   useEffect(() => {
@@ -182,7 +187,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // Saved exactly as read (the same POST the profile form uses); edited later from Home or "Edit what dazl inferred".
       const b = j.icp ?? {}
       const arr = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
-      const buyer = { summary: String(b.summary ?? j.sells ?? '').trim(), who: arr(b.who), industries: arr(b.industries), sizes: arr(b.sizes), where: arr(b.where), signals: arr(b.signals), exclude: arr(b.exclude) }
+      // The research block rides along from the first save too, so a reload before the person's first edit still has
+      // the provenance and any decisions it already carries (a recrawl's own read replaces it below, never drops it).
+      const buyer = { summary: String(b.summary ?? j.sells ?? '').trim(), who: arr(b.who), industries: arr(b.industries), sizes: arr(b.sizes), where: arr(b.where), signals: arr(b.signals), exclude: arr(b.exclude), ...((b as { research?: unknown }).research ? { research: (b as { research?: unknown }).research } : {}) }
       const sr = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells: String(j.sells ?? ''), website: url, business_name: bizName, buyer }) }).catch(() => null)
       if (!sr?.ok) { const sj = await sr?.json().catch(() => ({})); setError(sj?.error || 'Could not save what dazl inferred. Check it and save it yourself.'); setStep('brain'); return }
       window.dispatchEvent(new Event('profile-updated'))
