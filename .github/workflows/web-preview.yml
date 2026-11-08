@@ -35,34 +35,87 @@ jobs:
       - run: npm install --no-save playwright@1.63.0 esbuild@0.25.0 && npx playwright install --with-deps chromium
       # The rendered price-estimate check (stubbed: no server, db, network or key). esbuild bundles the page; installed with playwright for this job only, the lockfile untouched. It must run, not skip.
       - name: Rendered price-estimate and budget check
-        run: node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out && ! grep -q '^SKIP' /tmp/budget-ui.out
+        run: |
+          set -o pipefail
+          mkdir -p preview/budget
+          SHOTS=preview/budget node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out
+          ! grep -q '^SKIP' /tmp/budget-ui.out
       # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
       - name: Rendered research-review checks (first-run + leads draft editor)
-        run: SHOTS=preview/research-review node test/ui/research-review.ui.mjs | tee /tmp/rr1.out && ! grep -q '^NOT RUN' /tmp/rr1.out && SHOTS=preview/research-review node test/ui/leads-research-review.ui.mjs | tee /tmp/rr2.out && ! grep -q '^NOT RUN' /tmp/rr2.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/research-review node test/ui/research-review.ui.mjs | tee /tmp/rr1.out
+          ! grep -q '^NOT RUN' /tmp/rr1.out
+          SHOTS=preview/research-review node test/ui/leads-research-review.ui.mjs | tee /tmp/rr2.out
+          ! grep -q '^NOT RUN' /tmp/rr2.out
       # The #436 unsupported-adapter gates in Settings > Connectors (stubbed: no worker, session or network; screenshots into preview/settings-advanced). It must run, not skip.
       - name: Rendered settings connectors unsupported-adapter check
-        run: SHOTS=preview/settings-advanced node test/ui/settings-advanced-unsupported.ui.mjs | tee /tmp/sa.out && ! grep -q '^NOT RUN' /tmp/sa.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/settings-advanced node test/ui/settings-advanced-unsupported.ui.mjs | tee /tmp/sa.out
+          ! grep -q '^NOT RUN' /tmp/sa.out
       # The #379 offer-question binding: picking an offer binds the play's offer on both surfaces (stubbed; screenshots into preview/offer-question). It must run, not skip.
       - name: Rendered offer-question binding check (first-run + leads draft editor)
-        run: SHOTS=preview/offer-question node test/ui/offer-question-binding.ui.mjs | tee /tmp/oq.out && ! grep -q '^NOT RUN' /tmp/oq.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/offer-question node test/ui/offer-question-binding.ui.mjs | tee /tmp/oq.out
+          ! grep -q '^NOT RUN' /tmp/oq.out
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
-        run: node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out && ! grep -q '^NOT RUN' /tmp/it.out
+        run: |
+          set -o pipefail
+          mkdir -p preview/infotip
+          SHOTS=preview/infotip node test/ui/infotip-hydration.ui.mjs | tee /tmp/it.out
+          ! grep -q '^NOT RUN' /tmp/it.out
+      # #1010: an open tooltip is never clipped by the scrolling container (main overflow-auto) - every settings
+      # tooltip, desktop + mobile, hover + keyboard, bottom edge opens upward. It must run, not skip.
+      - name: InfoTip visible-bounds clipping regression (desktop + mobile)
+        run: |
+          set -o pipefail
+          mkdir -p preview/infotip-clipping
+          SHOTS=preview/infotip-clipping node test/ui/infotip-clipping.ui.mjs | tee /tmp/ic.out
+          ! grep -q '^NOT RUN' /tmp/ic.out
       # The #420 manual-profile ready card and readiness panel: a saved-by-hand profile completes both surfaces without a website and the panel must not contradict the card. They must run, not skip.
       - name: Ready card and readiness panel (manual profile without a website)
-        run: node test/ui/ready-card.ui.mjs | tee /tmp/rc.out && ! grep -q '^NOT RUN' /tmp/rc.out && node test/ui/readiness.ui.mjs | tee /tmp/rd.out && ! grep -q '^NOT RUN' /tmp/rd.out
+        run: |
+          set -o pipefail
+          mkdir -p preview/ready-card preview/readiness/1280 preview/readiness/390
+          SHOTS=preview/ready-card node test/ui/ready-card.ui.mjs | tee /tmp/rc.out
+          ! grep -q '^NOT RUN' /tmp/rc.out
+          WIDTH=1280 SHOTS=preview/readiness/1280 node test/ui/readiness.ui.mjs | tee /tmp/rd.out
+          ! grep -q '^NOT RUN' /tmp/rd.out
+          WIDTH=390 SHOTS=preview/readiness/390 node test/ui/readiness.ui.mjs | tee /tmp/rd-mobile.out
+          ! grep -q '^NOT RUN' /tmp/rd-mobile.out
       # refs #471: follow-ups held-state honesty on the real route (production build, throwaway db, synthetic fixtures, no stubbing, no send). It must run, not skip.
       - name: Follow-ups held states (promised date only when sendable; held shows reason + schedule date)
-        run: SHOTS=preview/followups-held node test/ui/followups-held.ui.mjs | tee /tmp/fh.out && ! grep -q '^NOT RUN' /tmp/fh.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/followups-held node test/ui/followups-held.ui.mjs | tee /tmp/fh.out
+          ! grep -q '^NOT RUN' /tmp/fh.out
       # The #410 trial line in Settings: a fresh account on an unconfigured trial is told the trial is unavailable, never that it used its scans; available counts down; used-up and throttled say their own reasons. It must run, not skip.
       - name: Trial status line (fresh, available, used-up, throttled)
-        run: SHOTS=preview/trial-status node test/ui/trial-status.ui.mjs | tee /tmp/ts.out && ! grep -q '^NOT RUN' /tmp/ts.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/trial-status node test/ui/trial-status.ui.mjs | tee /tmp/ts.out
+          ! grep -q '^NOT RUN' /tmp/ts.out
       # The #409 website-first free read: a keyless account gets the page's own source-labeled facts and the manual profile - no inference, no auto-save, no key demand; the keyed path keeps the AI fill; a failed read says the true reason and leaves the manual path. It must run, not skip.
       - name: Free site read (keyless facts with sources, keyed AI fill, failed read manual path)
-        run: SHOTS=preview/free-site-read node test/ui/free-site-read.ui.mjs | tee /tmp/fsr.out && ! grep -q '^NOT RUN' /tmp/fsr.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/free-site-read node test/ui/free-site-read.ui.mjs | tee /tmp/fsr.out
+          ! grep -q '^NOT RUN' /tmp/fsr.out
       # The #409 KeyInline nested-form regression: inside the first-run brain form, 'Save key' (click AND Enter) must run the real llm-key PUT with zero native document POSTs. It must run, not skip.
       - name: KeyInline save inside the brain form (no nested-form capture, click + Enter)
-        run: SHOTS=preview/key-inline node test/ui/key-inline-save.ui.mjs | tee /tmp/ki.out && ! grep -q '^NOT RUN' /tmp/ki.out
+        run: |
+          set -o pipefail
+          SHOTS=preview/key-inline node test/ui/key-inline-save.ui.mjs | tee /tmp/ki.out
+          ! grep -q '^NOT RUN' /tmp/ki.out
+      # Refs #919: exact production entry/progress labels with all-off, trial, no-key and enrichment-only fixtures.
+      - name: Truthful discovery availability at desktop and mobile (no live sources)
+        run: |
+          mkdir -p preview/source-availability/1280 preview/source-availability/390
+          WIDTH=1280 SHOTS=preview/source-availability/1280 node test/ui/source-availability.ui.mjs
+          WIDTH=390 SHOTS=preview/source-availability/390 node test/ui/source-availability.ui.mjs
       - name: Screenshots of every page
         run: npm run preview:shots -- preview
         env:
@@ -73,6 +126,15 @@ jobs:
       - name: Production smoke checks against the same build
         if: success() || failure()
         run: npm run test:smoke && npm run test:smoke:chunks
+      # #1006 scan outcomes on the production build: every stop class in Past scans, the campaign page and Home, the
+      # deep-link long copy (per-run budget / fixed cap origin-unknown / shared pool / trial / legacy neutral), and the
+      # QA cost truth (recorded-token component, cache unknown, reservation named as itself). Screenshots into
+      # preview/scan-outcomes for review. pipefail: a harness failure or a silent NOT RUN fails the job.
+      - name: Scan outcomes on the production build (stop classes + cost truth)
+        run: |
+          set -o pipefail
+          SHOTS=preview/scan-outcomes node test/ui/scan-outcomes.ui.mjs | tee /tmp/scan-outcomes.out
+          ! grep -q '^NOT RUN' /tmp/scan-outcomes.out
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:

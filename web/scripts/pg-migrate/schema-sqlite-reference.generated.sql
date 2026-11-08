@@ -205,11 +205,11 @@ CREATE TABLE email_candidates (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (length(person) <= 120),
       address TEXT NOT NULL CHECK (length(address) <= 254), format TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified')),
-      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, address));
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), verification TEXT NOT NULL DEFAULT 'none' CHECK (verification IN ('none','pending','verified','catch_all','undeliverable','uncertain','refused')), verifier TEXT CHECK (verifier IS NULL OR length(verifier) <= 40), checked_at INTEGER, country_basis TEXT CHECK (country_basis IS NULL OR length(country_basis) <= 160), tier TEXT NOT NULL DEFAULT 'guessed' CHECK (tier IN ('published','guessed')), source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500), confidence TEXT CHECK (confidence IS NULL OR confidence IN ('high','medium','low')), PRIMARY KEY (lead_id, address));
 
 CREATE TABLE email_patterns (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, site TEXT NOT NULL, format TEXT NOT NULL, support INTEGER NOT NULL,
-      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), PRIMARY KEY (lead_id, site));
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), confidence TEXT CHECK (confidence IS NULL OR confidence IN ('high','medium','low')), score INTEGER CHECK (score IS NULL OR (score >= 0 AND score <= 100)), runner_up INTEGER, evidence TEXT CHECK (evidence IS NULL OR length(evidence) <= 2000), PRIMARY KEY (lead_id, site));
 
 CREATE TABLE email_tokens (
     id TEXT PRIMARY KEY,
@@ -351,6 +351,39 @@ CREATE TABLE lead_feedback (
     reset_at INTEGER,
     reset_reason TEXT CHECK (reset_reason IS NULL OR length(reset_reason) <= 200)
   );
+
+CREATE TABLE lead_need_evidence (
+      tenant_id         TEXT NOT NULL,
+      job_id            TEXT NOT NULL,
+      lead_id           TEXT NOT NULL,
+      basis             TEXT NOT NULL CHECK (basis IN ('demand_post', 'hiring_trigger', 'none')),
+      verdict           TEXT NOT NULL CHECK (verdict IN ('verified_buying_need', 'needs_evidence', 'trigger_only', 'excluded', 'unqualifiable', 'unproven')),
+      reason            TEXT CHECK (reason IS NULL OR length(reason) <= 200),
+      qualifier_version TEXT,
+      offer             TEXT,
+      window_days       INTEGER,
+      rubric_reason     TEXT CHECK (rubric_reason IS NULL OR length(rubric_reason) <= 60),
+      demand_class      TEXT,
+      demand_tier       TEXT,
+      scores            TEXT,
+      families          TEXT,
+      reasons           TEXT,
+      missing           TEXT,
+      requester         TEXT,
+      mentioned_orgs    TEXT,
+      source_url        TEXT,
+      source_title      TEXT,
+      source_text       TEXT,
+      author_name       TEXT,
+      author_headline   TEXT,
+      author_company    TEXT,
+      author_url        TEXT,
+      published_at      TEXT,
+      lead_digest       TEXT,
+      plan_support      TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, lead_id)
+    );
 
 CREATE TABLE lead_qualifications (
     tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, prompt_sha256 TEXT NOT NULL,
@@ -1194,6 +1227,8 @@ CREATE INDEX lead_feedback_active ON lead_feedback (tenant_id, reset_at);
 
 CREATE UNIQUE INDEX lead_feedback_version ON lead_feedback (tenant_id, version);
 
+CREATE INDEX lead_need_evidence_job ON lead_need_evidence (tenant_id, job_id);
+
 CREATE UNIQUE INDEX lead_qualifications_one_per_lead ON lead_qualifications (tenant_id, lead_id);
 
 CREATE UNIQUE INDEX leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL;
@@ -1421,6 +1456,8 @@ CREATE TRIGGER tomb_lead_evidence_copies BEFORE INSERT ON lead_evidence_copies B
 
 CREATE TRIGGER tomb_lead_feedback BEFORE INSERT ON lead_feedback BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_lead_need_evidence BEFORE INSERT ON lead_need_evidence BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_lead_qualifications BEFORE INSERT ON lead_qualifications BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_lead_sources BEFORE INSERT ON lead_sources BEGIN SELECT (SELECT (SELECT user_id FROM scan_jobs WHERE id = scan_job_id) FROM leads WHERE id = NEW.lead_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'leads' AND key = NEW.lead_id) OR EXISTS (SELECT 1 FROM leads p0 WHERE p0.id = NEW.lead_id AND EXISTS (SELECT 1 FROM scan_jobs p1 JOIN tenant_tombstones t1 ON t1.deleted_tenant = p1.user_id WHERE p1.id = p0.scan_job_id)); END;
@@ -1612,6 +1649,8 @@ CREATE TRIGGER tomb_upd_lead_enrichments BEFORE UPDATE OF tenant_id ON lead_enri
 CREATE TRIGGER tomb_upd_lead_evidence_copies BEFORE UPDATE OF tenant_id ON lead_evidence_copies BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_lead_feedback BEFORE UPDATE OF tenant_id ON lead_feedback BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_lead_need_evidence BEFORE UPDATE OF tenant_id ON lead_need_evidence BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_lead_qualifications BEFORE UPDATE OF tenant_id ON lead_qualifications BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

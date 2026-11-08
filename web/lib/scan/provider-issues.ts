@@ -12,7 +12,7 @@ export { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, providerIssueText } fr
 import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES } from './provider-issue-text.ts'
 import type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus } from './provider-issue-text.ts'
 export type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus }
-import { getDb } from '../db/client.ts'
+import { getDb, type Db } from '../db/client.ts'
 import { parseRefusalLookup } from '../enrich/credit-pool.ts'
 
 // null = the audit table could not be read (older DB without it, or any read failure): the scan
@@ -20,8 +20,12 @@ import { parseRefusalLookup } from '../enrich/credit-pool.ts'
 // scan-provider-issues-unknown in leads-client), never silence that reads as "no issues".
 // [] = read succeeded, no failures - the only state allowed to look quiet.
 export async function providerIssues(tenantId: string, jobId: string): Promise<ProviderIssue[] | null> {
+  try { return await readProviderIssues(await getDb(), tenantId, jobId) } catch { return null }
+}
+
+// Injected-store reader: scan status must not independently select another database for provider audit.
+export async function readProviderIssues(db: Db, tenantId: string, jobId: string): Promise<ProviderIssue[] | null> {
   try {
-    const db = await getDb()
     // Enrichment skips (budget, circuit, held, fallback off) count only on the enrichment connectors.
     const rows = await db.all<{ connector: string; status: ProviderFailureStatus | EnrichSkipStatus; n: number | string; latest: number | string }>(
       `SELECT connector, status, count(*) AS n, max(created_at) AS latest FROM connector_audit

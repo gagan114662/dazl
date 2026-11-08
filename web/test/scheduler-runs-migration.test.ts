@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateSchedulerRuns, recordProgress, tenantFreshness } from './scheduler-runs.ts'
+import { migrateSchedulerRuns, recordProgress, tenantFreshness } from '../lib/ops/scheduler-runs.ts'
 
 // #411 reviewer gap: first-touch outcomes were folded into run counters because scheduler_progress.kind's CHECK
 // predated the kind; per-tenant freshness could not see a failing first-touch-only tenant.

@@ -2,7 +2,8 @@
 // as the page: contactsFromEnrichments ordered by the scan ICP's buyer roles. Nothing is invented: a lead with no
 // found person gets empty fields.
 import type { Db } from '../db/client.ts'
-import { contactsFromEnrichments, PEOPLE_SOURCE, roleContradicted } from './rank.ts'
+import { contactsFromEnrichments, peopleSourceText, roleContradicted } from './rank.ts'
+import { identityOf } from '../scan/opportunity.ts'
 import { currencyText } from './currency.ts'
 
 export interface BestPerson { best_person: string; best_person_title: string; best_person_link: string; best_person_found_via: string }
@@ -33,13 +34,18 @@ export async function bestPeople(db: Db, tenantId: string, rows: { lead_id: stri
   const hasTable = await db.get('SELECT 1 AS x FROM lead_enrichments LIMIT 0').then(() => true, () => false)
   for (const r of rows) {
     if (!rolesByJob.has(r.job_id)) rolesByJob.set(r.job_id, await buyerRoles(db, r.job_id))
-    const enr = !hasTable ? [] : await db.all<{ kind: string; value: string; label: string | null; source_url: string; connector: string; retrieved_at: unknown }>(
-      `SELECT e.kind, e.value, e.label, e.source_url, e.connector, e.retrieved_at FROM lead_enrichments e
+    // People rows, plus the website-identity rows identityOf reads (crawled domains and addresses, the user's own website
+    // review): a crawled person is verified current only on the lead's established / user-confirmed site (#781).
+    const enr = !hasTable ? [] : await db.all<{ kind: string; value: string; label: string | null; source_url: string; connector: string; retrieved_at: unknown; contact: string | null }>(
+      `SELECT e.kind, e.value, e.label, e.source_url, e.connector, e.retrieved_at, l.contact FROM lead_enrichments e
        JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
-       WHERE e.lead_id = ? AND e.tenant_id = ? AND j.user_id = ? AND l.quarantined_at IS NULL AND e.kind IN ('contact', 'person')
+       WHERE e.lead_id = ? AND e.tenant_id = ? AND j.user_id = ? AND l.quarantined_at IS NULL
+         AND (e.kind IN ('contact', 'person') OR (e.connector = 'sitecrawl' AND e.kind IN ('domain', 'email')) OR (e.connector = 'user' AND e.kind = 'domain_review'))
        ORDER BY e.insert_seq`, [r.lead_id, tenantId, tenantId])
-    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!).find(c => !c.historical && (!c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!)))
-    out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: top.currency === 'verified_current' && top.verified ? `${PEOPLE_SOURCE[top.connector] ?? top.connector}; ${currencyText(top.verified, top.connector)}` : PEOPLE_SOURCE[top.connector] ?? top.connector } : EMPTY)
+    const contact = enr[0]?.contact ?? null
+    const site = identityOf({ id: r.lead_id, contact }, enr.map(x => ({ ...x, retrieved_at: typeof x.retrieved_at === 'number' ? x.retrieved_at : typeof x.retrieved_at === 'string' && /^\d{1,12}$/.test(x.retrieved_at) ? Number(x.retrieved_at) : null })))
+    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!, Date.now(), site).find(c => !c.historical && (!c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!)))
+    out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: top.verified && (top.currency === 'verified_current' || top.verified.reason) ? `${peopleSourceText(top)}; ${currencyText(top.verified, top.connector)}` : peopleSourceText(top) } : EMPTY)
   }
   return out
 }

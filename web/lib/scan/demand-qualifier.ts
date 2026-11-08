@@ -48,7 +48,7 @@ export interface DemandRubric {
 export interface DemandPost {
   source_url: string
   published_at: string | null          // as the source dates the post; null when it does not
-  author: { name: string | null; headline?: string | null; company?: string | null } | null
+  author: { name: string | null; headline?: string | null; company?: string | null; url?: string | null } | null
   title?: string | null
   text: string
 }

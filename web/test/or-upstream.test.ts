@@ -79,7 +79,7 @@ function scan(request: string, icp: object): { f: Fixture; calls: Calls } {
   }
   // The stub extractor returns a candidate exactly when its page is one of the prompt's items (what the model can see).
   const extractionFn = (prompt: string) => CANDS.filter(c => prompt.includes(c.source_url))
-  return { calls, f: { request, modelIcp: icp, reviewedIcp: icp, modelQueries: ['london saas startup seed round', 'london b2b saas first sales hire', 'london saas startup hiring account executive', 'london startup news'], hits, hitsFor, tfPages: pages, own: pages, extraction: [], extractionFn, deps: { sourceHttp, newsHttp } } }
+  return { calls, f: { request, modelIcp: icp, reviewedIcp: icp, icpReviewed: true, modelQueries: ['london saas startup seed round', 'london b2b saas first sales hire', 'london saas startup hiring account executive', 'london startup news'], hits, hitsFor, tfPages: pages, own: pages, extraction: [], extractionFn, deps: { sourceHttp, newsHttp } } }
 }
 const fate = (x: Awaited<ReturnType<typeof runFixture>>, company: string) => {
   const ls = x.db.prepare('SELECT review_reason FROM leads WHERE company = ?').all(company) as { review_reason: string | null }[]

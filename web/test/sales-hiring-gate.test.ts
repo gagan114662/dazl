@@ -8,6 +8,8 @@ import Database from 'better-sqlite3'
 import { applySalesHiringGate, failClosedSalesHiring, salesHiringRequired, quoteNamesSalesHiring } from '../lib/scan/sales-hiring-gate.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 
 // CI runs with SITECRAWL_ENABLED=0 (npm test). The runJob fixtures below need their STUBBED crawl (an injected crawlGet, no network) to establish the lead's domain,
@@ -110,8 +112,21 @@ test('JUICEBOX-TYPE: a perfect board under a domain matched only by company NAME
     assert.deepEqual([r.passed, r.demoted], [0, 1], String(basis)); assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence')
     assert.match(lead(db).why, /not established as this company's board/)
   }
-  const confirmed = seed({ basis: null }); confirmed.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('R1', 'L1', 'u1', 'user', 'domain_review', 'brightloop.io', 'domain-review-v1:x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
-  assert.equal((await applySalesHiringGate(confirmed.db, confirmed.job, serve(board({ [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: d(12), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Join Brightloop in London&lt;/p&gt;' } })), { now: NOW })).passed, 1, 'a domain the user confirmed is established')
+  // a domain the user confirmed through the real review writer is established; the review is bound to what the user saw (#915)
+  const reviewedSeed = () => {
+    const s = seed({ basis: 'name_probe' })
+    s.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('E1', 'L1', 'u1', 'sitecrawl', 'email', 'hello@brightloop.io', NULL, NULL, 'https://brightloop.io/contact', '2026-10-28', 1)").run()
+    const rows = s.db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = 'L1' AND tenant_id = 'u1'").all() as NonNullable<Parameters<typeof domainReviewFor>[1]>
+    assert.equal(setDomainReview(s.db, 'u1', 'L1', 'confirm', domainReviewFor({ id: 'L1', contact: null }, rows).binding!).status, 'confirmed')
+    return s
+  }
+  const confirmedBoard = () => serve(board({ [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: d(12), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', content: '&lt;p&gt;Join Brightloop in London&lt;/p&gt;' } }))
+  const confirmed = reviewedSeed()
+  assert.equal((await applySalesHiringGate(confirmed.db, confirmed.job, confirmedBoard(), { now: NOW })).passed, 1, 'a domain the user confirmed is established')
+  const stale = reviewedSeed(); stale.db.prepare("UPDATE lead_enrichments SET value = 'someoneelse@brightloop.io' WHERE id = 'E1'").run()
+  assert.equal((await applySalesHiringGate(stale.db, stale.job, confirmedBoard(), { now: NOW })).passed, 0, 'a review whose address changed no longer establishes the board (#915)')
+  const fake = seed({ basis: null }); fake.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('R1', 'L1', 'u1', 'user', 'domain_review', 'brightloop.io', 'domain-review-v1:x', NULL, 'https://brightloop.io/', '2026-10-28', 1)").run()
+  assert.equal((await applySalesHiringGate(fake.db, fake.job, confirmedBoard(), { now: NOW })).passed, 0, 'a review row with no matching binding establishes nothing (#915)')
   const named = seed({ basis: 'name_probe' })
   assert.equal((await applySalesHiringGate(named.db, named.job, serve(board()), { now: NOW })).passed, 1, 'the board\u2019s own postings name the lead\u2019s domain (jobs@brightloop.io): bound by the board itself')
 })
