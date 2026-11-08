@@ -1293,7 +1293,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // refusal is the cause of the empty search, so its reason names the stop - the fallback's shape does not.
         if (e instanceof SpendRefused && e.reason === 'research_unbounded' && budgetRefused) {
           const code = refusalCode(new SpendRefused(budgetRefusal!), ledger)
-          ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal } })
+          ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal, superseded_refusal_reason: e.reason } })
           finish(db, job, 'failed', code, null, 0, ledger)
           return 'failed'
         }

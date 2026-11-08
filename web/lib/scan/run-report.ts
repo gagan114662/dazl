@@ -27,8 +27,10 @@ export interface ReportParts {
   // per-query outcome classes. Counts and status codes only - never payloads, URLs or response bodies.
   news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number> } | null
   // Why the scan stopped when it did: the bounded stop code written as the job error, and the exact spend-refusal reason
-  // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean.
-  stop?: { code: string; spend_refusal_reason: string | null } | null
+  // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean. When an
+  // earlier refusal names the stop but a later refusal also happened (e.g. the trailing research_unbounded), the later
+  // reason is preserved too - the record keeps BOTH, never only the code's priority winner.
+  stop?: { code: string; spend_refusal_reason: string | null; superseded_refusal_reason?: string | null } | null
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
