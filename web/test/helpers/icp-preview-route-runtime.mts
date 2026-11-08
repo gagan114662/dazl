@@ -48,5 +48,33 @@ test('POST /api/scan/icp: spend and provider failures map to their own names and
     const ok = await POST(request({ query: 'fintech founders in Europe' }))
     assert.equal(ok.status, 200)
     assert.equal((await ok.json() as { inferred?: boolean }).inferred, true)
+
+    // "Review profile first" with a prior profile: the fresh inference's fields come back, and the prior profile's
+    // research block - the rejection, the hold, the typed answer - rides along whole. Decisions are never reset.
+    const PRIOR_RESEARCH = {
+      v: 1, site: 'acme.example', q: 'Who buys this?', ans: { q: 'Who buys this?', o: 'o1', t: 'Practice managers' },
+      offers: [{ i: 'o1', n: 'Acme Booking' }],
+      hyps: [
+        { i: 'h1', o: 'o1', k: 'persona', t: 'Practice managers', s: 'reviewed', u: 'https://acme.example/', q: 'for practice managers', at: 1800000000 },
+        { i: 'h2', o: 'o1', k: 'persona', t: 'Dental influencers', s: 'rejected', u: 'https://acme.example/', q: null, at: null },
+      ],
+      u: [{ n: ['acme booking'], k: 'persona', t: '', s: 'reviewed', w: true, o: true }],
+    }
+    const prior = { summary: 'Dental practices that need booking software.', who: ['Practice managers'], industries: [], sizes: [], where: [], signals: [], exclude: [], research: PRIOR_RESEARCH }
+    setPreviewIcp(async () => ({ icp: { summary: 'Fresh inference', who: ['Owner'], industries: [], sizes: [], where: [], signals: [], exclude: [] }, inferred: true }) as never)
+    const carried = await POST(request({ query: 'orthodontists in Texas', prior_icp: prior }))
+    assert.equal(carried.status, 200)
+    const cj = await carried.json() as { icp: { summary: string; research?: unknown } }
+    assert.equal(cj.icp.summary, 'Fresh inference', 'the fields are the fresh inference')
+    const cr = cj.icp.research as { hyps: { s: string }[]; u?: { n: string[]; w?: boolean }[]; ans?: { t?: string } }
+    assert.deepEqual(cr.hyps.map(h => h.s), ['reviewed', 'rejected'], 'the reviewed statement and the rejection carry verbatim')
+    assert.equal(cr.ans?.t, 'Practice managers', 'the typed answer carries')
+    assert.equal(cr.u?.length, 1, 'the held offer carries')
+    assert.equal(cr.u?.[0].w, true)
+    assert.deepEqual(cr.u?.[0].n, ['acme booking'])
+    // A prior whose block is absent adds nothing; a malformed prior is ignored, never fatal.
+    const bare = await POST(request({ query: 'orthodontists in Texas', prior_icp: { who: [] } }))
+    assert.equal(bare.status, 200)
+    assert.equal((await bare.json() as { icp: { research?: unknown } }).icp.research, undefined)
   } finally { setPreviewIcp(null); db.close() }
 })

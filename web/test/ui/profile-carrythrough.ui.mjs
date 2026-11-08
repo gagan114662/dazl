@@ -18,7 +18,9 @@
 //      the stored profile raw again - reviewed: false, never the default semantics that would promote it;
 //   6. Home > Build (?setup=brain) reopen + save: the POST /api/settings/profile keeps the research block and its
 //      rejections whole, and the canonical fields (country/language/window/lookalike) with it (fail-before: the save
-//      dropped research and every non-flat field entirely).
+//      dropped research and every non-flat field entirely);
+//   7. "Review profile first" carries the saved profile in prior_icp (never a silent decision reset) and the draft
+//      editor shows the dismissed statements.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -51,9 +53,9 @@ const RESEARCH = {
   hyps: [
     { i: 'h1', o: 'o1', k: 'persona', t: 'Founders', s: 'sourced', u: 'https://dazl.ai/', q: 'for founders and sales teams', at: null },
     { i: 'h2', o: 'o1', k: 'persona', t: 'Head of Real Estate', s: 'rejected', u: 'https://dazl.ai/', q: 'illustrative example', at: null },
-    { i: 'h3', o: 'o1', k: 'offer', t: 'Dazl lead finding', s: 'held', u: null, q: null, at: null },
   ],
-  decisions: [{ offer: 'o1', hypothesis: 'h2', action: 'reject' }, { offer: 'o1', hypothesis: 'h3', action: 'hold' }],
+  u: [{ n: ['dazl lead finding'], k: 'persona', t: '', s: 'reviewed', w: true, o: true }],
+  decisions: [{ offer: 'o1', hypothesis: 'h2', action: 'reject' }],
 }
 const LOOKALIKE = { v: 1, p: 6, q: 6, f: [{ d: 'i', t: 'software', n: 3, x: 2.5 }], h: { p: 0.8, b: 0.4, n: 6 }, k: { c: 'abcde12345', x: 'zzzzz', n: 'yyyyy' } }
 const BUYER = { summary: 'Businesses that need evidence-backed outbound leads', who: ['Founders', 'B2B sales teams'], industries: [], sizes: [], where: [], signals: ['seeking a lead-finding tool'], exclude: [], country: 'US', language: 'en', window_days: 180, lookalike: LOOKALIKE, research: RESEARCH }
@@ -63,7 +65,7 @@ const ESTIMATE = { estimate: { rows: [], total: { min: 0, max: 0 }, unpriced: []
 
 const b = await chromium.launch()
 async function open({ buyer, latest = { query: null, icp: null, icp_source: null }, page: pagePath = '/app/leads' }) {
-  const scanBodies = [], estBodies = [], saves = []
+  const scanBodies = [], estBodies = [], saves = [], previews = []
   const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   await ctx.route('**/*', async route => {
@@ -79,13 +81,14 @@ async function open({ buyer, latest = { query: null, icp: null, icp_source: null
     if (p === '/api/scan/jobs') return json({ jobs: [], totals: { finished: 0, searches: 0 } })
     if (p === '/api/scan/latest') return json(latest)
     if (p === '/api/scan/estimate' && m === 'POST') { estBodies.push(JSON.parse(req.postData())); return json(ESTIMATE) }
+    if (p === '/api/scan/icp' && m === 'POST') { previews.push(JSON.parse(req.postData())); const prior = JSON.parse(req.postData()).prior_icp; return json({ icp: { summary: 'Fresh inference from the sentence', who: ['Owners'], industries: [], sizes: [], where: [], signals: [], exclude: [], ...(prior?.research ? { research: prior.research } : {}) }, inferred: true }) }
     if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'e'.repeat(24) }, 202) }
     if (p === '/api/scan/status') return json({ status: 'pending', lead_count: 0, attempts: 0, max_attempts: 3 })
     return json({}, 404)
   })
   const page = await ctx.newPage()
   await page.goto(`${base}${pagePath}`, { waitUntil: 'networkidle' })
-  return { ctx, page, scanBodies, estBodies, saves }
+  return { ctx, page, scanBodies, estBodies, saves, previews }
 }
 try {
   // 1. First scan: the saved buyer carries through whole - rejections, the held offer, the canonical fields - and the
@@ -166,6 +169,17 @@ try {
   assert.equal(e.saves[0].buyer.window_days, 180)
   assert.deepEqual(e.saves[0].buyer.lookalike, LOOKALIKE)
   await e.ctx.close()
+  // 7. "Review profile first" with a saved profile: the preview request CARRIES the profile, and the draft editor
+  //    shows the review state (the dismissed statement is there to restore) instead of silently resetting it.
+  const h = await open({ buyer: BUYER })
+  await h.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
+  await h.page.getByLabel('Who do you want to reach?').fill(Q)
+  await h.page.getByRole('button', { name: 'Review profile first' }).click()
+  await h.page.getByText('Dismissed targeting (restore explicitly)').waitFor({ timeout: 15000 })
+  assert.equal(h.previews.length, 1)
+  assert.deepEqual(h.previews[0].prior_icp, BUYER, 'the preview carries the saved profile whole so the server can keep its decisions')
+  assert.deepEqual(h.scanBodies, [], 'a preview never starts a scan')
+  await h.ctx.close()
   console.log('profile carry-through UI check passed: first scan uses the saved reviewed business profile with its decisions; reopen + save keeps the research whole')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

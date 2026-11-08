@@ -4,7 +4,7 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { previewIcp } from '@/lib/scan/runner'
-import { MAX_QUERY } from '@/lib/scan/icp'
+import { MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { denied } from '@/lib/workspace-access'
 import { PROVIDER_FAILED_COPY } from '@/lib/error-copy'
 
@@ -19,6 +19,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const query = cleanText(body?.query, MAX_QUERY)
   if (query.length < 3) return NextResponse.json({ error: 'Describe who you are looking for' }, { status: 400 })
+  // The profile the person already has (a saved business buyer or a restored play profile), when the caller carries
+  // one: its research block - rejections, holds, the typed answer - rides into the draft below, so "Review profile
+  // first" can never silently reset a decision. Presence here is NOT a review; it changes no statuses.
+  const prior = body?.prior_icp ? normalizeIcp(body.prior_icp) : null
   const out = await previewIcp(getScanDb(), user.tenantId, query, {}, clientIp(req))
   if ('error' in out) {
     // The same truthful spend/failure names as the website profile read (/api/scan/icp-from-url): a budget stop or an
@@ -30,5 +34,9 @@ export async function POST(req: NextRequest) {
     if (out.error === 'provider_failed') return NextResponse.json({ error: 'provider_failed', message: PROVIDER_FAILED_COPY }, { status: 502 })
     return NextResponse.json({ error: out.error }, { status: out.error === 'no_api_key' || out.error === 'key_unreadable' ? 400 : out.error === 'trial_key_invalid' ? 503 : 402 })
   }
+  // The fresh fields are the inference's; the review state is the prior profile's. A fresh inference has no research
+  // block of its own, so the carried one attaches whole; the editor shows it and Run (the explicit review event)
+  // applies the canonical semantics with every decision visible.
+  if (out.icp && !out.icp.research && prior?.research) out.icp = { ...out.icp, research: prior.research }
   return NextResponse.json(out)
 }
