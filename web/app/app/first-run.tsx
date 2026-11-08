@@ -63,6 +63,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // The source-backed research block from the website read (#379): carried untouched through the reviewed profile
   // into the scan, so the play keeps its provenance and per-offer corrections.
   const [research, setResearch] = useState<unknown>(null)
+  // The saved profile's fixed fields that have no editor box here (country, language, window_days, lookalike):
+  // kept verbatim through a reopen/edit/save, never silently dropped by the flat form.
+  const [buyerRest, setBuyerRest] = useState<Record<string, unknown>>({})
   const [error, setError] = useState('')
   const [needKey, setNeedKey] = useState(false)
   // The free website read (#409): only facts the page itself states, each with its source URL. Set when the account
@@ -76,10 +79,18 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // per-source progress, candidates so far and the verified leads. null for a job without it (then the leads read is used).
   const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string } | null>(null)
 
-  // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read).
-  const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[] }) => {
+  // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read). The saved profile's
+  // research block comes back too: reopening the editor (?setup=brain) must keep every Add/Dismiss, hold and answer it
+  // carries, or the next save would silently drop them. Loading is never an approval - only the person's own
+  // Add/Dismiss clicks change decisions.
+  const fillBuyer = (b: Partial<Brain> & { sizes?: string[]; exclude?: string[]; research?: unknown }) => {
     const j = (v?: string[]) => (v ?? []).join('; ')
     setSummary(b.summary ?? ''); setWho(j(b.who)); setIndustries(j(b.industries)); setWhere(j(b.where)); setSignals(j(b.signals)); setSizes(j(b.sizes)); setExclude(j(b.exclude))
+    // null when the loaded profile carries none: a stale block from an earlier read must not survive into the next save.
+    setResearch(asResearchBlock(b.research))
+    const rest = { ...(b as Record<string, unknown>) }
+    for (const k of ['summary', 'who', 'industries', 'sizes', 'where', 'signals', 'exclude', 'research']) delete rest[k]
+    setBuyerRest(rest)
   }
   const loadUsage = () => fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j) setUsage(j) }).catch(() => {})
   useEffect(() => {
@@ -108,7 +119,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const brain: Brain = { summary: summary || sells, who: list(who), industries: list(industries), where: list(where), signals: list(signals) }
   const plays = useMemo(() => suggestPlays(brain), [summary, sells, who, industries, where, signals]) // eslint-disable-line react-hooks/exhaustive-deps
   // The reviewed profile exactly as shown in step 2; it goes to the search with the sentence (no hidden fields).
-  const profile = { summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude), ...(research ? { research } : {}) }
+  const profile = { ...buyerRest, summary: (summary || sells).trim(), who: list(who), industries: list(industries), sizes: list(sizes), where: list(where), signals: list(signals), exclude: list(exclude), ...(research ? { research } : {}) }
 
   // Watch the first play: its status every few seconds until it settles, then its ready leads (the same gates as Home).
   const firstId = first?.id ?? null, firstStatus = first?.status ?? null
@@ -182,7 +193,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // Saved exactly as read (the same POST the profile form uses); edited later from Home or "Edit what dazl inferred".
       const b = j.icp ?? {}
       const arr = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
-      const buyer = { summary: String(b.summary ?? j.sells ?? '').trim(), who: arr(b.who), industries: arr(b.industries), sizes: arr(b.sizes), where: arr(b.where), signals: arr(b.signals), exclude: arr(b.exclude) }
+      // The research block rides along from the first save too, so a reload before the person's first edit still has
+      // the provenance and any decisions it already carries (a recrawl's own read replaces it below, never drops it).
+      const rest = { ...((b ?? {}) as Record<string, unknown>) }
+      for (const k of ['summary', 'who', 'industries', 'sizes', 'where', 'signals', 'exclude', 'research']) delete rest[k]
+      const buyer = { ...rest, summary: String(b.summary ?? j.sells ?? '').trim(), who: arr(b.who), industries: arr(b.industries), sizes: arr(b.sizes), where: arr(b.where), signals: arr(b.signals), exclude: arr(b.exclude), ...((b as { research?: unknown }).research ? { research: (b as { research?: unknown }).research } : {}) }
       const sr = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells: String(j.sells ?? ''), website: url, business_name: bizName, buyer }) }).catch(() => null)
       if (!sr?.ok) { const sj = await sr?.json().catch(() => ({})); setError(sj?.error || 'Could not save what dazl inferred. Check it and save it yourself.'); setStep('brain'); return }
       window.dispatchEvent(new Event('profile-updated'))

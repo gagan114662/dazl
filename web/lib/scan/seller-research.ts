@@ -269,10 +269,15 @@ const bindOffer = (offers: { id: string; name: string }[], offer: string): strin
 // feeds retrieval and ranking only through these truthful statuses and the person's own edits to the visible fields.
 // Questions: choosing the play's offer answers ONLY the offer-selection question, and only when the offer binding is
 // unambiguous. 'Who buys this?' is answered by the person's typed words (carried in the stored research), never inferred.
-export function applyReviewedDraft(icp: Icp, offer: string): Icp {
+export function applyReviewedDraft(icp: Icp, offer: string, opts?: { reviewed?: boolean }): Icp {
   const stored = icp.research
   if (!stored) return icp
   const r = fromStored(stored)
+  // reviewed: false = the profile is carried as stored (a saved business profile on a FIRST scan), NOT re-reviewed
+  // for this play: presence in the visible fields is not a confirmation, removal is not a rejection, and the offer
+  // question is not answered by the binding. Explicit rejections still strip their own text from the effective fields
+  // below (that guarantee is about the person's past acts, not this request).
+  const promote = opts?.reviewed !== false
   // Stable, unambiguous offer identity: the offer's stored NAME (an id alone never binds: two names can share a legacy id). Zero matches (the play's offer was not
   // found on the site read) or several ('SEO audit' vs 'SEO audit Pro', two offers with the same name) mean nothing
   // can be bound: no corrections, no answer, the draft passes through untouched.
@@ -283,6 +288,7 @@ export function applyReviewedDraft(icp: Icp, offer: string): Icp {
     const field = kindField[h.kind as keyof typeof kindField] as DraftField | undefined
     if (!field) return h   // offer/pain statements carry evidence, not a draft field
     if (h.status === 'rejected') return h   // an explicit rejection is NEVER resurrected by matching field text
+    if (!promote) return h
     const inDraft = icp[field].some(v => exact(v, h.text))
     if (inDraft) return h.status === 'reviewed' ? h : { ...h, status: 'reviewed' as const }
     if (h.status === 'reviewed') return { ...h, status: 'rejected' as const }
@@ -301,6 +307,6 @@ export function applyReviewedDraft(icp: Icp, offer: string): Icp {
   }
   const effective: Partial<Pick<Icp, DraftField>> = {}
   for (const [field, texts] of rejectedText) effective[field] = icp[field].filter(v => !texts.has(norm(v)))
-  const answered = r.answered ?? (r.question === OFFER_QUESTION ? { question: r.question, offer: oid } : null)
+  const answered = r.answered ?? (promote && r.question === OFFER_QUESTION ? { question: r.question, offer: oid } : null)
   return { ...icp, ...effective, research: toStored({ ...r, hypotheses: hyps, answered }) }
 }

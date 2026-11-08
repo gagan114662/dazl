@@ -88,6 +88,16 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   return { v: 1, site, offers, hyps, q: question, ans, ...(capped.length ? { u: capped } : {}) }
 }
 
+// "Review profile first" with an existing profile: the preview's fresh model output supplies the draft's FLAT
+// fields only. The research block is the prior profile's, whole: fresh model research is not new provenance (it is
+// not a site recrawl), and the prior block holds the person's decisions - reviewed statements, rejections, held
+// groups, the typed answer - with their EXACT offer bindings. Merging model research into it could only move,
+// collapse or truncate those bindings, so there is no merge: the prior block replaces any fresh research outright.
+// Presence is not a review: no status changes here; only the review editor's explicit submit does that.
+export function guardedPreviewResearch(fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
+  return prior
+}
+
 // Deterministic research fit: whole hypotheses only, best first - reviewed (a person's decision), sourced (page-verified),
 // rejected (a person's decision), then unreviewed hypotheses - round-robin across offers so no offer is starved. If even
 // the site/offers skeleton cannot fit, the research block is omitted whole. Flat user constraints are never touched.
