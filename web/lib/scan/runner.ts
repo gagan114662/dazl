@@ -41,7 +41,7 @@ import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLog
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
-import { ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
+import { OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
@@ -62,7 +62,7 @@ import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
-import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE } from '../search/news.ts'
+import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
@@ -616,6 +616,10 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   else if (uncertainSpend.has(job) || spendAttemptUncertain()) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }
   else if (spendAttemptRejected() !== null && status === 'done') { status = 'failed'; error = rejectionCode(spendAttemptRejected()!); out = null; candidates = null }
+  // The report contract: stop.code IS the code written as the job error. The overrides above are authoritative, so a
+  // stop block staged earlier (source_error, a refusal class, ...) is reconciled to the final terminal code here; the
+  // staged classification survives as superseded_stop_code and the refusal reason is never touched.
+  if (ledger && status === 'failed' && error) ledger.finalizeStop(error)
   // Provenance is recorded at each call site: a step refused BEFORE it ran (SpendRefused) reads skipped_hold; a step that
   // ran and failed reads error. A row still 'started' here can only come from a rethrown stop/auth/accounting failure - it
   // ran or was interrupted - and write() converts it to error. There is no finish-time blanket conversion.
@@ -645,6 +649,42 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   }).immediate()
 }
 
+// The four honest ways a scan can stop when its sources gave it nothing and the paid fallback cannot run. A source that
+// FAILED (source_error) is never a budget stop, and raising the budget would not have searched further. Sources that ran
+// clean and found nothing (no_discovery) searched everything the run was allowed to use. Sources that could not conclude
+// (unbounded_fallback_hold) stop the run rather than start the unpriceable web-search research call.
+export function fallbackStopCode(ledger: SourceRunLedger): string {
+  const failed = (s: string | null) => !!s && /^(?:error|limited)/.test(s)
+  const clean = (s: string | null) => !!s && /^(?:empty|no_candidates|ok)/.test(s)
+  const news = ledger.statusOf('search:news'), tf = ledger.statusOf('search:tinyfish')
+  if (failed(news) || failed(tf)) return 'source_error'
+  if (clean(news) || (!news && clean(tf))) return 'no_discovery'
+  return 'unbounded_fallback_hold'
+}
+
+// A SpendRefused names why the spend layer refused the call (spend-guard.ts reason); the job error must preserve that
+// reason's class end to end. Only a real numeric cap refusal is a budget stop: everything else (unbounded research,
+// unpriced model, failed accounting, lost ownership) refuses at ANY budget, so calling it budget_stopped would send the
+// user to raise a budget that cannot fix it.
+export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
+  switch (e.reason) {
+    case 'over_limit':
+    case 'over_cap':   // the scan's recorded cap refused (spend-cap.ts): the run's budget OR the service's cap - origin not retained
+    case OWNER_POOL_LIMIT_REASON:   // the owner pool's numeric refusal: still a limit stop, but NOT the run's own budget
+    case TRIAL_BUDGET_REASON: return 'budget_stopped'   // a real numeric budget refused the next paid step
+    case 'research_unbounded': return ledger ? fallbackStopCode(ledger) : 'unbounded_fallback_hold'
+    case 'model_unpriced': return 'model_unpriced'
+    case 'count_failed': return 'spend_count_failed'
+    case 'accounting_uncertain': case 'accounting_unsettled': case 'reservation_not_saved':
+    case 'reservation_invalid': case 'ledger_unavailable': case 'busy': return 'spend_accounting_unavailable'
+    case 'ownership_lost': case 'scan_not_found': case 'scan_not_active': return 'ownership_lost'   // the run no longer owns an active job row
+    case 'cap_config_invalid': case 'kind_unknown': return 'spend_config_invalid'
+    case 'provider_rejected': return 'provider_rejected'
+    case 'units_invalid': case 'price_invalid': case 'price_unknown': case 'cost_invalid': return 'spend_config_invalid'
+    default: return 'spend_refused'   // named, never silently a budget stop
+  }
+}
+
 // Shared failure handling: a rejected key fails the job outright; anything else retries
 // until MAX_ATTEMPTS, then fails. Returns the run outcome.
 function hasUnsettledCall(db: Database.Database, job: Job): boolean {
@@ -656,7 +696,12 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
   // A paid call answered but its cost could not be saved: the scan ends with its own status, never retried (a retry would pay again) and never reported as an empty search.
   if (e instanceof SpendAccountingFailed) { finish(db, job, 'failed', 'accounting_failed', null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused && spendAttemptRejected() !== null && !uncertainSpend.has(job) && !spendAttemptUncertain()) { finish(db, job, 'failed', rejectionCode(spendAttemptRejected()!), null, null, ledger); return 'failed' }
-  if (e instanceof SpendRefused) { finish(db, job, 'failed', 'budget_stopped', null, null, ledger); return 'failed' } // a refused call is never retried: attempts must not multiply spend
+  if (e instanceof SpendRefused) {
+    const code = refusalCode(e, ledger)
+    ledger?.report({ stop: { code, spend_refusal_reason: e.reason } })
+    finish(db, job, 'failed', code, null, null, ledger)
+    return 'failed'
+  } // a refused call is never retried: attempts must not multiply spend
   const err = e instanceof ProviderError ? e : new ProviderError('retry', 'internal_error', 'uncertain')
   // A documented vendor rejection (dazl does not claim it was uncharged): the scan ends with its own status and the owner retries on purpose.
   if (err.kind !== 'auth' && err.charge === 'rejected' && !(uncertainSpend.has(job) || spendAttemptUncertain() || hasUnsettledCall(db, job))) { finish(db, job, 'failed', rejectionCode(err.status), null, null, ledger); return 'failed' }
@@ -761,10 +806,12 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
         // A refused paid call STOPS the run (the query path's #594 contract): never fall through to the paid research
         // fallback - after the first refusal there is no later reserve at all, refused or not. The terminal error names
         // the truth: a maybe-billed call is accounting_uncertain, a documented rejection is its own status, else the
-        // hold stopped the run (budget_stopped) - never "nothing found".
+        // hold stopped the run, named by the refusal's own reason (refusalCode) - never "nothing found".
         if (e instanceof SpendRefused) {
           const rej = spendAttemptRejected()
-          finish(db, job, 'failed', spendAttemptUncertain() ? 'accounting_uncertain' : rej !== null ? rejectionCode(rej) : 'budget_stopped', null, 0, ledger)
+          const code = spendAttemptUncertain() ? 'accounting_uncertain' : rej !== null ? rejectionCode(rej) : refusalCode(e, ledger)
+          ledger.report({ stop: { code, spend_refusal_reason: e.reason } })
+          finish(db, job, 'failed', code, null, 0, ledger)
           return 'failed'
         }
         leads = null
@@ -781,10 +828,15 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     }
     const fetchP = cachedFetcher(deps.fetchPage ?? fetchPageDetailed)
     if (!leads) {
-      // Per-run budget control: a run that disabled the paid fallback stops here
-      // honestly instead of spending on research/ground/judge calls. The distinct
-      // error keeps the UI truthful - this is a budget stop, not "nothing found".
-      if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
+      // Per-run budget control: a run that disabled the paid fallback stops here honestly instead of spending on
+      // research/ground/judge calls. The error names what actually ended the search (source_error / no_discovery /
+      // unbounded_fallback_hold) - the fallback's absence alone is not a budget stop.
+      if (deps.paidFallback === false) {
+        const code = fallbackStopCode(ledger)
+        ledger.report({ stop: { code, spend_refusal_reason: null } })
+        finish(db, job, 'failed', code, null, 0, ledger)
+        return 'failed'
+      }
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
       const res = await callResearch(ledger, `search:${vendor}`, () => provider.research(key, buildCompanyPrompt(domain, deps.now ?? new Date()), deps.fetchImpl))
@@ -912,7 +964,16 @@ export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, win
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
-export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number }): string {
+export interface NewsNote { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number; classes?: NewsFailureClasses; http_statuses?: Record<string, number>; query_classes?: NewsQueryClasses }
+// A full outage names its failure class when the requests recorded one (network/http/empty_body/parse, 'mixed' for more
+// than one): a persisted News ERROR must distinguish an outage from a timeout, an HTTP refusal and a parse failure.
+const newsErrorName = (note: NewsNote): string => {
+  const c = note.classes
+  if (!c) return 'error'
+  const kinds = (['network', 'http', 'empty_body', 'parse'] as const).filter(k => c[k] > 0)
+  return `error:${kinds.length === 1 ? kinds[0] : 'mixed'}`
+}
+export function newsStatus(leads: LeadDraft[] | null, note: NewsNote): string {
   // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
   // A provider rate-limit is its own state, never an outage or an empty result: the provider answered and told us to slow down.
   const limited = note.limited ?? 0
@@ -923,18 +984,18 @@ export function newsStatus(leads: LeadDraft[] | null, note: { searched: boolean;
   if (!note.searched) return 'unavailable'
   if (note.hits === 0) {
     if (limited > 0) return note.failed > 0 ? `limited_partial:${note.failed}_of_${note.attempted}` : 'limited'
-    return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? 'error' : `error_partial:${note.failed}_of_${note.attempted}`
+    return note.failed === 0 ? ((note.malformed ?? 0) > 0 ? 'unavailable' : 'empty') : note.failed >= note.attempted ? newsErrorName(note) : `error_partial:${note.failed}_of_${note.attempted}`
   }
   return partial ?? 'unavailable'   // hits but no usable page evidence: unknown (named as partial when some requests also failed)
 }
-async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number }, queries?: string[]): Promise<LeadDraft[] | null> {
+async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, http: SafeGet, fetchPage: PageFetcher, fetchImpl?: typeof fetch, note?: NewsNote, queries?: string[]): Promise<LeadDraft[] | null> {
   const complete = provider.complete!
   // `queries` (the corroboration search) replaces the model's query planning: they name the companies whose second half is missing.
   const plan = queries ? { queries, source: 'model' as const } : queryPlan(await complete.call(provider, key, queryPrompt(job.query!, icp, NEWS_PER_SCAN), fetchImpl, 300).catch(e => { if (e instanceof SpendAccountingFailed) throw e; if (e instanceof ProviderError && e.kind === 'auth') throw e; return '' }), job.query!, NEWS_PER_SCAN)
   const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
-  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited }
+  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited; note.classes = found.failure_classes; note.http_statuses = found.http_statuses; note.query_classes = found.query_classes }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -1095,7 +1156,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     }
     // The owner pool admits one unsettled ownerGuarded call at a time (lib/llm/spend-pool.ts): a scan waits for one in
     // flight up to its deadline rather than stopping, and stops (budget_stopped) on one that never settled.
-    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(owner ? [new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000))] : [])]
+    // The pool guard's label is its typed refusal reason: a pool refusal reports owner_pool_limit, never the per-run
+    // budget's over_limit, so the stop provenance says WHICH numeric control refused (#1006).
+    const poolGuard = owner ? new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000)) : null
+    if (poolGuard) poolGuard.label = OWNER_POOL_LIMIT_REASON
+    const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(poolGuard ? [poolGuard] : [])]
     const spendLimit = spendGuards.length ? 1 : null
     // Every model request of this run is counted at the provider boundary (model-usage.ts), inside the spend guard so a
     // refused request is not recorded as sent. Behaviour is unchanged: same calls, same text, same errors.
@@ -1146,6 +1211,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
     let budgetRefused = false // the run budget refused a call in the TinyFish path
+    let budgetRefusal: string | null = null // the spend guard's exact reason for that refusal (diagnostics only)
     // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
     const newsOn = !!deps.newsHttp || newsEnabled()
@@ -1172,7 +1238,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // failure), not "unavailable" (not an outage) - 'partial_hold'. A PRIOR sent-and-failed request stays 'error': the
         // refusal must not erase a known vendor failure. Anything else: a paid request ran and failed.
         ledger.record('search:tinyfish', e instanceof SpendRefused ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? partialHold(e) : 'skipped_hold') : 'error')
-        if (e instanceof SpendRefused) budgetRefused = true
+        if (e instanceof SpendRefused) { budgetRefused = true; budgetRefusal = e.reason }
         leads = null
       }
       if (leads && leads.length === 0) leads = null
@@ -1189,7 +1255,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
     // the run budget already refused a call (its own calls would be refused too); a refusal inside it stops the scan.
     if (!leads && !budgetRefused && job.query && icpForSources && complete && newsOn) {
-      const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 } // hoisted: the catch reads it for hold-stopped-partial provenance
+      const note: NewsNote = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 } // hoisted: the catch reads it for hold-stopped-partial provenance
       try {
         ledger.record('search:news', 'started')
         assertOwned(db, job)
@@ -1204,19 +1270,50 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (e instanceof SpendRefused) ledger.record('search:news', note.searched ? partialHold(e) : 'skipped_hold')
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
-        ledger.record('search:news', 'error') // a request ran and failed
+        // A failure after the free search ran names what failed: the extraction model call keeps its provider class
+        // (error:model_<kind>); anything else is this source's own error. The request-level classes persist in the report below.
+        ledger.record('search:news', e instanceof ProviderError ? `error:model_${e.kind}` : 'error')
         leads = null
+      } finally {
+        // The request truth of the free news search survives the run EVEN when a later step rethrows (an extraction
+        // refusal, accounting failure, auth error or stop): per-class failure counts, the non-200 statuses seen and the
+        // per-query outcome classes - counts and status codes only, never payloads. A persisted News ERROR stays
+        // distinguishable, and a refusal after a searched query never erases the query's recorded truth.
+        if (note.searched) ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) } } })
       }
       if (leads && leads.length === 0) leads = null
     }
     if (!leads) {
       // a trial whose budget refused a step stops with what it has (finishTrialBudget, via the catch below)
       if (trialGuard?.refused) throw new SpendRefused(TRIAL_BUDGET_REASON)
-      // paid_fallback=false: stop honestly as a budget stop (not "nothing found") instead of web-search research.
-      if (deps.paidFallback === false) { finish(db, job, 'failed', 'budget_stopped', null, 0, ledger); return 'failed' }
+      // paid_fallback=false: stop honestly by what actually ended the search - a failed source (source_error), a clean
+      // zero from every source this run could use (no_discovery), or sources that could not conclude with the fallback
+      // held (unbounded_fallback_hold). Only an earlier real budget refusal is a budget stop; the fallback's absence is not one.
+      if (deps.paidFallback === false) {
+        // An earlier SpendRefused names the stop by its OWN reason (refusalCode): only a real numeric cap refusal is a
+        // budget stop - count_failed / model_unpriced / accounting / ownership refusals refuse at ANY budget, so
+        // calling them budget_stopped would send the user to raise a budget that cannot fix it.
+        const code = budgetRefused ? refusalCode(new SpendRefused(budgetRefusal!), ledger) : fallbackStopCode(ledger)
+        ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal } })
+        finish(db, job, 'failed', code, null, 0, ledger)
+        return 'failed'
+      }
       ledger.record(`search:${vendor}`, 'started')
       assertOwned(db, job)
-      const res = await callResearch(ledger, `search:${vendor}`, () => providers_[vendor].research(key, prompt, deps.fetchImpl))
+      let res: { text: string; citedUrls: string[] }
+      try {
+        res = await callResearch(ledger, `search:${vendor}`, () => providers_[vendor].research(key, prompt, deps.fetchImpl))
+      } catch (e) {
+        // The unbounded-research refusal can FOLLOW an earlier real spend refusal (the TinyFish path's): the earlier
+        // refusal is the cause of the empty search, so its reason names the stop - the fallback's shape does not.
+        if (e instanceof SpendRefused && e.reason === 'research_unbounded' && budgetRefused) {
+          const code = refusalCode(new SpendRefused(budgetRefusal!), ledger)
+          ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal, superseded_refusal_reason: e.reason } })
+          finish(db, job, 'failed', code, null, 0, ledger)
+          return 'failed'
+        }
+        throw e
+      }
       leads = parseLeads(res.text, res.citedUrls)
       if (leads?.length) partial.candidates = leads
       if (leads && leads.length > 0 && complete && deps.ground !== false) {
@@ -1262,7 +1359,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // candidates (verified quote, identity, date window) that the sales-hiring gate later merges with the posting. A run that disabled the paid fallback makes no extra model call.
         const targets = deps.paidFallback === false || !newsOn ? [] : corroborationTargets(job, leads.slice(leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })), leads.slice(0, leadsBefore).map(l => ({ company: l.company, excerpt: l.excerpt, signal: l.signal })))
         if (targets.length > 0) {
-          const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
+          const note: NewsNote = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
           ledger.record('corroborate:news', 'started')
           let found: LeadDraft[] | null = null
           let caught = false
@@ -1338,7 +1435,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
     recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
-      const note = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
+      const note: NewsNote = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
       try {
         assertOwned(db, job)
@@ -1768,7 +1865,7 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     // is reached, or the spend record could not be checked. Nothing was charged; say which, and never retry blind.
     if (spendRefused(e)) {
       if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
-      if (e.reason === 'over_limit') return { error: 'spend_limit' }
+      if (e.reason === 'over_limit' || e.reason === OWNER_POOL_LIMIT_REASON) return { error: 'spend_limit' }
       return { error: 'spend_unavailable' }
     }
     console.error('icp preview failed:', e instanceof Error ? e.message : e)
