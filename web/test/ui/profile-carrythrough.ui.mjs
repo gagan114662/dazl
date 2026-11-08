@@ -46,12 +46,14 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 const Q = 'Companies that need evidence-backed outbound leads'
-// The reviewed business buyer: two sourced statements, one dismissed (reject decision), one answer in the person's words.
+// The reviewed business buyer: genuinely mixed review state - one statement the person CONFIRMED (reviewed), one
+// still only page-backed (sourced), one dismissed (reject decision) - plus the held offer and the typed answer.
 const RESEARCH = {
   v: 1, site: 'dazl.ai', q: 'Who buys this?', ans: { q: 'Who buys this?', o: 'o1', t: 'B2B sales teams' },
   offers: [{ i: 'o1', n: 'Dazl lead finding' }],
   hyps: [
-    { i: 'h1', o: 'o1', k: 'persona', t: 'Founders', s: 'sourced', u: 'https://dazl.ai/', q: 'for founders and sales teams', at: null },
+    { i: 'h1', o: 'o1', k: 'persona', t: 'Founders', s: 'reviewed', u: 'https://dazl.ai/', q: 'for founders and sales teams', at: null },
+    { i: 'h3', o: 'o1', k: 'persona', t: 'B2B sales teams', s: 'sourced', u: 'https://dazl.ai/', q: 'for founders and sales teams', at: null },
     { i: 'h2', o: 'o1', k: 'persona', t: 'Head of Real Estate', s: 'rejected', u: 'https://dazl.ai/', q: 'illustrative example', at: null },
   ],
   u: [{ n: ['dazl lead finding'], k: 'persona', t: '', s: 'reviewed', w: true, o: true }],
@@ -181,15 +183,16 @@ try {
   assert.deepEqual(h.scanBodies, [], 'a preview never starts a scan')
   // ...and the explicit editor submit ("Run scan with this profile") posts the draft WITH the carried decisions:
   // the rejection and the hold are still there, and reviewed is true - the one explicit review event.
-  await h.page.locator('#play-offer').fill('Acme Booking')
+  await h.page.locator('#play-offer').fill('Dazl lead finding')   // the SAME offer the research block binds to
   await h.page.getByRole('button', { name: 'Run scan with this profile' }).first().click()
   await h.page.getByTestId('estimate-confirm-run').click()
   for (let i = 0; i < 50 && h.scanBodies.length === 0; i++) await new Promise(r => setTimeout(r, 100))
   assert.equal(h.scanBodies.length, 1, 'the editor submit starts the scan')
   assert.equal(h.scanBodies[0].reviewed, true, 'only the editor submit is the explicit review event')
   const sr = h.scanBodies[0].icp.research
-  assert.ok(sr.hyps.some(x => x.s === 'rejected'), 'the submitted profile keeps the rejection')
-  assert.ok(sr.hyps.some(x => x.s === 'reviewed'), 'the submitted profile keeps the reviewed statement')
+  assert.ok(sr.hyps.some(x => x.s === 'reviewed' && x.t === 'Founders'), 'the submitted profile keeps the confirmed (reviewed) statement')
+  assert.ok(sr.hyps.some(x => x.s === 'sourced' && x.t === 'B2B sales teams'), 'the submitted profile keeps the still-unconfirmed sourced statement as sourced (no promotion)')
+  assert.ok(sr.hyps.some(x => x.s === 'rejected' && x.t === 'Head of Real Estate'), 'the submitted profile keeps the rejection')
   assert.equal(sr.u?.length, 1, 'the submitted profile keeps the hold')
   await h.ctx.close()
   console.log('profile carry-through UI check passed: first scan uses the saved reviewed business profile with its decisions; reopen + save keeps the research whole')
