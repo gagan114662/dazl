@@ -12,8 +12,7 @@ function trackTimers() {
   const origSet = globalThis.setTimeout, origClear = globalThis.clearTimeout
   const live = new Map<NodeJS.Timeout, number>()
   globalThis.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
-    let h: NodeJS.Timeout
-    h = origSet(() => { live.delete(h); fn(...args) }, ms as number)
+    const h = origSet(function fired(this: unknown) { live.delete(h); fn(...args) } as never, ms as number)
     live.set(h, ms as number)
     return h
   }) as never
