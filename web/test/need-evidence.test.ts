@@ -213,6 +213,49 @@ bothEngines('high_intent alone is never verified: author binding, verified lead 
   for (const id of ['w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7']) assert.notEqual((await need(db, A, job, id)).status, 'verified_buying_need', id)
 })
 
+// ---------------------------------------------------------------------------------------------------- the profile-website binding (#401/#379 positive path)
+bothEngines('a source-reported author profile website matching the confirmed domain verifies; mismatch or unconfirmed domain holds', async ({ db }) => {
+  const job = await basePlay(db, A)
+  // The real X payload shape (session-worker parseX): display name, bio verbatim as headline, NO company field,
+  // profile website expanded. The website IS the lead's independently-confirmed domain: bound, never inferred.
+  const X_AUTHOR = { name: 'Kai Lund', headline: 'Co-founder at Tallyline, building invoicing tools', company: null, url: 'https://tallyline.example/about' }
+  const xurl = (id: string) => `https://x.com/kailund/status/${id}`
+  // a) website == confirmed domain: verifies
+  await lead(db, job, 's1', { company: 'Tallyline', domain: 'tallyline.example', url: xurl('s1'), published: '2026-10-28' })
+  await confirmDomain(db, A, 's1', 'tallyline.example')
+  // b) a page on a SUBDOMAIN of the confirmed domain still binds (registrable domain comparison)
+  await lead(db, job, 's2', { company: 'Tallyline', domain: 'tallyline.example', url: xurl('s2'), published: '2026-10-28' })
+  await confirmDomain(db, A, 's2', 'tallyline.example')
+  // c) website is a different domain: mismatch, never verified
+  await lead(db, job, 's3', { company: 'Tallyline', domain: 'tallyline.example', url: xurl('s3'), published: '2026-10-28' })
+  await confirmDomain(db, A, 's3', 'tallyline.example')
+  // d) website matches the populated domain but the domain is NOT confirmed: held, a guess never binds
+  await lead(db, job, 's4', { company: 'Tallyline', domain: 'tallyline.example', url: xurl('s4'), published: '2026-10-28' })
+  const s = await recordNeedEvidence(db, A, job, {
+    asOf: AS_OF,
+    demandArtifacts: [
+      artifact(xurl('s1'), { author: X_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(xurl('s2'), { author: { ...X_AUTHOR, url: 'https://blog.tallyline.example/post' }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(xurl('s3'), { author: { ...X_AUTHOR, url: 'https://othercorp.example' }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(xurl('s4'), { author: X_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+    ],
+  })
+  assert.equal(s.verified_buying_need, 2)
+  const r1 = (await record(db, A, 's1'))!
+  assert.equal(r1.verdict, 'verified_buying_need')
+  assert.equal(r1.author_url, 'https://tallyline.example/about')
+  assert.equal(r1.author_company, null)
+  // the async reader revalidates the SAME website binding (shared pure function, not a duplicate branch)
+  assert.equal((await need(db, A, job, 's1')).status, 'verified_buying_need')
+  assert.equal((await need(db, A, job, 's2')).status, 'verified_buying_need')
+  assert.equal((await record(db, A, 's3'))!.reason, 'author_company_mismatch')
+  assert.equal((await record(db, A, 's4'))!.reason, 'domain_unconfirmed_now')
+  for (const id of ['s3', 's4']) assert.notEqual((await need(db, A, job, id)).status, 'verified_buying_need', id)
+  // and the stored verified row reads unproven the moment the website binding breaks
+  await db.run("UPDATE lead_need_evidence SET author_url = 'https://elsewhere.example' WHERE lead_id = 's1'", [])
+  assert.equal((await need(db, A, job, 's1')).status, 'unproven')
+})
+
 // ---------------------------------------------------------------------------------------------------- source dates: own, old, future, missing
 bothEngines('only the source artifact\'s OWN date counts: missing, future or stale dates never verify', async ({ db }) => {
   const job = await basePlay(db, A)
@@ -634,7 +677,7 @@ bothEngines('intake: the artifact\'s own author binds the post to the lead; an a
   await lead(db, job, 'L2', { company: 'Nodo', domain: 'nodo.example', published: '2026-10-28' })
   await confirmDomain(db, A, 'L2', 'nodo.example')
   const collected: ComplaintItem[] = [
-    { source: COMPLAINT_CONNECTOR, url: 'https://forum.example.test/t/L1', title: 'LeadForge keeps failing us', quote: FOUNDER_POST, date: '2026-10-28', login_walled: false, complaint_of: 'LeadForge', author: { name: 'Maya Chen', headline: 'Co-founder, Tallyline', company: 'Tallyline' } },
+    { source: COMPLAINT_CONNECTOR, url: 'https://forum.example.test/t/L1', title: 'LeadForge keeps failing us', quote: FOUNDER_POST, date: '2026-10-28', login_walled: false, complaint_of: 'LeadForge', author: { name: 'Maya Chen', headline: 'Co-founder, Tallyline', company: 'Tallyline', url: null } },
     { source: COMPLAINT_CONNECTOR, url: 'https://forum.example.test/t/L2', title: 'anonymous ask', quote: FOUNDER_POST, date: '2026-10-28', login_walled: false, complaint_of: 'LeadForge' },
   ]
   const s = await recordNeedEvidence(db, A, job, { asOf: AS_OF, demandArtifacts: collected.map(complaintDemandArtifact) })

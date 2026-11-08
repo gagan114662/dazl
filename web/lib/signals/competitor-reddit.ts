@@ -14,6 +14,14 @@ import { hasConsent, httpWorker, readConsent, type WorkerAuthor, type WorkerFetc
 export const MAX_COMPETITORS = 5
 const MAX_POST_AGE_DAYS = 30
 export const COMPLAINT_CONNECTOR = 'adv:reddit-competitor'
+export const COMPLAINT_CONNECTOR_X = 'adv:x-competitor'
+// Complaint search runs on each platform whose fetcher can carry the post's own author. X is the one current
+// source whose payload reports an author affiliation binding (the profile website); Reddit carries only a
+// username, so Reddit complaints still land at needs_evidence with the explicit unavailable reason (#401/#379).
+const COMPLAINT_PLATFORMS: { platform: 'reddit' | 'x'; connector: string }[] = [
+  { platform: 'reddit', connector: COMPLAINT_CONNECTOR },
+  { platform: 'x', connector: COMPLAINT_CONNECTOR_X },
+]
 
 export function migrateCompetitors(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS tenant_competitors (
@@ -57,66 +65,71 @@ export async function setCompetitors(db: Db, tenantId: string, names: string[]):
 
 export const complaintQuery = (name: string): string => `${name} (complaint OR alternative OR hate OR cancel)`
 
-// Connector audit rows share the per-platform hourly budget with the normal Reddit
-// fetcher: complaint searches count as adv:reddit calls so the two never stack.
-const CALLS_LAST_HOUR_SQL = "SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector IN ('adv:reddit', 'adv:reddit-competitor') AND created_at > ?"
+// Connector audit rows share the per-platform hourly budget with the platform's normal
+// fetcher: complaint searches count as adv:<platform> calls so the two never stack.
+const callsLastHourSql = (platform: 'reddit' | 'x'): string =>
+  `SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector IN ('adv:${platform}', 'adv:${platform}-competitor') AND created_at > ?`
 
 export interface ComplaintItem extends Evidence { login_walled: boolean; complaint_of: string; author?: WorkerAuthor }
 type ComplaintDeps = { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
 
 // The store reads and writes one complaint search needs; a sync raw handle or the Db layer behind the same steps.
+// Consent, budget and session are per platform - an X complaint search never spends Reddit's consent or calls.
 interface ComplaintStore {
   competitors(): Promise<string[]>
-  consented(): Promise<boolean>
-  callsLastHour(since: number): Promise<number>
-  session(): Promise<string | null>
+  consented(platform: 'reddit' | 'x'): Promise<boolean>
+  callsLastHour(platform: 'reddit' | 'x', since: number): Promise<number>
+  session(platform: 'reddit' | 'x'): Promise<string | null>
   audit(a: AuditEntry): Promise<void>
 }
 async function complaints(store: ComplaintStore, tenantId: string, jobId: string, deps: ComplaintDeps): Promise<ComplaintItem[]> {
   const env = deps.env ?? process.env
   const competitors = (await store.competitors()).slice(0, MAX_COMPETITORS)
   if (competitors.length === 0) return []
-  const skip = (status: string) => store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: `${competitors.length} competitors`, status, results: 0 })
-  if (!platformAllowed('reddit', advFlags(env))) { await skip('disabled'); return [] }
-  if (!(await store.consented())) { await skip('no_consent'); return [] }
-  const budget = maxCallsPerHour('reddit', env) - await store.callsLastHour((deps.now ?? Math.floor(Date.now() / 1000)) - 3600)
-  if (budget <= 0) { await skip('rate_limited'); return [] }
   const worker = deps.worker ?? httpWorker(env)
-  const session = (await store.session()) || ''
   const cutoff = Date.now() - MAX_POST_AGE_DAYS * 86400_000
+  const now = deps.now ?? Math.floor(Date.now() / 1000)
   const out: ComplaintItem[] = []
-  for (const name of competitors.slice(0, budget)) {
-    const q = complaintQuery(name)
-    const r = await worker({ platform: 'reddit', query: q.slice(0, 300), session }).catch(() => null)
-    if (r === null) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'worker_error', results: 0 }); continue }
-    if ('failed' in r) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: r.failed, results: 0 }); continue }
-    // Version skew: a worker refusal is 'unsupported', never a fake empty result.
-    if (r.unsupported) { await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: 'unsupported', results: 0 }); continue }
-    const items = r.items
-    const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff)
-    await store.audit({ tenantId, connector: COMPLAINT_CONNECTOR, jobId, lookup: q, status: fresh.length ? 'ok' : 'empty', results: fresh.length })
-    for (const it of fresh.slice(0, 10)) out.push({ source: COMPLAINT_CONNECTOR, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled, complaint_of: name, ...(it.author ? { author: it.author } : {}) })
+  for (const { platform, connector } of COMPLAINT_PLATFORMS) {
+    const skip = (status: string) => store.audit({ tenantId, connector, jobId, lookup: `${competitors.length} competitors`, status, results: 0 })
+    if (!platformAllowed(platform, advFlags(env))) { await skip('disabled'); continue }
+    if (!(await store.consented(platform))) { await skip('no_consent'); continue }
+    const budget = maxCallsPerHour(platform, env) - await store.callsLastHour(platform, now - 3600)
+    if (budget <= 0) { await skip('rate_limited'); continue }
+    const session = (await store.session(platform)) || ''
+    for (const name of competitors.slice(0, budget)) {
+      const q = complaintQuery(name)
+      const r = await worker({ platform, query: q.slice(0, 300), session }).catch(() => null)
+      if (r === null) { await store.audit({ tenantId, connector, jobId, lookup: q, status: 'worker_error', results: 0 }); continue }
+      if ('failed' in r) { await store.audit({ tenantId, connector, jobId, lookup: q, status: r.failed, results: 0 }); continue }
+      // Version skew: a worker refusal is 'unsupported', never a fake empty result.
+      if (r.unsupported) { await store.audit({ tenantId, connector, jobId, lookup: q, status: 'unsupported', results: 0 }); continue }
+      const items = r.items
+      const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff)
+      await store.audit({ tenantId, connector, jobId, lookup: q, status: fresh.length ? 'ok' : 'empty', results: fresh.length })
+      for (const it of fresh.slice(0, 10)) out.push({ source: connector, url: it.url, title: it.title, quote: it.quote, date: it.date, login_walled: it.login_walled, complaint_of: name, ...(it.author ? { author: it.author } : {}) })
+    }
   }
   return out
 }
 
-// One worker search per configured competitor. Never throws into the runner. Sync store on the raw handle (the runner
-// today); gatherCompetitorComplaints is the same on the Db layer (the runner's storage port).
+// One worker search per configured competitor and platform. Never throws into the runner. Sync store on the raw
+// handle (the runner today); gatherCompetitorComplaints is the same on the Db layer (the runner's storage port).
 export function collectCompetitorComplaints(db: Database.Database, tenantId: string, jobId: string, deps: ComplaintDeps = {}): Promise<ComplaintItem[]> {
   return complaints({
     competitors: async () => listCompetitors(db, tenantId),
-    consented: async () => hasConsent(db, tenantId, scopeFor('reddit')),
-    callsLastHour: async since => (db.prepare(CALLS_LAST_HOUR_SQL).get(tenantId, since) as { n: number }).n,
-    session: async () => getEnabledCredential(db, tenantId, connectorId('reddit'), deps.master),
+    consented: async p => hasConsent(db, tenantId, scopeFor(p)),
+    callsLastHour: async (p, since) => (db.prepare(callsLastHourSql(p)).get(tenantId, since) as { n: number }).n,
+    session: async p => getEnabledCredential(db, tenantId, connectorId(p), deps.master),
     audit: async a => audit(db, a),
   }, tenantId, jobId, deps)
 }
 export function gatherCompetitorComplaints(db: Db, tenantId: string, jobId: string, deps: ComplaintDeps = {}): Promise<ComplaintItem[]> {
   return complaints({
     competitors: () => readCompetitors(db, tenantId),
-    consented: () => readConsent(db, tenantId, scopeFor('reddit')),
-    callsLastHour: async since => Number((await db.get<{ n: number }>(CALLS_LAST_HOUR_SQL, [tenantId, since]))!.n),
-    session: () => readEnabledCredential(db, tenantId, connectorId('reddit'), deps.master),
+    consented: p => readConsent(db, tenantId, scopeFor(p)),
+    callsLastHour: async (p, since) => Number((await db.get<{ n: number }>(callsLastHourSql(p), [tenantId, since]))!.n),
+    session: p => readEnabledCredential(db, tenantId, connectorId(p), deps.master),
     audit: a => writeAudit(db, a),
   }, tenantId, jobId, deps)
 }

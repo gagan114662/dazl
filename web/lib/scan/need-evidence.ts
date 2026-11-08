@@ -67,6 +67,7 @@ export function migrateNeedEvidence(db: Database.Database): void {
       author_name       TEXT,
       author_headline   TEXT,
       author_company    TEXT,
+      author_url        TEXT,
       published_at      TEXT,
       lead_digest       TEXT,
       plan_support      TEXT NOT NULL,
@@ -76,6 +77,7 @@ export function migrateNeedEvidence(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS lead_need_evidence_job ON lead_need_evidence (tenant_id, job_id);
   `)
   try { db.exec('ALTER TABLE lead_need_evidence ADD COLUMN lead_digest TEXT') } catch { /* column already present */ }
+  try { db.exec('ALTER TABLE lead_need_evidence ADD COLUMN author_url TEXT') } catch { /* column already present */ }
 }
 
 // The lead's own citation triple at write time (source URL, quote, the source's date): a verified record is bound to
@@ -130,11 +132,26 @@ export function planNeedSupport(plan: QueryPlan): PlanNeedSupport {
 }
 
 // ---------------------------------------------------------------------------------------------------- writer
+// The registrable domain of a URL or bare host, lowercased: the comparison key for the author's profile-website
+// binding. Same second-level-suffix rule as the rubric's own-name resolution (co.uk, com.au move one label more).
+const DOMAIN_SECOND_LEVEL = new Set(['co', 'com', 'org', 'net', 'gov', 'edu', 'ac', 'or', 'ne', 'go', 'gob', 'nom', 'mil'])
+export function registrableDomain(v: string | null | undefined): string | null {
+  const raw = (v ?? '').trim()
+  if (!raw) return null
+  try {
+    const host = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.toLowerCase().replace(/^www\./, '')
+    const parts = host.split('.')
+    if (parts.length < 2) return null
+    const sld = parts.length >= 3 && parts[parts.length - 1].length === 2 && DOMAIN_SECOND_LEVEL.has(parts[parts.length - 2])
+    return parts.slice(-(sld ? 3 : 2)).join('.')
+  } catch { return null }
+}
+
 // A demand-signal post the search's own intake collected, bound to the lead that cites it by the EXACT source URL.
 // author/published_at are the source's own values; null when the source does not carry them (never inferred).
 export interface DemandArtifact {
   source_url: string
-  author: { name: string | null; headline?: string | null; company?: string | null } | null
+  author: { name: string | null; headline?: string | null; company?: string | null; url?: string | null } | null
   title?: string | null
   text: string
   published_at: string | null
@@ -145,7 +162,7 @@ export interface DemandArtifact {
 export function complaintDemandArtifact(c: ComplaintItem): DemandArtifact {
   return {
     source_url: c.url,
-    author: c.author ? { name: c.author.name, headline: c.author.headline, company: c.author.company } : null,
+    author: c.author ? { name: c.author.name, headline: c.author.headline, company: c.author.company, url: c.author.url } : null,
     title: c.title ?? null,
     text: c.quote ?? '',
     published_at: c.date ?? null,
@@ -232,7 +249,14 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
         // row, and the company domain is confirmed NOW. high_intent without all three stays needs_evidence.
         const authorName = (q.requester.name ?? '').trim()
         const authorCompany = (q.requester.company ?? '').trim()
-        const authorBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(lead.company)
+        const authorSite = registrableDomain(artifact.author?.url)
+        const leadSite = registrableDomain(lead.company_domain)
+        const companyBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(lead.company)
+        // The second supported same-source binding: the author's profile website - reported verbatim in the same
+        // platform payload (today only X carries one) - IS the lead's own domain. Never parsed from free text,
+        // never inferred; the domain itself must still be confirmed NOW by the lead's own evidence below.
+        const websiteBound = !!authorSite && !!leadSite && authorSite === leadSite
+        const authorBound = companyBound || websiteBound
         const leadVerified = lead.review_reason === null && lead.confidence !== null && lead.quarantined_at === null && !heldReason
         const domainNow = authorBound && leadVerified && !!lead.company_domain ? await domainConfirmedDb(db, tenantId, lead.id, lead.company_domain) : false
         const ok = authorBound && leadVerified && domainNow
@@ -240,7 +264,7 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
         // author (today every worker platform - Reddit reports only a username) can never verify, and company is
         // NEVER inferred from the lead, the post text or the seller profile. Such a lead ends at needs_evidence
         // with the reason saying exactly why, not at a silent dead end.
-        const unbound = !authorCompany
+        const unbound = !authorCompany && !authorSite
           ? authorName ? 'author_company_unavailable_from_source' : 'author_unavailable_from_source'
           : 'author_company_mismatch'
         rows.push({
@@ -279,20 +303,20 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
     for (const r of rows) {
       yield* t.run(
         `INSERT INTO lead_need_evidence (tenant_id, job_id, lead_id, basis, verdict, reason, qualifier_version, offer, window_days, rubric_reason,
-           demand_class, demand_tier, scores, families, reasons, missing, requester, mentioned_orgs, source_url, source_title, source_text, author_name, author_headline, author_company, published_at, lead_digest, plan_support, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           demand_class, demand_tier, scores, families, reasons, missing, requester, mentioned_orgs, source_url, source_title, source_text, author_name, author_headline, author_company, author_url, published_at, lead_digest, plan_support, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (tenant_id, lead_id) DO UPDATE SET job_id = excluded.job_id, basis = excluded.basis, verdict = excluded.verdict, reason = excluded.reason,
            qualifier_version = excluded.qualifier_version, offer = excluded.offer, window_days = excluded.window_days, rubric_reason = excluded.rubric_reason,
            demand_class = excluded.demand_class, demand_tier = excluded.demand_tier, scores = excluded.scores, families = excluded.families,
            reasons = excluded.reasons, missing = excluded.missing, requester = excluded.requester, mentioned_orgs = excluded.mentioned_orgs,
-           source_url = excluded.source_url, source_title = excluded.source_title, source_text = excluded.source_text, author_name = excluded.author_name, author_headline = excluded.author_headline, author_company = excluded.author_company,
+           source_url = excluded.source_url, source_title = excluded.source_title, source_text = excluded.source_text, author_name = excluded.author_name, author_headline = excluded.author_headline, author_company = excluded.author_company, author_url = excluded.author_url,
            published_at = excluded.published_at, lead_digest = excluded.lead_digest, plan_support = excluded.plan_support, created_at = excluded.created_at`,
         [tenantId, jobId, r.lead.id, r.basis, r.verdict, r.reason,
           r.demand ? DEMAND_QUALIFIER_VERSION : null, rubric?.offer ?? null, rubric?.window_days ?? null, rubric ? null : rubricReason,
           r.demand?.class ?? null, r.demand?.tier ?? null, r.demand?.scores ?? null, r.demand?.families ?? null, r.demand?.reasons ?? null,
           r.demand?.missing ?? null, r.demand?.requester ?? null, r.demand?.mentioned_orgs ?? null,
           clip(r.lead.source_url, 500), clip(r.artifact?.title ?? null, 300), r.artifact ? clip(r.artifact.text, TEXT_MAX) : null,
-          clip(r.artifact?.author?.name ?? null, 200), clip(r.artifact?.author?.headline ?? null, 300), clip(r.artifact?.author?.company ?? null, 200), clip(r.artifact?.published_at ?? null, 40),
+          clip(r.artifact?.author?.name ?? null, 200), clip(r.artifact?.author?.headline ?? null, 300), clip(r.artifact?.author?.company ?? null, 200), clip(r.artifact?.author?.url ?? null, 500), clip(r.artifact?.published_at ?? null, 40),
           leadArtifactDigest(r.lead), supportKey, now])
       // The card row beside the lead (lead_enrichments), same verdict in the existing per-lead channel.
       yield* t.run('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ?', [r.lead.id, tenantId, NEED_CONNECTOR])
@@ -320,8 +344,8 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
 // missing, never a generic gap (reviewer #401/#379).
 const NEED_REASON_TEXT: Record<string, string> = {
   author_unavailable_from_source: 'the source does not identify the poster',
-  author_company_unavailable_from_source: "the source does not report the poster's company",
-  author_company_mismatch: 'the poster belongs to a different company than this lead',
+  author_company_unavailable_from_source: "the source does not report the poster's company or website",
+  author_company_mismatch: "the poster's reported company or website does not match this lead",
   lead_not_verified: 'the lead itself is not a verified row',
   domain_unconfirmed_now: 'the company domain is not confirmed now',
 }
@@ -346,7 +370,7 @@ export interface NeedRecord {
   scores: string | null; families: string | null; reasons: string | null
   missing: string | null; requester: string | null; mentioned_orgs: string | null
   source_url: string | null; source_title: string | null; source_text: string | null
-  author_name: string | null; author_headline: string | null; author_company: string | null; published_at: string | null
+  author_name: string | null; author_headline: string | null; author_company: string | null; author_url: string | null; published_at: string | null
   lead_digest: string | null; plan_support: string; created_at: number
 }
 export type BuyingNeed =
@@ -362,7 +386,7 @@ export type BuyingNeed =
 // classification gate (actionable.ts): both resolve their inputs on their own engine (domainConfirmedDb vs
 // domainConfirmed, awaited rubric vs caller-resolved rubric) and then call THESE functions, so the two paths cannot
 // drift apart. Nothing here touches a database.
-export type DemandBindingRecord = Pick<NeedRecord, 'qualifier_version' | 'offer' | 'window_days' | 'plan_support' | 'demand_class' | 'demand_tier' | 'source_url' | 'source_title' | 'source_text' | 'author_name' | 'author_headline' | 'author_company' | 'published_at'>
+export type DemandBindingRecord = Pick<NeedRecord, 'qualifier_version' | 'offer' | 'window_days' | 'plan_support' | 'demand_class' | 'demand_tier' | 'source_url' | 'source_title' | 'source_text' | 'author_name' | 'author_headline' | 'author_company' | 'author_url' | 'published_at'>
 export interface DemandReadContext { rubric: import('./demand-qualifier.ts').DemandRubric | null; rubricReason: string | null; planSupportKey: string; asOf: Date }
 
 // Context + qualifier revalidation of a demand_post record: the plan semantics still match, a CURRENT rubric exists
@@ -378,7 +402,7 @@ export function revalidateDemandContext(rec: DemandBindingRecord, ctx: DemandRea
   if (!rec.source_url || !rec.source_text) return { ok: false, reason: 'buying_need_unproven:record_incomplete' }
   const q = qualifyDemand({
     source_url: rec.source_url, published_at: rec.published_at,
-    author: rec.author_name || rec.author_company ? { name: rec.author_name, headline: rec.author_headline, company: rec.author_company } : null,
+    author: rec.author_name || rec.author_company || rec.author_url ? { name: rec.author_name, headline: rec.author_headline, company: rec.author_company, url: rec.author_url } : null,
     title: rec.source_title, text: rec.source_text,
   }, ctx.rubric, ctx.asOf)
   if (q.class !== rec.demand_class || q.tier !== rec.demand_tier) return { ok: false, reason: 'buying_need_unproven:qualifier_drift' }
@@ -390,13 +414,17 @@ export function revalidateDemandContext(rec: DemandBindingRecord, ctx: DemandRea
 // belongs to the lead's company, and the company domain is confirmed NOW. Name canonicalization is not authority: it
 // only compares the source-reported author company to the lead's company; decision-maker authority was scored by the
 // classifier from the artifact's own headline at write time and re-scored on re-read (revalidateDemandContext).
-export function revalidateVerifiedBinding(rec: DemandBindingRecord, leadCompany: string, domainConfirmedNow: boolean): { ok: true } | { ok: false; reason: string } {
+export function revalidateVerifiedBinding(rec: DemandBindingRecord, leadCompany: string, leadCompanyDomain: string | null, domainConfirmedNow: boolean): { ok: true } | { ok: false; reason: string } {
   const authorName = (rec.author_name ?? '').trim()
   const authorCompany = (rec.author_company ?? '').trim()
-  if (!authorCompany || companyKey(authorCompany) === '' || companyKey(authorCompany) !== companyKey(leadCompany)) {
+  const authorSite = registrableDomain(rec.author_url)
+  const leadSite = registrableDomain(leadCompanyDomain)
+  const companyBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(leadCompany)
+  const websiteBound = !!authorSite && !!leadSite && authorSite === leadSite
+  if (!companyBound && !websiteBound) {
     // The same split the writer records (need-evidence.ts recordNeedEvidence): the unavailable-vs-mismatch
     // distinction survives a re-read, so a stored verified row whose binding broke says which way it broke.
-    const unbound = !authorCompany
+    const unbound = !authorCompany && !authorSite
       ? authorName ? 'author_company_unavailable_from_source' : 'author_unavailable_from_source'
       : 'author_company_mismatch'
     return { ok: false, reason: `buying_need_unproven:${unbound}` }
@@ -445,7 +473,7 @@ export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string,
       if (!art.ok) return { status: 'unproven', reason: art.reason }
       const held = await db.get<{ x: number }>("SELECT 1 AS x FROM lead_enrichments h WHERE h.lead_id = ? AND h.connector = 'scan:gate' AND h.kind = 'gate_failed'", [leadId])
       if (held) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
-      const b = revalidateVerifiedBinding(record, lead.company, !!lead.company_domain && await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))
+      const b = revalidateVerifiedBinding(record, lead.company, lead.company_domain, !!lead.company_domain && await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))
       if (!b.ok) return { status: 'unproven', reason: b.reason }
     }
     if (record.verdict === 'unproven') return { status: 'unproven', reason: record.reason ?? 'buying_need_unproven' }

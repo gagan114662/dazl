@@ -64,12 +64,12 @@ test('worker output is validated: https only, quote length, bad shapes dropped',
   // The optional author is the source's own report: a well-formed one carries; non-strings and empty fields become
   // null; an all-null or non-object author is dropped entirely (never invented, never fatal).
   const withAuthor = parseWorkerItems({ items: [
-    { ...item, author: { name: 'maya-c', headline: 'Co-founder, Tallyline', company: 'Tallyline' } },
+    { ...item, author: { name: 'maya-c', headline: 'Co-founder, Tallyline', company: 'Tallyline', url: 'https://tallyline.example/about' } },
     { ...item, url: 'https://b.example/2', author: { name: 42, headline: null, company: '' } },
     { ...item, url: 'https://b.example/3', author: 'maya-c' },
     { ...item, url: 'https://b.example/4' },
   ] })
-  assert.deepEqual(withAuthor[0].author, { name: 'maya-c', headline: 'Co-founder, Tallyline', company: 'Tallyline' })
+  assert.deepEqual(withAuthor[0].author, { name: 'maya-c', headline: 'Co-founder, Tallyline', company: 'Tallyline', url: 'https://tallyline.example/about' })
   assert.equal(withAuthor[1].author, undefined, 'an all-empty author is no author')
   assert.equal(withAuthor[2].author, undefined, 'a non-object author is no author')
   assert.equal(withAuthor[3].author, undefined)

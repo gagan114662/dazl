@@ -42,7 +42,7 @@ export async function readConsent(db: Db, tenantId: string, scope: ConsentScope)
 
 // The post's OWN author exactly as the source page reports it; a field the source does not carry is null, never
 // inferred. No author on the source = no author field at all.
-export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null }
+export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null; url: string | null }
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean; author?: WorkerAuthor }
 // The worker's structured outcome: the item list plus an explicit refusal. `unsupported` means the
 // worker build cannot fetch this platform at all (its reason says why); it is not an error and
@@ -114,8 +114,10 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
       name: typeof ao.name === 'string' && ao.name.trim() ? ao.name.slice(0, 200) : null,
       headline: typeof ao.headline === 'string' && ao.headline.trim() ? ao.headline.slice(0, 300) : null,
       company: typeof ao.company === 'string' && ao.company.trim() ? ao.company.slice(0, 200) : null,
+      // The author's profile website exactly as the platform reports it; an http(s) URL only, never fabricated.
+      url: typeof ao.url === 'string' && /^https?:\/\/.{4,480}$/.test(ao.url) ? ao.url.slice(0, 500) : null,
     } : undefined
-    out.push({ url: o.url, title: o.title.slice(0, 200), quote: o.quote.slice(0, 300), date, login_walled: o.login_walled === true, ...(author && (author.name || author.headline || author.company) ? { author } : {}) })
+    out.push({ url: o.url, title: o.title.slice(0, 200), quote: o.quote.slice(0, 300), date, login_walled: o.login_walled === true, ...(author && (author.name || author.headline || author.company || author.url) ? { author } : {}) })
   }
   return out
 }

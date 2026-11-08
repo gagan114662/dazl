@@ -1,7 +1,9 @@
 // Shared helpers for the session worker. No dependencies, Node 22+.
 
 // The post's own author as the platform reports it; fields the platform does not carry are null, never inferred.
-export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null }
+// url is the author's profile website exactly as the platform payload reports it (the expanded link, never a
+// redirect wrapper): the only affiliation field X carries, and a source-reported binding, not an inference.
+export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null; url: string | null }
 export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean; author?: WorkerAuthor }
 
 // The app's verifier works on latin text (its normalizer strips CJK), so CJK-only quotes can never

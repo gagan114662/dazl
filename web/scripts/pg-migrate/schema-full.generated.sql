@@ -374,6 +374,7 @@ CREATE TABLE lead_need_evidence (
       author_name       TEXT,
       author_headline   TEXT,
       author_company    TEXT,
+      author_url        TEXT,
       published_at      TEXT,
       lead_digest       TEXT,
       plan_support      TEXT NOT NULL,

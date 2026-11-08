@@ -103,9 +103,9 @@ export function parseReddit(raw: unknown): WorkerItem[] {
     const permalink = typeof d.permalink === 'string' ? d.permalink : ''
     const quote = latinRun(typeof d.selftext === 'string' && d.selftext.length >= 20 ? d.selftext : String(d.title ?? ''))
     const it = item(`https://www.reddit.com${permalink}`, String(d.title ?? ''), quote, epochDay(d.created_utc))
-    // The listing carries the post's own username; a search result carries no headline or company (never invented).
+    // The listing carries the post's own username; a search result carries no headline, company or website (never invented).
     const an = typeof d.author === 'string' && d.author && d.author !== '[deleted]' && d.author !== '[removed]' ? d.author.slice(0, 200) : null
-    if (it && an) it.author = { name: an, headline: null, company: null }
+    if (it && an) it.author = { name: an, headline: null, company: null, url: null }
     if (it) out.push(it)
   }
   return out
@@ -127,12 +127,22 @@ export function parseX(raw: unknown): WorkerItem[] {
     if (Array.isArray(v)) { for (const e of v) walk(e); return }
     const o = v as Record<string, unknown>
     const legacy = (o.tweet_results as { result?: { legacy?: Record<string, unknown>; core?: { user_results?: { result?: { legacy?: { screen_name?: string } } } } } })?.result?.legacy ?? (o.legacy as Record<string, unknown> | undefined)
-    const user = (o.tweet_results as { result?: { core?: { user_results?: { result?: { legacy?: { screen_name?: string } } } } } })?.result?.core?.user_results?.result?.legacy
+    const user = (o.tweet_results as { result?: { core?: { user_results?: { result?: { legacy?: { screen_name?: string; name?: string; description?: string; url?: string; entities?: { url?: { urls?: { expanded_url?: string }[] } } } } } } } })?.result?.core?.user_results?.result?.legacy
     if (legacy && typeof legacy.full_text === 'string' && typeof legacy.id_str === 'string' && !seen.has(legacy.id_str)) {
       seen.add(legacy.id_str)
       const screen = user?.screen_name ?? 'i'
       const d = typeof legacy.created_at === 'string' ? new Date(legacy.created_at) : null
       const it = item(`https://x.com/${screen}/status/${legacy.id_str}`, `${screen} on X`, legacy.full_text, d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : null)
+      // The tweet payload's own user object: display name, the bio verbatim (authority evidence, not a company),
+      // and the profile website expanded (never the t.co wrapper). X carries no structured company field, so
+      // company stays null - it is never parsed out of the bio (no inference).
+      if (it && user) {
+        const an = typeof user.name === 'string' && user.name.trim() ? user.name.slice(0, 200) : screen !== 'i' ? screen : null
+        const bio = typeof user.description === 'string' && user.description.trim() ? user.description.slice(0, 300) : null
+        const expanded = user.entities?.url?.urls?.[0]?.expanded_url
+        const site = typeof expanded === 'string' && /^https?:\/\/.{4,480}$/.test(expanded) ? expanded.slice(0, 500) : null
+        if (an || bio || site) it.author = { name: an, headline: bio, company: null, url: site }
+      }
       if (it) out.push(it)
       if (out.length >= 15) return
     }
