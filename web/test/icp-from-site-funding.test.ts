@@ -156,6 +156,21 @@ test('trial: a funded answer cut at the trial cap with a complete leading draft 
   assert.deepEqual([seen, calls.n, settled], [[OP], 1, [(2000 * 3 + 700 * 15) / 1e6]], 'one admission, one call, settled to the reported usage')
 })
 
+// Review of #1012: the trial uses the own-key recovery predicate. With prior research or saved decisions a cut-off
+// draft is NOT offered (it could not carry them forward): the call still settles once, the page gets read_failed.
+test('trial: a cut-off answer with prior research or saved decisions is NOT recovered: read_failed, settled once, no retry', async () => {
+  const DRAFT = { summary: 'Sales ops teams at B2B SaaS companies that need CRM cleanup.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: ['Hiring a CRM admin'], exclude: [] }
+  const FULL = JSON.stringify({ sells: 'CRM cleanup', draft: DRAFT, offers: [{ id: 'o1', name: 'CRM cleanup' }], items: [] })
+  const cutText = FULL.slice(0, FULL.indexOf('"offers"') - 1)
+  const extras = [{ prior: { site: 'acme.example', offers: [], items: [] } }, { decisions: { decisions: [{}], trace: {} } }]
+  for (const extra of extras) {
+    const db = store(false), seen: string[] = [], calls = { n: 0 }, settled: (number | null)[] = []
+    const out = await icpFromWebsite(db, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: page, providers: { anthropic: provider(seen, { text: cutText, usage: { input_tokens: 2000, output_tokens: 700 } }) }, trial: admitted(calls, settled), ...extra } as never)
+    assert.ok('free' in out && out.trial === 'read_failed', JSON.stringify(out))
+    assert.deepEqual([seen, calls.n, settled], [[OP], 1, [(2000 * 3 + 700 * 15) / 1e6]], 'one call, settled to reported usage')
+  }
+})
+
 test('trial: a completed funded answer that is malformed or holds no acceptable profile is read_failed - settled, recorded with the reason, never silent, never key_rejected', async () => {
   const records: ErrorRecord[] = []
   const restore = setErrorSinks([r => { records.push(r) }])

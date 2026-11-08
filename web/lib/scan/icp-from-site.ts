@@ -167,6 +167,11 @@ export function readProfileAnswer(text: string, stop: string | undefined, output
   return { ok: true, parsed: { draft, ...(typeof sells === 'string' ? { sells } : {}) }, icp, truncated: true }
 }
 
+// One predicate for both paths: a cut-off draft (no research block) is only offered when there is no prior research and
+// no saved decisions to carry forward; otherwise the cut-off stays an honest error (trial: read_failed, usage settled).
+function canRecoverDraft(deps: { prior?: unknown; decisions?: DecisionPack | null }): boolean {
+  return !deps.prior && !(deps.decisions && deps.decisions.decisions.length)
+}
 export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider>; prior?: IcpResearch | null; researchTimeMs?: number; decisions?: DecisionPack
   // Set by the route when the caller has no key of its own and its account is the trial principal: admits one
   // trial-funded read. Called at most once, only after a readable page exists; undefined = free read only.
@@ -217,7 +222,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
       // The same truth rules as the own-key read (#1002): an answer cut off at the trial cap can still hold a
       // complete leading draft (recovered, flagged truncated); a malformed or profile-less answer is a failed
       // read, never a silent free read and never "AI key rejected".
-      const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, true, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
+      const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, canRecoverDraft(deps), TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
       const costUsd = researchCostUsd(det.usage, det.model ?? trialProvider.configuredModel?.())
       await adm.settle(costUsd).catch((e) => captureError(e, { source: 'route', where: '/api/scan/icp-from-url', tenantId }))
       if (!answer.ok) {
@@ -267,7 +272,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     const det: { text: string; usage?: { output_tokens?: number }; stop?: string } = provider.completeDetailed
       ? await provider.completeDetailed(read.key, prompt, deps.fetchImpl, PROFILE_MAX_OUTPUT_TOKENS)
       : { text: await provider.complete!(read.key, prompt, deps.fetchImpl, PROFILE_MAX_OUTPUT_TOKENS) }
-    const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, !deps.prior && !(deps.decisions && deps.decisions.decisions.length))
+    const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, canRecoverDraft(deps))
     if (!answer.ok) {
       // The call completed (and was billed): say what the answer was, and record the reason for the operator (never the answer text).
       captureError(new Error(`profile answer unusable: ${answer.reason} (stop ${det.stop ?? 'unreported'}, ${det.usage?.output_tokens ?? 'unreported'} output tokens, ${det.text.length} chars)`), { source: 'process', where: 'scan:icp-from-site:answer', tenantId })
