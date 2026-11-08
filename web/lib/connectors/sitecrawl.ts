@@ -29,11 +29,16 @@ const TIMEOUT_MS = 10_000
 export const MAX_SITES_PER_SCAN = Number(process.env.SITECRAWL_MAX_SITES || 8)
 const GAP_MS = Number(process.env.SITECRAWL_GAP_MS ?? 2000)
 // Intrinsic per-site crawl bound (#871): robots + home + up to MAX_PAGES pages under the polite gap must fit.
-const CRAWL_BUDGET_MS = Number(process.env.SITECRAWL_CRAWL_BUDGET_MS ?? 45000)
+const CRAWL_BUDGET_MS = (() => { const n = Number(process.env.SITECRAWL_CRAWL_BUDGET_MS ?? 45_000); return Number.isFinite(n) && n > 0 ? n : 45_000 })()
+// The crawl budget is ALWAYS a finite positive bound (#871): an invalid or non-positive value is the default, never a disable.
+export const crawlBudgetBound = (ms: number): number => Number.isFinite(ms) && ms > 0 ? ms : CRAWL_BUDGET_MS
 
 export const sitecrawlEnabled = (env: Record<string, string | undefined> = process.env) => env.SITECRAWL_ENABLED !== '0'
 
-export type Get = (url: string) => Promise<{ status: number; body: string; finalUrl: string } | null>
+// opts.signal: the caller's abort (and the crawl's own deadline, #871) handed to the fetch itself, so a timed-out or
+// aborted crawl CANCELS the native operation instead of abandoning a running socket. A Get that ignores it is still
+// bounded by the crawl's own race, but production Gets (rawGet, crawl4ai) honor it.
+export type Get = (url: string, opts?: { signal?: AbortSignal }) => Promise<{ status: number; body: string; finalUrl: string } | null>
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
@@ -86,12 +91,12 @@ async function publicHost(host: string): Promise<boolean> {
 }
 export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostOk: (h: string) => Promise<boolean> = publicHost): Get {
   const endpoint = base.replace(/\/$/, '') + '/crawl'
-  return async (url: string) => {
+  return async (url: string, opts?: { signal?: AbortSignal }) => {
     let u: URL; try { u = new URL(url) } catch { return null }
     if (u.protocol !== 'https:' || !(await hostOk(u.hostname))) return null
-    if (u.pathname === '/robots.txt') return rawGet(url) // plain text, no rendering needed
+    if (u.pathname === '/robots.txt') return rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal) // plain text, no rendering needed
     try {
-      const res = await fetchImpl(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: [url], crawler_config: { type: 'CrawlerRunConfig', params: { check_robots_txt: true, page_timeout: 20000 } } }), signal: AbortSignal.timeout(40_000) })
+      const res = await fetchImpl(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: [url], crawler_config: { type: 'CrawlerRunConfig', params: { check_robots_txt: true, page_timeout: 20000 } } }), signal: opts?.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(40_000)]) : AbortSignal.timeout(40_000) })
       if (!res.ok) return null
       const j = (await res.json()) as { results?: { url?: string; html?: string; status_code?: number; success?: boolean; redirected_url?: string }[] }
       const r = j.results?.[0]; if (!r) return null
@@ -101,7 +106,7 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
     } catch { return null }
   }
 }
-export const defaultGet = (env: Record<string, string | undefined> = process.env): Get => (env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : rawGet)
+export const defaultGet = (env: Record<string, string | undefined> = process.env): Get => (env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal))
 
 // ---- robots.txt: parsed by robots-parser (MIT, the parser Crawlee uses). We obey the group for our own token and for "dazl". ----
 export interface Robots { allows: (path: string, site?: string) => boolean; delayMs: number }
@@ -402,42 +407,59 @@ const lastHit = new Map<string, number>()
 // buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
 // payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
 // budgetMs: an intrinsic wall-clock bound for the WHOLE crawl (#871) - robots, home, every polite wait, every own-site page and the
-// social branch. A fetch never starts once the budget is spent, a polite gap that would outlive it is not waited out, and an in-flight
-// fetch is raced against it. Defaults to CRAWL_BUDGET_MS so every caller is bounded; pass budgetMs <= 0 to disable explicitly.
-// The return names which bound stopped the crawl (stoppedBy); a crawl the budget stopped before the homepage finished reads reason
-// 'time_budget' and is treated as unread.
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+// social branch. A fetch never starts once the budget is spent, a polite gap that would outlive it is not waited out, and every fetch
+// is handed a combined caller-abort + deadline signal so a bound or aborted crawl CANCELS the in-flight native fetch. The value is
+// always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
+// The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
+// abort reads reason 'aborted', and both are treated as unread.
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
-  const deadline = budgetMs && budgetMs > 0 ? Date.now() + budgetMs : null
+  const deadline = Date.now() + crawlBudgetBound(budgetMs)
   let stoppedBy: 'pages' | 'time' | 'aborted' | undefined
   let timeStop = false
+  let abortStop = false
+  // One controller fires at the deadline; every fetch gets caller-abort + deadline combined, so a bound crawl
+  // CANCELS the in-flight native fetch (signal-honoring Gets) instead of abandoning it.
+  const ctrl = new AbortController()
+  const deadlineTimer = setTimeout(() => ctrl.abort(), Math.max(1, deadline - Date.now())); deadlineTimer.unref?.()
+  const fetchSignal = (): AbortSignal | undefined => (signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, ctrl.signal]) : ctrl.signal)
   const polite = async (url: string, delay: number) => {
     const h = new URL(url).hostname
-    if (deadline && Date.now() >= deadline) { timeStop = true; return null } // never start a fetch after the budget
+    if (stopped()) { abortStop = true; return null } // a pre-aborted caller starts nothing
+    if (Date.now() >= deadline) { timeStop = true; return null } // never start a fetch after the budget
     const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now()
     if (wait > 0) {
-      if (deadline && Date.now() + wait >= deadline) { timeStop = true; return null } // the polite gap itself would outlive the budget
-      if (!(await sleepAbort(wait, signal))) return null
-      if (deadline && Date.now() >= deadline) { timeStop = true; return null }
+      if (Date.now() + wait >= deadline) { timeStop = true; return null } // the polite gap itself would outlive the budget
+      if (!(await sleepAbort(wait, signal))) { abortStop = true; return null }
+      if (stopped()) { abortStop = true; return null }
+      if (Date.now() >= deadline) { timeStop = true; return null }
     }
     lastHit.set(h, Date.now())
-    if (!deadline) return get(url)
+    // The race bounds the WAIT for any Get; the combined signal CANCELS the operation for signal-honoring Gets.
+    // A caller abort interrupts immediately; it never waits out the deadline.
     const left = Math.max(1, deadline - Date.now())
     let timer: ReturnType<typeof setTimeout> | undefined
-    const r = await Promise.race([get(url), new Promise<null>(res => { timer = setTimeout(() => res(null), left) })])
+    let onAbort: (() => void) | undefined
+    const interrupted = new Promise<null>(res => {
+      timer = setTimeout(() => res(null), left)
+      if (signal) { onAbort = () => res(null); if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
+    })
+    const r = await Promise.race([get(url, { signal: fetchSignal() }), interrupted])
     clearTimeout(timer)
-    if (r === null && Date.now() >= deadline) timeStop = true // the fetch outlived the budget (its own socket still settles on its own timeout)
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort)
+    if (stopped()) abortStop = true
+    else if (r === null && Date.now() >= deadline) timeStop = true // the fetch outlived the budget (and was handed the cancel signal)
     return r
   }
   const rob = await polite(`${origin}/robots.txt`, 0)
   let robots: Robots
-  if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : { found: [], reason: 'robots_unreachable', pages: 0 }
+  if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
   if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
   robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
   if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
   const home = await polite(`${origin}/`, robots.delayMs)
-  if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : { found: [], reason: 'site_unreachable', pages: 0 }
+  if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
   // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
   const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
   const homeNorm = norm(homePlain)
@@ -476,7 +498,7 @@ export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS,
   }
   // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
   const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  const sb = stoppedBy ?? (timeStop ? 'time' as const : undefined)
+  const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
   return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
 }
 
@@ -594,12 +616,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
-    const envBudget = Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS)
-    const crawlBudgetMs = Number.isFinite(envBudget) && envBudget > 0 ? envBudget : CRAWL_BUDGET_MS
+    const crawlBudgetMs = crawlBudgetBound(Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS))
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
     // own 40s per-call bound (outer deadline does not reach it yet - tracked).
     const get = deps.get ?? (deps.signal && !deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL
-      ? (url: string) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, deps.signal)
+      ? (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal ?? deps.signal)
       : defaultGet(deps.env))
     // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
     // Held leads whose evidence page could not be READ (blocked_by_site / needs_javascript) get the same identity attempt as the
@@ -672,7 +693,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
       // Nothing usable was read: wrong company, unreachable, or the time budget stopped the crawl before the homepage (#871).
-      const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget'
+      const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget' || x.reason === 'aborted'
       // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
       const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? ev.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ') : ''].join(' '), l.company)
       for (const cand of sites) {

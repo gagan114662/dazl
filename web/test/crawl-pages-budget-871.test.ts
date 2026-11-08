@@ -121,3 +121,44 @@ test('a time-stopped crawl writes its fetched pages but NO derived rows (partial
   assert.equal((db.prepare("SELECT COUNT(*) AS c FROM lead_enrichments WHERE tenant_id = 't1'").get() as { c: number }).c, 0, 'no derived enrichment rows from a partial read')
   assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'l1'").get() as { company_domain: string | null }).company_domain, null, 'no domain confirmation from a partial read')
 })
+
+test('a pre-aborted caller starts nothing; an abort mid-fetch interrupts at once and is labeled aborted', async () => {
+  const calls: string[] = []
+  const get: Get = async url => { calls.push(url); return { status: 200, body: 'Acme', finalUrl: url } }
+  const pre = new AbortController(); pre.abort()
+  const r1 = await crawlSite('stabyl-preabort.example', get, 0, undefined, false, pre.signal, undefined, undefined, 200)
+  assert.equal(calls.length, 0, 'no fetch starts for a pre-aborted caller')
+  assert.equal(r1.reason, 'aborted')
+  assert.equal(r1.stoppedBy, 'aborted')
+
+  const c = new AbortController()
+  let cancelDelivered = false
+  const slow: Get = (url, opts) => new Promise(resolve => {
+    const t = setTimeout(() => resolve({ status: 200, body: 'Acme', finalUrl: url }), 500)
+    opts?.signal?.addEventListener('abort', () => { cancelDelivered = true; clearTimeout(t); resolve(null) }, { once: true })
+  })
+  const started = Date.now(); setTimeout(() => c.abort(), 10)
+  const r2 = await crawlSite('stabyl-midabort.example', slow, 0, undefined, false, c.signal, undefined, undefined, 5_000)
+  const elapsed = Date.now() - started
+  assert.equal(r2.stoppedBy, 'aborted')
+  assert.equal(r2.reason, 'aborted')
+  assert.ok(elapsed < 200, `the caller abort interrupts immediately (${elapsed}ms), never waiting out the deadline`)
+  assert.ok(cancelDelivered, 'the abort is handed to the in-flight fetch itself')
+})
+
+test('a fetch the budget cuts is handed the cancel signal (the operation is stopped, not abandoned)', async () => {
+  let cancelDelivered = false
+  const slow: Get = (url, opts) => new Promise(resolve => {
+    const t = setTimeout(() => resolve({ status: 200, body: 'Acme', finalUrl: url }), 400)
+    opts?.signal?.addEventListener('abort', () => { cancelDelivered = true; clearTimeout(t); resolve(null) }, { once: true })
+  })
+  const r = await crawlSite('stabyl-cancel.example', slow, 0, undefined, false, undefined, undefined, undefined, 30)
+  assert.equal(r.stoppedBy, 'time')
+  assert.ok(cancelDelivered, 'the deadline aborts the in-flight fetch through the combined signal')
+})
+
+test('the crawl budget is always finite and positive', async () => {
+  const { crawlBudgetBound } = await import('../lib/connectors/sitecrawl.ts')
+  for (const bad of [NaN, 0, -5, Infinity, -Infinity]) assert.ok(Number.isFinite(crawlBudgetBound(bad)) && crawlBudgetBound(bad) > 0, `${bad} becomes the default bound, never an unbounded crawl`)
+  assert.equal(crawlBudgetBound(250), 250, 'a valid budget is honored')
+})
