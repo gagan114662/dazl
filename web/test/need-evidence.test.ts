@@ -173,8 +173,16 @@ bothEngines('high_intent alone is never verified: author binding, verified lead 
   // d) everything bound but the lead itself is not a verified row
   await lead(db, job, 'w4', { company: 'Tallyline', domain: 'tallyline.example', published: '2026-10-28', verified: false })
   await confirmDomain(db, A, 'w4', 'tallyline.example')
-
+  // e) the SAME source URL cited by another lead: the artifact replays, but the author belongs to Other Corp, never Corvana
+  await lead(db, job, 'w5', { company: 'Corvana', domain: 'corvana.example', url: 'https://forum.example.test/t/w1', published: '2026-10-28' })
+  await confirmDomain(db, A, 'w5', 'corvana.example')
+  // f) bound author but the domain evidence is for a DIFFERENT domain (name-matched guess, not the lead's own)
+  await lead(db, job, 'w6', { company: 'Tallyline', domain: 'tallyline.example', published: '2026-10-28' })
+  await db.run(
+    `INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at)
+     VALUES ('dom-w6', 'w6', ?, 'sitecrawl', 'domain', 'other.example|evidence_own_domain', NULL, NULL, 'https://other.example/', '2026-11-02', ?)`, [A, NOW])
   const url = (id: string) => `https://forum.example.test/t/${id}`
+
   const s = await recordNeedEvidence(db, A, job, {
     asOf: AS_OF,
     demandArtifacts: [
@@ -182,14 +190,17 @@ bothEngines('high_intent alone is never verified: author binding, verified lead 
       artifact(url('w2'), { author: null, text: "I'm the founder of a small B2B agency and we need a lead list provider for logistics companies.", published_at: '2026-10-29T10:00:00Z' }),
       artifact(url('w3'), { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
       artifact(url('w4'), { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      artifact(url('w6'), { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
     ],
   })
   assert.equal(s.verified_buying_need, 0)
-  assert.equal((await record(db, A, 'w1'))!.reason, 'author_company_unbound')
+  assert.equal((await record(db, A, 'w1'))!.reason, 'author_company_unbound') // the source says the author is at Other Corp, not Tallyline
   assert.equal((await record(db, A, 'w2'))!.verdict, 'needs_evidence')
   assert.equal((await record(db, A, 'w3'))!.reason, 'domain_unconfirmed_now')
   assert.equal((await record(db, A, 'w4'))!.reason, 'lead_not_verified')
-  for (const id of ['w1', 'w2', 'w3', 'w4']) assert.notEqual((await need(db, A, job, id)).status, 'verified_buying_need', id)
+  assert.equal((await record(db, A, 'w5'))!.reason, 'author_company_unbound') // replayed artifact: the author is Other Corp's, never Corvana's
+  assert.equal((await record(db, A, 'w6'))!.reason, 'domain_unconfirmed_now') // evidence confirms a different domain
+  for (const id of ['w1', 'w2', 'w3', 'w4', 'w5', 'w6']) assert.notEqual((await need(db, A, job, id)).status, 'verified_buying_need', id)
 })
 
 // ---------------------------------------------------------------------------------------------------- source dates: own, old, future, missing
@@ -482,4 +493,56 @@ test('[sqlite] older store without lead_need_evidence: classification fails clos
   const rows = classifyLeads(raw, { id: jobId, user_id: 'u1', query: 'dentists in Ohio', icp: null })
   assert.equal(rows[0].actionable, false)
   assert.equal(rows[0].missing[0], 'buying_need_unproven', 'the missing evidence table holds the lead first')
+})
+
+// ---------------------------------------------------------------------------------------------------- sync/async parity
+// The classification gate (sync, needProven) and the reader (async, currentBuyingNeed) must decide IDENTICALLY on
+// identical rows and context - they share the one pure revalidation, and this matrix proves it stays that way.
+test('[sqlite] parity: the sync gate and the async reader agree across the whole drift matrix', async () => {
+  const { default: Database } = await import('better-sqlite3')
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const { needProven } = await import('../lib/scan/actionable.ts')
+  const { loadPlayDemandRubric } = await import('../lib/scan/demand-rubric-play.ts')
+  const raw = new Database(':memory:')
+  migrateAllSqlite(raw)
+  const db = sqliteDb(raw)
+  const job = await basePlay(db, A)
+  await lead(db, job, 'p1', { company: 'Tallyline', domain: 'tallyline.example', published: '2026-10-28' })
+  await confirmDomain(db, A, 'p1', 'tallyline.example')
+  const url = 'https://forum.example.test/t/p1'
+  const write = () => recordNeedEvidence(db, A, job, { asOf: AS_OF, demandArtifacts: [artifact(url, { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' })] })
+  await write()
+  const ctx = async () => {
+    const j = (await db.get<{ query: string | null; icp: string | null }>('SELECT query, icp FROM scan_jobs WHERE id = ?', [job]))!
+    return { rubric: (await loadPlayDemandRubric(db, A, job)).rubric, planSupportKey: JSON.stringify(planNeedSupport(compileTargeting(j.query, j.icp))), asOf: AS_OF }
+  }
+  const leadRow = { id: 'p1', company: 'Tallyline', company_domain: 'tallyline.example' }
+  const both = async () => [
+    (await need(db, A, job, 'p1')).status,
+    needProven(raw, { id: job, user_id: A }, leadRow, await ctx()),
+  ] as const
+  const expectParity = async (status: string, gate: boolean, note: string) => {
+    const [st, g] = await both()
+    assert.equal(st, status, note)
+    assert.equal(g, gate, note)
+  }
+
+  await expectParity('verified_buying_need', true, 'baseline: both paths prove it')
+  await db.run("UPDATE lead_need_evidence SET qualifier_version = 'demand-qualifier/0' WHERE lead_id = 'p1'", [])
+  await expectParity('unproven', false, 'version drift: both hold')
+  await write(); await setPlayOffer(db, A, job, 'Bookkeeping and payroll for independent restaurants')
+  await expectParity('unproven', false, 'offer drift: both hold')
+  await setPlayOffer(db, A, job, OFFER)
+  await expectParity('verified_buying_need', true, 'restored: both prove it again')
+  await db.run("UPDATE scan_jobs SET query = 'companies hiring sales reps in Ohio' WHERE id = ?", [job])
+  await expectParity('unproven', false, 'plan drift: both hold')
+  await db.run('UPDATE scan_jobs SET query = ? WHERE id = ?', [QUERY, job])
+  await expectParity('verified_buying_need', true, 'plan restored')
+  await db.run("UPDATE lead_need_evidence SET source_text = 'We just launched our new office in Toronto!' WHERE lead_id = 'p1'", [])
+  await expectParity('unproven', false, 'qualifier drift: both hold')
+  await write()
+  await db.run("DELETE FROM lead_enrichments WHERE lead_id = 'p1' AND connector = 'sitecrawl'", [])
+  await expectParity('unproven', false, 'domain withdrawn: both hold')
+  await db.close()
 })

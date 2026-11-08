@@ -16,9 +16,8 @@ import { requiredGateHeld } from './held-state.ts'
 import { compileTargeting, evaluatePlan, type ClauseProof } from './targeting.ts'
 import { planProofs } from './targeting-proof.ts'
 import { listCompetitors } from '../signals/competitor-reddit.ts'
-import { DEMAND_QUALIFIER_VERSION, qualifyDemand, type DemandRubric } from './demand-qualifier.ts'
-import { planNeedSupport } from './need-evidence.ts'
-import { companyKey } from './evidence.ts'
+import { type DemandRubric } from './demand-qualifier.ts'
+import { planNeedSupport, revalidateDemandContext, revalidateVerifiedBinding, type NeedRecord } from './need-evidence.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
 
 const GATES = new Set<string>(['sales_hiring_check_failed', 'quarantined', 'excluded', 'fit_below_threshold', 'not_graded', 'targeting_not_proven'])
@@ -39,32 +38,22 @@ export type HeldIds = ReadonlyMap<string, string>   // lead id -> reason
 // error - a null rubric simply means no demand-post record can verify, so those leads hold. A trigger-only record
 // passes this gate (the sales-hiring gate already ran) but never claims verified buying need.
 export interface NeedGate { rubric: DemandRubric | null }
-type NeedRow = { basis: string; verdict: string; qualifier_version: string | null; offer: string | null; window_days: number | null; plan_support: string; source_url: string | null; source_title: string | null; source_text: string | null; author_name: string | null; author_headline: string | null; author_company: string | null; published_at: string | null }
-// The sync twin of need-evidence.currentBuyingNeed's revalidation, on the same rows and the same rules: a recorded
-// verified_buying_need is believed only while every binding holds NOW - qualifier version, plan semantics, the
-// current rubric's offer and window, the classifier re-run on the STORED source artifact, the source author's own
-// company matching the lead's company, and the domain confirmed now. A missing table (older store), a missing or
-// failed writer record, a read error, or any drift is NOT proven. Reads here never write.
-function needProven(db: Database.Database, job: { id: string; user_id: string }, l: { id: string; company: string; company_domain: string | null }, rubric: DemandRubric | null, supportKey: string): boolean {
+// The sync side of the ONE shared revalidation (need-evidence.ts owns the rules; both paths call the same pure
+// functions): a recorded verified_buying_need is believed only while every binding holds NOW - qualifier version,
+// plan semantics, the current rubric's offer and window, the classifier re-run on the STORED source artifact, the
+// source author's own company matching the lead's company, and the domain confirmed now. A missing table (older
+// store), a missing or failed writer record, a read error, or any drift is NOT proven. Reads here never write.
+type NeedRow = Pick<NeedRecord, 'basis' | 'verdict' | 'qualifier_version' | 'offer' | 'window_days' | 'plan_support' | 'demand_class' | 'demand_tier' | 'source_url' | 'source_title' | 'source_text' | 'author_name' | 'author_headline' | 'author_company' | 'published_at'>
+export function needProven(db: Database.Database, job: { id: string; user_id: string }, l: { id: string; company: string; company_domain: string | null }, ctx: { rubric: DemandRubric | null; planSupportKey: string; asOf: Date }): boolean {
   let rec: NeedRow | undefined
   try {
-    rec = db.prepare('SELECT basis, verdict, qualifier_version, offer, window_days, plan_support, source_url, source_title, source_text, author_name, author_headline, author_company, published_at FROM lead_need_evidence WHERE tenant_id = ? AND lead_id = ?').get(job.user_id, l.id) as NeedRow | undefined
+    rec = db.prepare('SELECT basis, verdict, qualifier_version, offer, window_days, plan_support, demand_class, demand_tier, source_url, source_title, source_text, author_name, author_headline, author_company, published_at FROM lead_need_evidence WHERE tenant_id = ? AND lead_id = ?').get(job.user_id, l.id) as NeedRow | undefined
   } catch { return false }  // an older store without the evidence table: hold, never a bypass
   if (!rec) return false    // the writer failed or never ran for this lead: hold
   if (rec.verdict === 'trigger_only') return true // the trigger gate already ran; trigger-only is never "verified buying need"
   if (rec.verdict !== 'verified_buying_need' || rec.basis !== 'demand_post') return false
-  if (rec.qualifier_version !== DEMAND_QUALIFIER_VERSION || rec.plan_support !== supportKey) return false
-  if (!rubric || rec.offer !== rubric.offer || rec.window_days !== rubric.window_days) return false
-  if (!rec.source_url || !rec.source_text) return false
-  const q = qualifyDemand({
-    source_url: rec.source_url, published_at: rec.published_at,
-    author: rec.author_name || rec.author_company ? { name: rec.author_name, headline: rec.author_headline, company: rec.author_company } : null,
-    title: rec.source_title, text: rec.source_text,
-  }, rubric, new Date())
-  if (q.tier !== 'high_intent') return false
-  const ac = (q.requester.company ?? '').trim()
-  if (!ac || companyKey(ac) === '' || companyKey(ac) !== companyKey(l.company)) return false
-  return domainConfirmed(db, job.user_id, l.id, l.company_domain)
+  if (!revalidateDemandContext(rec, { rubric: ctx.rubric, rubricReason: null, planSupportKey: ctx.planSupportKey, asOf: ctx.asOf }).ok) return false
+  return revalidateVerifiedBinding(rec, l.company, domainConfirmed(db, job.user_id, l.id, l.company_domain)).ok
 }
 
 export function classifyLeads(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map(), need: NeedGate = { rubric: null }): LeadYield[] {
@@ -95,7 +84,7 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
     }
     // #401/#379: no proven buying need, no promotion - collected with the other current gaps so the lead says
     // everything that is missing, while the company, person and route below stay OUTER requirements, never substitutes.
-    if (!needProven(db, job, l, need.rubric, supportKey)) missing.push('buying_need_unproven')
+    if (!needProven(db, job, l, { rubric: need.rubric, planSupportKey: supportKey, asOf: new Date() })) missing.push('buying_need_unproven')
     // The sales-hiring half is enforced by the gate (applySalesHiringGate runs before this): a lead that is still verified has the proof.
     void needVacancy
     // Domain, person and route are read from the CURRENT rows through the shared rule (#914): a confirmed domain, and a person / route

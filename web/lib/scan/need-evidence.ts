@@ -307,6 +307,46 @@ export type BuyingNeed =
   | { status: 'unqualifiable'; record: NeedRecord }
   | { status: 'unproven'; reason: string }
 
+// ---------------------------------------------------------------------------------------------------- shared revalidation (PURE)
+// ONE implementation of the binding and qualifier rules, shared by the async reader (currentBuyingNeed) and the sync
+// classification gate (actionable.ts): both resolve their inputs on their own engine (domainConfirmedDb vs
+// domainConfirmed, awaited rubric vs caller-resolved rubric) and then call THESE functions, so the two paths cannot
+// drift apart. Nothing here touches a database.
+export type DemandBindingRecord = Pick<NeedRecord, 'qualifier_version' | 'offer' | 'window_days' | 'plan_support' | 'demand_class' | 'demand_tier' | 'source_url' | 'source_title' | 'source_text' | 'author_name' | 'author_headline' | 'author_company' | 'published_at'>
+export interface DemandReadContext { rubric: import('./demand-qualifier.ts').DemandRubric | null; rubricReason: string | null; planSupportKey: string; asOf: Date }
+
+// Context + qualifier revalidation of a demand_post record: the plan semantics still match, a CURRENT rubric exists
+// and still has the recorded offer and window, the qualifier version is current, the stored source artifact is
+// complete, and the EXISTING classifier re-run on that stored artifact under the CURRENT rubric (as of now) still
+// classifies it the same. Any drift is named; nothing is bypassed.
+export function revalidateDemandContext(rec: DemandBindingRecord, ctx: DemandReadContext): { ok: true } | { ok: false; reason: string } {
+  if (rec.plan_support !== ctx.planSupportKey) return { ok: false, reason: 'buying_need_unproven:stale_plan' }
+  if (!ctx.rubric) return { ok: false, reason: `buying_need_unproven:no_rubric:${ctx.rubricReason ?? 'unknown'}` }
+  if (rec.qualifier_version !== DEMAND_QUALIFIER_VERSION) return { ok: false, reason: 'buying_need_unproven:stale_version' }
+  if (rec.offer !== ctx.rubric.offer) return { ok: false, reason: 'buying_need_unproven:stale_offer' }
+  if (rec.window_days !== ctx.rubric.window_days) return { ok: false, reason: 'buying_need_unproven:stale_window' }
+  if (!rec.source_url || !rec.source_text) return { ok: false, reason: 'buying_need_unproven:record_incomplete' }
+  const q = qualifyDemand({
+    source_url: rec.source_url, published_at: rec.published_at,
+    author: rec.author_name || rec.author_company ? { name: rec.author_name, headline: rec.author_headline, company: rec.author_company } : null,
+    title: rec.source_title, text: rec.source_text,
+  }, ctx.rubric, ctx.asOf)
+  if (q.class !== rec.demand_class || q.tier !== rec.demand_tier) return { ok: false, reason: 'buying_need_unproven:qualifier_drift' }
+  return { ok: true }
+}
+
+// The verified-only OUTER canonical binding: the post's OWN author - as the SAME source artifact reports them, bound
+// to the lead by its exact source URL, never the lead's founder read off another page and never the seller profile -
+// belongs to the lead's company, and the company domain is confirmed NOW. Name canonicalization is not authority: it
+// only compares the source-reported author company to the lead's company; decision-maker authority was scored by the
+// classifier from the artifact's own headline at write time and re-scored on re-read (revalidateDemandContext).
+export function revalidateVerifiedBinding(rec: DemandBindingRecord, leadCompany: string, domainConfirmedNow: boolean): { ok: true } | { ok: false; reason: string } {
+  const authorCompany = (rec.author_company ?? '').trim()
+  if (!authorCompany || companyKey(authorCompany) === '' || companyKey(authorCompany) !== companyKey(leadCompany)) return { ok: false, reason: 'buying_need_unproven:author_company_unbound' }
+  if (!domainConfirmedNow) return { ok: false, reason: 'buying_need_unproven:domain_withdrawn' }
+  return { ok: true }
+}
+
 // Shared per-job read context, so a listing loads the rubric and plan once (routes). windowDays must be the job's own
 // window (the value the writer ran with) or the binding check would misread a default.
 export interface NeedReadContext { rubricOffer: string | null; rubricWindow: number | null; rubricReason: string | null; rubric: import('./demand-qualifier.ts').DemandRubric | null; planSupportKey: string | null }
@@ -335,31 +375,17 @@ export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string,
   if (record.plan_support !== ctx.planSupportKey) return { status: 'unproven', reason: 'buying_need_unproven:stale_plan' }
 
   if (record.basis === 'demand_post') {
-    if (!ctx.rubric) return { status: 'unproven', reason: `buying_need_unproven:no_rubric:${ctx.rubricReason ?? 'unknown'}` }
-    if (record.qualifier_version !== DEMAND_QUALIFIER_VERSION) return { status: 'unproven', reason: 'buying_need_unproven:stale_version' }
-    if (record.offer !== ctx.rubricOffer) return { status: 'unproven', reason: 'buying_need_unproven:stale_offer' }
-    if (record.window_days !== ctx.rubricWindow) return { status: 'unproven', reason: 'buying_need_unproven:stale_window' }
-    // Re-run the EXISTING classifier on the STORED source artifact under the CURRENT rubric, as of now.
-    const stored = await db.get<{ source_title: string | null; source_text: string | null; author_name: string | null; author_headline: string | null; author_company: string | null; published_at: string | null }>(
-      'SELECT source_title, source_text, author_name, author_headline, author_company, published_at FROM lead_need_evidence WHERE tenant_id = ? AND lead_id = ?', [tenantId, leadId])
-    if (!stored?.source_text || !record.source_url) return { status: 'unproven', reason: 'buying_need_unproven:record_incomplete' }
-    const post: DemandPost = {
-      source_url: record.source_url, published_at: stored.published_at,
-      author: stored.author_name || stored.author_company ? { name: stored.author_name, headline: stored.author_headline, company: stored.author_company } : null,
-      title: stored.source_title,
-      text: stored.source_text,
-    }
-    const q = qualifyDemand(post, ctx.rubric, opts.asOf ?? new Date())
-    if (q.class !== record.demand_class || q.tier !== record.demand_tier) return { status: 'unproven', reason: 'buying_need_unproven:qualifier_drift' }
+    // The ONE shared revalidation (sync gate uses the same pure functions): context, bindings, classifier re-run.
+    const c = revalidateDemandContext(record, { rubric: ctx.rubric, rubricReason: ctx.rubricReason, planSupportKey: ctx.planSupportKey, asOf: opts.asOf ?? new Date() })
+    if (!c.ok) return { status: 'unproven', reason: c.reason }
     if (record.verdict === 'verified_buying_need') {
       const lead = await db.get<{ company: string; company_domain: string | null; review_reason: string | null; confidence: number | null; quarantined_at: number | null }>(
         'SELECT company, company_domain, review_reason, confidence, quarantined_at FROM leads WHERE id = ? AND scan_job_id = ?', [leadId, jobId])
       if (!lead || lead.review_reason !== null || lead.confidence === null || lead.quarantined_at !== null) return { status: 'unproven', reason: 'buying_need_unproven:lead_withdrawn' }
       const held = await db.get<{ x: number }>("SELECT 1 AS x FROM lead_enrichments h WHERE h.lead_id = ? AND h.connector = 'scan:gate' AND h.kind = 'gate_failed'", [leadId])
       if (held) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
-      const authorCompany = (record.author_company ?? '').trim()
-      if (!authorCompany || companyKey(authorCompany) !== companyKey(lead.company)) return { status: 'unproven', reason: 'buying_need_unproven:author_company_unbound' }
-      if (!lead.company_domain || !(await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))) return { status: 'unproven', reason: 'buying_need_unproven:domain_withdrawn' }
+      const b = revalidateVerifiedBinding(record, lead.company, !!lead.company_domain && await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))
+      if (!b.ok) return { status: 'unproven', reason: b.reason }
     }
     if (record.verdict === 'unproven') return { status: 'unproven', reason: record.reason ?? 'buying_need_unproven' }
     return { status: record.verdict, record } as BuyingNeed
