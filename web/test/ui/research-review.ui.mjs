@@ -128,6 +128,9 @@ try {
   assert.equal(hyps.h1.q, 'lets practice managers fill their appointment book', 'a confirmed statement keeps its page quote')
   assert.equal(hyps.h1.u, SITE, 'a confirmed statement keeps its page URL')
   assert.ok(saved.buyer.research.decisions?.some(d => d.offer === 'o1' && d.hypothesis === 'h1' && d.action === 'confirm'), 'the Add confirm decision is saved with the block')
+  assert.equal(hyps.h3.s, 'inferred', 'a statement the person never acted on keeps its truth status (inferred), unconfirmed and unrejected')
+  assert.equal(hyps.h3.u, null, 'the untouched inferred statement keeps its null provenance')
+  assert.ok(!saved.buyer.research.decisions?.some(d => d.hypothesis === 'h3'), 'no decision is recorded for a statement the person never acted on')
   assert.deepEqual(saved.buyer.research.ans, { q: 'Who buys this?', o: 'o1', t: 'office managers' }, 'the answer is saved with its WORDS, recrawl-durable')
   console.log('PASS research-review: render, add, dismiss, answer, and saved reviewed block')
 } finally {
