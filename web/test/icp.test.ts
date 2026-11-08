@@ -384,7 +384,7 @@ test('excluded ranges followed by ordinary context still exclude B and every lat
   assert.notEqual(r.summary, 'London Series C companies with funding'); assert.equal(r.summary, q)
 })
 
-import { guardedPreviewResearch, normalizeResearch } from '../lib/scan/icp.ts'
+import { guardedPreviewResearch } from '../lib/scan/icp.ts'
 
 // The guarded-preview contract (revision 8, reviewer-suggested): fresh model research is not new provenance, so the
 // prior block ALWAYS stays whole - every probe scenario below was an actual reproduced merge failure before the

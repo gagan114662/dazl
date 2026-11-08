@@ -88,7 +88,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     setSummary(b.summary ?? ''); setWho(j(b.who)); setIndustries(j(b.industries)); setWhere(j(b.where)); setSignals(j(b.signals)); setSizes(j(b.sizes)); setExclude(j(b.exclude))
     // null when the loaded profile carries none: a stale block from an earlier read must not survive into the next save.
     setResearch(asResearchBlock(b.research))
-    const { summary: _s, who: _w, industries: _i, sizes: _z, where: _h, signals: _g, exclude: _e, research: _r, ...rest } = b as Record<string, unknown>
+    const rest = { ...(b as Record<string, unknown>) }
+    for (const k of ['summary', 'who', 'industries', 'sizes', 'where', 'signals', 'exclude', 'research']) delete rest[k]
     setBuyerRest(rest)
   }
   const loadUsage = () => fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j) setUsage(j) }).catch(() => {})
@@ -194,7 +195,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const arr = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
       // The research block rides along from the first save too, so a reload before the person's first edit still has
       // the provenance and any decisions it already carries (a recrawl's own read replaces it below, never drops it).
-      const { summary: _s, who: _w, industries: _i, sizes: _z, where: _h, signals: _g, exclude: _e, research: _r, ...rest } = (b ?? {}) as Record<string, unknown>
+      const rest = { ...((b ?? {}) as Record<string, unknown>) }
+      for (const k of ['summary', 'who', 'industries', 'sizes', 'where', 'signals', 'exclude', 'research']) delete rest[k]
       const buyer = { ...rest, summary: String(b.summary ?? j.sells ?? '').trim(), who: arr(b.who), industries: arr(b.industries), sizes: arr(b.sizes), where: arr(b.where), signals: arr(b.signals), exclude: arr(b.exclude), ...((b as { research?: unknown }).research ? { research: (b as { research?: unknown }).research } : {}) }
       const sr = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sells: String(j.sells ?? ''), website: url, business_name: bizName, buyer }) }).catch(() => null)
       if (!sr?.ok) { const sj = await sr?.json().catch(() => ({})); setError(sj?.error || 'Could not save what dazl inferred. Check it and save it yourself.'); setStep('brain'); return }

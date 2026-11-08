@@ -1,4 +1,4 @@
-import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedKey, storedOfferName } from './offer-identity.ts'
+import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
 import { quoteSupports } from './claim-quote.ts'
