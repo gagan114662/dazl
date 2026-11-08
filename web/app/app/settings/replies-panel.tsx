@@ -39,6 +39,11 @@ export default function RepliesPanel() {
       {state === 'needs_reconnect' ? (
         <div className="text-sm space-y-2">
           <p className="text-[#555]">Gmail needs to be reconnected. dazl can&apos;t read replies or send until you reconnect.</p>
+          {!i.consent.accepted && (<>
+            <p className="text-[#555]">{CONSENT_NEEDED_NOTICE}</p>
+            <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
+            <p className="text-xs text-[#6b6b6b]">Reconnecting Gmail means you accept the reply-reading terms above (the connect step records it).</p>
+          </>)}
           <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail</a>
         </div>
       ) : state === 'disconnected' ? (
@@ -50,6 +55,11 @@ export default function RepliesPanel() {
       ) : state === 'read_scope_missing' ? (
         <div className="text-sm space-y-2">
           <p className="text-[#555]">Gmail is connected send-only (the read access was unticked on Google&apos;s screen, or it predates reply reading). Reconnect and leave the read access ticked to turn on reply reading.</p>
+          {!i.consent.accepted && (<>
+            <p className="text-[#555]">{CONSENT_NEEDED_NOTICE}</p>
+            <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
+            <p className="text-xs text-[#6b6b6b]">Reconnecting Gmail means you accept the reply-reading terms above (the connect step records it).</p>
+          </>)}
           <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail with reply access</a>
         </div>
       ) : state === 'consent_needed' ? (
