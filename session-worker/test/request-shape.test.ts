@@ -4,6 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createServer } from 'node:net'
 
 const TOKEN = 'test-token-933'
 let child: ChildProcess
@@ -11,20 +12,39 @@ let base: string
 let exited: number | null = null
 
 const redditListing = { kind: 'Listing', data: { after: null, children: [{ data: { permalink: '/r/sales/comments/1/x/', title: 'Hiring', selftext: 'We are hiring a sales operations manager to clean up our CRM pipeline this quarter.', created_utc: 1761955200 } }] } }
+const STUB_BODY = JSON.stringify(redditListing)
 
+// Boot like envelope.test.ts does: an OS-assigned free port (never a random one another suite can hold), a generous
+// startup budget that ends EARLY when the child dies, and one retry on a fresh port for the port-race class. The
+// child's stderr is kept as a bounded tail (env values scrubbed) so a boot failure carries its own evidence: the
+// hosted #933 run failed all 12 cases in this hook with stdio:'ignore' and there was nothing to diagnose.
+const freePort = () => new Promise<number>((resolve, reject) => { const srv = createServer(); srv.once('error', reject); srv.listen(0, '127.0.0.1', () => { const a = srv.address(); srv.close(() => resolve(typeof a === 'object' && a ? a.port : 0)) }) })
+const scrub = (s: string) => s.split(TOKEN).join('<token>').split(STUB_BODY).join('<stub-body>')
 test.before(async () => {
-  const port = 4800 + Math.floor(Math.random() * 500)
-  base = `http://127.0.0.1:${port}`
-  child = spawn(process.execPath, ['--experimental-strip-types', '--import', './test/platform-stub.ts', 'src/server.ts'], {
-    env: { PATH: process.env.PATH, ADVANCED_WORKER_TOKEN: TOKEN, PORT: String(port), PLATFORM_STUB_BODY: JSON.stringify(redditListing) },
-    stdio: 'ignore',
-  })
-  child.on('exit', code => { exited = code ?? -1 })
-  for (let i = 0; i < 100; i++) {
-    try { const r = await fetch(`${base}/health`); if (r.ok) return } catch { /* not up yet */ }
-    await new Promise(r => setTimeout(r, 100))
+  const diags: string[] = []
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const port = await freePort()
+    let errTail = ''
+    const c = spawn(process.execPath, ['--experimental-strip-types', '--import', './test/platform-stub.ts', 'src/server.ts'], {
+      env: { PATH: process.env.PATH, ADVANCED_WORKER_TOKEN: TOKEN, PORT: String(port), PLATFORM_STUB_BODY: STUB_BODY },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    c.stderr!.on('data', d => { errTail = (errTail + String(d)).slice(-8192) })
+    let gone: number | null = null
+    c.once('exit', code => { gone = code ?? -1 })
+    let up = false
+    for (let i = 0; i < 300 && gone === null; i++) {
+      try { const r = await fetch(`http://127.0.0.1:${port}/health`); if (r.ok) { up = true; break } } catch { /* not up yet */ }
+      await new Promise(r => setTimeout(r, 100))
+    }
+    if (up) { child = c; base = `http://127.0.0.1:${port}`; child.on('exit', code => { exited = code ?? -1 }); return }
+    // A real crash must NOT be retried away: its evidence is in the tail, and a deterministic crash just fails
+    // again. The retry exists only for the alive-but-never-served startup/port race.
+    diags.push(`attempt ${attempt}: port ${port}, exited ${gone}, stderr tail: ${scrub(errTail.trim()) || '<empty>'}`)
+    c.kill()
+    if (gone !== null) break
   }
-  throw new Error('worker did not start')
+  throw new Error(`worker did not start - ${diags.join(' | ')}`)
 })
 test.after(() => { child.kill() })
 
