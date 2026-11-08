@@ -128,3 +128,11 @@ test('recovery is anchored to the TOP-LEVEL draft only: a nested "draft" inside 
   // prior decisions still refuse recovery
   assert.deepEqual(readProfileAnswer(ok, 'max_tokens', 1200, false), { ok: false, reason: 'truncated' })
 })
+
+test('readProfileAnswer: valid JSON at the cap is truncated (no research), and fails closed when it cannot be carried forward', () => {
+  const full = JSON.stringify({ sells: 'S', draft: { summary: 'Sells to dentists', who: ['Owner'], industries: ['dental'], sizes: [], where: [], signals: [], exclude: [] } })
+  const r = readProfileAnswer(full, 'max_tokens', 1200); assert.ok(r.ok && r.truncated)
+  assert.deepEqual(readProfileAnswer(full, 'max_tokens', 1200, false), { ok: false, reason: 'truncated' })
+  const done = readProfileAnswer(full, 'end_turn', 300); assert.ok(done.ok && !done.truncated, 'a finished answer is complete')
+  const unreported = readProfileAnswer(full, undefined, PROFILE_MAX_OUTPUT_TOKENS); assert.ok(unreported.ok && unreported.truncated)
+})

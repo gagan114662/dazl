@@ -179,6 +179,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const f = brainFacts({ ...j, business_name: bizName })
       setFacts(f)
       for (let i = 1; i <= f.length; i++) { setShown(i); await new Promise(res => setTimeout(res, REVEAL_MS)) }
+      // A cut-off answer (server said truncated) holds only the leading draft, no research block: show it for review on the profile step, never auto-save it as a complete read.
+      if (j.truncated === true) { setError('The website read was cut off, so only part of the profile was recovered and no research was attached. Check it and save it yourself.'); setStep('brain'); return }
       // Saved exactly as read (the same POST the profile form uses); edited later from Home or "Edit what dazl inferred".
       const b = j.icp ?? {}
       const arr = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []

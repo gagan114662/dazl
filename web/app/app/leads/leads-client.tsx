@@ -397,7 +397,9 @@ export default function LeadsClient() {
       if (genSells) setOfferText(prev => (prev.trim().length >= 3 ? prev : genSells))
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
-      setDraftNote(`Filled from ${host}. Edit anything that is off, then run the scan.`)
+      setDraftNote(j.truncated === true
+        ? `Filled from ${host}, but the read was cut off: only the leading draft was recovered and no research was attached. Check every field before you run the scan.`
+        : `Filled from ${host}. Edit anything that is off, then run the scan.`)
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {

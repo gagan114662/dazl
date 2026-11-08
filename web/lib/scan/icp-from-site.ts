@@ -153,7 +153,11 @@ export function readProfileAnswer(text: string, stop: string | undefined, output
   if (whole !== null && (typeof whole !== 'object' || Array.isArray(whole))) return { ok: false, reason: 'no_profile' }   // valid JSON, but not a profile object
   if (whole) {
     const icp = normalizeIcp(whole.draft ?? whole)
-    return icp ? { ok: true, parsed: whole, icp, truncated: false } : { ok: false, reason: 'no_profile' }
+    if (!icp) return { ok: false, reason: 'no_profile' }
+    // Valid JSON at the cap is still a capped answer: its research fields (offers/items) may be missing, so it gets the same treatment as a recovered
+    // prefix (marked truncated, no research block), and fails closed when saved decisions/prior research could not be carried forward.
+    if (cut) return recover ? { ok: true, parsed: whole, icp, truncated: true } : { ok: false, reason: 'truncated' }
+    return { ok: true, parsed: whole, icp, truncated: false }
   }
   if (!cut) return { ok: false, reason: 'not_json' }
   if (!recover) return { ok: false, reason: 'truncated' }
