@@ -141,8 +141,8 @@ bothEngines('status read: dated known model prices as the recorded-token compone
   await db.run("INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)", [capped, JSON.stringify({ v: 1, attempt: 1, stop: { code: 'budget_stopped', spend_refusal_reason: 'over_cap' } })])
   const cappedStatus = await readScanStatus(db, 'A', capped)
   assert.equal(cappedStatus?.stop_refusal_reason, 'over_cap')
-  assert.equal((cappedStatus?.outcome as { label: string }).label, 'Stopped by the fixed per-scan spending cap - not an empty search')
-  assert.doesNotMatch(`${(cappedStatus?.outcome as { detail?: string }).detail} ${(cappedStatus?.outcome as { next?: { text: string } }).next?.text}`, /larger budget/i)
+  assert.equal((cappedStatus?.outcome as { label: string }).label, 'Stopped by its spending cap - not an empty search')
+  assert.doesNotMatch(`${(cappedStatus?.outcome as { detail?: string }).detail} ${(cappedStatus?.outcome as { next?: { text: string } }).next?.text}`, /larger budget|fixed per-scan/i, 'origin not retained: neither the fixed cap nor a run budget may be named')
 
   // Pool origin: the typed owner_pool_limit reason names the shared day/month limit and never the per-run control.
   const pooled = await createJob(db, 'A', { business_name: 'pooled', industry: 'software', location: 'Toronto' })

@@ -118,7 +118,7 @@ const EXPECT = {
   holdErr: ['stopped', /Stopped - the free sources could not conclude/, 'Try again', '/app/leads'],
   legacyBudget: ['stopped', /Stopped before it could conclude/, 'Run the search again', '/app/leads'],
   poolStop: ['stopped', /Stopped by the shared account spending limit - not an empty search/, 'Try again later', '/app/leads'],
-  hardCap: ['stopped', /Stopped by the fixed per-scan spending cap - not an empty search/, 'Run a narrower search', '/app/leads'],
+  hardCap: ['stopped', /Stopped by its spending cap - not an empty search/, 'Run the search again', '/app/leads'],
 }
 try {
   // An enriching scan is the active one (#254): Leads opens its progress instead of the history, so the history is
@@ -199,7 +199,7 @@ try {
     await page.getByText(/shared account spending limit \(its day\/month pool\) refused the next paid step/).waitFor({ timeout: 15000 })
     await shot('deep-pool-limit')
     await page.goto(`${base}/app/leads?job_id=${ALL.hardCap.id}`, { waitUntil: 'networkidle' })
-    await page.getByText(/fixed per-scan spending cap refused the next paid step/).waitFor({ timeout: 15000 })
+    await page.getByText(/recorded spending cap refused the next paid step/).waitFor({ timeout: 15000 })
     await shot('deep-hard-cap')
   }
   assert.deepEqual(writes, [], 'loading writes nothing')

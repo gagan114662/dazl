@@ -669,7 +669,7 @@ export function fallbackStopCode(ledger: SourceRunLedger): string {
 export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
   switch (e.reason) {
     case 'over_limit':
-    case 'over_cap':   // the per-job spend cap's own numeric refusal (spend-cap.ts)
+    case 'over_cap':   // the scan's recorded cap refused (spend-cap.ts): the run's budget OR the service's cap - origin not retained
     case OWNER_POOL_LIMIT_REASON:   // the owner pool's numeric refusal: still a limit stop, but NOT the run's own budget
     case TRIAL_BUDGET_REASON: return 'budget_stopped'   // a real numeric budget refused the next paid step
     case 'research_unbounded': return ledger ? fallbackStopCode(ledger) : 'unbounded_fallback_hold'
