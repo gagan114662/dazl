@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
   }
   // reviewed: false = the profile is carried exactly as stored (a saved business profile reused for a first scan):
   // nothing in it is confirmed or rejected by this request alone (applyReviewedDraft).
-  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed !== false }) : icp
+  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed === true }) : icp
   // Capture only explicit Add/Dismiss events, not inferred statuses or a profile's mere presence.
   let decisions: ReturnType<typeof decisionRows>
   try { decisions = decisionRows(body?.research_decisions, effective?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, effective ?? undefined) }
@@ -168,7 +168,7 @@ export async function POST(req: NextRequest) {
     if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
     const jid = job_id
     db.transaction(() => {
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value, icpReviewed: body?.reviewed !== false })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value, icpReviewed: body?.reviewed === true })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
       if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))

@@ -93,7 +93,7 @@ try {
   const a = await open({ buyer: BUYER })
   await a.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
   const note = await a.page.getByTestId('business-profile').textContent()
-  assert.match(note, /^Find leads uses your saved business profile as it is: Businesses that need evidence-backed outbound leads\./)
+  assert.match(note, /^Find leads uses the saved profile as it is: Businesses that need evidence-backed outbound leads\./)
   assert.ok(!note.includes('review decisions you made'), 'a saved profile is not a review: the note never claims decisions were made on it')
   await a.page.getByLabel('Who do you want to reach?').fill(Q)
   await a.page.getByRole('button', { name: 'Find leads' }).click()

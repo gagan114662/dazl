@@ -115,13 +115,42 @@ test('POST /api/scan with reviewed: false carries the saved profile whole withou
     assert.equal(dec[0].job_id, b3.job_id)
     assert.equal(dec[0].text, 'practice managers')
 
-    // 4. The default path (no reviewed flag) keeps the reviewed-draft semantics: presence confirms.
+    // 4. An EXPLICIT review event (reviewed: true - the review editor's submit) is the ONLY path that promotes.
     done(db)
-    const r4 = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: savedBuyer(research()) }))
+    const r4 = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: savedBuyer(research()), reviewed: true }))
     const b4 = await r4.json() as { job_id?: string; error?: string }
     assert.equal(r4.status, 202, JSON.stringify(b4))
     const s4 = storedJob(db, b4.job_id!)
-    assert.equal(hyp(s4.icp.research, 'practice managers').s, 'reviewed', 'default: the reviewed-draft semantics are unchanged')
+    assert.equal(hyp(s4.icp.research, 'practice managers').s, 'reviewed', 'the explicit review promotes the kept statement')
+    assert.equal(hyp(s4.icp.research, 'front-desk leads').s, 'sourced', 'a statement not in the fields stays sourced even here')
     assert.equal(s4.icp_inferred, 0, 'a review-flow submit stores as user-reviewed')
+
+    // 5. LEGACY/origin-0 repeat: an ordinary repeat (no flag) of a stored 'user' job is NOT a new review. Mixed
+    // statuses are preserved verbatim - reviewed stays reviewed, sourced stays sourced, rejections and the typed
+    // answer survive - and the repeat's own job records the raw carry (3), so later reloads read 'carried'.
+    done(db)
+    const latest3 = await (await latestGET()).json() as { icp: Icp | null; icp_source: string | null }
+    assert.equal(latest3.icp_source, 'user', 'the reviewed submit reads back as user')
+    const r5 = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: latest3.icp, reviewed: false }))
+    const b5 = await r5.json() as { job_id?: string; error?: string }
+    assert.equal(r5.status, 202, JSON.stringify(b5))
+    const s5 = storedJob(db, b5.job_id!)
+    assert.equal(hyp(s5.icp.research, 'practice managers').s, 'reviewed', 'a past explicit review is preserved, never demoted')
+    assert.equal(hyp(s5.icp.research, 'front-desk leads').s, 'sourced', 'the repeat does not promote what the review left sourced')
+    assert.equal(hyp(s5.icp.research, 'dental influencers').s, 'rejected', 'rejections survive the repeat')
+    assert.equal(s5.icp_inferred, 3, 'the repeat is a raw carry, durably')
+    assert.equal((await (await latestGET()).json() as { icp_source: string | null }).icp_source, 'carried')
+
+    // 6. A CHANGED sentence with a prior profile still carries it (reviewed: false): decisions are never silently
+    // discarded. The person sees the carry note in the UI; the server keeps every status.
+    done(db)
+    const r6 = await POST(request({ query: 'orthodontist practices in Texas expanding to two offices', icp: s5.icp, reviewed: false }))
+    const b6 = await r6.json() as { job_id?: string; error?: string }
+    assert.equal(r6.status, 202, JSON.stringify(b6))
+    const s6 = storedJob(db, b6.job_id!)
+    assert.equal(hyp(s6.icp.research, 'practice managers').s, 'reviewed', 'changed sentence: the review state carries whole')
+    assert.equal(hyp(s6.icp.research, 'front-desk leads').s, 'sourced')
+    assert.equal(hyp(s6.icp.research, 'dental influencers').s, 'rejected')
+    assert.equal(s6.icp_inferred, 3)
   } finally { db.close() }
 })

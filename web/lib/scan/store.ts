@@ -251,14 +251,15 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 }
 
 // icp is submitted JSON; presence does not prove human review or approval. null means infer it when the job runs.
-// icp_inferred: 0 = submitted from a review flow, 3 = carried raw (the request said reviewed: false - an autosaved or
-// restored profile, NOT a review). 3 is durable: a reload or repeat reads it back as 'carried' and never promotes.
+// icp_inferred: 0 = submitted from an explicit review flow (the request said reviewed: true), 3 = carried raw (an
+// autosaved, restored or repeated profile, NOT a review). 3 is durable: a reload or repeat reads it back as
+// 'carried' and never promotes. Legacy 0 rows predate this distinction and are NOT proof of review either.
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = input.id ?? randomBytes(12).toString('hex')   // a caller may fix the id first (a trial reservation is linked to it before the job exists)
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? (input.icpReviewed === false ? 3 : 0) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
 }

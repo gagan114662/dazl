@@ -451,7 +451,7 @@ export default function LeadsClient() {
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed === false ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
       // No estimate, no run: a paid scan is never started without showing what it will use.
@@ -467,11 +467,11 @@ export default function LeadsClient() {
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed === false ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
       if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer, reviewed }); return }
-      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === reuseIcp }); return }
+      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === priorIcp }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
@@ -631,20 +631,18 @@ export default function LeadsClient() {
   // Repeating a search: when the sentence is the one a profile YOU reviewed was used for, Find leads runs with that
   // reviewed profile instead of letting the server work out a new one (which silently discarded the review). A changed
   // sentence, or a profile dazl only inferred, still gets a fresh profile; Review profile first always rebuilds it.
-  const reuseIcp = icp && icp.source === 'user' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
-  // A job whose profile was committed reviewed: false reads back as source 'carried' (durable, icp_inferred = 3):
-  // repeating its exact sentence carries it raw again. The default reviewed semantics would promote its sourced
-  // statements with no review event - the stored origin is what prevents that, not the client's memory of the flag.
-  const carriedIcp = icp && icp.source === 'carried' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
-  // A first scan (no earlier play's profile to repeat): run with the reviewed business profile instead of letting the
+  // A restored play profile ('user' or the durable raw 'carried'): repeating its sentence OR changing the sentence
+  // carries it whole - statuses, dismissals and holds intact - never a silent discard and never a fresh review.
+  // (Legacy icp_inferred = 0 is not review proof either: an ordinary repeat stays raw, statuses preserved.)
+  const priorIcp = icp && (icp.source === 'user' || icp.source === 'carried') ? icp.icp : null
+  // A first scan (no earlier play's profile to carry): run with the saved business profile instead of letting the
   // server work out a new one, which silently discarded the review. The estimate step shows it before anything starts;
   // Review profile first still builds a fresh one from the sentence.
-  const businessIcp = reuseIcp ? null : carriedIcp ?? (!icp && savedBuyer ? savedBuyer : null)
-  const startIcp = reuseIcp ?? businessIcp
-  // A saved or carried business profile runs as stored, NOT as a fresh review: nothing in it is confirmed or rejected
-  // by this run alone (reviewed: false). Only a profile whose job was itself submitted from the review flow (source
-  // 'user') is a review and keeps the default semantics.
-  const startReviewed = reuseIcp ? undefined : businessIcp ? false : undefined
+  const startIcp = priorIcp ?? (!icp && savedBuyer ? savedBuyer : null)
+  // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
+  // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
+  const startReviewed = startIcp ? false : undefined
+  const businessIcp = startIcp
 
   const input = 'field'
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
@@ -686,8 +684,7 @@ export default function LeadsClient() {
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => { setOfferConflict(null); void run(startIcp, o, startReviewed) }} /></div>}
-        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads reuses this stored profile (approval is not recorded here): {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
-        {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile">Find leads uses your saved business profile as it is: {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl's reads; your dismissals and holds still apply. Review it in Build, or use Review profile first to build a new one from your sentence.</p>}
+        {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile">Find leads uses the saved profile as it is: {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl's reads; your dismissals and holds still apply. Review it in Build, or use Review profile first to build a new one from your sentence.</p>}
         </div>
       </form>
       {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}
@@ -813,7 +810,7 @@ export default function LeadsClient() {
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} />
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400">{draftNote}</p>
-            <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
@@ -838,7 +835,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={n => setOfferText(n)} />}
-          <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
