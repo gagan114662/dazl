@@ -5,10 +5,13 @@
 import type Database from 'better-sqlite3'
 import { demandRubric, type DemandRubric } from '../../lib/scan/demand-qualifier.ts'
 import { recordNeedEvidence, migrateNeedEvidence } from '../../lib/scan/need-evidence.ts'
+import { migrateAuth } from '../../lib/db/sqlite-store.ts'
+import { migrateCompetitors } from '../../lib/signals/competitor-reddit.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 
 export const NEED_OFFER = 'Dazl finds B2B sales leads and builds verified prospect lists for outbound teams'
-// The rubric the canonical loader resolves for a store without a users/competitors table (own names unknown, none saved).
+// The rubric the canonical loader resolves for the seeded store: a users row with no business name or website and an
+// empty competitors table - exclusion state KNOWN-empty, never unreadable (a rubric-less store fails closed now).
 export const NEED_RUBRIC: DemandRubric = demandRubric({ offer: NEED_OFFER, competitors: [], own_names: [], window_days: 90 })!
 export const NEED_GATE = { rubric: NEED_RUBRIC }
 
@@ -20,6 +23,12 @@ export const needPost = "I'm the co-founder of a B2B invoicing startup. We need 
 // the writer's own summary must say verified_buying_need or this fixture is wrong.
 export async function seedNeedVerified(db: Database.Database, tenantId: string, jobId: string, leadId: string, company: string): Promise<void> {
   migrateNeedEvidence(db)
+  // Known exclusion state: the fail-closed rubric loader refuses a store where the seller identity or the
+  // competitors table cannot be read, so the seed gives the tenant a real (name-less, website-less) identity row
+  // and a genuinely empty competitors list - the known-empty rubric above, not an unreadable one.
+  migrateAuth(db)
+  migrateCompetitors(db)
+  db.prepare("INSERT OR IGNORE INTO users (id, email, name, business_name, sells, website, password_hash, salt) VALUES (?, ?, 'n', NULL, NULL, NULL, 'x', 'y')").run(tenantId, `${tenantId}@example.test`)
   db.prepare('UPDATE scan_jobs SET offer = ?, offer_set_at = ? WHERE id = ?').run(NEED_OFFER, Math.floor(Date.now() / 1000), jobId)
   const lead = db.prepare('SELECT source_url FROM leads WHERE id = ?').get(leadId) as { source_url: string } | undefined
   if (!lead) throw new Error(`seedNeedVerified: no lead ${leadId}`)

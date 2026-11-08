@@ -42,7 +42,11 @@ export async function loadPlayDemandRubric(db: Db, tenantId: string, jobId: stri
   let me: { business_name: string | null; website: string | null } | undefined
   try { me = await db.get<{ business_name: string | null; website: string | null }>('SELECT business_name, website FROM users WHERE id = ?', [tenantId]) }
   catch (e) { if (e instanceof Error && /no such table|does not exist/i.test(e.message)) return { rubric: null, reason: 'identity_unreadable' }; throw e }
+  // A MISSING identity row is the same unknown as an unreadable one: no row does not throw, so without this check
+  // ownNamesFrom(undefined, undefined) would confirm an EMPTY own-name list and the seller's own post could promote
+  // (#401 review probe). Unknown exclusion state holds every lead; it never reads as empty.
+  if (!me) return { rubric: null, reason: 'identity_missing' }
   const competitors = await readCompetitorsStrict(db, tenantId)
   if (competitors === null) return { rubric: null, reason: 'competitors_unreadable' }
-  return rubricForPlay(offer, competitors, ownNamesFrom(me?.business_name, me?.website), windowDays)
+  return rubricForPlay(offer, competitors, ownNamesFrom(me.business_name, me.website), windowDays)
 }

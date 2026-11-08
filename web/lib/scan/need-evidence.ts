@@ -230,14 +230,22 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
       if (q.tier === 'high_intent') {
         // The outer canonical binding: the post's OWN author belongs to the lead's company, the lead is a verified
         // row, and the company domain is confirmed NOW. high_intent without all three stays needs_evidence.
+        const authorName = (q.requester.name ?? '').trim()
         const authorCompany = (q.requester.company ?? '').trim()
         const authorBound = !!authorCompany && companyKey(authorCompany) !== '' && companyKey(authorCompany) === companyKey(lead.company)
         const leadVerified = lead.review_reason === null && lead.confidence !== null && lead.quarantined_at === null && !heldReason
         const domainNow = authorBound && leadVerified && !!lead.company_domain ? await domainConfirmedDb(db, tenantId, lead.id, lead.company_domain) : false
         const ok = authorBound && leadVerified && domainNow
+        // The unbound reason names the actual gap (reviewer #401/#379): a source that reports no company for the
+        // author (today every worker platform - Reddit reports only a username) can never verify, and company is
+        // NEVER inferred from the lead, the post text or the seller profile. Such a lead ends at needs_evidence
+        // with the reason saying exactly why, not at a silent dead end.
+        const unbound = !authorCompany
+          ? authorName ? 'author_company_unavailable_from_source' : 'author_unavailable_from_source'
+          : 'author_company_mismatch'
         rows.push({
           lead, basis: 'demand_post', verdict: ok ? 'verified_buying_need' : 'needs_evidence',
-          reason: ok ? null : !authorBound ? 'author_company_unbound' : !leadVerified ? 'lead_not_verified' : 'domain_unconfirmed_now',
+          reason: ok ? null : !authorBound ? unbound : !leadVerified ? 'lead_not_verified' : 'domain_unconfirmed_now',
           demand, artifact,
         })
       } else if (q.tier === 'needs_evidence') {
@@ -308,10 +316,19 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
   return summary
 }
 
+// Truthful English for the machine reasons a needs_evidence verdict can carry: the card says what is actually
+// missing, never a generic gap (reviewer #401/#379).
+const NEED_REASON_TEXT: Record<string, string> = {
+  author_unavailable_from_source: 'the source does not identify the poster',
+  author_company_unavailable_from_source: "the source does not report the poster's company",
+  author_company_mismatch: 'the poster belongs to a different company than this lead',
+  lead_not_verified: 'the lead itself is not a verified row',
+  domain_unconfirmed_now: 'the company domain is not confirmed now',
+}
 function cardText(r: VerdictRow): string {
   switch (r.verdict) {
     case 'verified_buying_need': return 'Verified buying need: a dated post by a decision-maker at this company states the need, source-bound and domain-confirmed'
-    case 'needs_evidence': return `Buying need not fully proven: ${r.reason === 'needs_evidence' ? 'the post states a need but evidence is missing' : r.reason}`
+    case 'needs_evidence': return `Buying need not fully proven: ${r.reason === 'needs_evidence' ? 'the post states a need but evidence is missing' : NEED_REASON_TEXT[r.reason ?? ''] ?? r.reason}`
     case 'trigger_only': return 'Hiring trigger only: the sales-hiring proof stands, but a hiring signal is not verified buying need'
     case 'excluded': return `Not a qualified buyer: ${r.reason}`
     case 'unqualifiable': return 'Buying need cannot be qualified for this play: no effective rubric'
@@ -374,8 +391,16 @@ export function revalidateDemandContext(rec: DemandBindingRecord, ctx: DemandRea
 // only compares the source-reported author company to the lead's company; decision-maker authority was scored by the
 // classifier from the artifact's own headline at write time and re-scored on re-read (revalidateDemandContext).
 export function revalidateVerifiedBinding(rec: DemandBindingRecord, leadCompany: string, domainConfirmedNow: boolean): { ok: true } | { ok: false; reason: string } {
+  const authorName = (rec.author_name ?? '').trim()
   const authorCompany = (rec.author_company ?? '').trim()
-  if (!authorCompany || companyKey(authorCompany) === '' || companyKey(authorCompany) !== companyKey(leadCompany)) return { ok: false, reason: 'buying_need_unproven:author_company_unbound' }
+  if (!authorCompany || companyKey(authorCompany) === '' || companyKey(authorCompany) !== companyKey(leadCompany)) {
+    // The same split the writer records (need-evidence.ts recordNeedEvidence): the unavailable-vs-mismatch
+    // distinction survives a re-read, so a stored verified row whose binding broke says which way it broke.
+    const unbound = !authorCompany
+      ? authorName ? 'author_company_unavailable_from_source' : 'author_unavailable_from_source'
+      : 'author_company_mismatch'
+    return { ok: false, reason: `buying_need_unproven:${unbound}` }
+  }
   if (!domainConfirmedNow) return { ok: false, reason: 'buying_need_unproven:domain_withdrawn' }
   return { ok: true }
 }

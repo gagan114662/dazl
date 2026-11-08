@@ -104,3 +104,14 @@ bothEngines('unreadable exclusion state means NO rubric: competitors list unread
   await db.run('ALTER TABLE users RENAME TO users_gone', [])
   assert.deepEqual(await loadPlayDemandRubric(db, A, play), { rubric: null, reason: 'identity_unreadable' })
 })
+
+// #401 review probe: a MISSING identity row is not a confirmed-empty exclusion list - the no-row SELECT returns
+// undefined without throwing, and undefined must hold every lead exactly like an unreadable table does.
+bothEngines('missing seller identity row means NO rubric, never an exclusion-free one', async ({ db }) => {
+  const A = 'f'.repeat(32)
+  await tenant(db, A, 'Verified prospect lists for outbound teams')
+  const play = await createQueryJob(db, A, { query: 'B2B SaaS founders asking for lead sources', icp: null, seller: 'Verified prospect lists for outbound teams - https://seller.example', offer: 'Verified B2B prospect lists and sales leads' })
+  assert.ok((await loadPlayDemandRubric(db, A, play)).rubric, 'control: a healthy store loads the rubric')
+  await db.run('DELETE FROM users WHERE id = ?', [A])
+  assert.deepEqual(await loadPlayDemandRubric(db, A, play), { rubric: null, reason: 'identity_missing' })
+})

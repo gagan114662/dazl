@@ -181,6 +181,9 @@ bothEngines('high_intent alone is never verified: author binding, verified lead 
   await db.run(
     `INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at)
      VALUES ('dom-w6', 'w6', ?, 'sitecrawl', 'domain', 'other.example|evidence_own_domain', NULL, NULL, 'https://other.example/', '2026-11-02', ?)`, [A, NOW])
+  // g) the REAL session-worker Reddit shape: the listing reports only a username, headline/company are null
+  await lead(db, job, 'w7', { company: 'Tallyline', domain: 'tallyline.example', published: '2026-10-28' })
+  await confirmDomain(db, A, 'w7', 'tallyline.example')
   const url = (id: string) => `https://forum.example.test/t/${id}`
 
   const s = await recordNeedEvidence(db, A, job, {
@@ -191,16 +194,23 @@ bothEngines('high_intent alone is never verified: author binding, verified lead 
       artifact(url('w3'), { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
       artifact(url('w4'), { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
       artifact(url('w6'), { author: FOUNDER_AUTHOR, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
+      // exactly what session-worker/src/fetchers.ts emits for a Reddit listing: name only, company never inferred
+      artifact(url('w7'), { author: { name: 'maya-c', headline: null, company: null }, text: FOUNDER_POST, published_at: '2026-10-28T09:00:00Z' }),
     ],
   })
   assert.equal(s.verified_buying_need, 0)
-  assert.equal((await record(db, A, 'w1'))!.reason, 'author_company_unbound') // the source says the author is at Other Corp, not Tallyline
+  assert.equal((await record(db, A, 'w1'))!.reason, 'author_company_mismatch') // the source says the author is at Other Corp, not Tallyline
   assert.equal((await record(db, A, 'w2'))!.verdict, 'needs_evidence')
+  assert.equal((await record(db, A, 'w2'))!.reason, 'needs_evidence') // authorless: the qualifier itself caps the tier before the binding branch
   assert.equal((await record(db, A, 'w3'))!.reason, 'domain_unconfirmed_now')
   assert.equal((await record(db, A, 'w4'))!.reason, 'lead_not_verified')
-  assert.equal((await record(db, A, 'w5'))!.reason, 'author_company_unbound') // replayed artifact: the author is Other Corp's, never Corvana's
+  assert.equal((await record(db, A, 'w5'))!.reason, 'author_company_mismatch') // replayed artifact: the author is Other Corp's, never Corvana's
   assert.equal((await record(db, A, 'w6'))!.reason, 'domain_unconfirmed_now') // evidence confirms a different domain
-  for (const id of ['w1', 'w2', 'w3', 'w4', 'w5', 'w6']) assert.notEqual((await need(db, A, job, id)).status, 'verified_buying_need', id)
+  // the actual production intake outcome: a Reddit author never carries a company, so the explicit end state is
+  // needs_evidence naming the missing binding - never a silent dead end, never an inferred company
+  assert.equal((await record(db, A, 'w7'))!.verdict, 'needs_evidence')
+  assert.equal((await record(db, A, 'w7'))!.reason, 'author_company_unavailable_from_source')
+  for (const id of ['w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7']) assert.notEqual((await need(db, A, job, id)).status, 'verified_buying_need', id)
 })
 
 // ---------------------------------------------------------------------------------------------------- source dates: own, old, future, missing
