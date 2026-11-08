@@ -5,13 +5,18 @@
 // browser (no model call, no scan runs). Live finding (staging, 2026-11-07): the saved business profile was reviewed
 // and saved, but the first Find leads sent NO profile (the server worked out a new one, discarding the review), and
 // reopening Home > Build dropped every saved Dismiss because the editor only hydrated the flat fields. It proves:
-//   1. first scan, saved reviewed buyer with rejections: the page says Find leads uses the saved business profile,
-//      and the one POST /api/scan carries exactly that profile, with its research decisions;
+//   1. first scan, saved buyer with a rejection, a hold and the canonical fields (country/language/window/lookalike):
+//      the page says Find leads uses the saved business profile AS IT IS (never "review decisions you made" - a saved
+//      profile is not a review), and the estimate POST and the scan POST carry exactly the same profile, whole, both
+//      marked reviewed: false so the server never treats presence as approval;
 //   2. a changed sentence on that first scan still carries the saved business profile (decisions never silently
 //      discarded); the note stays visible so the person can see what runs;
 //   3. no saved buyer: no note, and the scan request carries no profile (the server works one out);
-//   4. Home > Build (?setup=brain) reopen + save: the POST /api/settings/profile keeps the research block and its
-//      rejections whole (fail-before: the save dropped research entirely).
+//   4. an autosaved, never-reviewed buyer (no decisions, statements only sourced): same honest note, still
+//      reviewed: false, and NO research decisions are claimed;
+//   5. Home > Build (?setup=brain) reopen + save: the POST /api/settings/profile keeps the research block and its
+//      rejections whole, and the canonical fields (country/language/window/lookalike) with it (fail-before: the save
+//      dropped research and every non-flat field entirely).
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -44,15 +49,19 @@ const RESEARCH = {
   hyps: [
     { i: 'h1', o: 'o1', k: 'persona', t: 'Founders', s: 'sourced', u: 'https://dazl.ai/', q: 'for founders and sales teams', at: null },
     { i: 'h2', o: 'o1', k: 'persona', t: 'Head of Real Estate', s: 'rejected', u: 'https://dazl.ai/', q: 'illustrative example', at: null },
+    { i: 'h3', o: 'o1', k: 'offer', t: 'Dazl lead finding', s: 'held', u: null, q: null, at: null },
   ],
-  decisions: [{ offer: 'o1', hypothesis: 'h2', action: 'reject' }],
+  decisions: [{ offer: 'o1', hypothesis: 'h2', action: 'reject' }, { offer: 'o1', hypothesis: 'h3', action: 'hold' }],
 }
-const BUYER = { summary: 'Businesses that need evidence-backed outbound leads', who: ['Founders', 'B2B sales teams'], industries: [], sizes: [], where: [], signals: ['seeking a lead-finding tool'], exclude: [], research: RESEARCH }
+const LOOKALIKE = { v: 1, p: 6, q: 6, f: [{ d: 'i', t: 'software', n: 3, x: 2.5 }], h: { p: 0.8, b: 0.4, n: 6 }, k: { c: 'abcde12345', x: 'zzzzz', n: 'yyyyy' } }
+const BUYER = { summary: 'Businesses that need evidence-backed outbound leads', who: ['Founders', 'B2B sales teams'], industries: [], sizes: [], where: [], signals: ['seeking a lead-finding tool'], exclude: [], country: 'US', language: 'en', window_days: 180, lookalike: LOOKALIKE, research: RESEARCH }
+// The same buyer as dazl autosaves it before any review: every statement sourced, no decisions recorded.
+const UNREVIEWED_BUYER = { ...BUYER, research: { ...RESEARCH, hyps: RESEARCH.hyps.map(h => ({ ...h, s: 'sourced' })), decisions: [] } }
 const ESTIMATE = { estimate: { rows: [], total: { min: 0, max: 0 }, unpriced: [], assumptions: ['Synthetic fenced estimate'], payer: 'you', cap: { max_usd: null, reserved_usd: 0, remaining_usd: null, binding: null, capped_total: { min: 0, max: 0 }, month_cap_usd: null, month_reserved_usd: 0, unknown: false }, verdict: { ok: true, reason: null, message: 'Synthetic estimate only', change: [], warning: null }, ack: 'synthetic-fenced-ack' } }
 
 const b = await chromium.launch()
 async function open({ buyer, latest = { query: null, icp: null, icp_source: null }, page: pagePath = '/app/leads' }) {
-  const scanBodies = [], saves = []
+  const scanBodies = [], estBodies = [], saves = []
   const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   await ctx.route('**/*', async route => {
@@ -67,28 +76,35 @@ async function open({ buyer, latest = { query: null, icp: null, icp_source: null
     if (p === '/api/scan/sources') return json({ web_index: true, news: true, websites: true })
     if (p === '/api/scan/jobs') return json({ jobs: [], totals: { finished: 0, searches: 0 } })
     if (p === '/api/scan/latest') return json(latest)
-    if (p === '/api/scan/estimate' && m === 'POST') return json(ESTIMATE)
+    if (p === '/api/scan/estimate' && m === 'POST') { estBodies.push(JSON.parse(req.postData())); return json(ESTIMATE) }
     if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'e'.repeat(24) }, 202) }
     if (p === '/api/scan/status') return json({ status: 'pending', lead_count: 0, attempts: 0, max_attempts: 3 })
     return json({}, 404)
   })
   const page = await ctx.newPage()
   await page.goto(`${base}${pagePath}`, { waitUntil: 'networkidle' })
-  return { ctx, page, scanBodies, saves }
+  return { ctx, page, scanBodies, estBodies, saves }
 }
 try {
-  // 1. First scan: the saved reviewed buyer carries through, decisions and all.
+  // 1. First scan: the saved buyer carries through whole - rejections, the held offer, the canonical fields - and the
+  //    estimate and scan requests are the SAME profile, both marked reviewed: false (presence is not approval).
   const a = await open({ buyer: BUYER })
   await a.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
-  assert.match(await a.page.getByTestId('business-profile').textContent(), /^Find leads uses your saved business profile, with the review decisions you made on it: Businesses that need evidence-backed outbound leads\./)
+  const note = await a.page.getByTestId('business-profile').textContent()
+  assert.match(note, /^Find leads uses your saved business profile as it is: Businesses that need evidence-backed outbound leads\./)
+  assert.ok(!note.includes('review decisions you made'), 'a saved profile is not a review: the note never claims decisions were made on it')
   await a.page.getByLabel('Who do you want to reach?').fill(Q)
   await a.page.getByRole('button', { name: 'Find leads' }).click()
   assert.equal(a.scanBodies.length, 0, 'no scan before estimate confirmation')
+  assert.equal(a.estBodies.length, 1)
   await a.page.getByTestId('estimate-confirm-run').click()
   await a.page.getByText('Queued - waiting to start.').waitFor()
   assert.equal(a.scanBodies.length, 1)
-  assert.deepEqual(a.scanBodies[0].icp, BUYER, 'the saved reviewed profile is sent whole, research block included')
-  assert.deepEqual(a.scanBodies[0].research_decisions, RESEARCH.decisions, 'the reject decision rides along')
+  assert.deepEqual(a.estBodies[0].icp, a.scanBodies[0].icp, 'the estimate and the scan carry the same profile')
+  assert.deepEqual(a.scanBodies[0].icp, BUYER, 'the saved profile is sent whole: research, held offer, country/language/window/lookalike')
+  assert.equal(a.estBodies[0].reviewed, false, 'the estimate says not-a-review')
+  assert.equal(a.scanBodies[0].reviewed, false, 'the scan says not-a-review')
+  assert.deepEqual(a.scanBodies[0].research_decisions, RESEARCH.decisions, 'the recorded reject and hold decisions ride along, still marked sourced/held server-side')
   await a.ctx.close()
   // 2. A changed sentence on that first scan keeps the saved business profile, visibly.
   const c = await open({ buyer: BUYER })
@@ -99,6 +115,7 @@ try {
   await c.page.getByTestId('estimate-confirm-run').click()
   await c.page.getByText('Queued - waiting to start.').waitFor()
   assert.deepEqual(c.scanBodies[0].icp, BUYER, 'explicit review decisions are never silently discarded')
+  assert.equal(c.scanBodies[0].reviewed, false)
   await c.ctx.close()
   // 3. No saved buyer: nothing is carried, the server works out the profile.
   const d = await open({ buyer: null })
@@ -109,8 +126,22 @@ try {
   await d.page.getByTestId('estimate-confirm-run').click()
   await d.page.getByText('Queued - waiting to start.').waitFor()
   assert.equal(d.scanBodies[0].icp, undefined)
+  assert.equal(d.scanBodies[0].reviewed, undefined, 'nothing carried, nothing marked')
   await d.ctx.close()
-  // 4. Home > Build reopen: the editor re-saves the research block whole.
+  // 4. An autosaved, never-reviewed buyer: the same honest note, still not a review, and no decisions claimed.
+  const f = await open({ buyer: UNREVIEWED_BUYER })
+  await f.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
+  const note4 = await f.page.getByTestId('business-profile').textContent()
+  assert.ok(!note4.includes('review decisions you made'), 'the autosaved buyer was never reviewed and the note says so')
+  await f.page.getByLabel('Who do you want to reach?').fill(Q)
+  await f.page.getByRole('button', { name: 'Find leads' }).click()
+  await f.page.getByTestId('estimate-confirm-run').click()
+  await f.page.getByText('Queued - waiting to start.').waitFor()
+  assert.deepEqual(f.scanBodies[0].icp, UNREVIEWED_BUYER, 'the autosaved profile carries whole too')
+  assert.equal(f.scanBodies[0].reviewed, false, 'autosaved is carried as stored, never as approval')
+  assert.deepEqual(f.scanBodies[0].research_decisions, [], 'no review act ever happened, so no decisions are claimed')
+  await f.ctx.close()
+  // 5. Home > Build reopen: the editor re-saves the research block and the canonical fields whole.
   const e = await open({ buyer: BUYER, page: '/app?setup=brain' })
   await e.page.getByRole('button', { name: /Looks right|continue/i }).first().waitFor({ timeout: 15000 })
   await e.page.getByRole('button', { name: /Looks right|continue/i }).first().click()
@@ -118,6 +149,10 @@ try {
   assert.equal(e.saves.length, 1, 'the save went out')
   assert.deepEqual(e.saves[0].buyer.research, BUYER.research, 'reopen + save keeps every decision and the research block whole')
   assert.deepEqual(e.saves[0].buyer.who, BUYER.who)
+  assert.equal(e.saves[0].buyer.country, 'US', 'the canonical fields survive the round-trip')
+  assert.equal(e.saves[0].buyer.language, 'en')
+  assert.equal(e.saves[0].buyer.window_days, 180)
+  assert.deepEqual(e.saves[0].buyer.lookalike, LOOKALIKE)
   await e.ctx.close()
   console.log('profile carry-through UI check passed: first scan uses the saved reviewed business profile with its decisions; reopen + save keeps the research whole')
 } finally {

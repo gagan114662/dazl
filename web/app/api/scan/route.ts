@@ -83,7 +83,9 @@ export async function POST(req: NextRequest) {
     try { tenantContext = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
     bindOffer = effectiveOffer({ seller, query }, tenantContext).offer ?? ''
   }
-  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer) : icp
+  // reviewed: false = the profile is carried exactly as stored (a saved business profile reused for a first scan):
+  // nothing in it is confirmed or rejected by this request alone (applyReviewedDraft).
+  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed !== false }) : icp
   // Capture only explicit Add/Dismiss events, not inferred statuses or a profile's mere presence.
   let decisions: ReturnType<typeof decisionRows>
   try { decisions = decisionRows(body?.research_decisions, effective?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, effective ?? undefined) }
