@@ -855,8 +855,9 @@ export default function LeadsClient() {
         <details className="text-sm text-gray-400 mb-4">
           {/* #1016: the profile text and its provenance are two wrapping flex items. On one shared row a long profile squeezed the
               provenance into a one-word-wide column on mobile; flex-wrap keeps them side by side only when both fit whole, else
-              the provenance takes its own full-width line. Nothing is hidden, truncated or shortened. */}
-          <summary className="cursor-pointer min-h-11 flex flex-wrap items-center content-center gap-x-1" data-testid="profile-used-summary"><span className="min-w-0" data-testid="profile-used-text">Profile used: {icp.icp.summary}</span><span className="min-w-0 text-gray-600" data-testid="profile-provenance">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
+              the provenance takes its own full-width line. Nothing is hidden, truncated or shortened. The {' '} keeps the text and
+              accessible name spaced (whitespace between flex items is not rendered). */}
+          <summary className="cursor-pointer min-h-11 flex flex-wrap items-center content-center gap-x-1"><span className="min-w-0">Profile used: {icp.icp.summary}</span>{' '}<span className="min-w-0 text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
           <ul className="mt-2 ml-4 list-disc text-xs">
             {icp.icp.who.length > 0 && <li>Who: {icp.icp.who.join('; ')}</li>}
             {icp.icp.where.length > 0 && <li>Where: {icp.icp.where.join('; ')}</li>}

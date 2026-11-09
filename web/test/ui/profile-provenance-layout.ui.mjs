@@ -41,7 +41,9 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 const shot = async (page, name) => {
   if (!process.env.SHOTS) return
   // The whole summary block with its surrounding layout: full viewport width, a band above and below the <details>.
-  const r = await page.locator('details', { has: page.getByTestId('profile-used-summary') }).boundingBox()
+  const det = page.locator('details', { has: page.locator('summary', { hasText: 'Profile used:' }) })
+  await det.evaluate(el => el.scrollIntoView({ block: 'center' })) // main scrolls on its own: bring the block into the viewport
+  const r = await det.boundingBox()
   const vp = page.viewportSize()
   const y = Math.max(0, r.y - 80); const h = Math.min(vp.height - y, r.height + 160)
   await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), clip: { x: 0, y, width: vp.width, height: h } })
@@ -50,8 +52,9 @@ const HYDRATION = /#41[89]|#42[23]|Hydration|did not match/i
 // A long saved profile (synthetic; the editor caps the summary at 300 characters) and a short one.
 const LONG = 'Independent dental practices in New York City and the surrounding boroughs with two to ten chairs, run by an owner-dentist or a practice manager, that recently opened, moved or added a location and still book appointments by phone or a paper calendar.'
 const SHORT = 'NYC dental practices'
-// Every origin/approval label the summary can show, keyed by the icp_source the restore path receives.
-const LABELS = { inferred: 'worked out by dazl', user: 'stored profile; approval not recorded', request_only: 'request fallback; interpretation not verified', carried: 'profile origin and approval not recorded' }
+// Every origin/approval label the summary can show, keyed by the icp_source the restore path receives. 'carried' (the
+// label of the staging finding) first, so its pixels are saved even when an earlier assertion fails.
+const LABELS = { carried: 'profile origin and approval not recorded', inferred: 'worked out by dazl', user: 'stored profile; approval not recorded', request_only: 'request fallback; interpretation not verified' }
 let latest = null
 
 const b = await chromium.launch()
@@ -72,18 +75,23 @@ await ctx.route('**/*', async route => {
 
 // The real geometry of the summary row: each part's rendered box, its natural one-line width, the summary's content
 // width, overflow, the line count of the note, and the bounds it must stay inside (main and the viewport).
+// Structure-agnostic on purpose (no test ids): the summary is found by its text, the note is its "(...)" child element
+// and the profile text is everything before the note (a DOM Range) - so the SAME check runs on the pre-fix markup
+// (bare text + one span) and fails there on the geometry, not on a missing selector.
 const geometry = page => page.evaluate(() => {
-  const s = document.querySelector('[data-testid="profile-used-summary"]')
-  const t = s?.querySelector('[data-testid="profile-used-text"]'); const n = s?.querySelector('[data-testid="profile-provenance"]')
-  if (!s || !t || !n) return null
-  const natural = el => { const c = el.cloneNode(true); c.removeAttribute('data-testid'); c.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;width:auto;max-width:none'; s.appendChild(c); const w = c.getBoundingClientRect().width; c.remove(); return w }
+  const s = [...document.querySelectorAll('summary')].find(x => (x.textContent ?? '').startsWith('Profile used:'))
+  const n = s && [...s.children].find(c => (c.textContent ?? '').trim().startsWith('('))
+  if (!s || !n) return null
+  const range = document.createRange(); range.setStart(s, 0); range.setEndBefore(n)
+  const probe = (txt, cls) => { const c = document.createElement('span'); c.className = cls; c.textContent = txt; c.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;width:auto;max-width:none'; s.appendChild(c); const w = c.getBoundingClientRect().width; c.remove(); return w }
   const cs = getComputedStyle(s)
   const content = s.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
-  const box = el => { const r = el.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width, h: r.height } }
+  const box = r => ({ l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width, h: r.height })
   const lh = parseFloat(getComputedStyle(n).lineHeight) || parseFloat(getComputedStyle(n).fontSize) * 1.5
   const main = document.getElementById('main')?.getBoundingClientRect()
-  return { text: box(t), note: box(n), textNat: natural(t), noteNat: natural(n), content, sScroll: s.scrollWidth, sClient: s.clientWidth,
-    noteLines: Math.round(n.getBoundingClientRect().height / lh), textStr: t.innerText, noteStr: n.innerText,
+  const textStr = range.toString().trim()
+  return { text: box(range.getBoundingClientRect()), note: box(n.getBoundingClientRect()), textNat: probe(textStr, ''), noteNat: probe(n.textContent ?? '', n.className), content, sScroll: s.scrollWidth, sClient: s.clientWidth,
+    noteLines: Math.round(n.getBoundingClientRect().height / lh), textStr, noteStr: (n.textContent ?? '').trim(),
     mainR: main ? main.right : window.innerWidth, vw: window.innerWidth }
 })
 const assertReadable = (g, label) => {
@@ -114,14 +122,17 @@ try {
         page.on('console', m => { if (m.type() === 'error' && HYDRATION.test(m.text())) hydrationErrors.push(m.text().slice(0, 140)) })
         page.on('pageerror', e => { if (HYDRATION.test(String(e))) hydrationErrors.push('pageerror: ' + String(e).slice(0, 140)) })
         await page.goto(base + '/app/leads', { waitUntil: 'load' })
-        const sum = page.getByTestId('profile-used-summary')
+        const sum = page.locator('summary', { hasText: 'Profile used:' })
         await sum.waitFor({ timeout: 15000 })
         await page.waitForTimeout(300)
         assert.deepEqual(hydrationErrors, [], `${label}: zero hydration errors (got ${JSON.stringify(hydrationErrors)})`)
         const g = await geometry(page)
+        if (source === 'carried') await shot(page, `profile-provenance-${tag}-${size}-closed`) // before asserting: failure pixels too
         // The complete wording, exactly: nothing truncated, shortened or replaced.
         assert.equal(g?.textStr, `Profile used: ${summary}`, `${label}: the whole profile text is on the page`)
         assert.equal(g?.noteStr, `(${words})`, `${label}: the whole origin/approval note is on the page`)
+        // Read as one sentence (text content feeds the summary's accessible name): profile and note stay space-separated.
+        assert.equal((await sum.textContent()).replace(/\s+/g, ' ').trim(), `Profile used: ${summary} (${words})`, `${label}: summary text reads as one spaced sentence`)
         const sameRow = assertReadable(g, label)
         // A short profile at desktop width keeps both parts on one row: the layout breaks the line only when it must.
         if (tag === 'desktop' && size === 'short') assert.ok(sameRow, `${label}: short profile and note share one row at 1280`)
@@ -142,7 +153,6 @@ try {
         assert.equal(await isOpen(), true, `${label}: click opens`)
         await sum.click()
         assert.equal(await isOpen(), false, `${label}: click closes`)
-        if (source === 'carried') await shot(page, `profile-provenance-${tag}-${size}-closed`)
         await page.close()
       }
     }
