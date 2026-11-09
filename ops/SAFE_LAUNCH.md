@@ -48,7 +48,7 @@ manifest (`--backup-manifest`, default `<backup>.json`) whose sourcePath is DB_P
 whose backupPath names this file and whose bytes/sha256 match the file now, a
 `--drill-report` from `restore-drill.ts --report` with ok=true for this backup name
 and sha256 (started at/after the manifest), and an explicit recovery policy
-`--backup-max-age-s` (1s..7d, default 86400 = 24h per owner decision; both manifest
+`--backup-max-age-s` (1s..7d, required, no default; both manifest
 and drill must be within it). Clock skew is a bounded tolerance, not "any future
 timestamp fails closed": `CLOCK_SKEW_S` = 120. A manifest created up to 120s in the
 future is accepted; further out is refused `backup_stale`. A drill may start up to 120s

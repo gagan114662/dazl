@@ -348,8 +348,8 @@ class BackupEvidenceTest(unittest.TestCase):
         write_manifest(self.backup, self.db, created=NOW - 3601); self.refused('backup_stale')
         write_manifest(self.backup, self.db, created=NOW + 3600); self.refused('backup_stale')
 
-    def test_cli_default_policy_is_24_hours(self):
-        self.assertEqual(m.DEFAULT_BACKUP_MAX_AGE_S, 86400)
+    def test_cli_has_no_default_policy_window(self):
+        self.assertFalse(hasattr(m, 'DEFAULT_BACKUP_MAX_AGE_S'))
         argv = ['safe_launch.py','--stage','/new','--commit','a'*40,'--rollback-stage','/old','--rollback-commit','b'*40,
                 '--env-file','/env','--pid','1','--backup','/b','--backup-db','/db']
         seen = {}
@@ -357,10 +357,12 @@ class BackupEvidenceTest(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()):
             try: m.main()
             except (SystemExit, m.LaunchError): pass
-        self.assertEqual(seen['a'].backup_max_age_s, 86400)
+        self.assertIsNone(seen['a'].backup_max_age_s, 'omitting --backup-max-age-s must not invent a window')
+        self.args.backup_max_age_s = seen['a'].backup_max_age_s
+        self.refused('backup_policy_required')
 
-    def test_24h_default_refuses_older_backup(self):
-        self.args.backup_max_age_s = m.DEFAULT_BACKUP_MAX_AGE_S
+    def test_an_explicit_24_hour_window_is_honoured(self):
+        self.args.backup_max_age_s = 86400
         write_manifest(self.backup, self.db, created=NOW - 86401); self.refused('backup_stale')
         write_manifest(self.backup, self.db, created=NOW - 86000); write_drill(self.root/'drill.json', self.backup, started=NOW - 85000)
         m.check_database_backup(self.env, self.args, now=NOW)
