@@ -72,12 +72,19 @@ export async function createMonitor(db: Db, userId: string, input: { query: stri
   const plan = await readPlan(db, userId)
   const lim = MONITOR_LIMITS[plan]
   if (input.intervalHours !== undefined && input.intervalHours < lim.minIntervalHours) return { error: 'interval', min: lim.minIntervalHours }
-  const n = Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM monitors WHERE user_id = ?', [userId]))!.n)
-  if (n >= lim.maxMonitors) return { error: 'limit', limit: lim.maxMonitors }
   const interval = Math.max(lim.minIntervalHours, Math.floor(input.intervalHours ?? lim.minIntervalHours))
   const id = randomBytes(12).toString('hex')
-  await db.run('INSERT INTO monitors (id, user_id, query, icp, sources, interval_hours, next_run_at, created_at, alert_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, userId, input.query, input.icp ?? null, input.sources ?? null, interval, now, now, input.alertPolicy ?? 'all'])
+  // The limit counts every stored monitor (enabled or not). Count and insert are one transaction (#905): SQLite's tx is
+  // synchronous, and on Postgres a per-tenant advisory lock orders concurrent creates across instances.
+  const ok = await db.tx(function* (t) {
+    if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('monitor_create:' || ?, 0)) AS x", [userId])
+    const n = Number((yield* t.get<{ n: number }>('SELECT count(*) AS n FROM monitors WHERE user_id = ?', [userId]))!.n)
+    if (n >= lim.maxMonitors) return false
+    yield* t.run('INSERT INTO monitors (id, user_id, query, icp, sources, interval_hours, next_run_at, created_at, alert_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, userId, input.query, input.icp ?? null, input.sources ?? null, interval, now, now, input.alertPolicy ?? 'all'])
+    return true
+  })
+  if (!ok) return { error: 'limit', limit: lim.maxMonitors }
   return { id }
 }
 

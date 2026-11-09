@@ -76,7 +76,7 @@ async function runScan(budget: string | null) {
 test('#379: an unguarded run never reaches the unpriceable web-search research fallback (fail closed)', async () => {
   // Pre-fix this run ended 'done' with leads from provider.research - an unbounded, unpriced, unrecorded call.
   // Post-fix the real provider's retired research method refuses before any network call: the run ends honestly as
-  // budget_stopped and no web-search request is ever made.
+  // unbounded_fallback_hold (the refusal is the unpriceable research call, not a budget) and no web-search request is ever made.
   resetTinyfishState()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
@@ -93,7 +93,7 @@ test('#379: an unguarded run never reaches the unpriceable web-search research f
   const r = await runJob(db, job, { master, fetchImpl, fetchPage: async () => ({ text: 'x'.repeat(300), title: 'Jobs', retrievedAt: 1 }), score: false, ground: false })
   assert.equal(r, 'failed')
   const row = db.prepare('SELECT status, error FROM scan_jobs').get() as { status: string; error: string }
-  assert.equal(row.status, 'failed'); assert.equal(row.error, 'budget_stopped', 'an honest stop, never "nothing found"')
+  assert.equal(row.status, 'failed'); assert.equal(row.error, 'unbounded_fallback_hold', 'an honest stop naming the unpriceable fallback, never "nothing found" and never a budget stop')
   assert.equal(webSearchCalls, 0, 'the unpriceable call was refused at the provider boundary')
 })
 

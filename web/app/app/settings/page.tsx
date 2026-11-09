@@ -16,22 +16,29 @@ import SessionsPanel from './sessions-panel'
 import ReauthGate from './reauth-gate'
 import AccountPanel from './account-panel'
 import AuditPanel from './audit-panel'
+import { Suspense } from 'react'
 import { connection } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { can } from '@/lib/workspaces'
 
 const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
-export default async function Settings() {
+// cacheComponents: the session read is request-time data, so it sits inside its own Suspense boundary (same pattern as
+// the claimed preview page).
+export default function Settings() {
+  return <Suspense fallback={null}><SettingsBody /></Suspense>
+}
+
+async function SettingsBody() {
   // the audit trail is for owners and admins; nobody else's page load asks for it (a refused read is a recorded event)
-  await connection() // #942: request-time only; the session read checks expiry against the clock
+  await connection() // #988: the session check reads the clock; request time first, so the prerender never sees Date.now()
   const user = await requireUser()
   return (
     <div className="p-8 max-w-2xl">
       <h1 className="text-2xl font-semibold tracking-tight mb-1">Settings</h1>
       <p className="text-[#555] text-sm mb-4">Your plan, your team, your AI key and optional connectors.</p>
-      <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 gap-y-1 mb-6 text-xs font-mono uppercase tracking-wider">
-        {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="inline-block py-1 underline underline-offset-4 text-[#111]">{label}</a>)}
+      <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 mb-6 text-xs font-mono uppercase tracking-wider">
+        {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="inline-flex items-center justify-center min-h-11 min-w-11 underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
       <ReauthGate />
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>

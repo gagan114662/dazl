@@ -271,8 +271,19 @@ export class WorkerHost {
 
 // A host loop: `concurrency` tickers until `signal` aborts. An error escaping a tick (a database fault) is reported and
 // the loop backs off; the claim it held, if any, is recovered by its lease.
-export async function runHost(host: WorkerHost, opts: { concurrency?: number; idleMs?: number; signal: AbortSignal }): Promise<void> {
-  const sleep = (ms: number) => new Promise<void>(r => { const t = setTimeout(r, ms); opts.signal.addEventListener('abort', () => { clearTimeout(t); r() }, { once: true }) })
+// Each sleep removes its own abort listener whichever way it ends (timer or abort), so a long idle host holds at most
+// one listener per ticker, not one per completed sleep (#918). An already-aborted signal returns at once.
+export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>(resolve => {
+    if (signal.aborted) return resolve()
+    const done = () => { clearTimeout(t); signal.removeEventListener('abort', done); resolve() }
+    const t = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
+export async function runHost(host: Pick<WorkerHost, 'tick'>, opts: { concurrency?: number; idleMs?: number; signal: AbortSignal }): Promise<void> {
+  const sleep = (ms: number) => abortableSleep(ms, opts.signal)
   const loop = async () => {
     while (!opts.signal.aborted) {
       try {
