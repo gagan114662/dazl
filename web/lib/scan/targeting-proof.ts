@@ -109,17 +109,47 @@ function techProof(c: Condition, rows: ProofRow[], now: number): Proof {
   return { truth: 'unknown', reason: `a removal needs a check showing ${tech}, then two later comparable full-page checks without it; these checks do not show that` }
 }
 
-// #878: each condition is proven on its OWN evidence date and its own clock. A clock counted from another condition's event needs BOTH
-// events dated on their own sources (one quote's date cannot be both), whatever kind the condition is; a clock the request states two
-// incompatible ways is never proven.
-export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext, dates: Record<string, string | undefined> = {}): Proof {
-  if (c.clock_conflict) return { truth: 'unknown', reason: c.clock_conflict }
-  const p = ownProof(c, lead, rows, ctx)
-  if (p.truth !== 'pass' || !c.relative_to) return p
-  const anchor = dates[c.relative_to]
-  if (!anchor || !p.date || anchor === p.date) return { truth: 'unknown', reason: `this condition and ${c.relative_to} are not dated on separate sources, so "within ${c.within_days} days of" it cannot be checked`, ...(p.source_url ? { source_url: p.source_url } : {}), ...(p.date ? { date: p.date } : {}) }
+// One source, whatever form its URL is written in: scheme, "www.", query, fragment and trailing slashes are dropped and case is folded.
+// Folding more than needed only ever makes two sources look like one (fail closed: the relation is then not checked, so not proven).
+const sourceKey = (u: string) => u.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '')
+
+// A pass checked against the gap to its anchor's event (#878). The two events must sit on separate sources: when both source URLs are
+// known they must differ (two sources may share a calendar date); when either is unknown, the dates must differ (one quote's date cannot be both).
+function relate(c: Condition, p: Proof, anchor: string | undefined, anchorUrl: string | undefined): Proof {
+  const rel = c.relative_to ?? ''
+  const urls = typeof anchorUrl === 'string' && !!anchorUrl.trim() && typeof p.source_url === 'string' && !!p.source_url.trim()
+  const separate = isDate(anchor) && isDate(p.date) && (urls ? sourceKey(anchorUrl as string) !== sourceKey(p.source_url as string) : anchor !== p.date)
+  if (!separate) return { truth: 'unknown', reason: `this condition and ${rel} are not dated on separate sources, so "within ${c.within_days} days of" it cannot be checked`, ...(p.source_url ? { source_url: p.source_url } : {}), ...(p.date ? { date: p.date } : {}) }
   const gap = Math.round((Date.parse(`${p.date}T00:00:00Z`) - Date.parse(`${anchor}T00:00:00Z`)) / DAY)
-  return gap >= 0 && gap <= (c.within_days ?? 0) ? { ...p, reason: `${p.reason}; ${gap} days after ${c.relative_to} (${anchor})` } : { truth: 'unknown', reason: `this condition's evidence (${p.date}) is not within ${c.within_days} days after ${c.relative_to} (${anchor})`, ...(p.source_url ? { source_url: p.source_url } : {}), date: p.date }
+  return gap >= 0 && gap <= (c.within_days ?? 0) ? { ...p, reason: `${p.reason}; ${gap} days after ${rel} (${anchor})` } : { truth: 'unknown', reason: `this condition's evidence (${p.date}) is not within ${c.within_days} days after ${rel} (${anchor})`, ...(p.source_url ? { source_url: p.source_url } : {}), date: p.date }
+}
+
+// #878: each condition is proven on its OWN evidence date and its own clock. A clock counted from another condition's event needs BOTH
+// events dated on their own sources, whatever kind the condition is; a clock the request states two incompatible ways is never proven.
+// EVERY candidate proof is checked against the gap (not only the first one), so the result never depends on the order rows are read in.
+// `sources` holds each anchor's source URL (planProofs fills it); without it, separate sources are told apart by date only.
+export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext, dates: Record<string, string | undefined> = {}, sources: Record<string, string | undefined> = {}): Proof {
+  if (c.clock_conflict) return { truth: 'unknown', reason: c.clock_conflict }
+  const alts = ownProofs(c, lead, rows, ctx)
+  if (!c.relative_to) return alts[0]
+  const checked = alts.filter(p => p.truth === 'pass').map(p => relate(c, p, dates[c.relative_to as string], sources[c.relative_to as string]))
+  return checked.find(p => p.truth === 'pass') ?? checked[0] ?? alts[0]
+}
+
+// Newest posting first; ties broken on URL then text, so the proof (and the date it records) is the same whatever order the rows came in.
+const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a.source_date) || a.source_url.localeCompare(b.source_url) || a.value.localeCompare(b.value)
+
+// The candidate proofs of a condition, best first. Only hiring can have more than one: every posting inside its now-clock, then the
+// lead's own quote when that passes too. Every other kind has exactly one. Without a relative clock the first candidate is the proof.
+function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof[] {
+  if (c.kind !== 'hiring') return [ownProof(c, lead, rows, ctx)]
+  const now = ctx.now ?? Date.now()
+  const gtm = !c.role || isGtmRole(c.role)
+  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
+    .sort(postingOrder)
+    .map((r): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }))
+  const rest = ownProof(c, lead, [], ctx)
+  return postings.length && rest.truth !== 'pass' ? postings : [...postings, rest]
 }
 
 function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof {
@@ -158,11 +188,8 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {
+      // Dated postings are read in ownProofs (every one of them, so row order never decides); here: the lead's own quote, then the gate's record.
       const gtm = !c.role || isGtmRole(c.role)
-      for (const r of rows) {
-        if (!(r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm))) continue
-        if (onClock(r.source_date, clockOf(c), now) === 'in') return { truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }
-      }
       if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, lead.event_date, clockOf(c), now, lead.source_url, 'this company hiring for the role')
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified an open sales role for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no dated posting or verified quote shows this company hiring${c.role ? ` ${c.role}` : ''}` }
@@ -179,6 +206,7 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
 export function planProofs(plan: QueryPlan, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Record<string, Proof> {
   const out: Record<string, Proof> = {}, dates: Record<string, string | undefined> = {}
   const conds = planConditions(plan.root).map(x => x.cond).sort((a, b) => Number(!!a.relative_to) - Number(!!b.relative_to))
-  for (const c of conds) { const p = conditionProof(c, lead, rows, ctx, dates); out[c.id] = p; if (p.truth === 'pass') dates[c.id] = p.date }
+  const sources: Record<string, string | undefined> = {}
+  for (const c of conds) { const p = conditionProof(c, lead, rows, ctx, dates, sources); out[c.id] = p; if (p.truth === 'pass') { dates[c.id] = p.date; sources[c.id] = p.source_url } }
   return out
 }
