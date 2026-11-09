@@ -144,5 +144,42 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   assert.equal(posts.length, 1, 'the changed estimate was not run'); await page.getByTestId('estimate-confirm-run').click(); await page.waitForTimeout(300)
   assert.equal(posts.length, 2); assert.equal(posts[1].estimate_ack, 'ack2'); await page.close()
 }
+// 7. #851: the panel shows the model the run will really call. These estimates are the REAL estimateRun output with the
+// server's scan price table (what /api/scan/estimate answers for an OpenAI key), not hand-written fixtures: gpt-4.1's own
+// price is on the page and claude-sonnet-4-5 is not; under a limit the same key is blocked before launch with what to change.
+{
+  const { estimateRun } = await import('../../lib/scan/price-estimate.ts')
+  const { scanModelPrice } = await import('../../lib/scan/spend-cap.ts')
+  const real = o => ({ estimate: estimateRun({ payer: 'you', priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5', env: {}, ...o }) })
+  for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
+    {
+      const { page, posts } = await open(route => json(route, { job_id: 'c'.repeat(24) }, 202), route => json(route, real({ budget: null, model: 'gpt-4.1' })))
+      await page.setViewportSize({ width: w, height: h })
+      await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
+      const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
+      const t = await panel.innerText()
+      assert.ok(t.includes('$3.50 in / $14.00 out per 1M tokens (gpt-4.1)'), `${tag}: gpt-4.1's own unit price is shown`)
+      assert.ok(!t.includes('claude-sonnet-4-5'), `${tag}: the default model is not shown for an OpenAI key`)
+      assert.equal(await panel.getAttribute('data-verdict'), 'ok'); assert.equal(posts.length, 0)
+      // No page-scroll assertion here: the real menu has every row, and this harness has no app stylesheet (the table's
+      // overflow-x-auto wrapper is unstyled), so width is the reviewer's pixel check on the built app, not this harness's.
+      await shot(page, `budget-estimate-gpt41-${tag}`, panel)
+      await page.close()
+    }
+    {
+      const { page, posts } = await open(route => json(route, {}, 500), route => json(route, real({ budget: { max_usd: 2 }, model: 'gpt-4.1' })))
+      await page.setViewportSize({ width: w, height: h })
+      await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
+      const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
+      assert.equal(await panel.getAttribute('data-verdict'), 'blocked'); assert.equal(await page.getByTestId('estimate-confirm-run').count(), 0, `${tag}: no Run button while blocked`)
+      assert.match(await page.getByTestId('estimate-verdict').innerText(), /^Your key's model \(gpt-4\.1\) has no listed price for spending limits/)
+      const change = await page.getByTestId('estimate-change').innerText()
+      assert.match(change, /Run without a spending limit/); assert.match(change, /Or use an Anthropic key \(claude-sonnet-4-5 is priced\)/)
+      assert.equal(posts.length, 0, `${tag}: a blocked estimate starts nothing`)
+      await shot(page, `budget-estimate-model-unpriced-${tag}`, panel)
+      await page.close()
+    }
+  }
+}
 await browser.close()
-console.log('OK (price estimate: menu + total before any run at desktop and 390px, cancel starts nothing, blocked state with what to change, changed estimate re-confirmed): spend limit off by default and not sent; disclosure (partial + not covered) shown before Run; invalid limit disables Run; Run sends the exact API budget; server rejection shown (all calls stubbed)')
+console.log('OK (price estimate: menu + total before any run at desktop and 390px, the real estimate for an OpenAI key shows gpt-4.1 and blocks it under a limit (#851), cancel starts nothing, blocked state with what to change, changed estimate re-confirmed): spend limit off by default and not sent; disclosure (partial + not covered) shown before Run; invalid limit disables Run; Run sends the exact API budget; server rejection shown (all calls stubbed)')
