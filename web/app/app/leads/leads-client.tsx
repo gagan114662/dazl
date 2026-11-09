@@ -199,11 +199,30 @@ export default function LeadsClient() {
   const [watchNote, setWatchNote] = useState('')
   const [monitors, setMonitors] = useState<Monitor[]>([])
   const [monError, setMonError] = useState('')
-  const loadMonitors = () => fetch('/api/monitors').then(r => r.ok ? r.json() : null).then(j => { if (j) setMonitors(j.monitors) }).catch(() => {})
-  useEffect(() => { void loadMonitors() }, [])
-  const addMonitor = async () => { if (!query.trim()) return; setMonError(''); const r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) }); const j = await r.json().catch(() => ({})); if (!r.ok) return setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || 'Could not create the monitor'); void loadMonitors() }
-  const toggleMonitor = async (id: string, enabled: boolean) => { await fetch(`/api/monitors/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) }); void loadMonitors() }
-  const removeMonitor = async (id: string) => { await fetch(`/api/monitors/${id}`, { method: 'DELETE' }); void loadMonitors() }
+  // #902: monitor reads and mutations report failure. A failed list read keeps the last confirmed list and says so;
+  // pause/resume/delete show an error on non-2xx or network failure (a reload is not proof the change happened) and
+  // are never retried automatically.
+  const [monLoadError, setMonLoadError] = useState('')
+  const loadMonitors = async () => {
+    try {
+      const r = await fetch('/api/monitors')
+      if (!r.ok) return setMonLoadError(`Could not load your monitors (error ${r.status}).`)
+      const j = await r.json().catch(() => null)
+      if (!j || !Array.isArray(j.monitors)) return setMonLoadError('Could not load your monitors (unexpected response).')
+      setMonitors(j.monitors); setMonLoadError('')
+    } catch { setMonLoadError('Could not load your monitors. Check your connection.') }
+  }
+  useEffect(() => { void Promise.resolve().then(loadMonitors) }, [])
+  const mutateMonitor = async (id: string, init: RequestInit, what: string) => {
+    setMonError('')
+    try {
+      const r = await fetch(`/api/monitors/${id}`, init)
+      if (!r.ok) { const j = await r.json().catch(() => ({})); setMonError(`Could not ${what} the monitor: ${j.error || `error ${r.status}`}. Try again.`) }
+    } catch { setMonError(`Could not reach dazl, so the monitor may not have been ${what === 'delete' ? 'deleted' : 'changed'}. The list shows the confirmed state.`) }
+    void loadMonitors()
+  }
+  const toggleMonitor = (id: string, enabled: boolean) => mutateMonitor(id, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) }, enabled ? 'resume' : 'pause')
+  const removeMonitor = (id: string) => mutateMonitor(id, { method: 'DELETE' }, 'delete')
   const [csvBatch, setCsvBatch] = useState<CsvBatch | null>(null)
   const [csvNote, setCsvNote] = useState('')
   const [csvInvalid, setCsvInvalid] = useState<{ line: string; reason: string }[]>([])
@@ -1311,7 +1330,7 @@ export default function LeadsClient() {
           <p className="text-gray-500 text-xs mb-2">Re-runs your search on a schedule. New companies show up here automatically.</p>
           <div className="space-y-1">
             {monitors.map(m => (
-              <div key={m.id} className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">
+              <div key={m.id} data-testid="monitor-row" className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">
                 <span className="flex-1 truncate">{m.query}</span>
                 {m.last_new_count != null && <span className="text-green-400">+{runNewLabel('monitor', m.last_new_count)}</span>}
                 <span>{m.run_count ?? 0} runs</span>
@@ -1320,9 +1339,12 @@ export default function LeadsClient() {
               </div>
             ))}
           </div>
-          {monError && <p className="text-red-400 text-xs mt-1">{monError}</p>}
         </div>
       )}
+      {(monError || monLoadError) && <div className="mt-2" role="alert" data-testid="monitor-error">
+        {monError && <p className="text-red-400 text-xs mt-1">{monError}</p>}
+        {monLoadError && <p className="text-red-400 text-xs mt-1">{monLoadError} <button className="underline" onClick={() => void loadMonitors()}>Try again</button></p>}
+      </div>}
     </div>
   )
 }
