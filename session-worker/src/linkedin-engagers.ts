@@ -3,8 +3,8 @@
 // store). Read-only: this module never reacts, comments, messages, connects or posts. One call = exactly ONE upstream GET
 // (one page, no pagination, no retry). A login wall, a checkpoint / captcha or a rate-limit answer is reported as that
 // failure (auth_failed / challenge / throttled), never as an empty list. Nothing is stored and no cookie is logged.
-import { epochDay, FetchFailure, latinRun, type FailureKind, type WorkerItem } from './util.ts'
-import { checkLinkedin } from './fetchers.ts'
+import { epochDay, FetchFailure, latinRun, readCapped, type FailureKind, type WorkerItem } from './util.ts'
+import { checkLinkedin, parseLinkedinPosts } from './fetchers.ts'
 
 export type EngagerKind = 'commenters' | 'reactors'
 export const isEngagerKind = (v: unknown): v is EngagerKind => v === 'commenters' || v === 'reactors'
@@ -24,7 +24,8 @@ export function engagersUrl(kind: EngagerKind, id: string): string {
 
 // What an answer that is NOT a usable JSON page means. LinkedIn answers a signed-out or flagged session with a redirect
 // (to /login, /authwall or /checkpoint/challenge), a 999 bot block, a 429, or an HTML page in place of JSON.
-const CHALLENGE = /checkpoint|challenge|captcha|security-verification/i
+// A restricted / suspended account (a ban signal) is a challenge too: the run stops and the app takes the session out of use.
+const CHALLENGE = /checkpoint|challenge|captcha|security-verification|restricted|suspended/i
 const LOGIN = /\/login|authwall|\/uas\/|signup|sign in to|join linkedin/i
 export function classifyAnswer(status: number, location: string | null, text: string): FailureKind | null {
   if (status >= 300 && status < 400) return location && CHALLENGE.test(location) ? 'challenge' : location && LOGIN.test(location) ? 'auth_failed' : 'upstream_error'
@@ -97,30 +98,42 @@ export function parseEngagers(kind: EngagerKind, raw: unknown, postId: string): 
   return out
 }
 
-// The one upstream GET. Manual redirects so a login wall / checkpoint is seen for what it is; 15s cap; 1MB body cap.
-export async function fetchEngagers(kind: EngagerKind, post: string, session: string): Promise<WorkerItem[]> {
-  const id = activityId(post); if (!id) throw new FetchFailure('schema_error')
+// The one upstream GET, shared by the post search and the engager reads. Manual redirects so a login wall / checkpoint
+// is seen for what it is; 15s cap; the body is STREAMED with a 1MB cap (readCapped), never buffered whole. GET only.
+async function sessionGet(url: string, session: string, referer: string): Promise<unknown> {
   const liAt = session.match(/li_at=([^;]+)/)?.[1]
   const jsession = session.match(/JSESSIONID="?([^";]+)"?/)?.[1]
   if (!liAt || !jsession) throw new FetchFailure('auth_failed')
   let res: Response
   try {
-    res = await fetch(engagersUrl(kind, id), {
+    res = await fetch(url, {
+      method: 'GET',
       headers: {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         accept: 'application/vnd.linkedin.normalized+json+2.1', cookie: `li_at=${liAt}; JSESSIONID="${jsession}"`,
-        'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer: `https://www.linkedin.com/feed/update/urn:li:activity:${id}/`,
+        'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer,
       },
       redirect: 'manual',
       signal: AbortSignal.timeout(15_000),
     })
   } catch { throw new FetchFailure('upstream_error') }
-  let text = ''
-  try { text = await res.text() } catch { throw new FetchFailure('upstream_error') }
+  const { text, over } = await readCapped(res)
   const bad = classifyAnswer(res.status, res.headers.get('location'), text.slice(0, 20_000))
   if (bad) throw new FetchFailure(bad)
-  if (text.length > 1_000_000) throw new FetchFailure('schema_error')
-  let json: unknown
-  try { json = JSON.parse(text) } catch { throw new FetchFailure('schema_error') }
-  return parseEngagers(kind, json, id)
+  if (over) throw new FetchFailure('schema_error')
+  try { return JSON.parse(text) } catch { throw new FetchFailure('schema_error') }
+}
+
+export async function fetchEngagers(kind: EngagerKind, post: string, session: string): Promise<WorkerItem[]> {
+  const id = activityId(post); if (!id) throw new FetchFailure('schema_error')
+  return parseEngagers(kind, await sessionGet(engagersUrl(kind, id), session, `https://www.linkedin.com/feed/update/urn:li:activity:${id}/`), id)
+}
+
+// The session post search (#192 review): the same voyager search as the /fetch adapter, but through sessionGet, so a login
+// wall, checkpoint / captcha, restriction page, 999 or 429 comes back as auth_failed / challenge / throttled and the app
+// STOPS - the /fetch adapter folds redirects into upstream_error, which the reader would treat as a retryable error.
+export const postsUrl = (query: string) => `https://www.linkedin.com/voyager/api/search/blended?keywords=${encodeURIComponent(query)}&count=10`
+export async function fetchPosts(query: string, session: string): Promise<WorkerItem[]> {
+  const q = query.trim(); if (!q) throw new FetchFailure('schema_error')
+  return parseLinkedinPosts(await sessionGet(postsUrl(q), session, 'https://www.linkedin.com/search/results/all/'))
 }

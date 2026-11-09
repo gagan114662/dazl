@@ -3,8 +3,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { activityId, classifyAnswer, engagersUrl, fetchEngagers, parseEngagers } from '../src/linkedin-engagers.ts'
-import { FetchFailure } from '../src/util.ts'
+import { activityId, classifyAnswer, engagersUrl, fetchEngagers, fetchPosts, parseEngagers, postsUrl } from '../src/linkedin-engagers.ts'
+import { FetchFailure, MAX_UPSTREAM_BYTES, readCapped } from '../src/util.ts'
 
 const fx = (f: string) => readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8')
 const POST = 'https://www.linkedin.com/feed/update/urn:li:activity:7391234567890123456/'
@@ -17,7 +17,8 @@ const stub = (status: number, body: string, location: string | null = null) => {
     calls.push(String(url)); assert.equal(init?.redirect, 'manual', 'redirects are inspected, never followed')
     assert.ok(!(init?.method && init.method !== 'GET'), 'read-only: GET only')
     // a plain Response-like answer: LinkedIn's 999 bot block is outside what the Response constructor accepts
-    return { status, headers: new Headers(location ? { location } : {}), text: async () => body } as unknown as Response
+    // the body is a real stream: the reader must stream it (readCapped), never call text() on the whole thing
+    return { status, headers: new Headers(location ? { location } : {}), body: new Response(body).body, text: async () => { throw new Error('text() buffers the whole body') } } as unknown as Response
   }) as typeof fetch
 }
 test.afterEach(() => { globalThis.fetch = real })
@@ -76,4 +77,57 @@ test('fetch: exactly ONE upstream GET per call, cookie-gated, failures thrown wi
   await assert.rejects(fetchEngagers('commenters', POST, 'no-cookie'), (e: unknown) => e instanceof FetchFailure && e.kind === 'auth_failed')
   await assert.rejects(fetchEngagers('commenters', 'Rippling', SESSION), (e: unknown) => e instanceof FetchFailure && e.kind === 'schema_error')
   assert.equal(calls.length, 0, 'no request without a session cookie or a post id')
+})
+
+const SEARCH = JSON.stringify({ data: { elements: [] }, included: [{ trackingUrn: 'urn:li:activity:7391234567890123456', commentary: { text: { text: 'Rippling announces its new payroll product for mid-size teams' } } }] })
+
+test('session post search: one GET, manual redirects, posts parsed; login wall / checkpoint / restriction / 999 / 429 are named stops, never [] or a retryable error (#949 review)', async () => {
+  stub(200, SEARCH)
+  const items = await fetchPosts('Rippling', SESSION)
+  assert.deepEqual(items.map(i => i.url), [POST]); assert.deepEqual(calls, [postsUrl('Rippling')])
+  for (const [status, body, loc, kind] of [
+    [302, '', 'https://www.linkedin.com/checkpoint/challenge/AgF', 'challenge'], [303, '', 'https://www.linkedin.com/authwall?trk=x', 'auth_failed'],
+    [302, '', 'https://www.linkedin.com/login?session_redirect=x', 'auth_failed'], [200, fx('linkedin-checkpoint.html'), null, 'challenge'],
+    [200, fx('linkedin-authwall.html'), null, 'auth_failed'], [200, '<html><body>Your account has been restricted</body></html>', null, 'challenge'],
+    [999, '', null, 'challenge'], [429, '', null, 'throttled'], [401, '', null, 'auth_failed'], [500, '', null, 'upstream_error'], [200, '{"data":{}}', null, 'schema_error'],
+  ] as const) {
+    stub(status, body, loc)
+    await assert.rejects(fetchPosts('Rippling', SESSION), (e: unknown) => e instanceof FetchFailure && e.kind === kind, `${status} ${loc ?? body.slice(0, 30)} -> ${kind}`)
+    assert.equal(calls.length, 1, `${kind}: one request, no retry`)
+  }
+  stub(200, SEARCH)
+  await assert.rejects(fetchPosts('Rippling', 'no-cookie'), (e: unknown) => e instanceof FetchFailure && e.kind === 'auth_failed')
+  await assert.rejects(fetchPosts('   ', SESSION), (e: unknown) => e instanceof FetchFailure && e.kind === 'schema_error')
+  assert.equal(calls.length, 0, 'no request without a cookie or a query')
+})
+
+test('a restricted / suspended account page is a challenge (a ban signal stops the run)', () => {
+  assert.equal(classifyAnswer(200, null, '<html>This account is temporarily restricted</html>'), 'challenge')
+  assert.equal(classifyAnswer(302, 'https://www.linkedin.com/checkpoint/restricted', ''), 'challenge')
+  assert.equal(classifyAnswer(200, null, '<html>Account suspended</html>'), 'challenge')
+})
+
+test('readCapped: streams, stops and cancels past the byte cap, never buffers the whole body (#949 review)', async () => {
+  let pulled = 0, cancelled = false
+  const huge = new ReadableStream<Uint8Array>({
+    pull(c) { pulled++; if (pulled > 10_000) { c.close(); return } c.enqueue(new Uint8Array(64 * 1024).fill(0x7b)) },
+    cancel() { cancelled = true },
+  })
+  const r = await readCapped({ body: huge })
+  assert.equal(r.over, true); assert.equal(r.text.length, MAX_UPSTREAM_BYTES); assert.ok(cancelled, 'the stream is cancelled')
+  assert.ok(pulled < 40, `stopped after about 1 MB (${pulled} chunks of 64 KB), not 640 MB`)
+  assert.deepEqual(await readCapped({ body: new Response('{"a":1}').body }), { text: '{"a":1}', over: false })
+  assert.deepEqual(await readCapped({ body: null }), { text: '', over: false })
+  assert.deepEqual(await readCapped({ body: new Response('x'.repeat(11)).body }, 10), { text: 'x'.repeat(10), over: true })
+  const broken = new ReadableStream<Uint8Array>({ pull(c) { c.error(new Error('reset')) } })
+  await assert.rejects(readCapped({ body: broken }), (e: unknown) => e instanceof FetchFailure && e.kind === 'upstream_error')
+  // non-UTF8 bytes decode with replacement characters, never throw
+  assert.equal((await readCapped({ body: new Response(new Uint8Array([0xff, 0xfe, 0x41])).body })).over, false)
+})
+
+test('an oversized upstream answer is a schema_error after one request, and a huge checkpoint page is still a challenge', async () => {
+  stub(200, '{"included":[' + '"x",'.repeat(300_000) + '"x"]}')
+  await assert.rejects(fetchEngagers('commenters', POST, SESSION), (e: unknown) => e instanceof FetchFailure && e.kind === 'schema_error'); assert.equal(calls.length, 1)
+  stub(200, '<html>checkpoint ' + 'x'.repeat(1_200_000) + '</html>')
+  await assert.rejects(fetchPosts('Rippling', SESSION), (e: unknown) => e instanceof FetchFailure && e.kind === 'challenge')
 })

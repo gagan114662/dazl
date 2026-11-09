@@ -3,6 +3,21 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-11-09: LinkedIn is top priority; the session engagers ship under three rules
+
+Owner decision 2026-11-09 4:59pm via Quest: separate throwaway account, human pace, off by default (Refs #192,
+PRs #192 and #949; "it needs to be as good as Gojiberry"). How the code holds each rule:
+- Separate throwaway account: the session transport needs `LINKEDIN_SESSION_ACCOUNT` (a non-secret label naming
+  the dedicated throwaway account, the operator's attestation) and EXACTLY ONE tenant in `LINKEDIN_SESSION_TENANTS`
+  (the operator's dedicated tenant holding that session); two or more tenants turn it off, so the per-tenant caps
+  are the account's caps. Never the owner's or any customer's own account.
+- Human pace: at least 10 s (default 20 s) plus up to 50% jitter between session requests, at most 3 per run and
+  3 per hour, and a daily cap (default 6, max 50), all atomic.
+- Off by default: `LINKEDIN_SESSION_TRANSPORT=1` on top of every existing LinkedIn gate; nothing is set in production.
+A checkpoint / captcha / restricted-account page or a logged-out answer stops the run, starts the 24 h cooldown AND
+switches the tenant's `adv:linkedin` connector off until an operator re-enables it. Turning it on is Gagan's call
+(via Instinct), after the controlled real-fixture capture.
+
 ## 2026-11-06: LinkedIn post engagers through a signed-in throwaway session
 
 The owner authorised (Refs #192) reading the commenters and reactors of competitors' LinkedIn posts through a

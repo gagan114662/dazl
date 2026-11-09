@@ -212,8 +212,13 @@ const linkedin: Fetcher = async (query, session) => {
     cookie: `li_at=${liAt}; JSESSIONID="${jsession}"`,
     headers: { 'csrf-token': jsession, 'x-restli-protocol-version': '2.0.0', referer: 'https://www.linkedin.com/search/results/all/' },
   })
+  return parseLinkedinPosts(json)
+}
+
+// Voyager payloads shift; walk for posts with commentary text. Shared by /fetch (above) and the session post search
+// (src/linkedin-engagers.ts fetchPosts, #192), so both read a search answer the same way.
+export function parseLinkedinPosts(json: unknown): WorkerItem[] {
   checkLinkedin(json)
-  // Voyager payloads shift; walk for posts with commentary text.
   const out: WorkerItem[] = []
   const walk = (v: unknown) => {
     if (!v || typeof v !== 'object') return

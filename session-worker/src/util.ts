@@ -49,6 +49,29 @@ export async function getJson(url: string, opts: FetchOptions = {}): Promise<unk
   try { return JSON.parse(text) } catch { throw new FetchFailure('schema_error') }
 }
 
+// Read at most `max` BYTES of a response body, streaming: the read stops and the stream is cancelled as soon as the
+// running total passes the cap, so a huge or hostile answer can never be buffered whole (#192 review). over = the cap was
+// passed; text is then only the bounded prefix (enough to classify a login wall / checkpoint page). A body that fails
+// mid-read is an upstream_error.
+export const MAX_UPSTREAM_BYTES = 1_000_000
+export async function readCapped(res: { body: ReadableStream<Uint8Array> | null }, max = MAX_UPSTREAM_BYTES): Promise<{ text: string; over: boolean }> {
+  if (!res.body) return { text: '', over: false }
+  const reader = res.body.getReader(), chunks: Uint8Array[] = []
+  let n = 0, over = false
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (n + value.byteLength > max) { chunks.push(value.subarray(0, max - n)); n = max; over = true; break }
+      chunks.push(value); n += value.byteLength
+    }
+  } catch { throw new FetchFailure('upstream_error') }
+  if (over) { try { await reader.cancel() } catch { /* already closed */ } }
+  const buf = new Uint8Array(n); let at = 0
+  for (const c of chunks) { buf.set(c, at); at += c.byteLength }
+  return { text: new TextDecoder('utf-8', { fatal: false }).decode(buf), over }
+}
+
 export const item = (url: string, title: string, quote: string, date: string | null, login_walled = true): WorkerItem | null => {
   const q = latinRun(quote).slice(0, 300)
   if (!/^https:\/\/[^\s]{4,480}$/.test(url) || q.length < 20) return null

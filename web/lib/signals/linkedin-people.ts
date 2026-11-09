@@ -15,7 +15,10 @@
 //   STOP    throttled / challenge / unauthorised: stop at once, no retry, and a COOLDOWN_S cooldown for that tenant only. The stop is audited and reported (deps.onStop).
 //   SESSION a transport that reads posts / commenters / reactors (the signed-in session transport) also gets: a DAILY cap (LINKEDIN_ENGAGERS_DAILY_CAP, default 6, atomic, its own
 //           'adv:linkedin:day' key), a per-run cap (LINKEDIN_SESSION_PER_RUN, default 3, never above the hourly cap), and a human pace between its requests
-//           (LINKEDIN_SESSION_GAP_MS, default 20 s plus up to 50% jitter). Its plan per competitor: one post search, then the commenters and the reactors of the first post found.
+//           (LINKEDIN_SESSION_GAP_MS, default 20 s, never below MIN_GAP_MS = 10 s, plus up to 50% jitter). Its plan per competitor: one post search, then the commenters and
+//           the reactors of the first post found. A challenge (checkpoint / captcha / restricted account) or a logged-out answer on the session also SWITCHES THE
+//           CONNECTOR OFF for that tenant (audited 'session_disabled'): the account is not used again, even after the cooldown, until an operator has checked it and
+//           re-enabled the connector.
 //   OWNER   deps.beforeRequest (the scan runner's ownership/deadline check) runs immediately before EVERY reservation: a scan that was cancelled, reaped or timed out
 //           while an earlier request was in flight starts no new LinkedIn request. Its throw is recorded ('scan_stopped') and re-thrown to the runner.
 //   OUTPUT  only public profile URLs (https://www.linkedin.com/in/<slug>), deduplicated across queries and within a result; bounded text; leads stay in the review lane
@@ -23,7 +26,7 @@
 // Db layer (SQLite + Postgres).
 import type { Db } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
-import { writeAudit } from '../connectors/store.ts'
+import { setEnabled, writeAudit } from '../connectors/store.ts'
 import { connectorId } from '../advanced/config.ts'
 import { readConsent } from '../advanced/index.ts'
 import { reserveRequest } from '../advanced/request-budget.ts'
@@ -46,9 +49,10 @@ export type TransportResult = { status: 'ok'; items: { url: string; title: strin
 // session: true marks the signed-in session transport (post -> commenters/reactors plan, daily cap, pacing). Absent = a third-party transport (people/engagers plan).
 export interface LinkedInTransport { fetch(req: TransportRequest): Promise<TransportResult>; session?: boolean }
 export const DAY_CONNECTOR = 'adv:linkedin:day'
+export const MIN_GAP_MS = 10_000   // a human pace: no configuration makes session requests closer than this
 const intEnv = (v: string | undefined, d: number, max: number) => { const n = Number(v); return Number.isInteger(n) && n >= 0 ? Math.min(n, max) : d }
 export const sessionLimits = (env: Record<string, string | undefined>) => ({
-  daily: intEnv(env.LINKEDIN_ENGAGERS_DAILY_CAP, 6, 50), perRun: intEnv(env.LINKEDIN_SESSION_PER_RUN, 3, MAX_REQUESTS_PER_HOUR), gapMs: intEnv(env.LINKEDIN_SESSION_GAP_MS, 20_000, 600_000),
+  daily: intEnv(env.LINKEDIN_ENGAGERS_DAILY_CAP, 6, 50), perRun: intEnv(env.LINKEDIN_SESSION_PER_RUN, 3, MAX_REQUESTS_PER_HOUR), gapMs: Math.max(MIN_GAP_MS, intEnv(env.LINKEDIN_SESSION_GAP_MS, 20_000, 600_000)),
 })
 const POST_URL = /^https:\/\/www\.linkedin\.com\/feed\/update\/urn:li:activity:\d{10,25}\/?$/
 
@@ -122,6 +126,10 @@ export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: str
     if (res.status !== 'ok') {
       if (res.status === 'error') { await writeAudit(db, { tenantId, connector: ID, jobId, lookup, status: 'error', results: 0 }); continue }
       await stop(lookup, `stopped_${res.status}`)     // throttled / challenge / unauthorised: visible, cooled down, never retried
+      // On the throwaway session a challenge or a logged-out answer takes the account out of use until a human re-enables it (a throttle only cools down).
+      if (session && (res.status === 'challenge' || res.status === 'unauthorized')) {
+        try { await setEnabled(db, tenantId, ID, false) } finally { await writeAudit(db, { tenantId, connector: ID, jobId, lookup, status: 'session_disabled', results: 0 }) }
+      }
       break
     }
     if ((res.upstream_requests ?? 1) !== 1) { await stop(lookup, 'stopped_contract'); break }
