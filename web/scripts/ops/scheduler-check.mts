@@ -28,6 +28,8 @@ const STATES = new Set(['never_ran', 'running', 'fresh', 'stale', 'crashed']), F
 const ERRS = new Set(['TimeoutError', 'AbortError', 'TypeError', 'SyntaxError'])
 const num = (v: unknown): number | null => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null
 const obj = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+// The counts that must each be present and valid to PROVE nothing is blocked, stale or overdue; a missing or invalid one is never read as zero. oldest_overdue_s may be null (nothing overdue).
+const SAFETY = ['tracked', 'blocked', 'reply_sync_stale', 'overdue'] as const
 const TENANT_KEYS = ['tracked', 'blocked', 'held', 'reply_sync_stale', 'overdue', 'oldest_overdue_s'] as const
 let problems: string[] = [], facts: Record<string, unknown> = {}
 try {
@@ -48,11 +50,11 @@ try {
   if (tenants.blocked) derived.push(`${tenants.blocked} tenant(s) blocked by repeated failures`)
   if (tenants.reply_sync_stale) derived.push(`${tenants.reply_sync_stale} tenant(s) with stale reply sync`)
   if (tenants.overdue) derived.push(`${tenants.overdue} tenant(s) with due work overdue by more than ${OVERDUE_ALERT_S}s${tenants.oldest_overdue_s != null ? ` (oldest ${tenants.oldest_overdue_s}s)` : ''}`)
-  // Healthy (and so a recovery) needs ALL of: a successful HTTP status, ok literally true, a valid state and a tracked count, and no problem reconstructed from the fields.
+  // Healthy (and so a recovery) needs ALL of: a successful HTTP status, ok literally true, a valid state, every safety count present and valid (tracked, blocked, reply_sync_stale, overdue; oldest_overdue_s null or valid), and no problem reconstructed from the fields.
   // Anything less keeps the problem (and any prior alert receipt) and says so plainly, copying nothing from the response.
   if (!r.ok || h.ok !== true) problems = derived.length ? derived : [`HTTP ${r.status}, not ok`]
   else if (derived.length) problems = derived
-  else if (state === null || tenants.tracked === undefined) problems = [`scheduler health unreadable (HTTP ${r.status})`]
+  else if (state === null || !SAFETY.every(k => tenants[k] !== undefined) || (t.oldest_overdue_s != null && num(t.oldest_overdue_s) === null)) problems = [`scheduler health unreadable (HTTP ${r.status})`]
 } catch (e) { problems = [`scheduler health not answering (${ERRS.has(e instanceof Error ? e.name : '') ? (e as Error).name : 'error'})`] }
 
 const body = { level: problems.length ? 'error' : 'info', type: 'scheduler_check', ok: problems.length === 0, host: os.hostname(), at: new Date().toISOString(), problems, ...facts }

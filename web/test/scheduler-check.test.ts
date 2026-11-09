@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 const web = fileURLToPath(new URL('../', import.meta.url))
 test('scheduler-check: alerts on problems (throttled), on an app that does not answer, and once on recovery', async () => {
   const T = mkdtempSync(path.join(tmpdir(), 'sched-check-'))
-  let health: { status: number; body: object } = { status: 200, body: { ok: true, problems: [], operational: { state: 'fresh' }, tenants: { tracked: 2 } } }
+  let health: { status: number; body: object } = { status: 200, body: { ok: true, problems: [], operational: { state: 'fresh' }, tenants: { tracked: 2, blocked: 0, held: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null } } }
   const server = http.createServer((_q, s) => { s.statusCode = health.status; s.end(JSON.stringify(health.body)) })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/health/scheduler`
@@ -29,7 +29,7 @@ test('scheduler-check: alerts on problems (throttled), on an app that does not a
     assert.equal(sent()[0].type, 'scheduler_check'); assert.equal(sent()[0].scheduler, 'stale'); assert.deepEqual(sent()[0].tenants, { tracked: 2, blocked: 1 })
     health.body = { ...health.body, problems: ['scheduler stale: last completed run 3300s ago', '1 tenant(s) blocked by repeated failures'] }
     assert.equal(await run(), 1); assert.equal(sent().length, 1, 'the same problems with new numbers are not re-sent within the interval')
-    health = { status: 200, body: { ok: true, problems: [], operational: { state: 'fresh' }, tenants: { tracked: 2 } } }
+    health = { status: 200, body: { ok: true, problems: [], operational: { state: 'fresh' }, tenants: { tracked: 2, blocked: 0, held: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null } } }
     assert.equal(await run(), 0); assert.equal(sent().at(-1).type, 'scheduler_recovered')
     assert.equal(await run(), 0); assert.equal(sent().length, 2, 'recovery is announced once')
     assert.equal(await run('http://127.0.0.1:1/api/health/scheduler'), 1); assert.match(sent().at(-1).problems[0], /not answering/)
@@ -39,7 +39,7 @@ test('scheduler-check: alerts on problems (throttled), on an app that does not a
 test('failed alert delivery is retried, and failed recovery delivery keeps the original receipt', async () => {
   const t = mkdtempSync(path.join(tmpdir(), 'sched-retry-'))
   let healthy = false
-  const server = http.createServer((_q, r) => { r.statusCode = healthy ? 200 : 503; r.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : ['scheduler stale 3000s'], operational: { state: healthy ? 'fresh' : 'stale' }, tenants: { tracked: 1 } })) })
+  const server = http.createServer((_q, r) => { r.statusCode = healthy ? 200 : 503; r.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : ['scheduler stale 3000s'], operational: { state: healthy ? 'fresh' : 'stale' }, tenants: { tracked: 1, blocked: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null } })) })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   const cmd = path.join(t, 'alert.sh'), log = path.join(t, 'sent'), state = path.join(t, 'state')
   const command = (ok: boolean) => { writeFileSync(cmd, ok ? `#!/bin/sh\necho delivered >> ${log}\n` : '#!/bin/sh\nexit 1\n'); chmodSync(cmd, 0o755) }
@@ -70,7 +70,7 @@ test('webhook payload carries a Slack-compatible text beside the structured fiel
   // A health endpoint that (wrongly) leaks identifiers, a token and extra fields: the payload is built at the send boundary from allowlisted counts and states only.
   let healthy = false
   const LEAK = 'sk-live-ABCDEF123456 jane.doe@example.com 0b0e7c1a-1111-4222-8333-444455556666'
-  const app = http.createServer((_q, s) => { s.statusCode = healthy ? 200 : 503; s.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : [`token ${LEAK}`, 42, null], operational: { state: healthy ? 'fresh' : 'stale', last_completed_age_s: 3000, last_error: LEAK }, tenants: { tracked: 2, ...(healthy ? {} : { blocked: 1 }), tenant_ids: [LEAK], note: LEAK } })) })
+  const app = http.createServer((_q, s) => { s.statusCode = healthy ? 200 : 503; s.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : [`token ${LEAK}`, 42, null], operational: { state: healthy ? 'fresh' : 'stale', last_completed_age_s: 3000, last_error: LEAK }, tenants: { tracked: 2, blocked: healthy ? 0 : 1, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null, tenant_ids: [LEAK], note: LEAK } })) })
   await new Promise<void>(r => app.listen(0, '127.0.0.1', () => r()))
   const url = `http://127.0.0.1:${(app.address() as { port: number }).port}/api/health/scheduler`
   const hookUrl = `https://localhost:${(hook.address() as { port: number }).port}/hook`
@@ -81,7 +81,7 @@ test('webhook payload carries a Slack-compatible text beside the structured fiel
     status = 200
     r = await run(); assert.equal(r.code, 1); assert.equal(got.length, 1, 'the retry delivers at once (not throttled by the failed attempt)'); assert.equal(stamps().length, 1)
     const a = got[0]
-    assert.equal(typeof a.text, 'string'); assert.match(a.text as string, /^dazl scheduler problem/); assert.match(a.text as string, /scheduler stale: last completed run 3000s ago/); assert.match(a.text as string, /1 tenant\(s\) blocked by repeated failures/); assert.deepEqual(a.tenants, { tracked: 2, blocked: 1 }, 'extra tenant fields are dropped')
+    assert.equal(typeof a.text, 'string'); assert.match(a.text as string, /^dazl scheduler problem/); assert.match(a.text as string, /scheduler stale: last completed run 3000s ago/); assert.match(a.text as string, /1 tenant\(s\) blocked by repeated failures/); assert.deepEqual(a.tenants, { tracked: 2, blocked: 1, reply_sync_stale: 0, overdue: 0 }, 'extra tenant fields are dropped')
     assert.equal(a.type, 'scheduler_check'); assert.equal(a.ok, false); assert.ok(Array.isArray(a.problems), 'the structured fields stay beside the text')
     assert.doesNotMatch(JSON.stringify(a), /sk-live|ABCDEF|0b0e7c1a|jane\.doe|@|tenant_ids|note/, 'no token, id, email or extra field anywhere in the payload, text or structured fields')
     r = await run(); assert.equal(r.code, 1); assert.equal(got.length, 1, 'the same problem is not re-sent within the interval')
@@ -125,7 +125,7 @@ test('the send boundary: tokens, arbitrary states, extra fields, malformed probl
 
 test('a prior alert is cleared only by a real recovery: 503 or contradictory or unreadable "ok:true" keeps the receipt and announces nothing', async () => {
   const T = mkdtempSync(path.join(tmpdir(), 'sched-recov-'))
-  const healthy = { ok: true, problems: [], operational: { state: 'fresh' }, tenants: { tracked: 2 } }
+  const healthy = { ok: true, problems: [], operational: { state: 'fresh' }, tenants: { tracked: 2, blocked: 0, held: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null } }
   const cases: { name: string; status: number; body: object | string; code: number; cleared: boolean; match?: RegExp }[] = [
     { name: '503 with ok:true, stale and a blocked tenant', status: 503, body: { ok: true, problems: [], operational: { state: 'stale', last_completed_age_s: 4000 }, tenants: { tracked: 2, blocked: 1 } }, code: 1, cleared: false, match: /^scheduler stale: last completed run 4000s ago$/ },
     { name: 'bare ok:true on 503', status: 503, body: { ok: true }, code: 1, cleared: false, match: /^HTTP 503, not ok$/ },
@@ -133,6 +133,12 @@ test('a prior alert is cleared only by a real recovery: 503 or contradictory or 
     { name: '200 ok:true but stale and blocked', status: 200, body: { ok: true, operational: { state: 'stale' }, tenants: { tracked: 1, blocked: 1 } }, code: 1, cleared: false },
     { name: '200 ok:true with no usable fields', status: 200, body: { ok: true }, code: 1, cleared: false, match: /^scheduler health unreadable \(HTTP 200\)$/ },
     { name: '200 ok:true with an unknown state', status: 200, body: { ok: true, operational: { state: 'whatever' }, tenants: { tracked: 1 } }, code: 1, cleared: false, match: /^scheduler health unreadable/ },
+    { name: '200 fresh with blocked as a string, negative stale, null overdue', status: 200, body: { ok: true, operational: { state: 'fresh' }, tenants: { tracked: 2, blocked: '0', reply_sync_stale: -1, overdue: null, oldest_overdue_s: null } }, code: 1, cleared: false, match: /^scheduler health unreadable \(HTTP 200\)$/ },
+    { name: '200 fresh with a safety count missing (no overdue)', status: 200, body: { ok: true, operational: { state: 'fresh' }, tenants: { tracked: 2, blocked: 0, reply_sync_stale: 0 } }, code: 1, cleared: false, match: /^scheduler health unreadable/ },
+    { name: '200 fresh with a fractional count', status: 200, body: { ok: true, operational: { state: 'fresh' }, tenants: { tracked: 2, blocked: 0.5, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null } }, code: 1, cleared: false, match: /^scheduler health unreadable/ },
+    { name: '200 fresh with oldest_overdue_s of the wrong type', status: 200, body: { ok: true, operational: { state: 'fresh' }, tenants: { tracked: 2, blocked: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: 'soon' } }, code: 1, cleared: false, match: /^scheduler health unreadable/ },
+    { name: 'a legitimate idle scheduler with nothing tracked recovers', status: 200, body: { ok: true, operational: { state: 'never_ran' }, tenants: { tracked: 0, blocked: 0, held: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null } }, code: 0, cleared: true },
+    { name: 'a running scheduler with a tenant on hold recovers', status: 200, body: { ok: true, operational: { state: 'running' }, tenants: { tracked: 3, blocked: 0, held: 1, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null } }, code: 0, cleared: true },
     { name: 'a real recovery', status: 200, body: healthy, code: 0, cleared: true },
   ]
   try {
