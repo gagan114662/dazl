@@ -49,6 +49,8 @@ import type { SourceProgress } from '@/lib/scan/progress'
 import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
+import PlanViewCard from './plan-view'
+import type { PlanView } from '@/lib/scan/targeting'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -150,6 +152,7 @@ export default function LeadsClient() {
   const viewedJob = useRef('')
   const [draft, setDraft] = useState<Icp | null>(null)
   const [draftNote, setDraftNote] = useState('')
+  const [draftPlan, setDraftPlan] = useState<PlanView | null>(null)   // the compiled targeting plan for the draft, shown before anything runs (#876)
   const [busy, setBusy] = useState(false)
   const [starting, setStarting] = useState(false)
   // Optional per-run spend limit (same budget object as the API; partial, see budget-panel.tsx). Off by default.
@@ -362,13 +365,13 @@ export default function LeadsClient() {
 
   // Optional: work out the profile for review before running. The sentence alone runs straight away (submit below).
   async function preview() {
-    setError(''); setDraft(null); setBusy(true)
+    setError(''); setDraft(null); setDraftPlan(null); setBusy(true)
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(startIcp ? { prior_icp: startIcp } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error || 'Could not build the profile')); return }
       await startOffer(query)
-      setDraft(j.icp)
+      setDraft(j.icp); setDraftPlan(j.plan ?? null)
       setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
@@ -809,6 +812,7 @@ export default function LeadsClient() {
         <div className="card p-4 mb-6 text-sm">
           {/* Above BOTH Run buttons: the spend limit and what it does not cover are read before anything starts. */}
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} />
+          <PlanViewCard plan={draftPlan} />
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400">{draftNote}</p>
             <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>

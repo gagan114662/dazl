@@ -324,3 +324,40 @@ export function eventMatchIndex(event: string | undefined, object: string | unde
   }
   return -1
 }
+
+// ---- The plan as the person sees it, BEFORE the search (#876 / #752) ----
+// A serialisable, human-worded view of the compiled plan: the same tree the gates evaluate, with each condition said in plain words (a completed hire is
+// never worded as an open role), its own clock, how the conditions combine, what is filtered elsewhere and every ambiguity with the reading chosen.
+// Pure: no database, no provider, no model call.
+export type PlanViewNode =
+  | { op: 'cond'; id: string; text: string; means: string; window: string | null; kind: CondKind }
+  | { op: 'and' | 'or'; of: PlanViewNode[] }
+  | { op: 'not'; of: PlanViewNode }
+export interface PlanView { explicit: boolean; empty: boolean; summary: string; root: PlanViewNode | null; filters: { kind: PlanFilter['kind']; values: string[]; semantics: string }[]; ambiguities: Ambiguity[] }
+function meansOf(c: Condition): string {
+  switch (c.kind) {
+    case 'funding': return `a completed ${c.stage ? `${c.stage} ` : ''}funding round`
+    // "made their first sales hire" is compiled as this condition (the #204 Test B contract), so the view says what is actually checked rather than calling it a vacancy or a completed hire.
+    case 'hiring': return /\b(?:made|making|makes|make)\b[^.]*\bhires?\b/i.test(c.text) ? `the hire the request names${c.role ? ` (${c.role})` : ''}, checked as hiring: a dated job posting or a source naming it (a completed-hire statement is not required)` : `an open role${c.role ? ` (${c.role})` : ''}: a job posting or a statement that it is hiring`
+    case 'hire_made': return `a completed ${c.first ? 'first ' : ''}hire${c.role ? ` (${c.role})` : ''}: a source saying the hire was made, not a vacancy`
+    case 'event': return `${c.event ?? 'an'} event${c.object ? ` (${c.object})` : ''}`
+    case 'competitor': return 'a company on your saved competitor list'
+    case 'company_named': return `the named ${(c.names ?? []).length === 1 ? 'company' : 'companies'}: ${(c.names ?? []).join(', ')}`
+    case 'category': return `a ${(c.names ?? [])[0] ?? 'category'} business`
+    case 'tech': return `${c.change === 'adopted' ? 'adopted' : c.change === 'removed' ? 'removed' : 'uses'} ${c.tech ?? 'a technology'}`
+  }
+}
+const windowOf = (c: Condition): string | null => c.relative_to ? `within ${c.within_days ?? '?'} days after ${c.relative_to}` : c.within_days ? `within ${c.within_days} days${c.window_source === 'narrowest' || c.window_source === 'default' ? ' (assumed)' : ''}` : null
+function viewNode(n: PlanNode): PlanViewNode {
+  if (n.op === 'cond') return { op: 'cond', id: n.cond.id, text: n.cond.text, means: meansOf(n.cond), window: windowOf(n.cond), kind: n.cond.kind }
+  if (n.op === 'not') return { op: 'not', of: viewNode(n.of) }
+  return { op: n.op, of: n.of.map(viewNode) }
+}
+export function planView(plan: QueryPlan): PlanView {
+  return {
+    explicit: plan.explicit, empty: plan.root === null && plan.filters.length === 0,
+    summary: describePlan(plan.root), root: plan.root ? viewNode(plan.root) : null,
+    filters: plan.filters.map(f => ({ kind: f.kind, values: f.values, semantics: f.semantics })),
+    ambiguities: plan.ambiguities,
+  }
+}
