@@ -32,6 +32,6 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     // #876: "made their first sales hire" compiles to hire_made (a completed hire), still the sales-hiring branch of the OR. The plan's own clause
     // proof (targeting-proof.ts) then needs a source showing the completed hire; an open posting does not prove it.
     const event = cs.find(c => c.kind === 'funding' || c.kind === 'event'), hiring = cs.find(c => (c.kind === 'hiring' || c.kind === 'hire_made') && (!c.role || isGtmRole(c.role)))
-    return event && hiring && !event.relative_to && !hiring.relative_to ? { event, hiring } : null
+    return event && hiring && !event.relative_to && !hiring.relative_to && !event.clock_conflict && !hiring.clock_conflict ? { event, hiring } : null
   } catch { return null }
 }
