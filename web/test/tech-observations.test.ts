@@ -10,6 +10,7 @@ import { encodeScan, decodeScan, techChanges, changeRow, techQueries, type TechS
 import { compileTargeting, describePlan, planConditions } from '../lib/scan/targeting.ts'
 import { conditionProof, type ProofLead, type ProofRow } from '../lib/scan/targeting-proof.ts'
 import { classifyLeads } from '../lib/scan/actionable.ts'
+import { seedNeedVerified, NEED_GATE } from './helpers/need.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateMemory } from '../lib/memory.ts'
@@ -187,6 +188,8 @@ test('through the crawl: four dated crawls of one domain; an unreadable crawl ch
   assert.deepEqual(truths(j4), ['C1:pass', 'C2:pass'])
   const c1 = classifyLeads(db, j4)[0].targeting![0]
   assert.equal(c1.source_url, 'https://brightloop.com/'); assert.equal(c1.date, '2026-10-01')
-  // technology fit is not the buying reason: the lead still needs its own contact proof (no person / published route here)
-  assert.deepEqual(classifyLeads(db, j4)[0].missing, ['no_contact_person', 'no_published_contact'])
+  // technology fit is not the buying reason: the lead still needs its own contact proof (no person / published route
+  // here). The buying-need verdict itself is recorded and valid, so the need gate passes and the contact gaps show.
+  await seedNeedVerified(db, 'u1', j4.id, 'l4', 'Brightloop')
+  assert.deepEqual(classifyLeads(db, j4, new Map(), NEED_GATE)[0].missing, ['no_contact_person', 'no_published_contact'])
 })

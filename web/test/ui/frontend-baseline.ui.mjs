@@ -132,6 +132,8 @@ async function keyboardCheck(page, key) {
   await page.focus('.skip-link'); await page.keyboard.press('Enter')
   if (!(await page.evaluate(() => location.hash === '#main' && !!document.getElementById('main')))) fail(key, 'skip link Enter did not land on #main (missing id="main")')
   else {
+    // #673: on /app routes focus itself must move to <main> (tabindex="-1"), not stay on BODY.
+    if (key.includes(' /app')) { const at = await page.evaluate(() => document.activeElement?.id === 'main' ? 'MAIN' : document.activeElement?.tagName); if (at !== 'MAIN') fail(key, `skip link Enter left focus on ${at}, not <main id="main">`) }
     await page.keyboard.press('Tab')
     if (!(await page.evaluate(() => !!document.activeElement?.closest('#main') || !document.querySelector('#main a[href], #main button, #main input, #main select, #main textarea')))) fail(key, 'after the skip link, Tab did not move into #main')
   }
@@ -214,10 +216,13 @@ try {
     const ctx = await browser.newContext(desc)
     await ctx.addCookies([{ name: 'dazl_session', value: srv.token, url: base }])
     let stubs = {}
+    let hold = null
     await ctx.route('**/*', route => {
       const u = new URL(route.request().url())
       if (u.origin !== base) return route.abort()
       const body = route.request().method() === 'GET' ? stubs[u.pathname] : undefined
+      // #673 loading state: hold this one stubbed answer until the test releases it.
+      if (body && hold && u.pathname === hold.path) return hold.wait.then(() => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }))
       return body ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }) : route.continue()
     })
     for (const route of [...PUBLIC, ...APP]) {
@@ -244,6 +249,51 @@ try {
       await overflowCheck(page, key)
       await keyboardCheck(page, key)
       await page.close()
+    }
+    // #673 (named regression): after Enter on the skip link, document.activeElement is <main id="main"> and its focus
+    // ring shows, on Home, Settings and Inbox. Settings and Inbox loaded are covered in keyboardCheck above. Home (/app)
+    // is not in APP (its content depends on onboarding state) but shares the /app layout's <main>; nothing on it may
+    // autofocus past the skip link, so this walks it with a real first Tab.
+    const mainFocus = () => { const el = document.activeElement; const s = el ? getComputedStyle(el) : null; return { at: el?.id === 'main' ? 'MAIN' : el?.tagName, ring: !!s && s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0 } }
+    {
+      const key = `${vp} /app (skip link)`; console.log(`---- ${key}`)
+      stubs = {}
+      const page = await ctx.newPage()
+      await page.goto(base + '/app', { waitUntil: 'networkidle' }); await page.waitForTimeout(400)
+      const landed = new URL(page.url()).pathname
+      if (!landed.startsWith('/app')) fail(key, `landed on ${landed}`)
+      else {
+        const pre = await page.evaluate(() => document.activeElement?.tagName)
+        if (pre !== 'BODY') fail(key, `on load focus is already on ${pre} (autofocus skips the skip link)`)
+        await page.keyboard.press('Tab')
+        if (!(await page.evaluate(() => document.activeElement?.classList.contains('skip-link')))) fail(key, 'first Tab did not land on the skip link')
+        await page.keyboard.press('Enter')
+        const st = await page.evaluate(mainFocus)
+        if (st.at !== 'MAIN') fail(key, `skip link Enter left focus on ${st.at}, not <main id="main">`)
+        else if (!st.ring) fail(key, '<main> has focus but shows no focus ring')
+        console.log(`     landed on ${landed}; first Tab -> skip link; Enter -> ${st.at} (ring ${st.ring})`)
+      }
+      await page.close()
+    }
+    // #673 loading state: the skip link is used while Inbox still shows "Loading..."; when the threads replace it,
+    // focus must stay on <main>, not fall back to BODY.
+    {
+      const key = `${vp} /app/inbox (skip link while loading)`; console.log(`---- ${key}`)
+      stubs = STUBS['/app/inbox']
+      let release; hold = { path: '/api/outreach/inbox', wait: new Promise(r => { release = r }) }
+      const page = await ctx.newPage()
+      try {
+        await page.goto(base + '/app/inbox', { waitUntil: 'load' })
+        await page.getByText('Loading...').first().waitFor({ timeout: 15000 })
+        await page.focus('.skip-link'); await page.keyboard.press('Enter')
+        const during = await page.evaluate(mainFocus)
+        if (during.at !== 'MAIN') fail(key, `while loading, skip link Enter left focus on ${during.at}`)
+        release(); hold = null
+        await page.getByTestId('inbox-thread').first().waitFor({ timeout: 15000 }); await page.waitForTimeout(300)
+        const after = await page.evaluate(mainFocus)
+        if (after.at !== 'MAIN') fail(key, `after the threads loaded, focus fell to ${after.at}, not <main id="main">`)
+        console.log(`     loading: ${during.at}; loaded: ${after.at}`)
+      } finally { release?.(); hold = null; await page.close() }
     }
     await ctx.close()
   }

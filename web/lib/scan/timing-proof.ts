@@ -9,7 +9,9 @@
 //   - person + route: the scan's actionability check found a role-matching named person AND a contact route the company
 //     published on its own site (lib/scan/actionable.ts);
 //   - binding: the recorded event day, proof kind, domain and person/route are still the lead's current ones, and the
-//     record is at the current TIMING_PROOF_VERSION. Any drift, an older version or no record at all holds (fail closed).
+//     record is at the current TIMING_PROOF_VERSION. The domain confirmation, person and route are re-read from the CURRENT
+//     evidence rows through lib/scan/site-contact.ts (#914), never from the stored actionability summary alone: losing or
+//     changing any of them holds even while an old "Actionable" summary remains. Any drift, an older version or no record at all holds (fail closed).
 // Model confidence is never an input. Nothing here sets human_confirmed_at, and every other draft / approve / send gate
 // (identity review, recipient purpose, suppression, launch authority, caps) still applies on top.
 import { createHash } from 'node:crypto'
@@ -17,15 +19,17 @@ import type Database from 'better-sqlite3'
 import { addEnrichment, INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { proofBackedTiming, TIMING_REQUESTED } from './scoreboard.ts'
 import { jobWindowDays } from './window.ts'
+import { currentSiteContact, whoOf } from './site-contact.ts'
 
-export const TIMING_PROOF_VERSION = 1
+// v2 (#914): the person/route binding hashes the current evidence rows (value + source page), not the summary label.
+export const TIMING_PROOF_VERSION = 2
 export const TIMING_PROOF_CONNECTOR = 'scan:timing-proof'
 export const TIMING_PROOF_KIND = INTERNAL_ENRICHMENT_KIND // never listed for display (enrichmentsForLeads filters it)
 export const TIMING_PROOF_LABEL = `timing-proof:v${TIMING_PROOF_VERSION}`
 const ACTIONABLE_CONNECTOR = 'scan:actionable' // lib/scan/actionable.ts ACTIONABLE_CONNECTOR (not imported: avoids its memory/people deps)
 
 export type TimingProofGap = 'no_lead' | 'not_machine_verified' | 'needs_review' | 'quarantined' | 'unresolved_recency_bound' | 'timing_unproven'
-  | 'no_domain' | 'not_actionable' | 'no_record' | 'version_mismatch' | 'binding_changed'
+  | 'no_domain' | 'domain_unconfirmed' | 'not_actionable' | 'no_record' | 'version_mismatch' | 'binding_changed'
 
 interface Binding { v: number; proof: string; date: string; domain: string; route: string }
 type LeadRow = { id: string; source_url: string; company_domain: string | null; event_date: string | null; event_date_proof: string | null; signal: string | null; signal_kind: string | null; review_reason: string | null; quarantined_at: number | null; confidence: number | null; query: string | null; icp: string | null }
@@ -43,10 +47,15 @@ function evaluate(db: Database.Database, tenant: string, row: LeadRow | undefine
   if (windowDays == null && TIMING_REQUESTED.test(row.query ?? '')) return { gap: 'unresolved_recency_bound', binding: null }
   if (!proofBackedTiming(row, windowDays, now)) return { gap: 'timing_unproven', binding: null }
   if (!row.company_domain) return { gap: 'no_domain', binding: null }
+  // The current facts, from the evidence rows as they are now (one rule with actionability).
+  const site = currentSiteContact(db, tenant, row, whoOf(row.icp) || 'founder')
+  if (!site.confirmed) return { gap: 'domain_unconfirmed', binding: null }
+  if (!site.person || !site.route) return { gap: 'not_actionable', binding: null }
   const act = db.prepare('SELECT value, label FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? ORDER BY retrieved_at DESC').all(row.id, tenant, ACTIONABLE_CONNECTOR) as { value: string; label: string | null }[]
-  // exactly one current actionability verdict, and it is the positive one with its person/route named
+  // and exactly one actionability verdict, the positive one with its person/route named (the scan's own record agrees)
   if (act.length !== 1 || !act[0].value.startsWith('Actionable:') || !act[0].label) return { gap: 'not_actionable', binding: null }
-  return { gap: null, binding: { v: TIMING_PROOF_VERSION, proof: row.event_date_proof!, date: row.event_date!, domain: row.company_domain, route: createHash('sha256').update(act[0].label).digest('hex').slice(0, 16) } }
+  const facts = [site.domain, site.person.value, site.person.source_url, site.route.kind, site.route.value, site.route.source_url]
+  return { gap: null, binding: { v: TIMING_PROOF_VERSION, proof: row.event_date_proof!, date: row.event_date!, domain: row.company_domain, route: createHash('sha256').update(JSON.stringify(facts)).digest('hex').slice(0, 16) } }
 }
 
 // Scan end, after actionability: replace each machine-verified lead's record with the current verdict. A proven lead's

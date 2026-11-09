@@ -141,11 +141,17 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
   const text = normalise(pageText), q = normalise(quote)
   const evYear = +eventDate.slice(0, 4), older = eventYears(q).filter(y => y <= evYear - 2)   // background years ("founded in 2020") do not date the event
   if (older.length) return { bound: false, why: `the quote itself names ${Math.min(...older)}, an earlier year than the claimed day` }
-  const hits = datePositions(text).filter(d => d.day === eventDate)
-  if (!hits.length) return { bound: false, why: 'the fetched page never states that day' }
+  const positions = datePositions(text)
+  const hits = positions.filter(d => d.day === eventDate && !d.ambiguous)
+  if (!hits.length) {
+    // #780: a numeric date whose day/month order the page does not settle ("08/10/2026") is either reading, so it is no reading.
+    const amb = positions.find(d => d.day === eventDate && d.ambiguous)
+    if (amb) { const other = positions.filter(d => d.index === amb.index && d.day !== eventDate).map(d => d.day); return { bound: false, why: `the page writes "${text.slice(amb.index, amb.end)}", which reads as ${eventDate} or ${other.join(' or ')} depending on day/month order, and the page does not settle which` } }
+    return { bound: false, why: 'the fetched page never states that day' }
+  }
   const qCore = q.replace(/^(?:\.{3,}|…)+\s*/, '').replace(/\s*(?:\.{3,}|…)+$/, '')   // a cut quote's ellipsis, as verifyEvidence strips it
   const qAt = qCore ? text.toLowerCase().indexOf(qCore.slice(0, 80).toLowerCase()) : -1
-  const dateSpans = datePositions(text).map(d => ({ start: d.index, end: d.end }))
+  const dateSpans = positions.map(d => ({ start: d.index, end: d.end }))
   const name = normalise(company)
   const nameSpans = name.length >= 2 ? [...text.toLowerCase().matchAll(new RegExp(name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))].map(m => ({ start: m.index!, end: m.index! + name.length })) : []
   const sents = sentences(text, dateSpans)

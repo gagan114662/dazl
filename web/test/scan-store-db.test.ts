@@ -52,7 +52,7 @@ bothEngines('scan store on Db: each tenant reads, counts and exports only its ow
   assert.ok((await S.listJobs(db, B)).every(j => j.id !== a.done && j.id !== a.query))
   assert.equal(await S.latestJobId(db, A), a.csv)
   assert.equal(await S.latestJobId(db, B), b.csv)
-  assert.deepEqual(await S.latestQueryJob(db, A), { query: 'find a buyers', icp: '{"x":1}', icp_inferred: 0 })
+  assert.deepEqual(await S.latestQueryJob(db, A), { query: 'find a buyers', icp: '{"x":1}', icp_inferred: 3 })
   // export: no hidden, no quarantined, no fixtures unless asked; never another tenant's rows
   assert.deepEqual((await S.exportLeads(db, A)).map(r => r.lead_id), ['a-good'])
   assert.deepEqual((await S.exportLeads(db, A, a.done, 5000, true)).map(r => r.lead_id).sort(), ['a-fixture', 'a-good'])
