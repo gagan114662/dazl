@@ -82,6 +82,14 @@ jobs:
           mkdir -p preview/infotip-clipping
           SHOTS=preview/infotip-clipping node test/ui/infotip-clipping.ui.mjs | tee /tmp/ic.out
           ! grep -q '^NOT RUN' /tmp/ic.out
+      # #1016: the Leads "Profile used" summary keeps the profile text and its origin/approval note readable beside a long
+      # profile at 390 and 1280 (no one-word-wide note column), full wording, details still toggles. It must run, not skip.
+      - name: Leads profile provenance layout (long profile, every label, desktop + mobile)
+        run: |
+          set -o pipefail
+          mkdir -p preview/profile-provenance
+          SHOTS=preview/profile-provenance node test/ui/profile-provenance-layout.ui.mjs | tee /tmp/pp.out
+          ! grep -q '^NOT RUN' /tmp/pp.out
       # The #420 manual-profile ready card and readiness panel: a saved-by-hand profile completes both surfaces without a website and the panel must not contradict the card. They must run, not skip.
       - name: Ready card and readiness panel (manual profile without a website)
         run: |
