@@ -21,12 +21,12 @@ export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?
 export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
   | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
-  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'spend_limit' | 'error'; usage?: PolishUsage }
+  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unconfirmed' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'spend_limit' | 'error'; usage?: PolishUsage }
 
 // Accounting only: vendor, requested + served model, bounded outcome code, token
 // counts, request id. Never secrets, never the prompt, never the output text,
 // never raw provider error text.
-type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded' | 'spend_limit'
+type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unconfirmed' | 'offer_unreadable' | 'superseded' | 'spend_limit'
 
 // A durable PENDING attempt is written before any provider call. If it cannot be
 // recorded, the paid call is refused - no invisible spend. Null means "do not call".

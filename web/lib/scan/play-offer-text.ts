@@ -23,7 +23,9 @@ export function isMissingSchema(e: unknown): boolean {
 }
 export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
-  | { offer: string; source: OfferSource; conflict: null }
+  // unconfirmed (#687): a stored play with a request that never recorded an offer, so `offer` is only the tenant's
+  // CURRENT context (source 'profile'), not a historical one: shown as such, and outreach for it waits for a choice
+  | { offer: string; source: OfferSource; conflict: null; unconfirmed?: true }
   // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
   | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string } }
   | { offer: null; source: 'none'; conflict: null }
@@ -564,17 +566,42 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   return { offer: null, source: 'none', conflict: null }
 }
 
+// A STORED play's effective offer (#687). A play created before plays recorded what they sell has a request but neither
+// a reviewed offer nor a seller snapshot, so effectiveOffer can only fall back to the tenant's CURRENT context (source
+// 'profile'): that is not the offer the play was researched for, which is unknown. Such a play is marked unconfirmed:
+// the pages say so, and drafting, the AI rewrite and approval for it wait until the tenant chooses (setPlayOffer).
+// Precedence is unchanged: reviewed offer > creation snapshot > this explicit-unknown fallback. A job without a request
+// (a CSV or commenter import, an intake job) is not a play and keeps the tenant context. Reads only: nothing here (or in
+// its callers) writes `offer` or `seller`, so the state stays unconfirmed until the tenant's own choice.
+// A play is a job with a request: query not NULL and not '' (the definition Home and Campaigns list plays by). A stored
+// offer or seller that is not a string (a malformed row) is read as missing, and a request that is not a string still
+// counts as one: a malformed row can only make the play unconfirmed or contested, never pinned.
+type StoredPlay = { offer?: unknown; seller?: unknown; query?: unknown }
+const stored = (v: unknown): string | null => typeof v === 'string' ? v : null
+export function storedPlayOffer(play: StoredPlay, profileSells: string | null | undefined): PlayOffer {
+  const row = { offer: stored(play.offer), seller: stored(play.seller), query: stored(play.query) }
+  const e = effectiveOffer(row, profileSells)
+  const isPlay = play.query !== null && play.query !== undefined && play.query !== ''
+  // a request that itself states the offer (the same one as the current context, or effectiveOffer would have returned a
+  // conflict) carries its own record of it: that play is not unconfirmed
+  return e.source === 'profile' && isPlay && !statedOffer(row.query) ? { ...e, unconfirmed: true } : e
+}
+
 // The tenant's own selling context, for a play without an offer of its own (#349): the Memory positioning set in
 // Settings, else what onboarding saved (users.sells), so nobody needs a second hidden form. Every drafting path (template,
 // rewrite, follow-ups), scoring and the offer card read it through these two functions, so they cannot disagree.
 export function tenantOffer(memoryPositioning: string | null | undefined, profileSells: string | null | undefined): string | null {
   return cleanOffer(memoryPositioning) || cleanOffer(profileSells) || null
 }
-// The offer a draft for a lead of this play states: the play's effective offer, with the tenant context as its base. A
-// contested play refuses (offer_conflict). offer null and no refusal: there is nothing to state.
-export type DraftOffer = { offer: string | null; refuse: 'offer_conflict' | null }
-export function draftOffer(play: { offer?: string | null; seller?: string | null; query?: string | null } | null | undefined, tenant: string | null): DraftOffer {
-  const e = effectiveOffer(play ?? {}, tenant ?? '')
+// The offer a draft for a lead of this play states: the play's effective offer (storedPlayOffer), with the tenant context
+// as its base. A contested play refuses (offer_conflict); a play whose offer was never recorded nor confirmed refuses
+// too (offer_unconfirmed, #687) and keeps `offer` only for the run-time scoring of its own scan (runner offerBlockFor):
+// every outreach caller checks `refuse` first. No play (a lead outside any play of this tenant): the tenant context.
+// offer null and no refusal: there is nothing to state.
+export type DraftOffer = { offer: string | null; refuse: 'offer_conflict' | 'offer_unconfirmed' | null }
+export function draftOffer(play: StoredPlay | null | undefined, tenant: string | null): DraftOffer {
+  const e = play ? storedPlayOffer(play, tenant ?? '') : effectiveOffer({}, tenant ?? '')
   if (e.conflict) return { offer: null, refuse: 'offer_conflict' }
+  if ('unconfirmed' in e && e.unconfirmed) return { offer: e.offer, refuse: 'offer_unconfirmed' }
   return { offer: e.offer, refuse: null }
 }

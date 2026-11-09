@@ -24,6 +24,9 @@ const ERR: Record<string, string> = {
   review_unreadable: 'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
   domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
   lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
+  offer_conflict: 'This play\'s request names a different offer than the one it was created with. Choose what this play sells on its campaign page (or Home) before approving.',
+  offer_unconfirmed: 'No offer was recorded when this play started. Confirm what this play sells on its campaign page (or Home) before approving. Nothing was sent.',
+  offer_unreadable: 'What this play sells could not be read just now. Nothing was approved or sent. Try again in a moment.',
   already_sending: 'This message is already being sent.',
   already_uncertain: 'We could not confirm whether this was sent. Check your Gmail Sent folder, then choose below.',
 }

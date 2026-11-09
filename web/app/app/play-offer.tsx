@@ -5,6 +5,9 @@ import type { PlayOffer } from '@/lib/scan/play-offer-text'
 // What THIS play sells (#349; lib/scan/play-offer.ts), shown wherever the play is: Home, its campaign page and its
 // drafts. A play whose request names a different offer than the one it was created with shows both and waits for the
 // tenant's choice; drafting for it is refused until then. Choosing changes this play only.
+// A play that never recorded an offer (unconfirmed, #687) is never shown as if it had one: the card says no offer was
+// recorded, names the CURRENT offer dazl would use, and drafting and approval wait until the tenant confirms it or
+// writes another (the same per-play choice).
 const SOURCE: Record<string, string> = {
   play: 'chosen for this play',
   recorded: 'recorded when this play started',
@@ -46,6 +49,19 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
         {c.stated && <button className="btn-primary btn-sm" disabled={busy} onClick={() => void choose(c.stated!)} data-testid="play-offer-use-stated">Use: {c.stated}</button>}
         <button className="btn-ghost btn-sm" disabled={busy} onClick={() => void choose(c.recorded)} data-testid="play-offer-use-recorded">Keep: {c.recorded}</button>
         {!editing && <button className={c.stated ? 'btn-ghost btn-sm' : 'btn-primary btn-sm'} onClick={() => { setText(''); setEditing(true) }} data-testid="play-offer-write">{c.stated ? 'Something else' : 'Write what this play sells'}</button>}
+      </div>
+      {editing && editor}
+      {msg && <p className="mt-1 text-xs" role="status">{msg}</p>}
+    </div>
+  }
+  if (offer.offer && 'unconfirmed' in offer && offer.unconfirmed) {
+    const current = offer.offer
+    return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-unconfirmed">
+      <p className="font-semibold">Confirm what this play sells</p>
+      <p className="mt-1 text-[var(--ink-2)]">dazl did not record an offer when this play started, so what it was researched for is unknown. Your current offer is <strong data-testid="play-offer-current">{current.replace(/\.$/, '')}</strong>. dazl will not draft or approve emails for this play until you confirm it or write another. Only this play changes.</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button className="btn-primary btn-sm" disabled={busy} onClick={() => void choose(current)} data-testid="play-offer-confirm-current">Use: {current}</button>
+        {!editing && <button className="btn-ghost btn-sm" onClick={() => { setText(''); setEditing(true) }} data-testid="play-offer-write">Something else</button>}
       </div>
       {editing && editor}
       {msg && <p className="mt-1 text-xs" role="status">{msg}</p>}

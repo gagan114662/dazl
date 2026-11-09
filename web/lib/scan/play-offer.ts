@@ -13,17 +13,18 @@
 // never rewritten except by that explicit choice for that play: an old play keeps the offer it was created with.
 import type { Db, DbLike } from '../db/client.ts'
 import { asDb } from '../db/client.ts'
-import { readSellerLine } from '../auth-db.ts'
+import { readSellerLine, readSellerProfile } from '../auth-db.ts'
 
-export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, type OfferSource, type PlayOffer } from './play-offer-text.ts'
-import { effectiveOffer, cleanOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
+export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, storedPlayOffer, type OfferSource, type PlayOffer } from './play-offer-text.ts'
+import { storedPlayOffer, cleanOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
 
-// The effective offer of one play of this tenant (null: no such play of this tenant).
+// The effective offer of one play of this tenant (null: no such play of this tenant). A play that never recorded an offer
+// comes back unconfirmed (storedPlayOffer, #687), never as if its current-profile fallback had been recorded. Read only.
 export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string): Promise<PlayOffer | null> {
   const d = asDb(db)
   const row = await d.get<{ offer: string | null; seller: string | null; query: string | null }>('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
   if (!row) return null
-  return effectiveOffer(row, await profileOffer(d, tenantId))
+  return storedPlayOffer(row, await profileOffer(d, tenantId))
 }
 
 // The tenant's own selling context (play-offer-text.ts tenantOffer): the Memory positioning, else the business
@@ -60,11 +61,14 @@ export async function confirmedPlayOffer(db: DbLike, tenantId: string, query: st
   return row && offer.length >= 3 ? { offer, seller: row.seller } : null
 }
 // The same, for a scheduled run of a saved play (weekly watch, monitor), which has no request body: matched against the
-// tenant's business profile as it is now (the seller snapshot POST /api/scan records).
-export async function scheduledPlayOffer(db: Db, tenantId: string, query: string): Promise<{ offer: string; seller: string | null } | null> {
-  let line = ''
-  try { line = await readSellerLine(db, tenantId) } catch (e) { if (!isMissingSchema(e)) throw e /* else: no profile table */ }
-  return confirmedPlayOffer(db, tenantId, query, line)
+// tenant's business profile as it is now (the seller snapshot POST /api/scan records). When nothing is confirmed (offer
+// null) the run records that snapshot too, as a manual run does, so its play has a recorded offer instead of waiting for
+// a choice every week (#687) - but only when the profile states an offer: a website alone is not one, so such a run (and
+// a Memory-only tenant's) keeps seller null and stays unconfirmed until the tenant chooses, never pinned to a domain.
+export async function scheduledPlayOffer(db: Db, tenantId: string, query: string): Promise<{ offer: string | null; seller: string | null }> {
+  let line = '', sells = ''
+  try { line = await readSellerLine(db, tenantId); sells = (await readSellerProfile(db, tenantId)).sells } catch (e) { if (!isMissingSchema(e)) throw e /* else: no profile table */ }
+  return (await confirmedPlayOffer(db, tenantId, query, line)) ?? { offer: null, seller: sells.trim() ? line.trim() || null : null }
 }
 
 // Sets the offer of one play of this tenant, and nothing else: the profile and every other play keep theirs.

@@ -7,7 +7,7 @@ import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 
-const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
+const STATUS: Record<string, number> = { offer_conflict: 409, offer_unconfirmed: 409, offer_unreadable: 503, not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
 
 async function guard(req: NextRequest, id: string, action: Action) {
   const user = await requireUser()

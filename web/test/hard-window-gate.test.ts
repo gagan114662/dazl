@@ -1,4 +1,4 @@
-import { seedOffers } from './helpers/seed-offer.ts'
+import { SEEDED_OFFER, seedOffers } from './helpers/seed-offer.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -44,7 +44,8 @@ function setup() {
 // Instinct's fixture: contact NULL, a crawled email on the company's own site with real evidence_own_domain provenance,
 // machine-verified quote, graded fit 4 / intent 0.
 function addLead(db: Database.Database, eventDate: string | null, icp: string | null = JSON.stringify({ summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], window_days: 90 }), query = 'dental clinics that opened in the past 90 days') {
-  const job = createQueryJob(db, 'A', { query, icp })
+  // the play records its offer as POST /api/scan does (a play without one waits for the tenant's choice, #687)
+  const job = createQueryJob(db, 'A', { query, icp, seller: SEEDED_OFFER })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const lead = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent, event_date, review_reason, score) VALUES (?, ?, ?, NULL, ?, ?, ?, 90, 4, 0, ?, ?, 70)').run(

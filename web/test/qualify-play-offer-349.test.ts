@@ -56,6 +56,13 @@ test('legacy tenant Memory fallback matches shared play resolver and a concurren
  const{db,jobs}=setup();db.exec('CREATE TABLE tenant_memory(tenant_id TEXT PRIMARY KEY,positioning TEXT)')
  db.prepare('UPDATE scan_jobs SET seller=NULL,offer=NULL,query=? WHERE id=?').run('Find companies hiring sales.',jobs[0])
  db.prepare('INSERT INTO tenant_memory VALUES (?,?)').run('u1','Sales consulting')
+ // #687: a PLAY (it has a request) that never recorded an offer is not checked against the current Memory offer: no
+ // page read, no input, until the tenant confirms what it sells
+ let fetched=0
+ const held=await preview(db,L,async()=>{fetched++;return fetchPage()});assert.equal(held?.ready,false);assert.equal(held?.input,null);assert.equal(fetched,0)
+ assert.ok(held?.notes.some(n=>/Confirm what this play sells/.test(n)),JSON.stringify(held?.notes))
+ // a job without a request (an import/intake job) keeps the shared resolver's tenant fallback and its concurrency check
+ db.prepare('UPDATE scan_jobs SET query=NULL WHERE id=?').run(jobs[0])
  const p=await preview(db);assert.equal(p?.input?.seller_offer,'Sales consulting')
  const changed=await preview(db,L,async()=>{db.prepare('UPDATE tenant_memory SET positioning=?').run('Bookkeeping');return fetchPage()})
  assert.equal(changed?.ready,false);assert.equal(changed?.input,null)
@@ -71,7 +78,8 @@ test('an owned lead with no tenant/snapshot/request offer remains structured not
  assert.ok(p);assert.equal(p.ready,false);assert.equal(p.seller_offer_present,false);assert.ok(p.notes.some(n=>/No seller profile/.test(n)))
 })
 test('legacy auth-profile offer read after sources catches a concurrent shared-profile change',async()=>{
- const{db,jobs}=setup();db.prepare('UPDATE scan_jobs SET seller=NULL,offer=NULL,query=? WHERE id=?').run('Find companies hiring sales.',jobs[0])
+ // a job without a request (#687: a play with one and no recorded offer is held before any read, see above)
+ const{db,jobs}=setup();db.prepare('UPDATE scan_jobs SET seller=NULL,offer=NULL,query=NULL WHERE id=?').run(jobs[0])
  const p=await preview(db,L,async()=>{db.prepare('UPDATE users SET sells=?').run('Bookkeeping');return fetchPage()})
  assert.equal(p?.ready,false);assert.equal(p?.input,null);assert.ok(p?.notes.some(n=>/changed/.test(n)))
 })

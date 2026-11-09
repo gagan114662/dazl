@@ -316,7 +316,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
 // Read-only: why createDraft would refuse this lead right now (its error code), or null if it would accept it. Runs the
 // very same checks (draftChecks); used by views that recommend a next step, so they never recommend a refused one.
 export function draftBlockReason(db: Database.Database, tenantId: string, leadId: string): string | null {
-  try { draftChecks(db, tenantId, leadId); return null } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
+  try { draftChecks(db, tenantId, leadId); return playOfferRefusal(db, tenantId, leadId) } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
 }
 
 // The play a lead came from, with what is needed to resolve its offer. null: no play of this tenant for the lead, or an
@@ -328,13 +328,21 @@ export function playOfferRow(db: Database.Database, tenantId: string, leadId: st
   } catch (e) { if (isMissingSchema(e)) return null; throw e }
 }
 
+// What this lead's play's offer refuses right now (play-offer-text.ts draftOffer), for the read-only views and approve: a
+// contested play (offer_conflict), or a play whose offer was never recorded and is not confirmed yet (offer_unconfirmed,
+// #687). A play or tenant offer that cannot be read is offer_unreadable: never "no refusal". Reads only.
+function playOfferRefusal(db: Database.Database, tenantId: string, leadId: string): 'offer_conflict' | 'offer_unconfirmed' | 'offer_unreadable' | null {
+  try { return draftOffer(playOfferRow(db, tenantId, leadId), readTenantOffer(db, tenantId)).refuse } catch { return 'offer_unreadable' }
+}
+
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
   // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
   // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,
   // a website alone is not an offer, and another tenant's context is never used. A contested play (offer_conflict) gets
-  // no draft until the tenant chooses.
+  // no draft until the tenant chooses, and so does a play whose offer was never recorded until the tenant confirms one
+  // (offer_unconfirmed, #687): its words would otherwise state the current profile as if the play had been run for it.
   let play: ReturnType<typeof playOfferRow>, tenant: ReturnType<typeof readTenantOffer>
   try { play = playOfferRow(db, tenantId, lead.id); tenant = readTenantOffer(db, tenantId) } catch { throw new OutreachError('offer_unreadable') } // nothing drafted
   const r = draftOffer(play, tenant)
@@ -406,6 +414,11 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) throw new OutreachError('not_sales_contact')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
+  // What the play sells must be settled before its words are approved to go out (#687): a contested play, or one whose
+  // offer was never recorded and not confirmed, is refused - so are manual approval, a sequence's first step and
+  // autopilot, which all approve here. A test-fixture send is not exempt: nothing about the offer is test-only.
+  const offerNo = playOfferRefusal(db, tenantId, m.lead_id)
+  if (offerNo) throw new OutreachError(offerNo)
   return m
 }
 

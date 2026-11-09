@@ -132,12 +132,13 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence } =
     if (!(await readHasKey(db, w.user_id))) { await pause('no_api_key'); continue }
     if (!(await readScanQuota(db, w.user_id)).allowed) { await pause('quota_exceeded'); continue }
     if (await countActiveJobs(db, w.user_id) > 0) continue // a scan is already going; the next tick picks this watch up
-    // the offer already confirmed for this play's request (#349), with the snapshot it was confirmed beside
+    // the offer already confirmed for this play's request (#349), with the snapshot it was confirmed beside; else the
+    // profile snapshot as it is now (#687), as a manual run records
     const play = await scheduledPlayOffer(db, w.user_id, w.query)
     const job = await db.tx(function* (t) {
       yield* fence(t)
       const r = yield* t.run('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ? AND active = 1 AND next_run_at = ?', [now, now + WEEK_S, w.id, w.next_run_at])
-      return r.changes === 1 ? yield* queryJobStep(t, w.user_id, { query: w.query, icp: w.icp, watchId: w.id, runBudget: w.run_budget ?? null, ...(play ? { offer: play.offer, seller: play.seller ?? undefined } : {}) }, now) : null
+      return r.changes === 1 ? yield* queryJobStep(t, w.user_id, { query: w.query, icp: w.icp, watchId: w.id, runBudget: w.run_budget ?? null, offer: play.offer, seller: play.seller ?? undefined }, now) : null
     })
     if (job) ran++
   }

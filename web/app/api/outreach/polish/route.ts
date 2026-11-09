@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
       no_profile: 'Add what you sell (positioning) in Settings first - without it the rewrite would have to invent an offer.',
       offer_unreadable: 'What this play sells could not be read just now, so the draft was not rewritten. Try again in a moment.',
       offer_conflict: 'This play\'s request names a different offer than the one it was created with. Choose what this play sells on its campaign page first.',
+      offer_unconfirmed: 'No offer was recorded when this play started. Confirm what this play sells on its campaign page first - the draft was not rewritten and nothing was charged.',
       unusable: 'The rewrite came back unusable - the original draft is unchanged.',
       blocked_claim: 'The rewrite asserted an unverified claim, so it was discarded - the original draft is unchanged.',
       error: 'The rewrite failed - the original draft is unchanged.',

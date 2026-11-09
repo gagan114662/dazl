@@ -118,13 +118,14 @@ export async function runDueMonitors(db: Db, o: { now?: number; fence?: Fence } 
       continue
     }
     if (await countActiveJobs(db, m.user_id) >= 2) continue // user's own scans win; try again next tick
-    // the offer already confirmed for this play's request (#349), with the snapshot it was confirmed beside
+    // the offer already confirmed for this play's request (#349), with the snapshot it was confirmed beside; else the
+    // profile snapshot as it is now (#687), as a manual run records
     const play = await scheduledPlayOffer(db, m.user_id, m.query)
     const jobId = await db.tx(function* (t: Tx): TxBody<string | null> {
       yield* fence(t)
       const r = yield* t.run('UPDATE monitors SET last_run_at = ?, next_run_at = ? + interval_hours * 3600 WHERE id = ? AND enabled = 1 AND next_run_at = ?', [now, now, m.id, m.next_run_at])
       if (r.changes !== 1) return null
-      const job = yield* queryJobStep(t, m.user_id, { query: m.query, icp: m.icp, sources: m.sources, ...(play ? { offer: play.offer, seller: play.seller ?? undefined } : {}) }, now)
+      const job = yield* queryJobStep(t, m.user_id, { query: m.query, icp: m.icp, sources: m.sources, offer: play.offer, seller: play.seller ?? undefined }, now)
       yield* t.run('INSERT INTO monitor_runs (id, monitor_id, job_id, ran_at, missed_runs) VALUES (?, ?, ?, ?, ?)', [randomBytes(12).toString('hex'), m.id, job, now, missedRuns(Number(m.next_run_at), now, Number(m.interval_hours))])
       return job
     })

@@ -30,6 +30,8 @@ export async function qualifyPreview(db: Database.Database, userId: string, lead
   if (!offer) return null
   const blocked = (note: string): QualifyPreviewFull => ({ lead_id: lead.id, company: lead.company, vendor, model, seller_offer_present: false, pages: [], cost: null, scope: null, packing, context_fields: [], ready: false, notes: [note], prompt_sha256: null, input: null })
   if (offer.conflict) return blocked('Choose what this play sells before checking fit; the saved profile and play request conflict.')
+  // #687: a play that never recorded an offer is not checked (a paid model call) against the current profile's offer
+  if ('unconfirmed' in offer && offer.unconfirmed) return blocked('Confirm what this play sells before checking fit: no offer was recorded when this play started, so dazl will not assume your current one.')
   const sellerOffer = offer.offer ?? ''
   const notes: string[] = []
   const targets: { url: string; role: PreviewPage['role'] }[] = []

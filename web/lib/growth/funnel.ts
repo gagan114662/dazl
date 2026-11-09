@@ -126,7 +126,7 @@ export interface PricedPurpose { usd: number; priced_calls: number; unpriced_cal
 // No model dazl lists takes more than this in one call; a larger count is a corrupt row (unpriced), not a cost.
 export const MAX_CALL_TOKENS = 10_000_000
 // Draft-polish outcomes recorded before any provider request (lib/outreach/draft-llm.ts recordRefusal / spend refusal).
-const DRAFT_NO_CALL = new Set(['no_key', 'no_profile', 'offer_conflict', 'offer_unreadable', 'spend_limit'])
+const DRAFT_NO_CALL = new Set(['no_key', 'no_profile', 'offer_conflict', 'offer_unconfirmed', 'offer_unreadable', 'spend_limit'])
 
 const count = (v: unknown): number | undefined => {
   if (v === null || v === undefined) return undefined

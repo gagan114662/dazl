@@ -1,4 +1,4 @@
-import { seedOffers } from './helpers/seed-offer.ts'
+import { SEEDED_OFFER, seedOffers } from './helpers/seed-offer.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
@@ -54,7 +54,8 @@ const SCENARIOS: Scenario[] = [
 async function build(s: Scenario) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateOutreach(db); seedOffers(db)
   const icp = s.icp ?? JSON.stringify({ ...ICP, window_days: 90 })
-  const job = createQueryJob(db, 'A', { query: s.query ?? 'dental clinics in the past 90 days', icp })
+  // the play records its offer as POST /api/scan does (a play without one waits for the tenant's choice, #687)
+  const job = createQueryJob(db, 'A', { query: s.query ?? 'dental clinics in the past 90 days', icp, seller: SEEDED_OFFER })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent, event_date, human_confirmed_at, score) VALUES (?, ?, ?, ?, ?, ?, ?, 90, 4, 2, ?, 1, 70)')

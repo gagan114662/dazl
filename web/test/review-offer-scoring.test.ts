@@ -9,6 +9,8 @@ import { migrateScan } from '../lib/scan/store.ts'
 import { getMemory, migrateMemory, saveMemory, memoryPromptBlock } from '../lib/memory.ts'
 import { offerBlockFor, scoringSellerContext } from '../lib/scan/runner.ts'
 import { memoryForLead } from '../lib/outreach/play-memory.ts'
+import { setPlayOffer } from '../lib/scan/play-offer.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 const DENTAL = 'Dental appointment software', CRM = 'CRM consulting'
 function db() {
@@ -36,7 +38,8 @@ test('REVIEW scoring for a reviewed CRM play does not retain the conflicting glo
     // contested: no offer at all, and still no global positioning
     const contested = scoringSellerContext(d, 'A', 'contested', getMemory(d, 'A'))
     assert.doesNotMatch(contested, /Dental appointment software|CRM consulting/); assert.match(contested, /Plain and short/)
-    // the dental play keeps dental; a play from before snapshots falls back to the Memory positioning
+    // the dental play keeps dental; a play from before snapshots falls back to the Memory positioning for scoring its own
+    // run (#687 gates outreach for such a play, not the research of its scan)
     assert.match(scoringSellerContext(d, 'A', 'dental', getMemory(d, 'A')), /Dental appointment software/)
     assert.match(offerBlockFor(d, 'A', 'old'), /Dental appointment software/)
     // the runner assembles the scoring text with this function, not Memory's own positioning
@@ -46,14 +49,17 @@ test('REVIEW scoring for a reviewed CRM play does not retain the conflicting glo
   } finally { d.close() }
 })
 
-test('follow-up and sequence drafts state the lead\'s play offer, none while contested, and dental plays keep dental', () => {
+test('follow-up and sequence drafts state the lead\'s play offer, none while contested or unconfirmed, and dental plays keep dental', async () => {
   const d = db()
   try {
     const block = (lead: string) => memoryPromptBlock(memoryForLead(d, 'A', lead))
     assert.match(block('lead-play'), /Seller's positioning: CRM consulting/); assert.doesNotMatch(block('lead-play'), /Dental/)
     assert.doesNotMatch(block('lead-contested'), /positioning/); assert.match(block('lead-contested'), /Plain and short/)
     assert.match(block('lead-dental'), /Seller's positioning: Dental appointment software/)
-    assert.match(block('lead-old'), /Seller's positioning: Dental appointment software/)
+    // #687: a play from before snapshots states no offer until the tenant confirms one; then it states that one
+    assert.doesNotMatch(block('lead-old'), /positioning/); assert.match(block('lead-old'), /Plain and short/)
+    assert.ok(await setPlayOffer(sqliteDb(d), 'A', 'old', CRM))
+    assert.match(block('lead-old'), /Seller's positioning: CRM consulting/); assert.doesNotMatch(block('lead-old'), /Dental/)
     assert.equal(memoryForLead(d, 'B', 'lead-play')?.positioning ?? null, null, 'another tenant: not this play, and no Memory')
     for (const f of ['../lib/outreach/draft-llm.ts', '../lib/outreach/sequences.ts']) assert.match(readFileSync(new URL(f, import.meta.url), 'utf8'), /memoryPromptBlock\(lead\.lead_id \? memoryForLead\(db, tenantId, lead\.lead_id\)/)
   } finally { d.close() }

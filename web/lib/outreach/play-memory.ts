@@ -4,7 +4,7 @@ import { draftOffer, isMissingSchema, tenantOffer } from '../scan/play-offer-tex
 
 // The tenant's Memory as written for ONE lead's play (#349): its positioning is that play's effective offer
 // (lib/scan/play-offer.ts), so a follow-up never states the tenant-wide offer for a play that sells something else.
-// A play whose offer is contested gets no positioning at all: the text then states no offer rather than a guessed one.
+// A play whose offer is contested or unconfirmed (#687) gets no positioning at all: the text then states no offer rather than a guessed one.
 // A lead outside any play of this tenant gets the tenant's own context (Memory positioning or, after onboarding only,
 // the profile offer). A read failure other than an older schema
 // throws (the follow-up and sequence callers then use their template, which states no offer, and make no model call).
@@ -16,9 +16,11 @@ export function memoryForLead(db: Database.Database, tenantId: string, leadId: s
     play = db.prepare('SELECT j.offer, j.seller, j.query FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as typeof play
   } catch (e) { if (!isMissingSchema(e)) throw e } // unreadable: the caller drafts nothing from Memory
   const r = draftOffer(play, tenantOffer(memory?.positioning, readProfileSells(db, tenantId)))
-  if (!memory && !r.offer) return null // nothing of this tenant's to state
+  // a contested play, or one whose offer was never recorded and is not confirmed yet (#687): no offer is stated
+  const offer = r.refuse ? null : r.offer
+  if (!memory && !offer) return null // nothing of this tenant's to state
   const base: Memory = memory ?? { icp: '', positioning: '', tone: '', exclusions: [], objections: [], updated_at: 0 }
-  return { ...base, positioning: r.offer ?? '' }
+  return { ...base, positioning: offer ?? '' }
 }
 
 // What onboarding saved as the tenant's offer (users.sells). '' on a database without it.

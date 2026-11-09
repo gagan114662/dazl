@@ -93,25 +93,34 @@ test('#349 exact two-play case: the London play is contested everywhere until ch
   } finally { db.close() }
 })
 
-test('#349 onboarding only (users.sells, no Memory): template and AI rewrite state the same offer; no offer anywhere still refuses', async () => {
+test('#349/#687 onboarding only (users.sells, no Memory): a play from before snapshots waits for a choice, then template and AI rewrite state the chosen offer; no offer anywhere still refuses', async () => {
   const ONBOARDED = 'Bookkeeping for independent design agencies'
   const db = setup(ONBOARDED)
   try {
-    // a play from before seller snapshots: the tenant context is its offer
+    // a play from before seller snapshots: its offer was never recorded, so the current profile is not silently its
+    // offer (#687): no draft, no paid rewrite and no follow-up offer until the tenant chooses
     db.prepare("UPDATE scan_jobs SET seller = NULL WHERE id = 'dental'").run()
+    assert.throws(() => createDraft(db, 'A', 'lead-dental', 'Acme'), (e: Error & { code?: string }) => e.code === 'offer_unconfirmed')
+    const r = recording()
+    const seeded = () => (db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('m2', 'A', 'lead-dental', 'sales@buyer.invalid', 's', 'a draft body long enough', 'draft') RETURNING id").get() as { id: string }).id
+    const id0 = seeded()
+    assert.deepEqual(await polishDraft(db, 'A', id0, 'Acme', { master, providers: r.providers }), { rewritten: false, reason: 'offer_unconfirmed' })
+    assert.equal(r.prompts.length, 0, 'no provider call for an unconfirmed play')
+    assert.equal(memoryForLead(db, 'A', 'lead-dental'), null, 'no Memory and no confirmed offer: nothing to state')
+    // nothing saved anywhere: nothing to fall back to, so the play is not unconfirmed - the rewrite refuses with no call
+    db.prepare("UPDATE users SET sells = '' WHERE id = 'A'").run()
+    assert.deepEqual(await polishDraft(db, 'A', id0, 'Acme', { master, providers: r.providers }), { rewritten: false, reason: 'no_profile' })
+    assert.equal(r.prompts.length, 0)
+    // the profile offer is back and the tenant confirms it for this play: template and rewrite state the same offer
+    db.prepare('UPDATE users SET sells = ? WHERE id = ?').run(ONBOARDED, 'A')
+    db.prepare('DELETE FROM outreach_messages WHERE id = ?').run(id0)
+    assert.ok(await setPlayOffer(sqliteDb(db), 'A', 'dental', ONBOARDED))
     const id = createDraft(db, 'A', 'lead-dental', 'Acme')
     assert.match(body(db, id), new RegExp(ONBOARDED))
-    const r = recording()
     const res = await polishDraft(db, 'A', id, 'Acme', { master, providers: r.providers })
     assert.ok(res.rewritten || res.reason !== 'no_profile', JSON.stringify(res))
     assert.equal(r.prompts.length, 1); assert.match(r.prompts[0], new RegExp(ONBOARDED))
     assert.match(memoryForLead(db, 'A', 'lead-dental')!.positioning, new RegExp(ONBOARDED))
-    // nothing saved anywhere: the rewrite refuses with no provider call
-    db.prepare("UPDATE users SET sells = '' WHERE id = 'A'").run()
-    db.prepare('DELETE FROM outreach_messages WHERE id = ?').run(id)
-    const id2 = (db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('m2', 'A', 'lead-dental', 'sales@buyer.invalid', 's', 'a draft body long enough', 'draft') RETURNING id").get() as { id: string }).id
-    assert.deepEqual(await polishDraft(db, 'A', id2, 'Acme', { master, providers: r.providers }), { rewritten: false, reason: 'no_profile' })
-    assert.equal(r.prompts.length, 1)
   } finally { db.close() }
 })
 

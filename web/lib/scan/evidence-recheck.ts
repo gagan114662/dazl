@@ -17,7 +17,7 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  const offer=await readPlayOffer(db,tenant,lead.scan_job_id)
  const base={lead_id:id,job_id:lead.scan_job_id,company:lead.company,source_url:lead.source_url,checked_at:Math.floor(now.getTime()/1000),offer:offer?.offer??null,query:lead.query,model_call:false,search_call:false,eligibility_changed:false,can_draft:false}
  const blocked=(reason:string)=>({...base,status:'not_checked' as const,reasons:[reason],checks:null})
- if(!offer||offer.conflict||!offer.offer)return blocked('Resolve what this play sells before rechecking its evidence.')
+ if(!offer||offer.conflict||!offer.offer||offer.unconfirmed)return blocked('Resolve what this play sells before rechecking its evidence.') // #687: an unconfirmed play too
  const icp=lead.icp?parseIcp(lead.icp):null
  if(!icp)return blocked('The saved reviewed targeting is unavailable. No geography or time window was guessed.')
  const page=await fetcher(lead.source_url).catch(()=>({fail:'error' as const}))
