@@ -133,7 +133,7 @@ test('actionable yield: an explicit plan is a required gate - an unproven clause
   recordActionability(db, job, new Map(), NEED_GATE)
   const rows = db.prepare("SELECT value, label FROM lead_enrichments WHERE lead_id = 'seedonly' AND connector = 'scan:targeting' ORDER BY value").all() as { value: string; label: string }[]
   assert.equal(rows.length, 2)
-  assert.match(rows[1].value, /^C2 hired their first VP of Sales within 30 days: unknown$/); assert.match(rows[1].label, /no verified source shows this company made its first VP of Sales hire/)
+  assert.match(rows[1].value, /^C2 hired their first VP of Sales within 30 days: unknown, no evidence date$/); assert.match(rows[1].label, /no verified source shows this company made its first VP of Sales hire/)
 })
 
 test('non-hiring events beyond open/launch/expand: contract, permit, partner and rebrand are proven only by a plain statement about this company', () => {

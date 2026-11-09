@@ -54,7 +54,10 @@ export async function POST(req: NextRequest) {
   const check = verifyRequest(c.config.secret, req.headers.get('x-dazl-timestamp'), sig, raw)
   if (check !== 'ok') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (!c.enabled) return NextResponse.json({ error: 'Collection is off for this workspace' }, { status: 403 })
-  const r = await ingest(db, tenantId, raw, sig ?? '')
+  // #921: ingest re-verifies these exact headers and bytes against the config it locks, so a re-record/erase that lands
+  // between the check above and ingest's config lock cannot carry this request into the replacement config.
+  const r = await ingest(db, tenantId, raw, { timestamp: req.headers.get('x-dazl-timestamp'), signature: sig })
+  if (r.status === 'unauthenticated') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (r.status === 'off') return NextResponse.json({ error: 'Collection is off for this workspace' }, { status: 403 })
   if (r.status === 'not_configured') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (r.status === 'bad_body') return NextResponse.json({ error: 'Send {"events":[...]} with 1-50 events' }, { status: 400 })

@@ -106,6 +106,16 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
   })
 }
 
+// #878: one clause's stored row says which evidence date THAT condition was checked on, or that it has none. A clause proven without a
+// date of its own (an undated source, the sales-hiring gate's pass record, a name or list check) never borrows the check day as if it were
+// evidence: source_date is then the day of the check, and the value says "no evidence date". The date part is never cut by the length cap.
+const EVIDENCE_DAY = /^\d{4}-\d{2}-\d{2}$/
+export function targetingClauseRow(c: Pick<ClauseProof, 'id' | 'text' | 'negated' | 'truth' | 'date'>, now: Date = new Date()): { value: string; source_date: string } {
+  const date = typeof c.date === 'string' && EVIDENCE_DAY.test(c.date) && Number.isFinite(Date.parse(`${c.date}T00:00:00Z`)) && new Date(`${c.date}T00:00:00Z`).toISOString().slice(0, 10) === c.date ? c.date : null
+  const tail = `: ${c.truth}, ${date ? `evidence dated ${date}` : 'no evidence date'}`
+  return { value: `${c.id} ${c.negated ? 'NOT ' : ''}${c.text}`.slice(0, 254 - tail.length) + tail, source_date: date ?? now.toISOString().slice(0, 10) }
+}
+
 // Writes one enrichment row per verified lead (replacing an earlier call's) and returns the summary for the run report.
 export function recordActionability(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map(), need: NeedGate = { rubric: null }): YieldSummary {
   const rows = classifyLeads(db, job, held, need)
@@ -116,7 +126,7 @@ export function recordActionability(db: Database.Database, job: { id: string; us
       del.run(r.lead_id, job.user_id, ACTIONABLE_CONNECTOR)
       del.run(r.lead_id, job.user_id, TARGETING_CONNECTOR)
       // One row per clause: the condition, its truth and why (the source it was proven on, or what is missing).
-      for (const c of r.targeting ?? []) addEnrichment(db, job.user_id, r.lead_id, { connector: TARGETING_CONNECTOR, kind: 'targeting_clause', value: `${c.id} ${c.negated ? 'NOT ' : ''}${c.text}: ${c.truth}`.slice(0, 254), label: c.reason.slice(0, 200), confidence: null, source_url: c.source_url && /^https?:/.test(c.source_url) ? c.source_url.slice(0, 500) : 'https://invalid.example/', source_date: c.date ?? new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
+      for (const c of r.targeting ?? []) addEnrichment(db, job.user_id, r.lead_id, { connector: TARGETING_CONNECTOR, kind: 'targeting_clause', ...targetingClauseRow(c), label: c.reason.slice(0, 200), confidence: null, source_url: c.source_url && /^https?:/.test(c.source_url) ? c.source_url.slice(0, 500) : 'https://invalid.example/', retrieved_at: Math.floor(Date.now() / 1000) })
       addEnrichment(db, job.user_id, r.lead_id, { connector: ACTIONABLE_CONNECTOR, kind: 'actionability', value: r.actionable ? 'Actionable: domain, person and published contact confirmed' : `Not actionable yet: ${r.missing.map(m => m.replace(/_/g, ' ')).join(', ')}`, label: r.actionable ? `${r.person} - ${r.route}`.slice(0, 200) : GATES.has(r.missing[0]) ? 'Not a qualified buyer: a found domain or contact does not change that' : 'Source-checked only; missing parts stay unknown, nothing is guessed', confidence: null, source_url: 'https://invalid.example/', source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) })
     } catch { /* an old schema never blocks the scan */ }
     for (const m of r.missing) missing[m] = (missing[m] ?? 0) + 1
