@@ -42,10 +42,15 @@ const nowS = () => Math.floor(Date.now() / 1000)
 
 export class InProcessQueue implements QueueAdapter {
   private items = new Map<string, WorkItem>()
-  // Namespaced dedupe key -> item id, kept only while the item is active
-  // (pending or claimed). Terminal items release the key so a recurring
-  // workload (weekly monitor) can enqueue its next run.
-  private dedupe = new Map<string, string>()
+  // Dedupe index tenantId -> kind -> dedupeKey -> item id, kept only while
+  // the item is active (pending or claimed). Terminal items release the key
+  // so a recurring workload (weekly monitor) can enqueue its next run.
+  // Nested maps (not a concatenated string) keep the tuple collision-free
+  // for arbitrary strings: ('a','bc','d') and ('ab','c','d') stay distinct,
+  // as do values containing any would-be delimiter (#909).
+  private dedupe = new Map<string, Map<string, Map<string, string>>>()
+  // Item id -> its dedupe tuple, so release removes exactly that tuple.
+  private dedupeOf = new Map<string, readonly [string, string, string]>()
   private byToken = new Map<number, string>()
   private tokenCounter = 0
   private backoff: BackoffPolicy
@@ -56,15 +61,37 @@ export class InProcessQueue implements QueueAdapter {
     this.rng = opts.rng ?? Math.random
   }
 
-  private ns(tenantId: string, kind: string, key: string): string {
-    return `${tenantId}${kind}${key}`
+  private dedupeGet(tenantId: string, kind: string, key: string): string | undefined {
+    return this.dedupe.get(tenantId)?.get(kind)?.get(key)
+  }
+
+  private dedupeSet(tenantId: string, kind: string, key: string, id: string): void {
+    let byKind = this.dedupe.get(tenantId)
+    if (!byKind) this.dedupe.set(tenantId, (byKind = new Map()))
+    let byKey = byKind.get(kind)
+    if (!byKey) byKind.set(kind, (byKey = new Map()))
+    byKey.set(key, id)
+    this.dedupeOf.set(id, [tenantId, kind, key])
+  }
+
+  private dedupeRelease(id: string): void {
+    const tuple = this.dedupeOf.get(id)
+    if (!tuple) return
+    this.dedupeOf.delete(id)
+    const [tenantId, kind, key] = tuple
+    const byKind = this.dedupe.get(tenantId)
+    const byKey = byKind?.get(kind)
+    if (!byKind || !byKey || byKey.get(key) !== id) return
+    byKey.delete(key)
+    if (byKey.size === 0) byKind.delete(kind)
+    if (byKind.size === 0) this.dedupe.delete(tenantId)
   }
 
   enqueue(input: EnqueueInput): EnqueueResult {
     if (input.maxBacklog !== undefined) throw new Error('maxBacklog admission is DbQueue only')
     const now = input.now ?? nowS()
     if (input.dedupeKey) {
-      const existing = this.dedupe.get(this.ns(input.tenantId, input.kind, input.dedupeKey))
+      const existing = this.dedupeGet(input.tenantId, input.kind, input.dedupeKey)
       if (existing) {
         const item = this.items.get(existing)
         if (item && (item.status === 'pending' || item.status === 'claimed')) return { id: item.id, created: false }
@@ -87,7 +114,7 @@ export class InProcessQueue implements QueueAdapter {
       lastError: null,
     }
     this.items.set(id, item)
-    if (input.dedupeKey) this.dedupe.set(this.ns(input.tenantId, input.kind, input.dedupeKey), id)
+    if (input.dedupeKey) this.dedupeSet(input.tenantId, input.kind, input.dedupeKey, id)
     return { id, created: true }
   }
 
@@ -153,9 +180,7 @@ export class InProcessQueue implements QueueAdapter {
     item.lastError = error
     if (item.claimToken !== null) this.byToken.delete(item.claimToken)
     item.claimToken = null
-    if (status === 'done' || status === 'failed') {
-      for (const [k, v] of this.dedupe) if (v === item.id) { this.dedupe.delete(k); break }
-    }
+    if (status === 'done' || status === 'failed') this.dedupeRelease(item.id)
   }
 
   complete(token: number): boolean {

@@ -38,3 +38,6 @@ quality-report.json
 # Stray JSON log lines saved as files at the repo root (a staging_deploy alert body was committed once). Such names
 # contain characters invalid on Windows and break checkout there.
 /{"level"*
+
+# Python bytecode caches (ops/ helpers and tests): build output, never committed.
+__pycache__/

@@ -158,7 +158,10 @@ test('latestQueryJob returns the most recent query job with its stored profile',
   const j = latestQueryJob(db, 'u1')
   assert.equal(j?.query, 'second search')
   assert.equal(j?.icp, icp)
-  assert.equal(j?.icp_inferred, 0)
+  assert.equal(j?.icp_inferred, 3, 'a submitted profile without an explicit review flag is a raw carry (durable)')
+  createQueryJob(db, 'u1', { query: 'third search', icp, icpReviewed: true })
+  assert.equal(latestQueryJob(db, 'u1')?.icp_inferred, 0, 'only an explicit review submit stores user-reviewed')
+  db.prepare("DELETE FROM scan_jobs WHERE query = 'third search'").run()
   const row = db.prepare('SELECT seller FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get('u1') as { seller: string }
   assert.equal(row.seller, 'Acme - sales software')
 })
@@ -379,4 +382,56 @@ test('excluded ranges followed by ordinary context still exclude B and every lat
   const q = 'Find companies with recent funding, exclude Series B or later in London'
   const r = keepStatedFundingStage(q, { ...base, summary: 'London Series C companies with funding' })
   assert.notEqual(r.summary, 'London Series C companies with funding'); assert.equal(r.summary, q)
+})
+
+import { guardedPreviewResearch } from '../lib/scan/icp.ts'
+
+// The guarded-preview contract (revision 8, reviewer-suggested): fresh model research is not new provenance, so the
+// prior block ALWAYS stays whole - every probe scenario below was an actual reproduced merge failure before the
+// contract was simplified.
+test('guardedPreviewResearch: fresh research never alters the prior block - decisions keep their exact bindings', () => {
+  const prior = { v: 1 as const, site: 'acme.example', q: 'Who buys this?', ans: { q: 'Who buys this?', o: 'o1', t: 'Practice managers' },
+    offers: [{ i: 'o1', n: 'Acme Booking' }],
+    hyps: [
+      { i: 'h1', o: 'o1', k: 'persona' as const, t: 'Practice managers', s: 'reviewed' as const, u: 'https://acme.example/', q: 'for practice managers', at: 1800000000 },
+      { i: 'h2', o: 'o1', k: 'persona' as const, t: 'Dental influencers', s: 'rejected' as const, u: null, q: null, at: null },
+    ],
+    u: [{ n: ['acme booking'], k: 'persona' as const, t: '', s: 'reviewed' as const, w: true as const, o: true as const }] }
+  const fresh = { v: 1 as const, site: 'acme.example', q: null, ans: null, offers: [{ i: 'f1', n: 'Acme Booking' }], hyps: [{ i: 'g1', o: 'f1', k: 'persona' as const, t: 'Clinic owners', s: 'hypothesis' as const, u: null, q: null, at: null }] }
+  assert.deepEqual(guardedPreviewResearch(fresh, prior), prior, 'the prior block carries whole, verbatim')
+  assert.deepEqual(guardedPreviewResearch(undefined, prior), prior)
+})
+
+test('guardedPreviewResearch (reviewer probe): duplicate fresh offer names cannot capture a prior binding', () => {
+  const hyp = (o: string) => ({ i: 'reject', o, k: 'persona' as const, t: 'Dental influencers', s: 'rejected' as const, u: null, q: null, at: null })
+  const prior = { v: 1 as const, site: 'example.test', q: null, ans: null, offers: [{ i: 'old', n: 'Booking' }], hyps: [hyp('old')] }
+  const out = guardedPreviewResearch({ v: 1, site: 'example.test', q: null, ans: null, offers: [{ i: 'a', n: 'Booking' }, { i: 'b', n: 'Booking' }], hyps: [] }, prior)
+  assert.deepEqual(out, prior, 'no remap at all: the ambiguity class cannot arise')
+  assert.equal(out.hyps[0].o, 'old')
+})
+
+test('guardedPreviewResearch (reviewer probe): caps cannot discard a prior decision - there is no merged list to truncate', () => {
+  const offers = Array.from({ length: 5 }, (_, i) => ({ i: `old${i}`, n: `Old ${i}` }))
+  offers.push({ i: 'matched', n: 'Booking' })
+  const prior = { v: 1 as const, site: 'example.test', q: null, ans: null, offers, hyps: [{ i: 'reject', o: 'matched', k: 'persona' as const, t: 'Dental influencers', s: 'rejected' as const, u: null, q: null, at: null }] }
+  const out = guardedPreviewResearch({ v: 1, site: 'example.test', q: null, ans: null, offers: [{ i: 'other', n: 'Fresh extra' }, { i: 'new', n: 'Booking' }], hyps: [] }, prior)
+  assert.equal(out.hyps.length, 1)
+  assert.equal(out.hyps[0].o, 'matched', 'the original binding, not the fresh offer of the same name')
+})
+
+test('guardedPreviewResearch (reviewer probe): duplicate prior names keep their two distinct bindings', () => {
+  const hyp = (o: string) => ({ i: 'reject', o, k: 'persona' as const, t: 'Dental influencers', s: 'rejected' as const, u: null, q: null, at: null })
+  const prior = { v: 1 as const, site: 'example.test', q: null, ans: null, offers: [{ i: 'old-a', n: 'Booking' }, { i: 'old-b', n: 'Booking' }], hyps: [hyp('old-a'), { ...hyp('old-b'), i: 'confirm', s: 'reviewed' as const }] }
+  const out = guardedPreviewResearch({ v: 1, site: 'example.test', q: null, ans: null, offers: [{ i: 'new', n: 'Booking' }], hyps: [] }, prior)
+  assert.deepEqual(out, prior)
+  assert.equal(new Set(out.hyps.map(h => h.o)).size, 2, 'two original bindings stay distinct')
+})
+
+test('guardedPreviewResearch (reviewer probe): long-id collisions cannot truncate - ids are never rewritten', () => {
+  const id = 'a'.repeat(40)
+  const prior = { v: 1 as const, site: 'example.test', q: null, ans: null, offers: [{ i: id, n: 'Old booking' }], hyps: [{ i: 'reject', o: id, k: 'persona' as const, t: 'Dental influencers', s: 'rejected' as const, u: null, q: null, at: null }] }
+  const out = guardedPreviewResearch({ v: 1, site: 'example.test', q: null, ans: null, offers: [{ i: id, n: 'Other booking' }], hyps: [] }, prior)
+  assert.deepEqual(out, prior)
+  assert.equal(out.offers.find(o => o.i === out.hyps[0].o)?.n, 'Old booking')
+  assert.equal(new Set(out.offers.map(o => o.i)).size, out.offers.length)
 })

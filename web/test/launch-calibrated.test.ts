@@ -586,7 +586,8 @@ const boundaryCases: Record<string, Case> = {
   // The tick after: an accepted policy that is not a launch pauses autopilot (launch_not_calibrated), never the warmup
   policy_reaccepted: { change: db => { assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([(db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id]), NOW + 1), { ok: true }) }, stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'], next: 'launch_not_calibrated' },
   mailbox_changed: { change: db => db.prepare("UPDATE gmail_accounts SET email = 'other@acme.example' WHERE tenant_id = 'A'").run(), stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'], next: 'launch_not_calibrated' },
-  mailbox_disconnected: { change: db => db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(), stopped: 'policy_changed', pause: null, msg: ['draft', 'launch_policy_changed'], next: 'launch_not_calibrated' },
+  // the connection vanishing during the token call itself is refused by the token fetch (#740: never a token for a replaced connection): still no send, the message released with the reason
+  mailbox_disconnected: { change: db => db.prepare("DELETE FROM gmail_accounts WHERE tenant_id = 'A'").run(), stopped: null, pause: null, msg: ['draft', 'gmail_unavailable'], next: 'launch_not_calibrated' },
   // the launch store itself unreadable (#405 council R3-1): a stop, never "no launch" and the warmup's wider rules
   launch_store_unreadable: { change: db => db.exec('DROP TABLE autopilot_launch_policy'), stopped: 'stop_check_unavailable', pause: 'stop_check_unavailable', msg: ['draft', 'stop_check_unavailable'], next: 'paused' },
 }

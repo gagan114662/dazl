@@ -111,7 +111,7 @@ test('runner: a malformed cap setting refuses the first paid call; the scan stop
   const x = await run({ DAZL_SCAN_CAP_CAD: '5 CAD' }, true)
   assert.deepEqual(x.paid, [], 'no paid request at all')
   assert.ok(x.calls.length >= 1 && x.calls.every(c => c.status === 'refused' && c.reason === 'cap_config_invalid'))
-  assert.deepEqual([x.row.status, x.row.error], ['failed', 'budget_stopped'])
+  assert.deepEqual([x.row.status, x.row.error], ['failed', 'spend_config_invalid'], 'a malformed cap is a config stop, never a budget stop')
 })
 
 // #363 runner settle: a scan under an owner pool (or a run budget) used to keep every model call's WORST-CASE reservation even

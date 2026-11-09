@@ -81,7 +81,7 @@ export default function TeamPanel() {
       {admin && (
         <div className="text-sm space-y-2">
           <div className="flex flex-wrap gap-2">
-            <input className="field flex-1 min-w-0" type="email" aria-label="Teammate email" placeholder="teammate@company.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <input className="field flex-1 min-w-[12rem]" type="email" aria-label="Teammate email" placeholder="teammate@company.com" value={email} onChange={e => setEmail(e.target.value)} />
             <select className="field" aria-label="Role for the invite" value={role} onChange={e => setRole(e.target.value as Role)}>{ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{r}</option>)}</select>
             <button className="btn-primary" disabled={!email.trim()} onClick={() => void invite()}>Invite</button>
           </div>

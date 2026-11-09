@@ -40,7 +40,7 @@ const usage = hasKey => ({ plan: 'free', scans_used: 0, scan_limit: 50, has_key:
 const b = await chromium.launch()
 try {
   for (const [tag, pressEnter] of [['click', false], ['enter-key', true]]) {
-    const puts = []; const icpCalls = []; const nativePosts = []
+    const puts = []; const icpCalls = []; const nativePosts = []; const saves = []
     const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
     await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
     await ctx.route('**/*', async route => {
@@ -50,6 +50,9 @@ try {
       if (u.pathname === '/api/usage') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(usage(puts.length > 0)) })
       if (u.pathname === '/api/scan/jobs') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"jobs":[]}' })
       if (u.pathname === '/api/settings/profile' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+      // The keyed read auto-saves the inferred profile exactly as read (first-run.tsx readSite) before it can open
+      // the ready screen; an unstubbed POST would 404 and the flow would fall back to the brain step.
+      if (u.pathname === '/api/settings/profile' && req.method() === 'POST') { saves.push(req.postData() ?? ''); return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) }
       if (u.pathname === '/api/settings/llm-key' && req.method() === 'PUT') { puts.push(req.postData() ?? ''); return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) }
       if (u.pathname === '/api/scan/icp-from-url') { icpCalls.push(req.postData() ?? ''); return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(puts.length > 0 ? KEYED : FREE) }) }
       return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
@@ -74,6 +77,11 @@ try {
     assert.equal(body.api_key, 'sk-ant-fixture-key-0123456789', `${tag}: the trimmed key is what goes out`)
     assert.equal(icpCalls.length, 2, `${tag}: onSaved re-read the site (keyed)`)
     await page.getByTestId('ready-step').waitFor({ timeout: 30000 })
+    assert.equal(saves.length, 1, `${tag}: exactly one profile save - the keyed read saves exactly as read; the free read never does`)
+    const savedBody = JSON.parse(saves[0])
+    assert.equal(savedBody.sells, 'CRM cleanup for sales teams', `${tag}: the save carries the keyed read's sells`)
+    assert.equal(savedBody.website, 'https://acme.example', `${tag}: the save carries the normalized website`)
+    assert.deepEqual(savedBody.buyer?.who, ['Sales ops managers'], `${tag}: the save carries the keyed read's inferred buyer`)
     assert.equal(await page.getByTestId('free-site-read').count(), 0, `${tag}: keyed re-read replaced the free card`)
     if (process.env.SHOTS) await page.locator('[data-testid=onboarding-screen]').first().screenshot({ path: path.join(process.env.SHOTS, `key-inline-save-${tag}.png`) })
     await ctx.close()
