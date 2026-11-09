@@ -28,9 +28,9 @@ export default function CrmPanel() {
       ) : (
         <div className="text-sm space-y-2">
           <div className="flex gap-4">
-            <label className="flex items-center gap-1"><input type="radio" name="crm" checked={provider === 'hubspot'} onChange={() => setProvider('hubspot')} /> HubSpot</label>
-            <label className="flex items-center gap-1"><input type="radio" name="crm" checked={provider === 'pipedrive'} onChange={() => setProvider('pipedrive')} /> Pipedrive</label>
-            <label className="flex items-center gap-1"><input type="radio" name="crm" checked={provider === 'webhook'} onChange={() => setProvider('webhook')} /> Webhook</label>
+            <label className="flex items-center gap-2 min-h-11 min-w-11"><input type="radio" name="crm" checked={provider === 'hubspot'} onChange={() => setProvider('hubspot')} /> HubSpot</label>
+            <label className="flex items-center gap-2 min-h-11 min-w-11"><input type="radio" name="crm" checked={provider === 'pipedrive'} onChange={() => setProvider('pipedrive')} /> Pipedrive</label>
+            <label className="flex items-center gap-2 min-h-11 min-w-11"><input type="radio" name="crm" checked={provider === 'webhook'} onChange={() => setProvider('webhook')} /> Webhook</label>
           </div>
           {provider === 'webhook' ? (
             <input className="field w-full" type="url" placeholder="https://your-endpoint.example/dazl" value={secret} onChange={e => setSecret(e.target.value)} />

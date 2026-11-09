@@ -10,6 +10,7 @@ import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, approve, sendMessage, editDraft, suppress } from '../lib/outreach/service.ts'
+import { sameThreadDsn } from './helpers/dsn-fixture.ts'
 import { migrateSequences, createSequence, editSequenceStep, approveSequence, setTestAddresses, runSequences, sequenceAnalytics, sequenceStatusByLead } from '../lib/outreach/sequences.ts'
 import { accountSendCount } from '../lib/outreach/send-budget.ts'
 
@@ -181,7 +182,7 @@ test('permanent bounce stops, auto replies do not, and no real sends occur in te
   const db=await setup(),s=add(db),m=mock();await start(db,s,m)
   const bounced={...mock(),now:NOW+3*DAY}
   const base=bounced.fetchImpl
-  bounced.fetchImpl=(async(u:unknown)=>String(u).includes('/threads/')?json({messages:[{id:'bounce',internalDate:String((NOW+1)*1000),payload:{mimeType:'text/plain',headers:[{name:'From',value:'mailer-daemon@example.invalid'}],body:{data:Buffer.from('Delivery failed 5.1.1 recipient not found').toString('base64url')}}}]}):base(u as string)) as typeof fetch
+  bounced.fetchImpl=(async(u:unknown)=>String(u).includes('/threads/')?json({messages:[sameThreadDsn('bounce',{recipient:'lead@acme.example',at:NOW+1})]}):base(u as string)) as typeof fetch
   assert.equal((await runSequences(db,'A','',bounced)).sent,0)
   assert.equal(sequenceStatusByLead(db,'A').get(s.lead)?.status,'stopped')
 })

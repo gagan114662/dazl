@@ -24,7 +24,7 @@ test('seven steps in order; all done -> complete; sources name only what can run
   assert.deepEqual(items.map(x => x.id), ['profile', 'search', 'play', 'qualified', 'contact', 'draft', 'sender'])
   assert.deepEqual(items.map(x => x.state), Array(7).fill('done'))
   assert.equal(readyComplete(items), true)
-  assert.match(items[1].detail, /Sources: Web research with your AI key, News articles, Company websites$/, 'the operator-off index and unconsented Reddit are not named')
+  assert.match(items[1].detail, /Sources: News articles$/, 'the operator-off index and unconsented Reddit are not named')
   assert.equal(items[0].detail, 'brightsmile.example - Independent dental practices with 2-10 chairs')
 })
 
@@ -160,4 +160,12 @@ test('a later edit that clears the buyer profile takes the manual step back to t
   const i: ReadinessInput = { ...all, profile: { sells: 'x', business_name: 'B', buyer: { summary: 'dental practices', who: [] } } }
   assert.equal(st(i)[0], 'profile:done')
   assert.equal(st({ ...i, profile: { ...i.profile!, buyer: null } })[0], 'profile:todo*>Add website@/app?setup=site')
+})
+
+test('#919 no-key vs no discovery are independent blockers on Home',()=>{
+ for(const usage of [{has_key:true},{has_key:false,trial:{funded:true,remaining:2}}]) {
+  const s=readyItems({...all,usage,sources:{web_index:false,news:false,websites:true},advanced:null})[1]
+  assert.equal(s.state,'todo');assert.equal(s.fix,null);assert.match(s.detail,/no usable discovery source/)
+  assert.doesNotMatch(s.detail,/until your AI key works/)
+ }
 })

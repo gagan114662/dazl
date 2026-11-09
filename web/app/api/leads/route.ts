@@ -13,6 +13,7 @@ import { fitRationale } from '@/lib/scan/score'
 import { timingProofGap } from '@/lib/scan/timing-proof'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
 import { jobWindowDays } from '@/lib/scan/window'
+import { currentBuyingNeed, needReadContext, type NeedRecord } from '@/lib/scan/need-evidence'
 import { leadLookalikeFit, lookalikeOf } from '@/lib/scan/lookalike-discovery'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 
@@ -46,6 +47,18 @@ export async function GET(req: NextRequest) {
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
     currentness_held:currentnessHeld(getScanDb(),user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id),
     lookalike_fit:la && la !== 'unreadable' ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
+  // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and
+  // domain evidence (lib/scan/need-evidence.ts). Read-only; absent records and drift read unproven, never guessed.
+  const needByLead = new Map<string, string>()
+  try {
+    const adb = await getDb()
+    const needCtx = await needReadContext(adb, user.tenantId, job.id, windowDays ?? undefined)
+    const needRecords = new Map((await adb.all<NeedRecord>('SELECT * FROM lead_need_evidence WHERE tenant_id = ? AND job_id = ?', [user.tenantId, job.id])).map(r => [r.lead_id, r]))
+    for (const l of leads) {
+      const bn = await currentBuyingNeed(adb, user.tenantId, job.id, l.id, { context: needCtx, record: needRecords.get(l.id) ?? null })
+      needByLead.set(l.id, bn.status === 'unproven' ? bn.reason : bn.status)
+    }
+  } catch { /* an older store without the table simply has no buying-need column */ }
   const intentByLead = new Map(safeLeads.map(l => [l.id, l.intent]))
   for (const [id, p] of Object.entries(pri)) if (p) p.intent = intentByLead.get(id) ?? 0
   // #385: the tenant's own explicit verdicts on the same source and signal kind order leads inside a fit lane (shown as
@@ -55,7 +68,7 @@ export async function GET(req: NextRequest) {
   const learned = new Map<string, Learned>(leads.map(l => [l.id, learnedPreference(yields, l)]))
   const ranked = rankLeads(safeLeads, pri, Object.fromEntries([...learned].map(([id, p]) => [id, p.delta])))
   const via = gdeltAttribution(getScanDb(), user.tenantId, ranked.map(l => l.id))
-  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.tenantId, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.tenantId, job.id), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()
