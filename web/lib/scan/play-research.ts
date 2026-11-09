@@ -3,7 +3,7 @@ import {createHash,randomBytes} from 'node:crypto'
 import {asDb,type DbLike,type Tx,type TxBody} from '../db/client.ts'
 import {parseSourceReview,type SourceReviewInput} from './source-review.ts'
 import {fetchPageDetailed,isFail,type Page,type FetchFail} from './fetch-page.ts'
-import {effectiveOffer,tenantOffer} from './play-offer-text.ts'
+import {storedPlayOffer,tenantOffer} from './play-offer-text.ts'
 
 export class PlayResearchError extends Error {}
 export interface ResearchInput extends SourceReviewInput {person_name:string;person_role:string;professional_url:string;person_excerpt:string}
@@ -55,8 +55,9 @@ export async function savePlayResearch(dbLike:DbLike,tenant:string,job:string,ra
  const db=asDb(dbLike),input=parseResearch(raw),before=await retryContext(()=>db.tx(t=>context(t,tenant,job),'serializable'))
  if(!before.job)throw new PlayResearchError('Play not found.')
  if(before.job.status!=='done'||!before.job.query?.trim())throw new PlayResearchError('Choose a completed play with its original request.')
- const offer=effectiveOffer(before.job,tenantOffer(before.memory?.positioning??'',before.profile?.sells??'')??'')
- if(!offer?.offer||offer.conflict)throw new PlayResearchError('Choose what this play sells before saving research.')
+ // #687: a play that never recorded its offer is not snapshotted with the current profile's offer as if it were its own
+ const offer=storedPlayOffer(before.job,tenantOffer(before.memory?.positioning??'',before.profile?.sells??'')??'')
+ if(!offer?.offer||offer.conflict||('unconfirmed' in offer&&offer.unconfirmed))throw new PlayResearchError('Choose what this play sells before saving research.')
  const fetchSafe=async(url:string)=>fetcher(url).catch(()=>({fail:'error' as const}))
  const source=await fetchSafe(input.source_url),person=input.professional_url?(input.professional_url===input.source_url?source:await fetchSafe(input.professional_url)):null
  const source_check=check(source,input.excerpt,input.company,now,input.source_url),person_check=person?check(person,input.person_excerpt,input.person_name,now,input.professional_url):null

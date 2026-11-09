@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { seedOffers } from './helpers/seed-offer.ts'
+import { SEEDED_OFFER, seedOffers } from './helpers/seed-offer.ts'
 import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { setDomainReview } from '../lib/scan/domain-review-action.ts'
@@ -109,7 +109,8 @@ test('DURABLE across a restart: every write of the failure rejected (no review r
     const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
     const mkLead = (id: string) => {
       const job = createJob(db, 'A', { business_name: 'Acme', industry: 'SaaS', location: 'London' })
-      db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run('Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', ICP, job)
+      // the play records its offer as POST /api/scan does (a play without one waits for the tenant's choice, #687)
+      db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ?, seller = ? WHERE id = ?").run('Find London UK B2B SaaS startups that announced seed funding and are hiring sales staff.', ICP, SEEDED_OFFER, job)
       db.prepare('INSERT INTO leads (id, scan_job_id, company, company_domain, contact, signal, source_url, evidence_excerpt, confidence, review_reason, score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 80, NULL, 70, ?)')
         .run(id, job, 'Northside Builders', 'northside.example', 'info@northside.example', 'raised a seed round', 'https://news.example/a', 'Northside Builders raised a seed round', Math.floor(Date.now() / 1000))
     }
