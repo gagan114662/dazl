@@ -157,7 +157,7 @@ test('a csv job whose searches find nothing stops honestly (research refused, #3
   }) as typeof fetch
   assert.equal(await runJob(db, job, { master, fetchPage: page, fetchImpl }), 'failed')
   assert.equal(webSearchCalls, 0, 'the unpriceable fallback was refused before any network call')
-  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped', 'an honest stop, not "nothing found" and never an unpriced call')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'unbounded_fallback_hold', 'an honest stop naming the unpriceable fallback, not "nothing found", never an unpriced call and never a budget stop')
   assert.equal(batchStatus(db, 'A', b)!.counts.failed, 1)
   } finally { delete process.env.TINYFISH_API_KEY }
 })

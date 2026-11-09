@@ -6,6 +6,7 @@
 // Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar). The summary records each
 // provider's outcome per lead in waterfall order, and failures/skips reach the scan view (lib/scan/provider-issues.ts).
 import type Database from 'better-sqlite3'
+import { createHash } from 'node:crypto'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, latestAuditStatus, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
@@ -19,6 +20,7 @@ import { roleContradicted } from '../people/rank.ts'
 import { providerContactLabel } from '../people/currency.ts'
 import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
 import { norm } from '../scan/evidence.ts'
+import { selectOffer, rebindOfferId } from '../scan/offer-identity.ts'
 
 export const ENRICH_APOLLO = 'enrich:apollo'
 export const ENRICH_PDL = 'enrich:pdl'
@@ -38,11 +40,53 @@ export const normDomain = (d: string | null | undefined): string | null => {
 // would silence the other), and a replayed job must never pay for the same lead's lookup twice.
 // LEGACY format ('people X (domain)'): the pre-recovery whole-attempt claim. Read-only now - a legacy terminal
 // outcome still replays free and a legacy held claim stays held; fresh attempts never write it again.
-const lookupKey = (kind: 'org' | 'people', lead: LeadRow) => `${kind} ${lead.company} (${lead.company_domain ? lead.company_domain : `lead:${lead.id}`})`.slice(0, 200)
+const rawLookup = (kind: 'org' | 'people', lead: LeadRow) => `${kind} ${lead.company} (${lead.company_domain ? lead.company_domain : `lead:${lead.id}`})`
+const lookupKey = (kind: 'org' | 'people', lead: LeadRow) => boundKey(rawLookup(kind, lead))
 // STEP format ('step:org/people ...'): per-step claims. The step: prefix can never collide with a legacy key.
-const stepKey = (kind: 'org' | 'people', lead: LeadRow) => `step:${kind} ${lead.company} (${normDomain(lead.company_domain) ?? `lead:${lead.id}`})`.slice(0, 200)
+const rawStep = (kind: 'org' | 'people', lead: LeadRow) => `step:${kind} ${lead.company} (${normDomain(lead.company_domain) ?? `lead:${lead.id}`})`
+const stepKey = (kind: 'org' | 'people', lead: LeadRow) => boundKey(rawStep(kind, lead))
 export const claimKeysFor = (lead: LeadRow): { legacyPeople: string; stepOrg: string; stepPeople: string } =>
   ({ legacyPeople: lookupKey('people', lead), stepOrg: stepKey('org', lead), stepPeople: stepKey('people', lead) })
+
+// #922: the readable key is an audit LABEL; identity is the whole string. Keys that fit (<= 200) are unchanged, so
+// every existing valid claim keeps replaying. A longer key used to be cut at 200 chars, which could cut away the
+// domain/lead id and make two different companies share one claim. Now it keeps a readable prefix and ends with a
+// hash of the FULL identity ('#h:' + 32 hex); a fitting key always ends with ')', so the two forms never meet.
+const KEY_MAX = 200
+function boundKey(raw: string): string {
+  if (raw.length <= KEY_MAX) return raw
+  const h = createHash('sha256').update(raw).digest('hex').slice(0, 32)
+  return `${raw.slice(0, KEY_MAX - 35)}#h:${h}`
+}
+// The pre-#922 truncated key for a long identity (null when the identity always fit and nothing changed).
+const truncatedKey = (raw: string): string | null => raw.length > KEY_MAX ? raw.slice(0, KEY_MAX) : null
+export const legacyTruncatedKeysFor = (lead: LeadRow): { legacyPeople: string | null; stepOrg: string | null; stepPeople: string | null } =>
+  ({ legacyPeople: truncatedKey(rawLookup('people', lead)), stepOrg: truncatedKey(rawStep('org', lead)), stepPeople: truncatedKey(rawStep('people', lead)) })
+
+// Read a claim under its current key; when none exists and the identity is long, honor a pre-#922 truncated row
+// READ-ONLY. If only this lead's identity in the job maps to that truncated key, the row is its own (replay /
+// held exactly as before). If two distinct identities share it, the row cannot be attributed: fail closed as
+// uncertain - never replay it as ours, never release it, never pay on an assumed identity.
+function readClaimCompat(db: Database.Database, a: { tenantId: string; connector: string; jobId: string; lookup: string }, lead: LeadRow, raw: (l: LeadRow) => string, opts: { legacyAudit?: boolean } = {}): ReturnType<typeof readOutcome> {
+  const cur = readOutcome(db, a, opts)
+  if (cur) return cur
+  const full = raw(lead), trunc = truncatedKey(full)
+  if (!trunc) return null
+  const old = readOutcome(db, { ...a, lookup: trunc }, opts)
+  if (!old) return null
+  const jobLeads = db.prepare('SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?').all(a.jobId) as LeadRow[]
+  return unambiguousTruncatedIdentity(jobLeads, full, raw) ? old : { prior: 'uncertain', status: old.status, memo: null }
+}
+
+// A truncated label is attributable only when every matching lead has the same full identity.
+// Use this same decision for replay and owner recovery; recovery must not delete another identity's hold.
+function unambiguousTruncatedIdentity(leads: LeadRow[], full: string, raw: (l: LeadRow) => string): boolean {
+  const trunc = truncatedKey(full)
+  if (!trunc) return true
+  const sharers = new Set(leads.map(raw).filter(r => truncatedKey(r) === trunc))
+  sharers.add(full)
+  return sharers.size === 1
+}
 
 // The scan's geography (ICP "where"): what a candidate record must agree with when the company's domain does not settle it.
 function scanWhere(db: Database.Database, jobId: string): string[] {
@@ -174,7 +218,7 @@ export async function enrichLeadContacts(
         const size = Math.max(1, Math.min(MAX_CONTACTS, budget.pdl - used.pdl))
         // A lookup this job already has an outcome for is a replay: recognize it BEFORE reserving, so a full pool never
         // turns a known replay into a credit_cap refusal (and never latches capped.pdl for the rest of the scan).
-        const known = readOutcome(db, { tenantId, connector: connector[prov], jobId, lookup: lookupKey('people', lead) })
+        const known = readClaimCompat(db, { tenantId, connector: connector[prov], jobId, lookup: lookupKey('people', lead) }, lead, l => rawLookup('people', l))
         if (known) {
           if (known.prior === 'ok') { skip(prov, 'replayed', lead); stopped = true; break }
           if (known.prior === 'empty' || known.prior === 'rejected') { skip(prov, 'replayed', lead); continue }
@@ -202,7 +246,7 @@ export async function enrichLeadContacts(
       // claim stays held - the old row cannot prove whether its org call was charged, so resolution is the
       // owner's explicit, disclosure-audited retry). A fresh attempt never writes the legacy key again; it runs
       // per-step claims: the org claim (paid, settles with a memo) and the people claim (0-credit endpoint).
-      const legacy = readOutcome(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: lookupKey('people', lead) })
+      const legacy = readClaimCompat(db, { tenantId, connector: ENRICH_APOLLO, jobId, lookup: lookupKey('people', lead) }, lead, l => rawLookup('people', l))
       if (legacy) {
         if (legacy.prior === 'ok') { skip(prov, 'replayed', lead); stopped = true; break }
         if (legacy.prior === 'empty' || legacy.prior === 'rejected') { skip(prov, 'replayed', lead); continue }
@@ -254,20 +298,27 @@ export function reviewedBuyerTitles(db: Database.Database, jobId: string): strin
     const icp = j?.icp ? JSON.parse(j.icp) as { research?: { site?: unknown; offers?: { i: string; n: string }[] } } : null
     const site = typeof icp?.research?.site === 'string' ? siteKey(icp.research.site) : null
     if (!j?.user_id || !site) return []
-    const offers = Array.isArray(icp?.research?.offers) ? icp.research.offers : []
+    const offers = (Array.isArray(icp?.research?.offers) ? icp.research.offers : []).filter(o => o && typeof o.i === 'string' && typeof o.n === 'string')
     const offerName = j.offer && j.offer !== '-' ? j.offer : null
-    const matches = offers.filter(o => o && typeof o.n === 'string' && offerName && norm(o.n) === norm(offerName))
-    const selected = matches.length === 1 ? matches[0].i : (!offerName && offers.length === 1 ? offers[0].i : null)
+    // The same play-name -> offer contract as the reviewed draft and decision reuse (stored name; more than one candidate selects nothing).
+    const named = offers.map(o => ({ id: o.i, name: o.n }))
+    const sel = offerName ? selectOffer(named, offerName, (a, b) => !!norm(a) && norm(a) === norm(b)) : null
+    const selected = sel ?? (!offerName && offers.length === 1 ? offers[0].i : null)
     if (!selected) return []
     const rows = db.prepare("SELECT offer_id, hypothesis_id, kind, text, action FROM seller_decisions WHERE tenant_id = ? AND site = ? AND kind = 'persona' ORDER BY created_at DESC, action DESC, id DESC LIMIT ?").all(j.user_id, site, RECALL_LIMIT + 1) as { offer_id: string; hypothesis_id: string; kind: string; text: string; action: string }[]
-    const seen = new Set<string>(), titles: string[] = []
-    for (const r of rows.slice(0, RECALL_LIMIT)) {
-      const hypKey = `${r.offer_id}|id:${r.hypothesis_id}`, textKey = `${r.offer_id}|${r.kind}|text:${norm(r.text)}`
+    // Saved rows carry only an offer id, which can change; each is rebound to the ONE current offer its id can mean, or HELD. A held confirmation is applied to no offer; a held rejection
+    // blocks its text for every candidate. A row naming no current offer is not carried.
+    const seen = new Set<string>(), titles: string[] = [], blocked = new Set<string>()
+    for (const raw of rows.slice(0, RECALL_LIMIT)) {
+      const rb = rebindOfferId(named, raw.offer_id); if (!rb) continue
+      const offerId = 'offer' in rb ? rb.offer : `held:${rb.held.join(',')}`
+      const hypKey = `${offerId}|id:${raw.hypothesis_id}`, textKey = `${offerId}|${raw.kind}|text:${norm(raw.text)}`
       if (seen.has(hypKey) || seen.has(textKey)) continue // superseded by a newer decision
       seen.add(hypKey); seen.add(textKey)
-      if (r.offer_id === selected && r.action === 'confirm' && r.text.trim() && titles.length < 10) titles.push(r.text.trim())
+      if ('held' in rb) { if (raw.action === 'reject' && rb.held.includes(selected)) blocked.add(norm(raw.text)); continue }
+      if (rb.offer === selected && raw.action === 'confirm' && raw.text.trim() && titles.length < 10) titles.push(raw.text.trim())
     }
-    return titles
+    return titles.filter(t => !blocked.has(norm(t)))
   } catch { return [] }
 }
 
@@ -319,7 +370,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
 
   // The people step's own state gates EVERYTHING, before any money moves: a terminal people outcome replays free
   // and a HELD people claim stops the attempt - a possibly-charged call is never preceded by a NEW paid one.
-  const peoplePrior0 = readOutcome(db, peopleClaim, { legacyAudit: false })
+  const peoplePrior0 = readClaimCompat(db, peopleClaim, lead, l => rawStep('people', l), { legacyAudit: false })
   if (peoplePrior0) {
     if (peoplePrior0.prior === 'ok') return { kind: 'replayed-ok' }
     if (peoplePrior0.prior === 'empty' || peoplePrior0.prior === 'rejected') { if (peoplePrior0.prior === 'rejected') repairRejectionCard(c, peopleKey); return { kind: 'replayed-terminal' } }
@@ -331,7 +382,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   let orgFailure: unknown = null
   let memo: OrgMemo | null = null
   let orgRan = false
-  const orgPrior = readOutcome(db, orgClaim, { legacyAudit: false })
+  const orgPrior = readClaimCompat(db, orgClaim, lead, l => rawStep('org', l), { legacyAudit: false })
   if (orgPrior?.prior === 'uncertain') return { kind: 'uncertain' } // the org call may have been charged: owner resolution only
   if (orgPrior?.prior === 'ok') { memo = parseMemo(orgPrior.memo); orgRan = true }
   if (orgPrior?.prior === 'empty' || orgPrior?.prior === 'rejected') orgRan = true // terminal: never pay for it again
@@ -491,8 +542,10 @@ export function heldEnrichments(db: Database.Database, tenantId: string, nowSec 
   for (const r of rows) {
     if (!byJob.has(r.scan_job_id)) byJob.set(r.scan_job_id, db.prepare('SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?').all(r.scan_job_id) as LeadRow[])
     for (const lead of byJob.get(r.scan_job_id)!) {
-      const k = claimKeysFor(lead)
-      const step = r.lookup === k.stepOrg ? 'org' : r.lookup === k.stepPeople ? 'people' : r.lookup === k.legacyPeople ? 'legacy' : null
+      const k = claimKeysFor(lead), t = legacyTruncatedKeysFor(lead) // Only attributable old rows are owner-resolvable.
+      const step = r.lookup === k.stepOrg || r.lookup === t.stepOrg ? 'org' : r.lookup === k.stepPeople || r.lookup === t.stepPeople ? 'people' : r.lookup === k.legacyPeople || r.lookup === t.legacyPeople ? 'legacy' : null
+      const raw = step === 'org' ? (l: LeadRow) => rawStep('org', l) : step === 'people' ? (l: LeadRow) => rawStep('people', l) : (l: LeadRow) => rawLookup('people', l)
+      if (step && r.lookup !== (step === 'org' ? k.stepOrg : step === 'people' ? k.stepPeople : k.legacyPeople) && !unambiguousTruncatedIdentity(byJob.get(r.scan_job_id)!, raw(lead), raw)) continue
       if (step) { out.push({ leadId: lead.id, company: lead.company, jobId: r.scan_job_id, provider: r.connector === ENRICH_APOLLO ? 'apollo' : 'pdl', step, lookup: r.lookup, claimedAt: r.claimed_at }); break }
     }
   }
@@ -529,7 +582,12 @@ export async function retryHeldEnrichment(db: Database.Database, tenantId: strin
   const disclosure = h.provider === 'apollo' && h.step === 'people'
     ? 'owner retry: people search resumed on the saved org memo; Apollo documents this endpoint as 0 credits (cost confirmed by the operator for this account)'
     : 'owner retry: the earlier attempt could not prove its outcome; the lookup may be charged again'
-  if (!releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)) return { status: 'nothing_held' }
+  const released = db.transaction(() => {
+    // Revalidate attribution next to the release under one snapshot, not a stale UI/earlier selection.
+    const current = heldEnrichments(db, tenantId).find(row => row.leadId === leadId && row.provider === h.provider && row.step === h.step && row.lookup === h.lookup)
+    return !!current && releaseHeldClaim(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: h.jobId, lookup: h.lookup }, disclosure)
+  })()
+  if (!released) return { status: 'nothing_held' }
   // The re-run draws on the scan's own hard spend cap (lib/scan/spend-cap.ts), as the scan's first pass did.
   const r = await runWithJobSpend(db, tenantId, lead.scan_job_id, () => enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider }))
   return { status: 'retried', attached: r.attached, releases: [`${h.provider} ${h.step}`] }

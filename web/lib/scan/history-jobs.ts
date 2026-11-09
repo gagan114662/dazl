@@ -1,7 +1,7 @@
 import type { Db } from '../db/client.ts'
 import { listJobs } from './store-db.ts'
 import { effectiveStatus } from './enrichment.ts'
-import { recordedEmptyReason } from './outcome-detail.ts'
+import { recordedEmptyReason, recordedStopRefusalReason } from './outcome-detail.ts'
 
 // The Leads history list (GET /api/scan/jobs): the tenant's own past scans with what their outcome needs. Read-only.
 // funded_by is reported only when it is positive evidence: 'trial' (the shared free-search key; set explicitly when the
@@ -17,6 +17,8 @@ export async function historyJobs(db: Db, userId: string) {
     status: effectiveStatus(j),
     // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.
     empty_reason: await recordedEmptyReason(db, userId, j),
+    // The recorded stop provenance (typed report only); null = no reason kept, so a legacy budget_stopped reads neutrally.
+    stop_refusal_reason: await recordedStopRefusalReason(db, userId, j),
     // Fixture jobs carry the inserters' own job-level marker (industry/location
     // 'test only') - the same provenance the export filter uses - so a genuine
     // business whose name contains '(test only)' is never mislabeled or hidden.

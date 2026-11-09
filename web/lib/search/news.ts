@@ -86,22 +86,36 @@ function queued<T>(f: () => Promise<T>, gapMs: number, sleep: (ms: number) => Pr
 
 // At most NEWS_PER_SCAN queries. A failed, limited or empty query only means fewer hits.
 // Request outcomes are kept apart from the hits: an empty `hits` with failed === attempted is an outage, never a search that found nothing.
-export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number; limited: number; malformed: number }   // limited: provider said over-rate (stopped early); never an outage   // malformed: invalid entries inside otherwise-valid answers (valid ones are kept; the result is partial)
+// Failure classes, counted per failed request (bounded counts and status codes only - never payloads, URLs or bodies):
+// network = the request itself failed (timeout, DNS, reset); http = a non-200 answer (status kept in http_statuses);
+// empty_body = 200 with no body; parse = 200 that was not the documented shape or whose every entry was invalid.
+export interface NewsFailureClasses { network: number; http: number; empty_body: number; parse: number }
+// Every attempted query is exactly one of these: ok (usable hits), empty (a valid answer with nothing in it - a real zero), limited, failed.
+export interface NewsQueryClasses { ok: number; empty: number; limited: number; failed: number }
+export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number; limited: number; malformed: number; failure_classes: NewsFailureClasses; http_statuses: Record<string, number>; query_classes: NewsQueryClasses }   // limited: provider said over-rate (stopped early); never an outage   // malformed: invalid entries inside otherwise-valid answers (valid ones are kept; the result is partial)
 export async function newsSearch(http: SafeGet, queries: string[], language?: string, opts: { gapMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<NewsSearchResult> {
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const lang = gdeltLang(language)
   const hits: SearchHit[] = []
   const seen = new Set<string>()
   let attempted = 0, failed = 0, malformed = 0, limited = 0
+  const failure_classes: NewsFailureClasses = { network: 0, http: 0, empty_body: 0, parse: 0 }
+  const http_statuses: Record<string, number> = {}
+  const query_classes: NewsQueryClasses = { ok: 0, empty: 0, limited: 0, failed: 0 }
   for (const q of queries.slice(0, NEWS_PER_SCAN)) {
     attempted++
     const r = await queued(() => http(newsUrl(q, lang), { accept: 'application/json' }).catch(() => null), opts.gapMs ?? GAP_MS, sleep)
-    if (!r || r.status !== 200 || !r.body) { failed++; continue }
-    if (isGdeltLimit(r.body)) { limited++; learnedGapMs = LIMITED_GAP_MS; break }
+    if (!r) { failed++; failure_classes.network++; query_classes.failed++; continue }   // the request never got an answer: timeout/DNS/reset - a network failure, not an empty search
+    if (r.status !== 200) { failed++; failure_classes.http++; http_statuses[String(r.status)] = (http_statuses[String(r.status)] ?? 0) + 1; query_classes.failed++; continue }
+    if (!r.body) { failed++; failure_classes.empty_body++; query_classes.failed++; continue }   // 200 with nothing in it: an empty body is a failed answer, not a zero-result search
+    if (isGdeltLimit(r.body)) { limited++; learnedGapMs = LIMITED_GAP_MS; query_classes.limited++; break }
     const parsed = parseGdeltDetail(r.body)
-    if (!parsed) { failed++; continue }   // 200 but malformed (not the documented shape, or every entry invalid): a parse failure, counted with the failed requests
+    if (!parsed) { failed++; failure_classes.parse++; query_classes.failed++; continue }   // 200 but malformed (not the documented shape, or every entry invalid): a parse failure, counted with the failed requests
     malformed += parsed.malformed
     for (const h of parsed.hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h) }
+    if (parsed.hits.length > 0) query_classes.ok++
+    else if (parsed.malformed > 0) { failed++; failure_classes.parse++; query_classes.failed++ }   // an answer whose entries were all unusable is a parse failure, not a clean zero
+    else query_classes.empty++   // a valid answer with nothing in it: the only real zero-result search
   }
-  return { hits, attempted, failed, limited, malformed }
+  return { hits, attempted, failed, limited, malformed, failure_classes, http_statuses, query_classes }
 }

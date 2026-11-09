@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { parseRelatedPersons, storeFilingOfficers, confirmFilingIdentity, filingIssuerPlace, unitsIn, CANDIDATE_KIND, CONNECTOR } from '../lib/people/sec-officers.ts'
 import { contactsFromEnrichments, recommendedPerson } from '../lib/people/rank.ts'
 import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
@@ -143,7 +145,14 @@ test('genuinely CIK/domain-bound: a reviewer binds the filer by the CIK and the 
   assert.equal(await store(db, bodyU('Suite 100')), 0); assert.equal(rows(db, CANDIDATE_KIND).length, 3)
   assert.equal(confirmFilingIdentity(db, 'A', 'L1', '123456', { domain: 'other.example' }), 0, 'a domain that is not the lead\'s'); assert.equal(confirmFilingIdentity(db, 'A', 'L1', '123456', { domain: 'acmedental.example' }), 0, 'the lead\'s domain is not confirmed yet')
   assert.equal(rows(db, 'sec_filing_confirmed').length, 0, 'nothing recorded by a refused confirmation'); assert.equal(rows(db, 'person').length, 0)
+  // a review row whose label carries no current binding confirms nothing (#915)
   db.prepare("INSERT INTO lead_enrichments (id, tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('d1', 'A', 'L1', 'user', 'domain_review', 'acmedental.example', 'confirmed', 'https://acmedental.example', '2026-10-20', 0)").run()
+  assert.equal(confirmFilingIdentity(db, 'A', 'L1', '123456', { domain: 'acmedental.example' }), 0, 'a malformed review label is not a confirmation')
+  db.prepare("DELETE FROM lead_enrichments WHERE id = 'd1'").run()
+  // the real review writer, bound to the crawled address and domain the user was shown
+  db.prepare("INSERT INTO lead_enrichments (id, tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('c1', 'A', 'L1', 'sitecrawl', 'domain', 'acmedental.example|name_probe', 'domain-basis-v1:name_probe', 'https://acmedental.example/', '2026-10-20', 0), ('c2', 'A', 'L1', 'sitecrawl', 'email', 'hello@acmedental.example', NULL, 'https://acmedental.example/contact', '2026-10-20', 0)").run()
+  const reviewRows = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = 'L1' AND tenant_id = 'A'").all() as NonNullable<Parameters<typeof domainReviewFor>[1]>
+  assert.equal(setDomainReview(db, 'A', 'L1', 'confirm', domainReviewFor({ id: 'L1', contact: null }, reviewRows).binding!).status, 'confirmed')
   assert.equal(confirmFilingIdentity(db, 'A', 'L1', '123456', { domain: 'acmedental.example' }), 3)
   assert.equal(rows(db, 'person').length, 3); assert.equal(rows(db, CANDIDATE_KIND).length, 0); assert.ok(rows(db, 'sec_filing_confirmed')[0].label.includes('confirmed domain'))
 })

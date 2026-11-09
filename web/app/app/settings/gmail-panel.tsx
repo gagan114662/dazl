@@ -53,7 +53,7 @@ export default function GmailPanel() {
     void load()
   }
 
-  const field = 'bg-white border border-black/20 rounded px-4 py-2.5 text-[#111] text-sm'
+  const field = 'min-h-11 bg-white border border-black/20 rounded px-4 py-2.5 text-[#111] text-sm'
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>

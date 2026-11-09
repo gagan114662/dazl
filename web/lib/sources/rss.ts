@@ -1,4 +1,4 @@
-import type { Evidence, SourceAdapter } from './types.ts'
+import { looksLikeHtml, statusNote, type Evidence, type SourceAdapter } from './types.ts'
 
 // RSS 2.0 and Atom. Same job as the feedparser backend in Agent Reach, written as a tiny parser with no dependency.
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
@@ -35,6 +35,8 @@ export function parseFeed(xml: string, max = 30): Omit<Evidence, 'source'>[] {
   return out
 }
 
+export const isFeed = (body: string): boolean => /<(rss|feed|rdf:RDF)(\s[^>]*)?>/i.test(body.slice(0, 4000)) && !looksLikeHtml(body)
+
 export const rssAdapter: SourceAdapter = {
   id: 'rss',
   label: 'RSS and Atom feeds',
@@ -43,8 +45,11 @@ export const rssAdapter: SourceAdapter = {
     for (const feed of feeds.slice(0, 5)) {
       const r = await http(feed, { accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9' })
       if (!r) { note?.('unreachable'); continue }
-      if (r.status !== 200) { note?.('http_error'); continue }
+      if (r.status !== 200) { note?.(statusNote(r.status)); continue }
       if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
+      // #906: only an RSS/Atom/RDF document is an answer. An HTML page (challenge, moved feed) or any other body parses as zero
+      // entries, which must not read as "this feed has nothing".
+      if (!isFeed(r.body)) { note?.(looksLikeHtml(r.body) ? 'challenge' : 'not_a_feed'); continue }
       for (const e of parseFeed(r.body)) {
         const hay = e.title.toLowerCase()
         if (keywords.length === 0 || keywords.some(k => hay.includes(k))) out.push({ source: 'rss', ...e })
