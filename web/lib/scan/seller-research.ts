@@ -78,16 +78,21 @@ const DENIAL_FRAME = /\b(?:false|fake|not true|do not offer|don'?t offer|not our
 const DISCLAIMER = /\b(?:third[- ]party (?:assertion|claim)|not our (?:offer|product|claim|statement)|attributed to|review by|testimonial (?:from|by)|says\s+\p{Lu})/iu
 // A sentence boundary is terminal punctuation FOLLOWED BY whitespace or end-of-text: an INTERNAL period is real
 // identity ("Acme.Payroll" is one token, not two sentences). Lazy body so the boundary lookahead decides.
-const authored = (text: string): { body: string; term: string }[] => (text.replace(/\s+/g, ' ').match(/.+?[.!?]+(?=\s|$)|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t.slice(-1) } }).filter(x => x.body)
+// The terminal is the FULL punctuation run: a declarative sentence ends in exactly '.', never '?.', '!.' or '...'.
+const authored = (text: string): { body: string; term: string }[] => (text.replace(/\s+/g, ' ').match(/.+?[.!?]+(?=\s|$)|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t } }).filter(x => x.body)
+// Page<->model binding is RAW: case/whitespace normalization ONLY. norm() strips punctuation and would let the
+// model invent an identity the authored page does not carry ("Acme-Payroll" vs "Acme Payroll").
+const rawnorm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 function sourceContextOk(pageText: string, quote: string): boolean {
   const sents = authored(pageText)
-  const qn = norm(quote.replace(/[.!?]+$/, '').trim())
+  // The model quote may omit ONE final period; any other terminal punctuation in the quote fails the equality.
+  const qn = rawnorm(quote.replace(/\.$/, ''))
   let found = false
   for (let i = 0; i < sents.length; i++) {
-    if (norm(sents[i].body) !== qn) {
+    if (rawnorm(sents[i].body) !== qn) {
       // EVERY occurrence must be clean: the same claim embedded in a LARGER authored sentence with a reporting
       // frame ("...X." says Harbor Dental) is a framed occurrence - the model cannot pick the clean twin.
-      if (norm(sents[i].body).includes(qn) && REPORTED.test(sents[i].body)) return false
+      if (rawnorm(sents[i].body).includes(qn) && REPORTED.test(sents[i].body)) return false
       continue
     }
     found = true
@@ -107,7 +112,7 @@ function offerCitation(x: { name: string; url?: unknown; quote?: unknown; inferr
   // Over-cap quotes are REJECTED, never sliced: a slice can cut off the negation or attribution that changes
   // what the authored sentence actually claims (#872 adversarial review).
   const quote = typeof x.quote === 'string' ? (q => q.length <= MAX_RESEARCH_QUOTE ? q : '')(x.quote.replace(/\s+/g, ' ').trim()) : ''
-  if (!pg || quote.length < 12 || !norm(pg.text).includes(norm(quote))) return null
+  if (!pg || quote.length < 12 || !rawnorm(pg.text).includes(rawnorm(quote))) return null
   if (!quoteBacksOffer(x.name, quote, names) || !sourceContextOk(pg.text, quote)) return null
   return { url: pg.url, quote, fetched_at: pg.fetched_at }
 }
@@ -146,7 +151,7 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
     const backed = kind === 'disqualifier' ? quoteBacksDisqualifier(offerName, text, quote, names) : quoteSupports(kind, text, quote)
     // An offer-identity kind (the disqualifier) must also match the page's complete authored sentence span (#872);
     // other kinds keep their existing verbatim-inclusion check.
-    const quoted = !!pg && it.inferred !== true && quote.length >= 12 && norm(pg.text).includes(norm(quote)) && backed && (kind !== 'disqualifier' || sourceContextOk(pg!.text, quote))
+    const quoted = !!pg && it.inferred !== true && quote.length >= 12 && rawnorm(pg.text).includes(rawnorm(quote)) && backed && (kind !== 'disqualifier' || sourceContextOk(pg!.text, quote))
     // A size or place without that is unknown, never carried as fact; a persona without it is a hypothesis.
     const status: HypStatus = quoted ? 'sourced' : kind === 'size' || kind === 'location' ? 'unknown' : 'hypothesis'
     const h: Hypothesis = { id: hypId(offer, kind, text), offer, kind, text: status === 'unknown' ? 'unknown' : text, status, url: quoted ? pg!.url : null, quote: quoted ? quote : null, fetched_at: quoted ? pg!.fetched_at : null }

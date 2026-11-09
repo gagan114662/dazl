@@ -304,6 +304,34 @@ test('internal name punctuation is real identity and survives (round 9)', () => 
   unsourced(namedOffer('Acme+Payroll', 'We offer AcmePayroll.'))
 })
 
+// Round 10: the PAGE<->model binding is RAW (case/whitespace only) - the model cannot invent a punctuation
+// identity the authored page does not carry, and the authored terminal run must be exactly '.'.
+test('the page binding is raw: the model cannot invent hyphen identity the page does not carry (round 10)', () => {
+  unsourced(offerHyp(run([{ id: 'o1', name: 'Acme-Payroll', url: PAYROLL, quote: 'We offer Acme-Payroll.' }], [], [page(PAYROLL, 'We offer Acme Payroll.', T0 + 2)]), 'Acme-Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, 'We offer Acme-Payroll.'), 'Acme Payroll'))
+})
+
+test("the authored terminal run must be exactly '.': '...', '?.', '!.' never source (round 10)", () => {
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, 'We offer Acme Payroll...'), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, 'We offer Acme Payroll?.'), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, 'We offer Acme Payroll!.'), 'Acme Payroll'))
+})
+
+test("a disqualifier against a '?.', '!.' page never sources; the plain '.' page does (round 10)", () => {
+  const q = 'Acme Payroll is not available for clinics with over 50 staff'
+  const dq = (pageText: string) => {
+    const r = run([{ id: 'o1', name: 'Acme Payroll', url: PAYROLL, quote: ATOMIC_PAYROLL }], [
+      { offer: 'o1', kind: 'disqualifier', text: 'clinics with over 50 staff', url: PAYROLL, quote: q, inferred: false },
+    ], [page(PAYROLL, `${ATOMIC_PAYROLL} ${pageText}`, T0 + 2)])
+    const o1 = r.offers.find(x => x.name === 'Acme Payroll')!
+    return r.hypotheses.find(h => h.offer === o1.id && h.kind === 'disqualifier')!
+  }
+  unsourced(dq(q + '?.'))
+  unsourced(dq(q + '!.'))
+  const ok = dq(q + '.')
+  assert.deepEqual([ok.status, ok.url, ok.fetched_at], ['sourced', PAYROLL, T0 + 2])
+})
+
 test("any '?', '!' or unconsumed punctuation rejects - a trailing period never erases sentence intent (round 9)", () => {
   unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll?.'))
   unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll!.'))
