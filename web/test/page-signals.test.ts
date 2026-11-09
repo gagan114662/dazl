@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { readPage, hitWindows, leadSignals, TASK_TERMS, STACK_NAMES } from '../lib/scan/page-signals.ts'
 
 const q = (text: string) => readPage(text).passages
@@ -76,11 +77,13 @@ test('the actual word and tool lists are exported for the UI to show', () => {
 })
 
 function setup() {
-  const db = new Database(':memory:'); migrateScan(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const mk = (user: string, id: string, domain: string | null, company = 'Acme') => {
     const job = createQueryJob(db, user, { query: 'q' })
     db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
     db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,company_domain) VALUES (?,?,?,?,?,?)").run(id, job, company, 'Posted a role', 'https://weworkremotely.com/remote-jobs/acme-sdr', domain)
+    // a confirmed site: the crawl found the evidence hosted on it (#912 uses the home page only for a confirmed domain)
+    if (domain) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-11-01', 1)").run(`${id}d`, id, user, `${domain}|evidence_own_domain`, `https://${domain}/news`)
   }
   mk('u1', 'a'.repeat(24), 'acme.example'); mk('u1', 'b'.repeat(24), null); mk('u2', 'c'.repeat(24), 'other.example')
   return db

@@ -40,6 +40,7 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- #943 b/914-timing-proof-revalidate review fixes: resolution, completion and the scoreboard now read the same `currentSiteContact` rule as actionability (a populated but unconfirmed domain, or a contact from another site, no longer counts as identity/contact/qualified), and contact selection is order-independent. Competitive: benchmark and completion numbers can no longer be inflated by leads the live gate rejects. Fixtures only; no live scan.
 - b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
   policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
   comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers

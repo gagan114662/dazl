@@ -1,5 +1,6 @@
 "use client"
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
@@ -38,7 +39,7 @@ export default function SignIn() {
   return (
     <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
-        <a href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></a>
+        <Link href="/" className="text-xl font-medium tracking-tight flex items-center justify-center min-h-11 mb-4">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Sign in</h1>
         <p className="text-[#555] text-sm mb-6 text-center">Enter your email to continue</p>
         <ClaimContextBanner business={claim.business} action="Sign in" />
@@ -59,9 +60,9 @@ export default function SignIn() {
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-        <p className="mt-3 text-sm text-center"><a href="/reset" className="text-[#666] underline underline-offset-2">Forgot password?</a></p>
+        <p className="mt-3 text-sm text-center"><a href="/reset" className="inline-flex items-center min-h-11 text-[#666] underline underline-offset-2">Forgot password?</a></p>
         <p className="mt-2 text-sm text-[#666] text-center">
-          No account? <a href="/sign-up" className="text-[#111] underline underline-offset-2 hover:underline">Create an account</a>
+          No account? <a href="/sign-up" className="inline-flex items-center min-h-11 text-[#111] underline underline-offset-2 hover:underline">Create an account</a>
         </p>
       </div>
     </main>

@@ -9,6 +9,7 @@ import { isRequestId, newRequestId, requestLogLine, routeTemplate } from '../lib
 import { ROUTE_TEMPLATES } from '../lib/ops/routes.ts'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 import { handleRequestError } from '../lib/ops/request-error.ts'
+import { assertRequestLogLine } from './helpers/request-log-leak-check.ts'
 
 test('request ids are random UUIDv4s; nothing else passes as one', () => {
   const a = newRequestId(), b = newRequestId()
@@ -87,4 +88,30 @@ test('proxy.ts: ids, log lines and the /app redirect through the real file', () 
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /# pass 2\b/)
   assert.match(r.stdout, /PROXY_OK/)
+})
+
+// The real-proxy test above asserts on a line whose ts comes from the clock. These controls are deterministic: they fix the timestamp and the input and prove the leak check
+// neither fails on a legitimate ".555Z" timestamp or an id full of digits, nor goes blind to input-derived leaks.
+const UUID = '0a1b2c3d-5555-4555-8555-555555555555'   // a valid UUIDv4 whose digits are mostly 5s
+const line = (over: Record<string, unknown> = {}) => JSON.stringify({ level: 'info', type: 'request', request_id: UUID, method: 'GET', path: '/api/leads', ts: '2026-11-07T18:00:00.555Z', ...over })
+test('request log line check: a valid ".555Z" timestamp and a digit-heavy request id are NOT leaks (named control for the false-positive class)', () => {
+  assert.ok(isRequestId(UUID))
+  assertRequestLogLine(line())
+  for (let ms = 0; ms < 1000; ms++) assertRequestLogLine(line({ ts: new Date(Date.UTC(2026, 10, 7, 18, 0, 0, ms)).toISOString() }))   // every millisecond value, 555 included
+  assertRequestLogLine(line({ request_id: newRequestId() }))
+})
+test('request log line check: input-derived leaks are still caught (malicious path, method, extra field, bad id, bad timestamp)', () => {
+  const bad = (over: Record<string, unknown>, why: string) => assert.throws(() => assertRequestLogLine(line(over)), why)
+  bad({ path: '/api/replies/+1 415 555 0134' }, 'a phone number in the path')
+  bad({ path: '/api/leads/jane@example.com' }, 'an email in the path')
+  bad({ path: '/api/leads?t=secret' }, 'a query secret in the path')
+  bad({ method: 'evil' }, 'a hostile method')
+  bad({ level: 'tok' }, 'a token in a fixed field')
+  bad({ query: 'email=jane@example.com' }, 'an extra field carrying request input')
+  bad({ request_id: 'evil-+1 415 555 0134' }, 'the caller\'s request id echoed back')
+  bad({ ts: '2026-11-07T18:00:00.555' }, 'a timestamp without the Z')
+  bad({ ts: '2026-13-45T99:00:00.555Z' }, 'an impossible timestamp')
+  bad({ ts: 'jane' }, 'a non-timestamp ts')
+  // the same digits that are fine in ts fail in the path: the check moved, it did not weaken
+  assertRequestLogLine(line({ ts: '2026-11-07T18:00:00.555Z' })); assert.throws(() => assertRequestLogLine(line({ path: '/api/leads/555' })))
 })
