@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import { spawnSync } from 'node:child_process'
@@ -70,7 +70,7 @@ test('webhook payload carries a Slack-compatible text beside the structured fiel
   // A health endpoint that (wrongly) leaks identifiers, a token and extra fields: the payload is built at the send boundary from allowlisted counts and states only.
   let healthy = false
   const LEAK = 'sk-live-ABCDEF123456 jane.doe@example.com 0b0e7c1a-1111-4222-8333-444455556666'
-  const app = http.createServer((_q, s) => { s.statusCode = healthy ? 200 : 503; s.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : [`token ${LEAK}`, 42, null], operational: { state: healthy ? 'fresh' : 'stale', last_completed_age_s: 3000, last_error: LEAK }, tenants: { tracked: 2, blocked: 1, tenant_ids: [LEAK], note: LEAK } })) })
+  const app = http.createServer((_q, s) => { s.statusCode = healthy ? 200 : 503; s.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : [`token ${LEAK}`, 42, null], operational: { state: healthy ? 'fresh' : 'stale', last_completed_age_s: 3000, last_error: LEAK }, tenants: { tracked: 2, ...(healthy ? {} : { blocked: 1 }), tenant_ids: [LEAK], note: LEAK } })) })
   await new Promise<void>(r => app.listen(0, '127.0.0.1', () => r()))
   const url = `http://127.0.0.1:${(app.address() as { port: number }).port}/api/health/scheduler`
   const hookUrl = `https://localhost:${(hook.address() as { port: number }).port}/hook`
@@ -119,6 +119,36 @@ test('the send boundary: tokens, arbitrary states, extra fields, malformed probl
       assert.doesNotMatch(JSON.stringify(sent[0]), /sk-live|ABCDEF|0b0e7c1a|jane|@|secret/, `${c.name}: nothing from the response is copied`)
       assert.match(sent[0].problems[0], c.expectProblem, c.name)
       assert.deepEqual(Object.keys(sent[0].tenants ?? {}).filter(k => !['tracked', 'blocked', 'held', 'reply_sync_stale', 'overdue', 'oldest_overdue_s'].includes(k)), [], c.name)
+    }
+  } finally { rmSync(T, { recursive: true, force: true }) }
+})
+
+test('a prior alert is cleared only by a real recovery: 503 or contradictory or unreadable "ok:true" keeps the receipt and announces nothing', async () => {
+  const T = mkdtempSync(path.join(tmpdir(), 'sched-recov-'))
+  const healthy = { ok: true, problems: [], operational: { state: 'fresh' }, tenants: { tracked: 2 } }
+  const cases: { name: string; status: number; body: object | string; code: number; cleared: boolean; match?: RegExp }[] = [
+    { name: '503 with ok:true, stale and a blocked tenant', status: 503, body: { ok: true, problems: [], operational: { state: 'stale', last_completed_age_s: 4000 }, tenants: { tracked: 2, blocked: 1 } }, code: 1, cleared: false, match: /^scheduler stale: last completed run 4000s ago$/ },
+    { name: 'bare ok:true on 503', status: 503, body: { ok: true }, code: 1, cleared: false, match: /^HTTP 503, not ok$/ },
+    { name: 'ok:true on 503 even with healthy-looking fields', status: 503, body: healthy, code: 1, cleared: false, match: /^HTTP 503, not ok$/ },
+    { name: '200 ok:true but stale and blocked', status: 200, body: { ok: true, operational: { state: 'stale' }, tenants: { tracked: 1, blocked: 1 } }, code: 1, cleared: false },
+    { name: '200 ok:true with no usable fields', status: 200, body: { ok: true }, code: 1, cleared: false, match: /^scheduler health unreadable \(HTTP 200\)$/ },
+    { name: '200 ok:true with an unknown state', status: 200, body: { ok: true, operational: { state: 'whatever' }, tenants: { tracked: 1 } }, code: 1, cleared: false, match: /^scheduler health unreadable/ },
+    { name: 'a real recovery', status: 200, body: healthy, code: 0, cleared: true },
+  ]
+  try {
+    for (const [i, c] of cases.entries()) {
+      const server = http.createServer((_q, s) => { s.statusCode = c.status; s.end(JSON.stringify(c.body)) })
+      await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+      const state = path.join(T, `s${i}`), out = path.join(T, `out${i}`), cmd = path.join(T, `cmd${i}.sh`)
+      mkdirSync(state, { recursive: true }); writeFileSync(path.join(state, 'alert-seeded0123456789'), '')   // a prior alert receipt
+      writeFileSync(cmd, `#!/bin/sh\necho "$1" >> ${out}\n`); chmodSync(cmd, 0o755)
+      const code = await new Promise<number | null>(res => { const ch = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/ops/scheduler-check.mts', '--url', `http://127.0.0.1:${(server.address() as { port: number }).port}/api/health/scheduler`, '--state-dir', state], { cwd: web, env: { ...process.env, SCHEDULER_ALERT_CMD: cmd, OPS_ALERT_WEBHOOK_URL: '' } }); ch.on('close', res) })
+      server.close()
+      const sent = existsSync(out) ? readFileSync(out, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : []
+      assert.equal(code, c.code, c.name)
+      assert.equal(existsSync(path.join(state, 'alert-seeded0123456789')), !c.cleared, `${c.name}: the prior receipt is ${c.cleared ? 'cleared' : 'kept'}`)
+      assert.ok(!sent.some(m => m.type === 'scheduler_recovered') === !c.cleared, `${c.name}: recovery is ${c.cleared ? '' : 'not '}announced`)
+      if (c.match) assert.match(sent[0].problems[0], c.match, c.name)
     }
   } finally { rmSync(T, { recursive: true, force: true }) }
 })

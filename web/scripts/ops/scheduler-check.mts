@@ -40,15 +40,19 @@ try {
   const tenants: Record<string, number> = {}
   for (const k of TENANT_KEYS) { const n = num(t[k]); if (n !== null) tenants[k] = n }
   facts = { scheduler: state ?? undefined, last_completed_age_s: age ?? undefined, lease_generation: num(op.lease_generation) ?? undefined, last_failure_status: fail, tenants }
-  if (h.ok !== true) {
-    if (state === 'stale' || state === 'crashed') problems.push(`scheduler ${state}${age !== null ? `: last completed run ${age}s ago` : ': no completed run'}`)
-    if (fail) problems.push(`latest scheduler run ${fail}: no successful run since`)
-    if (state === 'never_ran' && (tenants.tracked ?? 0) > 0) problems.push('scheduler never ran, but tenants have scheduled work')
-    if (tenants.blocked) problems.push(`${tenants.blocked} tenant(s) blocked by repeated failures`)
-    if (tenants.reply_sync_stale) problems.push(`${tenants.reply_sync_stale} tenant(s) with stale reply sync`)
-    if (tenants.overdue) problems.push(`${tenants.overdue} tenant(s) with due work overdue by more than ${OVERDUE_ALERT_S}s${tenants.oldest_overdue_s != null ? ` (oldest ${tenants.oldest_overdue_s}s)` : ''}`)
-    if (!problems.length) problems = [`HTTP ${r.status}, not ok`]   // unknown or unreadable health: said plainly, nothing copied
-  }
+  // What the allowlisted fields themselves show, whatever `ok` claims (an endpoint saying ok:true while a state is stale or a tenant is blocked is not healthy).
+  const derived: string[] = []
+  if (state === 'stale' || state === 'crashed') derived.push(`scheduler ${state}${age !== null ? `: last completed run ${age}s ago` : ': no completed run'}`)
+  if (fail) derived.push(`latest scheduler run ${fail}: no successful run since`)
+  if (state === 'never_ran' && (tenants.tracked ?? 0) > 0) derived.push('scheduler never ran, but tenants have scheduled work')
+  if (tenants.blocked) derived.push(`${tenants.blocked} tenant(s) blocked by repeated failures`)
+  if (tenants.reply_sync_stale) derived.push(`${tenants.reply_sync_stale} tenant(s) with stale reply sync`)
+  if (tenants.overdue) derived.push(`${tenants.overdue} tenant(s) with due work overdue by more than ${OVERDUE_ALERT_S}s${tenants.oldest_overdue_s != null ? ` (oldest ${tenants.oldest_overdue_s}s)` : ''}`)
+  // Healthy (and so a recovery) needs ALL of: a successful HTTP status, ok literally true, a valid state and a tracked count, and no problem reconstructed from the fields.
+  // Anything less keeps the problem (and any prior alert receipt) and says so plainly, copying nothing from the response.
+  if (!r.ok || h.ok !== true) problems = derived.length ? derived : [`HTTP ${r.status}, not ok`]
+  else if (derived.length) problems = derived
+  else if (state === null || tenants.tracked === undefined) problems = [`scheduler health unreadable (HTTP ${r.status})`]
 } catch (e) { problems = [`scheduler health not answering (${ERRS.has(e instanceof Error ? e.name : '') ? (e as Error).name : 'error'})`] }
 
 const body = { level: problems.length ? 'error' : 'info', type: 'scheduler_check', ok: problems.length === 0, host: os.hostname(), at: new Date().toISOString(), problems, ...facts }
