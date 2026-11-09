@@ -107,6 +107,10 @@ const STOP = /\s+(?:within|in\s+the|in|over|during|this|last|recently|and|or|but
 const MADE_HIRE = /\bmade\s+(?:(?:a|an|its|their|the|our)\s+)?((?:first|founding|inaugural|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi
 const HIRE_QUALIFIER = /^(?:first|founding|inaugural|new)$/i
 const FIRST_WORD = /^(?:first|founding|inaugural)$/i
+// #876: a modal in front of the completed verb ("may have made", "will have hired", "might have just made") says the hire may not have happened.
+// That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
+const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
+const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
 const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for)\s+)+/i, '').trim()
 
 function findAtoms(q: string): Atom[] {
@@ -116,18 +120,19 @@ function findAtoms(q: string): Atom[] {
   techAtoms(q, add)
   // 1. A completed hire ("hired their first VP of Sales", "first VP hired"): a fact in the past, never an open role.
   for (const m of q.matchAll(/\b(?:hired|appointed|named|brought\s+on|onboarded|welcomed)\s+((?:(?:a|an|its|their|the)\s+)?((?:first|founding|inaugural|new)\s+)?[a-z][a-z&\s-]{1,60})/gi)) {
-    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role)) continue
+    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role) || MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
     const end = (m.index ?? 0) + m[0].indexOf(m[1]) + m[1].indexOf(role) + role.length
     add({ kind: 'hire_made', start: m.index ?? 0, end, role, first: /\b(?:first|founding|inaugural)\b/i.test(m[1].slice(0, m[1].indexOf(role) + 1)) })
   }
   for (const m of q.matchAll(/\b(first|founding|new)\s+([a-z][a-z&\s-]{1,40}?)\s+(?:(?:was|were|has\s+been|have\s+been|recently|just)\s+)?(?:hired|appointed|joined|named|brought\s+on)\b/gi)) {
-    if (!ROLE_WORD.test(m[2])) continue
+    if (!ROLE_WORD.test(m[2]) || MODAL_WORD.test(m[0])) continue
     add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[2].trim(), first: /first|founding/i.test(m[1]) })
   }
   // #876: "made their first sales hire" states the same completed fact in other words - a hire in the past, never an open role. Only the past
   // tense "made" reads so: "making / make / makes their first sales hire" states no completed hire and stays an open-role condition (step 3).
   // A qualifier the role slot catches by itself ("made a new hire") is no role: any role, with `first` only when the request says first.
   for (const m of q.matchAll(MADE_HIRE)) {
+    if (MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
     const q1 = (m[1] ?? '').trim(), word = m[2]
     const role = HIRE_QUALIFIER.test(word) ? '' : word
     add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role, first: FIRST_WORD.test(q1) || (!role && FIRST_WORD.test(word)) })
@@ -173,6 +178,9 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const q = (query ?? '').replace(/\s+/g, ' ').trim()
   const ambiguities: Ambiguity[] = []
   const atoms = findAtoms(q)
+  // #876: a modal completed hire ("may have made their first sales hire") compiles to no condition (findAtoms); the plan says why.
+  for (const m of q.matchAll(/\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*(?:made\s+(?:(?:a|an|its|their|the|our)\s+)?(?:[a-z][a-z-]*\s+){0,2}hires?|hired|appointed|named|brought\s+on|onboarded|welcomed)\b/gi))
+    ambiguities.push({ text: m[0], readings: ['a completed hire', 'a hire that may not have happened'], chosen: 'no completed-hire condition: the request does not say the hire happened, so nothing is proven by it' })
   // Windows, each bound to the condition it follows in the text (or to every condition when it comes first).
   const windows: { at: number; end: number; days: number; text: string; anchorWord?: string }[] = []
   for (const m of q.matchAll(WINDOW_RE)) {

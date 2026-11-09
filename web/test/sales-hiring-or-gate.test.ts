@@ -23,7 +23,9 @@ const ANDOR_B = 'London B2B SaaS startups that raised seed funding and/or made t
 const TEST_A = 'Find independent dental practices in New York, NY that opened a new location or are hiring a front desk receptionist in the last 90 days. We sell dental appointment and reminder software.'
 
 const SEED = (co: string, place = 'London') => `${co}, a ${place} B2B SaaS startup, raised a £2m seed round led by Example Ventures.`
-const HIRE = (co: string) => `${co}, a London B2B SaaS company, is hiring its first Sales Representative to join the founders.`
+const HIRE = (co: string) => `${co}, a London B2B SaaS company, made its first sales hire, bringing a Sales Representative in alongside the founders.`
+// An OPEN vacancy: not a completed hire (#876), so it never proves Test B's hiring branch.
+const OPEN = (co: string) => `${co}, a London B2B SaaS company, is hiring its first Sales Representative to join the founders.`
 
 interface Lead { id?: string; company?: string; domain?: string | null; excerpt: string; date?: string | null; signal?: string }
 function setup(query: string, leads: Lead[], icp: string | null = ICP_B) {
@@ -65,16 +67,37 @@ test('OR: a hire-only lead (dated first sales hire, no funding quote) is NOT dem
   assert.equal(reason(s.db), null)
 })
 
-test('OR: a hire-only lead proven by a dated posting on its own job board passes (the board check still runs)', async () => {
-  const GH = 'https://boards-api.greenhouse.io/v1/boards/brightloop'
-  const m: Record<string, unknown> = {
-    [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'Account Executive' }] },
-    [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: new Date(NOW - 12 * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', location: { name: 'London, UK' }, content: '&lt;p&gt;Brightloop is hiring. Write to jobs@brightloop.io&lt;/p&gt;' },
-  }
+test('OR: a dated posting on the lead\u2019s own job board does NOT prove a completed hire (#876): demoted, no board lookup', async () => {
+  const seen: string[] = []
   const s = setup(OR_B, [{ company: 'Brightloop', domain: 'brightloop.io', excerpt: 'Brightloop is a London B2B SaaS platform for finance teams.' }])
-  s.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'L1', 'u1', 'sitecrawl', 'domain', 'brightloop.io|evidence_own_domain', 'x', NULL, 'https://brightloop.io/', '2026-11-01', 1)").run()
-  const r = await run(s, (async (u: RequestInfo | URL) => m[String(u)] ? new Response(JSON.stringify(m[String(u)]), { status: 200 }) : new Response('nope', { status: 404 })) as never)
-  assert.deepEqual([r.passed, r.demoted], [1, 0]); assert.equal(reason(s.db), null)
+  const r = await run(s, notFound(seen))
+  assert.deepEqual([r.passed, r.demoted], [0, 1]); assert.equal(reason(s.db), 'no_sales_hiring_evidence'); assert.match(why(s.db), /completed-hire/)
+  assert.equal(seen.length, 0, 'an open board cannot prove a completed hire, so it is never fetched')
+})
+
+test('OR: an OPEN vacancy quote ("is hiring its first Sales Representative") is not a completed hire: demoted', async () => {
+  const s = setup(OR_B, [{ company: 'Hireco', excerpt: OPEN('Hireco') }])
+  const r = await run(s)
+  assert.deepEqual([r.passed, r.demoted], [0, 1]); assert.equal(reason(s.db), 'no_sales_hiring_evidence')
+})
+
+test('OR: hypothetical, other-company and planned hire quotes are demoted; the own-company affirmative control passes (reviewer probes)', async () => {
+  const cases: [string, string, boolean][] = [
+    ['If Pastco makes its first sales hire, revenue grows.', 'Pastco', false],
+    ['Otherco made its first sales hire; Pastco sells payroll software.', 'Pastco', false],
+    ['Pastco plans to make its first sales hire.', 'Pastco', false],
+    ['Pastco has not made its first sales hire.', 'Pastco', false],
+    ["Pastco hasn't made its first sales hire.", 'Pastco', false],
+    ['Pastco hasn\u2019t yet made its first sales hire.', 'Pastco', false],
+    ['Pastco made its first sales hire.', 'Pastco', true],
+    ['Jane Doe joined Pastco as its first sales hire.', 'Pastco', true],
+  ]
+  for (const [q, co, ok] of cases) {
+    const s = setup(OR_B, [{ company: co, excerpt: q }]); const r = await run(s)
+    assert.deepEqual([r.passed, r.demoted], ok ? [1, 0] : [0, 1], q)
+    const p = conditionProof(planConditions(compileTargeting(OR_B, ICP_B).root).find(x => x.cond.kind === 'hire_made')!.cond, { company: co, company_domain: null, evidence_excerpt: q, event_date: day(20), source_url: 'https://news.example/1', signal: 's' } as never, [], { now: NOW } as never)
+    assert.equal(p.truth === 'pass', ok, `conditionProof: ${q}`)
+  }
 })
 
 // That request names a role ("sales representative"), so its hiring branch needs a source-matched posting (the existing requested-role rule): a quote alone
@@ -151,20 +174,41 @@ test('OR, a seed quote from another place fails the event-place check: demoted',
   assert.equal(reason(s.db), 'no_sales_hiring_evidence')
 })
 
-test('OR, a board lookup that fails keeps the lead held as not checked', async () => {
-  const s = setup(OR_B, [{ company: 'Brightloop', domain: 'brightloop.io', excerpt: 'Brightloop is a London B2B SaaS platform for finance teams.' }])
-  const r = await run(s, (async () => new Response('down', { status: 503 })) as never)
-  assert.deepEqual([r.passed, r.demoted], [0, 1])
-  assert.equal(reason(s.db), 'no_sales_hiring_evidence'); assert.match(why(s.db), /not checked/)
-})
-
-test('OR, the board lookup cap keeps the lead beyond it held as not checked', async () => {
+test('OR, with a completed-hire branch no job board is ever looked up (many leads, none fetched)', async () => {
   const leads = Array.from({ length: 21 }, (_, i) => ({ id: `L${i + 1}`, company: `Boardco${i + 1}`, domain: `boardco${i + 1}.io`, excerpt: `Boardco${i + 1} is a London B2B SaaS platform.` }))
   const seen: string[] = []
   const s = setup(OR_B, leads); const r = await run(s, notFound(seen))
   assert.deepEqual([r.passed, r.demoted], [0, 21])
+  assert.equal(seen.length, 0)
+})
+
+// The board path still serves an OPEN-role OR ("or are hiring sales staff"): a posting proves that branch, and the lookup's failure and cap rules hold.
+const OPEN_OR = 'London B2B SaaS startups that raised seed funding or are hiring sales staff in the last 90 days'
+const BOARD_LEAD = { company: 'Brightloop', domain: 'brightloop.io', excerpt: 'Brightloop is a London B2B SaaS platform for finance teams.' }
+test('open-role OR: a hire-only lead proven by a dated posting on its own job board passes (the board check still runs)', async () => {
+  const GH = 'https://boards-api.greenhouse.io/v1/boards/brightloop'
+  const m: Record<string, unknown> = {
+    [`${GH}/jobs`]: { jobs: [{ id: 1, title: 'Account Executive' }] },
+    [`${GH}/jobs/1`]: { id: 1, title: 'Account Executive', first_published: new Date(NOW - 12 * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', location: { name: 'London, UK' }, content: '&lt;p&gt;Brightloop is hiring. Write to jobs@brightloop.io&lt;/p&gt;' },
+  }
+  const s = setup(OPEN_OR, [BOARD_LEAD])
+  s.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'L1', 'u1', 'sitecrawl', 'domain', 'brightloop.io|evidence_own_domain', 'x', NULL, 'https://brightloop.io/', '2026-11-01', 1)").run()
+  const r = await run(s, (async (u: RequestInfo | URL) => m[String(u)] ? new Response(JSON.stringify(m[String(u)]), { status: 200 }) : new Response('nope', { status: 404 })) as never)
+  assert.deepEqual([r.passed, r.demoted], [1, 0]); assert.equal(reason(s.db), null)
+})
+test('open-role OR, a board lookup that fails keeps the lead held as not checked', async () => {
+  const s = setup(OPEN_OR, [BOARD_LEAD])
+  const r = await run(s, (async () => new Response('down', { status: 503 })) as never)
+  assert.deepEqual([r.passed, r.demoted], [0, 1])
+  assert.equal(reason(s.db), 'no_sales_hiring_evidence'); assert.match(why(s.db), /not checked/)
+})
+test('open-role OR, the board lookup cap keeps the lead beyond it held as not checked', async () => {
+  const leads = Array.from({ length: 21 }, (_, i) => ({ id: `L${i + 1}`, company: `Boardco${i + 1}`, domain: `boardco${i + 1}.io`, excerpt: `Boardco${i + 1} is a London B2B SaaS platform.` }))
+  const seen: string[] = []
+  const s = setup(OPEN_OR, leads); const r = await run(s, notFound(seen))
+  assert.deepEqual([r.passed, r.demoted], [0, 21])
   assert.equal(reason(s.db, 'L21'), 'no_sales_hiring_evidence'); assert.match(why(s.db, 'L21'), /not checked/)
-  assert.ok(!seen.some(u => /boardco21/.test(u)), 'no lookup beyond the cap')
+  assert.ok(seen.length > 0 && !seen.some(u => /boardco21/.test(u)), 'boards are looked up, but none beyond the cap')
 })
 
 test('a malformed profile falls back to AND: the seed-only lead is demoted as today', async () => {
