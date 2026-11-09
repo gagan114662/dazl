@@ -7,6 +7,7 @@ import { preparePrompt, estimateCost, DEFAULT_LIMITS, FIELD_CAPS, type ContextFi
 import { packRequest, type RequestPacking } from './qualification-packing.ts'
 import { effectiveOffer } from './play-offer-text.ts'
 import { readPlayOffer } from './play-offer.ts'
+import { domainConfirmed } from '../signals/domain-basis.ts'
 
 export type PageFetcher = (url: string) => Promise<Page | FetchFail>
 export interface PreviewPage { url: string; role: 'posting' | 'company_home'; status: 'fetched' | 'failed'; chars: number; fail?: string; used: boolean; not_used_reason?: string }
@@ -33,7 +34,17 @@ export async function qualifyPreview(db: Database.Database, userId: string, lead
   const notes: string[] = []
   const targets: { url: string; role: PreviewPage['role'] }[] = []
   if (/^https:\/\//.test(lead.source_url)) targets.push({ url: lead.source_url, role: 'posting' })
-  if (lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain)) targets.push({ url: `https://${lead.company_domain}/`, role: 'company_home' })
+  // The company home page is evidence only for a CONFIRMED site (#912): own-domain evidence, a current identity review or a passed homepage
+  // check (signals/domain-basis.ts). A populated company_domain alone (a legacy or name-guessed domain) is not fetched or used.
+  const identity = () => {
+    const l = db.prepare('SELECT l.company, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead.id, userId) as { company: string; company_domain: string | null } | undefined
+    const domain = l?.company_domain && /^[a-z0-9.-]+$/i.test(l.company_domain) ? l.company_domain : null
+    return JSON.stringify([l?.company ?? null, l?.company_domain ?? null, !!domain && domainConfirmed(db, userId, lead.id, domain)])
+  }
+  const before = identity()
+  const confirmedSite = lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain) && domainConfirmed(db, userId, lead.id, lead.company_domain) ? lead.company_domain : null
+  if (confirmedSite) targets.push({ url: `https://${confirmedSite}/`, role: 'company_home' })
+  else if (lead.company_domain) notes.push(`The company site ${lead.company_domain} is not confirmed for this lead (no own-domain evidence, review or homepage check), so its home page is not used; only the posting page can be used as evidence.`)
   else notes.push('No confirmed company site on this lead, so only the posting page can be used as evidence.')
   const got = await Promise.all(targets.map(async t => ({ t, r: await fetchPage(t.url).catch(() => ({ fail: 'error' }) as FetchFail) })))
   // Page reads await external state. Never price/approve the old offer after a concurrent choice.
@@ -42,6 +53,8 @@ export async function qualifyPreview(db: Database.Database, userId: string, lead
   const currentOffer = latest?.source === 'none' && current ? effectiveOffer(current, sellerText) : latest
   if (!currentOffer || JSON.stringify(currentOffer) !== JSON.stringify(offer)) return blocked('The play offer changed while reading sources. Reload the preview before approving any check.')
   if (!current || current.query !== lead.query || current.icp !== lead.icp) return blocked('The saved request or profile changed while reading sources. Reload the preview before approving any check.')
+  // The lead's company, domain and its confirmation are rechecked after the reads too: a change or a lost confirmation rebuilds the preview.
+  if (identity() !== before) return blocked('The lead\'s company or confirmed site changed while reading sources. Reload the preview before approving any check.')
   // Provenance: the posting page is only evidence about this company if it names the company. The company home
   // page is used only when the lead already has a confirmed site. Anything else is fetched for display but not used.
   const nameOk = (t: string) => { const c = lead.company.toLowerCase().replace(/\s+/g, ' ').trim(); return c.length >= 2 && t.toLowerCase().replace(/\s+/g, ' ').includes(c) }

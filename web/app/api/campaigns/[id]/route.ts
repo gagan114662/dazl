@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { campaignDetail } from '@/lib/outreach/campaign-detail'
-import { recordedEmptyReason } from '@/lib/scan/outcome-detail'
+import { recordedEmptyReason, recordedStopRefusalReason } from '@/lib/scan/outcome-detail'
 import { readPlayOffer, setPlayOffer } from '@/lib/scan/play-offer'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied } from '@/lib/workspace-access'
@@ -16,7 +16,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const db = await getDb()
   const d = /^[a-f0-9]{24}$/.test(id) ? await campaignDetail(db, user.tenantId, id) : null
   if (!d) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ ...d, job: { ...d.job, empty_reason: await recordedEmptyReason(db, user.tenantId, d.job) }, offer: await readPlayOffer(db, user.tenantId, id) })
+  return NextResponse.json({ ...d, job: { ...d.job, empty_reason: await recordedEmptyReason(db, user.tenantId, d.job), stop_refusal_reason: await recordedStopRefusalReason(db, user.tenantId, d.job) }, offer: await readPlayOffer(db, user.tenantId, id) })
 }
 
 // Choose what this play sells: { offer }. Only this play changes; the business profile and every other play keep

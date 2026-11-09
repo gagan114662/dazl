@@ -123,6 +123,7 @@ jobs:
       - name: Scan view provider-failure transparency and per-verification-pass cost UI (fenced fixture)
         if: success() || failure()
         run: |
+          set -o pipefail
           npm install --no-save esbuild playwright@1.63.0
           SHOT_A=preview/scan-transparency/branch-a.png SHOT_B=preview/scan-transparency/branch-b.png SHOT_C=preview/scan-transparency/telemetry-unknown.png \
             node test/ui/scan-transparency.ui.mjs 2>&1 | tee /tmp/scan-transparency-ui.log

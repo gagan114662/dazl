@@ -50,7 +50,7 @@ test('pure: per-source progress — status, candidates found, accepted; unknown 
   assert.equal(sourceStatusOf('skipped_hold', false), 'skipped')
   assert.deepEqual(outcomeInputs(null, [{ collector: 'search:anthropic', status: 'skipped_hold' }], 'failed').failed_sources, [])
   assert.deepEqual(progressOf([{ collector: 'search:x', status: 'error', evidence_count: null, candidate_count: null, verified_count: null, review_count: null }], 'done')[0].status, 'failed')
-  assert.deepEqual(outcomeInputs({ funnel: { review_reasons: { quote_unconfirmed: 2 }, drop_reasons: { duplicate: 1 } }, search: { hits_unique_urls: 6, attempted: 3, ok: 3 } }, [], 'done'), { failed_sources: [], reject_reasons: { 'review:quote_unconfirmed': 2, 'dropped:duplicate': 1 }, search_hits: 6, evidence_sources: [], unknown_sources: [], partial_sources: [] })
+  assert.deepEqual(outcomeInputs({ funnel: { review_reasons: { quote_unconfirmed: 2 }, drop_reasons: { duplicate: 1 } }, search: { hits_unique_urls: 6, attempted: 3, ok: 3 } }, [], 'done'), { failed_sources: [], reject_reasons: { 'review:quote_unconfirmed': 2, 'dropped:duplicate': 1 }, search_hits: 6, evidence_sources: [], unknown_sources: [], partial_sources: [], stop_refusal_reason: null })
   assert.deepEqual(outcomeInputs({ search: { attempted: 3, ok: 0, hits_unique_urls: 0 } }, [], 'done').failed_sources, ['search:tinyfish'], 'every search attempt failed: a failed source, not an empty result')
 })
 

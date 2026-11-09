@@ -36,7 +36,8 @@ export interface CompletionUsage { input_tokens?: number; output_tokens?: number
 // content - just the accounting fields a tenant needs to see what a call used.
 // model is the SERVED model from the response, or null when the response omits it -
 // never the requested model mislabeled as what was actually served.
-export interface DetailedCompletion { text: string; model: string | null; request_id?: string; usage?: CompletionUsage }
+// `stop`: why the vendor stopped, when it said (Anthropic stop_reason; OpenAI incomplete_details.reason). 'max_tokens' / 'max_output_tokens' mean the output hit the cap and is cut off.
+export interface DetailedCompletion { text: string; model: string | null; request_id?: string; usage?: CompletionUsage; stop?: string }
 
 // Only fields the provider actually reported are present - missing stays absent,
 // never a fabricated zero.
@@ -130,6 +131,7 @@ export const anthropicProvider: Provider = {
       model: typeof json.model === 'string' ? json.model : null,
       request_id: typeof json.id === 'string' ? json.id : undefined,
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(u.cache_read_input_tokens), cache_creation_input_tokens: num(u.cache_creation_input_tokens) }),
+      ...(typeof json.stop_reason === 'string' ? { stop: json.stop_reason } : {}),
     }
     await settleScanSpend(hold, out)
     return out
@@ -167,6 +169,7 @@ export const openaiProvider: Provider = {
       model: typeof json.model === 'string' ? json.model : null,
       request_id: typeof json.id === 'string' ? json.id : undefined,
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(det.cached_tokens) }),
+      ...(json.status === 'incomplete' && typeof (json.incomplete_details as Obj | null)?.reason === 'string' ? { stop: (json.incomplete_details as Obj).reason as string } : {}),
     }
     await settleScanSpend(hold, out)
     return out
