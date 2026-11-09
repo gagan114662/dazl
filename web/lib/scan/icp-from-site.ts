@@ -93,7 +93,7 @@ From what this company sells, reply with ONLY one JSON object:
   "who": string[] (roles or kinds of buyer, up to 4), "industries": string[] (buyer industries, up to 4, [] if the site does not say),
   "sizes": string[] (buyer company sizes, up to 3, [] if unclear), "where": string[] (geographies, up to 3, [] if worldwide or unclear),
   "signals": string[] (public events that would show such a buyer needs them now, up to 5), "exclude": string[] (buyers to skip, up to 3, [] if none)},
- "offers": [{"id": "o1", "name": string}] (one per distinct product or service),
+ "offers": [{"id": "o1", "name": string, "url"?: one of the PAGE urls above, "quote"?: an EXACT sentence copied from that page, "inferred"?: true|false}] (one per distinct product or service; include url and quote only when that page states the offer in its own words - never a menu label, a comparison, a refusal, or a customer's words),
  "items": [{"offer": "o1", "kind": "persona|industry|size|location|disqualifier|pain", "text": string, "url": one of the PAGE urls above, "quote": an EXACT phrase copied from that page, "inferred": true|false}]}
 Rules: use every page, not just the first. Only what the pages support, no invented facts, no hype words. "quote" must be copied exactly from the page it cites; if the pages do not state a buyer, headcount or place, either set inferred=true (a hypothesis) or leave it out. Never invent a size or a location.`
 

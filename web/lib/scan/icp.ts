@@ -1,7 +1,7 @@
 import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
-import { quoteSupports } from './claim-quote.ts'
+import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier, MAX_RESEARCH_QUOTE } from './claim-quote.ts'
 
 // An ideal customer profile (ICP) inferred from a free-text "what are you looking for".
 // Everything is plain strings with hard caps, so it is safe to store, show, edit and
@@ -40,7 +40,9 @@ export interface IcpResearch { v: 1; site: string; offers: { i: string; n: strin
 // NEVER truncated to fit - a profile that cannot fit whole is a typed overflow the caller must surface. Only the
 // system-generated research block is fitted to the remaining room (deterministic priority, whole hypotheses only).
 export const ICP_JSON_BUDGET = 3900
-const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: 140, question: 120, answer: 100 }
+// quote shares the ONE quote contract (claim-quote.ts MAX_RESEARCH_QUOTE): construction, storage and ingress all
+// use the same cap, so a citation that sourced at research time survives the store/reload round trip unchanged.
+const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: MAX_RESEARCH_QUOTE, question: 120, answer: 100 }
 const RKINDS = new Set(['offer', 'persona', 'industry', 'size', 'location', 'disqualifier', 'pain'])
 const RSTATUS = new Set(['sourced', 'hypothesis', 'reviewed', 'rejected'])
 
@@ -62,12 +64,21 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
     const t = clean(h?.t, RCAPS.text)
     if (!i || !ids.has(o) || !RKINDS.has(k) || !RSTATUS.has(st) || !t) continue
     const u = typeof h.u === 'string' && /^https:\/\//.test(h.u) ? h.u.slice(0, RCAPS.url) : null
-    const q = typeof h.q === 'string' ? clean(h.q, RCAPS.quote) : null
+    // #872: an over-cap stored quote is REJECTED, never sliced - a slice can cut off the negation or attribution
+    // that changes the claim. The strict validators below run on the full stored quote, before any truncation.
+    const q = typeof h.q === 'string' ? (x => x.length <= RCAPS.quote ? x : null)(h.q.replace(/\s+/g, ' ').trim()) : null
     const at = typeof h.at === 'number' && Number.isInteger(h.at) && h.at > 0 ? h.at : null
     // A block arriving from a client or the store is re-checked: 'sourced' needs its URL, fetch time and a quote that
     // carries the claim (claim-quote.ts). Otherwise a persona/industry/pain falls back to an unreviewed hypothesis with
     // no evidence, and a headcount or place is dropped (unknown is never persisted as a statement).
-    if (st === 'sourced' && !(u && at && q && quoteSupports(k, t, q))) {
+    // #872: the ingress re-check uses the same strict binding as buildResearch - a stored or client-sent 'sourced'
+    // offer or disqualifier must pass the same ownership/polarity/exclusion guards, or it honestly downgrades.
+    // An offer row must also be ABOUT the canonical offer it references: the stored text is validated against the
+    // offer's current canonical name, so a row claiming one offer under another's id cannot stay sourced.
+    const offerName = offers.find(x => x.i === o)?.n ?? ''
+    const canonical = !!offerName && t.trim().toLowerCase() === offerName.trim().toLowerCase()
+    const backed = k === 'offer' ? (canonical && quoteBacksOffer(offerName, q ?? '', offers.map(x => x.n))) : k === 'disqualifier' ? (offerName ? quoteBacksDisqualifier(offerName, t, q ?? '', offers.map(x => x.n)) : false) : quoteSupports(k, t, q ?? '')
+    if (st === 'sourced' && !(u && at && q && backed)) {
       if (k === 'size' || k === 'location') continue
       hyps.push({ i, o, k: k as ResearchedHyp['k'], t, s: 'hypothesis', u: null, q: null, at: null }); continue
     }
