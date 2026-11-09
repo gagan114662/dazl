@@ -62,7 +62,9 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
     const t = clean(h?.t, RCAPS.text)
     if (!i || !ids.has(o) || !RKINDS.has(k) || !RSTATUS.has(st) || !t) continue
     const u = typeof h.u === 'string' && /^https:\/\//.test(h.u) ? h.u.slice(0, RCAPS.url) : null
-    const q = typeof h.q === 'string' ? clean(h.q, RCAPS.quote) : null
+    // #872: an over-cap stored quote is REJECTED, never sliced - a slice can cut off the negation or attribution
+    // that changes the claim. The strict validators below run on the full stored quote, before any truncation.
+    const q = typeof h.q === 'string' ? (x => x.length <= RCAPS.quote ? x : null)(h.q.replace(/\s+/g, ' ').trim()) : null
     const at = typeof h.at === 'number' && Number.isInteger(h.at) && h.at > 0 ? h.at : null
     // A block arriving from a client or the store is re-checked: 'sourced' needs its URL, fetch time and a quote that
     // carries the claim (claim-quote.ts). Otherwise a persona/industry/pain falls back to an unreviewed hypothesis with

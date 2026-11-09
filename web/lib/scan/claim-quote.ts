@@ -71,13 +71,24 @@ function offerOwnership(name: string, quote: string, otherNames: string[]): bool
   if (nameSubject(name, qtoks) < 0) return false
   return !otherNames.some(o => norm(o) !== norm(name) && nameSubject(o, qtoks) >= 0)
 }
-// A quote's sentences: the grammar binds name, predicate, polarity and segment within ONE sentence, never across.
-const sentences = (s: string) => s.split(/[.!?]+|\n+/).map(x => x.trim()).filter(Boolean)
+// A quote's sentences WITH their terminal punctuation: the grammar binds name, predicate, polarity and segment
+// within ONE sentence, and only a DECLARATIVE sentence ('.' or, at quote level, no terminal) can source a claim -
+// never a question or an exclamation.
+const sentences = (s: string): { body: string; term: string }[] => (s.replace(/\n+/g, ' ').match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t.slice(-1) } }).filter(x => x.body)
 // Positive first-party predicates. A verb not in this list is not a claim; a claim not recognized is a hypothesis.
 const POS_VERB = new Set('runs lets helps gives offers provides includes costs starts makes automates sends fills saves supports handles delivers simplifies serves'.split(' '))
-// After a copula, only a first-party possessive or a positive availability adjective counts - never a bare noun
-// phrase ("is a product sold by another vendor").
-const COPULA_COMPLEMENT = new Set(['our', 'available', 'built', 'designed', 'made', 'priced', 'free', 'live', 'ready'])
+// After a copula, only an explicit FIRST-PARTY possessive counts ("X is our payroll product"). A bare
+// "available"/"designed" is NOT ownership ("available exclusively from another vendor", "designed and sold by
+// our competitor", "available if we ever build it") and stays a hypothesis.
+const COPULA_COMPLEMENT = new Set(['our'])
+// Hypothetical or conditional modality after the name ("available if we ever build it", "would run payroll")
+// is not a claim of fact: the sentence is unrecognized and fails closed.
+const CONDITIONAL = new Set(['if', 'would', 'could', 'might', 'may', 'should'])
+// Reported speech: the citation is itself quoted material or carries a reporting clause ("..." says Harbor
+// Dental / according to G2) - someone else's words about the offer, never the seller's authored page copy.
+const REPORTED = /["“”]|\b(?:says|said|writes|wrote|according to)\s+\p{Lu}/u
+// A testimonial/review announcement: what follows is a customer's story, not the seller's own claim.
+const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|(?:customer|client|user)s?\s+reviews?|what\s+(?:our\s+)?(?:customers?|clients?|users?)\s+say)\b/i
 // Sentence-openers that keep the name first-party. Anything else before the name embeds it in another clause.
 const OPENERS = new Set(['', 'the', 'our', 'our offer is', 'our product is', 'our flagship', 'we built', 'we make', 'we offer', 'we sell', 'we provide', 'we ship', 'introducing', 'meet'])
 // Negation: a bare negator, or the two tokens norm() makes of a contraction ("don't" -> "don t"). 'without' is
@@ -100,18 +111,21 @@ function offerSentence(name: string, stoks: string[]): OfferVerdict {
     positive = COPULA_COMPLEMENT.has(rest[1])
   }
   if (!positive) return 'none'
-  for (let i = 1; i < rest.length; i++) if (isNeg(rest, i)) return 'negative'   // polarity holds across the sentence
+  for (let i = 1; i < rest.length; i++) {
+    if (isNeg(rest, i)) return 'negative'   // polarity holds across the sentence
+    if (CONDITIONAL.has(rest[i])) return 'none'   // hypothetical, not a claim of fact
+  }
   return 'positive'
 }
 export function quoteBacksOffer(name: string, quote: string, otherNames: string[] = []): boolean {
   if (!name || !quote) return false
   if (!offerOwnership(name, quote, otherNames)) return false
-  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote)) return false
+  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote)) return false
   let positive = false
   for (const s of sentences(quote)) {
-    const v = offerSentence(name, tokens(s))
+    const v = offerSentence(name, tokens(s.body))
     if (v === 'negative') return false
-    if (v === 'positive') positive = true
+    if (v === 'positive' && (s.term === '.' || s.term === '')) positive = true
   }
   return positive
 }
@@ -131,12 +145,12 @@ const segEq = (a: string[], b: string[]) => a.length === b.length && a.every((w,
 export function quoteBacksDisqualifier(offerName: string, text: string, quote: string, otherNames: string[] = []): boolean {
   if (!offerName || !text || !quote) return false
   if (!offerOwnership(offerName, quote, otherNames)) return false
-  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote)) return false
+  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote)) return false
   const claim = tokens(text)
   if (!claim.length) return false
   let excluded = false, included = false
   for (const s of sentences(quote)) {
-    const stoks = tokens(s)
+    const stoks = tokens(s.body)
     const at = nameSubject(offerName, stoks)
     if (at < 0 || !OPENERS.has(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
     const rest = stoks.slice(at + tokens(offerName).length)
@@ -147,7 +161,7 @@ export function quoteBacksDisqualifier(offerName: string, text: string, quote: s
     }
     for (const p of NEG_AVAIL) {
       const pt = p.split(' ')
-      if (pt.every((w, i) => rest[i] === w) && segEq(objectAfter(pt, 0), claim)) excluded = true
+      if (pt.every((w, i) => rest[i] === w) && segEq(objectAfter(pt, 0), claim) && (s.term === '.' || s.term === '')) excluded = true
     }
     // A positive availability for the claimed segment - even in a later elided-subject clause - vetoes the exclusion.
     for (const p of POS_AVAIL) {

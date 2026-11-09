@@ -119,6 +119,16 @@ test('an explicit exclusion bound to the same offer and the exact claimed segmen
   assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
 })
 
+test('a disqualifier exclusion written as a QUESTION never sources', () => {
+  unsourced(disq('clinics with over 50 staff', 'Acme Payroll is not available for clinics with over 50 staff?'))
+})
+
+test('an over-cap disqualifier quote is rejected, never sliced', () => {
+  const q = 'Acme Payroll is not available for clinics with over 50 staff ' + 'under any current plan or pilot program '.repeat(8) + 'today.'
+  assert.ok(q.length > 300, 'fixture exceeds the quote cap')
+  unsourced(disq('clinics with over 50 staff', q))
+})
+
 test('a disqualifier whose quote does not carry the claim stays a hypothesis with no citation', () => {
   const r = run(OFFERS, [
     { offer: 'o1', kind: 'disqualifier', text: 'solo practitioners', url: BOOKING, quote: BOOKING_QUOTE, inferred: false },
@@ -147,6 +157,14 @@ const REPRO: [string, string][] = [
   ['a reviewer writing about the offer', 'A reviewer wrote that Acme Payroll runs payroll for clinics.'],
   ['a might-help-one-day statement', 'Acme Payroll might help clinics one day but is not available today.'],
   ['a no-longer-sold statement', 'Acme Payroll is no longer sold by anyone.'],
+  // Round 3: bare availability/design is not ownership; reported speech and context are not the seller's claim;
+  // hypothetical conditionals are not facts.
+  ['available exclusively from another vendor', 'Acme Payroll is available exclusively from another vendor.'],
+  ['designed and sold by our competitor', 'Acme Payroll is designed and sold by our competitor.'],
+  ['a quoted testimonial with a trailing attribution', '"Acme Payroll runs payroll for clinics." says Harbor Dental.'],
+  ['a testimonial announcement preceding the sentence', 'A customer testimonial follows. Acme Payroll runs payroll for clinics.'],
+  ['available only hypothetically', 'Acme Payroll is available if we ever build it.'],
+  ['a conditional offer claim', 'Acme Payroll would run payroll if we ever launch it.'],
 ]
 for (const [label, q] of REPRO) {
   test(`repro: ${label} never sources the offer`, () => {
@@ -180,6 +198,20 @@ test("a customer's attributed testimonial never sources the seller's offer", () 
 
 test('a bare headline with no own-offered predicate stays a hypothesis', () => {
   unsourced(offerHyp(oneOffer('Acme Payroll', 'Acme Payroll'), 'Acme Payroll'))
+})
+
+test('an over-cap quote is REJECTED, never sliced (a slice can cut off the negation)', () => {
+  const q = 'Acme Payroll runs payroll for clinics ' + 'using integrated scheduling and accounting '.repeat(9) + 'but we do not offer it.'
+  assert.ok(q.length > 300, 'fixture exceeds the quote cap')
+  unsourced(offerHyp(oneOffer(q, q), 'Acme Payroll'))
+})
+
+test('a quote that is a fragment of a QUESTIONED page sentence never sources (span + context binding)', () => {
+  unsourced(offerHyp(oneOffer('Acme Payroll runs payroll for clinics', 'Acme Payroll runs payroll for clinics? No, that is a third-party claim we reject.'), 'Acme Payroll'))
+})
+
+test('a quote must equal the complete authored page sentence, not a fragment of a longer one', () => {
+  unsourced(offerHyp(oneOffer('Acme Payroll runs payroll for clinics', 'Acme Payroll runs payroll for clinics using integrated scheduling and accounting.'), 'Acme Payroll'))
 })
 
 test('an offer citing a URL that was never fetched stays a hypothesis', () => {
@@ -242,6 +274,20 @@ test('ingress: a sourced row whose text is not the canonical offer name honestly
   const r = normalizeResearch({ v: 1, site: 'multi.example', offers: [{ i: 'acme-payroll', n: 'Acme Payroll' }], hyps: [{ i: 'acme-payroll:offer', o: 'acme-payroll', k: 'offer', t: 'Other Payroll', s: 'sourced', u: PAYROLL, q: 'Other Payroll runs payroll for clinics.', at: T0 + 2 }], q: null, ans: null })
   assert.ok(r, 'research kept')
   assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].q, r.hyps[0].at], ['hypothesis', null, null, null])
+})
+
+test('ingress: an over-cap stored quote is rejected, never sliced, and honestly downgrades', () => {
+  const q = 'Acme Payroll runs payroll for clinics' + ' with integrated scheduling'.repeat(6)
+  assert.ok(q.length > 140, 'fixture exceeds the stored quote cap')
+  const r = stored(q)
+  assert.ok(r, 'research kept')
+  assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].q, r.hyps[0].at], ['hypothesis', null, null, null])
+})
+
+test('ingress: a stored quote that is a question honestly downgrades', () => {
+  const r = stored('Acme Payroll runs payroll for clinics?')
+  assert.ok(r, 'research kept')
+  assert.deepEqual([r.hyps[0].s, r.hyps[0].u], ['hypothesis', null])
 })
 
 test('ingress: a forged sourced disqualifier without an explicit bound exclusion honestly downgrades', () => {
