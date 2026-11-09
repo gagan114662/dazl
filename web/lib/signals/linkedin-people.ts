@@ -16,6 +16,8 @@
 //   SESSION a transport that reads posts / commenters / reactors (the signed-in session transport) also gets: a DAILY cap (LINKEDIN_ENGAGERS_DAILY_CAP, default 6, atomic, its own
 //           'adv:linkedin:day' key), a per-run cap (LINKEDIN_SESSION_PER_RUN, default 3, never above the hourly cap), and a human pace between its requests
 //           (LINKEDIN_SESSION_GAP_MS, default 20 s plus up to 50% jitter). Its plan per competitor: one post search, then the commenters and the reactors of the first post found.
+//   OWNER   deps.beforeRequest (the scan runner's ownership/deadline check) runs immediately before EVERY reservation: a scan that was cancelled, reaped or timed out
+//           while an earlier request was in flight starts no new LinkedIn request. Its throw is recorded ('scan_stopped') and re-thrown to the runner.
 //   OUTPUT  only public profile URLs (https://www.linkedin.com/in/<slug>), deduplicated across queries and within a result; bounded text; leads stay in the review lane
 //           (login_required) and are never emailed automatically.
 // Db layer (SQLite + Postgres).
@@ -83,7 +85,7 @@ async function gateStatus(db: Db, tenantId: string, env: Record<string, string |
   return null
 }
 
-export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: string, icp: { who: string[]; where: string[]; industries: string[] }, deps: { transport?: LinkedInTransport; env?: Record<string, string | undefined>; now?: number; deadlineMs?: number; sleep?: (ms: number) => Promise<void>; onStop?: (status: string) => void } = {}): Promise<LinkedInItem[]> {
+export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: string, icp: { who: string[]; where: string[]; industries: string[] }, deps: { transport?: LinkedInTransport; env?: Record<string, string | undefined>; now?: number; deadlineMs?: number; sleep?: (ms: number) => Promise<void>; onStop?: (status: string) => void; beforeRequest?: () => void | Promise<void> } = {}): Promise<LinkedInItem[]> {
   const envNow = () => deps.env ?? process.env, now = deps.now ?? Math.floor(Date.now() / 1000), deadlineMs = deps.deadlineMs ?? DEADLINE_MS
   const skip = async (status: string) => { await writeAudit(db, { tenantId, connector: PEOPLE_CONNECTOR, jobId, lookup: 'linkedin people', status, results: 0 }); return [] as LinkedInItem[] }
   const g0 = await gateStatus(db, tenantId, envNow()); if (g0) return skip(g0)
@@ -102,6 +104,8 @@ export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: str
     if (session && made > 0) await sleep(lim.gapMs + Math.floor(Math.random() * lim.gapMs * 0.5))   // a human pace between session requests
     // Every gate again, immediately before THIS request: a switch flipped mid-run stops the run.
     const g = await gateStatus(db, tenantId, envNow()); if (g) { await skip(g); break }
+    // The scan still owns this run (not cancelled, reaped or timed out): checked before the reservation, so a stopped scan neither spends budget nor calls LinkedIn.
+    if (deps.beforeRequest) { try { await deps.beforeRequest() } catch (e) { try { await skip('scan_stopped') } catch { /* the audit write failed: the runner still sees the stop */ } throw e } }
     if (!(await reserveRequest(db, tenantId, ID, MAX_REQUESTS_PER_HOUR, 'people', now))) { if (made === 0) await skip('rate_limited'); else await skip('rate_limited_mid_run'); break }
     // The daily cap is reserved AFTER the hourly one: a refused day slot burns the hour slot (never undercounts), and the run stops visibly.
     if (session && !(await reserveRequest(db, tenantId, DAY_CONNECTOR, lim.daily, 'people', now, 86_400))) { await skip('daily_cap'); deps.onStop?.('daily_cap'); break }

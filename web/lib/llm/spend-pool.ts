@@ -200,6 +200,10 @@ export function ownerSetting(name: string, userId: string, env: Record<string, s
   }
   return null
 }
+// The typed refusal reason of the owner pool's guard (PooledGuard.label): a reservation refused by the shared
+// day/month pool is NOT a refusal by the run's own budget, and the report's stop provenance must say which.
+export const OWNER_POOL_LIMIT_REASON = 'owner_pool_limit'
+
 export function ownerLimits(userId: string, env: Record<string, string | undefined> = process.env): PoolLimits | null {
   const day = ownerSetting('DAZL_RUN_MAX_USD_USERS', userId, env), month = ownerSetting('DAZL_OWNER_MONTH_MAX_USD_USERS', userId, env)
   return day === null && month === null ? null : { day, month }

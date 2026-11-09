@@ -8,5 +8,7 @@ Description=dazl staging deploy from main
 Type=oneshot
 Environment=PROD_ENV_FILE=/CHANGE-ME/path/to/production/env
 Environment=MIN_FREE_BYTES=2147483648
-ExecStart=/srv/dazl-staging/deploy.sh
+# Installed root-owned in /usr/local/lib/dazl-staging with recovery_point.py beside it (docs/STAGING.md), never in the
+# service account's home: that account could otherwise replace a script root runs.
+ExecStart=/usr/local/lib/dazl-staging/deploy.sh
 Nice=10

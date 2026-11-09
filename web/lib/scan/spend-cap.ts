@@ -283,6 +283,9 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
           return null
         }
         // Why it did not fit, read under the same lock: another tenant's (or no) job, a lost attempt, a finished job, or the cap.
+        // 'over_cap' means the scan's RECORDED cap refused: that cap is min(fixed cap, the run's own max_usd, earlier
+        // attempts' persisted floor), and which of those was binding is NOT recoverable here (an earlier lower operator
+        // setting leaves the same floor as a run budget), so the reason names no origin (#1006).
         const j = yield* t.get<{ attempts: number | string; status: string }>('SELECT attempts, status FROM scan_jobs WHERE id = ? AND user_id = ?', [ctx.jobId, ctx.tenantId])
         why = !j ? 'scan_not_found' : Number(j.attempts) !== attempt ? 'ownership_lost' : j.status !== 'running' && j.status !== 'done' ? 'scan_not_active' : 'over_cap'
       }

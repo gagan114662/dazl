@@ -9,14 +9,15 @@ import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
-import { contactsFromEnrichments, PEOPLE_SOURCE, type RankedPerson } from '@/lib/people/rank'
+import { contactsFromEnrichments, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
+import { identityOf } from '@/lib/scan/opportunity'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
 import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
-import { coreSources, socialLabel, socialSources, usableLabels, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
+import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
@@ -117,15 +118,17 @@ function extraLabels(body: Record<string, unknown> | null): string[] {
 // website reads when no lead qualifies), so the entry names what a scan here CAN use. Without an AI key no scan can
 // start at all, so that prerequisite comes first. Opt-in social sources are never listed; unavailable core and social
 // sources are listed with their reason, and a fix link only where the user can fix it.
-function SourceAvailability({ core, social }: { core: SourceRow[] | null; social: SourceRow[] }) {
+function SourceAvailability({ core, social, keyState }: { core: SourceRow[] | null; social: SourceRow[]; keyState: KeyState | null }) {
   if (!core) return <p className="text-xs text-[#555] mt-2" data-testid="source-availability">Could not check which sources are available. Reload to retry.</p>
   const off = [...core, ...social].filter(r => !r.usable)
   const on = usableLabels(core)
+  const analysis = analysisPrerequisite(keyState)
+  const enrichment = enrichmentLabels(core)
   return (
     <div className="text-xs text-[#555] mt-2 space-y-1" data-testid="source-availability">
-      <p data-testid="sources-usable">{!core.find(r => r.id === 'research')?.usable
-        ? <>A scan cannot start until you add an AI key{on ? <>. Then it can use: {on}</> : ''}.</>
-        : on ? <>Sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No source is available for a scan yet.</>}</p>
+      {analysis && !analysis.usable && <p data-testid="analysis-prerequisite">A scan needs an AI key for analysis and extraction ({analysis.reason}). <a className="underline text-[#111]" href={analysis.fix!.href}>Add key</a>. Adding a key does not enable discovery sources.</p>}
+      <p data-testid="sources-usable">{on ? <>Discovery sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No usable primary discovery source is available on this server. Optional sources can be chosen under More sources; an AI key does not enable web research.</>}</p>
+      {enrichment && <p data-testid="sources-enrichment">After discovery: {enrichment}. This enriches leads already found; it does not discover leads.</p>}
       {off.length > 0 && <p data-testid="sources-unavailable">Not available: {off.map((r, i) => <span key={r.id} data-testid={`source-off-${r.id}`}>{i > 0 && '; '}{r.label} ({r.reason}{r.fix && <>, <a className="underline text-[#111]" href={r.fix.href}>{r.fix.label}</a></>})</span>)}.</p>}
     </div>
   )
@@ -175,6 +178,7 @@ export default function LeadsClient() {
   const [jobError, setJobError] = useState('')
   const [enrichInterrupted, setEnrichInterrupted] = useState(false) // enrichment started but never ended (crash/restart): contacts and fit may be incomplete
   const [emptyReason, setEmptyReason] = useState<string | null>(null) // why a scan that read pages still extracted nothing (counts only)
+  const [stopRefusalReason, setStopRefusalReason] = useState<string | null>(null) // the recorded stop provenance; null = no reason kept (legacy), so budget words stay neutral
   const [statusError, setStatusError] = useState<'not_found' | 'unavailable' | null>(null)
   const statusFails = useRef(0)
   // Polling resumes a pending scan (a retry or a job reaped after a restart is only picked up by the status poll), so an adopted job is polled normally. ?passive=1 on the URL is the explicit no-kick QA mode: it never starts the runner, but a stale job may still be reaped to pending (not read-only).
@@ -360,7 +364,7 @@ export default function LeadsClient() {
   async function preview() {
     setError(''); setDraft(null); setBusy(true)
     try {
-      const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }) })
+      const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(startIcp ? { prior_icp: startIcp } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error || 'Could not build the profile')); return }
       await startOffer(query)
@@ -442,33 +446,33 @@ export default function LeadsClient() {
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
   // The price estimate shown before a run starts; the run begins only from its Confirm button (or is blocked with what to change).
-  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; withIcp: Icp | null; offer?: string } | null>(null)
-  async function run(withIcp: Icp | null, offer?: string) {
+  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; withIcp: Icp | null; offer?: string; reviewed?: boolean } | null>(null)
+  async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean) {
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
       // No estimate, no run: a paid scan is never started without showing what it will use.
       if (!er.ok || !ej.estimate) { setError(ej.detail ? `The spend limit was not accepted: ${String(ej.detail).slice(0, 200)}` : 'Could not get a price estimate, so nothing was started. Try again.'); return }
-      setPendingEst({ est: ej.estimate as RunEstimate, withIcp, offer })
+      setPendingEst({ est: ej.estimate as RunEstimate, withIcp, offer, reviewed })
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
       setStarting(false)
     }
   }
-  async function confirmRun(ack: string, withIcp: Icp | null, offer?: string) {
+  async function confirmRun(ack: string, withIcp: Icp | null, offer?: string, reviewed?: boolean) {
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
-      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer }); return }
-      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === reuseIcp }); return }
+      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer, reviewed }); return }
+      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === priorIcp }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
@@ -497,7 +501,7 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
-      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
+      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
@@ -618,14 +622,28 @@ export default function LeadsClient() {
   // One-sentence play suggestions from the saved business details (examples when there are none). Filling the box is all
   // a click does; the scan starts only from the existing buttons.
   const [plays, setPlays] = useState<PlaySuggestions | null>(null)
-  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => setPlays(playSuggestions(p))) }, [])
+  // The saved business buyer profile (Home > Build, reviewed there): carried whole - with its research decisions,
+  // rejections and holds - into a first scan, so the first run never re-infers what the person already reviewed.
+  const [savedBuyer, setSavedBuyer] = useState<Icp | null>(null)
+  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => { setPlays(playSuggestions(p)); const b = p && typeof p === 'object' ? (p as { buyer?: unknown }).buyer : null; if (b && typeof b === 'object' && typeof (b as { summary?: unknown }).summary === 'string') setSavedBuyer(b as Icp) }) }, [])
 
   const core = coreSources(serverSrc, keyState)
 
   // Repeating a search: when the sentence is the one a profile YOU reviewed was used for, Find leads runs with that
   // reviewed profile instead of letting the server work out a new one (which silently discarded the review). A changed
   // sentence, or a profile dazl only inferred, still gets a fresh profile; Review profile first always rebuilds it.
-  const reuseIcp = icp && icp.source === 'user' && icp.query && icp.query.trim() === query.trim() ? icp.icp : null
+  // A restored play profile ('user' or the durable raw 'carried'): repeating its sentence OR changing the sentence
+  // carries it whole - statuses, dismissals and holds intact - never a silent discard and never a fresh review.
+  // (Legacy icp_inferred = 0 is not review proof either: an ordinary repeat stays raw, statuses preserved.)
+  const priorIcp = icp && (icp.source === 'user' || icp.source === 'carried') ? icp.icp : null
+  // A first scan (no earlier play's profile to carry): run with the saved business profile instead of letting the
+  // server work out a new one, which silently discarded the review. The estimate step shows it before anything starts;
+  // Review profile first still builds a fresh one from the sentence.
+  const startIcp = priorIcp ?? (!icp && savedBuyer ? savedBuyer : null)
+  // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
+  // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
+  const startReviewed = startIcp ? false : undefined
+  const businessIcp = startIcp
 
   const input = 'field'
   const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
@@ -646,8 +664,8 @@ export default function LeadsClient() {
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst && <EstimateConfirm est={pendingEst.est} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer)} onCancel={() => setPendingEst(null)} />}
-      <form onSubmit={e => { e.preventDefault(); void run(reuseIcp) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
+      {pendingEst && <EstimateConfirm est={pendingEst.est} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
+      <form onSubmit={e => { e.preventDefault(); void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
@@ -666,8 +684,8 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
-        {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => { setOfferConflict(null); void run(reuseIcp, o) }} /></div>}
-        {reuseIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="reuse-profile">Find leads reuses this stored profile (approval is not recorded here): {reuseIcp.summary.replace(/[.\s]+$/, '')}. Change the sentence, or use Review profile first, to build a new one.</p>}
+        {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => { setOfferConflict(null); void run(startIcp, o, startReviewed) }} /></div>}
+        {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile">Find leads uses the saved profile as it is: {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Review it in Build, or use Review profile first to build a new one from your sentence.</p>}
         </div>
       </form>
       {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}
@@ -676,7 +694,7 @@ export default function LeadsClient() {
       <details className={`drawer card ${jobId ? 'order-last' : 'mb-6'}`} data-testid="play-settings">
         <summary><span className="flex items-center gap-2"><Icon name="sliders" className="w-4 h-4" />Settings for this play</span><span className="ml-auto text-xs font-normal text-[var(--ink-3)] hidden sm:inline">Sources, imports, profile, warm paths</span></summary>
         <div className="px-5 pb-5 space-y-4 text-sm border-t border-[var(--line)] pt-4">
-          {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} />}
+          {!jobId && <SourceAvailability core={core} social={socialSources(advanced)} keyState={keyState} />}
           <details className="mb-4 text-sm" data-testid="more-sources">
             <summary className="cursor-pointer text-[#555]">More sources</summary>
             <div className="mt-3 space-y-4 border-l border-black/10 pl-4">
@@ -793,7 +811,7 @@ export default function LeadsClient() {
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} />
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400">{draftNote}</p>
-            <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
@@ -818,7 +836,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={n => setOfferText(n)} />}
-          <button onClick={() => run(draft, offerText)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
@@ -835,7 +853,7 @@ export default function LeadsClient() {
           )
         })()}
         <details className="text-sm text-gray-400 mb-4">
-          <summary className="cursor-pointer">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
+          <summary className="cursor-pointer min-h-11 flex items-center">Profile used: {icp.icp.summary} <span className="text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
           <ul className="mt-2 ml-4 list-disc text-xs">
             {icp.icp.who.length > 0 && <li>Who: {icp.icp.who.join('; ')}</li>}
             {icp.icp.where.length > 0 && <li>Where: {icp.icp.where.join('; ')}</li>}
@@ -873,7 +891,7 @@ export default function LeadsClient() {
               <span className="font-semibold">{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</span>
               <InfoTip label="About this scan">
                 <span className="block">{leadsSoFar > 0 ? `${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'} so far` : status === 'pending' ? 'Not started' : 'Running'}{status === 'pending' ? (createdAt ? ` - queued ${Math.max(0, Math.floor((now - createdAt) / 60))} min ago` : '') : startedAt ? ` - running ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}{attempt ? ` - attempt ${attempt[0]} of ${attempt[1]}` : ''}</span>
-                <span className="block mt-1" data-testid="run-sources">{core ? `Sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'none'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.` : 'Could not check which sources this scan can use.'}</span>
+                <span className="block mt-1" data-testid="run-sources">{core ? `Discovery sources this scan can use: ${[usableLabels(core), ...(runExtras ?? [])].filter(Boolean).join(', ') || 'no usable primary discovery source'}${runExtras === null ? ' (plus any extra sources chosen when it started)' : ''}.${enrichmentLabels(core) ? ` After discovery: ${enrichmentLabels(core)} (enrichment only).` : ''}` : 'Could not check which sources this scan can use.'}</span>
                 <span className="block mt-1">A scan that stops responding is retried automatically, up to {attempt?.[1] ?? 3} attempts.</span>
               </InfoTip>
             </div>
@@ -902,7 +920,7 @@ export default function LeadsClient() {
           </div>
         </div>
       )}
-      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'accounting_uncertain' ? 'This run was interrupted while a paid step was in flight. dazl did not run it again automatically because that could bill the same step twice. The step stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'provider_rate_limited' ? 'The AI provider rate-limited a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'provider_rejected' ? 'The AI provider refused a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'accounting_failed' ? 'This run stopped because the cost of one paid step could not be recorded. dazl did not retry it automatically. That step may have been billed, so its worst-case cost stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'budget_stopped' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? (emptyReason ? `${emptyReason} This scan did not count toward your monthly scans.` : 'No candidates were extracted for that search. That does not show that no matching companies exist. Try rephrasing or broadening it - this scan did not count toward your monthly scans.') : jobError === 'key_rejected' ? 'The AI provider rejected the key this scan used. Check or replace your AI key in Settings, then run the scan again.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
+      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4">{jobError === 'accounting_uncertain' ? 'This run was interrupted while a paid step was in flight. dazl did not run it again automatically because that could bill the same step twice. The step stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'provider_rate_limited' ? 'The AI provider rate-limited a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'provider_rejected' ? 'The AI provider refused a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'accounting_failed' ? 'This run stopped because the cost of one paid step could not be recorded. dazl did not retry it automatically. That step may have been billed, so its worst-case cost stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'source_error' ? 'A source this run depends on failed, so the run stopped before it could conclude. This was not a budget stop: raising or removing the budget would not have searched further. Nothing was concluded about whether leads exist. Try again - if it keeps failing, the source may be down.' : jobError === 'no_discovery' ? 'The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope for this run. That is not proof that no matching companies exist. Run again with a broader search or without that scope limit to look further.' : jobError === 'unbounded_fallback_hold' ? 'This run could not conclude from its free sources, and the broader paid research step has no price bound, so the run stopped instead of starting it. Raising or removing the budget would not change this. Nothing was concluded about whether leads exist.' : jobError === 'model_unpriced' ? 'This run stopped because the configured model has no known price, so no paid step was allowed. Raising the budget would not help - check the model setup.' : jobError === 'spend_count_failed' ? 'This run stopped because the cost of a paid step could not be estimated in advance, so the step was not sent. Raising the budget would not help.' : jobError === 'spend_accounting_unavailable' ? 'This run stopped because spend accounting could not be written, so no further paid step was allowed. This is a safety stop, not a budget limit: raising the budget would not help. Nothing was concluded about whether leads exist.' : jobError === 'ownership_lost' ? 'This run stopped because it lost ownership of its own job - another process took it over. This was not a budget stop.' : jobError === 'spend_config_invalid' ? 'This run stopped because its spend configuration was invalid, so no paid step ran. Raising the budget would not help.' : jobError === 'spend_refused' ? 'This run stopped because a paid step was refused before it was sent. Nothing was concluded about whether leads exist.' : jobError === 'budget_stopped' ? (stopRefusalReason === 'owner_pool_limit' ? 'This run stopped because the shared account spending limit (its day/month pool) refused the next paid step before it ran. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. The per-scan budget did not cause it - raising or removing that budget would not have searched further.' : stopRefusalReason === 'over_cap' ? 'This run stopped because its recorded spending cap refused the next paid step before it ran. That is a cap stop, not an empty search: nothing was concluded about whether leads exist. That cap may be the run budget or the service per-scan limit; which one was binding was not kept with this stop.' : stopRefusalReason === 'over_limit' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : stopRefusalReason === 'trial_budget_reached' ? 'This free scan stopped at its spending limit. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. A free scan searches the web only in ways whose cost is fixed in advance.' : 'This run stopped before it could conclude. It was recorded as a budget stop, but its exact reason was not kept: it may not have been a budget limit, so raising or removing the budget may not change anything. Nothing was concluded about whether leads exist.') : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? (emptyReason ? `${emptyReason} This scan did not count toward your monthly scans.` : 'No candidates were extracted for that search. That does not show that no matching companies exist. Try rephrasing or broadening it - this scan did not count toward your monthly scans.') : jobError === 'key_rejected' ? 'The AI provider rejected the key this scan used. Check or replace your AI key in Settings, then run the scan again.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
       {jobId && statusError && (
         <p className="text-gray-400 text-sm mb-4">{statusError === 'not_found'
           ? <>That scan was not found in this account. <a className="underline text-[#111]" href="/app/leads">View your past scans</a>.</>
@@ -1077,7 +1095,7 @@ export default function LeadsClient() {
                 </div>}
                 <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
                 {c.timing && <p className="text-xs text-[var(--ink-2)] mt-1" data-testid="card-timing">{c.timing}</p>}
-                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)]" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
+                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
@@ -1085,7 +1103,7 @@ export default function LeadsClient() {
               </div>
             })()}
             <details className="mt-2 text-sm">
-              <summary className="text-xs text-[#555] cursor-pointer">Details</summary>
+              <summary className="text-xs text-[#555] cursor-pointer min-h-11 flex items-center">Details</summary>
               <div className="mt-2">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason === 'policy_stop' ? 'stopped by policy' : l.sequence.stop_reason})` : ''}</p>}
             {!l.quarantined_at && <p className="text-xs mb-1"><button className="underline text-[#555]" onClick={() => quarantine(l.id)}>Quarantine (wrong company or contacts)</button></p>}
@@ -1108,13 +1126,14 @@ export default function LeadsClient() {
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
             {l.enrichments && l.enrichments.some(e => e.kind === 'contact' || e.kind === 'person') && (() => {
-              const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
+              // #781: a crawled person is verified current only on the lead's established / user-confirmed website (identityOf)
+              const people = contactsFromEnrichments(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', Date.now(), identityOf({ id: l.id, contact: l.contact }, l.enrichments))
               // #383 criterion 4: two sections, each ordered by title match (lib/people/currency.ts has the owner's definition).
               const { verified, searchOnly } = splitByCurrency(people)
               const row = (p: RankedPerson) => (
                 <div key={p.name + (p.title ?? '')} className="text-gray-400">
                   <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
-                  <span className="text-gray-500">via {PEOPLE_SOURCE[p.connector] ?? p.connector}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && p.currency === 'verified_current' ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
+                  <span className="text-gray-500">via {peopleSourceText(p)}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && (p.currency === 'verified_current' || p.verified.reason) ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
                   {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
                   {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                 </div>
@@ -1136,7 +1155,7 @@ export default function LeadsClient() {
                 {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review' && e.kind !== 'domain_check' && e.kind !== 'timing_proof' && e.kind !== 'tech_scan').map(e => (
                   <div key={e.kind + e.value} className="text-gray-400">
                     {e.kind === 'hiring' && <div className="text-[#555]">{e.label?.startsWith('Requested role:') ? `Hiring for ${(e.value.includes(' - posted ') ? e.value.slice(0, e.value.lastIndexOf(' - posted ')) : e.value).replace(/^Open role on its careers page: /, '')}. This may relate to your offer; buying need isn't verified.` : 'Hiring activity only. A requested-role match and buying need are not verified.'}</div>}
-                    <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.connector === 'first_party' ? fpTypeLabel(e.value) : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.kind === 'tech_change' ? 'a change between dated checks of the same company web page' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : e.connector === 'first_party' ? `${fpTypeLabel(e.value)} recorded by your own site, consent recorded (account-level unless submitted by the person)` : e.connector === 'scan:targeting' ? 'a condition from your request, checked only on this lead\'s verified sources (unknown is not false)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, {e.kind === 'hiring' && !e.value.includes(' - posted ') && !e.value.includes('sales/GTM role') ? `checked ${e.source_date}; original posting date unknown` : e.kind === 'hiring' ? `posting date ${e.source_date}` : e.kind === 'hiring-role' ? (e.value.includes(' - posted ') ? `posting date ${e.source_date}` : `checked ${e.source_date}; ${/older than the last/.test(e.label ?? '') ? 'posting date outside the window, not stored' : 'posting date unknown'}`) : `seen ${e.source_date}`}</span>{' '}
+                    <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.connector === 'first_party' ? fpTypeLabel(e.value) : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.kind === 'tech_change' ? 'a change between dated checks of the same company web page' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : e.connector === 'first_party' ? `${fpTypeLabel(e.value)} recorded by your own site, consent recorded (account-level unless submitted by the person)` : e.connector === 'scan:targeting' ? 'a condition from your request, checked only on this lead\'s verified sources (unknown is not false)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, {e.kind === 'hiring' && !e.value.includes(' - posted ') && !e.value.includes('sales/GTM role') ? `checked ${e.source_date}; original posting date unknown` : e.kind === 'hiring' ? `posting date ${e.source_date}` : e.kind === 'hiring-role' ? (e.value.includes(' - posted ') ? `posting date ${e.source_date}` : `checked ${e.source_date}; ${/older than the last/.test(e.label ?? '') ? 'posting date outside the window, not stored' : 'posting date unknown'}`) : e.connector === 'scan:targeting' ? (/, evidence dated \d{4}-\d{2}-\d{2}$/.test(e.value) ? 'dated by its own source' : /, no evidence date$/.test(e.value) ? `checked ${e.source_date}` : `recorded ${e.source_date} (an older check: evidence date not stated)`) : `seen ${e.source_date}`}</span>{' '}
                     <a className="underline text-[#111]" href={e.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
                   </div>
                 ))}

@@ -25,7 +25,9 @@ export async function POST(req: NextRequest) {
   if (body?.action) {
     const id = typeof body.id === 'string' ? body.id : ''
     if (!['pause', 'resume', 'delete'].includes(body.action) || !/^[a-f0-9]{24}$/.test(id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-    if (!(await watchAction(db, user.tenantId, id, body.action))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    const done = await watchAction(db, user.tenantId, id, body.action)
+    if (done === false) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (done !== true) return NextResponse.json({ error: done.error, code: done.code }, { status: 409 })
     return NextResponse.json({ ok: true })
   }
   const query = typeof body?.query === 'string' ? body.query.trim() : ''
@@ -35,7 +37,7 @@ export async function POST(req: NextRequest) {
   const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
   const nb = normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
   if (!nb.ok) return NextResponse.json({ error: 'invalid_budget', detail: nb.error }, { status: 400 })
-  const { watch, error } = await createWatch(db, user.tenantId, query, JSON.stringify(icp), nb.value)
-  if (error) return NextResponse.json({ error }, { status: 400 })
+  const { watch, error, code } = await createWatch(db, user.tenantId, query, JSON.stringify(icp), nb.value)
+  if (error) return NextResponse.json({ error, code }, { status: code ? 409 : 400 })
   return NextResponse.json({ watch })
 }
