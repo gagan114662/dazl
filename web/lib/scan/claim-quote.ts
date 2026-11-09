@@ -35,22 +35,18 @@ export function quoteSupports(kind: string, text: string, quote: string): boolea
   return need.some(has)
 }
 
-// Offer citation binding (#872), a narrow ACCEPTED first-party grammar. Anything unrecognized fails closed to a
-// hypothesis - this is an acceptlist, not a growing denylist. An offer is source-backed only when a sentence of the
-// quote meets ALL of:
-// - the offer's WHOLE name (consecutive full-stem-equal tokens, no prefix bleed - "PayrollPlus" never carries
-//   "Payroll") is sentence-initial or follows a first-party OPENER ("our", "our offer is", "we built") - never
-//   embedded in someone else's clause ("a reviewer wrote that X runs...", "customers say X...", "we cannot offer
-//   X", "our customers buy X from another vendor");
-// - a POSITIVE predicate lands immediately on the name: an acceptlisted verb ("X runs payroll for clinics") or a
-//   copula + acceptlisted first-party complement ("X is our flagship product", "X is available"). A bare copula
-//   with anything else ("X is a product sold exclusively by another vendor") is not a claim;
-// - POLARITY is exact: a negator between the name and the predicate, or anywhere after it in the sentence, voids
-//   the sentence ("X does not run payroll", "X is not our product", "X is no longer sold");
-// - the quote names exactly ONE offer (a sentence naming two offers sources neither), with no comparison,
-//   third-party subject, or testimonial attribution anywhere in it.
-// quoteSupports alone is NOT enough for identity: its one-distinctive-word rule admits a sibling product sharing a
-// brand word and reads neither polarity nor attribution.
+// Offer citation binding (#872): the MINIMAL ATOMIC own-offer contract. Anything that is not one of two exact
+// one-sentence forms fails closed to a hypothesis - this is an acceptlist, not a growing denylist:
+// - the whole quote is exactly ONE declarative sentence whose RAW tokens (case/whitespace normalization ONLY -
+//   no stemming, no punctuation laundering) are FULLY consumed by:
+//     A. ('we offer'|'we sell'|'our product is'|'our offer is') + the offer's EXACT whole name, or
+//     B. the offer's EXACT whole name + ('is'|'are') + ('our'|'our flagship') + one PRODUCT_HEAD word;
+// - any negator anywhere in the sentence voids it; any '?', '!', extra sentence, adjective, tail, or second
+//   terminal period rejects it; the quote names exactly ONE offer, with no comparison, third-party subject,
+//   or testimonial attribution anywhere in it.
+// Richer real claims ("X is our payroll product for clinics") stay visible unreviewed hypotheses - never false
+// promotions. quoteSupports alone is NOT enough for identity: its one-distinctive-word rule admits a sibling
+// product sharing a brand word and reads neither polarity nor attribution.
 const COMPARISON = /\b(?:unlike|versus|vs\.?|compared (?:to|with)|alternative to|instead of|rather than|better than|cheaper than)\b/i
 const ATTRIBUTION = /(?:^|\s)[-–—]\s*\p{Lu}[\p{L}'.-]*(?:\s+\p{Lu}[\p{L}'.-]*){0,3}\s*$/u
 // ONE quote contract (#872): the same cap at construction (seller-research.ts), storage and ingress (icp.ts).
@@ -65,22 +61,11 @@ const tokens = (s: string) => norm(s).split(' ').map(w => w.replace(/\.+$/, ''))
 // The name's tokens, stem-equal and CONSECUTIVE in the quote's tokens; no prefix extension ("payrollplus" != "payroll").
 // Uses a FULL stem - the shared stem() truncates to 7 letters for word-carriage, which would bleed prefixes here.
 const stemFull = (w: string) => w.replace(/(?:ies)$/, 'y').replace(/(?:es|s)$/, '')
-function nameSubject(name: string, qtoks: string[]): number {
-  const nt = tokens(name); if (!nt.length) return -1
-  for (let i = 0; i + nt.length <= qtoks.length; i++) if (nt.every((w, j) => stemFull(qtoks[i + j]) === stemFull(w))) return i
-  return -1
-}
-// Shared ownership core: this offer's whole name is present, no OTHER offer's whole name is - exactly one owner,
-// or the claim cannot be attributed (a sentence naming two offers sources neither).
-function offerOwnership(name: string, quote: string, otherNames: string[]): boolean {
-  const qtoks = tokens(quote)
-  if (nameSubject(name, qtoks) < 0) return false
-  return !otherNames.some(o => norm(o) !== norm(name) && nameSubject(o, qtoks) >= 0)
-}
-// A quote's sentences WITH their terminal punctuation: the grammar binds name, predicate, polarity and segment
-// within ONE sentence, and only a DECLARATIVE sentence ('.' or, at quote level, no terminal) can source a claim -
-// never a question or an exclamation.
-const sentences = (s: string): { body: string; term: string }[] => (s.replace(/\n+/g, ' ').match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t.slice(-1) } }).filter(x => x.body)
+// A quote's sentences WITH their terminal punctuation run: the grammar binds name, predicate, polarity and
+// segment within ONE sentence, and only a DECLARATIVE sentence can source a claim - the terminal must be exactly
+// '.' (or, at quote level, no terminal), never '?', '!', '?.' or '...'. A boundary is terminal punctuation
+// FOLLOWED BY whitespace or end-of-text, so an internal period ("Acme.Payroll") is real identity, not a split.
+const sentences = (s: string): { body: string; term: string }[] => (s.replace(/\n+/g, ' ').match(/.+?[.!?]+(?=\s|$)|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t } }).filter(x => x.body)
 // Minimal ATOMIC own-offer contract (#872, round 8): an offer sources ONLY when the whole quote is exactly ONE
 // complete declarative ownership sentence, fully consumed by one of two exact forms - zero adjectives, zero
 // tails, no other unconsumed sentences (enforced in quoteBacksOffer):
@@ -157,16 +142,22 @@ const CLAUSE_END = new Set(['but', 'however', 'though', 'although', 'yet', 'whil
 const segEq = (a: string[], b: string[]) => a.length === b.length && a.every((w, i) => stemFull(w) === stemFull(b[i]))
 export function quoteBacksDisqualifier(offerName: string, text: string, quote: string, otherNames: string[] = []): boolean {
   if (!offerName || !text || !quote) return false
-  if (!offerOwnership(offerName, quote, otherNames)) return false
+  // RAW exact offer identity (#872, round 10 - reviewed scope): the offer's name matches as RAW
+  // whitespace-delimited tokens, case/whitespace normalization ONLY - no stemming ("Payrolls" != "Payroll"),
+  // no hyphen laundering ("Acme-Payroll" != "Acme Payroll"), internal punctuation is real identity.
+  const qtoks = rawTokens(quote)
+  const nt = rawTokens(offerName)
+  if (rawNameAt(nt, qtoks) < 0) return false
+  if (otherNames.some(o => o.trim().toLowerCase() !== offerName.trim().toLowerCase() && rawNameAt(rawTokens(o), qtoks) >= 0)) return false
   if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote)) return false
   const claim = tokens(text)
   if (!claim.length) return false
   let excluded = false, included = false
   for (const s of sentences(quote)) {
-    const stoks = tokens(s.body)
-    const at = nameSubject(offerName, stoks)
+    const stoks = rawTokens(s.body)
+    const at = rawNameAt(nt, stoks)
     if (at < 0 || !['', 'our', 'our flagship'].includes(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
-    const rest = stoks.slice(at + tokens(offerName).length)
+    const rest = stoks.slice(at + nt.length)
     const objectAfter = (pt: string[], from: number) => {
       const obj = rest.slice(from + pt.length)
       const cut = obj.findIndex(w => CLAUSE_END.has(w))

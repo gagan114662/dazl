@@ -317,6 +317,57 @@ test("the authored terminal run must be exactly '.': '...', '?.', '!.' never sou
   unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, 'We offer Acme Payroll!.'), 'Acme Payroll'))
 })
 
+// Round 10: the DISQUALIFIER identity is RAW exact too (reviewed scope) - no stemming, no hyphen laundering,
+// full declarative terminal - while the exclusion comparator/segment contract is preserved token-for-token.
+test('a disqualifier with a non-declarative terminal run in the QUOTE never sources (round 10)', () => {
+  unsourced(disq('clinics with over 50 staff', 'Acme Payroll is not available for clinics with over 50 staff?.'))
+  unsourced(disq('clinics with over 50 staff', 'Acme Payroll is not available for clinics with over 50 staff!.'))
+  unsourced(disq('clinics with over 50 staff', 'Acme Payroll is not available for clinics with over 50 staff...'))
+})
+
+test('a disqualifier quote must name the offer with RAW exact identity (round 10)', () => {
+  unsourced(disq('clinics with over 50 staff', 'Acme Payrolls is not available for clinics with over 50 staff.'))
+  const r = run([{ id: 'o1', name: 'Acme-Payroll', url: PAYROLL, quote: 'We offer Acme-Payroll.' }], [
+    { offer: 'o1', kind: 'disqualifier', text: 'clinics with over 50 staff', url: PAYROLL, quote: 'Acme Payroll is not available for clinics with over 50 staff.', inferred: false },
+  ], [page(PAYROLL, 'We offer Acme-Payroll. Acme Payroll is not available for clinics with over 50 staff.', T0 + 2)])
+  const o1 = r.offers.find(x => x.name === 'Acme-Payroll')!
+  unsourced(r.hypotheses.find(h => h.offer === o1.id && h.kind === 'disqualifier')!)
+})
+
+test('a disqualifier on an internal-period offer name binds with raw identity (round 10 positive)', () => {
+  const q = 'Acme.Payroll is not available for clinics with over 50 staff.'
+  const r = run([{ id: 'o1', name: 'Acme.Payroll', url: PAYROLL, quote: 'We offer Acme.Payroll.' }], [
+    { offer: 'o1', kind: 'disqualifier', text: 'clinics with over 50 staff', url: PAYROLL, quote: q, inferred: false },
+  ], [page(PAYROLL, `We offer Acme.Payroll. ${q}`, T0 + 2)])
+  const o1 = r.offers.find(x => x.name === 'Acme.Payroll')!
+  const d = r.hypotheses.find(h => h.offer === o1.id && h.kind === 'disqualifier')!
+  assert.deepEqual([d.status, d.url, d.fetched_at], ['sourced', PAYROLL, T0 + 2])
+})
+
+test('ingress: a forged sourced disqualifier with laundered identity or terminal intent honestly downgrades (round 10)', () => {
+  const storedDisq = (name: string, q: string) => normalizeResearch({ v: 1, site: 'multi.example', offers: [{ i: 'o', n: name }], hyps: [{ i: 'h', o: 'o', k: 'disqualifier', t: 'clinics with over 50 staff', s: 'sourced', u: PAYROLL, q, at: T0 + 2 }], q: null, ans: null })
+  for (const [name, q] of [
+    ['Acme Payroll', 'Acme Payroll is not available for clinics with over 50 staff?.'],
+    ['Acme Payroll', 'Acme Payroll is not available for clinics with over 50 staff!.'],
+    ['Acme-Payroll', 'Acme Payroll is not available for clinics with over 50 staff.'],
+    ['Acme Payroll', 'Acme Payrolls is not available for clinics with over 50 staff.'],
+  ] as const) {
+    const r = storedDisq(name, q)
+    assert.ok(r, 'research kept')
+    assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].q, r.hyps[0].at], ['hypothesis', null, null, null], `${name} / ${q}`)
+  }
+})
+
+test('the canonical disqualifier survives the construction -> storage -> ingress round trip (round 10)', () => {
+  const r = run(OFFERS, [
+    { offer: 'o1', kind: 'disqualifier', text: 'clinics with over 50 staff', url: BOOKING, quote: EXCLUSION_QUOTE, inferred: false },
+  ])
+  const n = normalizeResearch(toStored(r))
+  assert.ok(n, 'research kept')
+  const d = n.hyps.find(h => h.k === 'disqualifier')!
+  assert.deepEqual([d.s, d.u, d.q, d.at], ['sourced', BOOKING, EXCLUSION_QUOTE, T0 + 1])
+})
+
 test("a disqualifier against a '?.', '!.' page never sources; the plain '.' page does (round 10)", () => {
   const q = 'Acme Payroll is not available for clinics with over 50 staff'
   const dq = (pageText: string) => {
