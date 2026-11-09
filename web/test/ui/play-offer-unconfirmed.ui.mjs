@@ -34,7 +34,6 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 // The old play ran while the profile sold dental software; the profile now sells bookkeeping. Nothing recorded which.
-const DENTAL = 'Appointment booking and reminder software for dental practices'
 const BOOKS = 'Bookkeeping for independent design agencies'
 const OTHER = 'Payroll setup for dental practices'
 const OLD = 'e'.repeat(24), REC = 'f'.repeat(24)
