@@ -69,15 +69,15 @@ test('transport abort is the real hard bound on the live provider; the retired r
   await assert.rejects(anthropicProvider.complete!('sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'prompt', hangingFetch), /network_or_timeout/)
   assert.ok(Date.now() - t0 < 3_000, 'settled at the 50 ms transport timeout, not hung')
   // #379: the unguarded plain-job scan's only provider call was research, which is retired at the real provider
-  // boundary - the job fails honestly budget_stopped with ZERO fetch attempts (no spend is even possible), instead of
-  // the old re-pend-and-retry-unpriced-research loop.
+  // boundary - the job fails honestly unbounded_fallback_hold with ZERO fetch attempts (no spend is even possible),
+  // instead of the old re-pend-and-retry-unpriced-research loop.
   const { db, master, id } = rig()
   let calls = 0
   const countingFetch = ((...a: unknown[]) => { calls++; return (hangingFetch as (...b: unknown[]) => unknown)(...a) }) as unknown as typeof fetch
   const providers = { anthropic: anthropicProvider, openai: anthropicProvider } as never
   assert.equal(await runJob(db, claimKeyedJob(db)!, { providers, master, fetchImpl: countingFetch, score: false }), 'failed')
   const j = getJob(db, 'A', id)!
-  assert.equal(j.status, 'failed'); assert.equal(j.error, 'budget_stopped')
+  assert.equal(j.status, 'failed'); assert.equal(j.error, 'unbounded_fallback_hold')
   assert.equal(calls, 0, 'retired research attempted no fetch')
 })
 

@@ -21,7 +21,7 @@ const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().s
 const WHY = 'Strong fit: a multi-location dental group in Austin, the exact buyer profile.'
 const ROUTE = 'Dana Lee, Owner - email: hello@acme-dental.test'
 
-type LeadOpts = Partial<{ event_date: string | null; event_date_proof: string | null; signal: string; signal_kind: string | null; company_domain: string | null; published_at: string | null; review_reason: string | null; quarantined_at: number | null; actionable: string | null; route: string }>
+type LeadOpts = Partial<{ evidence: boolean; event_date: string | null; event_date_proof: string | null; signal: string; signal_kind: string | null; company_domain: string | null; published_at: string | null; review_reason: string | null; quarantined_at: number | null; actionable: string | null; route: string }>
 function setup(o: LeadOpts = {}, job: { query?: string; icp?: string | null } = {}) {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateMemory(db)
@@ -31,6 +31,13 @@ function setup(o: LeadOpts = {}, job: { query?: string; icp?: string | null } = 
     VALUES ('L1', ?, 'Acme Dental', 'Dana Lee', 'hello@acme-dental.test', ?, 'https://news.example.test/acme', 'Acme Dental opened its second clinic. Contact hello@acme-dental.test', 80, 70, 4, 4, 3, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, o.signal ?? 'Opened a second clinic', WHY, o.signal_kind === undefined ? 'expansion' : o.signal_kind, o.event_date === undefined ? day(5) : o.event_date, o.event_date_proof === undefined ? 'page_bound' : o.event_date_proof,
       o.company_domain === undefined ? 'acme-dental.test' : o.company_domain, o.published_at ?? null, o.review_reason ?? null, o.quarantined_at ?? null)
+  // the current evidence rows the proof re-reads (#914): own-domain site, a named owner and a mailbox published on that site
+  if (o.evidence !== false && o.company_domain !== null) {
+    const d = o.company_domain ?? 'acme-dental.test'
+    const site = (kind: string, value: string, url: string, label: string | null = null) => addEnrichment(db, 'A', 'L1', { connector: 'sitecrawl', kind, value, label, confidence: null, source_url: url, source_date: day(0), retrieved_at: Math.floor(Date.now() / 1000) })
+    site('domain', `${d}|evidence_own_domain`, `https://${d}/news`, 'domain-basis-v1:evidence_own_domain')
+    site('person', 'Dana Lee, Owner', `https://${d}/team`); site('email', `hello@${d}`, `https://${d}/contact`)
+  }
   const act = o.actionable === undefined ? 'Actionable: domain, person and published contact confirmed' : o.actionable
   if (act) addEnrichment(db, 'A', 'L1', { connector: 'scan:actionable', kind: 'actionability', value: act, label: o.route ?? ROUTE, confidence: null, source_url: 'https://invalid.example/', source_date: day(0), retrieved_at: Math.floor(Date.now() / 1000) })
   return { db, job: { id, user_id: 'A' } }
@@ -68,6 +75,7 @@ test('unsupported timing stays held: model date, publication date, wrong proof k
 test('identity, person and route gaps hold even with proven timing; an unresolved recency bound holds', () => {
   const cases: [string, LeadOpts, { query?: string; icp?: string | null }, string][] = [
     ['no confirmed company domain', { company_domain: null }, {}, 'no_domain'],
+    ['a populated domain with no confirmation evidence', { evidence: false }, {}, 'domain_unconfirmed'],
     ['no named person / published route', { actionable: 'Not actionable yet: no contact person' }, {}, 'not_actionable'],
     ['no actionability verdict at all', { actionable: null }, {}, 'not_actionable'],
     ['sent to review', { review_reason: 'identity_unconfirmed' }, {}, 'needs_review'],
@@ -96,12 +104,15 @@ test('the proof state is durable and versioned: no record, another version or a 
   assert.equal(timingProofGap(moved.db, 'A', 'L1'), 'binding_changed', 'a different event day is not the proven one')
 
   const route = setup(); recordTimingProof(route.db, route.job)
-  route.db.prepare("UPDATE lead_enrichments SET label = 'Someone Else, CEO - email: ceo@acme-dental.test' WHERE connector = 'scan:actionable'").run()
-  assert.equal(timingProofGap(route.db, 'A', 'L1'), 'binding_changed', 'a different person/route is not the proven one')
+  route.db.prepare("UPDATE lead_enrichments SET value = 'ceo@acme-dental.test' WHERE connector = 'sitecrawl' AND kind = 'email'").run()
+  assert.equal(timingProofGap(route.db, 'A', 'L1'), 'binding_changed', 'a different published route is not the proven one')
+  const person = setup(); recordTimingProof(person.db, person.job)
+  person.db.prepare("UPDATE lead_enrichments SET value = 'Someone Else, CEO' WHERE connector = 'sitecrawl' AND kind = 'person'").run()
+  assert.equal(timingProofGap(person.db, 'A', 'L1'), 'binding_changed', 'a different named person is not the proven one')
 
   // a record forged as proven never stands on its own: every condition is re-checked against the lead now
   const forged = setup({ event_date_proof: null }); recordTimingProof(forged.db, forged.job)
-  forged.db.prepare('UPDATE lead_enrichments SET value = ? WHERE connector = ?').run(JSON.stringify({ state: 'proven', v: 1, proof: 'page_bound', date: day(5), domain: 'acme-dental.test', route: 'x' }), TIMING_PROOF_CONNECTOR)
+  forged.db.prepare('UPDATE lead_enrichments SET value = ? WHERE connector = ?').run(JSON.stringify({ state: 'proven', v: 2, proof: 'page_bound', date: day(5), domain: 'acme-dental.test', route: 'x' }), TIMING_PROOF_CONNECTOR)
   assert.equal(timingProofGap(forged.db, 'A', 'L1'), 'timing_unproven')
   assert.equal(currentnessHeld(forged.db, 'A', 'L1'), true)
 })

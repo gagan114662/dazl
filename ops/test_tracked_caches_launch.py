@@ -43,6 +43,15 @@ class TrackedPythonCachesTest(unittest.TestCase):
         self.assertFalse(ignored("ops/safe_launch.py"))
         self.assertFalse(ignored("web/package.json"))
 
+    def test_gitignore_braces_are_escaped(self):
+        # `/{"level"*` is accepted by git but is an unclosed alternate group for ripgrep ("error parsing glob"), which breaks `rg --files`
+        # on any tree carrying this file. git check-ignore cannot tell the two forms apart, so check the text: every non-comment line
+        # of the root .gitignore that contains a brace has it escaped.
+        for n, line in enumerate(open(os.path.join(ROOT, ".gitignore")).read().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            self.assertNotRegex(line, r"(?<!\\)[{}]", ".gitignore line %d has an unescaped brace: %r" % (n, line))
+
 
 if __name__ == "__main__":
     unittest.main()
