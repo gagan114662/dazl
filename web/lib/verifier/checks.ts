@@ -33,7 +33,7 @@ export interface DecideInput { claim: LeadClaim; problems: string[]; sources: Sn
 
 export const CHECK_VERSIONS = {
   claim_well_formed: 1, company_on_source: 1, domain_bound: 1, place_on_source: 1, event_date_on_source: 1, sources_agree: 1,
-  quote_on_source: 1, person_current: 1, contact_on_source: 1, contact_domain: 1, contact_not_recruiting: 1,
+  quote_on_source: 1, person_current: 2, contact_on_source: 1, contact_domain: 1, contact_not_recruiting: 1,
 } as const
 type CheckId = keyof typeof CHECK_VERSIONS
 const r = (check: CheckId, subject: string, status: Status, reason: string): CheckResult => ({ check, version: CHECK_VERSIONS[check], subject, status, reason })
@@ -65,6 +65,23 @@ const clauseAt = (folded: string, i: number): string => {
   const start = Math.max(folded.lastIndexOf(',', i), folded.lastIndexOf(';', i), folded.lastIndexOf('. ', i), folded.lastIndexOf('\n', i), -1)
   const stops = [folded.indexOf(',', i), folded.indexOf(';', i), folded.indexOf('. ', i), folded.indexOf('\n', i)].filter(x => x >= 0)
   return folded.slice(start + 1, stops.length ? Math.min(...stops) : folded.length).trim()
+}
+
+// The sentence span around position i in folded text, with the same boundaries as sentenceAt.
+const sentenceSpan = (folded: string, i: number): [number, number] => {
+  const start = Math.max(folded.lastIndexOf('. ', i), folded.lastIndexOf('\n', i), folded.lastIndexOf('! ', i), folded.lastIndexOf('? ', i))
+  const ends = ['. ', '\n', '! ', '? '].map(t => folded.indexOf(t, i)).filter(x => x >= 0)
+  return [start + 1, ends.length ? Math.min(...ends) : folded.length]
+}
+// The employer a source explicitly attaches to a title occurrence [ts, te) inside its sentence [ss, se): "<title> at
+// <Employer>" right after it, or "<Employer>'s <title>" right before it. null when none is attached. Only these two
+// unambiguous forms are read; "of"/"for"/"with" are not ("VP of Sales", "Head of Sales for EMEA" name no employer).
+const attachedEmployer = (folded: string, ts: number, te: number, ss: number, se: number, personName: string): string | null => {
+  const after = /^\s*,?\s*at\s+(?:the\s+)?([^,.;:()\n"]{1,80}?)(?=\s*(?:[,;:()\n"]|\.(?:\s|$)|$)|\s+(?:and|who|which|since|where|when|until|in|on|from|for|to)\s)/u.exec(folded.slice(te, se))
+  if (after) return after[1].trim()
+  const poss = /((?:[\p{L}\p{N}&.\-]+ ){0,3}[\p{L}\p{N}&.\-]+)'s?\s+$/u.exec(folded.slice(ss, ts))
+  if (poss && tokenPositions(poss[1], personName).length === 0) return poss[1].trim()
+  return null
 }
 
 interface Read { s: Snapshot; folded: string }
@@ -192,11 +209,15 @@ export function decide(x: DecideInput): CheckResult[] {
   })
 
   // 8. Person: named on the source, with the claimed title AND the claimed company both bound to that SAME name
-  // occurrence (not title anywhere near the name and company anywhere on the page, independently - that lets an
-  // unrelated company mention elsewhere, or someone else's title at a different employer, satisfy this), and not
-  // described as a former holder of the role - a "formerly"/"until 20xx"/"ex-" marker or a bare past-tense "was
-  // <title>" copula fails, never passes. Former-role wording is scoped to the title's OWN clause, so "formerly VP at
-  // OldCo, is now CRO at Harbor Ledger Analytics" does not taint the current, separately-clausal claim.
+  // occurrence's SENTENCE (not title anywhere near the name and company anywhere within a character window,
+  // independently - that lets an unrelated company mention in the next sentence, or someone else's title at a
+  // different employer, satisfy this), and not described as a former holder of the role - a "formerly"/"until
+  // 20xx"/"ex-" marker or a bare past-tense "was <title>" copula fails, never passes. Former-role wording is scoped to
+  // the title's OWN clause, so "formerly VP at OldCo, is now CRO at Harbor Ledger Analytics" does not taint the
+  // current, separately-clausal claim. An employer the source explicitly attaches to the title ("Sales Director at
+  // Rival Corp", "Rival Corp's Sales Director") that is not the claimed company never counts for the claim; when it is
+  // the only employer the source gives that title, the check is unknown with that employer named - never a pass (#781,
+  // audit 9379b162 cross-employer proximity false pass). Unknown, not fail: one person can hold roles at two firms.
   if (claim.person) {
     const p = claim.person
     const e = need(p.source_url, 'person_current', 'person')
@@ -205,17 +226,29 @@ export function decide(x: DecideInput): CheckResult[] {
       const nameAt = tokenPositions(e.folded, p.name)
       const titleAt = tokenPositions(e.folded, p.title)
       const companyAt = tokenPositions(e.folded, claim.company)
+      const titleLen = fold(p.title).length
       if (!nameAt.length) out.push(r('person_current', 'person', e.s.truncated ? 'unknown' : 'fail', `${p.name} is not named on ${p.source_url}`))
       else {
-        const bound = nameAt.find(i => near([i], titleAt) && near([i], companyAt))
+        // Per name occurrence: the titles and company mentions inside its own sentence.
+        const reads = nameAt.map(i => {
+          const [ss, se] = sentenceSpan(e.folded, i)
+          const inS = (x: number) => x >= ss && x < se
+          return { i, ss, se, titles: titleAt.filter(inS), companies: companyAt.filter(inS) }
+        })
+        const employerOf = (t: number, ss: number, se: number) => attachedEmployer(e.folded, t, t + titleLen, ss, se, p.name)
+        const ofCompany = (phrase: string) => tokenPositions(phrase, claim.company).length > 0 || fold(claim.company).startsWith(`${phrase} `)   // a name cut at its own "and" ("Smith and Sons")
+        // A title occurrence counts for the claim unless the source attaches it to some other employer.
+        const forClaim = (rd: typeof reads[number]) => rd.titles.filter(t => { const emp = employerOf(t, rd.ss, rd.se); return emp === null || ofCompany(emp) })
+        const bound = reads.find(rd => rd.companies.length > 0 && forClaim(rd).length > 0)
+        const rival = reads.map(rd => ({ rd, emps: rd.titles.map(t => employerOf(t, rd.ss, rd.se)) })).find(x => x.emps.length > 0 && x.emps.every(emp => emp !== null && !ofCompany(emp)))
         if (bound === undefined) {
-          out.push(r('person_current', 'person', 'unknown', `the title "${p.title}" and "${claim.company}" are not both next to ${p.name} on the source`))
+          out.push(rival ? r('person_current', 'person', 'unknown', `the source gives ${p.name}'s "${p.title}" role at ${rival.emps[0]}, not at "${claim.company}"`)
+            : r('person_current', 'person', 'unknown', `the title "${p.title}" and "${claim.company}" are not both in the same sentence as ${p.name} on the source`))
         } else {
-          const boundTitleAt = titleAt.filter(t => near([t], [bound]))
-          const titleClauses = boundTitleAt.map(t => clauseAt(e.folded, t))
+          const titleClauses = forClaim(bound).map(t => clauseAt(e.folded, t))
           const formerClause = titleClauses.find(c => FORMER.test(c) || PAST_STATE.test(c))
           out.push(formerClause ? r('person_current', 'person', 'fail', `the source describes ${p.name}'s "${p.title}" as a past role ("${formerClause.slice(0, 120)}")`)
-            : r('person_current', 'person', 'pass', `${p.name}, ${p.title}, at ${claim.company}, on the source with no former-role marker`))
+            : r('person_current', 'person', 'pass', `${p.name}, ${p.title}, at ${claim.company}, in one sentence on the source with no former-role marker`))
         }
       }
     }
