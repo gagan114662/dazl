@@ -216,6 +216,7 @@ test('#851 malformed model ids fail closed: blank, whitespace, non-string and mo
 
 test('#851 trial payer: the trial always runs under its reserve guard, so an unpriceable trial model is refused with a configuration message (no own-key advice)', () => {
   const e = estimateRun({ budget: null, payer: 'trial', model: 'claude-opus-unlisted', priceModel: scanModelPrice, limited: true, pricedAlternative: 'claude-opus-unlisted' })
+  assert.doesNotMatch(e.verdict.message, /list price for this estimate/, 'unpriced rows: no claim that the rows are priced')
   assert.deepEqual([e.verdict.ok, e.verdict.reason], [false, 'model_unpriced'])
   assert.match(e.verdict.message, /^The free trial's model \(claude-opus-unlisted\) has no listed price/)
   assert.deepEqual(e.verdict.change, ['This is a dazl configuration problem, not your request: try again later, or add your own AI key in Settings.'])

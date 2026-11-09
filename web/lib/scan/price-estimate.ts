@@ -155,7 +155,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const whose = i.payer === 'trial' ? "The free trial's model" : "Your key's model"
     message = model === UNKNOWN_MODEL
       ? `${i.payer === 'trial' ? "The free trial's model" : 'The model your key runs'} could not be read right now, so a run under a spending limit cannot be priced and would not reserve. Nothing was started or charged.`
-      : `${whose} (${model}) has no listed price for spending limits in dazl yet, so a run under a spending limit cannot reserve for it and would stop at its first model call. Nothing was started or charged.`
+      : `${whose} (${model}) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call.${p ? ' The model rows above use its list price for this estimate only.' : ''} Nothing was started or charged.`
     if (i.payer === 'trial') change.push('This is a dazl configuration problem, not your request: try again later, or add your own AI key in Settings.')
     else {
       if (model === UNKNOWN_MODEL) change.push('Try again in a moment.')
