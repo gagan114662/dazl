@@ -22,12 +22,14 @@ const page = (url: string, text: string, at: number): FetchedPage => ({ url, kin
 // lives on the product and pricing pages, each with its OWN fetch time.
 const PAGES: FetchedPage[] = [
   page(HOME, 'Multi builds tools for modern teams and supports every customer.', T0),
-  page(BOOKING, 'Acme Booking lets practice managers fill their appointment book and send reminders. Acme Booking is not available for clinics with over 50 staff. Acme Booking serves clinics with over 50 staff through partners.', T0 + 1),
-  page(PAYROLL, 'Acme Payroll runs payroll for clinic owners without a finance team.', T0 + 2),
+  page(BOOKING, 'Acme Booking is our appointment book for practice managers. Acme Booking is not available for clinics with over 50 staff. Acme Booking serves clinics with over 50 staff through partners.', T0 + 1),
+  page(PAYROLL, 'Acme Payroll is our payroll product for clinic owners without a finance team.', T0 + 2),
   page(PRICING, 'Acme Booking starts at $49 per location per month. Payroll is priced per employee for clinics with 10 to 50 staff.', T0 + 3),
 ]
-const BOOKING_QUOTE = 'Acme Booking lets practice managers fill their appointment book and send reminders.'
-const PAYROLL_QUOTE = 'Acme Payroll runs payroll for clinic owners without a finance team.'
+// Positive fixtures use explicit OWN-offering sentences: a bare capability sentence ("X runs payroll") is NOT
+// ownership evidence (round-5 contract) - an integrations directory lists third-party tools with the same shape.
+const BOOKING_QUOTE = 'Acme Booking is our appointment book for practice managers.'
+const PAYROLL_QUOTE = 'Acme Payroll is our payroll product for clinic owners without a finance team.'
 const EXCLUSION_QUOTE = 'Acme Booking is not available for clinics with over 50 staff.'
 const OFFERS = [
   { id: 'o1', name: 'Acme Booking', url: BOOKING, quote: BOOKING_QUOTE, inferred: false },
@@ -250,14 +252,41 @@ test("an explicit first-party offering construction sources ('we offer X')", () 
   assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
 })
 
-test("an explicit first-party possessive sources ('X is our payroll product')", () => {
-  const q = 'Acme Payroll is our payroll product.'
-  const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
-  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+// Round 5 positive controls: the canonical own-offering sentences - including sentence-final names, where
+// punctuation-safe tokens matter ("Payroll." must still match "Payroll").
+test('the canonical own-offering sentences source (positive controls)', () => {
+  for (const q of ['We offer Acme Payroll.', 'Our product is Acme Payroll.', 'Acme Payroll is our payroll product.']) {
+    const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
+    assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2], q)
+  }
+})
+
+test('a bare capability sentence is NOT ownership (an integrations directory reads the same)', () => {
+  unsourced(offerHyp(oneOffer('Acme Payroll runs payroll for clinics.', 'Acme Payroll runs payroll for clinics.'), 'Acme Payroll'))
+})
+
+test('a bare capability sentence under an integrations heading never sources', () => {
+  unsourced(offerHyp(oneOffer('Acme Payroll runs payroll for clinics.', 'Tools we integrate with are listed below. Acme Payroll runs payroll for clinics.'), 'Acme Payroll'))
+})
+
+test("'we support X' is not ownership (support describes someone else's product)", () => {
+  unsourced(offerHyp(oneOffer('We support Acme Payroll.', 'We support Acme Payroll. It is owned and sold by Harbor Software.'), 'Acme Payroll'))
+})
+
+test('a future offering is unknown, not a current claim', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll next year.', 'We offer Acme Payroll next year.'), 'Acme Payroll'))
+})
+
+test('an or-alternative offering is ambiguous, not a claim', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll or another system depending on availability.', 'We offer Acme Payroll or another system depending on availability.'), 'Acme Payroll'))
+})
+
+test('an unmarked review context frames the claim (preceding and closing sentences)', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll.', 'A review from Harbor Dental. We offer Acme Payroll. End of customer review.'), 'Acme Payroll'))
 })
 
 test('a valid 174-char quote survives the whole construction -> storage -> ingress round trip (ONE quote contract)', () => {
-  const q = 'Acme Payroll runs payroll for busy clinics with multiple locations and helps clinic managers process monthly payroll for their staff using integrated scheduling and accounting.'
+  const q = 'Acme Payroll is our payroll product for busy clinics with multiple locations and helps clinic managers process monthly payroll for their staff using integrated scheduling and accounting.'
   assert.ok(q.length > 140 && q.length <= 300, 'fixture sits between the old and shared caps')
   const r = oneOffer(q, q)
   assert.equal(offerHyp(r, 'Acme Payroll').status, 'sourced')

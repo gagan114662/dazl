@@ -88,7 +88,7 @@ function sourceContextOk(pageText: string, quote: string): boolean {
     const prev = sents[i - 1]?.body ?? ''
     if (ANNOUNCE.test(prev) || DENIAL_FRAME.test(prev)) return false
     const next = sents[i + 1]?.body ?? ''
-    if (REBUTTAL.test(next.trim()) || DISCLAIMER.test(next)) return false
+    if (REBUTTAL.test(next.trim()) || DISCLAIMER.test(next) || ANNOUNCE.test(next)) return false   // 'End of customer review' closes a frame too
   }
   return found
 }

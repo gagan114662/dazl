@@ -58,7 +58,8 @@ const ATTRIBUTION = /(?:^|\s)[-–—]\s*\p{Lu}[\p{L}'.-]*(?:\s+\p{Lu}[\p{L}'.-]
 export const MAX_RESEARCH_QUOTE = 300
 // A customer or other third party as the claim's subject: their purchase or praise is not the seller's own statement.
 const THIRD_PARTY = /\b(?:customers?|clients?|users?|buyers?|patients?|companies|they|people)\s+(?:[\p{L}']+\s+){0,4}(?:buy|bought|purchase[sd]?|use[sd]?|say|said|chose|choose|prefer(?:red)?|love[sd]?|left|switch(?:ed)?|got|get|found|report(?:ed)?)\b/iu
-const tokens = (s: string) => norm(s).split(' ').filter(Boolean)
+// Punctuation-safe tokens: norm() keeps '.', so a sentence-final name ("...Acme Payroll.") must still match.
+const tokens = (s: string) => norm(s).replace(/[.@+]/g, ' ').split(' ').filter(Boolean)
 // The name's tokens, stem-equal and CONSECUTIVE in the quote's tokens; no prefix extension ("payrollplus" != "payroll").
 // Uses a FULL stem - the shared stem() truncates to 7 letters for word-carriage, which would bleed prefixes here.
 const stemFull = (w: string) => w.replace(/(?:ies)$/, 'y').replace(/(?:es|s)$/, '')
@@ -83,21 +84,22 @@ const POS_VERB = new Set('runs lets helps gives offers provides includes costs s
 // After a copula, only an explicit FIRST-PARTY possessive counts ("X is our payroll product"). A bare
 // "available"/"designed" is NOT ownership ("available exclusively from another vendor", "designed and sold by
 // our competitor", "available if we ever build it") and stays a hypothesis.
-const COPULA_COMPLEMENT = new Set(['our'])
 // Hypothetical or conditional modality after the name ("available if we ever build it", "would run payroll")
 // is not a claim of fact: the sentence is unrecognized and fails closed.
 const CONDITIONAL = new Set(['if', 'would', 'could', 'might', 'may', 'should'])
+// Future-tense qualifiers make the offering not-current ("we offer X next year") - unknown, not a claim.
+const FUTURE = new Set(['soon', 'tomorrow', 'later', 'upcoming', 'planned', 'planning', 'eventually', 'someday'])
+const TIME_WORD = new Set(['year', 'quarter', 'month', 'week', 'decade'])
 // Reported speech: the citation is itself quoted material or carries a reporting clause ("..." says Harbor
 // Dental / according to G2) - someone else's words about the offer, never the seller's authored page copy.
 export const REPORTED = /["“”]|\b(?:says|said|writes|wrote|according to)\s+\p{Lu}/u
 // A testimonial/review announcement: what follows is a customer's story, not the seller's own claim.
-export const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|(?:customer|client|user)s?\s+reviews?|what\s+(?:our\s+)?(?:customers?|clients?|users?)\s+say)\b/i
+export const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|(?:customer|client|user)s?\s+reviews?|reviews?\s+from\s+\p{Lu}|end of (?:customer|client|user)\s+review|what\s+(?:our\s+)?(?:customers?|clients?|users?)\s+say)\b/iu
 // Sentence-openers that keep the name first-party. Anything else before the name embeds it in another clause.
-// LEAD_IN keeps the name the SUBJECT (a positive predicate must follow it); OFFERING is an explicit first-party
-// OWN-offering construction with the name as its OBJECT ("we offer X", "our offer is X") - exact and complete, so
-// "we cannot offer X" and "our customers buy X" never match.
-const LEAD_IN = new Set(['', 'the', 'our', 'our flagship', 'introducing', 'meet'])
-const OFFERING = new Set(['we offer', 'we sell', 'we make', 'we build', 'we built', 'we provide', 'we ship', 'we run', 'we automate', 'we support', 'we deliver', 'we host', 'our offer is', 'our product is'])
+// OFFERING is an explicit first-party OWN-offering construction with the name as its OBJECT ("we offer X",
+// "our offer is X") - exact and complete, so "we cannot offer X" and "our customers buy X" never match.
+// Capability verbs are NOT ownership ("we support X" / "we integrate X" describes someone else's product).
+const OFFERING = new Set(['we offer', 'we sell', 'we make', 'we build', 'we built', 'we provide', 'we ship', 'our offer is', 'our product is'])
 // External ownership: the sentence hands the offer to someone else ("our competitor's payroll product", "sold by
 // another vendor"). Offer citations only - a disqualifier may legitimately exclude third parties.
 const EXTERNAL = /\b(?:competitors?|another (?:vendor|provider|company|seller)|third[- ]party|other (?:vendors?|providers?|companies|compan(?:y|ies)|sellers?)|someone else)\b/i
@@ -112,29 +114,28 @@ function offerSentence(name: string, stoks: string[]): OfferVerdict {
   if (at < 0) return 'none'
   const before = stoks.slice(0, at).join(' ')
   const rest = stoks.slice(at + tokens(name).length)
-  if (OFFERING.has(before)) {
-    // The name is the object of our own offering construction; polarity still holds across the whole sentence.
+  // Polarity, conditionality, futurity and alternation hold across the whole sentence after the name: any
+  // negator voids it; a conditional, a future qualifier or an 'or'-alternative makes it unrecognized.
+  const tail = (): OfferVerdict => {
     for (let i = 0; i < rest.length; i++) {
       if (isNeg(rest, i)) return 'negative'
-      if (CONDITIONAL.has(rest[i])) return 'none'
+      if (CONDITIONAL.has(rest[i]) || FUTURE.has(rest[i]) || rest[i] === 'or' || (rest[i] === 'next' && TIME_WORD.has(rest[i + 1] ?? ''))) return 'none'
     }
     return 'positive'
   }
-  if (!LEAD_IN.has(before)) return 'none'   // embedded in another clause: not the seller's own claim
-  if (!rest.length) return 'none'
-  if (isNeg(rest, 0)) return 'negative'
-  let positive = false
-  if (POS_VERB.has(rest[0])) positive = true
-  else if ((rest[0] === 'is' || rest[0] === 'are') && rest[1] !== undefined) {
+  if (OFFERING.has(before)) return rest.length ? tail() : 'positive'   // the name is the object of our own offering
+  // The name as SUBJECT is accepted only with an EXPLICIT OWN predicate: "our X does Y" (possessive subject) or
+  // "X is our ..." (possessive complement). A bare "X runs payroll" is a capability statement, NOT ownership -
+  // a seller's integrations page lists third-party tools with the same sentence shape.
+  const possessive = before === 'our' || before === 'our flagship'
+  if (!possessive && before !== '') return 'none'   // embedded in another clause: not the seller's own claim
+  if (!rest.length || isNeg(rest, 0)) return rest.length ? 'negative' : 'none'
+  if (POS_VERB.has(rest[0])) return possessive ? tail() : 'none'
+  if ((rest[0] === 'is' || rest[0] === 'are') && rest[1] !== undefined) {
     if (isNeg(rest, 1)) return 'negative'
-    positive = COPULA_COMPLEMENT.has(rest[1])
+    if (rest[1] === 'our') return tail()
   }
-  if (!positive) return 'none'
-  for (let i = 1; i < rest.length; i++) {
-    if (isNeg(rest, i)) return 'negative'   // polarity holds across the sentence
-    if (CONDITIONAL.has(rest[i])) return 'none'   // hypothetical, not a claim of fact
-  }
-  return 'positive'
+  return 'none'
 }
 export function quoteBacksOffer(name: string, quote: string, otherNames: string[] = []): boolean {
   if (!name || !quote) return false
@@ -171,7 +172,7 @@ export function quoteBacksDisqualifier(offerName: string, text: string, quote: s
   for (const s of sentences(quote)) {
     const stoks = tokens(s.body)
     const at = nameSubject(offerName, stoks)
-    if (at < 0 || !LEAD_IN.has(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
+    if (at < 0 || !['', 'our', 'our flagship'].includes(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
     const rest = stoks.slice(at + tokens(offerName).length)
     const objectAfter = (pt: string[], from: number) => {
       const obj = rest.slice(from + pt.length)
