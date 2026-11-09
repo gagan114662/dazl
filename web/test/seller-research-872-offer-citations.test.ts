@@ -22,13 +22,13 @@ const page = (url: string, text: string, at: number): FetchedPage => ({ url, kin
 // lives on the product and pricing pages, each with its OWN fetch time.
 const PAGES: FetchedPage[] = [
   page(HOME, 'Multi builds tools for modern teams and supports every customer.', T0),
-  page(BOOKING, 'Acme Booking is our appointment book for practice managers. Acme Booking is not available for clinics with over 50 staff. Acme Booking serves clinics with over 50 staff through partners.', T0 + 1),
+  page(BOOKING, 'Acme Booking is our scheduling product for practice managers. Acme Booking is not available for clinics with over 50 staff. Acme Booking serves clinics with over 50 staff through partners.', T0 + 1),
   page(PAYROLL, 'Acme Payroll is our payroll product for clinic owners without a finance team.', T0 + 2),
   page(PRICING, 'Acme Booking starts at $49 per location per month. Payroll is priced per employee for clinics with 10 to 50 staff.', T0 + 3),
 ]
 // Positive fixtures use explicit OWN-offering sentences: a bare capability sentence ("X runs payroll") is NOT
 // ownership evidence (round-5 contract) - an integrations directory lists third-party tools with the same shape.
-const BOOKING_QUOTE = 'Acme Booking is our appointment book for practice managers.'
+const BOOKING_QUOTE = 'Acme Booking is our scheduling product for practice managers.'
 const PAYROLL_QUOTE = 'Acme Payroll is our payroll product for clinic owners without a finance team.'
 const EXCLUSION_QUOTE = 'Acme Booking is not available for clinics with over 50 staff.'
 const OFFERS = [
@@ -285,8 +285,43 @@ test('an unmarked review context frames the claim (preceding and closing sentenc
   unsourced(offerHyp(oneOffer('We offer Acme Payroll.', 'A review from Harbor Dental. We offer Acme Payroll. End of customer review.'), 'Acme Payroll'))
 })
 
+// Round 6: typed offering-object identity + current assertion. The complement's head noun must DENOTE the
+// offering (not a relationship to someone else's product), the name must BE the offered object (not a
+// modifier of a different object), and no continuation outside the typed frames may follow the core claim.
+test("'X is our preferred integration' describes someone else's product, not ours", () => {
+  unsourced(offerHyp(oneOffer('Acme Payroll is our preferred integration.', 'Acme Payroll is our preferred integration.'), 'Acme Payroll'))
+})
+
+test("'X is our main reference' is a comparison relationship, not ownership", () => {
+  unsourced(offerHyp(oneOffer('Acme Payroll is our main reference for comparisons.', 'Acme Payroll is our main reference for comparisons.'), 'Acme Payroll'))
+})
+
+test('a contrast clause after the assertion voids currency ("runs payroll but was discontinued in 2024")', () => {
+  unsourced(offerHyp(oneOffer('Our flagship Acme Payroll runs payroll but was discontinued in 2024.', 'Our flagship Acme Payroll runs payroll but was discontinued in 2024.'), 'Acme Payroll'))
+})
+
+test('a dated offering is not a current claim ("we offer X in 2028")', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll in 2028.', 'We offer Acme Payroll in 2028.'), 'Acme Payroll'))
+})
+
+test('an offering after an event is not a current claim ("we offer X after launch")', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll after launch.', 'We offer Acme Payroll after launch.'), 'Acme Payroll'))
+})
+
+test('the offering object must BE the name, not a noun it modifies ("we offer X consulting services")', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll consulting services.', 'We offer Acme Payroll consulting services.'), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll migration training.', 'We offer Acme Payroll migration training.'), 'Acme Payroll'))
+})
+
+test('a typed price and recipient tail still sources (accepted complete tail structures)', () => {
+  const q = 'We offer Acme Payroll to clinics starting at $49 per location.'
+  const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
+  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2], q)
+})
+
 test('a valid 174-char quote survives the whole construction -> storage -> ingress round trip (ONE quote contract)', () => {
-  const q = 'Acme Payroll is our payroll product for busy clinics with multiple locations and helps clinic managers process monthly payroll for their staff using integrated scheduling and accounting.'
+  // NOTE: no 'and' - a coordinator closes the accepted region under the full-parse tail contract (round 6).
+  const q = 'Acme Payroll is our payroll product for busy clinics with multiple locations across several states that process monthly payroll for their staff through one integrated scheduling system.'
   assert.ok(q.length > 140 && q.length <= 300, 'fixture sits between the old and shared caps')
   const r = oneOffer(q, q)
   assert.equal(offerHyp(r, 'Acme Payroll').status, 'sourced')

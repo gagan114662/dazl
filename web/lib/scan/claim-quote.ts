@@ -84,12 +84,27 @@ const POS_VERB = new Set('runs lets helps gives offers provides includes costs s
 // After a copula, only an explicit FIRST-PARTY possessive counts ("X is our payroll product"). A bare
 // "available"/"designed" is NOT ownership ("available exclusively from another vendor", "designed and sold by
 // our competitor", "available if we ever build it") and stays a hypothesis.
-// Hypothetical or conditional modality after the name ("available if we ever build it", "would run payroll")
-// is not a claim of fact: the sentence is unrecognized and fails closed.
-const CONDITIONAL = new Set(['if', 'would', 'could', 'might', 'may', 'should'])
-// Future-tense qualifiers make the offering not-current ("we offer X next year") - unknown, not a claim.
-const FUTURE = new Set(['soon', 'tomorrow', 'later', 'upcoming', 'planned', 'planning', 'eventually', 'someday'])
-const TIME_WORD = new Set(['year', 'quarter', 'month', 'week', 'decade'])
+// Typed OFFER GRAMMAR (#872, round 6): an offer sentence is accepted only when it FULLY parses as one of the
+// productions in offerSentence below. Full consumption is the contract - anything unrecognized after the core
+// assertion fails closed with NO deny list:
+//   - temporal deferrals ("we offer X in 2028", "...after launch", "...next year") are not frames;
+//   - alternations ("X or another system") and contrast clauses ("runs payroll but was discontinued in 2024")
+//     hit a CONNECTOR that no production continues past;
+//   - an extra noun phrase ("we offer X consulting services") means X MODIFIES a different offering object;
+//   - hypothetical/conditional/future phrasing ("would run", "available if we ever build it") matches no opener.
+// FRAME_HEAD: the only typed continuations after an accepted core assertion - beneficiary ("for clinics"),
+// recipient ("to customers"), inclusion ("with reminders"), price ("at $49", "starting at $49"), unit
+// ("per location"), base price ("from $49").
+const FRAME_HEAD = new Set(['for', 'to', 'with', 'at', 'per', 'from'])
+// Coordinators and subordinators close the accepted region: a clause or alternative after the core assertion
+// never sources. Closed grammatical class, not per-product words.
+const CONNECTOR = new Set('and or but however although though except if when after until once while whereas yet so because since'.split(' '))
+// "starting at" / "priced at" are price frames; a bare "starting"/"priced" elsewhere fails the parse.
+const PRICE_LEAD = new Set(['starting', 'priced'])
+// Typed offering-object identity for "X is our <head>": the complement's HEAD NOUN must denote the offering
+// itself. Relationship nouns ("our preferred integration", "our main reference") describe someone ELSE'S
+// product and fail closed.
+const PRODUCT_TYPE = new Set('product products platform platforms solution solutions tool tools app apps application applications software service services offering offerings suite suites system systems'.split(' '))
 // Reported speech: the citation is itself quoted material or carries a reporting clause ("..." says Harbor
 // Dental / according to G2) - someone else's words about the offer, never the seller's authored page copy.
 export const REPORTED = /["“”]|\b(?:says|said|writes|wrote|according to)\s+\p{Lu}/u
@@ -109,31 +124,51 @@ const NEGATOR = new Set(['not', 'no', 'never', 'nor', 'neither', 'cannot', 'hard
 const CONTRACTION = /^(?:don|doesn|didn|won|can|couldn|isn|aren|wasn|weren|hasn|haven|hadn|mustn|shouldn|wouldn)$/
 const isNeg = (toks: string[], i: number) => NEGATOR.has(toks[i]) || (CONTRACTION.test(toks[i]) && toks[i + 1] === 't')
 type OfferVerdict = 'positive' | 'negative' | 'none'
+// An NP is 0+ tokens up to the next frame head, price lead or connector; a TAIL is a COMPLETE sequence of
+// FRAME NP modifiers. Leftover tokens mean unrecognized - never scanned for deny words, never sliced away.
+const npEnd = (toks: string[], i: number) => {
+  while (i < toks.length && !FRAME_HEAD.has(toks[i]) && !PRICE_LEAD.has(toks[i]) && !CONNECTOR.has(toks[i])) i++
+  return i
+}
+const parseTail = (toks: string[], i: number): boolean => {
+  while (i < toks.length) {
+    if (PRICE_LEAD.has(toks[i])) {
+      if (toks[i + 1] !== 'at') return false
+      i += 2
+    } else if (FRAME_HEAD.has(toks[i])) i++
+    else return false
+    const s = npEnd(toks, i)
+    if (s === i) return false   // a frame needs its modifier
+    i = s
+  }
+  return true
+}
 function offerSentence(name: string, stoks: string[]): OfferVerdict {
   const at = nameSubject(name, stoks)
   if (at < 0) return 'none'
   const before = stoks.slice(0, at).join(' ')
   const rest = stoks.slice(at + tokens(name).length)
-  // Polarity, conditionality, futurity and alternation hold across the whole sentence after the name: any
-  // negator voids it; a conditional, a future qualifier or an 'or'-alternative makes it unrecognized.
-  const tail = (): OfferVerdict => {
-    for (let i = 0; i < rest.length; i++) {
-      if (isNeg(rest, i)) return 'negative'
-      if (CONDITIONAL.has(rest[i]) || FUTURE.has(rest[i]) || rest[i] === 'or' || (rest[i] === 'next' && TIME_WORD.has(rest[i + 1] ?? ''))) return 'none'
-    }
-    return 'positive'
-  }
-  if (OFFERING.has(before)) return rest.length ? tail() : 'positive'   // the name is the object of our own offering
+  // Polarity holds across the whole sentence after the name: any negator voids the claim.
+  for (let i = 0; i < rest.length; i++) if (isNeg(rest, i)) return 'negative'
+  // A. Explicit first-party OFFERING opener with the name as its OBJECT: "we offer X [TAIL]",
+  //    "our product is X [TAIL]". The token after the name must start a typed frame or end the sentence -
+  //    "we offer X consulting services" offers consulting services, not X.
+  if (OFFERING.has(before)) return parseTail(rest, 0) ? 'positive' : 'none'
   // The name as SUBJECT is accepted only with an EXPLICIT OWN predicate: "our X does Y" (possessive subject) or
-  // "X is our ..." (possessive complement). A bare "X runs payroll" is a capability statement, NOT ownership -
-  // a seller's integrations page lists third-party tools with the same sentence shape.
+  // "X is our <product-type>" (possessive complement). A bare "X runs payroll" is a capability statement, NOT
+  // ownership - a seller's integrations page lists third-party tools with the same sentence shape.
   const possessive = before === 'our' || before === 'our flagship'
   if (!possessive && before !== '') return 'none'   // embedded in another clause: not the seller's own claim
-  if (!rest.length || isNeg(rest, 0)) return rest.length ? 'negative' : 'none'
-  if (POS_VERB.has(rest[0])) return possessive ? tail() : 'none'
-  if ((rest[0] === 'is' || rest[0] === 'are') && rest[1] !== undefined) {
-    if (isNeg(rest, 1)) return 'negative'
-    if (rest[1] === 'our') return tail()
+  if (!rest.length) return 'none'
+  // B. Possessive subject: "our [flagship] X <capability-verb> [OBJECT] [TAIL]".
+  if (possessive && POS_VERB.has(rest[0])) return parseTail(rest, npEnd(rest, 1)) ? 'positive' : 'none'
+  // C. Possessive complement with a typed product head: "X is our [flagship] ... product [TAIL]".
+  if (!possessive && (rest[0] === 'is' || rest[0] === 'are') && rest[1] === 'our') {
+    let i = 2
+    if (rest[i] === 'flagship') i++
+    const np = npEnd(rest, i)
+    if (np === i || !PRODUCT_TYPE.has(stemFull(rest[np - 1]))) return 'none'
+    return parseTail(rest, np) ? 'positive' : 'none'
   }
   return 'none'
 }
