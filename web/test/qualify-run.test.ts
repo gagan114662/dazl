@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { runQualification, storedQualifications, migrateQualify } from '../lib/scan/qualify-run.ts'
 import { preparePrompt, DEFAULT_LIMITS } from '../lib/scan/lead-qualify.ts'
@@ -8,10 +9,11 @@ import { qualifyPreview } from '../lib/scan/qualify-preview.ts'
 
 const L = 'a'.repeat(24), MODEL = 'claude-sonnet-4-5'
 function setup() {
-  const db = new Database(':memory:'); migrateScan(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createQueryJob(db, 'u1', { query: 'B2B companies hiring sales roles' })
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
   db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,company_domain) VALUES (?,?,?,?,?,?)").run(L, job, 'Acme', 'Posted a role titled "SDR"', 'https://weworkremotely.com/remote-jobs/acme-sdr', 'acme.example')
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-11-01', 1)").run(`${L}d`, L, 'acme.example|evidence_own_domain', 'https://acme.example/news')   // a confirmed site (#912)
   return db
 }
 const fetchPage = async (url: string) => ({ text: `Acme runs outbound sales with five SDRs. (${url})`, title: 't', retrievedAt: 1 })

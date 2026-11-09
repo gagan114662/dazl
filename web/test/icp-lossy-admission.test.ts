@@ -65,7 +65,7 @@ test('POST /api/scan refuses each lossy profile with zero jobs and zero provider
   const result = spawnSync(process.execPath, ['--experimental-strip-types', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/scan-route-loader.mjs', '--test-reporter=tap', '--test', './test/helpers/icp-lossy-route-runtime.mts'],
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(result.error, undefined); assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 9/); assert.match(result.stdout, /# fail 0/)
+  assert.match(result.stdout, /# pass 15/); assert.match(result.stdout, /# fail 0/)
 })
 
 // xhawk findings on #965: the estimate preflight must refuse what admission refuses, and the form must say what to fix.
@@ -86,4 +86,18 @@ test('lossyProfileCopy names the field, item position and what to do; never the 
   assert.match(t, /exclude: 7 entries, the limit is 6\. Remove 1\./); assert.match(t, /who item 2: 170 characters, the limit is 160/); assert.match(t, /sizes: must be a list, got string/)
   assert.doesNotMatch(t, /profile_lossy/)
   assert.match(lossyProfileCopy({}), /cut or ignored/)
+})
+
+test('icpLoss: a stated window, country or language that normalizeIcp would silently drop is refused by name; valid, null and blank are not', () => {
+  for (const [patch, want] of [
+    [{ window_days: 400 }, [{ field: 'window_days', kind: 'invalid_value', actual: '400' }]],
+    [{ window_days: 0 }, [{ field: 'window_days', kind: 'invalid_value', actual: '0' }]],
+    [{ window_days: '30' }, [{ field: 'window_days', kind: 'invalid_value', actual: '"30"' }]],
+    [{ window_days: 30.5 }, [{ field: 'window_days', kind: 'invalid_value', actual: '30.5' }]],
+    [{ country: 'Narnia' }, [{ field: 'country', kind: 'invalid_value', actual: '"Narnia"' }]],
+    [{ country: 7 }, [{ field: 'country', kind: 'invalid_value', actual: '7' }]],
+    [{ language: 'english' }, [{ field: 'language', kind: 'invalid_value', actual: '"english"' }]],
+  ] as [Record<string, unknown>, unknown[]][]) assert.deepEqual(icpLoss({ ...BASE, ...patch }), want, JSON.stringify(patch))
+  for (const ok of [{ window_days: 1 }, { window_days: 365 }, { country: 'UK' }, { country: 'gb' }, { language: 'en' }, { language: ' EN ' }, { window_days: null, country: null, language: null }, { country: '', language: '  ' }])
+    assert.deepEqual(icpLoss({ ...BASE, ...ok }), [], JSON.stringify(ok))
 })

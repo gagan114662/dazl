@@ -6,7 +6,7 @@
 // per-scan caps the runner really enforces (DEFAULT_TINYFISH counts, PEOPLE_SEARCHES_MAX). What it is not: a bill, a quote or a
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
-import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../llm/spend-guard.ts'
+import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
 import { DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
@@ -154,16 +154,43 @@ export function estimateRun(i: EstimateInput): RunEstimate {
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
-export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null }
-export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
+export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; capReservedUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
+export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
 export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput): ActualVsEstimate {
-  const p = a.model ? PRICES_USD_PER_M[a.model] : undefined
-  const usd = p && a.inputTokens !== null && a.outputTokens !== null ? (a.inputTokens * p.in + a.outputTokens * p.out) / 1e6 : null
+  // The canonical pricing truth is the settlement path's own (spend-guard.ts): priceOf normalizes dated served ids
+  // (claude-sonnet-4-5-20250929 -> claude-sonnet-4-5) and completionCost prices cache tokens at the shared factors. A
+  // bare PRICES_USD_PER_M lookup here called a dated, KNOWN model "unlisted" and reported real spend as unknown.
+  const served = a.servedModels && a.servedModels.length ? a.servedModels : a.model ? [a.model] : []
+  const priceKeys = new Set(served.map(m => { const p = priceOf(m); return p ? `${p.in}/${p.out}` : null }))
+  const mixed = priceKeys.size > 1
+  const cost = !mixed && a.inputTokens !== null && a.outputTokens !== null
+    ? completionCost(a.model ?? served[0] ?? null, { input_tokens: a.inputTokens, output_tokens: a.outputTokens, cache_creation_input_tokens: a.cacheWriteTokens ?? 0, cache_read_input_tokens: a.cacheReadTokens ?? 0 })
+    : null
+  const usd = cost && 'usd' in cost ? cost.usd : null
+  // Cache token usage is NOT stored per scan (model-usage.ts): absent cache fields are UNKNOWN, not zero. Without them
+  // the computed USD is the recorded-token component only - an at-least amount, never "complete" and never placed
+  // inside/against the estimate range. Explicit zeros are a real record; provided values price at the shared factors.
+  const cacheRecorded = a.cacheWriteTokens != null && a.cacheReadTokens != null
+  const complete = usd !== null && a.tokensComplete && cacheRecorded
   const modelEst = est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 })
-  const within = usd === null ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
-  const summary = usd === null ? `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
-    : `Actual model cost ${a.tokensComplete ? '' : 'at least '}${money(usd)} from the tokens the provider reported, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)} (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'}). Not an invoice.`
-  return { model_usd: usd, model_usd_complete: usd !== null && a.tokensComplete, searches: a.searches, reserved_usd: a.reservedUsd, estimate: est.total, within, summary }
+  const within = !complete ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
+  const reqs = a.requests ?? null, reqsWithTokens = a.requestsWithTokens ?? null
+  // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
+  // what IS known (call count, reported tokens, why no USD) and that the actual cost is unknown - never $0 or free.
+  let summary: string
+  if (usd !== null) {
+    const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
+    const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
+    summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
+  }
+  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else summary = `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
+  // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
+  const capRes = a.capReservedUsd ?? null
+  if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
+  return { model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: est.total, within, summary }
 }
 
 // The one line under the menu that states the limits and what is left. Unreadable budget is "remaining unknown" (never $0.00); the daily and monthly limits are labelled,

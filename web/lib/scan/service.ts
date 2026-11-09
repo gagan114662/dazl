@@ -29,6 +29,7 @@ import { migrateThreadReplies } from '../replies/threads.ts'
 import { migrateTrial } from './trial.ts'
 import { migratePreviewClaim } from './preview-claim.ts'
 import { migrateCompetitors } from '../signals/competitor-reddit.ts'
+import { migrateNeedEvidence } from './need-evidence.ts'
 import { migrateEvents } from '../events/store.ts'
 import { migrateSeo } from '../seo/audit.ts'
 import { migrateWarm } from '../warm/connections.ts'
@@ -58,6 +59,7 @@ export function getScanDb() {
     migrateSequences(db)
     migrateTrial(db)
     migrateCompetitors(db)
+    migrateNeedEvidence(db)
     migrateEvents(db)
     migrateWarm(db)
     migrateSeo(db)
