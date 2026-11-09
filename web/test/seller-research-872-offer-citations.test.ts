@@ -93,6 +93,32 @@ test('an exclusion bound to the OTHER offer never sources this offer\'s disquali
   unsourced(r.hypotheses.find(h => h.offer === o1.id && h.kind === 'disqualifier')!)
 })
 
+// The disqualifier binding is EXACT: the exclusion's object must equal the claim, comparator and number included.
+const disq = (text: string, quote: string) => {
+  const r = run([{ id: 'o1', name: 'Acme Payroll', url: PAYROLL, quote: PAYROLL_QUOTE }], [
+    { offer: 'o1', kind: 'disqualifier', text, url: PAYROLL, quote, inferred: false },
+  ], [page(PAYROLL, `${PAYROLL_QUOTE} ${quote}`, T0 + 2)])
+  const o1 = r.offers.find(x => x.name === 'Acme Payroll')!
+  return r.hypotheses.find(h => h.offer === o1.id && h.kind === 'disqualifier')!
+}
+
+test('an under-50 exclusion never backs an over-50 claim (comparator is part of the binding)', () => {
+  unsourced(disq('clinics with over 50 staff', 'Acme Payroll is not available for clinics with under 50 staff.'))
+})
+
+test('an exclusion of a DIFFERENT segment plus a positive availability for the claimed one never sources', () => {
+  unsourced(disq('Texas clinics', 'Acme Payroll is not available for dental clinics, but is available for Texas clinics.'))
+})
+
+test('a positive availability for the claimed segment plus an unrelated exclusion never sources', () => {
+  unsourced(disq('dental clinics', 'Acme Payroll is available for dental clinics. Our consulting service is not suitable for retailers.'))
+})
+
+test('an explicit exclusion bound to the same offer and the exact claimed segment IS sourced (control)', () => {
+  const h = disq('clinics with over 50 staff', 'Acme Payroll is not available for clinics with over 50 staff.')
+  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+})
+
 test('a disqualifier whose quote does not carry the claim stays a hypothesis with no citation', () => {
   const r = run(OFFERS, [
     { offer: 'o1', kind: 'disqualifier', text: 'solo practitioners', url: BOOKING, quote: BOOKING_QUOTE, inferred: false },
@@ -105,7 +131,8 @@ test('a disqualifier whose quote does not carry the claim stays a hypothesis wit
 const oneOffer = (quote: string, pageText: string, extra: Record<string, unknown> = {}) =>
   run([{ id: 'o1', name: 'Acme Payroll', url: PAYROLL, quote, ...extra }], [], [page(PAYROLL, pageText, T0 + 2)])
 
-// The reviewer's semantic repro set (2026-11-08): each was FALSE-SOURCED by the first cut, all must stay hypotheses.
+// The reviewer's semantic repro sets (2026-11-08, two adversarial rounds): each was FALSE-SOURCED by an earlier cut,
+// all must stay hypotheses.
 const REPRO: [string, string][] = [
   ['customers buying from another vendor', 'Our customers buy Acme Payroll from another vendor.'],
   ['a cannot-offer statement', 'We cannot offer Acme Payroll to any customers.'],
@@ -114,6 +141,12 @@ const REPRO: [string, string][] = [
   ['a not-sold-here statement', 'Acme Payroll is not sold by our company.'],
   ['a nav-style information label', 'Acme Payroll information and resources for your business.'],
   ['a longer name with the offer as prefix (PayrollPlus)', 'Our offer is Acme PayrollPlus, which runs monthly payroll.'],
+  ['sold exclusively by another vendor', 'Acme Payroll is a product sold exclusively by another vendor.'],
+  ['a does-not-run statement', 'Acme Payroll does not run payroll for any customer.'],
+  ['a not-our-product competitor statement', 'Acme Payroll is not our product and belongs to a competitor.'],
+  ['a reviewer writing about the offer', 'A reviewer wrote that Acme Payroll runs payroll for clinics.'],
+  ['a might-help-one-day statement', 'Acme Payroll might help clinics one day but is not available today.'],
+  ['a no-longer-sold statement', 'Acme Payroll is no longer sold by anyone.'],
 ]
 for (const [label, q] of REPRO) {
   test(`repro: ${label} never sources the offer`, () => {
@@ -203,6 +236,12 @@ test('ingress: a forged sourced offer quoting another offer\'s claim honestly do
   const r = stored('Acme Booking runs payroll for clinics.')
   assert.ok(r, 'research kept')
   assert.deepEqual([r.hyps[0].s, r.hyps[0].u], ['hypothesis', null])
+})
+
+test('ingress: a sourced row whose text is not the canonical offer name honestly downgrades', () => {
+  const r = normalizeResearch({ v: 1, site: 'multi.example', offers: [{ i: 'acme-payroll', n: 'Acme Payroll' }], hyps: [{ i: 'acme-payroll:offer', o: 'acme-payroll', k: 'offer', t: 'Other Payroll', s: 'sourced', u: PAYROLL, q: 'Other Payroll runs payroll for clinics.', at: T0 + 2 }], q: null, ans: null })
+  assert.ok(r, 'research kept')
+  assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].q, r.hyps[0].at], ['hypothesis', null, null, null])
 })
 
 test('ingress: a forged sourced disqualifier without an explicit bound exclusion honestly downgrades', () => {

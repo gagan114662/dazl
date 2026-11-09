@@ -35,23 +35,26 @@ export function quoteSupports(kind: string, text: string, quote: string): boolea
   return need.some(has)
 }
 
-// Offer citation binding (#872). An offer is source-backed only by an unambiguous FIRST-PARTY POSITIVE predicate:
-// the offer's WHOLE name appears as consecutive, exactly-matched tokens (no prefix bleed - "PayrollPlus" never
-// carries "Payroll"), the name is the SUBJECT of a positive predicate ("Acme Payroll runs payroll for clinics"),
-// and none of the contexts where a name on the page is not the seller's own claim appears: a negated offering
-// ("we don't/cannot offer X", "X is not sold/available"), a comparison ("Unlike X, ..."), third-party words about
-// the offer ("customers buy X from another vendor", "customers say X saved hours", an attributed testimonial), or a
-// bare label/headline with no predicate ("X information and resources"). quoteSupports alone is NOT enough for
-// identity: its one-distinctive-word rule admits a sibling product sharing a brand word and reads neither polarity
-// nor attribution. Every condition here is necessary, none is proof alone; anything short of all fails closed.
-const NEG_OFFER = /\b(?:don'?t|do not|doesn'?t|does not|cannot|can'?t|couldn'?t|could not|won'?t|will not|never|no longer|stopped?|dropp?ed|discontinued?|retired?|unable to)\s+(?:[\p{L}]+\s+){0,3}(?:offer|offers|offered|sell|sells|sold|provide|provides|provided|carry|carries|support|supports|make|makes|include|includes|ship|ships)\b|\b(?:not|never|no longer)\s+(?:available|offered|provided|supported|for|sold|included|shipped|carried|made|built)\b/iu
+// Offer citation binding (#872), a narrow ACCEPTED first-party grammar. Anything unrecognized fails closed to a
+// hypothesis - this is an acceptlist, not a growing denylist. An offer is source-backed only when a sentence of the
+// quote meets ALL of:
+// - the offer's WHOLE name (consecutive full-stem-equal tokens, no prefix bleed - "PayrollPlus" never carries
+//   "Payroll") is sentence-initial or follows a first-party OPENER ("our", "our offer is", "we built") - never
+//   embedded in someone else's clause ("a reviewer wrote that X runs...", "customers say X...", "we cannot offer
+//   X", "our customers buy X from another vendor");
+// - a POSITIVE predicate lands immediately on the name: an acceptlisted verb ("X runs payroll for clinics") or a
+//   copula + acceptlisted first-party complement ("X is our flagship product", "X is available"). A bare copula
+//   with anything else ("X is a product sold exclusively by another vendor") is not a claim;
+// - POLARITY is exact: a negator between the name and the predicate, or anywhere after it in the sentence, voids
+//   the sentence ("X does not run payroll", "X is not our product", "X is no longer sold");
+// - the quote names exactly ONE offer (a sentence naming two offers sources neither), with no comparison,
+//   third-party subject, or testimonial attribution anywhere in it.
+// quoteSupports alone is NOT enough for identity: its one-distinctive-word rule admits a sibling product sharing a
+// brand word and reads neither polarity nor attribution.
 const COMPARISON = /\b(?:unlike|versus|vs\.?|compared (?:to|with)|alternative to|instead of|rather than|better than|cheaper than)\b/i
 const ATTRIBUTION = /(?:^|\s)[-–—]\s*\p{Lu}[\p{L}'.-]*(?:\s+\p{Lu}[\p{L}'.-]*){0,3}\s*$/u
 // A customer or other third party as the claim's subject: their purchase or praise is not the seller's own statement.
 const THIRD_PARTY = /\b(?:customers?|clients?|users?|buyers?|patients?|companies|they|people)\s+(?:[\p{L}']+\s+){0,4}(?:buy|bought|purchase[sd]?|use[sd]?|say|said|chose|choose|prefer(?:red)?|love[sd]?|left|switch(?:ed)?|got|get|found|report(?:ed)?)\b/iu
-// Positive first-party predicates: the offer named as subject does or is something. A name with no such predicate
-// after it (a nav label, a list entry, the object of someone else's sentence) is not a claim.
-const FIRST_PARTY_PREDICATE = new Set('is are runs run lets let helps help gives give offers offer provides provide includes include costs cost starts start makes make automates automate sends send fills fill saves save supports support handles handle delivers deliver simplifies simplify built designed made priced comes comes'.split(' '))
 const tokens = (s: string) => norm(s).split(' ').filter(Boolean)
 // The name's tokens, stem-equal and CONSECUTIVE in the quote's tokens; no prefix extension ("payrollplus" != "payroll").
 // Uses a FULL stem - the shared stem() truncates to 7 letters for word-carriage, which would bleed prefixes here.
@@ -68,27 +71,89 @@ function offerOwnership(name: string, quote: string, otherNames: string[]): bool
   if (nameSubject(name, qtoks) < 0) return false
   return !otherNames.some(o => norm(o) !== norm(name) && nameSubject(o, qtoks) >= 0)
 }
+// A quote's sentences: the grammar binds name, predicate, polarity and segment within ONE sentence, never across.
+const sentences = (s: string) => s.split(/[.!?]+|\n+/).map(x => x.trim()).filter(Boolean)
+// Positive first-party predicates. A verb not in this list is not a claim; a claim not recognized is a hypothesis.
+const POS_VERB = new Set('runs lets helps gives offers provides includes costs starts makes automates sends fills saves supports handles delivers simplifies serves'.split(' '))
+// After a copula, only a first-party possessive or a positive availability adjective counts - never a bare noun
+// phrase ("is a product sold by another vendor").
+const COPULA_COMPLEMENT = new Set(['our', 'available', 'built', 'designed', 'made', 'priced', 'free', 'live', 'ready'])
+// Sentence-openers that keep the name first-party. Anything else before the name embeds it in another clause.
+const OPENERS = new Set(['', 'the', 'our', 'our offer is', 'our product is', 'our flagship', 'we built', 'we make', 'we offer', 'we sell', 'we provide', 'we ship', 'introducing', 'meet'])
+// Negation: a bare negator, or the two tokens norm() makes of a contraction ("don't" -> "don t"). 'without' is
+// deliberately NOT here ("runs payroll for clinic owners without a finance team" is a true positive).
+const NEGATOR = new Set(['not', 'no', 'never', 'nor', 'neither', 'cannot', 'hardly', 'barely'])
+const CONTRACTION = /^(?:don|doesn|didn|won|can|couldn|isn|aren|wasn|weren|hasn|haven|hadn|mustn|shouldn|wouldn)$/
+const isNeg = (toks: string[], i: number) => NEGATOR.has(toks[i]) || (CONTRACTION.test(toks[i]) && toks[i + 1] === 't')
+type OfferVerdict = 'positive' | 'negative' | 'none'
+function offerSentence(name: string, stoks: string[]): OfferVerdict {
+  const at = nameSubject(name, stoks)
+  if (at < 0) return 'none'
+  if (!OPENERS.has(stoks.slice(0, at).join(' '))) return 'none'   // embedded in another clause: not the seller's own claim
+  const rest = stoks.slice(at + tokens(name).length)
+  if (!rest.length) return 'none'
+  if (isNeg(rest, 0)) return 'negative'
+  let positive = false
+  if (POS_VERB.has(rest[0])) positive = true
+  else if ((rest[0] === 'is' || rest[0] === 'are') && rest[1] !== undefined) {
+    if (isNeg(rest, 1)) return 'negative'
+    positive = COPULA_COMPLEMENT.has(rest[1])
+  }
+  if (!positive) return 'none'
+  for (let i = 1; i < rest.length; i++) if (isNeg(rest, i)) return 'negative'   // polarity holds across the sentence
+  return 'positive'
+}
 export function quoteBacksOffer(name: string, quote: string, otherNames: string[] = []): boolean {
   if (!name || !quote) return false
-  const qtoks = tokens(quote)
-  const at = nameSubject(name, qtoks)
-  if (at < 0 || otherNames.some(o => norm(o) !== norm(name) && nameSubject(o, qtoks) >= 0)) return false
-  // Subject/predicate: a first-party positive predicate follows the name within three tokens.
-  const after = qtoks.slice(at + tokens(name).length, at + tokens(name).length + 3)
-  if (!after.some(t => FIRST_PARTY_PREDICATE.has(t))) return false
-  if (NEG_OFFER.test(quote) || COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote)) return false
-  // A claim has prose around the name; a title-case-only label is not a predicate.
-  return quote.split(/\s+/).filter(w => /^\p{Ll}[\p{Ll}'-]+$/u.test(w) && !STOP.has(norm(w))).length >= 2
+  if (!offerOwnership(name, quote, otherNames)) return false
+  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote)) return false
+  let positive = false
+  for (const s of sentences(quote)) {
+    const v = offerSentence(name, tokens(s))
+    if (v === 'negative') return false
+    if (v === 'positive') positive = true
+  }
+  return positive
 }
 
-// Disqualifier citation binding (#872): the OPPOSITE polarity of an offer citation. A disqualifier is source-backed
-// only by an EXPLICIT exclusion claim bound to the SAME offer: the quote names that offer (exact token identity,
-// exactly one owner), carries the claim's own words/numbers, and states the exclusion outright ("Acme Booking is not
-// available for clinics with over 50 staff"). A pricing boundary, an "only" mention, a positive inclusion of the
-// same segment, or the OTHER offer's exclusion never sources it. Comparison and third-party words are still refused.
-const EXCLUSION = /\b(?:not (?:available|for|intended|designed|suitable|offered|built|made|provided|supported)|doesn'?t (?:serve|support|fit|work for)|do not (?:serve|support)|cannot (?:serve|support)|no (?:support|availability) for|excludes?|not serve)\b/iu
+// Disqualifier citation binding (#872): an EXPLICIT exclusion clause bound to the SAME offer and to the CLAIMED
+// segment, token-for-token. The quote must name the offer (exact identity, exactly one owner) and state a negative
+// availability predicate with the offer as subject ("Acme Booking is not available for clinics with over 50
+// staff"), where the predicate's OBJECT equals the claim text - full-stem token equality, so the comparator and
+// the number are part of the binding ("under 50" never backs an "over 50" claim, "dental clinics" never backs
+// "Texas clinics"). A positive availability for the same segment anywhere in the sentence vetoes the exclusion
+// ("not available for dental clinics, but available for Texas clinics"). A pricing boundary, an "only" mention, a
+// positive inclusion of the segment, or the OTHER offer's exclusion never sources it.
+const NEG_AVAIL = 'is not available for|is unavailable for|are not available for|are unavailable for|is not for|is not intended for|is not designed for|is not suitable for|is not built for|is not made for|is not offered to|are not offered to|does not serve|do not serve|does not support|do not support|does not fit|cannot serve|cannot support|excludes'.split('|')
+const POS_AVAIL = 'is available for|are available for|is designed for|is built for|is made for|is suitable for|is intended for|is offered to|is for|serves|supports'.split('|')
+const CLAUSE_END = new Set(['but', 'however', 'though', 'although', 'yet', 'while'])
+const segEq = (a: string[], b: string[]) => a.length === b.length && a.every((w, i) => stemFull(w) === stemFull(b[i]))
 export function quoteBacksDisqualifier(offerName: string, text: string, quote: string, otherNames: string[] = []): boolean {
+  if (!offerName || !text || !quote) return false
   if (!offerOwnership(offerName, quote, otherNames)) return false
   if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote)) return false
-  return EXCLUSION.test(quote) && quoteSupports('disqualifier', text, quote)
+  const claim = tokens(text)
+  if (!claim.length) return false
+  let excluded = false, included = false
+  for (const s of sentences(quote)) {
+    const stoks = tokens(s)
+    const at = nameSubject(offerName, stoks)
+    if (at < 0 || !OPENERS.has(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
+    const rest = stoks.slice(at + tokens(offerName).length)
+    const objectAfter = (pt: string[], from: number) => {
+      const obj = rest.slice(from + pt.length)
+      const cut = obj.findIndex(w => CLAUSE_END.has(w))
+      return cut < 0 ? obj : obj.slice(0, cut)
+    }
+    for (const p of NEG_AVAIL) {
+      const pt = p.split(' ')
+      if (pt.every((w, i) => rest[i] === w) && segEq(objectAfter(pt, 0), claim)) excluded = true
+    }
+    // A positive availability for the claimed segment - even in a later elided-subject clause - vetoes the exclusion.
+    for (const p of POS_AVAIL) {
+      const pt = p.split(' ')
+      for (let i = 0; i + pt.length <= rest.length; i++) if (pt.every((w, j) => rest[i + j] === w) && segEq(objectAfter(pt, i), claim)) included = true
+    }
+  }
+  return excluded && !included
 }

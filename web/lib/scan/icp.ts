@@ -69,8 +69,11 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
     // no evidence, and a headcount or place is dropped (unknown is never persisted as a statement).
     // #872: the ingress re-check uses the same strict binding as buildResearch - a stored or client-sent 'sourced'
     // offer or disqualifier must pass the same ownership/polarity/exclusion guards, or it honestly downgrades.
+    // An offer row must also be ABOUT the canonical offer it references: the stored text is validated against the
+    // offer's current canonical name, so a row claiming one offer under another's id cannot stay sourced.
     const offerName = offers.find(x => x.i === o)?.n ?? ''
-    const backed = k === 'offer' ? quoteBacksOffer(t, q ?? '', offers.map(x => x.n)) : k === 'disqualifier' ? (offerName ? quoteBacksDisqualifier(offerName, t, q ?? '', offers.map(x => x.n)) : false) : quoteSupports(k, t, q ?? '')
+    const canonical = !!offerName && t.trim().toLowerCase() === offerName.trim().toLowerCase()
+    const backed = k === 'offer' ? (canonical && quoteBacksOffer(offerName, q ?? '', offers.map(x => x.n))) : k === 'disqualifier' ? (offerName ? quoteBacksDisqualifier(offerName, t, q ?? '', offers.map(x => x.n)) : false) : quoteSupports(k, t, q ?? '')
     if (st === 'sourced' && !(u && at && q && backed)) {
       if (k === 'size' || k === 'location') continue
       hyps.push({ i, o, k: k as ResearchedHyp['k'], t, s: 'hypothesis', u: null, q: null, at: null }); continue
