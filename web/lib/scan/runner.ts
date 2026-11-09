@@ -1421,7 +1421,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (job.query && icpForSources && complete && !trial) {
       try {
         assertOwned(db, job)
-        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport: deps.linkedinTransport })
+        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport: deps.linkedinTransport, beforeRequest: () => assertOwned(db, job) })
         if (li.length > 0) {
           ledger.record(PEOPLE_CONNECTOR, 'ok', li.length)
           assertOwned(db, job)

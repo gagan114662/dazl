@@ -27,10 +27,11 @@ const providers = (): Record<'anthropic' | 'openai', Provider> => ({
   anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k, p) => p.includes('jane-doe-1') ? JSON.stringify([{ name: 'Jane Doe', company: 'Acme Logistics', contact: null, signal: 'Commented on a LinkedIn post about Rippling', source_url: 'https://www.linkedin.com/in/jane-doe-1/', excerpt: QUOTE, score: 70, event_date: '2026-10-20' }]) : '[]' },
   openai: { research: async () => ({ text: '', citedUrls: [] }) },
 })
-const run = async (flag: boolean, transport?: LinkedInTransport) => {
+const run = async (flag: boolean, transport?: LinkedInTransport, onDb?: (db: Database.Database, id: string) => void) => {
   const db = await setup(); const saved = { ...process.env }; if (flag) Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_LINKEDIN: '1', ADVANCED_LINKEDIN_PEOPLE: '1' }); else delete process.env.ADVANCED_LINKEDIN_PEOPLE
   try {
     const id = createQueryJob(db, 'A', { query: 'Ohio employers that need payroll help', icp: JSON.stringify(ICP) } as never)
+    onDb?.(db, id)
     await runJob(db, claimKeyedJob(db, id)!, { providers: providers(), master, fetchPage: async () => null, linkedinTransport: transport, score: false, judge: null })
     return { db, leads: listLeads(db, 'A', id, 200, true) as { name: string; company: string; review_reason: string | null; source_url: string }[] }
   } finally { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved) }
@@ -54,4 +55,12 @@ test('a throttled answer in a scan stops LinkedIn for that tenant and the scan s
   let asked = 0; const t: LinkedInTransport = { fetch: async () => { asked++; return { status: 'throttled' } } }
   const { db, leads } = await run(true, t); assert.equal(asked, 1); assert.ok(!leads.some(l => l.source_url.includes('linkedin.com/in/')))
   assert.ok((db.prepare("SELECT status FROM connector_audit WHERE connector = 'adv:linkedin'").all() as { status: string }[]).some(r => r.status === 'stopped_throttled'))
+})
+
+test('a scan cancelled during the LinkedIn phase makes no further LinkedIn request (ownership is re-checked before each one)', async () => {
+  let asked = 0, handle: { db: Database.Database; id: string } | null = null
+  const t: LinkedInTransport = { fetch: async () => { asked++; handle!.db.prepare("UPDATE scan_jobs SET status = 'failed', error = 'cancelled', claimed_at = NULL WHERE id = ? AND status = 'running'").run(handle!.id); return { status: 'ok', items: [] } } }
+  const { db } = await run(true, t, (d, id) => { handle = { db: d, id } })
+  assert.equal(asked, 1, 'the second planned request (people search + one competitor) is never sent')
+  assert.ok((db.prepare("SELECT status FROM connector_audit WHERE connector = 'adv:linkedin-people'").all() as { status: string }[]).some(r => r.status === 'scan_stopped'))
 })

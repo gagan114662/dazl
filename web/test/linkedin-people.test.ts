@@ -194,3 +194,24 @@ bothEngines('UPGRADE concurrent (seeded): per tenant/connector budget, legacy us
   const [aLi, aOther, bLi, bFresh] = await Promise.all([run('A', 'adv:linkedin'), run('A', 'adv:other'), run('B', 'adv:linkedin'), run('B', 'adv:fresh')])
   assert.deepEqual([aLi, aOther, bLi, bFresh], [1, 2, 0, 3], 'A/linkedin 2 used -> 1; A/other 1 used -> 2; B/linkedin 3 used -> 0; B/fresh none used -> 3')
 })
+
+bothEngines('OWNER: a scan stopped while a request was in flight starts no further request, spends no budget, and records scan_stopped', async ({ db }) => {
+  await ready(db)
+  let owned = true, calls = 0
+  const t: LinkedInTransport = { fetch: async () => { calls++; owned = false; return ok('owner-a') } }   // the scan is cancelled during the first call
+  class Stopped extends Error {}
+  await assert.rejects(collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: NOW, beforeRequest: () => { if (!owned) throw new Stopped('stopped') } }), Stopped)
+  assert.equal(calls, 1, 'no second LinkedIn request after the stop')
+  assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin', NOW), 1, 'the stopped run reserved nothing more')
+  assert.deepEqual(await audits(db), ['linkedin:ok', 'linkedin-people:scan_stopped'])
+})
+
+bothEngines('OWNER: an async hook that rejects before the first request stops the run with no request; a hook that passes changes nothing', async ({ db }) => {
+  await ready(db)
+  const { t, seen } = recorder([ok('own-b'), ok('own-c')])
+  await assert.rejects(collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: NOW, beforeRequest: async () => { throw new Error('timed out') } }), /timed out/)
+  assert.equal(seen.length, 0); assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin', NOW), 0)
+  let checks = 0
+  const r = await collectLinkedInPeople(db, 'A', 'j2', ICP, { transport: t, env: ENV, now: NOW, beforeRequest: () => { checks++ } })
+  assert.equal(seen.length, MAX_REQUESTS_PER_RUN); assert.equal(checks, MAX_REQUESTS_PER_RUN, 'checked once before each request'); assert.equal(r.length, 2)
+})

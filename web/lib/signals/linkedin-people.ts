@@ -12,6 +12,8 @@
 //           result is discarded and the run stops with a cooldown. At most MAX_ITEMS items are taken from that single page.
 //   DEADLINE the call is raced against a hard deadline; the signal is aborted, and any result that arrives after the deadline is DISCARDED even if the transport ignored the abort.
 //   STOP    throttled / challenge / unauthorised: stop at once, no retry, and a COOLDOWN_S cooldown for that tenant only.
+//   OWNER   deps.beforeRequest (the scan runner's ownership/deadline check) runs immediately before EVERY reservation: a scan that was cancelled, reaped or timed out
+//           while an earlier request was in flight starts no new LinkedIn request. Its throw is recorded ('scan_stopped') and re-thrown to the runner.
 //   OUTPUT  only public profile URLs (https://www.linkedin.com/in/<slug>), deduplicated across queries and within a result; bounded text; leads stay in the review lane
 //           (login_required) and are never emailed automatically.
 // Db layer (SQLite + Postgres).
@@ -70,7 +72,7 @@ async function gateStatus(db: Db, tenantId: string, env: Record<string, string |
   return null
 }
 
-export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: string, icp: { who: string[]; where: string[]; industries: string[] }, deps: { transport?: LinkedInTransport; env?: Record<string, string | undefined>; now?: number; deadlineMs?: number } = {}): Promise<LinkedInItem[]> {
+export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: string, icp: { who: string[]; where: string[]; industries: string[] }, deps: { transport?: LinkedInTransport; env?: Record<string, string | undefined>; now?: number; deadlineMs?: number; beforeRequest?: () => void | Promise<void> } = {}): Promise<LinkedInItem[]> {
   const envNow = () => deps.env ?? process.env, now = deps.now ?? Math.floor(Date.now() / 1000), deadlineMs = deps.deadlineMs ?? DEADLINE_MS
   const skip = async (status: string) => { await writeAudit(db, { tenantId, connector: PEOPLE_CONNECTOR, jobId, lookup: 'linkedin people', status, results: 0 }); return [] as LinkedInItem[] }
   const g0 = await gateStatus(db, tenantId, envNow()); if (g0) return skip(g0)
@@ -81,6 +83,8 @@ export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: str
   for (const q of queries) {
     // Every gate again, immediately before THIS request: a switch flipped mid-run stops the run.
     const g = await gateStatus(db, tenantId, envNow()); if (g) { await skip(g); break }
+    // The scan still owns this run (not cancelled, reaped or timed out): checked before the reservation, so a stopped scan neither spends budget nor calls LinkedIn.
+    if (deps.beforeRequest) { try { await deps.beforeRequest() } catch (e) { try { await skip('scan_stopped') } catch { /* the audit write failed: the runner still sees the stop */ } throw e } }
     if (!(await reserveRequest(db, tenantId, ID, MAX_REQUESTS_PER_HOUR, 'people', now))) { if (made === 0) await skip('rate_limited'); else await skip('rate_limited_mid_run'); break }
     made++
     const lookup = `${q.kind}:${q.query}`
