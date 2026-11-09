@@ -77,6 +77,27 @@ production DB restore, directory hygiene edits, rotation or8795 action follows
 from snapshot permission. Historical backup mode644 remains unchanged.
 
 
+## Backup preflight (manual operator tool)
+
+ops/backup_preflight.py is kept as a manual operator preflight. No timer,
+service or script calls it; the scheduled backups are ops/backup/*. Its tests
+(ops/test_backup_preflight.py) run in release-preflight CI with every other
+ops/test_*.py file.
+
+Default invocation only validates the env file and the fixed DB identity. It
+prints one JSON status line and never writes anything:
+
+    python3 ops/backup_preflight.py --env-file /path/to/env \
+      --source "$DB_PATH" --backup /outside/dir/b.db \
+      --restore-rehearsal /outside/dir/r.db
+
+--create-backup is a separate host action that needs explicit original user
+approval before it is run. With it, the tool takes a readonly snapshot, creates
+new 0600 backup and restore-rehearsal files (never overwriting), refuses outputs
+inside the source DB directory, and verifies integrity plus a logical digest.
+It never writes to the source database.
+
+
 ## Literal unquoted value compatibility
 
 Reviewed fixedcategory-only check established unquoted_multiword as existingenv

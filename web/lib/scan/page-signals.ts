@@ -77,6 +77,7 @@ export function readPage(text: string, cap = 60_000, show = 12): PageReading {
 
 import { asDb, type DbLike } from '../db/client.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
+import { domainConfirmedDb } from '../signals/domain-basis.ts'
 export interface LeadPageReading { url: string; role: 'posting' | 'company_home'; status: 'read' | 'failed' | 'not_used'; why?: string; reading?: PageReading }
 export interface LeadSignals { lead_id: string; company: string; topic: string; applies_to: string; looked_for: { task_terms: string[]; stack_names: string[] }; pages: LeadPageReading[]; model_call: false }
 
@@ -84,11 +85,14 @@ export interface LeadSignals { lead_id: string; company: string; topic: string; 
 // A posting page is used only if it names the company. Public pages only; no model, no spend, nothing stored.
 // The lead read is on the Db layer (#354), so the route runs on SQLite or Postgres; a raw handle is wrapped on the same connection.
 export async function leadSignals(db: DbLike, userId: string, leadId: string, fetchPage: (u: string) => Promise<Page | FetchFail> = fetchPageDetailed): Promise<LeadSignals | null> {
-  const lead = await asDb(db).get<{ id: string; company: string; source_url: string; company_domain: string | null }>('SELECT l.id, l.company, l.source_url, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, userId])
+  const d = asDb(db)
+  const readLead = () => d.get<{ id: string; company: string; source_url: string; company_domain: string | null }>('SELECT l.id, l.company, l.source_url, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, userId])
+  const lead = await readLead()
   if (!lead) return null
   const targets: { url: string; role: 'posting' | 'company_home' }[] = []
   if (/^https:\/\//.test(lead.source_url)) targets.push({ url: lead.source_url, role: 'posting' })
-  if (lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain)) targets.push({ url: `https://${lead.company_domain}/`, role: 'company_home' })
+  // The home page is read only for a CONFIRMED site (#912): a populated, hostname-shaped company_domain alone may be another company's.
+  if (lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain) && await domainConfirmedDb(d, userId, lead.id, lead.company_domain)) targets.push({ url: `https://${lead.company_domain}/`, role: 'company_home' })
   const nameOk = (t: string) => { const c = lead.company.toLowerCase().replace(/\s+/g, ' ').trim(); return c.length >= 2 && t.toLowerCase().replace(/\s+/g, ' ').includes(c) }
   const pages = await Promise.all(targets.map(async (t): Promise<LeadPageReading> => {
     const r = await fetchPage(t.url).catch(() => ({ fail: 'error' }) as FetchFail)
@@ -96,5 +100,19 @@ export async function leadSignals(db: DbLike, userId: string, leadId: string, fe
     if (t.role === 'posting' && !nameOk(r.text)) return { url: t.url, role: t.role, status: 'not_used', why: 'the posting page does not name the company' }
     return { url: t.url, role: t.role, status: 'read', reading: readPage(r.text) }
   }))
-  return { lead_id: lead.id, company: lead.company, topic: TOPIC, applies_to: APPLIES_TO, looked_for: { task_terms: TASK_TERMS, stack_names: STACK_NAMES }, pages, model_call: false }
+  // The reads above awaited external pages. Whatever they returned is evidence about the lead AS IT WAS when they started, so the lead's
+  // current company, source page, domain and the domain's confirmation are read again before anything is returned as current (#912):
+  //  - the lead is gone or no longer this tenant's: nothing is returned;
+  //  - company, source page or domain changed: every reading is withdrawn (the posting was judged against the old company name, the home page
+  //    belongs to the old domain) and the result names the current company;
+  //  - only the confirmation of the domain was lost: the company-home reading is withdrawn, the posting reading (judged against an unchanged
+  //    company) stands.
+  const now = await readLead()
+  if (!now) return null
+  const CHANGED = 'the lead\'s company, source page or site changed while the pages were being read, so this reading is withdrawn; reload to read the current lead'
+  const LOST = 'the site is no longer confirmed for this lead, so its home page reading is withdrawn'
+  const identityChanged = now.company !== lead.company || now.source_url !== lead.source_url || now.company_domain !== lead.company_domain
+  const homeStale = !identityChanged && targets.some(t => t.role === 'company_home') && !(now.company_domain && await domainConfirmedDb(d, userId, now.id, now.company_domain))
+  const current = pages.map((pg): LeadPageReading => identityChanged ? { url: pg.url, role: pg.role, status: 'not_used', why: CHANGED } : homeStale && pg.role === 'company_home' ? { url: pg.url, role: pg.role, status: 'not_used', why: LOST } : pg)
+  return { lead_id: now.id, company: now.company, topic: TOPIC, applies_to: APPLIES_TO, looked_for: { task_terms: TASK_TERMS, stack_names: STACK_NAMES }, pages: current, model_call: false }
 }

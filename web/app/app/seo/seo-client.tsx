@@ -14,20 +14,37 @@ export default function SeoClient() {
   const [audits, setAudits] = useState<Audit[]>([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const [loadErr, setLoadErr] = useState('')
+
+  // #902: the past-audits read reports failure with a retry instead of looking like "no audits yet".
+  async function loadAudits() {
+    try {
+      const r = await fetch('/api/seo/audit')
+      if (!r.ok) { setLoadErr(`Could not load past audits (error ${r.status}).`); return }
+      const j = await r.json().catch(() => null)
+      if (!j || !Array.isArray(j.audits)) { setLoadErr('Could not load past audits (unexpected response).'); return }
+      setAudits(j.audits); setLoadErr('')
+    } catch { setLoadErr('Could not load past audits. Check your connection.') }
+  }
 
   useEffect(() => {
-    void fetch('/api/seo/audit').then(r => r.ok ? r.json() : null).then(j => { if (j) setAudits(j.audits) }).catch(() => {})
+    void Promise.resolve().then(loadAudits)
+    // Prefill only: if the profile read fails, the field simply stays empty for the owner to type.
     void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(j => { if (j?.website) setDomain(String(j.website).replace(/^[a-z]+:\/\//i, '').replace(/\/.*$/, '')) }).catch(() => {})
   }, [])
 
   async function run(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true); setMsg('')
-    const r = await fetch('/api/seo/audit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ domain }) })
-    const j = await r.json().catch(() => ({}))
-    setBusy(false)
-    if (!r.ok) { setMsg(j.error || 'Audit failed'); return }
-    setAudits(a => [{ id: `new-${Date.now()}`, domain: j.domain, results: j, created_at: j.fetched_at }, ...a].slice(0, 10))
+    try {
+      const r = await fetch('/api/seo/audit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ domain }) })
+      const j = await r.json().catch(() => null)
+      if (!r.ok) { setMsg(j?.error || `Audit failed (error ${r.status}).`); return }
+      if (!j || !Array.isArray(j.checks)) { setMsg('dazl answered, but the reply could not be read, so it is not known whether the audit was saved. Past audits were reloaded below; check there before running it again.'); void loadAudits(); return }
+      setAudits(a => [{ id: `new-${Date.now()}`, domain: j.domain, results: j, created_at: j.fetched_at }, ...a].slice(0, 10))
+    } catch {
+      setMsg('Lost the connection before dazl answered, so it is not known whether the audit finished. Past audits were reloaded below; check there before running it again.'); void loadAudits()
+    } finally { setBusy(false) }
   }
 
   const input = 'bg-white border border-black/20 rounded px-4 py-2.5 text-[#111] text-sm'
@@ -39,7 +56,8 @@ export default function SeoClient() {
         <input className={`${input} flex-1`} placeholder="yourdomain.com" value={domain} onChange={e => setDomain(e.target.value)} maxLength={253} />
         <button className="btn-primary px-5 py-2 text-sm" disabled={busy || !domain.trim()}>{busy ? 'Auditing...' : 'Run audit'}</button>
       </form>
-      {msg && <p className="text-sm text-red-700 mb-4">{msg}</p>}
+      {msg && <p role="alert" className="text-sm text-red-700 mb-4" data-testid="audit-error">{msg}</p>}
+      {loadErr && <p role="alert" className="text-sm text-red-700 mb-4" data-testid="audit-load-error">{loadErr} <button className="underline" onClick={() => void loadAudits()}>Try again</button></p>}
 
       <BriefPanel />
       <NewsjackPanel />

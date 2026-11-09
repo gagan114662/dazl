@@ -88,7 +88,7 @@ async function runCrawls(db: Database.Database, tenant: string, targets: CrawlTa
     const before = crawlAuditCount(db, t.job_id)
     let status: 'finished' | 'cut_off' | 'failed' = 'failed'
     try {
-      await crawlJob(db, tenant, t.job_id, { get: deps.get ?? (url => rawGet(url, 0, 10_000, guardedLookup, signal)), gapMs: deps.gapMs, env: deps.env, signal, leads: [{ id: t.id, company: t.company, source_url: t.source_url }] })
+      await crawlJob(db, tenant, t.job_id, { get: deps.get ?? ((url, opts) => rawGet(url, 0, 10_000, guardedLookup, opts?.signal ?? signal)), gapMs: deps.gapMs, env: deps.env, signal, leads: [{ id: t.id, company: t.company, source_url: t.source_url }] })
       status = signal.aborted ? 'cut_off' : crawlAuditCount(db, t.job_id) > before ? 'finished' : 'failed'
     } catch { status = 'failed' }
     // Only the read that still holds this company's claim may record its outcome. A stale worker finishing after a retry took over changes nothing.
