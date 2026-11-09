@@ -76,13 +76,20 @@ export const WHO_QUESTION = 'Who buys this?'
 const REBUTTAL = /^(?:no|nope|wrong|false|actually|but|however)\b/i
 const DENIAL_FRAME = /\b(?:false|fake|not true|do not offer|don'?t offer|not our|rumou?rs?|hoax|scam|we reject)\b/i
 const DISCLAIMER = /\b(?:third[- ]party (?:assertion|claim)|not our (?:offer|product|claim|statement)|attributed to|review by|testimonial (?:from|by)|says\s+\p{Lu})/iu
-const authored = (text: string): { body: string; term: string }[] => (text.replace(/\s+/g, ' ').match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t.slice(-1) } }).filter(x => x.body)
+// A sentence boundary is terminal punctuation FOLLOWED BY whitespace or end-of-text: an INTERNAL period is real
+// identity ("Acme.Payroll" is one token, not two sentences). Lazy body so the boundary lookahead decides.
+const authored = (text: string): { body: string; term: string }[] => (text.replace(/\s+/g, ' ').match(/.+?[.!?]+(?=\s|$)|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t.slice(-1) } }).filter(x => x.body)
 function sourceContextOk(pageText: string, quote: string): boolean {
   const sents = authored(pageText)
   const qn = norm(quote.replace(/[.!?]+$/, '').trim())
   let found = false
   for (let i = 0; i < sents.length; i++) {
-    if (norm(sents[i].body) !== qn) continue
+    if (norm(sents[i].body) !== qn) {
+      // EVERY occurrence must be clean: the same claim embedded in a LARGER authored sentence with a reporting
+      // frame ("...X." says Harbor Dental) is a framed occurrence - the model cannot pick the clean twin.
+      if (norm(sents[i].body).includes(qn) && REPORTED.test(sents[i].body)) return false
+      continue
+    }
     found = true
     if (sents[i].term !== '.' || REPORTED.test(sents[i].body)) return false
     const prev = sents[i - 1]?.body ?? ''

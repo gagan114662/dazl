@@ -102,38 +102,45 @@ export const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]
 // External ownership: the sentence hands the offer to someone else ("our competitor's payroll product", "sold by
 // another vendor"). Offer citations only - a disqualifier may legitimately exclude third parties.
 const EXTERNAL = /\b(?:competitors?|another (?:vendor|provider|company|seller)|third[- ]party|other (?:vendors?|providers?|companies|compan(?:y|ies)|sellers?)|someone else)\b/i
-// Negation: a bare negator, or the two tokens norm() makes of a contraction ("don't" -> "don t"). 'without' is
+// Negation: a bare negator token, or an n't-contraction (checked at the raw-token call site). 'without' is
 // deliberately NOT here ("runs payroll for clinic owners without a finance team" is a true positive).
 const NEGATOR = new Set(['not', 'no', 'never', 'nor', 'neither', 'cannot', 'hardly', 'barely'])
-const CONTRACTION = /^(?:don|doesn|didn|won|can|couldn|isn|aren|wasn|weren|hasn|haven|hadn|mustn|shouldn|wouldn)$/
-const isNeg = (toks: string[], i: number) => NEGATOR.has(toks[i]) || (CONTRACTION.test(toks[i]) && toks[i + 1] === 't')
-type OfferVerdict = 'positive' | 'negative' | 'none'
-function offerSentence(name: string, stoks: string[]): OfferVerdict {
-  const at = nameSubject(name, stoks)
-  if (at < 0) return 'none'
-  const before = stoks.slice(0, at).join(' ')
-  const rest = stoks.slice(at + tokens(name).length)
-  // Polarity: any negator anywhere in the sentence voids the claim.
-  for (let i = 0; i < stoks.length; i++) if (isNeg(stoks, i)) return 'negative'
-  // A. Exact first-party offering opener, the name its object, NOTHING else in the sentence.
-  if (OFFER_OPEN.has(before) && rest.length === 0) return 'positive'
-  // B. The name as subject of an exact possessive product-identity copula: zero adjectives, no tail.
-  if (before === '' && (rest[0] === 'is' || rest[0] === 'are')) {
-    const poss = rest[1] === 'our' ? (rest[2] === 'flagship' ? 3 : 2) : -1
-    if (poss > 0 && rest.length === poss + 1 && PRODUCT_HEAD.has(rest[poss])) return 'positive'
-  }
-  return 'none'
+// OFFER-ONLY raw identity (#872, round 9): the offer's name matches as RAW whitespace-delimited tokens, exact
+// after case/whitespace normalization ONLY - NO stemming, NO hyphen/period laundering. Internal name punctuation
+// is real identity ('Acme.Payroll' is ONE token, 'Acme-Payroll' != 'Acme Payroll', 'Payrolls' != 'Payroll').
+const rawTokens = (s: string) => s.trim().toLowerCase().split(/\s+/).filter(Boolean)
+const rawNameAt = (nt: string[], qtoks: string[]): number => {
+  if (!nt.length) return -1
+  for (let i = 0; i + nt.length <= qtoks.length; i++) if (nt.every((w, j) => qtoks[i + j] === w)) return i
+  return -1
 }
 export function quoteBacksOffer(name: string, quote: string, otherNames: string[] = []): boolean {
   if (!name || !quote) return false
-  if (!offerOwnership(name, quote, otherNames)) return false
   if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote) || EXTERNAL.test(quote)) return false
-  // The whole quote must be exactly ONE complete declarative ownership sentence - no other unconsumed sentences.
-  const ss = sentences(quote)
-  if (ss.length !== 1) return false
-  const s = ss[0]
-  if (s.term !== '.' && s.term !== '') return false
-  return offerSentence(name, tokens(s.body)) === 'positive'
+  const q = quote.replace(/\s+/g, ' ').trim()
+  // Exactly ONE declarative sentence: no '?'/'!' ANYWHERE (a trailing '. ' never erases sentence intent), no
+  // internal sentence boundary, at most ONE terminal period; a second period is unconsumed punctuation.
+  if (/[?!]/.test(q)) return false
+  const body = q.endsWith('.') ? q.slice(0, -1) : q
+  if (/\.\s/.test(body) || body.endsWith('.')) return false
+  const qtoks = rawTokens(body)
+  const nt = rawTokens(name)
+  const at = rawNameAt(nt, qtoks)
+  if (at < 0) return false
+  // Exactly one owner: no OTHER offer's whole RAW name appears.
+  if (otherNames.some(o => o.trim().toLowerCase() !== name.trim().toLowerCase() && rawNameAt(rawTokens(o), qtoks) >= 0)) return false
+  // Polarity: any negator (bare or n't-contraction) anywhere in the sentence voids the claim.
+  for (const t of qtoks) if (NEGATOR.has(t) || t.endsWith("n't")) return false
+  const before = qtoks.slice(0, at).join(' ')
+  const rest = qtoks.slice(at + nt.length)
+  // A. Exact first-party offering opener, the name its object, NOTHING else in the sentence.
+  if (OFFER_OPEN.has(before) && rest.length === 0) return true
+  // B. The name as subject of an exact possessive product-identity copula: zero adjectives, no tail.
+  if (before === '' && (rest[0] === 'is' || rest[0] === 'are')) {
+    const poss = rest[1] === 'our' ? (rest[2] === 'flagship' ? 3 : 2) : -1
+    if (poss > 0 && rest.length === poss + 1 && PRODUCT_HEAD.has(rest[poss])) return true
+  }
+  return false
 }
 
 // Disqualifier citation binding (#872): an EXPLICIT exclusion clause bound to the SAME offer and to the CLAIMED

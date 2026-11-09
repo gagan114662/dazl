@@ -279,6 +279,42 @@ test('the canonical atomic own-offering sentences source (positive controls)', (
   }
 })
 
+test('the model quote may omit the final period; the AUTHORED page sentence must carry it', () => {
+  const h = offerHyp(oneOffer('We offer Acme Payroll', 'We offer Acme Payroll.'), 'Acme Payroll')
+  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll', 'We offer Acme Payroll'), 'Acme Payroll'))
+})
+
+// Round 9: RAW exact identity. No stemming, no hyphen/period laundering; internal name punctuation is real
+// identity; exactly one terminal period is the boundary; any '?'/'!' or unconsumed punctuation rejects.
+const namedOffer = (name: string, quote: string) =>
+  offerHyp(run([{ id: 'o1', name, url: PAYROLL, quote }], [], [page(PAYROLL, quote, T0 + 2)]), name)
+
+test('offer identity is EXACT: no stemming, no hyphen laundering (round 9)', () => {
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payrolls.'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Pay-Roll.'))
+  unsourced(namedOffer('Acme Pay Roll', 'We offer Acme Pay-Roll.'))
+  unsourced(namedOffer('Acme-Payroll', 'We offer Acme Payroll.'))
+  unsourced(namedOffer('Acme Devices', 'We offer Acme Device.'))
+})
+
+test('internal name punctuation is real identity and survives (round 9)', () => {
+  const h = namedOffer('Acme.Payroll', 'We offer Acme.Payroll.')
+  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+  unsourced(namedOffer('Acme+Payroll', 'We offer AcmePayroll.'))
+})
+
+test("any '?', '!' or unconsumed punctuation rejects - a trailing period never erases sentence intent (round 9)", () => {
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll?.'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll!.'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll?'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll!'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll..'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll;'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll:'))
+  unsourced(namedOffer('Acme Payroll', 'We offer Acme Payroll. We sell Acme Payroll.'))
+})
+
 test('a bare capability sentence is NOT ownership (an integrations directory reads the same)', () => {
   unsourced(offerHyp(oneOffer('Acme Payroll runs payroll for clinics.', 'Acme Payroll runs payroll for clinics.'), 'Acme Payroll'))
 })
