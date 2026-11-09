@@ -32,6 +32,7 @@ const MATRIX: [string, Work, string][] = [
   ['followups', { sent: 1, skipped: 0, stopped: 'uncertain_send' }, 'failure:uncertain_send'], // a send of unknown outcome outranks earlier progress
   ['followups', idle('gmail_or_identity'), 'failure:gmail_or_identity'],
   ['followups', idle('gmail_unavailable'), 'failure:gmail_unavailable'],
+  ['followups', idle('connection_replaced'), 'hold:connection_replaced'],             // #739: the Gmail connection was replaced mid-call; nothing sent, retried next tick
   // runSequences
   ['sequences', seqIdle(), 'success'],                                                // idle pass: no step due
   ['sequences', { started: 1, sent: 0, skipped: 0 }, 'success'],                      // activation is progress
@@ -44,6 +45,7 @@ const MATRIX: [string, Work, string][] = [
   ['sequences', seqIdle('sequences_disabled'), 'failure:sequences_disabled'],         // operator switch off / kill switch
   ['sequences', seqIdle('reading_not_enabled'), 'failure:reading_not_enabled'],       // active work, replies cannot be read
   ['sequences', seqIdle('gmail_unavailable'), 'failure:gmail_unavailable'],
+  ['sequences', seqIdle('connection_replaced'), 'hold:connection_replaced'],
   ['sequences', seqIdle('reply_sync_failed'), 'failure:reply_sync_failed'],
   ['sequences', seqIdle('reply_sync_incomplete'), 'failure:reply_sync_incomplete'], // #355: a due thread left unread by the budget
   ['sequences', seqIdle('uncertain_send'), 'failure:uncertain_send'],

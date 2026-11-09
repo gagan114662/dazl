@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setRequestLogWriter, isRequestId } from '../../lib/ops/request-log.ts'
+import { assertRequestLogLine } from './request-log-leak-check.ts'
 import { setDb, sqliteDb, type Db } from '../../lib/db/client.ts'
 import { migrateAuth, createSession } from '../../lib/auth-db.ts'
 
@@ -24,8 +25,8 @@ test('proxy: a fresh request id per request, forwarded to the route and returned
   const l = JSON.parse(lines[0])
   assert.deepEqual(Object.keys(l).sort(), ['level', 'method', 'path', 'request_id', 'ts', 'type'])
   assert.deepEqual([l.level, l.type, l.request_id, l.method, l.path], ['info', 'request', id, 'GET', '/api/leads'])
-  const noId = JSON.stringify({ ...l, request_id: undefined }) // the request id is a random UUID and may contain any digits
-  for (const leak of ['jane', 'secret', '555', 'evil', 'tok']) assert.ok(!noId.includes(leak), leak)
+  // the request id (random UUID) and ts (the clock, e.g. a legitimate '.555Z') may contain any digits: each is validated on its own, and the leak check covers only the input-derived fields
+  assertRequestLogLine(lines[0], ['jane', 'secret', '555', 'evil', 'tok'])
 
   const res2 = await proxy(req('/api/leads/0123456789abcdef0123456789abcdef/confirm', {}, 'POST'))
   assert.notEqual(res2.headers.get('x-request-id'), id)

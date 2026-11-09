@@ -24,6 +24,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+import { drillPassword } from './drill-password.mts'
 import { restoreDrill } from './lib.ts'
 import { sendSafety } from './send-safety.mts'
 import { decryptSecret } from '../../lib/secrets.ts'
@@ -151,7 +152,7 @@ if (contentOk && restored) {
         // account is created (sign-up), signed out, then signed in with its password; the new session must read the
         // signed-in API. Proves password verification and session creation work on the restored store; no existing
         // user's credentials are touched or needed.
-        const email = `recovery-drill-${randomBytes(6).toString('hex')}@drill.invalid`, password = randomBytes(18).toString('base64url')
+        const email = `recovery-drill-${randomBytes(6).toString('hex')}@drill.invalid`, password = drillPassword()
         const post = (p: string, body: unknown, cookie = '') => fetch(base + p, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) })
         const cookieOf = (r: Response) => /dazl_session=([^;]+)/.exec(r.headers.get('set-cookie') ?? '')?.[1] ?? null
         const up = await post('/api/auth/signup', { email, password, name: 'Recovery drill', business_name: 'Recovery drill' })

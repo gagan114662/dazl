@@ -3,11 +3,13 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed in the
 // browser (no model call, no scan runs). Live finding: Find leads on an unchanged sentence sent no profile, so the server
 // worked out a new one and the reviewed profile was silently discarded. It proves:
-//   1. last search restored with a profile reviewed by the user: the page says Find leads uses it, and the one
-//      POST /api/scan carries exactly that profile;
-//   2. a changed sentence: no reuse note, and the scan request carries no profile (a fresh one is worked out);
+//   1. last search restored with a profile reviewed by the user: the page says Find leads uses the saved profile as
+//      it is, and the one POST /api/scan carries exactly that profile - reviewed: false, because an ordinary repeat
+//      is NOT a new review (stored statuses are preserved, never promoted by presence);
+//   2. a changed sentence: the profile STILL carries (decisions are never silently discarded), the note stays so the
+//      person sees what runs;
 //   3. a profile dazl only inferred is never reused as if reviewed;
-//   4. viewing a finished scan whose profile was reviewed: Find leads on its sentence reuses that profile.
+//   4. viewing a finished scan whose profile was reviewed: Find leads on its sentence reuses that profile, raw.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -68,9 +70,9 @@ try {
   // 1. Restored last search, profile reviewed by the user.
   const a = await open({ latest: { query: Q, icp: REVIEWED, icp_source: 'user' } })
   const box = a.page.getByLabel('Who do you want to reach?')
-  await a.page.getByTestId('reuse-profile').waitFor({ timeout: 15000 })
+  await a.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
   assert.equal(await box.inputValue(), Q)
-  assert.match(await a.page.getByTestId('reuse-profile').textContent(), /^Find leads reuses this stored profile \(approval is not recorded here\): Owner-run dental practices with 2-10 chairs\./)
+  assert.match(await a.page.getByTestId('business-profile').textContent(), /^Find leads uses the saved profile as it is: Owner-run dental practices with 2-10 chairs\./)
   await shot(a.page, 'reuse')
   await a.page.getByRole('button', { name: 'Find leads' }).click()
   assert.equal(a.scanBodies.length, 0, 'no scan before estimate confirmation'); await a.page.getByTestId('estimate-confirm-run').click()
@@ -78,21 +80,23 @@ try {
   assert.equal(a.scanBodies.length, 1)
   assert.deepEqual(a.scanBodies[0].icp, REVIEWED, 'the reviewed profile is sent unchanged')
   assert.equal(a.scanBodies[0].query, Q)
+  assert.equal(a.scanBodies[0].reviewed, false, 'an ordinary repeat is not a new review: statuses are preserved, not promoted')
   await a.ctx.close()
-  // 2. Changed sentence: a new profile is worked out.
+  // 2. Changed sentence: the profile still carries, visibly - review decisions are never silently discarded.
   const c = await open({ latest: { query: Q, icp: REVIEWED, icp_source: 'user' } })
-  await c.page.getByTestId('reuse-profile').waitFor({ timeout: 15000 })
+  await c.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
   await c.page.getByLabel('Who do you want to reach?').fill('Restaurant owners in Austin - started taking online orders')
-  assert.equal(await c.page.getByTestId('reuse-profile').count(), 0)
+  assert.equal(await c.page.getByTestId('business-profile').count(), 1, 'the note stays: the saved profile still runs')
   await c.page.getByRole('button', { name: 'Find leads' }).click()
   assert.equal(c.scanBodies.length, 0); await c.page.getByTestId('estimate-confirm-run').click()
   await c.page.getByText('Queued - waiting to start.').waitFor()
-  assert.equal(c.scanBodies[0].icp, undefined, 'changed sentence: no stale profile sent')
+  assert.deepEqual(c.scanBodies[0].icp, REVIEWED, 'changed sentence: the stored profile carries whole, decisions intact')
+  assert.equal(c.scanBodies[0].reviewed, false)
   await c.ctx.close()
   // 3. Only inferred by dazl: never reused as if reviewed.
   const d = await open({ latest: { query: Q, icp: REVIEWED, icp_source: 'inferred' } })
   await d.page.getByText('Profile used:').waitFor({ timeout: 15000 })
-  assert.equal(await d.page.getByTestId('reuse-profile').count(), 0)
+  assert.equal(await d.page.getByTestId('business-profile').count(), 0)
   await d.page.getByRole('button', { name: 'Find leads' }).click()
   assert.equal(d.scanBodies.length, 0); await d.page.getByTestId('estimate-confirm-run').click()
   await d.page.getByText('Queued - waiting to start.').waitFor()
@@ -100,14 +104,15 @@ try {
   await d.ctx.close()
   // 4. Viewing a finished scan with a reviewed profile: repeating its sentence reuses it.
   const v = await open({ latest: {}, viewJob: true })
-  await v.page.getByTestId('reuse-profile').waitFor({ timeout: 15000 })
+  await v.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
   await v.page.getByRole('button', { name: 'Find leads' }).click()
   assert.equal(v.scanBodies.length, 0); await v.page.getByTestId('estimate-confirm-run').click()
   await v.page.getByText('Queued - waiting to start.').waitFor()
   assert.deepEqual(v.scanBodies[0].icp, REVIEWED)
   assert.equal(v.scanBodies[0].query, Q)
+  assert.equal(v.scanBodies[0].reviewed, false)
   await v.ctx.close()
-  console.log('reuse profile UI check passed: unchanged sentence reuses the reviewed profile (restored or viewed), changed sentence or inferred profile does not')
+  console.log('reuse profile UI check passed: restored or viewed profiles carry raw on repeat AND on a changed sentence; an inferred profile never carries')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

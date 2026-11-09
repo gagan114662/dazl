@@ -34,7 +34,9 @@ test('a stop is never reported as an empty search', () => {
     assert.doesNotMatch(o.label, /no match|nothing found/i, e)
     assert.ok(o.next, e)
   }
-  assert.match(failed('budget_stopped').label, /not an empty search/)
+  // The numeric copy requires the recorded typed reason; a legacy stop with no reason kept stays neutral (#1006).
+  assert.match(failed('budget_stopped', { stop_refusal_reason: 'over_limit' }).label, /not an empty search/)
+  assert.equal(failed('budget_stopped').label, 'Stopped before it could conclude')
 })
 
 // Instinct #274: key_rejected is stored for the user's own key too; only a known trial-funded job is the free-search

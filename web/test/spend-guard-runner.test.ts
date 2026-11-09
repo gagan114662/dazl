@@ -72,11 +72,11 @@ test('a budget that cannot cover the first paid call makes ZERO provider calls a
   assert.equal(x.err, 'budget_stopped')
 })
 
-test('an unpriced or unknown model with a budget makes zero provider calls (no price means no proof of a bound)', async () => {
+test('an unpriced or unknown model with a budget makes zero provider calls and is named model_unpriced (no price means no proof of a bound - never a budget stop)', async () => {
   for (const m of ['some-future-model', undefined]) {
     const x = await run('{"max_usd":5}', m)
     assert.equal(x.calls.complete + x.calls.research, 0, String(m))
-    assert.equal(x.err, 'budget_stopped')
+    assert.equal(x.err, 'model_unpriced', String(m))
   }
 })
 
@@ -171,7 +171,7 @@ test('count_tokens preflight: a counted size that does not fit the limit refuses
   assert.equal(x.calls.complete, 0); assert.equal(x.err, 'budget_stopped')
 })
 
-test('count_tokens preflight: a failed or rate-limited count refuses the paid call (fail closed)', async () => {
+test('count_tokens preflight: a failed or rate-limited count refuses the paid call (fail closed) and is named spend_count_failed, never a budget stop', async () => {
   const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, null, 'fail')
-  assert.equal(x.calls.complete, 0); assert.equal(x.err, 'budget_stopped')
+  assert.equal(x.calls.complete, 0); assert.equal(x.err, 'spend_count_failed')
 })

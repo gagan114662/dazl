@@ -33,8 +33,8 @@ try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.spli
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 const Database = require('better-sqlite3'); const { createHash, randomBytes } = require('crypto')
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-ready-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
-db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), email_verified_at INTEGER); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
-db.prepare("INSERT INTO users (id,email,password_hash,salt,email_verified_at) VALUES ('u1','s@example.test','x','y',1)").run()
+db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
+db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
 const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
@@ -51,9 +51,9 @@ const JOBS = [
   job('f', 'Cancelled search', now - 200, { status: 'failed', error: 'cancelled', lead_count: 0 }),
   job('d', null, now - 100, { csv_domain: 'acme.com' }),
 ]
-const state = { hasKey: false, sender: null, gmail: null, sent: 0, sourcesFail: false }
+const state = { hasKey: false, sender: null, gmail: null, sent: 0, sourcesFail: false, news: false }
 const writes = []
-const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
+const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: Number(process.env.WIDTH || 1280), height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
 await ctx.route('**/*', async route => {
   const req = route.request(); const u = new URL(req.url()); const m = req.method(); const p = u.pathname
@@ -65,8 +65,8 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan/jobs') return json({ jobs: JOBS })
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 0, cap: 3 } })
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
-  // This server has no search index, news or website reads switched on: only web research with a key is possible.
-  if (p === '/api/scan/sources') return state.sourcesFail ? json({ error: 'unavailable' }, 503) : json({ web_index: false, news: true, websites: false })
+  // No primary discovery source is configured: adding a key cannot repair that operator state.
+  if (p === '/api/scan/sources') return state.sourcesFail ? json({ error: 'unavailable' }, 503) : json({ web_index: false, news: state.news, websites: false })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: Math.min(state.sent, 12), account_sent_24h: state.sent })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
   // An approved email and no rejections: the first-scan, leads-reviewed and first-approved rows are done here.
@@ -123,8 +123,9 @@ try {
   await row('key').getByRole('button', { name: 'Add key' }).click()
   await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
   await row('key').getByText('✓').waitFor()
-  await row('sources').getByText('✓').waitFor()
-  assert.match(await row('sources').textContent(), /Lead sources - a scan can use News articles\./)
+  assert.equal(await row('sources').getByText('✓').count(),0)
+  assert.match(await row('sources').textContent(), /no usable discovery source/)
+  assert.equal(await row('sources').getByRole('link',{name:'Add key'}).count(),0)
   await row('sender').getByRole('button', { name: 'Add' }).click()
   await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
   await page.getByRole('button', { name: 'Save sender details' }).click()
@@ -144,8 +145,10 @@ try {
   await shot('after-fixes')
   assert.equal(await row('gmail').getByText('✓').count(), 0, 'Gmail stays a to-do until connected in Settings')
   assert.deepEqual(writes, ['POST /api/settings/profile', 'PUT /api/settings/llm-key', 'PUT /api/outreach/settings', 'POST /api/settings/profile'])
-  assert.equal(await page.getByTestId('ready-progress').textContent(), '10 of 11 done')
+  assert.equal(await page.getByTestId('ready-progress').textContent(), '9 of 11 done')
 
+  // Explicit simulated operator news availability, independent of adding the key. No actual source/config call.
+  state.news = true
   // Gmail connected (in Settings; here the stubbed status says so): everything is done, so the checklist goes away.
   state.gmail = { email: 'dana@brightsmile.example', status: 'active' }
   await page.reload({ waitUntil: 'networkidle' })
@@ -176,6 +179,10 @@ try {
   assert.equal(await page.getByTestId('ready-progress').textContent(), '10 of 11 done')
   await shot('sources-unknown')
   console.log('readiness UI check passed:', writes.join(', '))
+} catch (e) {
+  console.error('READINESS_DIAGNOSTIC', JSON.stringify({url:page.url(),body:(await page.locator('body').innerText().catch(()=>'' )).slice(0,6000)}))
+  await shot('failure-state').catch(()=>{})
+  throw e
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

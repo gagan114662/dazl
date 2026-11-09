@@ -67,7 +67,7 @@ await ctx.route('**/*', async route => {
   return json({}, 404)
 })
 const page = await ctx.newPage()
-const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
+const shot = async (name, target) => { if (!process.env.SHOTS) return; if (target) await target.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }); else await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
 try {
   await page.goto(`${base}/app/leads`, { waitUntil: 'networkidle' })
   await page.getByTestId('play-settings').locator('summary').first().click() // the website fill lives under Settings for this play > More sources
@@ -78,7 +78,11 @@ try {
   await block.waitFor({ timeout: 10000 })
   const card = page.locator('.card', { has: block })
   const who = card.locator('textarea').nth(1) // after the summary textarea: who, then the other fields
-  await shot('leads-draft-research-review')
+  // The review panel sits under Settings > More sources. The card is taller than the viewport inside main's own
+  // scroll container, where an element shot still clips - so capture the SOURCE PANEL whole (it fits) and the
+  // bottom controls as a separate visible shot; neither claims to be the whole card.
+  await block.scrollIntoViewIfNeeded()
+  await shot('leads-draft-research-review', block)
 
   // 1. Statements render with quotes/URLs; inferred marked.
   const h1 = page.getByTestId('hyp-h1'), h2 = page.getByTestId('hyp-h2'), h3 = page.getByTestId('hyp-h3')
@@ -101,7 +105,8 @@ try {
   await q.getByRole('button', { name: 'Save' }).click()
   for (let i = 0; i < 50 && !(await who.inputValue()).includes('office managers'); i++) await page.waitForTimeout(100)
   assert.match(await who.inputValue(), /office managers/, 'typed answer lands in the Who field')
-  await shot('leads-draft-research-reviewed')
+  await block.scrollIntoViewIfNeeded()
+  await shot('leads-draft-research-reviewed', block)
 
   // 3. Estimate, confirm, run: the POST carries the reviewed draft with the answer's words and the play's offer.
   // #379: the play's offer is prefilled after a site read - request first, then the business profile (null in this
@@ -113,6 +118,9 @@ try {
   await offerInput.scrollIntoViewIfNeeded()
   await page.waitForTimeout(200)
   await shot('leads-draft-offer-prefilled')
+  // The run controls, visibly on screen (the element shots above never claim them).
+  await page.getByRole('button', { name: 'Run scan with this profile' }).last().scrollIntoViewIfNeeded()
+  await shot('leads-draft-run-controls')
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   await page.getByTestId('estimate-confirm').waitFor()
   await page.getByTestId('estimate-confirm-run').click()
