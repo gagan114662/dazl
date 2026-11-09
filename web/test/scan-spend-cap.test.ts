@@ -257,3 +257,14 @@ bothEngines('scan spend cap: a settle refreshes the lease ONLY for its own attem
   assert.equal(Number(j3!.claimed_at), 1, 'a replayed settle never refreshes the newer attempt')
   assert.equal(Number(j3!.spend_cap_reserved_usd), Number(before!.spend_cap_reserved_usd), 'a replayed settle never re-applies the cost delta')
 })
+
+// #1006 (reviewer repro 03:29): a saved run budget below the fixed cap refuses as over_cap - and the outcome copy must
+// therefore name NEITHER the fixed cap NOR a run budget: the recorded cap's binding origin is not retained.
+bothEngines('scan spend cap: a saved run budget refusal is over_cap, and the outcome copy names no origin and advises no budget change', async ({ db }) => {
+  await job(db, 'jcap', A, { status: 'running', attempts: 1, runBudget: '{"max_usd":0.01}' })
+  await assert.rejects(runWithJobSpend(db, A, 'jcap', () => reserveScanSpend('apollo.org', () => 0.02)), refusedWith('over_cap'))
+  const { scanOutcome } = await import('../lib/scan/scan-outcome.ts')
+  const o = scanOutcome({ id: 'jcap'.padEnd(24, '0'), status: 'failed', error: 'budget_stopped', candidates: 0, verified: 0, needs_review: 0, dropped: 0, lead_count: 0, stop_refusal_reason: 'over_cap' })
+  assert.equal(o.label, 'Stopped by its spending cap - not an empty search')
+  assert.doesNotMatch(`${o.detail} ${o.next?.text}`, /fixed|larger budget|narrower/i)
+})

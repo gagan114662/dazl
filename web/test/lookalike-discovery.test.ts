@@ -123,7 +123,7 @@ test('the real runner on a lookalike scan: supplied accounts are dropped before 
   const page = (t: string) => ({ title: t, text: `Published ${daysAgo(5)}. ${t}. ${'More about the clinic and its patients. '.repeat(12)}` })
   const Q1 = 'Maple Row Dental opened a second orthodontic clinic in New York', Q2 = 'Bright Smile 3 Dental opened a new office in New York', Q3 = 'Other 5 Works opened a new office'
   const r = await runFixture({
-    request: p.query, reviewedIcp: p.icp, modelIcp: p.icp, modelQueries: ['dental clinics new york opens'],
+    request: p.query, reviewedIcp: p.icp, icpReviewed: true, modelIcp: p.icp, modelQueries: ['dental clinics new york opens'],
     hits: [A1, A2, A3].map((u, i) => ({ url: u, title: [Q1, Q2, Q3][i], snippet: [Q1, Q2, Q3][i], date: daysAgo(5) })),
     tfPages: { [A1]: page(Q1), [A2]: page(Q2), [A3]: page(Q3) }, own: { [A1]: page(Q1), [A2]: page(Q2), [A3]: page(Q3) },
     extraction: [

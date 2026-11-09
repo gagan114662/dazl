@@ -117,6 +117,11 @@ async function scenario(db: Db, { J, L }: Ids): Promise<{ out: Out[]; rows: unkn
   out.push(await call('export all', exportRoute.GET(req('/api/leads/export'))))
   out.push(await call('profile', profile.GET()))
   out.push(await call('profile save', profile.POST(req('/api/settings/profile', 'POST', { sells: '  dental scheduling ', business_name: '  Acme   Dental Co ', buyer: null }))))
+  // The whole canonical buyer on BOTH engines: research with a rejection, country/language/window/lookalike survive
+  // save + fresh read (the #1002 carry-through storage proof on Postgres, not only sqlite).
+  const WHOLE = { summary: 'ONLY independent New York City clinics with 2-5 locations', who: ['Clinic administrators'], industries: ['Healthcare clinics'], sizes: ['2-5 locations'], where: ['New York City'], signals: ['Opened a new location within past 30 days'], exclude: ['Chains'], country: 'US', language: 'en', window_days: 180, lookalike: { v: 1, p: 6, q: 6, f: [{ d: 'i', t: 'dental', n: 3, x: 2.5 }], h: { p: 0.8, b: 0.4, n: 6 }, k: { c: 'abcde12345', x: 'zzzzz', n: 'yyyyy' } }, research: { v: 1, site: 'clinicdesk.example', q: 'Who buys this?', ans: { q: 'Who buys this?', o: 'o1', t: 'Clinic administrators' }, offers: [{ i: 'o1', n: 'ClinicDesk' }], hyps: [{ i: 'h1', o: 'o1', k: 'persona', t: 'Clinic administrators', s: 'sourced', u: 'https://clinicdesk.example/', q: 'for clinic administrators', at: 1800000000 }, { i: 'h2', o: 'o1', k: 'persona', t: 'Real estate coaches', s: 'rejected', u: 'https://clinicdesk.example/', q: null, at: null }] } }
+  out.push(await call('profile save whole buyer', profile.POST(req('/api/settings/profile', 'POST', { buyer: WHOLE }))))
+  out.push(await call('profile whole buyer read', profile.GET()))
   out.push(await call('usage A', usage.GET(req('/api/usage'))))
   out.push(await call('confirm', confirm.POST(req(`/api/leads/${L.review}/confirm`, 'POST', {}), ctx({ lead: L.review }))))
   out.push(await call('confirm again', confirm.POST(req(`/api/leads/${L.review}/confirm`, 'POST', {}), ctx({ lead: L.review }))))
@@ -195,6 +200,13 @@ test('batch 1 routes on SQLite answer exactly as the raw store did, including sa
   // 2 of 3 trial scans left; no trial budget configured here (lib/billing/trial-budget.ts), so none would run now
   assert.deepEqual((by('B usage').body as { trial: unknown }).trial, { funded: false, remaining: 2, cap: 3, blocked: 'not_configured' })
   assert.deepEqual(by('profile save').body, { ok: true, sells: 'dental scheduling', website: 'https://acme.example', business_name: 'Acme Dental Co', buyer: null })
+  const wholeRead = (by('profile whole buyer read').body as { buyer: Record<string, unknown> }).buyer
+  assert.equal(wholeRead.window_days, 180)
+  assert.equal(wholeRead.country, 'US')
+  assert.equal(wholeRead.language, 'en')
+  assert.deepEqual((wholeRead.lookalike as { p: number }).p, 6)
+  assert.deepEqual(((wholeRead.research as { hyps: { s: string }[] }).hyps.map(h => h.s)), ['sourced', 'rejected'], 'the rejection survives save + fresh read on both engines')
+  assert.deepEqual(wholeRead, (by('profile save whole buyer').body as { buyer: unknown }).buyer, 'the save response is what a fresh read returns')
   // what a new play starts from (#349): the profile offer without its website, else the Memory positioning; per tenant
   assert.equal((by('profile').body as { new_play_offer: unknown }).new_play_offer, 'dental software')
   assert.equal((by('B profile').body as { new_play_offer: unknown }).new_play_offer, 'Payroll software for restaurants')

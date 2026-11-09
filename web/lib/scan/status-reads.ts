@@ -26,9 +26,11 @@ export async function readModelUsage(db: Db, tenantId: string, jobId: string) {
     return modelUsageOf(rows.map(r => numbers(r, ['attempt', 'seq', 'input_tokens', 'output_tokens', 'max_tokens', 'prompt_chars', 'recorded_at'])))
   } catch { return modelUsageOf([]) }
 }
-export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null }> {
+export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null }> {
   try {
-    const row = await db.get<{ estimate: string | null; spend_reserved_usd: number | string | null }>('SELECT estimate, spend_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
-    return { estimate: row?.estimate ?? null, reserved_usd: row?.spend_reserved_usd == null ? null : Number(row.spend_reserved_usd) }
-  } catch { return { estimate: null, reserved_usd: null } }
+    // Both reservation columns: spend_reserved_usd (a max_usd run's reservation) AND spend_cap_reserved_usd (the per-job
+    // spend-cap ledger, spend-cap.ts). Reading only the first hid real reserved spend on cap-only runs. NULL stays null.
+    const row = await db.get<{ estimate: string | null; spend_reserved_usd: number | string | null; spend_cap_reserved_usd: number | string | null }>('SELECT estimate, spend_reserved_usd, spend_cap_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
+    return { estimate: row?.estimate ?? null, reserved_usd: row?.spend_reserved_usd == null ? null : Number(row.spend_reserved_usd), cap_reserved_usd: row?.spend_cap_reserved_usd == null ? null : Number(row.spend_cap_reserved_usd) }
+  } catch { return { estimate: null, reserved_usd: null, cap_reserved_usd: null } }
 }
