@@ -5,7 +5,7 @@
 // leak into another's targeting. Pure core: the fetcher and the model call are injected (tests stub both); no database, no network of its own.
 import { extractSiteText } from './icp-from-site.ts'
 import { norm } from './evidence.ts'
-import { quoteSupports } from './claim-quote.ts'
+import { quoteSupports, quoteBacksOffer } from './claim-quote.ts'
 
 export type HypKind = 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'
 export type HypStatus = 'sourced' | 'hypothesis' | 'unknown' | 'reviewed' | 'rejected'
@@ -65,18 +65,35 @@ export interface FetchedPage { url: string; kind: PageKind; title: string; text:
 export const OFFER_QUESTION = 'Which of your offers is this play for?'
 export const WHO_QUESTION = 'Who buys this?'
 
+// The offer-citation validator (#872): optional model-supplied {url, quote, inferred} on an offer, verified against the
+// pages actually fetched - never trusted on the model's say-so.
+function offerCitation(x: { name: string; url?: unknown; quote?: unknown; inferred?: unknown }, byUrl: Map<string, FetchedPage>, names: string[]): { url: string; quote: string; fetched_at: number } | null {
+  if (x.inferred === true) return null
+  const pg = typeof x.url === 'string' ? byUrl.get(x.url) : undefined
+  const quote = typeof x.quote === 'string' ? x.quote.replace(/\s+/g, ' ').trim().slice(0, 300) : ''
+  if (!pg || quote.length < 12 || !norm(pg.text).includes(norm(quote))) return null
+  if (!quoteBacksOffer(x.name, quote, names)) return null
+  return { url: pg.url, quote, fetched_at: pg.fetched_at }
+}
+
 export function buildResearch(out: unknown, pages: FetchedPage[], site: string, prior?: SellerResearch | null): SellerResearch | { error: 'model_failed' } {
   if (!out || typeof out !== 'object') return { error: 'model_failed' }
   // Site identity: another site's corrections and answers never carry into this read, even when offer slugs collide.
   if (prior && prior.site !== site) prior = null
   const o = out as { offers?: unknown; items?: unknown }
-  const raw = (Array.isArray(o.offers) ? o.offers : []).filter((x): x is { id?: unknown; name: string } => typeof (x as { name?: unknown })?.name === 'string').slice(0, 6)
+  const raw = (Array.isArray(o.offers) ? o.offers : []).filter((x): x is { id?: unknown; name: string; url?: unknown; quote?: unknown; inferred?: unknown } => typeof (x as { name?: unknown })?.name === 'string').slice(0, 6)
   const names = raw.map(x => x.name.slice(0, 120)), { ids, ambiguous } = offerIds(names)
-  const offers = raw.map((x, i) => ({ ref: typeof (x as { id?: unknown }).id === 'string' ? String((x as { id?: unknown }).id) : null, id: ids[i], name: names[i], ambiguous: ambiguous[i] }))
+  const offers = raw.map((x, i) => ({ ref: typeof (x as { id?: unknown }).id === 'string' ? String((x as { id?: unknown }).id) : null, id: ids[i], name: names[i], ambiguous: ambiguous[i], url: x.url, quote: x.quote, inferred: x.inferred }))
   if (offers.length === 0) return { error: 'model_failed' }
   const byRef = new Map(offers.map(x => [x.ref, x.id]))
   const byUrl = new Map(pages.map(p => [p.url, p]))
-  const hyps: Hypothesis[] = offers.map(x => ({ id: `${x.id}:offer`, offer: x.id, kind: 'offer' as const, text: x.name, status: 'hypothesis' as const, url: null, quote: null, fetched_at: null }))
+  // #872: an offer is source-backed only by a verbatim, claim-carrying first-party sentence on an ALREADY FETCHED page,
+  // cited by its exact URL with that page's own fetch time. No quote, an unfetched URL, a model-marked inference, or a
+  // citation failing the ownership/polarity/attribution guards (claim-quote.ts quoteBacksOffer) stays a hypothesis.
+  const hyps: Hypothesis[] = offers.map(x => {
+    const cite = offerCitation(x, byUrl, names)
+    return { id: `${x.id}:offer`, offer: x.id, kind: 'offer' as const, text: x.name, status: cite ? 'sourced' as const : 'hypothesis' as const, url: cite?.url ?? null, quote: cite?.quote ?? null, fetched_at: cite?.fetched_at ?? null }
+  })
   const origin = new Map<Hypothesis, string>()   // the model's own wording, which the content-keyed id was made from (an edited text is a different string)
   for (const it of (Array.isArray(o.items) ? o.items : []).slice(0, 40) as Record<string, unknown>[]) {
     const offer = typeof it.offer === 'string' && byRef.has(it.offer) ? byRef.get(it.offer)! : offers.some(x => x.id === it.offer) ? String(it.offer) : null
