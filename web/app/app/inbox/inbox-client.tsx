@@ -45,7 +45,7 @@ export default function InboxClient() {
   // #902: per-thread read state, so a failed read and a read that returned no messages each get a terminal state
   // instead of both showing Loading forever; load-more failure is shown with its own retry.
   const [threadErr, setThreadErr] = useState<Record<string, string>>({})
-  const [moreErr, setMoreErr] = useState<string | null>(null)
+  const [moreErr, setMoreErr] = useState<{ key: string; msg: string } | null>(null) // tied to the query that failed; shown only while that query is current
   const [retryTick, setRetryTick] = useState(0)
   const [copied, setCopied] = useState<string | null>(null)
   // First page of the current query. A filter or play change aborts the previous query's requests (first page and
@@ -68,18 +68,24 @@ export default function InboxClient() {
       // Appended only to the list it was asked for. Rows already shown are kept; a thread that moved since the first
       // page is not shown twice.
       if (j && !c.signal.aborted) setList(cur => cur && cur.key === k ? { ...j, key: k, threads: [...cur.threads, ...j.threads.filter(t => !cur.threads.some(x => x.thread_id === t.thread_id))] } : cur)
-    }).catch((e: Error) => { if (!c.signal.aborted) setMoreErr(`Could not load older conversations (${e.message}). The list above is unchanged.`) }).finally(() => setMoreKey(m => m === k ? null : m))
+    }).catch((e: Error) => { if (!c.signal.aborted) setMoreErr({ key: k, msg: `Could not load older conversations (${e.message}). The list above is unchanged.` }) }).finally(() => setMoreKey(m => m === k ? null : m))
   }
+  // One generation per thread: only the latest read may touch threads[id] / threadErr[id], so close+reopen can
+  // neither leave a failure banner over loaded messages nor let an older response overwrite a newer one.
+  const threadGen = useRef<Record<string, number>>({})
   function loadThread(threadId: string) {
+    const g = (threadGen.current[threadId] ?? 0) + 1
+    threadGen.current[threadId] = g
+    const latest = () => threadGen.current[threadId] === g
     setThreadErr(e => { const c = { ...e }; delete c[threadId]; return c })
     void fetch(`/api/outreach/inbox?thread_id=${encodeURIComponent(threadId)}`)
       .then(async r => {
         if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'your session may have expired' : `error ${r.status}`)
         const j = await r.json().catch(() => null)
         if (!j || !Array.isArray(j.messages)) throw new Error('unexpected response')
-        setThreads(t => ({ ...t, [threadId]: j.messages }))
+        if (latest()) setThreads(t => ({ ...t, [threadId]: j.messages }))
       })
-      .catch((e: Error) => setThreadErr(x => ({ ...x, [threadId]: `Could not load this thread (${e.message === 'Failed to fetch' ? 'network error' : e.message}).` })))
+      .catch((e: Error) => latest() && setThreadErr(x => ({ ...x, [threadId]: `Could not load this thread (${e.message === 'Failed to fetch' ? 'network error' : e.message}).` })))
   }
   function toggle(threadId: string) {
     if (open === threadId) return setOpen(null)
@@ -174,7 +180,7 @@ export default function InboxClient() {
           ))}
         </ul>
       )}
-      {moreErr && <p className="text-sm mt-4" role="alert" data-testid="inbox-more-error">{moreErr}</p>}
+      {moreErr && moreErr.key === key && <p className="text-sm mt-4" role="alert" data-testid="inbox-more-error">{moreErr.msg}</p>}
       {current?.next_cursor && (
         <button className="btn-ghost btn-sm mt-4" onClick={loadMore} disabled={moreKey === key} data-testid="inbox-more">{moreKey === key ? 'Loading...' : 'Show older conversations'}</button>
       )}

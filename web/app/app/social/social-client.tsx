@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ThreadMetrics from './thread-metrics'
 import { Pill } from '../ui/bits'
 
@@ -27,14 +27,20 @@ export default function SocialClient() {
   // #902: the list read has explicit loading / error states. A failed or malformed read never leaves the page on
   // Loading forever, and a failed reload keeps the last confirmed list on screen with a retry.
   const [loadErr, setLoadErr] = useState('')
+  // Request generation: a superseded read (double retry, retry racing a mutation reload) cannot overwrite a newer result.
+  const loadGen = useRef(0)
   async function load() {
+    const g = ++loadGen.current
+    const stale = () => g !== loadGen.current
     try {
       const r = await fetch('/api/replies')
+      if (stale()) return
       if (!r.ok) { setLoadErr(r.status === 401 || r.status === 403 ? 'Your session may have expired. Sign in again to see social threads.' : `Could not load social threads (error ${r.status}).`); return }
       const j = await r.json().catch(() => null)
+      if (stale()) return
       if (!j || !Array.isArray(j.threads) || !Array.isArray(j.queries) || !j.platforms) { setLoadErr('Could not load social threads (unexpected response).'); return }
       setState(j as State); setLoadErr('')
-    } catch { setLoadErr('Could not load social threads. Check your connection.') }
+    } catch { if (!stale()) setLoadErr('Could not load social threads. Check your connection.') }
   }
   useEffect(() => { void load() }, [])
 
