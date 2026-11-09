@@ -1,0 +1,41 @@
+# One-off: builds the Next.js output for staging on an arm64 runner (the staging box cannot build). Runs only on ci/staging-prebuilt-* branches.
+name: staging-prebuilt
+on:
+  push:
+    branches: ['ci/staging-prebuilt-*']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 12a14dc60b265dc73ef245499ba3b5868b9e4caa
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build (staging settings, no secrets)
+        working-directory: web
+        env:
+          DAZL_ENV: staging
+          PUBLIC_BASE_URL: https://staging.dazl.ai
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: |
+          npm ci --no-audit --no-fund --loglevel=error
+          echo "12a14dc60b265dc73ef245499ba3b5868b9e4caa" > .build-commit
+          NODE_OPTIONS=--max-old-space-size=4096 npx next build
+          rm -rf .next/cache
+          tar -czf ../staging-next-12a14dc6.tgz .next .build-commit
+          tar -czf ../staging-modules-12a14dc6.tgz node_modules
+          ls -la ../staging-*.tgz
+          node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"
+          sha256sum ../staging-next-12a14dc6.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staging-next-12a14dc6
+          path: |
+            staging-next-12a14dc6.tgz
+            staging-modules-12a14dc6.tgz
+          retention-days: 3
