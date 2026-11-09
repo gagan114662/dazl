@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { buildSourcePrompt } from '../lib/sources/index.ts'
 import { compoundHalves, halvesBlock } from '../lib/scan/halves.ts'
 import { corroborationTargets, MAX_CORROBORATE } from '../lib/scan/corroborate.ts'
-import { fetchRankFor } from '../lib/scan/runner.ts'
+import { fetchRankFor, jobPagesBehindEvents } from '../lib/scan/runner.ts'
 import { salesGateOr } from '../lib/scan/sales-hiring-required.ts'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
@@ -108,22 +108,21 @@ if (process.env.OR_UPSTREAM_SNAPSHOT_WRITE === '1') {
   let orRun: ReturnType<typeof record> | undefined
   const orB = () => orRun ??= record(OR_B, ICP_B)   // one Test B scan, read by the three tests below
 
-  test('(1) TEST B OR wording, through the real runner: the hire-only careers-page candidate is fetched, extracted and reaches the gate as a hiring-branch candidate', async t => {
+  // #876: Test B's hiring branch is a COMPLETED hire ("made their first sales hire"). A careers-page vacancy cannot prove it, so the job page is ranked
+  // behind the pages that can carry either fact (as under AND) and, whatever it reaches, it is never promoted.
+  test('(1) TEST B OR wording, through the real runner: a careers-page vacancy (Hireco) is never promoted as the completed hire; the completed-hire article (Pastco) and the funding article (Fundco) each pass on their own', async t => {
     const { x, trace } = await orB()
-    t.diagnostic(`Hireco: ${fate(x, 'Hireco')}; Pastco: ${fate(x, 'Pastco')}; Fundco: ${fate(x, 'Fundco')}; Boardco: ${fate(x, 'Boardco')}`)
-    assert.ok(trace.tfFetchBatches.flat().includes(HIRECO), 'the job page gets a fetch slot')
-    assert.ok(x.extractionPrompt.includes(HIRECO), 'the job page survives the 30-item extraction cap')
-    assert.notEqual(fate(x, 'Hireco'), 'none', 'Hireco reached the gate')
-    assert.doesNotMatch(fate(x, 'Hireco'), /no_event_evidence/, 'not held because the OTHER branch (funding) is missing')
-    assert.match(x.extractionPrompt, /accepts EITHER of two facts/); assert.doesNotMatch(x.extractionPrompt, /needs TWO facts/)
-  })
-  test('(1) TEST B OR wording: the extra search goes to the hiring branch (Pastco: a completed-hire article, its own quote proves neither branch), not to a funding search for a board posting that already proves hiring', async () => {
-    const { x, trace } = await orB()
-    assert.ok(trace.news.some(q => /"Pastco" hiring sales/.test(q)), JSON.stringify(trace.news))
-    assert.ok(!trace.news.some(q => /"Boardco" raised/.test(q)), 'no funding search for a hire-proven board posting')
-    assert.ok(trace.ownFetch.includes(PASTCO_PRESS), 'the hiring search result is fetched and verified')
+    t.diagnostic(`Hireco: ${fate(x, 'Hireco')}; Pastco: ${fate(x, 'Pastco')}; Fundco: ${fate(x, 'Fundco')}; Boardco: ${fate(x, 'Boardco')}; fetched Hireco: ${trace.tfFetchBatches.flat().includes(HIRECO)}; news: ${JSON.stringify(trace.news)}`)
+    assert.ok(!/verifier-passed/.test(fate(x, 'Hireco')), fate(x, 'Hireco'))
     assert.match(fate(x, 'Pastco'), /verifier-passed/, fate(x, 'Pastco'))
     assert.equal(fate(x, 'Fundco'), 'verifier-passed', 'the funding branch still passes on its own')
+    assert.match(x.extractionPrompt, /accepts EITHER of two facts/); assert.match(x.extractionPrompt, /MADE a sales \/ go-to-market hire/); assert.doesNotMatch(x.extractionPrompt, /needs TWO facts/)
+  })
+  test('(1) TEST B OR wording: the extra search never asks for vacancies ("hiring sales"), and Pastco, whose own quote proves the completed hire, is not searched', async () => {
+    const { x, trace } = await orB()
+    assert.ok(!trace.news.some(q => /hiring sales/.test(q)), JSON.stringify(trace.news))
+    assert.ok(!trace.news.some(q => /"Pastco"/.test(q)), JSON.stringify(trace.news))
+    assert.match(fate(x, 'Pastco'), /verifier-passed/, fate(x, 'Pastco'))
   })
   test('(3) provider calls per scan under Test B are no greater than on #643\'s head', async t => {
     const { providerCalls, trace } = await orB()
@@ -145,25 +144,30 @@ const boardLead = { company: 'Boardco', excerpt: Q.boardco, signal: 'is hiring a
 const others = [{ company: 'Pastco', excerpt: Q.pastco, signal: 'made its first sales hire' }, { company: 'Fundco', excerpt: Q.fundco, signal: 'raised a seed round' }, { company: 'Seedly', excerpt: 'Seedly, a London startup, is closing in on a seed', signal: 'raising a seed round' }, { company: 'Vague', excerpt: 'Vague is a London B2B SaaS startup', signal: 'London SaaS' }]
 
 test('halves: OR gets the either-fact block; AND, and/or and Test A keep the two-fact block byte for byte', () => {
-  assert.deepEqual(compoundHalves(OR_B, ICP_B), { event: 'a COMPLETED seed funding round (not plans, talks or a raise by another company)', or: true })
+  assert.deepEqual(compoundHalves(OR_B, ICP_B), { event: 'a COMPLETED seed funding round (not plans, talks or a raise by another company)', or: true, done: true })
   for (const q of [AND_B, ANDOR_B]) assert.deepEqual(compoundHalves(q, ICP_B), { event: 'a COMPLETED seed funding round (not plans, talks or a raise by another company)' })
   assert.equal(halvesBlock({ event: 'E' }), `
 This request needs TWO facts about the SAME company: (1) E, and (2) the company is hiring sales / go-to-market staff. One item almost never shows both (a funding article does not list job openings; a job posting does not mention funding).
 Return a company when an item shows EITHER fact for it. In "signal" say plainly which fact THIS item shows (for example "raised a seed round" or "is hiring a sales account executive") and never claim the other fact. The "excerpt" must show the fact you name.
 The other fact is checked separately, from other sources: do not guess it and do not copy it from anywhere else.`)
-  const or = buildSourcePrompt(OR_B, ICP_B, items); assert.match(or, /accepts EITHER of two facts about a company: \(1\) a COMPLETED seed funding round .*, or \(2\) the company is hiring sales/); assert.match(or, /One fact on its own qualifies the company/); assert.doesNotMatch(or, /TWO facts/)
+  const or = buildSourcePrompt(OR_B, ICP_B, items); assert.match(or, /accepts EITHER of two facts about a company: \(1\) a COMPLETED seed funding round .*, or \(2\) the company MADE a sales/); assert.match(or, /One fact on its own qualifies the company/); assert.doesNotMatch(or, /TWO facts/)
   assert.match(buildSourcePrompt(AND_B, ICP_B, items), /needs TWO facts/); assert.match(buildSourcePrompt(ANDOR_B, ICP_B, items), /needs TWO facts/)
 })
-test('fetch rank: OR ranks a job page with the event pages; AND keeps job pages behind them', () => {
+test('fetch rank: an open-role OR ranks a job page with the event pages; AND and a completed-hire OR (#876) keep job pages behind them', () => {
   const by = new Map([[HIRECO, { date: daysAgo(9) }], [FUNDCO, { date: daysAgo(12) }]])
   const and = fetchRankFor(by, 90, true), flat = fetchRankFor(by, 90, false)
   assert.equal(and(HIRECO), 2); assert.equal(and(FUNDCO), 0); assert.equal(flat(HIRECO), 0); assert.equal(flat(FUNDCO), 0)
+  assert.equal(jobPagesBehindEvents(ICP_B.signals, OR_B, icpB), true, 'Test B: a job page cannot prove a completed hire')
+  assert.equal(jobPagesBehindEvents(ICP_B.signals, AND_B, icpB), true)
+  assert.equal(jobPagesBehindEvents(['raised seed funding in the last 90 days', 'hiring sales staff'], 'London B2B SaaS startups that raised seed funding or are hiring sales staff in the last 90 days', icpB), false, 'open-role OR')
 })
 test('corroborate: OR spends the AND rule\'s slots (never more) on each unproven candidate\'s own branch; a candidate claiming neither is not searched', () => {
   const job = { query: OR_B, icp: icpB }
-  assert.deepEqual(corroborationTargets(job, [boardLead], others), [{ company: 'Pastco', branch: 'hiring', query: '"Pastco" hiring sales' }], 'one AND slot -> one OR search')
+  // #876: Test B's hiring branch is a completed hire. A board posting (an open vacancy) does not prove it, so the slot goes to a search for Boardco's completed
+  // hire; Pastco's own quote ("made its first sales hire") already proves it, so Pastco is not searched.
+  assert.deepEqual(corroborationTargets(job, [boardLead], others), [{ company: 'Boardco', branch: 'hiring', query: '"Boardco" first sales hire hired' }], 'one AND slot -> one OR search')
   const three = corroborationTargets(job, ['B1', 'B2', 'B3', 'B4'].map(c => ({ ...boardLead, company: `Boardco ${c}`, excerpt: Q.boardco.replace('Boardco', `Boardco ${c}`) })), others)
-  assert.deepEqual(three, [{ company: 'Pastco', branch: 'hiring', query: '"Pastco" hiring sales' }, { company: 'Seedly', branch: 'event', query: '"Seedly" raised seed funding round' }])
+  assert.deepEqual(three, ['B1', 'B2', 'B3'].map(c => ({ company: `Boardco ${c}`, branch: 'hiring', query: `"Boardco ${c}" first sales hire hired` })))
   assert.ok(three.length <= MAX_CORROBORATE)
   assert.deepEqual(corroborationTargets(job, [], others), [], 'no AND slot -> no OR search (no new spend)')
   // AND and and/or: the 'others' list is never read; byte-identical to the two-argument call.
@@ -194,5 +198,7 @@ test('(4) malformed plans fall back to AND in all three steps', () => {
   // Hostile lead fields: quotes and newlines in names are stripped from the query; huge names are capped at 150 characters; empty names are skipped.
   const hostile = [{ company: 'Pa"st\nco', excerpt: 'made its first sales hire', signal: 'made its first sales hire' }, { company: 'X'.repeat(500), excerpt: 'hired a rep', signal: 'hired' }, { company: '', excerpt: 'raised seed', signal: 'raised seed' }]
   const h = corroborationTargets({ query: OR_B, icp: icpB }, ['B1', 'B2', 'B3'].map(c => ({ ...boardLead, company: `Boardco ${c}`, excerpt: Q.boardco.replace('Boardco', `Boardco ${c}`) })), hostile)
-  assert.equal(h.length, 2); assert.equal(h[0].query, '"Pa st co" hiring sales'); assert.ok(h[1].query.length <= 150)
+  assert.equal(h.length, 3); assert.ok(h.every(x => x.query.length <= 150 && !/hiring sales/.test(x.query)), JSON.stringify(h))
+  const h2 = corroborationTargets({ query: OR_B, icp: icpB }, ['B1', 'B2', 'B3'].map(c => ({ ...boardLead, company: `Boardco ${c}`, excerpt: 'sells software', signal: 'software' })), hostile.map(x => ({ ...x, excerpt: 'is hiring', signal: 'hiring' })))
+  assert.equal(h2.length, 2); assert.equal(h2[0].query, '"Pa st co" first sales hire hired'); assert.ok(h2[1].query.length <= 150)
 })

@@ -16,7 +16,7 @@ export function salesHiringRequired(query: string | null | undefined, icp: strin
 
 // #380 / #204 Test B: how the request joins the event half and the sales-hiring half, read from its compiled targeting plan (targeting.ts).
 // Returns the two branches only when the plan holds ONE OR (not under a NOT) of exactly two plain conditions: a funding / event condition and a
-// sales / GTM hiring condition ("raised seed funding or made their first sales hire"). Anything else - the AND wording, an ambiguous and/or
+// sales / GTM hiring condition (an open role, or a completed hire: hire_made, #876) ("raised seed funding or made their first sales hire"). Anything else - the AND wording, an ambiguous and/or
 // (compiled as AND), a third branch, a negation, an unreadable profile or plan - returns null: the gate keeps requiring both halves.
 export interface SalesGateOr { event: Condition; hiring: Condition }
 export function salesGateOr(query: string | null | undefined, icp: string | null | undefined): SalesGateOr | null {
@@ -29,7 +29,10 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     const of = (ors[0] as { of: PlanNode[] }).of
     if (of.length !== 2 || !of.every(n => n.op === 'cond')) return null
     const cs = of.map(n => (n as { cond: Condition }).cond)
-    const event = cs.find(c => c.kind === 'funding' || c.kind === 'event'), hiring = cs.find(c => c.kind === 'hiring' && (!c.role || isGtmRole(c.role)))
+    // #876: "made their first sales hire" compiles to hire_made (a completed hire), still the sales-hiring branch of the OR. The plan's own clause
+    // proof (targeting-proof.ts) then needs a source showing the completed hire; an open posting does not prove it.
+    // #878 (main): a clause whose stated clocks conflict never forms the OR.
+    const event = cs.find(c => c.kind === 'funding' || c.kind === 'event'), hiring = cs.find(c => (c.kind === 'hiring' || c.kind === 'hire_made') && (!c.role || isGtmRole(c.role)))
     return event && hiring && !event.relative_to && !hiring.relative_to && !event.clock_conflict && !hiring.clock_conflict ? { event, hiring } : null
   } catch { return null }
 }
