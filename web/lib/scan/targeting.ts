@@ -213,7 +213,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
       if (back !== null && back < c.within_days) c.since_days = back
     } else c.within_days = narrowest(c, now, '')
   }
-  const distinct = [...new Set([...requestLevel, ...conds.filter(c => bound[conds.indexOf(c)].now.length > 0 && !c.relative_to && !c.clock_conflict).map(c => c.within_days!)])]
+  const distinct = [...new Set([...requestLevel, ...conds.filter((c, i) => bound[i].now.length > 0 && !c.relative_to && !c.clock_conflict).map(c => c.within_days!)])]
   for (const c of conds) {
     if (c.within_days !== null) continue
     if (distinct.length === 1) { c.within_days = distinct[0]; c.window_source = 'request' }
