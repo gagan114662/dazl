@@ -5,7 +5,7 @@
 // leak into another's targeting. Pure core: the fetcher and the model call are injected (tests stub both); no database, no network of its own.
 import { extractSiteText } from './icp-from-site.ts'
 import { norm } from './evidence.ts'
-import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier } from './claim-quote.ts'
+import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier, MAX_RESEARCH_QUOTE, REPORTED, ANNOUNCE } from './claim-quote.ts'
 
 export type HypKind = 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'
 export type HypStatus = 'sourced' | 'hypothesis' | 'unknown' | 'reviewed' | 'rejected'
@@ -65,17 +65,32 @@ export interface FetchedPage { url: string; kind: PageKind; title: string; text:
 export const OFFER_QUESTION = 'Which of your offers is this play for?'
 export const WHO_QUESTION = 'Who buys this?'
 
-// #872: a quote sources an offer or disqualifier only as a COMPLETE authored span on the cited page: exactly one
-// full DECLARATIVE page sentence (terminal '.'), never a fragment of a longer sentence, never a question or an
-// exclamation, and never one the page's NEXT sentence immediately rebuts ("...? No, that is a third-party claim
-// we reject."). The model quote may omit the final period; everything else must equal the authored sentence.
+// #872: a quote sources an offer or disqualifier only as a COMPLETE authored span with CLEAN CONTEXT - the model
+// cannot select the framing away: exactly one full DECLARATIVE page sentence (terminal '.'), whose RAW text
+// carries no quotation marks or reporting clause (never laundered from a testimonial), whose PRECEDING sentence is
+// no announcement or denial frame ("a customer testimonial follows", "the following claim is false"), and whose
+// FOLLOWING sentence is no rebuttal or disclaimer ("this is a third-party assertion, not our offer"). When the
+// same sentence appears more than once on the page, EVERY occurrence must be clean - the model cannot pick the
+// clean twin of a framed claim. The model quote may omit the final period; everything else must equal the
+// authored sentence, and the raw sentence is inspected BEFORE any normalization erases its punctuation.
 const REBUTTAL = /^(?:no|nope|wrong|false|actually|but|however)\b/i
+const DENIAL_FRAME = /\b(?:false|fake|not true|do not offer|don'?t offer|not our|rumou?rs?|hoax|scam|we reject)\b/i
+const DISCLAIMER = /\b(?:third[- ]party (?:assertion|claim)|not our (?:offer|product|claim|statement)|attributed to|review by|testimonial (?:from|by)|says\s+\p{Lu})/iu
 const authored = (text: string): { body: string; term: string }[] => (text.replace(/\s+/g, ' ').match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t.slice(-1) } }).filter(x => x.body)
-function sourceSpanOk(pageText: string, quote: string): boolean {
+function sourceContextOk(pageText: string, quote: string): boolean {
   const sents = authored(pageText)
-  const i = sents.findIndex(s => norm(s.body) === norm(quote.replace(/[.!?]+$/, '').trim()))
-  if (i < 0 || sents[i].term !== '.') return false
-  return !REBUTTAL.test(sents[i + 1]?.body.trim() ?? '')
+  const qn = norm(quote.replace(/[.!?]+$/, '').trim())
+  let found = false
+  for (let i = 0; i < sents.length; i++) {
+    if (norm(sents[i].body) !== qn) continue
+    found = true
+    if (sents[i].term !== '.' || REPORTED.test(sents[i].body)) return false
+    const prev = sents[i - 1]?.body ?? ''
+    if (ANNOUNCE.test(prev) || DENIAL_FRAME.test(prev)) return false
+    const next = sents[i + 1]?.body ?? ''
+    if (REBUTTAL.test(next.trim()) || DISCLAIMER.test(next)) return false
+  }
+  return found
 }
 // The offer-citation validator (#872): optional model-supplied {url, quote, inferred} on an offer, verified against the
 // pages actually fetched - never trusted on the model's say-so.
@@ -84,9 +99,9 @@ function offerCitation(x: { name: string; url?: unknown; quote?: unknown; inferr
   const pg = typeof x.url === 'string' ? byUrl.get(x.url) : undefined
   // Over-cap quotes are REJECTED, never sliced: a slice can cut off the negation or attribution that changes
   // what the authored sentence actually claims (#872 adversarial review).
-  const quote = typeof x.quote === 'string' ? (q => q.length <= 300 ? q : '')(x.quote.replace(/\s+/g, ' ').trim()) : ''
+  const quote = typeof x.quote === 'string' ? (q => q.length <= MAX_RESEARCH_QUOTE ? q : '')(x.quote.replace(/\s+/g, ' ').trim()) : ''
   if (!pg || quote.length < 12 || !norm(pg.text).includes(norm(quote))) return null
-  if (!quoteBacksOffer(x.name, quote, names) || !sourceSpanOk(pg.text, quote)) return null
+  if (!quoteBacksOffer(x.name, quote, names) || !sourceContextOk(pg.text, quote)) return null
   return { url: pg.url, quote, fetched_at: pg.fetched_at }
 }
 
@@ -115,7 +130,7 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
     const text = typeof it.text === 'string' ? it.text.replace(/\s+/g, ' ').trim().slice(0, 160) : ''
     if (!offer || !kind || !text) continue
     const pg = typeof it.url === 'string' ? byUrl.get(it.url) : undefined
-    const quote = typeof it.quote === 'string' ? (q => q.length <= 300 ? q : '')(it.quote.replace(/\s+/g, ' ').trim()) : ''   // over-cap rejected, never sliced (#872)
+    const quote = typeof it.quote === 'string' ? (q => q.length <= MAX_RESEARCH_QUOTE ? q : '')(it.quote.replace(/\s+/g, ' ').trim()) : ''   // over-cap rejected, never sliced (#872)
     // Sourced = the quote is verbatim on the cited page AND carries the claim itself (claim-quote.ts: a real quote next
     // to an invented headcount proves nothing), and the model did not itself mark the item as inferred.
     // #872: a disqualifier needs an EXPLICIT exclusion claim bound to its own offer (claim-quote.ts); every other kind
@@ -124,7 +139,7 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
     const backed = kind === 'disqualifier' ? quoteBacksDisqualifier(offerName, text, quote, names) : quoteSupports(kind, text, quote)
     // An offer-identity kind (the disqualifier) must also match the page's complete authored sentence span (#872);
     // other kinds keep their existing verbatim-inclusion check.
-    const quoted = !!pg && it.inferred !== true && quote.length >= 12 && norm(pg.text).includes(norm(quote)) && backed && (kind !== 'disqualifier' || sourceSpanOk(pg!.text, quote))
+    const quoted = !!pg && it.inferred !== true && quote.length >= 12 && norm(pg.text).includes(norm(quote)) && backed && (kind !== 'disqualifier' || sourceContextOk(pg!.text, quote))
     // A size or place without that is unknown, never carried as fact; a persona without it is a hypothesis.
     const status: HypStatus = quoted ? 'sourced' : kind === 'size' || kind === 'location' ? 'unknown' : 'hypothesis'
     const h: Hypothesis = { id: hypId(offer, kind, text), offer, kind, text: status === 'unknown' ? 'unknown' : text, status, url: quoted ? pg!.url : null, quote: quoted ? quote : null, fetched_at: quoted ? pg!.fetched_at : null }

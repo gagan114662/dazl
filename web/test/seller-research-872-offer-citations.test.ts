@@ -9,7 +9,7 @@
 // at the stored/client ingress (normalizeResearch): a forged 'sourced' row honestly downgrades.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildResearch, type FetchedPage, type SellerResearch } from '../lib/scan/seller-research.ts'
+import { buildResearch, toStored, type FetchedPage, type SellerResearch } from '../lib/scan/seller-research.ts'
 import { normalizeResearch } from '../lib/scan/icp.ts'
 
 const T0 = 1_800_000_000
@@ -165,6 +165,10 @@ const REPRO: [string, string][] = [
   ['a testimonial announcement preceding the sentence', 'A customer testimonial follows. Acme Payroll runs payroll for clinics.'],
   ['available only hypothetically', 'Acme Payroll is available if we ever build it.'],
   ['a conditional offer claim', 'Acme Payroll would run payroll if we ever launch it.'],
+  // Round 4: external ownership is not first-party ownership; appositive/possessive embedding is not a claim.
+  ["our competitor's product is not our offer", "Acme Payroll is our competitor's payroll product."],
+  ['an appositive third-party frame', "Harbor Dental's favorite, Acme Payroll, runs payroll for clinics."],
+  ['a possessive embedding', "Acme Payroll's payroll features save clinics time."],
 ]
 for (const [label, q] of REPRO) {
   test(`repro: ${label} never sources the offer`, () => {
@@ -212,6 +216,54 @@ test('a quote that is a fragment of a QUESTIONED page sentence never sources (sp
 
 test('a quote must equal the complete authored page sentence, not a fragment of a longer one', () => {
   unsourced(offerHyp(oneOffer('Acme Payroll runs payroll for clinics', 'Acme Payroll runs payroll for clinics using integrated scheduling and accounting.'), 'Acme Payroll'))
+})
+
+// Round 4: the model cannot select the context away - the RAW authored span and its neighbors decide.
+test('a claim preceded by a testimonial announcement never sources (context laundering)', () => {
+  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `A customer testimonial follows. ${PAYROLL_QUOTE}`), 'Acme Payroll'))
+})
+
+test('a claim preceded by an explicit denial frame never sources', () => {
+  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `The following claim is false and we do not offer this product. ${PAYROLL_QUOTE}`), 'Acme Payroll'))
+})
+
+test('a claim followed by a third-party disclaimer never sources', () => {
+  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `${PAYROLL_QUOTE} This is a third-party assertion, not our offer.`), 'Acme Payroll'))
+})
+
+test('a claim the model unquoted from a testimonial never sources (raw span keeps the quotation marks)', () => {
+  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `"${PAYROLL_QUOTE}" says Harbor Dental.`), 'Acme Payroll'))
+})
+
+test('the same sentence repeated with one framed occurrence never sources (the model cannot pick the clean twin)', () => {
+  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `"${PAYROLL_QUOTE}" says Harbor Dental. ${PAYROLL_QUOTE}`), 'Acme Payroll'))
+})
+
+test('the same sentence repeated in two clean contexts still sources (control)', () => {
+  const h = offerHyp(oneOffer(PAYROLL_QUOTE, `${PAYROLL_QUOTE} ${PAYROLL_QUOTE}`), 'Acme Payroll')
+  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+})
+
+test("an explicit first-party offering construction sources ('we offer X')", () => {
+  const q = 'We offer Acme Payroll to clinics of every size.'
+  const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
+  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+})
+
+test("an explicit first-party possessive sources ('X is our payroll product')", () => {
+  const q = 'Acme Payroll is our payroll product.'
+  const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
+  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+})
+
+test('a valid 174-char quote survives the whole construction -> storage -> ingress round trip (ONE quote contract)', () => {
+  const q = 'Acme Payroll runs payroll for busy clinics with multiple locations and helps clinic managers process monthly payroll for their staff using integrated scheduling and accounting.'
+  assert.ok(q.length > 140 && q.length <= 300, 'fixture sits between the old and shared caps')
+  const r = oneOffer(q, q)
+  assert.equal(offerHyp(r, 'Acme Payroll').status, 'sourced')
+  const n = normalizeResearch(toStored(r))
+  assert.ok(n, 'research kept')
+  assert.deepEqual([n.hyps[0].s, n.hyps[0].q], ['sourced', q])
 })
 
 test('an offer citing a URL that was never fetched stays a hypothesis', () => {
@@ -277,8 +329,8 @@ test('ingress: a sourced row whose text is not the canonical offer name honestly
 })
 
 test('ingress: an over-cap stored quote is rejected, never sliced, and honestly downgrades', () => {
-  const q = 'Acme Payroll runs payroll for clinics' + ' with integrated scheduling'.repeat(6)
-  assert.ok(q.length > 140, 'fixture exceeds the stored quote cap')
+  const q = 'Acme Payroll runs payroll for clinics' + ' with integrated scheduling'.repeat(10)
+  assert.ok(q.length > 300, 'fixture exceeds the stored quote cap')
   const r = stored(q)
   assert.ok(r, 'research kept')
   assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].q, r.hyps[0].at], ['hypothesis', null, null, null])

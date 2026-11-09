@@ -53,6 +53,9 @@ export function quoteSupports(kind: string, text: string, quote: string): boolea
 // brand word and reads neither polarity nor attribution.
 const COMPARISON = /\b(?:unlike|versus|vs\.?|compared (?:to|with)|alternative to|instead of|rather than|better than|cheaper than)\b/i
 const ATTRIBUTION = /(?:^|\s)[-–—]\s*\p{Lu}[\p{L}'.-]*(?:\s+\p{Lu}[\p{L}'.-]*){0,3}\s*$/u
+// ONE quote contract (#872): the same cap at construction (seller-research.ts), storage and ingress (icp.ts).
+// An over-cap quote is REJECTED, never sliced - a slice can cut off the negation or attribution that changes the claim.
+export const MAX_RESEARCH_QUOTE = 300
 // A customer or other third party as the claim's subject: their purchase or praise is not the seller's own statement.
 const THIRD_PARTY = /\b(?:customers?|clients?|users?|buyers?|patients?|companies|they|people)\s+(?:[\p{L}']+\s+){0,4}(?:buy|bought|purchase[sd]?|use[sd]?|say|said|chose|choose|prefer(?:red)?|love[sd]?|left|switch(?:ed)?|got|get|found|report(?:ed)?)\b/iu
 const tokens = (s: string) => norm(s).split(' ').filter(Boolean)
@@ -86,11 +89,18 @@ const COPULA_COMPLEMENT = new Set(['our'])
 const CONDITIONAL = new Set(['if', 'would', 'could', 'might', 'may', 'should'])
 // Reported speech: the citation is itself quoted material or carries a reporting clause ("..." says Harbor
 // Dental / according to G2) - someone else's words about the offer, never the seller's authored page copy.
-const REPORTED = /["“”]|\b(?:says|said|writes|wrote|according to)\s+\p{Lu}/u
+export const REPORTED = /["“”]|\b(?:says|said|writes|wrote|according to)\s+\p{Lu}/u
 // A testimonial/review announcement: what follows is a customer's story, not the seller's own claim.
-const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|(?:customer|client|user)s?\s+reviews?|what\s+(?:our\s+)?(?:customers?|clients?|users?)\s+say)\b/i
+export const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|(?:customer|client|user)s?\s+reviews?|what\s+(?:our\s+)?(?:customers?|clients?|users?)\s+say)\b/i
 // Sentence-openers that keep the name first-party. Anything else before the name embeds it in another clause.
-const OPENERS = new Set(['', 'the', 'our', 'our offer is', 'our product is', 'our flagship', 'we built', 'we make', 'we offer', 'we sell', 'we provide', 'we ship', 'introducing', 'meet'])
+// LEAD_IN keeps the name the SUBJECT (a positive predicate must follow it); OFFERING is an explicit first-party
+// OWN-offering construction with the name as its OBJECT ("we offer X", "our offer is X") - exact and complete, so
+// "we cannot offer X" and "our customers buy X" never match.
+const LEAD_IN = new Set(['', 'the', 'our', 'our flagship', 'introducing', 'meet'])
+const OFFERING = new Set(['we offer', 'we sell', 'we make', 'we build', 'we built', 'we provide', 'we ship', 'we run', 'we automate', 'we support', 'we deliver', 'we host', 'our offer is', 'our product is'])
+// External ownership: the sentence hands the offer to someone else ("our competitor's payroll product", "sold by
+// another vendor"). Offer citations only - a disqualifier may legitimately exclude third parties.
+const EXTERNAL = /\b(?:competitors?|another (?:vendor|provider|company|seller)|third[- ]party|other (?:vendors?|providers?|companies|compan(?:y|ies)|sellers?)|someone else)\b/i
 // Negation: a bare negator, or the two tokens norm() makes of a contraction ("don't" -> "don t"). 'without' is
 // deliberately NOT here ("runs payroll for clinic owners without a finance team" is a true positive).
 const NEGATOR = new Set(['not', 'no', 'never', 'nor', 'neither', 'cannot', 'hardly', 'barely'])
@@ -100,8 +110,17 @@ type OfferVerdict = 'positive' | 'negative' | 'none'
 function offerSentence(name: string, stoks: string[]): OfferVerdict {
   const at = nameSubject(name, stoks)
   if (at < 0) return 'none'
-  if (!OPENERS.has(stoks.slice(0, at).join(' '))) return 'none'   // embedded in another clause: not the seller's own claim
+  const before = stoks.slice(0, at).join(' ')
   const rest = stoks.slice(at + tokens(name).length)
+  if (OFFERING.has(before)) {
+    // The name is the object of our own offering construction; polarity still holds across the whole sentence.
+    for (let i = 0; i < rest.length; i++) {
+      if (isNeg(rest, i)) return 'negative'
+      if (CONDITIONAL.has(rest[i])) return 'none'
+    }
+    return 'positive'
+  }
+  if (!LEAD_IN.has(before)) return 'none'   // embedded in another clause: not the seller's own claim
   if (!rest.length) return 'none'
   if (isNeg(rest, 0)) return 'negative'
   let positive = false
@@ -120,7 +139,7 @@ function offerSentence(name: string, stoks: string[]): OfferVerdict {
 export function quoteBacksOffer(name: string, quote: string, otherNames: string[] = []): boolean {
   if (!name || !quote) return false
   if (!offerOwnership(name, quote, otherNames)) return false
-  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote)) return false
+  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote) || EXTERNAL.test(quote)) return false
   let positive = false
   for (const s of sentences(quote)) {
     const v = offerSentence(name, tokens(s.body))
@@ -152,7 +171,7 @@ export function quoteBacksDisqualifier(offerName: string, text: string, quote: s
   for (const s of sentences(quote)) {
     const stoks = tokens(s.body)
     const at = nameSubject(offerName, stoks)
-    if (at < 0 || !OPENERS.has(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
+    if (at < 0 || !LEAD_IN.has(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
     const rest = stoks.slice(at + tokens(offerName).length)
     const objectAfter = (pt: string[], from: number) => {
       const obj = rest.slice(from + pt.length)

@@ -1,7 +1,7 @@
 import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
-import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier } from './claim-quote.ts'
+import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier, MAX_RESEARCH_QUOTE } from './claim-quote.ts'
 
 // An ideal customer profile (ICP) inferred from a free-text "what are you looking for".
 // Everything is plain strings with hard caps, so it is safe to store, show, edit and
@@ -40,7 +40,9 @@ export interface IcpResearch { v: 1; site: string; offers: { i: string; n: strin
 // NEVER truncated to fit - a profile that cannot fit whole is a typed overflow the caller must surface. Only the
 // system-generated research block is fitted to the remaining room (deterministic priority, whole hypotheses only).
 export const ICP_JSON_BUDGET = 3900
-const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: 140, question: 120, answer: 100 }
+// quote shares the ONE quote contract (claim-quote.ts MAX_RESEARCH_QUOTE): construction, storage and ingress all
+// use the same cap, so a citation that sourced at research time survives the store/reload round trip unchanged.
+const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: MAX_RESEARCH_QUOTE, question: 120, answer: 100 }
 const RKINDS = new Set(['offer', 'persona', 'industry', 'size', 'location', 'disqualifier', 'pain'])
 const RSTATUS = new Set(['sourced', 'hypothesis', 'reviewed', 'rejected'])
 
