@@ -30,6 +30,6 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     if (of.length !== 2 || !of.every(n => n.op === 'cond')) return null
     const cs = of.map(n => (n as { cond: Condition }).cond)
     const event = cs.find(c => c.kind === 'funding' || c.kind === 'event'), hiring = cs.find(c => c.kind === 'hiring' && (!c.role || isGtmRole(c.role)))
-    return event && hiring && !event.relative_to && !hiring.relative_to ? { event, hiring } : null
+    return event && hiring && !event.relative_to && !hiring.relative_to && !event.clock_conflict && !hiring.clock_conflict ? { event, hiring } : null
   } catch { return null }
 }
