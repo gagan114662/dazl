@@ -98,8 +98,12 @@ const EVENTS: { event: string; re: RegExp; object?: number }[] = [
   { event: 'partner', re: /\b(?:partnered|partnership)\b/gi },
   { event: 'rebrand', re: /\brebrand(?:ed|ing)?\b/gi },
 ]
-const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|account\s+executives?)\b/i
+const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|salesperson|account\s+executives?)\b/i
 const STOP = /\s+(?:within|in\s+the|in|over|during|this|last|recently|and|or|but|while|who|that|which|excluding|except|other\s+than|with|at|from|to)\b|[,.;:!?()]/i
+// #876: "made their first sales hire" / "has made a founding engineering hire": a completed hire, in the request's own words.
+const MADE_HIRE = /\bmade\s+(?:(?:a|an|its|their|the|our)\s+)?((?:first|founding|inaugural|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi
+const HIRE_QUALIFIER = /^(?:first|founding|inaugural|new)$/i
+const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for)\s+)+/i, '').trim()
 
 function findAtoms(q: string): Atom[] {
@@ -116,6 +120,14 @@ function findAtoms(q: string): Atom[] {
   for (const m of q.matchAll(/\b(first|founding|new)\s+([a-z][a-z&\s-]{1,40}?)\s+(?:(?:was|were|has\s+been|have\s+been|recently|just)\s+)?(?:hired|appointed|joined|named|brought\s+on)\b/gi)) {
     if (!ROLE_WORD.test(m[2])) continue
     add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[2].trim(), first: /first|founding/i.test(m[1]) })
+  }
+  // #876: "made their first sales hire" states the same completed fact in other words - a hire in the past, never an open role. Only the past
+  // tense "made" reads so: "making / make / makes their first sales hire" states no completed hire and stays an open-role condition (step 3).
+  // A qualifier the role slot catches by itself ("made a new hire") is no role: any role, with `first` only when the request says first.
+  for (const m of q.matchAll(MADE_HIRE)) {
+    const q1 = (m[1] ?? '').trim(), word = m[2]
+    const role = HIRE_QUALIFIER.test(word) ? '' : word
+    add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role, first: FIRST_WORD.test(q1) || (!role && FIRST_WORD.test(word)) })
   }
   // 2. Funding. A bare "seed" is a stage only in a funding context ("seed oil producers" is not).
   const fundingContext = FUNDING_CUE.test(q) || /\bseries\s+[a-e]\b|\bpre-?seed\b/i.test(q)
@@ -138,9 +150,10 @@ function findAtoms(q: string): Atom[] {
     const role = m[1] ? cleanRole(m[1]) : ''
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
   }
-  // "made their first sales hire": the hire the request asks about, read as the hiring condition its role names (proven like any open role: a dated posting or a source naming it).
-  for (const m of q.matchAll(/\b(?:made|making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
-    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[1] })
+  // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
+  // like any open role: a dated posting or a source naming it). The past tense ("made their first sales hire") is a completed hire: step 1 (#876).
+  for (const m of q.matchAll(/\b(?:making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
+    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
   // 4. Other events.
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })

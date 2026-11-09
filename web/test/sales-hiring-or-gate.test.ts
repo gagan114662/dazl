@@ -45,7 +45,8 @@ test('Test B text compiles to (seed funding, 90 days) OR (first sales hire, 90 d
   const p = compileTargeting(OR_B, ICP_B)
   assert.equal(p.root?.op, 'or')
   const c = planConditions(p.root).map(x => [x.cond.kind, x.cond.stage ?? x.cond.role, x.cond.within_days, x.negated])
-  assert.deepEqual(c, [['funding', 'seed', 90, false], ['hiring', 'sales', 90, false]])
+  // #876: "made their first sales hire" is a completed hire (hire_made), not an open role; the OR shape is unchanged.
+  assert.deepEqual(c, [['funding', 'seed', 90, false], ['hire_made', 'sales', 90, false]])
   assert.equal(compileTargeting(AND_B, ICP_B).root?.op, 'and')
   assert.equal(compileTargeting(ANDOR_B, ICP_B).root?.op, 'and', 'and/or takes the narrow reading')
 })
@@ -182,7 +183,7 @@ test('a plan the gate cannot read as one funding-OR-sales-hiring choice falls ba
 
 test('OR: the gate pass record no longer stands in for the branch it did not check (targeting proof)', () => {
   const plan = compileTargeting(OR_B, ICP_B)
-  const hiring = planConditions(plan.root).find(x => x.cond.kind === 'hiring')!.cond
+  const hiring = planConditions(plan.root).find(x => x.cond.kind === 'hire_made')!.cond   // #876: Test B's hiring branch is a completed hire
   const lead = { company: 'Synthco', company_domain: null, evidence_excerpt: SEED('Synthco'), signal: 'raised seed', source_url: 'https://news.example/1', event_date: day(20) }
   const p = conditionProof(hiring, lead, [], { query: OR_B, icp: ICP_B, salesGatePassed: true, competitors: null, graded: true, now: NOW })
   assert.equal(p.truth, 'unknown')

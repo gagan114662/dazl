@@ -36,7 +36,9 @@ const sameCompany = (a: string, b: string, domain: string | null) => {
 }
 const excludesOf = (icp: string | null | undefined): string[] => { try { const j = JSON.parse(icp ?? '{}') as { exclude?: unknown }; return Array.isArray(j.exclude) ? j.exclude.filter((x): x is string => typeof x === 'string') : [] } catch { return [] } }
 const stageOf = (s: string | undefined): Stage => !s ? null : s === 'pre-seed' || s === 'seed' ? 'seed' : s as Stage
-const HIRE_DONE = /\b(?:hired|appointed|named|joined|joins|welcomed|brought\s+on|onboarded)\b/i
+// #876: a source reporting "made its first sales hire" (or a headline's "makes first sales hire") states the completed hire in other words.
+// "making" / "to make" do not: NOT_DONE still rules out planned, hoped-for and open-role wording in the same clause.
+const HIRE_DONE = /\b(?:hired|appointed|named|joined|joins|welcomed|brought\s+on|onboarded)\b|\b(?:made|makes)\s+(?:(?:a|an|its|their|the)\s+)?(?:(?:first|founding|inaugural|new)\s+)?[a-z][a-z-]*\s+hires?\b/i
 const NOT_DONE = /\b(?:not|no|never|yet\s+to|plans?\s+to|planning|will|would|could|may|might|seeking|looking\s+for|hiring|search(?:ing)?\s+for|reportedly|rumou?r\w*)\b/i
 const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
 // Event families the sales-hiring gate's event reader does not cover (it reads open / launch / expand). For these a CLAUSE of the lead's own
