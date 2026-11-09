@@ -34,20 +34,20 @@ test('pinnedLookup serves only the validated address - no second DNS answer can 
 })
 
 const pubLookup: Lookup = async (host) => host === 'internal.example' ? [{ address: '169.254.169.254', family: 4 }] : [{ address: '93.184.216.34', family: 4 }]
-const htmlResponse = (_url: string) => new Response('<html><title>t</title></html>', { status: 200, headers: { 'content-type': 'text/html' } })
+const htmlResponse = () => new Response('<html><title>t</title></html>', { status: 200, headers: { 'content-type': 'text/html' } })
 
 test('fetchPublicHtml blocks a redirect chain that hops to a non-public host', async () => {
   const redirects = async (url: string | URL | Request) => {
     const u = String(url)
     if (u.startsWith('https://start.example/')) return new Response(null, { status: 302, headers: { location: 'http://internal.example/latest/meta-data' } })
-    return htmlResponse(u)
+    return htmlResponse()
   }
   const r = await fetchPublicHtml('https://start.example/', { lookup: pubLookup, fetchImpl: redirects as typeof fetch })
   assert.deepEqual(r, { error: 'not_public' })
 })
 
 test('fetchPublicHtml rejects credentialed, nonstandard-port and non-http(s) URLs', async () => {
-  const fetchImpl = (async (url: string | URL | Request) => htmlResponse(String(url))) as typeof fetch
+  const fetchImpl = (async () => htmlResponse()) as typeof fetch
   assert.deepEqual(await fetchPublicHtml('https://user:pass@example.com/', { lookup: pubLookup, fetchImpl }), { error: 'invalid' })
   assert.deepEqual(await fetchPublicHtml('https://example.com:8443/', { lookup: pubLookup, fetchImpl }), { error: 'invalid' })
   assert.deepEqual(await fetchPublicHtml('file:///etc/passwd', { lookup: pubLookup, fetchImpl }), { error: 'invalid' })

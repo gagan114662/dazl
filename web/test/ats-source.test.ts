@@ -14,7 +14,7 @@ import type { SafeGet } from '../lib/sources/types.ts'
 const ms = (n: number) => Date.now() - n * 86_400_000
 const QUERY = 'London UK startups hiring sales account executives'
 const LEVER = (host: string, n = 1) => Array.from({ length: n }, (_, i) => ({ text: 'Sales Account Executive', hostedUrl: `https://jobs.lever.co/${host}/${i + 1}`, createdAt: ms(9), categories: { location: 'London, UK', allLocations: ['London, UK'] }, descriptionPlain: `${host} is hiring an Account Executive in London to sell to UK fintechs. ${'x'.repeat(40)}` }))
-const GH = (_board: string) => ({ jobs: [{ id: 1, title: 'Sales Account Executive', location: { name: 'London, UK' } }] })
+const GH = () => ({ jobs: [{ id: 1, title: 'Sales Account Executive', location: { name: 'London, UK' } }] })
 const GHD = (t: string) => ({ id: 1, title: 'Sales Account Executive', first_published: new Date(ms(9)).toISOString(), absolute_url: `https://boards.greenhouse.io/${t}/jobs/1`, location: { name: 'London, UK' }, content: `&lt;p&gt;${t} is hiring an Account Executive in London to sell to UK fintechs. Join the sales team.&lt;/p&gt;` })
 const ASHBY = (t: string) => ({ jobs: [{ isListed: true, title: 'Sales Account Executive', jobUrl: `https://jobs.ashbyhq.com/${t}/1`, location: 'London, UK', publishedAt: new Date(ms(9)).toISOString(), descriptionPlain: `${t} is hiring an Account Executive in London to sell to UK fintechs. ${'x'.repeat(40)}` }] })
 function http(map: Record<string, { status: number; body?: unknown } | null>): SafeGet {
@@ -61,7 +61,7 @@ test('PROGRESS: some requests of one ATS failing is partial:<failed>_of_<asked>;
 })
 test('PROGRESS: the three public APIs all answer through one adapter run; malformed Greenhouse JSON is a failed request', async () => {
   const r = await collectEvidenceReport(SEL(['https://boards.greenhouse.io/delta', 'https://jobs.ashbyhq.com/eps']), QUERY, http({
-    'https://boards-api.greenhouse.io/v1/boards/delta/jobs': { status: 200, body: GH('delta') }, 'https://boards-api.greenhouse.io/v1/boards/delta/jobs/1': { status: 200, body: GHD('delta') },
+    'https://boards-api.greenhouse.io/v1/boards/delta/jobs': { status: 200, body: GH() }, 'https://boards-api.greenhouse.io/v1/boards/delta/jobs/1': { status: 200, body: GHD('delta') },
     'https://api.ashbyhq.com/posting-api/job-board/eps': { status: 200, body: ASHBY('eps') },
   }), 5000)
   assert.deepEqual([row(r.runs, 'ats:greenhouse')?.status, row(r.runs, 'ats:ashby')?.status], ['ok', 'ok']); assert.equal(r.items.length, 2)
@@ -81,7 +81,7 @@ const jobCand: Cand = { company: 'Brightloop', signal: 'hiring a sales account e
 const fundCand: Cand = { company: 'Brightloop', signal: 'raised a seed round', source_url: NEWS, excerpt: FUNDQ, event_date: daysAgo(12) }
 const gdelt = (articles: unknown[]) => JSON.stringify({ articles })
 function fx(newsArticles: unknown[]): Fixture {
-  const sourceHttp = http({ 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { status: 200, body: GH('brightloop') }, 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { status: 200, body: GHD('brightloop') } })
+  const sourceHttp = http({ 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { status: 200, body: GH() }, 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { status: 200, body: GHD('brightloop') } })
   const newsHttp: SafeGet = async () => ({ status: 200, body: gdelt(newsArticles) })
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup hiring account executive'], hits: [{ url: JOB, title: 'Account Executive', snippet: JOBQ, date: daysAgo(9) }], tfPages: {},
     own: { [JOB]: { title: 'Account Executive at Brightloop', text: `On ${daysAgo(9)}, ${JOBQ}.${filler}` }, [NEWS]: { title: 'Brightloop raises seed round', text: `On ${daysAgo(12)}, ${FUNDQ}.${filler}` } },
@@ -120,7 +120,7 @@ function seedOnly(board: { ghJobs?: unknown; ghDetail?: unknown } | null, over: 
 const lead1 = (x: Awaited<ReturnType<typeof runFixture>>) => x.db.prepare("SELECT review_reason, confidence, why FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null; why: string | null }
 
 test('SEED-ONLY + BOARD: a funding-news candidate with no hiring evidence of its own is verified by the dated London sales posting on its (name-guessed) public Greenhouse board', async () => {
-  const x = await runFixture(seedOnly({ ghJobs: GH('brightloop'), ghDetail: GHD('brightloop') }))
+  const x = await runFixture(seedOnly({ ghJobs: GH(), ghDetail: GHD('brightloop') }))
   const l = lead1(x); assert.equal(l.review_reason, null, JSON.stringify(l)); assert.notEqual(l.confidence, null); assert.match(l.why ?? '', /Hiring sales: named in a verified source/)
   const rows = sourceRuns(x.db, 'A', (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id) as { collector: string; status: string }[]
   assert.equal(rows.find(r => r.collector === 'ats:greenhouse')?.status, 'ok', JSON.stringify(rows))
@@ -131,13 +131,13 @@ test('SEED-ONLY + NO BOARD: nothing on any public board -> held with the specifi
 })
 test('SEED-ONLY + SOMEONE ELSE\'S BOARD: a board at the same slug whose posting does not name Brightloop is another company - it verifies nothing', async () => {
   const other = { ...GHD('brightloop'), content: '&lt;p&gt;Initech is hiring an Account Executive in London to sell to UK fintechs. Join the sales team.&lt;/p&gt;' }
-  const x = await runFixture(seedOnly({ ghJobs: GH('brightloop'), ghDetail: other }))
+  const x = await runFixture(seedOnly({ ghJobs: GH(), ghDetail: other }))
   assert.equal(lead1(x).review_reason, 'no_sales_hiring_evidence')
 })
 test('SEED-ONLY + WRONG CITY / STALE / NON-SALES POSTINGS: the place, window and role gates still apply to a board posting used as verifying evidence', async () => {
   const cases: [string, unknown, unknown][] = [
     ['wrong city', { jobs: [{ id: 1, title: 'Sales Account Executive', location: { name: 'Austin, TX' } }] }, { ...GHD('brightloop'), location: { name: 'Austin, TX' } }],
-    ['stale', GH('brightloop'), { ...GHD('brightloop'), first_published: new Date(ms(300)).toISOString() }],
+    ['stale', GH(), { ...GHD('brightloop'), first_published: new Date(ms(300)).toISOString() }],
     ['non-sales role', { jobs: [{ id: 1, title: 'Backend Engineer', location: { name: 'London, UK' } }] }, { ...GHD('brightloop'), title: 'Backend Engineer' }],
   ]
   for (const [name, ghJobs, ghDetail] of cases) assert.equal(lead1(await runFixture(seedOnly({ ghJobs, ghDetail }))).review_reason, 'no_sales_hiring_evidence', name)

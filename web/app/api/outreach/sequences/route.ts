@@ -13,7 +13,7 @@ import { audit } from '@/lib/audit-route'
 import { getState } from '@/lib/outreach/autopilot'
 import { displayStopReason } from '@/lib/outreach/lifecycle'
 
-export async function GET(_req: NextRequest) {
+export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Sign in first.' }, { status: 401 })
   const db = getScanDb()
