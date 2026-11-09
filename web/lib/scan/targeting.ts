@@ -9,7 +9,8 @@
 //     (both readings and the one chosen) so the person can see it and rephrase.
 //   - Exclusions the request states (excluding competitors, except Acme, other than franchises) are HARD NOT conditions.
 //   - Each condition keeps its own window ("seed within 90 days AND first VP hired within 30 days" are two clocks), or a window
-//     relative to another condition's event ("within 30 days of the raise").
+//     relative to another condition's event ("within 30 days of the raise"). Every window the request binds to a condition counts
+//     (#878): a second, narrower one ("within 90 days, specifically within 30 days") is never dropped, whichever comes first.
 // Place, industry, size and buyer role stay with the gates that already enforce them (the verifier's place check, the ICP grade);
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
@@ -32,6 +33,8 @@ export interface Condition {
   within_days: number | null         // this condition's own clock; null = no window stated
   window_source: 'clause' | 'request' | 'narrowest' | 'default' | null
   relative_to?: string               // the window counts from this condition's event date (event relationship), not from now
+  since_days?: number                // relative_to only: the clock counted back from NOW (default within_days); a stated "in the last N days" can only narrow it
+  clock_conflict?: string            // the request states clocks for this condition that one condition cannot hold (two different anchor events): never provable
 }
 export type PlanNode = { op: 'cond'; cond: Condition } | { op: 'and' | 'or'; of: PlanNode[] } | { op: 'not'; of: PlanNode }
 export interface Ambiguity { text: string; readings: string[]; chosen: string }
@@ -167,19 +170,50 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const conds: Condition[] = atoms.map((a, i) => ({ id: `C${i + 1}`, kind: a.kind, text: q.slice(a.start, a.end), within_days: null, window_source: null,
     ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
   const requestLevel: number[] = []
+  // #878: EVERY window bound to a condition counts, not only the first. A clock counted from now and one counted from another condition's
+  // event are different clocks and both hold; two different windows of the same kind take the NARROWEST and the ambiguity is recorded.
+  const bound = conds.map(() => ({ now: [] as number[], rel: [] as { days: number; anchor: string }[], end: -1 }))
   for (const w of windows) {
     const k = owner(w)
     if (k < 0) { requestLevel.push(w.days); continue }
-    const c = conds[k]
-    if (c.within_days !== null) continue   // the nearest window binds; a second one for the same condition is ignored only if wider
-    c.within_days = w.days; c.window_source = 'clause'; c.text = q.slice(atoms[k].start, Math.max(atoms[k].end, w.end))
+    const b = bound[k]
+    b.end = Math.max(b.end, w.end)
+    let anchor: Condition | undefined
     if (w.anchorWord) {
-      const anchor = conds.find((x, j) => j !== k && (x.kind === 'funding' && /^(?:raise|round|funding|seed|financing|investment)$/.test(w.anchorWord!) || x.kind === 'event' && x.event && w.anchorWord!.startsWith(x.event.slice(0, 4))))
-      if (anchor) c.relative_to = anchor.id
-      else ambiguities.push({ text: w.text, readings: [`${w.days} days after an event the request does not name as a condition`, `within the last ${w.days} days`], chosen: `within the last ${w.days} days` })
+      anchor = conds.find((x, j) => j !== k && (x.kind === 'funding' && /^(?:raise|round|funding|seed|financing|investment)$/.test(w.anchorWord!) || x.kind === 'event' && x.event && w.anchorWord!.startsWith(x.event.slice(0, 4))))
+      if (!anchor) ambiguities.push({ text: w.text, readings: [`${w.days} days after an event the request does not name as a condition`, `within the last ${w.days} days`], chosen: `within the last ${w.days} days` })
     }
+    if (anchor) b.rel.push({ days: w.days, anchor: anchor.id }); else b.now.push(w.days)
   }
-  const distinct = [...new Set([...requestLevel, ...conds.filter(c => c.window_source === 'clause' && !c.relative_to).map(c => c.within_days!)])]
+  const narrowest = (c: Condition, days: number[], what: string): number => {
+    const d = [...new Set(days)]
+    if (d.length > 1) {
+      c.window_source = 'narrowest'
+      ambiguities.push({ text: c.text, readings: d.map(x => `within ${x} days${what}`), chosen: `within ${Math.min(...d)} days${what} (the narrowest window the request states for this condition)` })
+    }
+    return Math.min(...d)
+  }
+  for (const [k, c] of conds.entries()) {
+    const b = bound[k]
+    if (b.end < 0) continue
+    c.text = q.slice(atoms[k].start, Math.max(atoms[k].end, b.end)); c.window_source = 'clause'
+    // A request-level window ("In the last 30 days, ...") also bounds a condition that states its own: the narrower one holds.
+    const now = b.now.length ? [...b.now, ...requestLevel] : []
+    const anchors = [...new Set(b.rel.map(r => r.anchor))]
+    if (anchors.length > 1) {
+      c.within_days = Math.min(...b.rel.map(r => r.days)); c.window_source = 'narrowest'
+      c.clock_conflict = `the request counts this condition's clock from ${anchors.join(' and from ')}; one condition cannot be checked against two anchor events`
+      ambiguities.push({ text: c.text, readings: anchors.map(a => `within ${Math.min(...b.rel.filter(r => r.anchor === a).map(r => r.days))} days of ${a}`), chosen: 'neither: the condition stays unproven until the request names one anchor' })
+    } else if (anchors.length === 1) {
+      c.relative_to = anchors[0]
+      c.within_days = narrowest(c, b.rel.map(r => r.days), ` of ${anchors[0]}`)
+      // Counted back from now, a relative condition keeps its own window as before (never wider); a stated now-window can only narrow it.
+      // A request-level window bounds it too, as it bounds every other condition.
+      const back = b.now.length ? narrowest(c, now, '') : requestLevel.length ? narrowest(c, requestLevel, '') : null
+      if (back !== null && back < c.within_days) c.since_days = back
+    } else c.within_days = narrowest(c, now, '')
+  }
+  const distinct = [...new Set([...requestLevel, ...conds.filter(c => bound[conds.indexOf(c)].now.length > 0 && !c.relative_to && !c.clock_conflict).map(c => c.within_days!)])]
   for (const c of conds) {
     if (c.within_days !== null) continue
     if (distinct.length === 1) { c.within_days = distinct[0]; c.window_source = 'request' }
@@ -246,7 +280,9 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const parts = [...(trigger ? [trigger] : []), ...exclusions]
   const root: PlanNode | null = parts.length === 0 ? null : parts.length === 1 ? parts[0] : trigger?.op === 'and' ? { op: 'and', of: [...trigger.of, ...exclusions] } : { op: 'and', of: parts }
   // A technology condition (#389) is always an explicit filter: no other gate checks it.
-  const explicit = conds.length >= 2 || exclusions.length > 0 || negated.some(Boolean) || conds.some(c => c.kind === 'hire_made' || c.kind === 'tech' || !!c.relative_to)
+  // #878: a condition whose clock the request states more than once ("within 90 days, specifically within 30 days") is a separate clock the
+  // plan must hold: other gates read only the first window of the request.
+  const explicit = conds.length >= 2 || exclusions.length > 0 || negated.some(Boolean) || conds.some(c => c.kind === 'hire_made' || c.kind === 'tech' || !!c.relative_to || c.window_source === 'narrowest' || c.since_days !== undefined || !!c.clock_conflict)
   return { v: 1, root, filters: filtersOf(icp), ambiguities, explicit }
 }
 
@@ -276,10 +312,18 @@ export function planConditions(root: PlanNode | null): { cond: Condition; negate
   return out
 }
 
+// The clock a condition is checked on, when its own words do not already say it exactly (#878: a narrowed, relative or conflicting clock).
+function clockText(c: Condition): string {
+  if (c.clock_conflict) return ' (clock unresolved: two anchor events)'
+  if (!c.within_days) return ''
+  const since = c.since_days !== undefined ? `, and within the last ${c.since_days} days` : ''
+  if (c.window_source === 'clause' && !since) return ''
+  return c.relative_to ? ` (within ${c.within_days} days of ${c.relative_to}${since})` : ` (within ${c.within_days} days)`
+}
 // One line per condition for a card or a log: "C1 seed funding (within 90 days) AND C2 ...".
 export function describePlan(n: PlanNode | null): string {
   if (!n) return '(no targeting conditions)'
-  if (n.op === 'cond') return `${n.cond.id} ${n.cond.text}${n.cond.within_days && n.cond.window_source !== 'clause' ? ` (within ${n.cond.within_days} days)` : ''}`
+  if (n.op === 'cond') return `${n.cond.id} ${n.cond.text}${clockText(n.cond)}`
   if (n.op === 'not') return `NOT ${describePlan(n.of)}`
   return `(${n.of.map(describePlan).join(n.op === 'and' ? ' AND ' : ' OR ')})`
 }
