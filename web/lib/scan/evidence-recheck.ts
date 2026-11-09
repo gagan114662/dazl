@@ -15,9 +15,10 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  const read=()=>d.get<Saved>(`SELECT l.id,l.scan_job_id,l.company,l.name,l.signal,l.source_url,l.evidence_excerpt,l.event_date,l.review_reason,l.company_domain,l.contact,l.human_confirmed_at,j.query,j.icp FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?`,[id,tenant])
  const lead=await read();if(!lead)return null
  const offer=await readPlayOffer(db,tenant,lead.scan_job_id)
- const base={lead_id:id,job_id:lead.scan_job_id,company:lead.company,source_url:lead.source_url,checked_at:Math.floor(now.getTime()/1000),offer:offer?.offer??null,query:lead.query,model_call:false,search_call:false,eligibility_changed:false,can_draft:false}
+ const unconfirmed=!!offer&&'unconfirmed' in offer&&offer.unconfirmed===true // #687: never reported as the play's offer
+ const base={lead_id:id,job_id:lead.scan_job_id,company:lead.company,source_url:lead.source_url,checked_at:Math.floor(now.getTime()/1000),offer:unconfirmed?null:offer?.offer??null,query:lead.query,model_call:false,search_call:false,eligibility_changed:false,can_draft:false}
  const blocked=(reason:string)=>({...base,status:'not_checked' as const,reasons:[reason],checks:null})
- if(!offer||offer.conflict||!offer.offer||offer.unconfirmed)return blocked('Resolve what this play sells before rechecking its evidence.') // #687: an unconfirmed play too
+ if(!offer||offer.conflict||!offer.offer||unconfirmed)return blocked('Resolve what this play sells before rechecking its evidence.') // #687: an unconfirmed play too
  const icp=lead.icp?parseIcp(lead.icp):null
  if(!icp)return blocked('The saved reviewed targeting is unavailable. No geography or time window was guessed.')
  const page=await fetcher(lead.source_url).catch(()=>({fail:'error' as const}))

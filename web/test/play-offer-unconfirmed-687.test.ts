@@ -24,6 +24,7 @@ import { draftAuthority, offerHashFor } from '../lib/outreach/autopilot.ts'
 import { offerBlockFor, playOfferUnresolved } from '../lib/scan/runner.ts'
 import { qualifyPreview } from '../lib/scan/qualify-preview.ts'
 import { savePlayResearch } from '../lib/scan/play-research.ts'
+import { evidenceRecheck } from '../lib/scan/evidence-recheck.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { saveMemory } from '../lib/memory.ts'
 import { createWatch, runDueWatches } from '../lib/watch.ts'
@@ -148,6 +149,10 @@ test('#687 a pre-snapshot play across a profile change: shown unconfirmed, every
     const research = { company: 'Buyer', signal: 'Hiring', source_url: 'https://buyer.invalid/careers', excerpt: 'Buyer is hiring an SDR for the team.', event_date: null, contact: null, person_name: '', person_role: '', professional_url: '', person_excerpt: '' }
     await assert.rejects(savePlayResearch(raw, 'A', 'old', research, async () => { fetched++; return { fail: 'error' } }), /Choose what this play sells/)
     assert.equal(fetched, 0)
+    // the source recheck neither runs nor reports the current profile's offer as the play's
+    const er = await evidenceRecheck(raw, 'A', 'lead-old', async () => { fetched++; return { fail: 'error' } })
+    assert.equal(er?.status, 'not_checked'); assert.equal(er?.offer, null); assert.equal(fetched, 0)
+    assert.match(er!.reasons.join(' '), /Resolve what this play sells/)
     // the run's own research is unchanged: scoring still reads the context, the play is not "contested"
     assert.match(offerBlockFor(raw, 'A', 'old'), new RegExp(BOOKS)); assert.equal(playOfferUnresolved(raw, 'A', 'old'), false)
     // none of the above wrote a play or profile row
