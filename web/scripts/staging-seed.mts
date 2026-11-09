@@ -27,8 +27,9 @@ export async function seedStaging(raw: Database.Database, password: string, now 
   if (existing) return { created: false, tenant: existing.id }
 
   const id = randomBytes(16).toString('hex'), salt = randomBytes(16).toString('hex')
+  const sells = 'Dental chairs, sterilisers and practice equipment', website = 'https://harbour-dental.example.test'
   raw.prepare('INSERT INTO users (id, email, name, business_name, sells, website, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, DEMO_EMAIL, 'Demo Owner', 'Harbour Dental Supply (demo)', 'Dental chairs, sterilisers and practice equipment', 'https://harbour-dental.example.test', scryptSync(password, salt, 64).toString('hex'), salt)
+    .run(id, DEMO_EMAIL, 'Demo Owner', 'Harbour Dental Supply (demo)', sells, website, scryptSync(password, salt, 64).toString('hex'), salt)
   const icp = {
     summary: 'Independent dental practices in Ohio and Texas that are opening a location or expanding their team',
     who: ['Practice owner', 'Practice manager'], industries: ['Dental practices'], sizes: ['1-50 employees'], where: ['Ohio', 'Texas'],
@@ -56,7 +57,8 @@ export async function seedStaging(raw: Database.Database, password: string, now 
   ]
   for (const s of scans) {
     const at = now - s.daysAgo * DAY
-    const job = await createQueryJob(db, id, { query: s.query, icp: JSON.stringify(icp) }, at)
+    // each play records the profile it started from, as POST /api/scan does (#687: a play without it waits for a choice)
+    const job = await createQueryJob(db, id, { query: s.query, icp: JSON.stringify(icp), seller: `${sells} - ${website}` }, at)
     await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?", [at, job])
     await finishJob(db, { id: job, attempts: 1 }, { status: 'done', error: null, leads: s.leads, candidates: s.leads.length + 3, dropped: { off_profile: 3 }, now: at + 300 })
   }
