@@ -24,7 +24,6 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
-import { createHash, randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -45,18 +44,14 @@ const RENDERED = '[data-testid=active-row], [data-testid=thread-held], [data-tes
 const settle = pg => pg.waitForSelector(RENDERED, { timeout: 15000 }) // every hold state renders at least one of these
 try {
   for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
-  // #357: sign-up needs mail delivery to confirm the address, and this fenced server has none: it refuses, for every
-  // address alike. One sign-in attempt migrates the schema; the fixture account (confirmed) and its session are then
-  // written directly, as the other UI fixtures do.
-  const json = { 'Content-Type': 'application/json', Origin: base }
-  const refused = await fetch(base + '/api/auth/signup', { method: 'POST', headers: json, body: JSON.stringify({ email: EMAIL, password: 'fixturepass123', name: 'Fixture Runner (test only)', business_name: 'followups held fixture (test only)' }) })
-  assert.equal(refused.status, 503, `signup without mail delivery: ${refused.status}`)
-  assert.equal(refused.headers.get('set-cookie'), null, 'no session from a refused signup')
-  assert.equal((await fetch(base + '/api/auth/signin', { method: 'POST', headers: json, body: JSON.stringify({ email: EMAIL, password: 'fixturepass123' }) })).status, 401)
+  // Real signup (verification mail has no SMTP under the fence and stays in the outbox table).
+  const res = await fetch(base + '/api/auth/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL, password: 'fixturepass123', name: 'Fixture Runner (test only)', business_name: 'followups held fixture (test only)' }) })
+  assert.equal(res.status, 200, `signup: ${res.status}`)
+  const cookie = (res.headers.get('set-cookie') ?? '').split(';')[0]
+  assert.ok(cookie.startsWith('dazl_session='), 'signup sets the session cookie')
+  const token = cookie.slice('dazl_session='.length)
+  // Migrate-then-fixture: the signup already migrated the schema; add synthetic state.
   const db = new Database(DB)
-  db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt, email_verified_at) VALUES ('fxFHuser', ?, 'Fixture Runner (test only)', 'followups held fixture (test only)', 'x', 'y', 1)").run(EMAIL)
-  const token = randomBytes(32).toString('hex')
-  db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), 'fxFHuser', Math.floor(Date.now() / 1000) + 3600)
   const user = db.prepare('SELECT id FROM users WHERE email = ?').get(EMAIL).id
   const tenant = db.prepare('SELECT tenant_id FROM memberships WHERE member_id = ?').get(user)?.tenant_id ?? user
   const now = Math.floor(Date.now() / 1000), D = 86400
