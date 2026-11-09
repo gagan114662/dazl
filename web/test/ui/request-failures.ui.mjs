@@ -173,6 +173,7 @@ try {
         if (t === 'th1') return ++th1 === 1 ? { status: 500 } : { body: { messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Sounds good', at: now, classification: 'other' }] } }
         if (t === 'th2') return { body: { messages: [] } }
         if (u.searchParams.get('cursor')) return 'abort'
+        if (u.searchParams.get('status') === 'unread') return { body: { ...INBOX, threads: [{ ...ROW, gmail_id: 'gu', thread_id: 'thu', company: 'Only unread' }], next_cursor: null } }
         return { body: INBOX }
       })
       await page.getByTestId('inbox-thread').first().waitFor({ timeout: 15000 })
@@ -187,6 +188,13 @@ try {
       await page.getByTestId('inbox-more-error').waitFor()
       assert.equal(await page.getByTestId('inbox-thread').count(), 2, 'failed load-more keeps the list')
       await shot(page, `inbox-errors-${size}`)
+      // The load-more error describes the All list only: switching the filter must not carry it onto Unread's list (B1).
+      await page.getByTestId('inbox-filter-unread').click()
+      await page.getByText('Only unread').first().waitFor({ timeout: 15000 })
+      assert.equal(await page.getByTestId('inbox-more-error').count(), 0, 'the stale "could not load older" message is gone after a filter change')
+      await page.getByTestId('inbox-filter-all').click()
+      await page.getByTestId('inbox-thread').first().waitFor({ timeout: 15000 })
+      assert.equal(await page.getByTestId('inbox-more-error').count(), 0, 'and it does not come back on returning to All either (a new load-more is a new request)')
       await ctx.close()
     }
     // Leads monitors: a failed delete is reported and the monitor stays; not reissued.
@@ -201,6 +209,67 @@ try {
       assert.equal(count(hits, 'DELETE /api/monitors/m1'), 1)
       await shot(page, `leads-monitor-error-${size}`)
       await shotVisible(page, 'monitor-error', `leads-monitor-error-inview-${size}`)
+      await ctx.close()
+    }
+    // Inbox first page: a failed first read says so, and Try again loads the list (P7).
+    {
+      let n = 0
+      const { ctx, page } = await open('/app/inbox', vp, u => {
+        if (u.pathname !== '/api/outreach/inbox') return u.pathname === '/api/outreach/conversion' ? { body: { rows: [] } } : u.pathname === '/api/outreach/settings' ? { body: SETTINGS } : undefined
+        return ++n === 1 ? { status: 500 } : { body: INBOX }
+      })
+      await page.getByTestId('inbox-retry').waitFor({ timeout: 15000 })
+      await page.getByTestId('inbox-retry').click()
+      await page.getByTestId('inbox-thread').first().waitFor({ timeout: 15000 })
+      assert.equal(await page.getByTestId('inbox-retry').count(), 0)
+      await ctx.close()
+    }
+    // Social list load: 401, a rejected fetch and a non-JSON 2xx each end in the panel's own error with Try again; the next try recovers.
+    {
+      let n = 0
+      const { ctx, page } = await open('/app/social', vp, (u, req) => {
+        if (u.pathname === '/api/replies' && req.method() === 'GET') { n++; return n === 1 ? { status: 401, body: {} } : n === 2 ? 'abort' : n === 3 ? { raw: '<html>oops</html>' } : { body: REPLIES } }
+        if (u.pathname.includes('metrics')) return { body: {} }
+      })
+      for (let i = 0; i < 3; i++) {
+        await page.getByTestId('social-load-error').waitFor({ timeout: 15000 })
+        await page.getByRole('button', { name: 'Try again' }).click()
+      }
+      await page.getByTestId('thread-card').waitFor({ timeout: 15000 })
+      assert.equal(await page.getByTestId('social-load-error').count(), 0)
+      assert.ok(n >= 4, 'each Try again was one new request')
+      await ctx.close()
+    }
+    // Leads monitors: the list load fails three different ways (500, rejected, malformed 2xx), each with Try again; the fourth try recovers.
+    {
+      let n = 0
+      const { ctx, page } = await open('/app/leads', vp, u => {
+        if (u.pathname === '/api/monitors') { n++; return n === 1 ? { status: 500, body: {} } : n === 2 ? 'abort' : n === 3 ? { body: { monitors: 'nope' } } : { body: { monitors: [{ id: 'm1', query: 'saas founders', enabled: true, run_count: 2, last_new_count: null }] } } }
+      })
+      const err = page.getByTestId('monitor-error')
+      await err.filter({ hasText: 'Could not load your monitors (error 500)' }).waitFor({ timeout: 15000 })
+      await err.getByRole('button', { name: 'Try again' }).click()
+      await err.filter({ hasText: 'Check your connection' }).waitFor()
+      await err.getByRole('button', { name: 'Try again' }).click()
+      await err.filter({ hasText: 'unexpected response' }).waitFor()
+      await err.getByRole('button', { name: 'Try again' }).click()
+      await page.getByTestId('monitor-row').filter({ hasText: 'saas founders' }).waitFor({ timeout: 15000 })
+      assert.equal(await err.count(), 0, 'recovered: no error left on screen')
+      await ctx.close()
+    }
+    // Leads monitors: pause with a rejected fetch and resume with a 500 are each reported and sent once (never auto-reissued).
+    {
+      const { ctx, page, hits } = await open('/app/leads', vp, (u, req) => {
+        if (u.pathname === '/api/monitors') return { body: { monitors: [{ id: 'm1', query: 'saas founders', enabled: true, run_count: 2, last_new_count: null }, { id: 'm2', query: 'dental clinics', enabled: false, run_count: 1, last_new_count: null }] } }
+        if (u.pathname === '/api/monitors/m1' && req.method() === 'PATCH') return 'abort'
+        if (u.pathname === '/api/monitors/m2' && req.method() === 'PATCH') return { status: 500, body: { error: 'server error' } }
+      })
+      await page.getByTestId('monitor-row').filter({ hasText: 'saas founders' }).waitFor({ timeout: 15000 })
+      await page.getByTestId('monitor-row').filter({ hasText: 'saas founders' }).getByRole('button', { name: 'Pause' }).click()
+      await page.getByTestId('monitor-error').filter({ hasText: 'may not have been changed' }).waitFor()
+      await page.getByTestId('monitor-row').filter({ hasText: 'dental clinics' }).getByRole('button', { name: 'Resume' }).click()
+      await page.getByTestId('monitor-error').filter({ hasText: 'Could not resume the monitor: server error' }).waitFor()
+      assert.equal(count(hits, 'PATCH /api/monitors/m1'), 1); assert.equal(count(hits, 'PATCH /api/monitors/m2'), 1)
       await ctx.close()
     }
   }
