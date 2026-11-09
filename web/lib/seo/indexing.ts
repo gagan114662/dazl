@@ -169,7 +169,8 @@ export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?:
 
 // Latest result per keyword for the tenant's CURRENTLY saved domain (#904): results recorded for an earlier domain,
 // or before results named their domain, are not current. Exactly one row per keyword: ties on checked_at are broken
-// by id (descending), the same on both engines.
+// by id (descending), the same on both engines. Within one run the id is `${stamp}${i}` and the stamp carries a random suffix, so same-second rows
+// from two different runs order deterministically but not chronologically (acceptable for #904: one row per keyword, always the same one).
 export async function latestResults(db: DbLike, tenantId: string): Promise<IndexResult[]> {
   return (await asDb(db).all<{ keyword: string; indexed: number; top_url: string | null; domain: string; checked_at: number }>(`
     SELECT keyword, indexed, top_url, domain, checked_at FROM (

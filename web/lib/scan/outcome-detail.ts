@@ -10,3 +10,11 @@ export async function recordedEmptyReason(db: Db, tenantId: string, job: { id: s
   if (!extractedNone) return null
   return emptyExtractionReason((await readRunReport(db, tenantId, job.id) as { extraction?: never }[] | null)?.at(-1)?.extraction)
 }
+
+// The exact spend-refusal reason recorded in the run report's stop block (spend-guard.ts). null when the scan kept no
+// stop block or no reason (legacy rows): never proof of any particular reason, so a legacy budget_stopped renders
+// neutrally. Read-only and owner-scoped.
+export async function recordedStopRefusalReason(db: Db, tenantId: string, job: { id: string; error: string | null }): Promise<string | null> {
+  if (job.error !== 'budget_stopped') return null
+  return (await readRunReport(db, tenantId, job.id) as { stop?: { spend_refusal_reason?: string | null } | null }[] | null)?.at(-1)?.stop?.spend_refusal_reason ?? null
+}

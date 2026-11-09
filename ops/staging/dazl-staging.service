@@ -7,7 +7,8 @@ After=network.target
 User=dazl-staging
 WorkingDirectory=/srv/dazl-staging/current/web
 EnvironmentFile=/etc/dazl-staging/env
-EnvironmentFile=-/srv/dazl-staging/release.env
+# written by deploy.sh (as root) in its root-only state directory; systemd reads it as root before dropping to User=
+EnvironmentFile=-/var/lib/dazl-staging-deploy/release.env
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/npx next start -p 3200 -H 127.0.0.1
 Restart=on-failure

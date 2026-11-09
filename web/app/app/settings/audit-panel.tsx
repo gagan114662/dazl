@@ -50,10 +50,10 @@ export default function AuditPanel() {
         automatically unless your operator has set a retention period.
       </p>
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <select className="input" aria-label="Show" value={filter} onChange={e => setFilter(e.target.value)}>
+        <select className="input min-h-11" aria-label="Show" value={filter} onChange={e => setFilter(e.target.value)}>
           {FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
-        <a className="text-sm underline underline-offset-4" href={`/api/workspace/audit?format=csv${filter ? `&action=${encodeURIComponent(filter)}` : ''}`}>Download CSV</a>
+        <a className="text-sm underline underline-offset-4 inline-flex items-center min-h-11 min-w-11" href={`/api/workspace/audit?format=csv${filter ? `&action=${encodeURIComponent(filter)}` : ''}`}>Download CSV</a>
       </div>
       {events.length === 0 ? <p className="text-sm text-[#555]">Nothing recorded yet.</p> : (
         <ul className="divide-y divide-[#eee] text-sm">

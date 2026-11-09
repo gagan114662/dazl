@@ -83,8 +83,8 @@ export function sourceFindings(rows: SourceRunRow[], jobStatus: string, searchEm
   return { evidence_sources, unknown_sources }
 }
 
-export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null; partial_sources: string[] } & SourceFindings {
-  const rep = (report && typeof report === 'object' ? report : {}) as { funnel?: { review_reasons?: Record<string, number>; drop_reasons?: Record<string, number> }; search?: { hits_unique_urls?: number | null; hits_raw?: number | null; ok?: number | null; attempted?: number | null } | null }
+export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null; partial_sources: string[]; stop_refusal_reason: string | null } & SourceFindings {
+  const rep = (report && typeof report === 'object' ? report : {}) as { funnel?: { review_reasons?: Record<string, number>; drop_reasons?: Record<string, number> }; search?: { hits_unique_urls?: number | null; hits_raw?: number | null; ok?: number | null; attempted?: number | null } | null; stop?: { spend_refusal_reason?: string | null } | null }
   const partial = new Map(rows.map(r => [String(r.collector ?? ''), /^error_partial:(\d+)_of_(\d+)/.exec(String(r.status ?? ''))] as const))
   const failed = progressOf(rows, jobStatus).filter(p => p.status === 'failed').map(p => { const m = partial.get(p.source); return m ? `${p.source} (${m[1]} of ${m[2]} requests failed)` : p.note ? `${p.source} (${p.note})` : p.source })
   const search = rep.search ?? null
@@ -98,5 +98,7 @@ export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: 
   const hits = typeof search?.hits_unique_urls === 'number' ? search.hits_unique_urls : typeof search?.hits_raw === 'number' ? search.hits_raw : null
   const searchEmptyOk = attempted > 0 && ok === attempted && hits === 0   // a clean zero from TinyFish: clears TinyFish's own 'unavailable' row, no other source's
   const partial_sources = progressOf(rows, jobStatus).filter(p => p.status === 'partial').map(p => `${p.source} (${p.note})`)
-  return { failed_sources: failed, partial_sources, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits, ...sourceFindings(rows, jobStatus, searchEmptyOk) }
+  // The stop block's exact refusal reason (null when not recorded): a legacy budget_stopped row must render neutrally.
+  const stop_refusal_reason = rep.stop?.spend_refusal_reason ?? null
+  return { failed_sources: failed, partial_sources, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits, stop_refusal_reason, ...sourceFindings(rows, jobStatus, searchEmptyOk) }
 }

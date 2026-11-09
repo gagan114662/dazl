@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { hasConsent } from './ledger.ts'
-import { norm } from './store.ts'
+import { norm, READ_CONSENT_VERSION } from './store.ts'
 
 // The shared authority recheck for every Gmail send handoff (Refs #739, #925, #405, #467).
 // Call it synchronously right before the handoff, AFTER every await on the path (token fetch, reply sync, draft text, approval
@@ -26,13 +26,16 @@ export interface SendAuthorityInput {
   /** when set, the consent row must carry exactly this evidence_ref (e.g. 'sequence:<id>'), so a grant for another
    *  sequence or flow to the same recipient never authorises this send */
   consentEvidenceRef?: string
+  /** the refresh_ct generation the path's token was minted from (getAccessTokenBound): a replaced connection refuses, even at the same address */
+  expectRefreshCt?: string
 }
 
 export function recheckSendAuthority(db: Database.Database, tenantId: string, i: SendAuthorityInput): string | null {
   try {
-    const acct = db.prepare('SELECT email, status FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string } | undefined
+    const acct = db.prepare('SELECT email, status, refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string; refresh_ct: string } | undefined
     if (!acct || acct.status !== 'active') return 'gmail_not_connected'
     if (acct.email.toLowerCase() !== i.sender.toLowerCase()) return 'sender_changed'
+    if (i.expectRefreshCt !== undefined && acct.refresh_ct !== i.expectRefreshCt) return 'connection_replaced'
     if (db.prepare('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?').get(tenantId, norm(i.to))) return 'suppressed'
     if (i.consentScope) {
       const ok = i.consentEvidenceRef
@@ -46,6 +49,25 @@ export function recheckSendAuthority(db: Database.Database, tenantId: string, i:
       if (i.autopilot !== 'enabled' && Number(st.paused) === 1) return 'paused'
       if (i.autopilot === 'followups' && Number(st.followups_enabled) !== 1) return 'followups_off'
     }
+    return null
+  } catch {
+    return 'authority_unreadable'
+  }
+}
+
+// The read-side twin (Refs #928, #415): re-proves, after an await and before anything read is stored or granted from, that the
+// mail-read consent still stands at the current version and that the connection the sync started with is still the live one:
+// same account, same address, still active and read-granted, same refresh ciphertext (a disconnect and reconnect, even to the
+// same address, is a different connection). Returns null or the refusal reason; an unreadable check is a refusal.
+export interface ReadAuthorityInput { email: string; refreshCt: string }
+export function recheckReadAuthority(db: Database.Database, tenantId: string, i: ReadAuthorityInput): string | null {
+  try {
+    const c = db.prepare('SELECT version FROM mail_read_consent WHERE tenant_id = ?').get(tenantId) as { version: string } | undefined
+    if (c?.version !== READ_CONSENT_VERSION) return 'read_consent_absent'
+    const a = db.prepare('SELECT email, status, read_granted, refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string; read_granted: number; refresh_ct: string } | undefined
+    if (!a || a.status !== 'active') return 'gmail_not_connected'
+    if (a.email.toLowerCase() !== i.email.toLowerCase() || a.refresh_ct !== i.refreshCt) return 'connection_changed'
+    if (Number(a.read_granted) !== 1) return 'read_not_granted'
     return null
   } catch {
     return 'authority_unreadable'

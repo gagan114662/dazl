@@ -42,6 +42,11 @@ export default function InboxClient() {
   const moreCtl = useRef<AbortController | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [threads, setThreads] = useState<Record<string, ThreadMsg[]>>({})
+  // #902: per-thread read state, so a failed read and a read that returned no messages each get a terminal state
+  // instead of both showing Loading forever; load-more failure is shown with its own retry.
+  const [threadErr, setThreadErr] = useState<Record<string, string>>({})
+  const [moreErr, setMoreErr] = useState<{ key: string; msg: string } | null>(null) // keyed like moreKey: it describes ONE list, never another
+  const [retryTick, setRetryTick] = useState(0)
   const [copied, setCopied] = useState<string | null>(null)
   // First page of the current query. A filter or play change aborts the previous query's requests (first page and
   // load-more); a response that still lands after that is dropped by the aborted signal.
@@ -51,23 +56,35 @@ export default function InboxClient() {
       .then((j: Info) => { if (!c.signal.aborted) setList({ ...j, key }) })
       .catch(() => { if (!c.signal.aborted) setFailedKey(key) })
     return () => { c.abort(); moreCtl.current?.abort() }
-  }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [status, jobId, key, retryTick]) // status and jobId are what key is made of; retryTick is the explicit Try again
   const current = list && list.key === key ? list : null
   function loadMore() {
     if (!current?.next_cursor || moreKey === key) return
     const k = key, c = new AbortController()
     moreCtl.current = c
-    setMoreKey(k)
-    fetch(listUrl(status, jobId, current.next_cursor), { signal: c.signal }).then(r => r.ok ? r.json() : null).then((j: Info | null) => {
+    setMoreKey(k); setMoreErr(null)
+    fetch(listUrl(status, jobId, current.next_cursor), { signal: c.signal }).then(r => r.ok ? r.json() : Promise.reject(new Error(`error ${r.status}`))).then((j: Info | null) => {
+      if (!j || !Array.isArray(j.threads)) throw new Error('unexpected response')
       // Appended only to the list it was asked for. Rows already shown are kept; a thread that moved since the first
       // page is not shown twice.
       if (j && !c.signal.aborted) setList(cur => cur && cur.key === k ? { ...j, key: k, threads: [...cur.threads, ...j.threads.filter(t => !cur.threads.some(x => x.thread_id === t.thread_id))] } : cur)
-    }).catch(() => {}).finally(() => setMoreKey(m => m === k ? null : m))
+    }).catch((e: Error) => { if (!c.signal.aborted) setMoreErr({ key: k, msg: `Could not load older conversations (${e.message}). The list above is unchanged.` }) }).finally(() => setMoreKey(m => m === k ? null : m))
+  }
+  function loadThread(threadId: string) {
+    setThreadErr(e => { const c = { ...e }; delete c[threadId]; return c })
+    void fetch(`/api/outreach/inbox?thread_id=${encodeURIComponent(threadId)}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'your session may have expired' : `error ${r.status}`)
+        const j = await r.json().catch(() => null)
+        if (!j || !Array.isArray(j.messages)) throw new Error('unexpected response')
+        setThreads(t => ({ ...t, [threadId]: j.messages }))
+      })
+      .catch((e: Error) => setThreadErr(x => ({ ...x, [threadId]: `Could not load this thread (${e.message === 'Failed to fetch' ? 'network error' : e.message}).` })))
   }
   function toggle(threadId: string) {
     if (open === threadId) return setOpen(null)
     setOpen(threadId)
-    if (!threads[threadId]) void fetch(`/api/outreach/inbox?thread_id=${encodeURIComponent(threadId)}`).then(r => r.ok ? r.json() : null).then(j => { if (j) setThreads(t => ({ ...t, [threadId]: j.messages })) }).catch(() => {})
+    if (!threads[threadId]) loadThread(threadId)
     // Opening a thread reads it. The row and the totals of the list it was opened from update; if the filter or play
     // changed meanwhile, that other list keeps the server's own counts.
     const row = current?.threads.find(t => t.thread_id === threadId)
@@ -76,7 +93,7 @@ export default function InboxClient() {
       .then(r => { if (r.ok) setList(cur => cur && cur.key === k && cur.threads.some(t => t.thread_id === threadId && t.unread) ? { ...cur, threads: cur.threads.map(t => t.thread_id === threadId ? { ...t, unread: false } : t), counts: { ...cur.counts, unread: Math.max(0, cur.counts.unread - 1), unread_needs_owner: Math.max(0, cur.counts.unread_needs_owner - (row.needs_owner ? 1 : 0)) } } : cur) }).catch(() => {})
   }
   const i = current ?? list // consent, account and booking link do not depend on the query
-  if (!i) return failedKey === key ? <div className="p-8 text-sm" role="alert">Could not load your inbox. Reload to retry.</div> : <div className="p-8 text-sm text-[#555]">Loading...</div>
+  if (!i) return failedKey === key ? <div className="p-8 text-sm" role="alert">Could not load your inbox. <button className="underline" onClick={() => { setFailedKey(null); setRetryTick(t => t + 1) }} data-testid="inbox-retry">Try again</button></div> : <div className="p-8 text-sm text-[#555]">Loading...</div>
   return (
     <div className="p-8 max-w-4xl">
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
@@ -91,7 +108,7 @@ export default function InboxClient() {
       {i.consent_accepted && i.read_granted && (
         <div className="flex flex-wrap items-center gap-2 mb-4" data-testid="inbox-filters">
           {FILTERS.map(([st, label, ck]) => (
-            <button key={st} className={st === status ? 'btn-primary btn-sm' : 'btn-ghost btn-sm'} aria-pressed={st === status} onClick={() => { setOpen(null); setStatus(st) }} data-testid={`inbox-filter-${st}`}>
+            <button key={st} className={st === status ? 'btn-primary btn-sm' : 'btn-ghost btn-sm'} aria-pressed={st === status} onClick={() => { setOpen(null); setMoreErr(null); setStatus(st) }} data-testid={`inbox-filter-${st}`}>
               {label} <span className="tabular-nums">{current ? current.counts[ck] : '…'}</span>
             </button>
           ))}
@@ -99,7 +116,7 @@ export default function InboxClient() {
         </div>
       )}
       {i.consent_accepted && i.read_granted && !current && (failedKey === key
-        ? <p className="text-sm" role="alert">Could not load these conversations. Reload to retry.</p>
+        ? <p className="text-sm" role="alert">Could not load these conversations. <button className="underline" onClick={() => { setFailedKey(null); setRetryTick(t => t + 1) }} data-testid="inbox-retry">Try again</button></p>
         : <p className="text-sm text-[#555]" data-testid="inbox-loading">Loading...</p>)}
       {current && i.consent_accepted && i.read_granted && current.threads.length === 0 && (
         <div className="card p-6 text-sm text-[#555]">{status === 'all' && !jobId ? 'No replies yet. When someone answers an outreach email, it shows up here.' : 'No conversations match this filter.'}</div>
@@ -123,7 +140,7 @@ export default function InboxClient() {
               <div className="text-xs text-[#6b6b6b] mt-2 flex items-center gap-3">
                 {r.replies > 1 && <span>{r.replies} replies</span>}
                 <span>{r.stopped === 'review' ? 'Follow-ups stopped: this reply needs your review' : r.stopped ? `Follow-ups stopped (${r.stopped.replace(/_/g, ' ')})` : r.followups_sent ? `Follow-ups sent: ${r.followups_sent}` : 'No follow-up sent'}</span>
-                <button className="underline underline-offset-2" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
+                <button className="underline underline-offset-2 min-h-11 min-w-11 inline-flex items-center" onClick={() => toggle(r.thread_id)}>{open === r.thread_id ? 'Hide thread' : 'View thread'}</button>
               </div>
               {r.classification === 'positive' && (
                 <div className="mt-2 text-xs border border-black/10 p-2 space-y-1">
@@ -131,7 +148,7 @@ export default function InboxClient() {
                   {i.booking_url ? (
                     <p className="text-[#333]">If you want to offer a time, paste your own booking link into your reply:{' '}
                       <span className="font-mono break-all">{i.booking_url}</span>{' '}
-                      <button className="underline" onClick={() => { void navigator.clipboard?.writeText(i.booking_url ?? ''); setCopied(r.gmail_id); setTimeout(() => setCopied(null), 1500) }}>{copied === r.gmail_id ? 'Copied' : 'Copy link'}</button>
+                      <button className="underline" onClick={() => { void Promise.resolve(navigator.clipboard?.writeText(i.booking_url ?? '') ?? Promise.reject(new Error('no clipboard'))).then(() => { setCopied(r.gmail_id); setTimeout(() => setCopied(null), 1500) }, () => setCopied(`fail:${r.gmail_id}`)) }}>{copied === r.gmail_id ? 'Copied' : copied === `fail:${r.gmail_id}` ? 'Copy failed - select the link' : 'Copy link'}</button>
                       <span className="block text-[#6b6b6b] mt-0.5">This is your saved link only - showing it does not check availability, reserve a time, or book anything.</span>
                     </p>
                   ) : (
@@ -141,7 +158,10 @@ export default function InboxClient() {
               )}
               {open === r.thread_id && (
                 <div className="mt-3 border-l-2 border-black/10 pl-3 space-y-2">
-                  {(threads[r.thread_id] ?? []).length === 0 && <p className="text-xs text-[#6b6b6b]">Loading...</p>}
+                  {threadErr[r.thread_id]
+                    ? <p className="text-xs" role="alert" data-testid="thread-error">{threadErr[r.thread_id]} <button className="underline" onClick={() => loadThread(r.thread_id)}>Try again</button></p>
+                    : !threads[r.thread_id] ? <p className="text-xs text-[#6b6b6b]" data-testid="thread-loading">Loading...</p>
+                    : threads[r.thread_id].length === 0 && <p className="text-xs text-[#6b6b6b]" data-testid="thread-empty">No messages are stored for this thread.</p>}
                   {(threads[r.thread_id] ?? []).map((m, idx) => (
                     <div key={idx} className="text-xs">
                       <div className="text-[#6b6b6b]">{m.dir === 'out' ? (m.kind === 'followup' ? 'You (automatic follow-up)' : 'You') : 'Them'} · {new Date(m.at * 1000).toLocaleString()}{m.subject ? ` · ${m.subject}` : ''}</div>
@@ -154,6 +174,7 @@ export default function InboxClient() {
           ))}
         </ul>
       )}
+      {moreErr && moreErr.key === key && <p className="text-sm mt-4" role="alert" data-testid="inbox-more-error">{moreErr.msg}</p>}
       {current?.next_cursor && (
         <button className="btn-ghost btn-sm mt-4" onClick={loadMore} disabled={moreKey === key} data-testid="inbox-more">{moreKey === key ? 'Loading...' : 'Show older conversations'}</button>
       )}

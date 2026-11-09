@@ -236,3 +236,35 @@ bothEngines('indexing #904: tied checked_at returns one deterministic row per ke
   assert.equal(rows.length, 1)
   assert.equal(rows[0].indexed, true, 'tie broken by id descending, ignoring the domain-less legacy row')
 })
+
+// #904 review (Instinct 11-07 item 1, Hermes-PC): the FOR UPDATE on the config row in the commit transaction is what orders a concurrent
+// saveDomain strictly before or after the commit. A single-writer harness cannot tell, so this holds the row from a second connection:
+// writer X locks the config row and, still holding it, changes the domain; the search run's commit then reads the row. WITH the lock it
+// waits for X and finds the new domain (stale_domain, nothing recorded for the old one). WITHOUT it a plain read sees the OLD domain
+// (X has not committed), records results against it, and returns them: the test fails on that.
+bothEngines('indexing #904: a second writer holding the config row makes the commit wait and then fence (Postgres FOR UPDATE)', async ({ db, kind, url, schema }) => {
+  if (kind !== 'pg') return   // SQLite has one write transaction at a time; the single-writer cases above cover it
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'alpha.example')
+  await addKeyword(db, 'u1', 'crm')
+  const writer = pgDb({ connectionString: url!, searchPath: schema, max: 1 })
+  try {
+    const x = writer.tx(function* (t) {
+      yield* t.get('SELECT domain FROM seo_index_configs WHERE tenant_id = ? FOR UPDATE', ['u1'])   // X now holds the row
+      yield* t.get('SELECT pg_sleep(1.5)')                                                          // ...and keeps it while the run commits
+      yield* t.run('UPDATE seo_index_configs SET domain = ?, next_run_at = NULL WHERE tenant_id = ?', ['bravo.example', 'u1'])
+      return true
+    })
+    await new Promise(r => setTimeout(r, 400))                          // X is inside its transaction
+    const t0 = Date.now()
+    const out = await runIndexChecks(db, 'u1', { env, fetchImpl: hits(['https://alpha.example/p']), now: NOW })
+    const waited = Date.now() - t0
+    await x
+    assert.ok(waited >= 700, `the commit waited for the writer holding the row (${waited} ms)`)
+    assert.equal(out, 'stale_domain', 'after the wait it saw the new domain and fenced')
+    const rows = await db.all<{ n: number }>('SELECT COUNT(*) AS n FROM seo_index_results WHERE tenant_id = ?', ['u1'])
+    assert.equal(Number(rows[0].n), 0, 'nothing was recorded against the old domain')
+    assert.equal((await getConfig(db, 'u1'))?.domain, 'bravo.example')
+    assert.equal((await getConfig(db, 'u1'))?.next_run_at, null)
+  } finally { await writer.close() }
+})

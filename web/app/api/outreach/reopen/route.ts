@@ -7,7 +7,7 @@ import { OutreachError } from '@/lib/outreach/service'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
 
-const STATUS: Record<string, number> = { not_found: 404, already_created: 409, paused: 409, not_sales_contact: 409, lead_currentness_unconfirmed: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, already_sent: 409, send_uncertain: 409, already_uncertain: 409, not_uncertain: 409, send_in_progress: 409, daily_cap: 409, final: 409, not_editable: 409, bad_body: 400, suppressed: 409, lead_missing: 404, root_missing: 404, gmail_not_connected: 400, gmail_reconnect_needed: 400, sender_changed: 409, authority_unreadable: 503 }
+const STATUS: Record<string, number> = { not_found: 404, already_created: 409, paused: 409, not_sales_contact: 409, lead_currentness_unconfirmed: 409, lead_evidence_withdrawn: 409, domain_unconfirmed: 409, review_unreadable: 409, already_sent: 409, send_uncertain: 409, already_uncertain: 409, not_uncertain: 409, send_in_progress: 409, daily_cap: 409, final: 409, not_editable: 409, bad_body: 400, suppressed: 409, lead_missing: 404, root_missing: 404, gmail_not_connected: 400, gmail_reconnect_needed: 400, sender_changed: 409, authority_unreadable: 503, connection_replaced: 409 }
 
 export async function GET() {
   const user = await requireUser()
