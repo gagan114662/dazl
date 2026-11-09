@@ -337,8 +337,7 @@ export interface PlanView { explicit: boolean; empty: boolean; summary: string; 
 function meansOf(c: Condition): string {
   switch (c.kind) {
     case 'funding': return `a completed ${c.stage ? `${c.stage} ` : ''}funding round`
-    // "made their first sales hire" is compiled as this condition (the #204 Test B contract), so the view says what is actually checked rather than calling it a vacancy or a completed hire.
-    case 'hiring': return /\b(?:made|making|makes|make)\b[^.]*\bhires?\b/i.test(c.text) ? `the hire the request names${c.role ? ` (${c.role})` : ''}, checked as hiring: a dated job posting or a source naming it (a completed-hire statement is not required)` : `an open role${c.role ? ` (${c.role})` : ''}: a job posting or a statement that it is hiring`
+    case 'hiring': return `an open role${c.role ? ` (${c.role})` : ''}: a job posting or a statement that it is hiring`
     case 'hire_made': return `a completed ${c.first ? 'first ' : ''}hire${c.role ? ` (${c.role})` : ''}: a source saying the hire was made, not a vacancy`
     case 'event': return `${c.event ?? 'an'} event${c.object ? ` (${c.object})` : ''}`
     case 'competitor': return 'a company on your saved competitor list'

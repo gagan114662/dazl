@@ -1,6 +1,7 @@
 // #876 / #752: the compiled targeting plan said in plain words, before the search. Real compiler, no database, no provider, no model call.
 // The completed-first-hire versus open-vacancy distinction is carried through the plan view, not only AND/OR.
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { compileTargeting, planView, type PlanViewNode } from '../lib/scan/targeting.ts'
 
@@ -26,10 +27,22 @@ test('COMPLETED hire versus OPEN vacancy: the literal completed-hire wording is 
   const both = conds(view('Companies that hired their first VP of Sales within 30 days and are hiring account executives').root)
   assert.deepEqual(both.map(c => c.kind), ['hire_made', 'hiring']); assert.match(both[0].means, /not a vacancy/); assert.match(both[1].means, /job posting/)
 })
-test('"made their first sales hire" keeps its current (Test B) reading, and the view says what is actually checked: not a vacancy claim, not a completed-hire claim', () => {
-  const c = conds(view('London startups that raised seed funding or made their first sales hire in the last 90 days').root)[1]
-  assert.equal(c.kind, 'hiring'); assert.match(c.means, /^the hire the request names \(sales\), checked as hiring: a dated job posting or a source naming it \(a completed-hire statement is not required\)$/)
-  assert.equal(c.window, 'within 90 days')
+test('the view reports whatever the compiler compiled: every condition word comes from its kind, so a compiler change (e.g. the completed-hire reading of "made their first sales hire") flows through and is never contradicted here', () => {
+  for (const q of ['Companies that made their first sales hire within 30 days', 'Companies hiring a first sales rep within 30 days', 'Companies that hired their first VP of Sales within 30 days']) {
+    const p = compileTargeting(q, null), v = planView(p)
+    for (const c of conds(v.root)) {
+      if (c.kind === 'hire_made') assert.match(c.means, /^a completed .*hire.*not a vacancy$/, q)
+      else if (c.kind === 'hiring') assert.match(c.means, /^an open role/, q)
+      else assert.fail(`${q}: unexpected kind ${c.kind}`)
+    }
+  }
+})
+test('the fixture the rendered check uses is what the REAL compiler produces (same JSON file feeds test/ui/plan-view.ui.mjs)', () => {
+  const f = JSON.parse(readFileSync(new URL('./helpers/plan-view-fixture.json', import.meta.url), 'utf8')) as { query: string; expect: { groups: string[]; kinds: string[]; windows: (string | null)[] } }
+  const icp = JSON.stringify({ summary: 'x', who: ['Founder'], industries: [], sizes: [], where: [], signals: [], exclude: [] })
+  const v = planView(compileTargeting(f.query, icp))
+  const groups: string[] = []; const walk = (n: PlanViewNode | null) => { if (!n || n.op === 'cond') return; groups.push(n.op); (n.op === 'not' ? [n.of] : n.of).forEach(walk) }; walk(v.root)
+  assert.deepEqual(groups, f.expect.groups); assert.deepEqual(conds(v.root).map(c => c.kind), f.expect.kinds); assert.deepEqual(conds(v.root).map(c => c.window), f.expect.windows)
 })
 test('separate clocks stay separate: seed within 90 days AND first VP hired within 30 days', () => {
   const c = conds(view('Companies that raised seed funding within 90 days and hired their first VP within 30 days').root)

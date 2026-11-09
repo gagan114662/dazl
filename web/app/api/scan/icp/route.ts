@@ -7,7 +7,6 @@ import { previewIcp } from '@/lib/scan/runner'
 import { MAX_QUERY, guardedPreviewResearch, normalizeIcp } from '@/lib/scan/icp'
 import { denied } from '@/lib/workspace-access'
 import { PROVIDER_FAILED_COPY } from '@/lib/error-copy'
-import { compileTargeting, planView } from '@/lib/scan/targeting'
 
 // Turns "what are you looking for" into an editable profile, using the caller's own key.
 export async function POST(req: NextRequest) {
@@ -40,7 +39,5 @@ export async function POST(req: NextRequest) {
   // keep their exact bindings, always: no merge, no conditional, no silent replacement. Presence here is NOT a
   // review; the editor shows every decision and Run (the explicit review event) applies the canonical semantics.
   if (out.icp && prior?.research) out.icp = { ...out.icp, research: guardedPreviewResearch(out.icp.research, prior.research) }
-  // The compiled targeting plan, said in plain words, BEFORE anything runs (#876): the same compiler the gates use, no model call, no spend.
-  // Computed from the request and the draft profile exactly as a run would read them; it changes nothing and is never saved here.
-  return NextResponse.json({ ...out, plan: planView(compileTargeting(query, out.icp ? JSON.stringify(out.icp) : null)) })
+  return NextResponse.json(out)
 }

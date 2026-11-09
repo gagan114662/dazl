@@ -2,7 +2,7 @@
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
@@ -50,7 +50,7 @@ import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
 import PlanViewCard from './plan-view'
-import type { PlanView } from '@/lib/scan/targeting'
+import { compileTargeting, planView } from '@/lib/scan/targeting'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -151,8 +151,10 @@ export default function LeadsClient() {
   // query or profile of a scan the user is looking at (whichever response arrives first). Synced on every render.
   const viewedJob = useRef('')
   const [draft, setDraft] = useState<Icp | null>(null)
+  // The plan shown above Run (#876) is compiled HERE from exactly what Run sends: the request text now in the box and the profile now being edited. Any edit to either,
+  // a website fill, or a restored saved run, recompiles it on the spot, so it can never describe an earlier request or profile.
+  const draftPlan = useMemo(() => draft ? planView(compileTargeting(query, JSON.stringify(draft))) : null, [draft, query])
   const [draftNote, setDraftNote] = useState('')
-  const [draftPlan, setDraftPlan] = useState<PlanView | null>(null)   // the compiled targeting plan for the draft, shown before anything runs (#876)
   const [busy, setBusy] = useState(false)
   const [starting, setStarting] = useState(false)
   // Optional per-run spend limit (same budget object as the API; partial, see budget-panel.tsx). Off by default.
@@ -365,13 +367,13 @@ export default function LeadsClient() {
 
   // Optional: work out the profile for review before running. The sentence alone runs straight away (submit below).
   async function preview() {
-    setError(''); setDraft(null); setDraftPlan(null); setBusy(true)
+    setError(''); setDraft(null); setBusy(true)
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(startIcp ? { prior_icp: startIcp } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error || 'Could not build the profile')); return }
       await startOffer(query)
-      setDraft(j.icp); setDraftPlan(j.plan ?? null)
+      setDraft(j.icp)
       setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
     } catch {
       setError('Could not reach the server. Check your connection and try again.')

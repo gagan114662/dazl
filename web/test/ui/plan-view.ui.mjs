@@ -1,12 +1,14 @@
 // Rendered check for the compiled targeting plan on the Leads review step (#876 / #752). NOT part of `npm test`.
 // Run:  cd web && npm run build && node test/ui/plan-view.ui.mjs   (SHOTS=<dir> also saves screenshots at 1280 and 390 px)
-// Real production build, throwaway database, server under test/helpers/net-fence.ts, every /api/* call answered from a browser stub. It proves the plan
-// (AND / OR / NOT, a completed hire worded as one, per-condition clocks, ambiguity with the reading used) is shown above Run, starts nothing, and fits at both widths.
+// Real production build, throwaway database, server under test/helpers/net-fence.ts, every /api/* call answered from a browser stub. NOTHING about the plan is stubbed:
+// the page compiles the request in the box with the real compiler (the same query and expected structure live in test/helpers/plan-view-fixture.json, which
+// test/targeting-plan-view.test.ts proves the real compiler produces). It proves the plan is shown above Run, starts nothing, fits at both widths, and follows edits:
+// changing the request recompiles it, and the request Run sends is the one the plan describes.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -30,20 +32,7 @@ const PROFILE = { business_name: 'Bright Smile Software', sells: 'Online booking
   buyer: { summary: 'Dental practices', who: ['Dental practice owners', 'Clinic administrators'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['opened a new location', 'hiring front-desk staff', 'switching practice software'], exclude: [] } }
 const ICP = { summary: 'Clinic administrators in Ohio hiring front-desk staff', who: ['Clinic administrators'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['hiring front-desk staff'], exclude: [] }
 
-// The plan the real /api/scan/icp route returns for these requests (planView of compileTargeting; covered against the real compiler in test/targeting-plan-view.test.ts).
-const cond = (id, text, means, window, kind) => ({ op: 'cond', id, text, means, window, kind })
-const PLAN = {
-  explicit: true, empty: false, summary: '(C1 AND (C2 OR NOT C3))',
-  root: { op: 'and', of: [
-    cond('C1', 'made their first sales hire within 30 days', 'a completed first hire (sales): a source saying the hire was made, not a vacancy', 'within 30 days', 'hire_made'),
-    { op: 'or', of: [
-      cond('C2', 'raised seed funding within 90 days', 'a completed seed funding round', 'within 90 days', 'funding'),
-      { op: 'not', of: cond('C3', 'excluding competitors', 'a company on your saved competitor list', null, 'competitor') },
-    ] },
-  ] },
-  filters: [{ kind: 'where', values: ['London, UK'], semantics: 'the company is in this place' }],
-  ambiguities: [{ text: 'seed or hiring and a founder', readings: ['(seed or hiring) and a founder', 'seed or (hiring and a founder)'], chosen: '(seed or hiring) and a founder' }],
-}
+const FIX = JSON.parse(readFileSync(path.join(dir, 'test/helpers/plan-view-fixture.json'), 'utf8'))
 const b = await chromium.launch()
 async function open(profile) {
   const writes = []; const scanBodies = []
@@ -60,7 +49,8 @@ async function open(profile) {
     if (p === '/api/settings/advanced') return json({ available: false, platforms: [] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/scan/latest') return json({})
-    if (p === '/api/scan/icp' && m === 'POST') return json({ icp: ICP, inferred: true, plan: PLAN })
+    if (p === '/api/scan/icp' && m === 'POST') return json({ icp: ICP, inferred: true })
+    if (p === '/api/scan/estimate' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ error: 'stub' }, 400) }
     if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'b'.repeat(24) }, 202) }
     if (p === '/api/scan/status') return json({ status: 'pending', lead_count: 0, attempts: 0, max_attempts: 3 })
     return json({}, 404)
@@ -71,11 +61,13 @@ async function open(profile) {
 }
 const shot = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: false }) }
 const WIDTHS = [1280, 390]
+const kindsOf = page => page.getByTestId('plan-view').getByTestId('plan-cond').evaluateAll(c => c.map(x => x.getAttribute('data-kind')))
 try {
   for (const w of WIDTHS) {
-    const { ctx, page, writes } = await open(PROFILE)
+    const { ctx, page, writes, scanBodies } = await open(PROFILE)
     await page.setViewportSize({ width: w, height: 1100 })
-    await page.getByTestId('play-suggestion').nth(1).click()
+    const box = page.getByLabel('Who do you want to reach?')
+    await box.fill(FIX.query)
     await page.getByRole('button', { name: 'Review profile first' }).click()
     const view = page.getByTestId('plan-view')
     await view.waitFor()
@@ -83,29 +75,36 @@ try {
     // Above the Run button: the plan is read before anything starts.
     const vy = (await view.boundingBox()).y, ry = (await page.getByRole('button', { name: 'Run scan with this profile' }).first().boundingBox()).y
     assert.ok(vy < ry, `the plan sits above Run at ${w}px (${vy} < ${ry})`)
-    assert.deepEqual(await view.getByTestId('plan-group').evaluateAll(g => g.map(x => x.getAttribute('data-op'))), ['and', 'or', 'not'])
-    assert.deepEqual(await view.getByTestId('plan-cond').evaluateAll(c => c.map(x => x.getAttribute('data-kind'))), ['hire_made', 'funding', 'competitor'])
+    // The structure the REAL compiler produced for this request (the fixture is proven against the compiler in targeting-plan-view.test.ts).
+    assert.deepEqual(await view.getByTestId('plan-group').evaluateAll(g => g.map(x => x.getAttribute('data-op'))), FIX.expect.groups)
+    assert.deepEqual(await kindsOf(page), FIX.expect.kinds)
     const text = await view.innerText()
+    for (const win of FIX.expect.windows) if (win) assert.match(text, new RegExp(win), 'each condition keeps its own clock')
     assert.match(text, /ALL of these must be shown/); assert.match(text, /ANY ONE of these is enough/); assert.match(text, /NONE of these may apply/)
-    assert.match(text, /a completed first hire \(sales\): a source saying the hire was made, not a vacancy/, 'a completed hire is never worded as a vacancy')
-    assert.match(text, /within 30 days/); assert.match(text, /within 90 days/, 'each condition keeps its own clock')
-    assert.match(text, /Your words: .made their first sales hire within 30 days./)
-    assert.match(text, /Not clear in your request/); assert.match(text, /could mean \(seed or hiring\) and a founder or seed or \(hiring and a founder\)/); assert.match(text, /Used: \(seed or hiring\) and a founder/)
-    assert.match(text, /London, UK/)
-    // Nothing is clipped or pushed off screen, and no one word per line.
-    const fit = await page.evaluate(() => { const v = document.querySelector('[data-testid="plan-view"]'); const r = v.getBoundingClientRect(); return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, right: r.right, vw: window.innerWidth, h: r.height } })
+    assert.match(text, /a completed first hire \(VP of Sales\): a source saying the hire was made, not a vacancy/, 'a completed hire is never worded as a vacancy')
+    assert.match(text, /a company on your saved competitor list/)
+    const fit = await page.evaluate(() => { const r = document.querySelector('[data-testid="plan-view"]').getBoundingClientRect(); return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, right: r.right, vw: window.innerWidth } })
     assert.ok(fit.sw <= fit.cw + 1, `no horizontal scroll at ${w}px (${fit.sw} > ${fit.cw})`); assert.ok(fit.right <= fit.vw, `the plan stays inside the screen at ${w}px`)
     await shot(page, `plan-${w}`)
+
+    // The plan follows the request in the box: edit it and the plan recompiles on the spot (no stale description of the earlier request).
+    await box.fill(FIX.edited_query)
+    await page.waitForFunction(() => document.querySelector('[data-testid="plan-view"]')?.getAttribute('data-empty') === 'true')
+    assert.equal(await page.getByTestId('plan-cond').count(), 0, 'the old conditions are gone')
+    assert.match(await view.innerText(), /no trigger or exclusion it can check/)
+    await shot(page, `plan-edited-${w}`)
+    await box.fill(FIX.query)
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="plan-cond"]').length === 3)
+    // ...and the request Run sends is the one the plan describes.
+    await box.fill(FIX.edited_query)
+    await page.waitForFunction(() => document.querySelector('[data-testid="plan-view"]')?.getAttribute('data-empty') === 'true')
+    await page.getByRole('button', { name: 'Run scan with this profile' }).first().click()
+    await page.waitForTimeout(500)
+    const est = scanBodies.find(b => b && typeof b.query === 'string')
+    assert.ok(est, 'Run asked for its estimate'); assert.equal(est.query, FIX.edited_query, 'the request Run sends is the request the plan on screen describes')
     await ctx.close()
   }
-  // An empty plan says so and adds nothing.
-  const e = await open(PROFILE)
-  await e.ctx.route('**/api/scan/icp', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ icp: ICP, inferred: true, plan: { explicit: false, empty: true, summary: '(no targeting conditions)', root: null, filters: [], ambiguities: [] } }) }))
-  await e.page.getByTestId('play-suggestion').nth(1).click(); await e.page.getByRole('button', { name: 'Review profile first' }).click()
-  await e.page.getByTestId('plan-view').waitFor()
-  assert.match(await e.page.getByTestId('plan-view').innerText(), /no trigger or exclusion it can check/); assert.equal(await e.page.getByTestId('plan-cond').count(), 0)
-  await e.ctx.close()
-  console.log('plan view UI check passed: the compiled plan (AND/OR/NOT, per-condition clocks, ambiguity) is shown above Run at 1280 and 390 px, starts nothing, and an empty plan says so')
+  console.log('plan view UI check passed: the real compiler\'s plan (AND/OR/NOT, per-condition clocks, completed hire) is shown above Run at 1280 and 390 px, starts nothing, recompiles when the request is edited, and Run sends the request the plan describes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

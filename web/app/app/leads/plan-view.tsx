@@ -27,8 +27,13 @@ function Node({ n, depth }: { n: PlanViewNode; depth: number }) {
 
 export default function PlanViewCard({ plan }: { plan: PlanView | null | undefined }) {
   if (!plan) return null
-  if (plan.empty) {
-    return <p className="text-xs text-[#555] mb-3" data-testid="plan-view">How dazl reads your request: no trigger or exclusion it can check, so only the profile below applies. Nothing is added to it.</p>
+  if (!plan.root) {
+    return (
+      <section className="mb-3 text-xs text-[#555]" data-testid="plan-view" data-empty="true" aria-label="How dazl reads your request">
+        <p>How dazl reads your request: no trigger or exclusion it can check, so only the profile below applies. Nothing is added to it.</p>
+        {plan.filters.length > 0 && <ul className="mt-1 space-y-1" data-testid="plan-filters">{plan.filters.map(f => <li key={f.kind} className="break-words"><span className="font-medium text-[#111]">{f.kind === 'who' ? 'Person to reach' : f.kind[0].toUpperCase() + f.kind.slice(1)}:</span> {f.values.join('; ')} <span>({f.semantics})</span></li>)}</ul>}
+      </section>
+    )
   }
   return (
     <section className="mb-3 rounded border border-gray-200 p-3 text-xs text-[#333]" data-testid="plan-view" aria-label="How dazl reads your request">
