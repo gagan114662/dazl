@@ -40,6 +40,13 @@ jobs:
           mkdir -p preview/budget
           SHOTS=preview/budget node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out
           ! grep -q '^SKIP' /tmp/budget-ui.out
+      # The #876 compiled-plan view on the Leads review step (stubbed: no network, model or key; screenshots at 1280 and 390 px into preview/plan-view). It must run, not skip.
+      - name: Rendered query-plan view check
+        run: |
+          set -o pipefail
+          mkdir -p preview/plan-view
+          SHOTS=preview/plan-view node test/ui/plan-view.ui.mjs | tee /tmp/pv.out
+          ! grep -q '^NOT RUN' /tmp/pv.out
       # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
       # #902 request-lifecycle failures (stubbed: no Gmail, posting, sends or provider calls; phone + desktop). It must run, not skip.
       - name: Rendered request-failure states (send readiness, social, SEO, inbox, lead monitors)
