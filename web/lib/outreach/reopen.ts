@@ -5,7 +5,7 @@
 // at draft time and again at send time.
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, connectionGone, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
 import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
@@ -159,14 +159,15 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(orig.id, master)}`
   const now = d.now ?? Math.floor(Date.now() / 1000)
   let token: string
-  try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { throw new OutreachError('gmail_reconnect_needed') }
+  let tokenGen: string
+  try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) { throw new OutreachError(connectionGone(e) ? 'gmail_not_connected' : isConnectionReplaced(e, db, tenantId) ? 'connection_replaced' : 'gmail_reconnect_needed') }
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
   leadGates(db, tenantId, r)
   if (accountPaused(db, tenantId)) throw new OutreachError('paused') // a pause during the token await still holds this send
   // Shared authority recheck (send-authority.ts) after the token await: the sending identity and suppression as they are NOW.
-  { const why = recheckSendAuthority(db, tenantId, { to: r.to_email, sender: acct.email, now }); if (why) throw new OutreachError(why) }
+  { const why = recheckSendAuthority(db, tenantId, { to: r.to_email, sender: acct.email, now, expectRefreshCt: tokenGen }); if (why) throw new OutreachError(why) }
   // #413: never send a thread-bound re-open on stale safety state; nothing is claimed, the user can retry once fresh.
   if (orig && !testFixtureSend(db, tenantId, { to_email: r.to_email, test: orig.test }) && replySafetyStale(db, tenantId, r.to_email, now)) throw new OutreachError('reply_sync_stale')
   // At-most-once: claim the draft atomically right before the send. No await sits between the last check and

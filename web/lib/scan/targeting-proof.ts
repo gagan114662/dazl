@@ -4,7 +4,7 @@
 // and 'fail' is returned only for a fact that rules the condition out (a named company that is not this lead, a competitor list it is not on).
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
 import { planConditions, eventMatches, eventMatchIndex } from './targeting.ts'
-import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, type Stage } from './sales-hiring-gate.ts'
+import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, type Stage } from './sales-hiring-gate.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
@@ -36,8 +36,6 @@ const sameCompany = (a: string, b: string, domain: string | null) => {
 }
 const excludesOf = (icp: string | null | undefined): string[] => { try { const j = JSON.parse(icp ?? '{}') as { exclude?: unknown }; return Array.isArray(j.exclude) ? j.exclude.filter((x): x is string => typeof x === 'string') : [] } catch { return [] } }
 const stageOf = (s: string | undefined): Stage => !s ? null : s === 'pre-seed' || s === 'seed' ? 'seed' : s as Stage
-const HIRE_DONE = /\b(?:hired|appointed|named|joined|joins|welcomed|brought\s+on|onboarded)\b/i
-const NOT_DONE = /\b(?:not|no|never|yet\s+to|plans?\s+to|planning|will|would|could|may|might|seeking|looking\s+for|hiring|search(?:ing)?\s+for|reportedly|rumou?r\w*)\b/i
 const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
 // Event families the sales-hiring gate's event reader does not cover (it reads open / launch / expand). For these a CLAUSE of the lead's own
 // quote must state the event plainly: done, by this company (no other company in front of the verb), not denied, planned, conditional or hearsay.
@@ -46,6 +44,9 @@ const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|w
 function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
   return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
 }
+// The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
+// also checked on that gap (conditionProof); counted from now it keeps its own window, narrowed by a stated "in the last N days".
+const clockOf = (c: Condition): number | null => c.since_days ?? c.within_days
 const roleWords = (r: string) => r.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w))
 
 function dated(ok: boolean, date: string | null, days: number | null, now: number, url: string, shown: string): Proof {
@@ -84,9 +85,9 @@ function techProof(c: Condition, rows: ProofRow[], now: number): Proof {
   // removal by any later page with it. An unreadable later page contradicts nothing.
   const change = (kind: 'adopted' | 'removed') => changes.find(x => x.p?.kind === kind && !scans.some(s => day(s.at) > x.r.source_date && (kind === 'adopted' ? s.obs === 'ok' && !seen(s) : seen(s))))?.r
   const clock = (date: string, url: string, reason: string): Proof => {
-    const k = onClock(date, c.within_days, now)
+    const k = onClock(date, clockOf(c), now)
     if (k === 'in') return { truth: 'pass', reason, source_url: url, date }
-    return { truth: 'unknown', reason: `${reason}, but ${date} is outside this condition's ${c.within_days}-day window`, source_url: url, date }
+    return { truth: 'unknown', reason: `${reason}, but ${date} is outside this condition's ${clockOf(c)}-day window`, source_url: url, date }
   }
   if (!latest) return { truth: 'unknown', reason: `no website check for this lead (the crawl did not confirm the company's homepage), so ${tech} is unknown` }
   const removed = change('removed'), adopted = change('adopted')
@@ -106,7 +107,50 @@ function techProof(c: Condition, rows: ProofRow[], now: number): Proof {
   return { truth: 'unknown', reason: `a removal needs a check showing ${tech}, then two later comparable full-page checks without it; these checks do not show that` }
 }
 
-export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext, dates: Record<string, string | undefined> = {}): Proof {
+// One source, whatever form its URL is written in: scheme, "www.", query, fragment and trailing slashes are dropped and case is folded.
+// Folding more than needed only ever makes two sources look like one (fail closed: the relation is then not checked, so not proven).
+const sourceKey = (u: string) => u.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '')
+
+// A pass checked against the gap to its anchor's event (#878). The two events must sit on separate sources: when both source URLs are
+// known they must differ (two sources may share a calendar date); when either is unknown, the dates must differ (one quote's date cannot be both).
+function relate(c: Condition, p: Proof, anchor: string | undefined, anchorUrl: string | undefined): Proof {
+  const rel = c.relative_to ?? ''
+  const urls = typeof anchorUrl === 'string' && !!anchorUrl.trim() && typeof p.source_url === 'string' && !!p.source_url.trim()
+  const separate = isDate(anchor) && isDate(p.date) && (urls ? sourceKey(anchorUrl as string) !== sourceKey(p.source_url as string) : anchor !== p.date)
+  if (!separate) return { truth: 'unknown', reason: `this condition and ${rel} are not dated on separate sources, so "within ${c.within_days} days of" it cannot be checked`, ...(p.source_url ? { source_url: p.source_url } : {}), ...(p.date ? { date: p.date } : {}) }
+  const gap = Math.round((Date.parse(`${p.date}T00:00:00Z`) - Date.parse(`${anchor}T00:00:00Z`)) / DAY)
+  return gap >= 0 && gap <= (c.within_days ?? 0) ? { ...p, reason: `${p.reason}; ${gap} days after ${rel} (${anchor})` } : { truth: 'unknown', reason: `this condition's evidence (${p.date}) is not within ${c.within_days} days after ${rel} (${anchor})`, ...(p.source_url ? { source_url: p.source_url } : {}), date: p.date }
+}
+
+// #878: each condition is proven on its OWN evidence date and its own clock. A clock counted from another condition's event needs BOTH
+// events dated on their own sources, whatever kind the condition is; a clock the request states two incompatible ways is never proven.
+// EVERY candidate proof is checked against the gap (not only the first one), so the result never depends on the order rows are read in.
+// `sources` holds each anchor's source URL (planProofs fills it); without it, separate sources are told apart by date only.
+export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext, dates: Record<string, string | undefined> = {}, sources: Record<string, string | undefined> = {}): Proof {
+  if (c.clock_conflict) return { truth: 'unknown', reason: c.clock_conflict }
+  const alts = ownProofs(c, lead, rows, ctx)
+  if (!c.relative_to) return alts[0]
+  const checked = alts.filter(p => p.truth === 'pass').map(p => relate(c, p, dates[c.relative_to as string], sources[c.relative_to as string]))
+  return checked.find(p => p.truth === 'pass') ?? checked[0] ?? alts[0]
+}
+
+// Newest posting first; ties broken on URL then text, so the proof (and the date it records) is the same whatever order the rows came in.
+const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a.source_date) || a.source_url.localeCompare(b.source_url) || a.value.localeCompare(b.value)
+
+// The candidate proofs of a condition, best first. Only hiring can have more than one: every posting inside its now-clock, then the
+// lead's own quote when that passes too. Every other kind has exactly one. Without a relative clock the first candidate is the proof.
+function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof[] {
+  if (c.kind !== 'hiring') return [ownProof(c, lead, rows, ctx)]
+  const now = ctx.now ?? Date.now()
+  const gtm = !c.role || isGtmRole(c.role)
+  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
+    .sort(postingOrder)
+    .map((r): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }))
+  const rest = ownProof(c, lead, [], ctx)
+  return postings.length && rest.truth !== 'pass' ? postings : [...postings, rest]
+}
+
+function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof {
   const now = ctx.now ?? Date.now()
   const quote = lead.evidence_excerpt ?? ''
   switch (c.kind) {
@@ -133,34 +177,26 @@ export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], 
     case 'funding': {
       const shows = quoteShowsEvent(quote, lead.signal, true, lead.company, stageOf(c.stage)) && (c.stage !== 'pre-seed' || /\bpre-?seed\b/i.test(quote))
       const what = `a completed ${c.stage ? `${c.stage} ` : ''}raise by this company`
-      if (shows) return dated(true, lead.event_date, c.within_days, now, lead.source_url, what)
+      if (shows) return dated(true, lead.event_date, clockOf(c), now, lead.source_url, what)
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified the funding half on a source for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
       const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
-      return dated(shows, lead.event_date, c.within_days, now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
+      return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {
+      // Dated postings are read in ownProofs (every one of them, so row order never decides); here: the lead's own quote, then the gate's record.
       const gtm = !c.role || isGtmRole(c.role)
-      for (const r of rows) {
-        if (!(r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm))) continue
-        if (onClock(r.source_date, c.within_days, now) === 'in') return { truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }
-      }
-      if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, lead.event_date, c.within_days, now, lead.source_url, 'this company hiring for the role')
+      if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, lead.event_date, clockOf(c), now, lead.source_url, 'this company hiring for the role')
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified an open sales role for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no dated posting or verified quote shows this company hiring${c.role ? ` ${c.role}` : ''}` }
     }
     case 'hire_made': {
       const want = roleWords(c.role ?? '')
-      const shows = clauses(quote).some(k => HIRE_DONE.test(k) && !NOT_DONE.test(k) && want.every(w => new RegExp(`\\b${w}`, 'i').test(k)) && (!c.first || /\b(?:first|founding|inaugural)\b/i.test(k)))
-      const p = dated(shows, lead.event_date, c.within_days, now, lead.source_url, `this company ${c.first ? 'made its first' : 'made a'} ${c.role || 'role'} hire`)
-      if (p.truth !== 'pass' || !c.relative_to) return p
-      // A clock counted from another condition's event needs BOTH events dated on their own sources: one quote's date cannot be both.
-      const anchor = dates[c.relative_to]
-      if (!anchor || !p.date || anchor === p.date) return { truth: 'unknown', reason: `the hire and ${c.relative_to} are not dated on separate sources, so "within ${c.within_days} days of" it cannot be checked`, source_url: lead.source_url }
-      const gap = Math.round((Date.parse(`${p.date}T00:00:00Z`) - Date.parse(`${anchor}T00:00:00Z`)) / DAY)
-      return gap >= 0 && gap <= (c.within_days ?? 0) ? { ...p, reason: `${p.reason}; ${gap} days after ${c.relative_to} (${anchor})` } : { truth: 'unknown', reason: `the hire (${p.date}) is not within ${c.within_days} days after ${c.relative_to} (${anchor})`, source_url: lead.source_url }
+      // Shared with the OR gate (sales-hiring-gate.ts) so both read a completed hire the same way: this company's own, affirmative, not conditional.
+      const shows = quoteShowsCompletedHire(quote, lead.company, want, !!c.first)
+      return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company ${c.first ? 'made its first' : 'made a'} ${c.role || 'role'} hire`)
     }
   }
 }
@@ -169,6 +205,7 @@ export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], 
 export function planProofs(plan: QueryPlan, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Record<string, Proof> {
   const out: Record<string, Proof> = {}, dates: Record<string, string | undefined> = {}
   const conds = planConditions(plan.root).map(x => x.cond).sort((a, b) => Number(!!a.relative_to) - Number(!!b.relative_to))
-  for (const c of conds) { const p = conditionProof(c, lead, rows, ctx, dates); out[c.id] = p; if (p.truth === 'pass') dates[c.id] = p.date }
+  const sources: Record<string, string | undefined> = {}
+  for (const c of conds) { const p = conditionProof(c, lead, rows, ctx, dates, sources); out[c.id] = p; if (p.truth === 'pass') { dates[c.id] = p.date; sources[c.id] = p.source_url } }
   return out
 }

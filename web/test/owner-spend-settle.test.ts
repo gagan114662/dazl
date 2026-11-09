@@ -137,6 +137,7 @@ function qualifyDb() {
   const job = createQueryJob(db, 'u1', { query: 'B2B companies hiring sales roles' })
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
   db.prepare('INSERT INTO leads(id,scan_job_id,company,signal,source_url,company_domain) VALUES (?,?,?,?,?,?)').run(L, job, 'Acme', 'Posted a role titled "SDR"', 'https://weworkremotely.com/remote-jobs/acme-sdr', 'acme.example')
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-11-01', 1)").run(`${L}d`, L, 'acme.example|evidence_own_domain', 'https://acme.example/news')   // a confirmed site (#912)
   return db
 }
 const fetchPage = async (url: string) => ({ text: `Acme runs outbound sales with five SDRs. (${url})`, title: 't', retrievedAt: 1 })
@@ -174,6 +175,7 @@ test('qualification: a refusal before the call releases the claim; a settled ove
     assert.deepEqual(await rows(sqliteDb(db), 'u1'), [['d:', OVERRUN_USD, OVERRUN_USD, 1]])
     // A second lead: refused before its call; its claim is released.
     db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,company_domain) SELECT ?, scan_job_id, 'Birch', signal, source_url, 'birch.example' FROM leads WHERE id = ?").run('b'.repeat(24), L)
+    db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-11-01', 1)").run(`${'b'.repeat(24)}d`, 'b'.repeat(24), 'birch.example|evidence_own_domain', 'https://birch.example/news')
     const pv = await qualifyPreview(db, 'u1', 'b'.repeat(24), 'Sales prospecting software', fetchPage, 'anthropic', MODEL)
     const r2 = await runQualification(db, 'u1', 'b'.repeat(24), { ...a, prompt_sha256: pv!.prompt_sha256!, max_usd_estimate: pv!.cost!.usd_estimate_max! }, qdeps(s.p))
     assert.deepEqual(r2, { status: 'blocked', reason: 'spend_limit' })
