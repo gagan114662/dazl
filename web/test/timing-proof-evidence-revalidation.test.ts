@@ -11,11 +11,12 @@ import { migrateMemory } from '../lib/memory.ts'
 import { recordActionability, classifyLeads } from '../lib/scan/actionable.ts'
 import { recordTimingProof, timingProofGap } from '../lib/scan/timing-proof.ts'
 import { domainConfirmed } from '../lib/signals/domain-basis.ts'
+import { seedNeedVerified, NEED_GATE } from './helpers/need.ts'
 
 const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
 const D = 'acme-dental.test'
 
-function setup(opts: { domainBasis?: string | null } = {}) {
+async function setup(opts: { domainBasis?: string | null; seedNeed?: boolean } = {}) {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateMemory(db)
   const id = createJob(db, 'A', { business_name: 'Seller', industry: 'dental', location: 'Austin' })
@@ -28,13 +29,17 @@ function setup(opts: { domainBasis?: string | null } = {}) {
   put('person', 'Dana Lee, Owner', `https://${D}/team`)
   put('email', `hello@${D}`, `https://${D}/contact`)
   const job = { id, user_id: 'A', query: 'dental groups in Austin that opened a new clinic in the last 30 days', icp: JSON.stringify({ window_days: 30, who: ['owner'] }) }
-  const run = () => { const y = recordActionability(db, job); const t = recordTimingProof(db, job); return { actionable: y.actionable, proven: t.proven } }
+  // #401/#379: the lead carries the search's recorded, still-valid verified buying-need verdict, so the promotion
+  // gate passes and the facts under test (domain / person / route) decide actionability. A name-probed domain can
+  // never carry one (the writer refuses), so that setup seeds none and the need gate holds the lead first.
+  if (opts.seedNeed !== false) await seedNeedVerified(db, 'A', id, 'L1', 'Acme Dental')
+  const run = () => { const y = recordActionability(db, job, new Map(), NEED_GATE); const t = recordTimingProof(db, job); return { actionable: y.actionable, proven: t.proven } }
   const summary = () => (db.prepare("SELECT value FROM lead_enrichments WHERE connector = 'scan:actionable' AND lead_id = 'L1'").get() as { value: string } | undefined)?.value ?? null
   return { db, run, summary, put }
 }
 
-test('#914 audit reproduction: deleting the underlying domain/person/email rows holds the proof though both summaries remain', () => {
-  const s = setup()
+test('#914 audit reproduction: deleting the underlying domain/person/email rows holds the proof though both summaries remain', async () => {
+  const s = await setup()
   assert.deepEqual(s.run(), { actionable: 1, proven: 1 })
   assert.equal(timingProofGap(s.db, 'A', 'L1'), null, 'supported, unchanged: clears')
   s.db.prepare("DELETE FROM lead_enrichments WHERE connector = 'sitecrawl' AND kind IN ('domain', 'person', 'email')").run()
@@ -44,7 +49,7 @@ test('#914 audit reproduction: deleting the underlying domain/person/email rows 
   assert.equal(timingProofGap(s.db, 'A', 'L1'), 'domain_unconfirmed')
 })
 
-test('#914 each removed / changed fact holds a previously proven lead, with the stale summary left untouched', () => {
+test('#914 each removed / changed fact holds a previously proven lead, with the stale summary left untouched', async () => {
   const changes: [string, string, string][] = [
     ['person removed', "DELETE FROM lead_enrichments WHERE kind = 'person'", 'not_actionable'],
     ['person changed to a non-matching role', "UPDATE lead_enrichments SET value = 'Sam Roe, Hygienist' WHERE kind = 'person'", 'not_actionable'],
@@ -61,7 +66,7 @@ test('#914 each removed / changed fact holds a previously proven lead, with the 
     ['company domain changed', "UPDATE leads SET company_domain = 'other-dental.test'", 'domain_unconfirmed'],
   ]
   for (const [name, sql, gap] of changes) {
-    const s = setup(); assert.deepEqual(s.run(), { actionable: 1, proven: 1 }, name)
+    const s = await setup(); assert.deepEqual(s.run(), { actionable: 1, proven: 1 }, name)
     const before = s.summary()
     s.db.prepare(sql).run()
     assert.equal(s.summary(), before, name + ': summary unchanged')
@@ -69,8 +74,8 @@ test('#914 each removed / changed fact holds a previously proven lead, with the 
   }
 })
 
-test('#914 a phone route is revalidated the same way', () => {
-  const s = setup(); s.db.prepare("DELETE FROM lead_enrichments WHERE kind = 'email'").run(); s.put('phone', '+1 512 555 0100', `https://${D}/contact`)
+test('#914 a phone route is revalidated the same way', async () => {
+  const s = await setup(); s.db.prepare("DELETE FROM lead_enrichments WHERE kind = 'email'").run(); s.put('phone', '+1 512 555 0100', `https://${D}/contact`)
   assert.deepEqual(s.run(), { actionable: 1, proven: 1 })
   s.db.prepare("UPDATE lead_enrichments SET value = '+1 512 555 0199' WHERE kind = 'phone'").run()
   assert.equal(timingProofGap(s.db, 'A', 'L1'), 'binding_changed')
@@ -78,20 +83,20 @@ test('#914 a phone route is revalidated the same way', () => {
   assert.equal(timingProofGap(s.db, 'A', 'L1'), 'not_actionable')
 })
 
-test('#914 a contact-source pass that never ran (foreign rows retained) cannot produce positive actionability or timing proof', () => {
+test('#914 a contact-source pass that never ran (foreign rows retained) cannot produce positive actionability or timing proof', async () => {
   // domain only name-probed (not confirmed); a namesake's contacts were attached and never removed
-  const s = setup({ domainBasis: 'name_probe' })
+  const s = await setup({ domainBasis: 'name_probe', seedNeed: false })
   const [y] = classifyLeads(s.db, { id: (s.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id, user_id: 'A', icp: JSON.stringify({ who: ['owner'] }) })
   assert.equal(y.actionable, false); assert.ok(y.missing.includes('domain_unconfirmed'))
   assert.deepEqual(s.run(), { actionable: 0, proven: 0 })
   assert.equal(timingProofGap(s.db, 'A', 'L1'), 'domain_unconfirmed')
   // confirmed domain, but the person and route came from another site
-  const f = setup(); f.db.prepare("UPDATE lead_enrichments SET source_url = 'https://namesake.test/x' WHERE kind IN ('person', 'email')").run()
+  const f = await setup(); f.db.prepare("UPDATE lead_enrichments SET source_url = 'https://namesake.test/x' WHERE kind IN ('person', 'email')").run()
   assert.deepEqual(f.run(), { actionable: 0, proven: 0 })
   assert.equal(timingProofGap(f.db, 'A', 'L1'), 'not_actionable')
 })
 
-test('#914 tenant isolation is preserved', () => {
-  const s = setup(); s.run()
+test('#914 tenant isolation is preserved', async () => {
+  const s = await setup(); s.run()
   assert.equal(timingProofGap(s.db, 'B', 'L1'), 'no_lead')
 })

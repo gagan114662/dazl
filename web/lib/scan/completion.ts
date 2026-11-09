@@ -4,8 +4,8 @@
 // the date is only ever a structured date on a page about the SAME event, and a lead is never promoted or demoted here.
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
-import { whoOf } from './actionable.ts'
 import { currentSiteContact } from './site-contact.ts'
+import { whoOf } from './actionable.ts'
 import type { ResolutionSummary } from './resolution.ts'
 
 export const COMPLETION_CONNECTOR = 'scan:completion'
@@ -29,13 +29,11 @@ function kept(db: Database.Database, tenantId: string, jobId: string): (LeadRow 
   return (db.prepare(`SELECT l.id, l.company, l.event_date, l.company_domain, l.score, l.fit FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
     WHERE l.scan_job_id = ? AND j.user_id = ? AND l.review_reason IS NULL AND l.confidence IS NOT NULL AND l.quarantined_at IS NULL AND l.company <> '' ORDER BY l.score DESC`).all(jobId, tenantId) as LeadRow[]).map(r => ({ ...r, who }))
 }
-// Site contacts count only while their SOURCE is the lead's confirmed domain (the page is on it; a published email is at it) and only for a lead that has a confirmed domain at all: a contact from a namesake's
-// site (or one that outlived a refused domain) is worth nothing here, however it got attached. The rule is the shared one in site-contact.ts (#914) and its domain identity is
-// public-suffix aware (#910): alpha.co.uk and unrelated.co.uk, or acme.github.io and other.github.io (private suffix), are different companies; shop.acme.example is acme.example.
-// A malformed company domain fills nothing, even if a confirmation row names it.
+// Site contacts count only while their SOURCE is the lead's confirmed domain, by the ONE shared rule (site-contact.ts, public-suffix aware, same route filter as
+// actionability and the timing proof): completion must never award contact points for evidence those gates reject (#943 review).
 function factsOf(db: Database.Database, tenantId: string, l: LeadRow & { who: string }): Facts {
-  const sc = currentSiteContact(db, tenantId, l, l.who)
-  return { date: realDay(l.event_date), domain: sc.confirmed && sc.domain !== null, person: sc.person !== null, route: sc.route !== null }
+  const c = currentSiteContact(db, tenantId, l, l.who)
+  return { date: realDay(l.event_date), domain: c.confirmed && c.domain !== null, person: !!c.person, route: !!c.route }
 }
 export function snapshotLeads(db: Database.Database, tenantId: string, jobId: string): Snapshot[] {
   try { return kept(db, tenantId, jobId).map(l => ({ id: l.id, company: l.company, score: l.score, ...factsOf(db, tenantId, l) })) } catch { return [] }

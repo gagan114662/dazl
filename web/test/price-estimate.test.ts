@@ -73,10 +73,14 @@ test('ack changes when the limit or the mode changes, and is stable for the same
 
 test('actual vs estimate: priced from the tokens the provider reported; unknown stays unknown', () => {
   const e = estimateRun({ budget: null, payer: 'you' })
+  // Cache token usage is not stored per scan: without it the priced amount is the recorded-token component only - an
+  // at-least amount, never complete, and never placed against the estimate range. Explicit cache zeros complete it.
   const lo = compareActual(e, { inputTokens: 1000, outputTokens: 500, tokensComplete: true, model: 'claude-sonnet-4-5', searches: 6, reservedUsd: null })
-  assert.equal(lo.within, 'under'); assert.ok(Math.abs(lo.model_usd! - (1000 * 3 + 500 * 15) / 1e6) < 1e-12); assert.match(lo.summary, /Not an invoice/)
+  assert.equal(lo.within, 'unknown'); assert.equal(lo.model_usd_complete, false); assert.ok(Math.abs(lo.model_usd! - (1000 * 3 + 500 * 15) / 1e6) < 1e-12); assert.match(lo.summary, /at least/); assert.match(lo.summary, /cache token usage was not recorded/); assert.match(lo.summary, /Not an invoice/)
+  const loCached = compareActual(e, { inputTokens: 1000, outputTokens: 500, tokensComplete: true, model: 'claude-sonnet-4-5', searches: 6, reservedUsd: null, cacheWriteTokens: 0, cacheReadTokens: 0 })
+  assert.equal(loCached.within, 'under'); assert.equal(loCached.model_usd_complete, true, 'explicit cache zeros are a real record')
   const mid = compareActual(e, { inputTokens: 40_000, outputTokens: 7_000, tokensComplete: false, model: 'claude-sonnet-4-5', searches: null, reservedUsd: 0.4 })
-  assert.equal(mid.within, 'within'); assert.equal(mid.model_usd_complete, false); assert.match(mid.summary, /at least/)
+  assert.equal(mid.within, 'unknown'); assert.equal(mid.model_usd_complete, false); assert.match(mid.summary, /at least/)
   const none = compareActual(e, { inputTokens: null, outputTokens: null, tokensComplete: false, model: null, searches: null, reservedUsd: null })
   assert.equal(none.model_usd, null); assert.equal(none.within, 'unknown'); assert.match(none.summary, /not recorded/)
 })

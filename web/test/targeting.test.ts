@@ -9,6 +9,7 @@ import { classifyLeads, recordActionability } from '../lib/scan/actionable.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateMemory } from '../lib/memory.ts'
+import { seedNeedVerified, NEED_GATE } from './helpers/need.ts'
 
 const NOW = Date.parse('2026-10-28T12:00:00Z')
 const ago = (d: number) => new Date(NOW - d * 86_400_000).toISOString().slice(0, 10)
@@ -102,7 +103,7 @@ test('adversarial and ambiguous requests take the narrowest reading and record i
   assert.equal(facts(notFunded, {}).truth, 'unknown'); assert.equal(facts(notFunded, { C1: 'fail' }).truth, 'pass')
 })
 
-test('actionable yield: an explicit plan is a required gate - an unproven clause holds the lead and every clause is recorded with its proof', () => {
+test('actionable yield: an explicit plan is a required gate - an unproven clause holds the lead and every clause is recorded with its proof', async () => {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateMemory(db)
   const query = 'Find B2B SaaS startups that raised a seed round within 90 days and hired their first VP of Sales within 30 days.'
   const icp = JSON.stringify({ summary: 's', who: ['Founder'], signals: [], exclude: [] })
@@ -119,16 +120,20 @@ test('actionable yield: an explicit plan is a required gate - an unproven clause
   }
   lead('both', 'Brightloop', 'Brightloop raised a 3m seed round and hired its first VP of Sales.')
   lead('seedonly', 'Quietco', 'Quietco raised a 2m seed round to grow its team.')
+  // #401/#379: the buying-need promotion gate also holds a lead with no proven need. 'both' earns the promotion
+  // through the REAL writer (seedNeedVerified: dated decision-maker demand post at the company, bound to this
+  // job's plan), so only the plan clause separates the two leads below. seedonly stays unseeded and unproven.
+  await seedNeedVerified(db, 'u1', jobId, 'both', 'Brightloop')
   const job = { id: jobId, user_id: 'u1', query, icp }
-  const by = Object.fromEntries(classifyLeads(db, job).map(r => [r.lead_id, r]))
+  const by = Object.fromEntries(classifyLeads(db, job, new Map(), NEED_GATE).map(r => [r.lead_id, r]))
   assert.deepEqual([by.both.actionable, by.both.missing], [true, []])
   assert.deepEqual(by.both.targeting!.map(c => [c.id, c.truth]), [['C1', 'pass'], ['C2', 'pass']])
   assert.deepEqual([by.seedonly.actionable, by.seedonly.missing], [false, ['targeting_not_proven']])
   assert.deepEqual(by.seedonly.targeting!.map(c => [c.id, c.truth]), [['C1', 'pass'], ['C2', 'unknown']])
-  recordActionability(db, job)
+  recordActionability(db, job, new Map(), NEED_GATE)
   const rows = db.prepare("SELECT value, label FROM lead_enrichments WHERE lead_id = 'seedonly' AND connector = 'scan:targeting' ORDER BY value").all() as { value: string; label: string }[]
   assert.equal(rows.length, 2)
-  assert.match(rows[1].value, /^C2 hired their first VP of Sales within 30 days: unknown$/); assert.match(rows[1].label, /no verified source shows this company made its first VP of Sales hire/)
+  assert.match(rows[1].value, /^C2 hired their first VP of Sales within 30 days: unknown, no evidence date$/); assert.match(rows[1].label, /no verified source shows this company made its first VP of Sales hire/)
 })
 
 test('non-hiring events beyond open/launch/expand: contract, permit, partner and rebrand are proven only by a plain statement about this company', () => {

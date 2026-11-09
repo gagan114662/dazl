@@ -2,7 +2,7 @@
 // never shows a funding round - the sales-hiring gate rightly holds it as no_event_evidence. A funding-news candidate has the reverse gap and is checked against the boards by the gate.
 // This closes the first gap WITHOUT a new kind of proof: for the few companies in that position it only decides what to SEARCH for; whatever the news search returns goes through the same
 // extraction and the same verifier (quote on the page, identity, date window) as every other candidate, and the gate then merges the verified funding quote with the posting.
-import { affirmativeSalesHiring, quoteShowsEvent, requestAsksFunding, requestedStage, salesHiringRequired } from './sales-hiring-gate.ts'
+import { affirmativeSalesHiring, quoteShowsCompletedHire, quoteShowsEvent, requestAsksFunding, requestedStage, salesHiringRequired } from './sales-hiring-gate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
 import { mentionsFunding } from '../search/page-class.ts'
 import { companyKey } from './evidence.ts'
@@ -33,18 +33,24 @@ export function corroborationTargets(job: { query?: string | null; icp?: string 
 const HIRING_CLAIM = /\bhir(?:e|es|ed|ing)\b|\brecruit\w*/i
 const claimedBranch = (t: string): 'event' | 'hiring' | null => mentionsFunding(t) ? 'event' : HIRING_CLAIM.test(t) ? 'hiring' : null
 function orTargets(job: { query?: string | null; icp?: string | null }, slots: number, stage: ReturnType<typeof requestedStage>, leads: CorroLead[]): CorroTarget[] | null {
-  if (!salesGateOr(job.query, job.icp)) return null
+  const or = salesGateOr(job.query, job.icp)
+  if (!or) return null
+  // #876: a completed-hire branch ("made their first sales hire") is proven only by a report that the hire was made (quoteShowsCompletedHire), never by
+  // an open vacancy: a candidate whose quote only shows open hiring still needs that search, and the search asks for the hire, not for vacancies.
+  const done = or.hiring.kind === 'hire_made'
+  const rw = done ? (or.hiring.role ?? '').toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w)) : []
+  const hiringShown = (l: CorroLead) => done ? quoteShowsCompletedHire(l.excerpt, l.company, rw, !!or.hiring.first) : affirmativeSalesHiring(l.excerpt, l.company)
   const out: CorroTarget[] = [], seen = new Set<string>()
   for (const l of leads) {
     if (out.length >= slots) break
     const key = companyKey(l.company)
     if (!key || seen.has(key)) continue
     seen.add(key)
-    if (quoteShowsEvent(l.excerpt, l.signal, true, l.company, stage) || affirmativeSalesHiring(l.excerpt, l.company)) continue   // its own quote already shows a branch
+    if (quoteShowsEvent(l.excerpt, l.signal, true, l.company, stage) || hiringShown(l)) continue   // its own quote already shows a branch
     const branch = claimedBranch(l.signal ?? '') ?? claimedBranch(l.excerpt ?? '')   // the extraction names the fact in "signal"
     if (!branch) continue
     const name = l.company.replace(/["\n]/g, ' ').trim()
-    out.push({ company: l.company, branch, query: (branch === 'event' ? `"${name}" raised ${stage ? `${stage} ` : ''}funding round` : `"${name}" hiring sales`).slice(0, 150) })
+    out.push({ company: l.company, branch, query: (branch === 'event' ? `"${name}" raised ${stage ? `${stage} ` : ''}funding round` : done ? `"${name}" ${or.hiring.first ? 'first ' : ''}${or.hiring.role || 'sales'} hire hired` : `"${name}" hiring sales`).slice(0, 150) })
   }
   return out
 }

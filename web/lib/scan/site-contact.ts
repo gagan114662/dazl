@@ -44,6 +44,8 @@ export function onCompanySite(r: SiteRow, ld: string | null): boolean {
 export const isFounderRoute = (r: SiteRow): boolean =>
   r.kind === 'phone' || (r.kind === 'email' && emailIdentity(r.value) !== null && !isRecruitingInbox(r.value) && !NOT_A_FOUNDER_ROUTE.test(r.value.trim().split('@')[0].replace(/[._-]/g, '')))
 
+const canonical = (a: SiteRow, b: SiteRow): number => cmp(a.kind, b.kind) || cmp(a.value, b.value) || cmp(a.source_url ?? '', b.source_url ?? '') || cmp(a.label ?? '', b.label ?? '')
+const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0)
 export interface SiteContact { confirmed: boolean; domain: string | null; person: SiteRow | null; route: SiteRow | null }
 const ROWS_SQL = "SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'phone', 'email')"
 // The lead's current confirmed domain, role-matching person and published route, from the rows as they are now. Pass `rows` to
@@ -52,7 +54,9 @@ export function currentSiteContact(db: Database.Database, tenantId: string, lead
   const confirmed = !!lead.company_domain && domainConfirmed(db, tenantId, lead.id, lead.company_domain)
   const ld = confirmed ? siteIdentity(lead.company_domain) : null
   if (!ld) return { confirmed, domain: null, person: null, route: null }
-  const own = (rows ?? db.prepare(ROWS_SQL).all(lead.id, tenantId) as SiteRow[]).filter(r => onCompanySite(r, ld))
+  // Canonical order (not DB return order): the timing proof hashes the chosen person/route, so the same rows must always pick the same
+  // contact whatever the engine, query plan or copy returns first (#943 review). Source, kind, value, label are all stable text.
+  const own = (rows ?? db.prepare(ROWS_SQL).all(lead.id, tenantId) as SiteRow[]).filter(r => onCompanySite(r, ld)).sort(canonical)
   return {
     confirmed, domain: ld,
     person: own.find(r => r.kind === 'person' && personMatchesRole(r.value, who || 'founder')) ?? null,
