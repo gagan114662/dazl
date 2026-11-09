@@ -2,6 +2,7 @@
 // Reads the app's own /api/health/scheduler (counts only) and, when it is not ok (scheduler stale, crashed or never ran
 // with work waiting; the latest run failed or lost its lease with no success since; tenants blocked, reply sync stale, due work overdue) or the app does not answer, alerts:
 // OPS_ALERT_WEBHOOK_URL (https; e.g. a Slack incoming webhook) or SCHEDULER_ALERT_CMD (tests; the JSON as its argument).
+// The webhook body is the structured JSON plus a Slack-compatible `text` summary (counts, states and problem kinds only; emails and long ids are masked).
 // The same problems alert at most once per SCHEDULER_ALERT_EVERY_S (3600); a recovery after an alert is announced once.
 // Stamps live in --state-dir. The alert carries the endpoint's counts and states only: no tenant id or error text.
 //   node --experimental-strip-types scripts/ops/scheduler-check.mts --url http://127.0.0.1:3100/api/health/scheduler --state-dir /var/lib/dazl-scheduler-check
@@ -26,10 +27,17 @@ try {
   facts = { scheduler: h.operational?.state, last_completed_age_s: h.operational?.last_completed_age_s, lease_generation: h.operational?.lease_generation, last_failure_status: (h.operational?.unresolved_failure as { status?: string } | null | undefined)?.status ?? null, tenants: h.tenants }
 } catch (e) { problems = [`scheduler health not answering (${e instanceof Error ? e.name : 'error'})`] }
 
+// Anything that looks like an email address or a long id is masked in the problems, in the structured fields and the text alike.
+const mask = (t: string) => t.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '[email]').replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[id]').replace(/\b[0-9a-f]{16,}\b/gi, '[id]')
+problems = problems.map(mask)
 const body = { level: problems.length ? 'error' : 'info', type: 'scheduler_check', ok: problems.length === 0, host: os.hostname(), at: new Date().toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))
+// One human-readable block for Slack-style receivers, built from the same already-masked fields as the JSON.
+const summary = (b: { type: string; host?: string; problems: string[]; scheduler?: unknown }): string => b.type === 'scheduler_recovered'
+  ? `dazl scheduler recovered${b.host ? ` on ${b.host}` : ''}: health is ok again.`
+  : ([`dazl scheduler problem${b.host ? ` on ${b.host}` : ''}${b.scheduler ? ` (${String(b.scheduler)})` : ''}:`, ...b.problems.map(x => `- ${x}`)].join('\n'))
 // A throttle stamp is a delivery receipt, never an attempted-send receipt.
-const send = async (b: object): Promise<boolean> => {
+const send = async (b: { type: string; host?: string; problems: string[]; scheduler?: unknown }): Promise<boolean> => {
   const cmd = process.env.SCHEDULER_ALERT_CMD, hook = process.env.OPS_ALERT_WEBHOOK_URL
   if (cmd) {
     const result = spawnSync(cmd, [JSON.stringify(b)], { stdio: 'inherit', timeout: 10_000 })
@@ -38,7 +46,7 @@ const send = async (b: object): Promise<boolean> => {
   }
   if (!hook?.startsWith('https://')) { console.error('scheduler-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only'); return false }
   try {
-    const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), signal: AbortSignal.timeout(10_000) })
+    const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: summary(b), ...b }), signal: AbortSignal.timeout(10_000) })
     if (!r.ok) { console.error(`scheduler-check: alert webhook HTTP ${r.status}`); return false }
     return true
   } catch (e) { console.error(`scheduler-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`); return false }

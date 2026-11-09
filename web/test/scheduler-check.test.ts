@@ -3,8 +3,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
+import https from 'node:https'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -53,4 +55,39 @@ test('failed alert delivery is retried, and failed recovery delivery keeps the o
     command(true); assert.equal(await run(), 0); assert.equal(count(), 2, 'recovery retried until delivered')
     assert.equal(await run(), 0); assert.equal(count(), 2, 'delivered recovery clears receipt')
   } finally { server.close(); rmSync(t, { recursive: true, force: true }) }
+})
+
+// The real OPS_ALERT_WEBHOOK_URL path against a local HTTPS receiver (self-signed, loopback, trusted only for this child via NODE_EXTRA_CA_CERTS).
+test('webhook payload carries a Slack-compatible text beside the structured fields; throttled, retried on failure, recovery once; nothing identifying', async () => {
+  const T = mkdtempSync(path.join(tmpdir(), 'sched-hook-'))
+  const key = path.join(T, 'k.pem'), cert = path.join(T, 'c.pem'), cfg = path.join(T, 'c.cnf'), state = path.join(T, 'state')
+  writeFileSync(cfg, '[req]\ndistinguished_name=dn\n[dn]\n[v3]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\n')
+  const o = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '2', '-subj', '/CN=localhost', '-config', cfg, '-extensions', 'v3'], { encoding: 'utf8' })
+  assert.equal(o.status, 0, `openssl is needed for the loopback receiver: ${o.stderr}`)
+  let status = 500; const got: Record<string, unknown>[] = []
+  const hook = https.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (q, s) => { let b = ''; q.on('data', c => { b += c }); q.on('end', () => { if (status < 300) got.push(JSON.parse(b)); s.statusCode = status; s.end() }) })
+  await new Promise<void>(r => hook.listen(0, '127.0.0.1', () => r()))
+  // A health endpoint that (wrongly) leaks identifiers in its problem strings: the alert text must still not carry them.
+  let healthy = false
+  const app = http.createServer((_q, s) => { s.statusCode = healthy ? 200 : 503; s.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : ['scheduler stale: last completed run 3000s ago', 'tenant 0b0e7c1a-1111-4222-8333-444455556666 blocked, owner jane.doe@example.com'], operational: { state: healthy ? 'fresh' : 'stale' }, tenants: { tracked: 2, blocked: 1 } })) })
+  await new Promise<void>(r => app.listen(0, '127.0.0.1', () => r()))
+  const url = `http://127.0.0.1:${(app.address() as { port: number }).port}/api/health/scheduler`
+  const hookUrl = `https://localhost:${(hook.address() as { port: number }).port}/hook`
+  const run = () => new Promise<{ code: number | null; out: string }>(r => { let out = ''; const c = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/ops/scheduler-check.mts', '--url', url, '--state-dir', state], { cwd: web, env: { ...process.env, SCHEDULER_ALERT_CMD: '', OPS_ALERT_WEBHOOK_URL: hookUrl, NODE_EXTRA_CA_CERTS: cert } }); c.stdout.on('data', d => { out += d }); c.stderr.on('data', d => { out += d }); c.on('close', code => r({ code, out })) })
+  const stamps = () => existsSync(state) ? readdirSync(state).filter(f => f.startsWith('alert-')) : []
+  try {
+    let r = await run(); assert.equal(r.code, 1); assert.match(r.out, /alert webhook HTTP 500/); assert.equal(got.length, 0); assert.deepEqual(stamps(), [], 'a failed delivery leaves no receipt')
+    status = 200
+    r = await run(); assert.equal(r.code, 1); assert.equal(got.length, 1, 'the retry delivers at once (not throttled by the failed attempt)'); assert.equal(stamps().length, 1)
+    const a = got[0]
+    assert.equal(typeof a.text, 'string'); assert.match(a.text as string, /^dazl scheduler problem/); assert.match(a.text as string, /scheduler stale: last completed run 3000s ago/)
+    assert.equal(a.type, 'scheduler_check'); assert.equal(a.ok, false); assert.ok(Array.isArray(a.problems), 'the structured fields stay beside the text')
+    assert.doesNotMatch(JSON.stringify(a), /0b0e7c1a|jane\.doe|@/, 'no id or email anywhere in the payload, text or structured fields'); assert.match(a.text as string, /\[id\]/); assert.match(a.text as string, /\[email\]/)
+    r = await run(); assert.equal(r.code, 1); assert.equal(got.length, 1, 'the same problem is not re-sent within the interval')
+    healthy = true; status = 500
+    r = await run(); assert.equal(r.code, 1, 'a failed recovery delivery is not success'); assert.equal(got.length, 1); assert.equal(stamps().length, 1, 'the receipt stays until recovery is delivered')
+    status = 200
+    r = await run(); assert.equal(r.code, 0); assert.equal(got.length, 2); assert.equal(got[1].type, 'scheduler_recovered'); assert.match(got[1].text as string, /^dazl scheduler recovered/); assert.deepEqual(stamps(), [])
+    r = await run(); assert.equal(r.code, 0); assert.equal(got.length, 2, 'recovery is announced once')
+  } finally { hook.close(); app.close(); rmSync(T, { recursive: true, force: true }) }
 })
