@@ -95,7 +95,7 @@ test('paid_fallback=false stops the run before the paid research call; no budget
   const calls = { n: 0 }
   assert.equal(await runJob(db, job, { providers: researchProvider(calls), master, fetchPage: page }), 'failed')
   assert.equal(calls.n, 0) // the paid fallback was never attempted
-  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'unbounded_fallback_hold', 'with no source able to conclude, the held fallback is named - not mislabelled a budget stop')
 
   const db2 = setup()
   const b2 = createBatch(db2, 'A', ['acme.com'])
@@ -209,7 +209,7 @@ test('TinyFish-primary path makes exactly ONE paid extraction call (complete, ma
   assert.equal(leads.length, 1)
 }))
 
-test('RESTRICTED flags: a failed extraction stops the run as budget_stopped - zero research calls, one paid attempt, no retry', withTinyfishEnv(async () => {
+test('RESTRICTED flags: a failed extraction stops the run as source_error - zero research calls, one paid attempt, no retry', withTinyfishEnv(async () => {
   const db = setup()
   const b = createBatch(db, 'A', ['acme.com'], JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
   queuePendingRows(db, 'A', b)
@@ -225,7 +225,7 @@ test('RESTRICTED flags: a failed extraction stops the run as budget_stopped - ze
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   assert.equal(await runJob(db, job, { providers, master, fetchPage: page, fetchImpl: tinyfishStubFetch(tfUrls) }), 'failed')
-  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'source_error', 'the failed extraction is a source error, never a budget stop')
   assert.equal(completeCalls, 1, 'the failed extraction was the only paid call')
   assert.equal(researchCalls, 0, 'paid_fallback=false: the failed extraction never widened into the paid research fallback')
   assert.equal(claimKeyedJob(db), null, 'budget stop is terminal - no re-pend, no second attempt')

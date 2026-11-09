@@ -21,7 +21,7 @@ test('normalizeIcp keeps a reviewed profile as it is: same roles, place, size, s
 
 test('the real runner uses a reviewed profile as stored: no profile inference, the profile is not altered, icp_inferred stays 0', async () => {
   const r = await runFixture({
-    request: REQUEST, reviewedIcp: REVIEWED,
+    request: REQUEST, reviewedIcp: REVIEWED, icpReviewed: true,
     modelIcp: { ...REVIEWED, who: ['Managing Director', 'Head of Sales'], industries: ['SaaS', 'fintech', 'AI'], signals: ['seed funding', 'hiring sales'] },   // what an inference WOULD have produced (must never be used)
     modelQueries: ['London SaaS startup seed round'], hits: [], tfPages: {}, own: {}, extraction: [],
   })
@@ -31,9 +31,20 @@ test('the real runner uses a reviewed profile as stored: no profile inference, t
   assert.deepEqual(JSON.parse(job.icp), normalizeIcp(REVIEWED), 'stored profile identical to the reviewed one')
 })
 
+test('a carried profile WITHOUT the explicit review event stays a raw carry: icp_inferred 3, still never re-inferred', async () => {
+  const r = await runFixture({
+    request: REQUEST, reviewedIcp: REVIEWED, modelIcp: { ...REVIEWED, who: ['Managing Director'] },
+    modelQueries: ['London SaaS startup seed round'], hits: [], tfPages: {}, own: {}, extraction: [],
+  })
+  assert.equal(r.calls.prompts.filter(p => p.startsWith(INFERENCE_PREFIX)).length, 0, 'a carry is never re-inferred either')
+  const job = r.db.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
+  assert.equal(job.icp_inferred, 3, 'presence is not approval: carried raw, NOT a review')
+  assert.deepEqual(JSON.parse(job.icp), normalizeIcp(REVIEWED), 'the carried profile is used exactly as stored')
+})
+
 test('a reviewed profile without a window gains only the window the request itself states (90 days), nothing else', async () => {
   const { window_days: _w, ...noWindow } = REVIEWED
-  const r = await runFixture({ request: REQUEST, reviewedIcp: noWindow, modelIcp: REVIEWED, modelQueries: ['q'], hits: [], tfPages: {}, own: {}, extraction: [] })
+  const r = await runFixture({ request: REQUEST, reviewedIcp: noWindow, icpReviewed: true, modelIcp: REVIEWED, modelQueries: ['q'], hits: [], tfPages: {}, own: {}, extraction: [] })
   assert.equal(r.calls.prompts.filter(p => p.startsWith(INFERENCE_PREFIX)).length, 0)
   const stored = JSON.parse((r.db.prepare('SELECT icp FROM scan_jobs').get() as { icp: string }).icp)
   assert.deepEqual(stored, { ...normalizeIcp(noWindow), window_days: 90 })

@@ -3,7 +3,10 @@
 // (lib/outreach/capability-claims.ts), so dazl selling itself can only promise what this record says is shipped.
 //
 // Every entry comes from a code registry or flag:
-//   sources       lib/channels.ts CHANNELS (live = available, worker = limited: needs an operator worker, soon = unavailable)
+//   sources       lib/channels.ts CHANNELS (live = available, worker = limited: needs an operator worker, soon = unavailable),
+//                 then lib/advanced/config.ts PLATFORM_SUPPORT: a worker platform whose adapter is not built (Facebook,
+//                 XiaoHongShu) is unavailable with nothing that enables it, never limited. Connecting an operator worker
+//                 enables a built-but-disconnected source; it cannot enable an adapter nobody wrote (sourceCapability).
 //   send channels SEND_CHANNELS below: Gmail is the only sender (lib/gmail/oauth.ts gmailSend); every other channel has
 //                 no adapter in lib/ and is listed so a claim about it is recognised and refused
 //   CRM           lib/crm/index.ts CRM_PROVIDERS; other CRMs are listed as unavailable for the same reason
@@ -25,6 +28,7 @@ import { trialCaps } from './billing/trial-budget.ts'
 import { TRIAL_SCANS_PER_ACCOUNT } from './scan/trial.ts'
 import { trialSiteReadsPerDay } from './scan/trial-site-read.ts'
 import { ACCOUNT_SEND_CAP } from './outreach/send-budget.ts'
+import { PLATFORM_SUPPORT } from './advanced/config.ts'
 
 export const PRODUCT_TRUTH_SCHEMA = 1
 
@@ -98,17 +102,34 @@ export const COMPETITORS = ['pancake', 'gojiberry', 'chatgpt', 'apollo', 'clay',
 export const BENCHMARKS: Benchmark[] = []
 
 type Env = Record<string, string | undefined>
+type Channel = (typeof CHANNELS)[number]
+export type PlatformSupport = Record<string, { supported: boolean; reason: string | null } | undefined>
 
-function capabilities(env: Env): Capability[] {
-  const out: Capability[] = []
-  for (const c of CHANNELS) {
-    out.push({
-      id: `source:${c.id}`, kind: 'source', name: c.name,
-      state: c.status === 'live' ? 'available' : c.status === 'worker' ? 'limited' : 'unavailable',
-      requires: c.status === 'worker' ? ['operator_worker'] : [],
-      aliases: SOURCE_ALIASES[c.id] ?? [], basis: `lib/channels.ts ${c.id}: ${c.status}`,
-    })
+// One source's capability. Three distinct states, each with what (if anything) turns it on:
+//   available    status live, and no unbuilt adapter behind it
+//   limited      built, but needs an operator worker session (status worker, adapter supported)
+//   unavailable  status soon, or the platform's adapter is not built or has no PLATFORM_SUPPORT entry at all (fail
+//                closed: an unknown platform is never assumed built); requires is empty because no setup enables it
+export function sourceCapability(c: Channel, support: PlatformSupport = PLATFORM_SUPPORT): Capability {
+  const base = { id: `source:${c.id}`, kind: 'source' as const, name: c.name, aliases: SOURCE_ALIASES[c.id] ?? [] }
+  if (c.platform !== undefined) {
+    const s = Object.prototype.hasOwnProperty.call(support, c.platform) ? support[c.platform] : undefined
+    if (!s || typeof s !== 'object' || s.supported !== true) {
+      const why = !s || typeof s !== 'object' ? 'no PLATFORM_SUPPORT entry' : `unsupported: ${typeof s.reason === 'string' && s.reason.trim() ? s.reason.trim() : 'adapter not built'}`
+      return { ...base, state: 'unavailable', requires: [], basis: `lib/advanced/config.ts PLATFORM_SUPPORT ${c.platform}: ${why}` }
+    }
   }
+  return {
+    ...base,
+    state: c.status === 'live' ? 'available' : c.status === 'worker' ? 'limited' : 'unavailable',
+    requires: c.status === 'worker' ? ['operator_worker'] : [],
+    basis: `lib/channels.ts ${c.id}: ${c.status}`,
+  }
+}
+
+function capabilities(env: Env, support: PlatformSupport): Capability[] {
+  const out: Capability[] = []
+  for (const c of CHANNELS) out.push(sourceCapability(c, support))
   for (const s of SEND_CHANNELS) out.push({ ...s, kind: 'channel' })
   for (const p of CRM_PROVIDERS) {
     const [name, aliases] = CRM_NAMES[p] ?? [p, [p]]
@@ -132,10 +153,11 @@ function capabilities(env: Env): Capability[] {
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 
 // The record for this deployment. Pure: the same code and env always give the same record and version.
-export function productTruth(env: Env = process.env): ProductTruth {
+// support defaults to the shipped PLATFORM_SUPPORT; a test passes another one to show the record and its version follow it.
+export function productTruth(env: Env = process.env, support: PlatformSupport = PLATFORM_SUPPORT): ProductTruth {
   const body: Omit<ProductTruth, 'version'> = {
     schema: PRODUCT_TRUTH_SCHEMA,
-    capabilities: capabilities(env),
+    capabilities: capabilities(env, support),
     pricing: {
       currency: 'USD',
       plans: (Object.keys(PLAN_LIMITS) as PlanId[]).map(id => ({ id, monthlyUsd: PLAN_PRICE_USD_MONTHLY[id], scansPerMonth: PLAN_LIMITS[id].scansPerMonth })),

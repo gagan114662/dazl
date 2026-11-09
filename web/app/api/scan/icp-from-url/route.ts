@@ -10,6 +10,7 @@ import { getDb } from '@/lib/db/client'
 import { admitTrialSiteRead } from '@/lib/scan/trial-site-read'
 import { trialPrincipal } from '@/lib/billing/trial-budget'
 import { hasKey } from '@/lib/llm/key-store'
+import { DRAFT_UNREADABLE_COPY, PROVIDER_FAILED_COPY } from '@/lib/error-copy'
 import { icpFromWebsite } from '@/lib/scan/icp-from-site'
 import { latestQueryJob } from '@/lib/scan/store'
 import { denied } from '@/lib/workspace-access'
@@ -82,8 +83,10 @@ export async function POST(req: NextRequest) {
   if ('error' in out) {
     if (out.error === 'spend_limit') return NextResponse.json({ error: 'spend_limit', message: 'Your workspace AI spend limit for today or this month is reached, so nothing was generated and nothing was charged.' }, { status: 429 })
     if (out.error === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.' }, { status: 503 })
-    if (out.error === 'accounting_pending') return NextResponse.json({ error: 'accounting_pending', message: 'The cost of an earlier AI call could not be recorded, so paid generation is paused until that record settles. That call may still be billed to your key; no new charge was made for this request.' }, { status: 503 })
+    if (out.error === 'accounting_pending') return NextResponse.json({ error: 'accounting_pending', message: 'The cost of an AI call could not be recorded, so paid generation is paused until that record settles. A recent call - possibly this request - may still be billed to your key.' }, { status: 503 })
     if (out.error === 'spend_unavailable') return NextResponse.json({ error: 'spend_unavailable', message: 'Your spend budget could not be checked just now, so nothing was generated and nothing was charged. Try again shortly.' }, { status: 503 })
+    if (out.error === 'draft_unreadable') return NextResponse.json({ error: 'draft_unreadable', ...(out.reason ? { reason: out.reason } : {}), message: DRAFT_UNREADABLE_COPY }, { status: 502 })
+    if (out.error === 'provider_failed') return NextResponse.json({ error: 'provider_failed', message: PROVIDER_FAILED_COPY }, { status: 502 })
     const status = out.error === 'no_api_key' || out.error === 'key_unreadable' || out.error === 'invalid' || out.error === 'not_public' ? 400
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
     return NextResponse.json({ error: out.error, ...('trial' in out && out.trial ? { trial: out.trial } : {}) }, { status })

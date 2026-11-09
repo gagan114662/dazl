@@ -7,7 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { blindClaim, type LeadClaim } from '../lib/verifier/claim.ts'
-import { decide, isRecruitingMailbox, overall, type Snapshot } from '../lib/verifier/checks.ts'
+import { CHECK_VERSIONS, decide, isRecruitingMailbox, overall, type Snapshot } from '../lib/verifier/checks.ts'
 import { linkedDomains, metadataDays, htmlToText } from '../lib/verifier/text.ts'
 
 const AS_OF = '2026-11-06T12:00:00.000Z'
@@ -191,4 +191,43 @@ test('a malformed address with trailing punctuation is rejected by blindClaim, n
   const { claim, problems } = blindClaim({ ...BASE, contact: { email: 'buyer@acme.com.', source_url: PEOPLE_PAGE } })
   assert.equal(claim.contact, null)
   assert.ok(problems.includes('contact is malformed'))
+})
+
+// #781 audit 9379b162 (2026-11-06 19:31Z): cross-employer proximity false pass. The role is explicitly attached to a
+// rival employer; an unrelated mention of the claimed company within the same 250-character passage must not supply
+// the employer relation.
+test('explicit rival employer with the target named nearby, after or before: person_current never passes', () => {
+  const claim: LeadClaim = { ...BASE, person: { name: 'Pat Example', title: 'Sales Director', source_url: PEOPLE_PAGE } }
+  for (const text of [
+    // the audited reproduction, verbatim shape
+    'Harbor Ledger Analytics opened a Toronto, Canada office on October 8, 2026. Pat Example is Sales Director at Rival Corp. Harbor Ledger Analytics sponsored the conference.',
+    // target mentioned only before
+    'Harbor Ledger Analytics sponsored the conference. Pat Example is Sales Director at Rival Corp.',
+    // target in the SAME sentence, role still attached to the rival
+    'Harbor Ledger Analytics sponsored the panel where Pat Example, Sales Director at Rival Corp, spoke.',
+    // possessive rival before the title
+    'Rival Corp\'s Sales Director Pat Example spoke on a panel sponsored by Harbor Ledger Analytics.',
+  ]) {
+    const checks = run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, page(`<p>${text}</p>`))])
+    const pc = checks.find(c => c.check === 'person_current')!
+    assert.notEqual(pc.status, 'pass', text)
+    assert.notEqual(overall(checks).action, 'accept', text)
+  }
+  const named = run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, page('<p>Harbor Ledger Analytics sponsored the panel where Pat Example, Sales Director at Rival Corp, spoke.</p>'))]).find(c => c.check === 'person_current')!
+  assert.match(named.reason, /role at rival corp, not at "Harbor Ledger Analytics"/, 'the hold names the attached employer')
+})
+
+test('controls: a valid current appointment, a possessive target and "formerly at OldCo, now at Target" still pass', () => {
+  const claim: LeadClaim = { ...BASE, person: { name: 'Pat Example', title: 'Sales Director', source_url: PEOPLE_PAGE } }
+  for (const text of [
+    'Harbor Ledger Analytics named Pat Example Sales Director this quarter.',
+    'Pat Example, Sales Director at Harbor Ledger Analytics, leads the London team.',
+    'Harbor Ledger Analytics\' Sales Director Pat Example spoke on the panel.',
+    'Pat Example, formerly at Rival Corp, is now Sales Director at Harbor Ledger Analytics.',
+    'Pat Example was named Sales Director at Harbor Ledger Analytics in October.',
+  ]) assert.deepEqual(statusOf(run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, page(`<p>${text}</p>`))]), 'person_current'), ['pass'], text)
+})
+
+test('the check version moved with the relationship rule', () => {
+  assert.equal(CHECK_VERSIONS.person_current, 2)
 })

@@ -55,7 +55,7 @@ test('scan route: omitted offer binds by the play effective offer; persisted del
     setScanDb(db); setAuthDb(db); setDb(sqliteDb(db))
 
     // 1. Request omits `offer`: the binding must use the play's effective offer (profile offer 'Acme Booking').
-    const r1 = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: icpWith(research(), ['practice managers']) }))
+    const r1 = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: icpWith(research(), ['practice managers']), reviewed: true }))
     const b1 = await r1.json() as { job_id?: string; error?: string }
     assert.equal(r1.status, 202, JSON.stringify(b1))
     const s1 = storedIcp(db, b1.job_id!)
@@ -67,7 +67,7 @@ test('scan route: omitted offer binds by the play effective offer; persisted del
 
     // 2. Next play: the person removed 'practice managers' from the draft -> the persisted review honors the deletion.
     done(db)
-    const r2 = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: icpWith(s1.icp.research!, []) }))
+    const r2 = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: icpWith(s1.icp.research!, []), reviewed: true }))
     const b2 = await r2.json() as { job_id?: string; error?: string }
     assert.equal(r2.status, 202, JSON.stringify(b2))
     const s2 = storedIcp(db, b2.job_id!)
@@ -83,7 +83,7 @@ test('scan route: omitted offer binds by the play effective offer; persisted del
 
     // 4. A stated offer binds by itself and is persisted with the play.
     done(db)
-    const r4 = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: 'Acme Booking', icp: icpWith(research(), ['practice managers']) }))
+    const r4 = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: 'Acme Booking', icp: icpWith(research(), ['practice managers']), reviewed: true }))
     const b4 = await r4.json() as { job_id?: string; error?: string }
     assert.equal(r4.status, 202, JSON.stringify(b4))
     const s4 = storedIcp(db, b4.job_id!)

@@ -26,11 +26,12 @@ import { migrateSourceStats } from '../lib/search/trace.ts'
 import { migrateSourceRuns } from '../lib/scan/source-runs.ts'
 import { migrateMemory } from '../lib/memory.ts'
 import { companyKey } from '../lib/scan/evidence.ts'
+import { currentSiteContact, onCompanySite, isFounderRoute, personMatchesRole, type SiteRow } from '../lib/scan/site-contact.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { scoreLeadV2, scoreSearchV2, scoreboardMarkdownV2, RUBRIC_VERSION, type RouteInput, type ScoredLeadInputV2, type SearchScoreV2 } from '../lib/scan/scoreboard.ts'
 import { requiredGateHeld } from '../lib/scan/held-state.ts'
 import { getMemory, isExcluded } from '../lib/memory.ts'
-import { whoOf, personMatchesRole, NOT_A_FOUNDER_ROUTE } from '../lib/scan/actionable.ts'
+import { whoOf } from '../lib/scan/actionable.ts'
 import { parseWindowDays } from '../lib/scan/window.ts'
 import { TIMING_REQUESTED } from '../lib/scan/scoreboard.ts'
 
@@ -91,17 +92,20 @@ for (const s of searches) {
   try { memory = getMemory(db, TENANT) } catch { memory = null }
   const raw = db.prepare('SELECT id, name, company, contact, review_reason, confidence, event_date, event_date_proof, signal, signal_kind, fit, source_url, quarantined_at, company_domain FROM leads WHERE scan_job_id = ?').all(id) as { id: string; name: string; company: string; contact: string | null; review_reason: string | null; confidence: number | null; event_date: string | null; event_date_proof: string | null; signal: string | null; signal_kind: string | null; fit: number | null; source_url: string; quarantined_at: number | null; company_domain: string | null }[]
   const contactsOf = db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = 'contact'")
-  const siteOf = db.prepare("SELECT kind, value FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'email', 'phone')")
+  const siteOf = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'email', 'phone')")
   const leads = raw.map(l => {
-    const site = siteOf.all(l.id, TENANT) as { kind: string; value: string }[]
-    const person = site.filter(r => r.kind === 'person').map(r => r.value).find(v => personMatchesRole(v, who)) ?? null
-    const routes: RouteInput[] = site.filter(r => r.kind === 'email' || r.kind === 'phone').map(r => r.kind === 'phone'
+    // Same rule as the live gate (lib/scan/site-contact.ts, #943): the domain counts only when CONFIRMED, and the person/routes only from that
+    // confirmed company's own site. A populated company_domain or a foreign-site contact must not inflate the benchmark.
+    const sc = currentSiteContact(db, TENANT, l, who)
+    const own = (siteOf.all(l.id, TENANT) as SiteRow[]).filter(r => onCompanySite(r, sc.domain))
+    const person = own.filter(r => r.kind === 'person').map(r => r.value).find(v => personMatchesRole(v, who)) ?? null
+    const routes: RouteInput[] = own.filter(r => r.kind === 'email' || r.kind === 'phone').map(r => r.kind === 'phone'
       ? { kind: 'phone' as const, value: r.value, role_ok: true }
-      : { kind: 'email' as const, value: r.value, role_ok: !NOT_A_FOUNDER_ROUTE.test(r.value.split('@')[0].replace(/[._-]/g, '')) })
+      : { kind: 'email' as const, value: r.value, role_ok: isFounderRoute(r) })
     const v2: ScoredLeadInputV2 = {
       name: l.name, review_reason: l.review_reason, confidence: l.confidence,
       quarantined: l.quarantined_at != null, excluded: isExcluded(memory, l), held: requiredGateHeld(db, TENANT, l.id) !== null,
-      fit: l.fit, company_domain_confirmed: l.company_domain != null, person_title: person, routes,
+      fit: l.fit, company_domain_confirmed: sc.confirmed, person_title: person, routes,
       event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind,
     }
     return { ...l, v2, contacts: (contactsOf.all(l.id) as { value: string }[]).map(r => r.value) }
