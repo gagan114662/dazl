@@ -67,9 +67,10 @@ test('webhook payload carries a Slack-compatible text beside the structured fiel
   let status = 500; const got: Record<string, unknown>[] = []
   const hook = https.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (q, s) => { let b = ''; q.on('data', c => { b += c }); q.on('end', () => { if (status < 300) got.push(JSON.parse(b)); s.statusCode = status; s.end() }) })
   await new Promise<void>(r => hook.listen(0, '127.0.0.1', () => r()))
-  // A health endpoint that (wrongly) leaks identifiers in its problem strings: the alert text must still not carry them.
+  // A health endpoint that (wrongly) leaks identifiers, a token and extra fields: the payload is built at the send boundary from allowlisted counts and states only.
   let healthy = false
-  const app = http.createServer((_q, s) => { s.statusCode = healthy ? 200 : 503; s.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : ['scheduler stale: last completed run 3000s ago', 'tenant 0b0e7c1a-1111-4222-8333-444455556666 blocked, owner jane.doe@example.com'], operational: { state: healthy ? 'fresh' : 'stale' }, tenants: { tracked: 2, blocked: 1 } })) })
+  const LEAK = 'sk-live-ABCDEF123456 jane.doe@example.com 0b0e7c1a-1111-4222-8333-444455556666'
+  const app = http.createServer((_q, s) => { s.statusCode = healthy ? 200 : 503; s.end(JSON.stringify({ ok: healthy, problems: healthy ? [] : [`token ${LEAK}`, 42, null], operational: { state: healthy ? 'fresh' : 'stale', last_completed_age_s: 3000, last_error: LEAK }, tenants: { tracked: 2, blocked: 1, tenant_ids: [LEAK], note: LEAK } })) })
   await new Promise<void>(r => app.listen(0, '127.0.0.1', () => r()))
   const url = `http://127.0.0.1:${(app.address() as { port: number }).port}/api/health/scheduler`
   const hookUrl = `https://localhost:${(hook.address() as { port: number }).port}/hook`
@@ -80,9 +81,9 @@ test('webhook payload carries a Slack-compatible text beside the structured fiel
     status = 200
     r = await run(); assert.equal(r.code, 1); assert.equal(got.length, 1, 'the retry delivers at once (not throttled by the failed attempt)'); assert.equal(stamps().length, 1)
     const a = got[0]
-    assert.equal(typeof a.text, 'string'); assert.match(a.text as string, /^dazl scheduler problem/); assert.match(a.text as string, /scheduler stale: last completed run 3000s ago/)
+    assert.equal(typeof a.text, 'string'); assert.match(a.text as string, /^dazl scheduler problem/); assert.match(a.text as string, /scheduler stale: last completed run 3000s ago/); assert.match(a.text as string, /1 tenant\(s\) blocked by repeated failures/); assert.deepEqual(a.tenants, { tracked: 2, blocked: 1 }, 'extra tenant fields are dropped')
     assert.equal(a.type, 'scheduler_check'); assert.equal(a.ok, false); assert.ok(Array.isArray(a.problems), 'the structured fields stay beside the text')
-    assert.doesNotMatch(JSON.stringify(a), /0b0e7c1a|jane\.doe|@/, 'no id or email anywhere in the payload, text or structured fields'); assert.match(a.text as string, /\[id\]/); assert.match(a.text as string, /\[email\]/)
+    assert.doesNotMatch(JSON.stringify(a), /sk-live|ABCDEF|0b0e7c1a|jane\.doe|@|tenant_ids|note/, 'no token, id, email or extra field anywhere in the payload, text or structured fields')
     r = await run(); assert.equal(r.code, 1); assert.equal(got.length, 1, 'the same problem is not re-sent within the interval')
     healthy = true; status = 500
     r = await run(); assert.equal(r.code, 1, 'a failed recovery delivery is not success'); assert.equal(got.length, 1); assert.equal(stamps().length, 1, 'the receipt stays until recovery is delivered')
@@ -90,4 +91,34 @@ test('webhook payload carries a Slack-compatible text beside the structured fiel
     r = await run(); assert.equal(r.code, 0); assert.equal(got.length, 2); assert.equal(got[1].type, 'scheduler_recovered'); assert.match(got[1].text as string, /^dazl scheduler recovered/); assert.deepEqual(stamps(), [])
     r = await run(); assert.equal(r.code, 0); assert.equal(got.length, 2, 'recovery is announced once')
   } finally { hook.close(); app.close(); rmSync(T, { recursive: true, force: true }) }
+})
+
+test('the send boundary: tokens, arbitrary states, extra fields, malformed problem entries and non-JSON bodies never reach the alert and never crash the check', async () => {
+  const T = mkdtempSync(path.join(tmpdir(), 'sched-bound-'))
+  const LEAK = 'sk-live-ABCDEF123456 jane.doe@example.com 0b0e7c1a-1111-4222-8333-444455556666'
+  const cases: { name: string; status: number; raw: string; expectProblem: RegExp }[] = [
+    { name: 'token in problems', status: 503, raw: JSON.stringify({ ok: false, problems: [LEAK], operational: { state: 'stale', last_completed_age_s: 5 }, tenants: { tracked: 1 } }), expectProblem: /^scheduler stale: last completed run 5s ago$/ },
+    { name: 'arbitrary state', status: 503, raw: JSON.stringify({ ok: false, problems: ['x'], operational: { state: LEAK }, tenants: { tracked: 1, blocked: 2 } }), expectProblem: /^2 tenant\(s\) blocked by repeated failures$/ },
+    { name: 'non-string problems', status: 503, raw: JSON.stringify({ ok: false, problems: [1, null, { a: LEAK }, [LEAK]], operational: LEAK, tenants: LEAK }), expectProblem: /^HTTP 503, not ok$/ },
+    { name: 'extra tenant fields and string numbers', status: 503, raw: JSON.stringify({ ok: false, operational: { state: 'crashed', last_completed_age_s: LEAK }, tenants: { tracked: LEAK, blocked: -1, overdue: 1.5, secret: LEAK } }), expectProblem: /^scheduler crashed: no completed run$/ },
+    { name: 'not an object', status: 200, raw: JSON.stringify([LEAK]), expectProblem: /^HTTP 200, not ok$/ },
+    { name: 'not JSON', status: 502, raw: `<html>${LEAK}</html>`, expectProblem: /^HTTP 502, not ok$/ },
+    { name: 'ok must be literally true', status: 200, raw: JSON.stringify({ ok: 'yes', problems: [] }), expectProblem: /^HTTP 200, not ok$/ },
+  ]
+  try {
+    for (const [i, c] of cases.entries()) {
+      const server = http.createServer((_q, s) => { s.statusCode = c.status; s.end(c.raw) })
+      await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+      const out = path.join(T, `out${i}`), cmd = path.join(T, `cmd${i}.sh`)
+      writeFileSync(cmd, `#!/bin/sh\necho "$1" >> ${out}\n`); chmodSync(cmd, 0o755)
+      const r = await new Promise<{ code: number | null; err: string }>(res => { let err = ''; const ch = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/ops/scheduler-check.mts', '--url', `http://127.0.0.1:${(server.address() as { port: number }).port}/api/health/scheduler`, '--state-dir', path.join(T, `s${i}`)], { cwd: web, env: { ...process.env, SCHEDULER_ALERT_CMD: cmd, OPS_ALERT_WEBHOOK_URL: '' } }); ch.stderr.on('data', d => { err += d }); ch.on('close', code => res({ code, err })) })
+      server.close()
+      assert.equal(r.code, 1, `${c.name}: reported as a problem, not a crash (${r.err.slice(0, 200)})`); assert.doesNotMatch(r.err, /TypeError|at .*\.mts/, `${c.name}: no crash trace`)
+      const sent = readFileSync(out, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+      assert.equal(sent.length, 1, c.name)
+      assert.doesNotMatch(JSON.stringify(sent[0]), /sk-live|ABCDEF|0b0e7c1a|jane|@|secret/, `${c.name}: nothing from the response is copied`)
+      assert.match(sent[0].problems[0], c.expectProblem, c.name)
+      assert.deepEqual(Object.keys(sent[0].tenants ?? {}).filter(k => !['tracked', 'blocked', 'held', 'reply_sync_stale', 'overdue', 'oldest_overdue_s'].includes(k)), [], c.name)
+    }
+  } finally { rmSync(T, { recursive: true, force: true }) }
 })

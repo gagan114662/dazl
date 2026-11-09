@@ -2,7 +2,7 @@
 // Reads the app's own /api/health/scheduler (counts only) and, when it is not ok (scheduler stale, crashed or never ran
 // with work waiting; the latest run failed or lost its lease with no success since; tenants blocked, reply sync stale, due work overdue) or the app does not answer, alerts:
 // OPS_ALERT_WEBHOOK_URL (https; e.g. a Slack incoming webhook) or SCHEDULER_ALERT_CMD (tests; the JSON as its argument).
-// The webhook body is the structured JSON plus a Slack-compatible `text` summary (counts, states and problem kinds only; emails and long ids are masked).
+// The webhook body is the structured JSON plus a Slack-compatible `text` summary. Both carry allowlisted counts and states only (built at the send boundary, see below).
 // The same problems alert at most once per SCHEDULER_ALERT_EVERY_S (3600); a recovery after an alert is announced once.
 // Stamps live in --state-dir. The alert carries the endpoint's counts and states only: no tenant id or error text.
 //   node --experimental-strip-types scripts/ops/scheduler-check.mts --url http://127.0.0.1:3100/api/health/scheduler --state-dir /var/lib/dazl-scheduler-check
@@ -13,26 +13,47 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import os from 'node:os'
 import path from 'node:path'
 
+// Must equal OVERDUE_ALERT_S in lib/ops/scheduler-runs.ts (the endpoint's own threshold wording).
+const OVERDUE_ALERT_S = 60 * 60
 const arg = (f: string) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : undefined }
 const url = arg('--url'), state = arg('--state-dir')
 if (!url || !state) { console.error('usage: scheduler-check.mts --url <app>/api/health/scheduler --state-dir DIR'); process.exit(2) }
 const u = new URL(url)
 if (u.protocol !== 'https:' && !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) { console.error('scheduler-check: --url must be https or loopback'); process.exit(2) }
 
+// Counts-and-states only, enforced HERE (the send boundary) and not by trusting the endpoint's output: only allowlisted fields with valid values are read, and every problem line is built
+// from those known states and counts, never copied from the response. Anything else (extra fields, a token in a problem string, a non-string entry, a non-object body) is dropped
+// without being echoed, and malformed input is a problem to report, never a crash.
+const STATES = new Set(['never_ran', 'running', 'fresh', 'stale', 'crashed']), FAILS = new Set(['failed', 'lease_lost'])
+const ERRS = new Set(['TimeoutError', 'AbortError', 'TypeError', 'SyntaxError'])
+const num = (v: unknown): number | null => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null
+const obj = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+const TENANT_KEYS = ['tracked', 'blocked', 'held', 'reply_sync_stale', 'overdue', 'oldest_overdue_s'] as const
 let problems: string[] = [], facts: Record<string, unknown> = {}
 try {
   const r = await fetch(u, { cache: 'no-store', signal: AbortSignal.timeout(10_000) })
-  const h = await r.json() as { ok: boolean; problems?: string[]; operational?: Record<string, unknown>; tenants?: Record<string, unknown> }
-  problems = h.ok ? [] : (h.problems?.length ? h.problems : [`HTTP ${r.status}, not ok`])
-  facts = { scheduler: h.operational?.state, last_completed_age_s: h.operational?.last_completed_age_s, lease_generation: h.operational?.lease_generation, last_failure_status: (h.operational?.unresolved_failure as { status?: string } | null | undefined)?.status ?? null, tenants: h.tenants }
-} catch (e) { problems = [`scheduler health not answering (${e instanceof Error ? e.name : 'error'})`] }
+  const raw: unknown = await r.json().catch(() => undefined)
+  const h = obj(raw), op = obj(h.operational), t = obj(h.tenants)
+  const state = typeof op.state === 'string' && STATES.has(op.state) ? op.state : null
+  const age = num(op.last_completed_age_s)
+  const fail = (() => { const f = obj(op.unresolved_failure).status; return typeof f === 'string' && FAILS.has(f) ? f : null })()
+  const tenants: Record<string, number> = {}
+  for (const k of TENANT_KEYS) { const n = num(t[k]); if (n !== null) tenants[k] = n }
+  facts = { scheduler: state ?? undefined, last_completed_age_s: age ?? undefined, lease_generation: num(op.lease_generation) ?? undefined, last_failure_status: fail, tenants }
+  if (h.ok !== true) {
+    if (state === 'stale' || state === 'crashed') problems.push(`scheduler ${state}${age !== null ? `: last completed run ${age}s ago` : ': no completed run'}`)
+    if (fail) problems.push(`latest scheduler run ${fail}: no successful run since`)
+    if (state === 'never_ran' && (tenants.tracked ?? 0) > 0) problems.push('scheduler never ran, but tenants have scheduled work')
+    if (tenants.blocked) problems.push(`${tenants.blocked} tenant(s) blocked by repeated failures`)
+    if (tenants.reply_sync_stale) problems.push(`${tenants.reply_sync_stale} tenant(s) with stale reply sync`)
+    if (tenants.overdue) problems.push(`${tenants.overdue} tenant(s) with due work overdue by more than ${OVERDUE_ALERT_S}s${tenants.oldest_overdue_s != null ? ` (oldest ${tenants.oldest_overdue_s}s)` : ''}`)
+    if (!problems.length) problems = [`HTTP ${r.status}, not ok`]   // unknown or unreadable health: said plainly, nothing copied
+  }
+} catch (e) { problems = [`scheduler health not answering (${ERRS.has(e instanceof Error ? e.name : '') ? (e as Error).name : 'error'})`] }
 
-// Anything that looks like an email address or a long id is masked in the problems, in the structured fields and the text alike.
-const mask = (t: string) => t.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '[email]').replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[id]').replace(/\b[0-9a-f]{16,}\b/gi, '[id]')
-problems = problems.map(mask)
 const body = { level: problems.length ? 'error' : 'info', type: 'scheduler_check', ok: problems.length === 0, host: os.hostname(), at: new Date().toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))
-// One human-readable block for Slack-style receivers, built from the same already-masked fields as the JSON.
+// One human-readable block for Slack-style receivers, built from the same allowlisted fields as the JSON.
 const summary = (b: { type: string; host?: string; problems: string[]; scheduler?: unknown }): string => b.type === 'scheduler_recovered'
   ? `dazl scheduler recovered${b.host ? ` on ${b.host}` : ''}: health is ok again.`
   : ([`dazl scheduler problem${b.host ? ` on ${b.host}` : ''}${b.scheduler ? ` (${String(b.scheduler)})` : ''}:`, ...b.problems.map(x => `- ${x}`)].join('\n'))
