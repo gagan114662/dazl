@@ -10,7 +10,8 @@ const KEPT = ['nodemailer', 'pg-mem'] // real dynamic consumers (lib/system-mail
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'))
-const all = (p: any) => ({ ...p.dependencies, ...p.devDependencies, ...p.optionalDependencies, ...p.peerDependencies })
+type DepMap = Record<string, string> | undefined
+const all = (p: { dependencies?: DepMap, devDependencies?: DepMap, optionalDependencies?: DepMap, peerDependencies?: DepMap }) => ({ ...p.dependencies, ...p.devDependencies, ...p.optionalDependencies, ...p.peerDependencies })
 
 test('removed packages are not direct deps in package.json or the lock root', () => {
   for (const name of REMOVED) {
@@ -30,6 +31,6 @@ test('no source imports the removed packages', () => {
   try {
     out = execFileSync('git', ['grep', '-nE', re, '--', '.', ':!package-lock.json', ':!test/unused-direct-deps.test.ts'],
       { cwd: new URL('..', import.meta.url), encoding: 'utf8' })
-  } catch (e: any) { if (e.status !== 1) throw e }
+  } catch (e: unknown) { if ((e as { status?: unknown }).status !== 1) throw e }
   assert.equal(out, '')
 })
