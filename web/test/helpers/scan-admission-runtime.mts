@@ -8,6 +8,7 @@ import { migrateScan, createQueryJob } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migratePlatform } from '../../lib/db/platform-tables.ts'
+import { atFence } from './admission-fence.ts'
 import { POST } from '../../app/api/scan/route.ts'
 
 // #913: the real POST /api/scan handler, in-memory db, network fenced, after() captured and never flushed (no runner, no provider call).
@@ -68,4 +69,17 @@ test('pending, running and a recent cancel block; completed and an expired cance
   }
   const db = setup(); const id = tenant(db); seed(db, id, 1, 'pending', ", csv_domain = 'acme.com'")
   assert.equal((await race(id, 1))[0].status, 202, 'a pending CSV import does not hold the manual slot')
+})
+
+// The monthly-quota recheck INSIDE the fence (q2). The early check passes (49 of 50 used), then a competing scan completes between that check
+// and the fence, so the month is full and nothing is active: only the recheck inside the admission transaction can refuse. (The active-scan
+// check cannot: nothing is pending.) Without it this request would be a 51st scan.
+test('the quota is rechecked inside the fence: a scan that lands after the early check but before the fence still stops the request at 402', async () => {
+  const db = setup(); const id = tenant(db); seed(db, id, 49, 'done')
+  let fired = 0
+  atFence(db, () => { if (!fired++) seed(db, id, 1, 'done') })
+  const out = await race(id, 1)
+  assert.equal(fired, 1, 'the competing scan landed at the fence')
+  assert.equal(out[0].status, 402); assert.equal(out[0].error, 'quota_exceeded')
+  assert.equal(jobs(db, id).length, 50, 'no 51st job')
 })

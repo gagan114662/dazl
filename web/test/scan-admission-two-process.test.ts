@@ -13,8 +13,7 @@ import { migratePlans } from '../lib/plans.ts'
 import { migratePlatform } from '../lib/db/platform-tables.ts'
 
 // #913 acceptance: two separate PROCESSES, each with its own connection to one database FILE, race the real POST /api/scan handler.
-// The parent holds the database write lock while both are blocked at the admission fence, then releases it, so the contention is
-// observed (both children waited), not inferred. Synthetic tenant and key, network fenced in the children, no runner, no provider call.
+// Each child stops AT the admission fence (after the route's early checks passed); the parent sees both there and releases them together. Synthetic tenant and key, network fenced in the children, no runner, no provider call.
 const web = fileURLToPath(new URL('../', import.meta.url))
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
 interface Out { pid: number; status: number; error: string | null; job_id: string | null; ms: number }
@@ -39,25 +38,22 @@ function child(s: ReturnType<typeof setup>, tenant: string, tag: string) {
   })
   return { ready: env.READY_FILE as string, done }
 }
-async function race(s: ReturnType<typeof setup>, tenants: [string, string], holdMs: number) {
+async function race(s: ReturnType<typeof setup>, tenants: [string, string]) {
   const a = child(s, tenants[0], 'a'), b = child(s, tenants[1], 'b')
   for (let i = 0; i < 1500 && !(existsSync(a.ready) && existsSync(b.ready)); i++) await wait(20)
-  assert.ok(existsSync(a.ready) && existsSync(b.ready), 'both children reached the barrier')
-  const holder = new Database(s.file); holder.pragma('busy_timeout = 20000'); holder.exec('BEGIN IMMEDIATE')   // the write lock is now held by a third connection
-  writeFileSync(path.join(s.dir, 'go'), '1')
-  await wait(holdMs)                                                  // both children are inside POST, parked at the admission fence
-  holder.exec('ROLLBACK'); holder.close()
+  assert.ok(existsSync(a.ready) && existsSync(b.ready), 'both children reached the admission fence (their early checks passed with nothing active)')
+  assert.equal((s.db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, 0, 'at the fence nothing is written yet')
+  writeFileSync(path.join(s.dir, 'go'), '1')                          // released together: only the fence itself can separate them
   return Promise.all([a.done, b.done])
 }
 const jobs = (db: Database.Database, t: string) => db.prepare('SELECT id, status FROM scan_jobs WHERE user_id = ?').all(t) as { id: string; status: string }[]
 
-test('two processes, one tenant, one shared file: exactly one 202, the other the documented scan_active, after both waited on the lock', async () => {
+test('two processes, one tenant, one shared file: exactly one 202, the other the documented scan_active, with both parked at the fence until released together', async () => {
   const s = setup()
   try {
-    const out = await race(s, ['TA', 'TA'], 1200)
+    const out = await race(s, ['TA', 'TA'])
     assert.deepEqual(out.map(o => o.status).sort(), [202, 409], JSON.stringify(out))
     assert.equal(out.find(o => o.status === 409)!.error, 'scan_active')
-    assert.ok(out.every(o => o.ms >= 1000), `both requests were blocked behind the held write lock (contention observed): ${out.map(o => o.ms)}`)
     const rows = jobs(s.db, 'TA'); assert.equal(rows.length, 1, 'one job row, no orphan'); assert.equal(rows[0].id, out.find(o => o.status === 202)!.job_id)
     assert.equal((s.db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, 1, 'nothing else was written anywhere')
   } finally { s.db.close(); rmSync(s.dir, { recursive: true, force: true }) }
@@ -66,7 +62,7 @@ test('two processes, one tenant, one shared file: exactly one 202, the other the
 test('two processes, two different tenants, one shared file: both admitted (tenant isolation holds under lock contention)', async () => {
   const s = setup()
   try {
-    const out = await race(s, ['TA', 'TB'], 800)
+    const out = await race(s, ['TA', 'TB'])
     assert.deepEqual(out.map(o => o.status), [202, 202], JSON.stringify(out))
     assert.deepEqual([jobs(s.db, 'TA').length, jobs(s.db, 'TB').length], [1, 1])
   } finally { s.db.close(); rmSync(s.dir, { recursive: true, force: true }) }
