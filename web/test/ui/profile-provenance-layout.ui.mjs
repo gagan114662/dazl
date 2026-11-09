@@ -52,6 +52,11 @@ const HYDRATION = /#41[89]|#42[23]|Hydration|did not match/i
 // A long saved profile (synthetic; the editor caps the summary at 300 characters) and a short one.
 const LONG = 'Independent dental practices in New York City and the surrounding boroughs with two to ten chairs, run by an owner-dentist or a practice manager, that recently opened, moved or added a location and still book appointments by phone or a paper calendar.'
 const SHORT = 'NYC dental practices'
+// Adversarial profile text (with the staging label only): one unbroken token (a pasted URL, no break opportunity), CJK
+// without spaces, and right-to-left Arabic. Each must wrap inside the row - no overflow - with the note still readable.
+const TOKEN = 'https://brightsmile.example/' + 'dental-practices-new-york-two-to-ten-chairs-owner-run-'.repeat(4).replace(/-/g, '_')
+const CJK = 'ニューヨーク市内で過去九十日以内に開業または移転したチェア二台から十台の独立系歯科医院で、院長または事務長が予約を電話や紙の台帳で管理しているところ'
+const RTL = 'عيادات أسنان مستقلة في مدينة نيويورك افتتحت أو انتقلت خلال الأيام التسعين الماضية ويديرها طبيب الأسنان المالك أو مدير العيادة'
 // Every origin/approval label the summary can show, keyed by the icp_source the restore path receives. 'carried' (the
 // label of the staging finding) first, so its pixels are saved even when an earlier assertion fails.
 const LABELS = { carried: 'profile origin and approval not recorded', inferred: 'worked out by dazl', user: 'stored profile; approval not recorded', request_only: 'request fallback; interpretation not verified' }
@@ -112,8 +117,8 @@ const assertReadable = (g, label) => {
 
 try {
   for (const [w, h, tag] of [[390, 844, 'mobile'], [1280, 800, 'desktop']]) {
-    for (const [summary, size] of [[LONG, 'long'], [SHORT, 'short']]) {
-      for (const [source, words] of Object.entries(LABELS)) {
+    for (const [summary, size] of [[LONG, 'long'], [SHORT, 'short'], [TOKEN, 'token'], [CJK, 'cjk'], [RTL, 'rtl']]) {
+      for (const [source, words] of Object.entries(LABELS).filter(([src]) => ['long', 'short'].includes(size) || src === 'carried')) {
         latest = { query: 'Find NYC dental practices that opened in the past 90 days', icp: { summary, who: ['Practice owner'], industries: [], sizes: [], where: ['New York'], signals: [], exclude: [] }, icp_source: source }
         const label = `${tag} ${size} ${source}`
         const page = await ctx.newPage()
@@ -127,7 +132,7 @@ try {
         await page.waitForTimeout(300)
         assert.deepEqual(hydrationErrors, [], `${label}: zero hydration errors (got ${JSON.stringify(hydrationErrors)})`)
         const g = await geometry(page)
-        if (source === 'carried') await shot(page, `profile-provenance-${tag}-${size}-closed`) // before asserting: failure pixels too
+        if (source === 'carried' && ['long', 'short', 'token'].includes(size)) await shot(page, `profile-provenance-${tag}-${size}-closed`) // before asserting: failure pixels too
         // The complete wording, exactly: nothing truncated, shortened or replaced.
         assert.equal(g?.textStr, `Profile used: ${summary}`, `${label}: the whole profile text is on the page`)
         assert.equal(g?.noteStr, `(${words})`, `${label}: the whole origin/approval note is on the page`)
@@ -157,7 +162,7 @@ try {
       }
     }
   }
-  console.log('PASS profile-provenance-layout: long and short profiles x every origin/approval label at 390 and 1280 - profile text and provenance note keep their natural width (or the full row), the note never sits beside the profile on more than one line, nothing overflows or is truncated, click + Enter + Space still toggle the details, zero hydration errors')
+  console.log('PASS profile-provenance-layout: long and short profiles x every origin/approval label (plus unbroken-token, CJK and RTL profiles) at 390 and 1280 - profile text and provenance note keep their natural width (or the full row), the note never sits beside the profile on more than one line, nothing overflows or is truncated, click + Enter + Space still toggle the details, zero hydration errors')
 } finally {
   srv.kill(); await b.close()
   // Windows can hold the db file briefly after the server exits (EBUSY); never let cleanup mask the real result.
