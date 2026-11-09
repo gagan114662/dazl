@@ -150,17 +150,28 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   } else message = 'No dollar limit is set, so nothing here is a ceiling. Set one to make the run stop at an amount.'
   // A run under a spending limit only reserves for a model the limit's guard can price (limitReservable); any other model is
   // refused at its first call (model_unpriced). Say so BEFORE launch, and put that verdict inside the confirmation (ack) below.
-  if ((i.limited ?? capped) && !limitReservable(model)) {
+  // EVERY run, limited or not, also runs inside the per-scan spend cap (runner.ts runWithScanSpend), which reserves each model
+  // call at i.priceModel's price (spend-cap.ts modelCostUsd -> scanModelPrice) and refuses an id it cannot price. So when the
+  // caller supplied that table and it has no price for a named model, the run would stop at its first model call with or
+  // without a limit: refuse that too, and never advise removing the limit (it cannot help). An unreadable model
+  // (UNKNOWN_MODEL) is not refused without a limit: the model the run really calls may be priced.
+  const scanUnpriced = i.priceModel !== undefined && p === null && model !== UNKNOWN_MODEL
+  if (scanUnpriced || ((i.limited ?? capped) && !limitReservable(model))) {
     ok = false; reason = 'model_unpriced'; warning = null; change.length = 0
     const whose = i.payer === 'trial' ? "The free trial's model" : "Your key's model"
     message = model === UNKNOWN_MODEL
       ? `${i.payer === 'trial' ? "The free trial's model" : 'The model your key runs'} could not be read right now, so a run under a spending limit cannot be priced and would not reserve. Nothing was started or charged.`
-      : `${whose} (${model}) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call.${p ? ' The model rows above use its list price for this estimate only.' : ''} Nothing was started or charged.`
+      : scanUnpriced
+        ? `${whose} (${model}) has no listed price, so the per-scan spend cap every run has would stop it at its first model call, with or without a spending limit. Nothing was started or charged.`
+        : `${whose} (${model}) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call.${p ? ' The model rows above use its list price for this estimate only.' : ''} Nothing was started or charged.`
     if (i.payer === 'trial') change.push('This is a dazl configuration problem, not your request: try again later, or add your own AI key in Settings.')
     else {
       if (model === UNKNOWN_MODEL) change.push('Try again in a moment.')
-      change.push('Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)')
-      if (i.pricedAlternative && limitReservable(i.pricedAlternative) && i.pricedAlternative !== model) change.push(`Or use an Anthropic key (${i.pricedAlternative} is priced)`)
+      if (!scanUnpriced) change.push('Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)')
+      // The alternative must be priceable by every guard the run would still meet: the limit's table and the scan cap's.
+      const alt = i.pricedAlternative
+      if (alt && alt !== model && limitReservable(alt) && (i.priceModel ?? listedPrice)(alt) !== null) change.push(`${scanUnpriced ? 'Use' : 'Or use'} an Anthropic key (${alt} is priced)`)
+      if (scanUnpriced) change.push('This is a dazl model configuration problem, not your request: try again later.')
     }
   }
   const assumptions = [

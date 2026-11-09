@@ -131,7 +131,7 @@ test('monthly constraint: daily and monthly limits are labelled with their own r
 })
 
 // ---- #851: the estimate prices the model the run will really call, not always the default model ----
-import { scanModelPrice } from '../lib/scan/spend-cap.ts'
+import { scanModelPrice, modelCostUsd } from '../lib/scan/spend-cap.ts'
 import { UNKNOWN_MODEL, DEFAULT_MODEL } from '../lib/scan/price-estimate.ts'
 const modelRows = (e: ReturnType<typeof estimateRun>) => e.rows.filter(r => r.kind === 'model')
 const at = (p: { in: number; out: number }, calls: number, inK: number, outK: number) => calls * ((inK * 1000 + INPUT_MARGIN_TOKENS) * p.in + outK * 1000 * p.out) / 1e6
@@ -148,11 +148,44 @@ test('#851 known alternate model: gpt-4.1 rows, total and unit price use its own
   assert.equal(e.verdict.ok, true, 'no limit: nothing needs reserving, so the run is not blocked')
 })
 
-test('#851 an unpriced model: every model row is unpriced (null, never zero), named, listed in unpriced; with no limit it is not blocked', () => {
+test('#851 an unpriced model: every model row is unpriced (null, never zero), named, listed in unpriced; with no limit it is STILL refused (the per-scan cap cannot price it)', () => {
   const e = estimateRun({ budget: null, payer: 'you', model: 'o3-mystery', priceModel: scanModelPrice })
   assert.ok(modelRows(e).every(r => r.usd === null && r.unit_usd === 'o3-mystery: no listed price'))
   assert.ok(e.unpriced.includes('Candidate extraction')); assert.equal(e.total.max, 0)
-  assert.equal(e.verdict.reason, null)
+  assert.deepEqual([e.verdict.ok, e.verdict.reason], [false, 'model_unpriced'])
+})
+
+test('#851 no limit, a model the per-scan spend cap cannot price (gpt-4o, claude-opus-4-1): refused BEFORE launch, exactly as the cap refuses its first call; no "remove the limit" advice', () => {
+  for (const model of ['gpt-4o', 'claude-opus-4-1', 'o3-mystery']) {
+    // The cap every run has (runner.ts runWithScanSpend -> spend-cap.ts modelCostUsd) refuses this model at its first call.
+    assert.throws(() => modelCostUsd(model, 'p', 100), (err: unknown) => err instanceof SpendRefused && err.reason === 'model_unpriced', model)
+    for (const limited of [false, true]) {
+      const e = estimateRun({ budget: limited ? { max_usd: 5 } : null, payer: 'you', model, limited, priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5' })
+      assert.deepEqual([e.verdict.ok, e.verdict.reason, e.verdict.warning], [false, 'model_unpriced', null], `${model} limited=${limited}`)
+      assert.match(e.verdict.message, new RegExp(`^Your key's model \\(${model.replace(/[.]/g, '\\.')}\\) has no listed price, so the per-scan spend cap`))
+      assert.match(e.verdict.message, /with or without a spending limit/); assert.match(e.verdict.message, /Nothing was started or charged/)
+      assert.ok(!e.verdict.change.some(c => /without a spending limit/i.test(c)), 'removing the limit cannot help: never advised')
+      assert.deepEqual(e.verdict.change, ['Use an Anthropic key (claude-sonnet-4-5 is priced)', 'This is a dazl model configuration problem, not your request: try again later.'])
+    }
+    // The trial pays with the operator's model: the same refusal, the trial's own advice.
+    const t = estimateRun({ budget: null, payer: 'trial', model, limited: true, priceModel: scanModelPrice })
+    assert.equal(t.verdict.reason, 'model_unpriced'); assert.ok(!t.verdict.change.some(c => /without a spending limit/i.test(c)))
+  }
+  // Controls: models the cap prices are not refused without a limit (gpt-4.1, a dated alias), and an unreadable model stays
+  // unrefused without a limit (the run's real model may be priced) and keeps "Try again".
+  for (const model of ['gpt-4.1', 'claude-sonnet-4-5', 'claude-sonnet-4-5-20250929', 'gpt-4.1-2025-04-14']) {
+    assert.doesNotThrow(() => modelCostUsd(model, 'p', 100))
+    assert.equal(estimateRun({ budget: null, payer: 'you', model, limited: false, priceModel: scanModelPrice }).verdict.ok, true, model)
+  }
+  const unk = estimateRun({ budget: null, payer: 'you', modelUnknown: true, limited: false, priceModel: scanModelPrice })
+  assert.deepEqual([unk.verdict.ok, unk.verdict.reason], [true, null])
+  const unkLim = estimateRun({ budget: { max_usd: 5 }, payer: 'you', modelUnknown: true, priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5' })
+  assert.equal(unkLim.verdict.reason, 'model_unpriced'); assert.equal(unkLim.verdict.change[0], 'Try again in a moment.')
+  // Without the scan table (the client-side default), only the limit rule applies, as before.
+  assert.equal(estimateRun({ budget: null, payer: 'you', model: 'gpt-4o', limited: false }).verdict.ok, true)
+  // An alternative the scan cap cannot price is never offered.
+  const badAlt = estimateRun({ budget: null, payer: 'you', model: 'gpt-4o', limited: false, priceModel: scanModelPrice, pricedAlternative: 'claude-opus-4-1' })
+  assert.ok(!badAlt.verdict.change.some(c => /Anthropic key/.test(c)))
 })
 
 test('#851 under a limit, a model the limit guard cannot price is refused BEFORE launch (model_unpriced), with the verdict inside the confirmation', () => {
@@ -160,7 +193,10 @@ test('#851 under a limit, a model the limit guard cannot price is refused BEFORE
     const e = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model, priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5' })
     assert.deepEqual([e.verdict.ok, e.verdict.reason, e.verdict.warning], [false, 'model_unpriced', null], model)
     assert.match(e.verdict.message, new RegExp(`Your key's model \\(${model.replace(/[.]/g, '\\.')}\\) has no listed price`)); assert.match(e.verdict.message, /Nothing was started or charged/)
-    assert.deepEqual(e.verdict.change, ['Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)', 'Or use an Anthropic key (claude-sonnet-4-5 is priced)'])
+    // Removing the limit is advised only when it can help: the per-scan cap prices this model (o3-mystery: it cannot).
+    assert.deepEqual(e.verdict.change, scanModelPrice(model)
+      ? ['Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)', 'Or use an Anthropic key (claude-sonnet-4-5 is priced)']
+      : ['Use an Anthropic key (claude-sonnet-4-5 is priced)', 'This is a dazl model configuration problem, not your request: try again later.'], model)
     // The guard really refuses it: the estimate says what the run would do.
     assert.throws(() => new SpendGuard(5).check(model, 1000, 1000), (err: unknown) => err instanceof SpendRefused && err.reason === 'model_unpriced')
     const unlimited = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model, priceModel: scanModelPrice, limited: false })

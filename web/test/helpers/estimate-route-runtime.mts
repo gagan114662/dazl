@@ -317,6 +317,21 @@ test('#851 a changed key model after confirmation is a changed estimate: 409 est
   })
 })
 
+test('#851 an own OpenAI key on a model the per-scan cap cannot price (DAZL_OPENAI_MODEL=gpt-4o), NO limit: the estimate refuses (no "remove the limit" advice) and POST /api/scan gives 422 model_unpriced with no job', async () => {
+  await withEnv({ DAZL_OPENAI_MODEL: 'gpt-4o' }, async () => {
+    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
+    const r0 = await est({ query: Q }); const e = await r0.json() as Est
+    assert.equal(r0.status, 200)
+    assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
+    assert.match(e.estimate.verdict.message, /^Your key's model \(gpt-4o\) has no listed price, so the per-scan spend cap/)
+    assert.ok(!e.estimate.verdict.change.some(c => /without a spending limit/i.test(c)), JSON.stringify(e.estimate.verdict.change))
+    assert.ok(modelRowsOf(e).every(x => x.usd === null))
+    const r = await scan({ query: Q }); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced'])
+    const r2 = await scan({ query: Q, estimate_ack: e.estimate.ack }); assert.equal(r2.status, 422, 'a confirmation of the refusal does not start it')
+    assert.equal(jobs(db).length, 0, 'no job')
+  })
+})
+
 test('#851 an Anthropic key on a model the limit guard cannot price (dated id): refused before launch under a limit (422, no job, no Anthropic-key advice); no limit runs', async () => {
   await withEnv({ DAZL_ANTHROPIC_MODEL: 'claude-sonnet-4-5-20250929' }, async () => {
     const db = setup(); as(db)
