@@ -45,6 +45,8 @@ Updated by the builder on every branch. Newest first.
   policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
   comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
   from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
+  b/402-source-truth: sources whose adapter is not built (PLATFORM_SUPPORT: Facebook, XiaoHongShu) are unavailable, not
+  limited behind an operator worker; record version moves, so drafts/answers bound to the old one are held until re-accepted.
 
 - b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
   (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:

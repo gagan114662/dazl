@@ -2,8 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { productTruth, BENCHMARKS, type ProductTruth } from '../lib/product-truth.ts'
+import { productTruth, sourceCapability, BENCHMARKS, type ProductTruth } from '../lib/product-truth.ts'
 import { CHANNELS } from '../lib/channels.ts'
+import { PLATFORM_SUPPORT } from '../lib/advanced/config.ts'
+import { draftClaimContextFor } from '../lib/outreach/service.ts'
 import { CRM_PROVIDERS } from '../lib/crm/index.ts'
 import { VENDORS } from '../lib/llm/vendors.ts'
 import { PLAN_LIMITS, PLAN_PRICE_USD_MONTHLY, PRICE_DISCLOSURE } from '../lib/plans.ts'
@@ -27,7 +29,10 @@ const truth = productTruth(OFF)
 const cap = (t: ProductTruth, id: string) => t.capabilities.find(c => c.id === id)
 
 test('the record is derived from the code registries and flags, and its version follows them', () => {
-  for (const c of CHANNELS) assert.equal(cap(truth, `source:${c.id}`)?.state, c.status === 'live' ? 'available' : c.status === 'worker' ? 'limited' : 'unavailable', c.id)
+  for (const c of CHANNELS) {
+    const unbuilt = c.platform !== undefined && PLATFORM_SUPPORT[c.platform].supported !== true
+    assert.equal(cap(truth, `source:${c.id}`)?.state, unbuilt ? 'unavailable' : c.status === 'live' ? 'available' : c.status === 'worker' ? 'limited' : 'unavailable', c.id)
+  }
   for (const p of CRM_PROVIDERS) assert.equal(cap(truth, `crm:${p}`)?.state, 'available', p)
   for (const v of VENDORS) assert.deepEqual([cap(truth, `model:${v}`)?.state, cap(truth, `model:${v}`)?.requires], ['available', ['own_key']], v)
   assert.equal(cap(truth, 'channel:gmail')?.state, 'available')
@@ -186,4 +191,84 @@ test('polish under a bound record: the model is told what is not shipped, and an
   // a rewrite inside the record is accepted
   const id3 = createDraft(db, 'A', 'l3', 'Dazl')
   assert.equal((await polishDraft(db, 'A', id3, 'Dazl', { master, providers: stub('Subject: Saw the hiring\n\nHi Pat,\n\nSaw the AE hiring reported. We research leads with the evidence attached. Worth a short call?\n\nThanks,') as never })).rewritten, true)
+})
+
+test('audit (#402): an unbuilt source adapter is unavailable with nothing that enables it, not limited behind a worker', () => {
+  // The 2026-11-06 audit counterexample: Facebook and XiaoHongShu are channels.ts 'worker' rows, but PLATFORM_SUPPORT
+  // says their adapters are not built. Before the fix the record called them limited/operator_worker, as if connecting
+  // a worker would turn them on, and a prospect who needs them was waitlisted instead of no-fit.
+  for (const id of ['facebook', 'xiaohongshu'] as const) {
+    const c = cap(truth, `source:${id}`)
+    assert.deepEqual([c?.state, c?.requires], ['unavailable', []], id)
+    assert.equal(c?.basis, `lib/advanced/config.ts PLATFORM_SUPPORT ${id}: unsupported: ${PLATFORM_SUPPORT[id].reason}`, id)
+  }
+  // built-but-disconnected stays limited with its worker prerequisite; shipped sources stay available
+  for (const id of ['x', 'reddit', 'instagram', 'bilibili', 'linkedin']) assert.deepEqual([cap(truth, `source:${id}`)?.state, cap(truth, `source:${id}`)?.requires], ['limited', ['operator_worker']], id)
+  for (const id of ['web', 'youtube', 'github', 'rss', 'search', 'v2ex']) assert.deepEqual([cap(truth, `source:${id}`)?.state, cap(truth, `source:${id}`)?.requires], ['available', []], id)
+  // the audit's exact call, and copy that promises the unbuilt source
+  assert.deepEqual(qualifyProspect('We need facebook lead discovery.', truth), { verdict: 'no_fit', unmet: ['source:facebook'] })
+  assert.deepEqual(qualifyProspect('Our team requires RedNote coverage.', truth), { verdict: 'no_fit', unmet: ['source:xiaohongshu'] })
+  assert.deepEqual(qualifyProspect('We need Reddit lead discovery.', truth), { verdict: 'waitlist', unmet: ['source:reddit'] }, 'a built worker source is still waitlist')
+  assert.deepEqual(truthClaimIssues('We find buyers in Facebook groups.', truth), ['capability_unavailable:source:facebook'])
+  assert.deepEqual(truthClaimIssues('We read Xiaohongshu posts for you.', truth), ['capability_unavailable:source:xiaohongshu'])
+  assert.deepEqual(truthClaimIssues('There is no Facebook search yet.', truth), [], 'a disclosed limitation still passes')
+})
+
+test('audit (#402): sourceCapability fails closed on a missing, malformed or unsupported platform entry', () => {
+  const worker = { id: 'zz', name: 'ZZ', tier: 1 as const, status: 'worker' as const, note: '', platform: 'facebook' as const }
+  const live = { id: 'zz', name: 'ZZ', tier: 0 as const, status: 'live' as const, note: '' }
+  const st = (c: Parameters<typeof sourceCapability>[0], s: unknown) => { const r = sourceCapability(c, s as never); return [r.state, r.requires, r.basis] }
+  const noEntry = 'lib/advanced/config.ts PLATFORM_SUPPORT facebook: no PLATFORM_SUPPORT entry'
+  assert.deepEqual(st(worker, { facebook: { supported: true, reason: null } }), ['limited', ['operator_worker'], 'lib/channels.ts zz: worker'], 'built adapter: worker prerequisite')
+  assert.deepEqual(st(worker, {}), ['unavailable', [], noEntry], 'a missing entry is never assumed built')
+  for (const entry of [undefined, null, 'yes', 1, true]) assert.deepEqual(st(worker, { facebook: entry }), ['unavailable', [], noEntry], `entry=${JSON.stringify(entry)}`)
+  for (const supported of ['true', 1, null, undefined, {}, []]) assert.equal(st(worker, { facebook: { supported, reason: 'x' } })[0], 'unavailable', `supported=${JSON.stringify(supported)} is not true`)
+  for (const reason of [null, '', '   ', 42, { a: 1 }]) assert.deepEqual(st(worker, { facebook: { supported: false, reason } }), ['unavailable', [], 'lib/advanced/config.ts PLATFORM_SUPPORT facebook: unsupported: adapter not built'], `reason=${JSON.stringify(reason)}`)
+  // an inherited key is not an entry (prototype-shaped platform names)
+  assert.equal(st({ ...worker, platform: 'toString' as never }, {})[0], 'unavailable')
+  assert.equal(st({ ...worker, platform: 'constructor' as never }, {})[0], 'unavailable')
+  // an unbuilt adapter outranks a 'live' row: it is never sold as available
+  assert.equal(st({ ...live, platform: 'facebook' as const }, { facebook: { supported: false, reason: 'not built' } })[0], 'unavailable')
+  // a source with no platform is read from channels.ts alone
+  assert.deepEqual(st(live, {}), ['available', [], 'lib/channels.ts zz: live'])
+  assert.deepEqual(st({ ...live, status: 'soon' as const }, {}), ['unavailable', [], 'lib/channels.ts zz: soon'])
+})
+
+test('audit (#402): the source-capability change moves the version, so drafts and answers accepted under the old record are held', () => {
+  // the record as it read before the fix (every worker platform treated as built) has a different version
+  const allBuilt = Object.fromEntries(Object.keys(PLATFORM_SUPPORT).map(p => [p, { supported: true, reason: null }]))
+  const before = productTruth(OFF, allBuilt)
+  assert.deepEqual([cap(before, 'source:facebook')?.state, cap(before, 'source:facebook')?.requires], ['limited', ['operator_worker']])
+  assert.notEqual(before.version, truth.version)
+  assert.equal(productTruth(OFF, PLATFORM_SUPPORT).version, truth.version, 'the default is the shipped PLATFORM_SUPPORT')
+  // building one adapter later moves it again, and only that source changes
+  const fbBuilt = productTruth(OFF, { ...PLATFORM_SUPPORT, facebook: { supported: true, reason: null } })
+  assert.notEqual(fbBuilt.version, truth.version)
+  assert.deepEqual(fbBuilt.capabilities.filter((c, i) => JSON.stringify(c) !== JSON.stringify(truth.capabilities[i])).map(c => c.id), ['source:facebook'])
+  // copy accepted under the old record relies on it and is held until the owner accepts the current one
+  assert.deepEqual(truthClaimIssues('Email goes from your own Gmail.', truth, { acceptedVersion: before.version }), ['product_truth_changed'])
+  const db = new Database(':memory:'); migrateLaunchPolicy(db)
+  assert.deepEqual(acceptLaunchPolicy(db, 'A', policy({ productTruthVersion: before.version }), 1), { ok: false, problems: ['product_truth_not_current'] })
+  // the routine answers' facts carry the new version, so answers prepared under the old one stop (facts_stale)
+  const facts = productFactsFromTruth(truth, { signupUrl: 'https://app.example/sign-up', bookingUrl: null })
+  const thread = { authenticatedSender: true, takenOver: false, handledMessageIds: [], autoReplies: 0 }
+  assert.deepEqual(decide({ messageId: 'm1', text: 'How much does it cost?' }, thread, facts, { cta: 'signup', maxAutoReplies: 3, acceptedFactsVersion: before.version }), { action: 'escalate', messageId: 'm1', reason: 'facts_stale' })
+})
+
+test('audit (#402): the send-gate claim check reads the lead row and holds a Facebook-only prospect as no-fit', () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateOutreach(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
+  const lead = (id: string, signal: string) => db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, 'j1', 'Pat', 'Acme', 'pat@acme.example', ?, 'https://n.example/a', 'quote', 80)").run(id, signal)
+  lead('fb', 'We need Facebook lead discovery for our clinics.')
+  lead('rd', 'We need Reddit lead discovery for our clinics.')
+  lead('ok', 'We need leads pushed to HubSpot.')
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
+  const bound = policy({ productTruthVersion: productTruth().version })
+  const body = 'Saw the posting. Worth a short call?'
+  assert.deepEqual(claimIssuesFor(bound, body, ...draftClaimContextFor(db, 'A', 'fb')), ['prospect_no_fit:source:facebook'])
+  assert.deepEqual(claimIssuesFor(bound, body, ...draftClaimContextFor(db, 'A', 'rd')), ['prospect_waitlist:source:reddit'])
+  assert.deepEqual(claimIssuesFor(bound, body, ...draftClaimContextFor(db, 'A', 'ok')), [])
+  assert.deepEqual(claimIssuesFor(bound, 'We find your buyers in Facebook groups.', ...draftClaimContextFor(db, 'A', 'ok')), ['capability_unavailable:source:facebook'])
+  assert.deepEqual(claimIssuesFor(bound, body, ...draftClaimContextFor(db, 'A', 'gone')), ['prospect_context_missing'])
 })
