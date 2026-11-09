@@ -36,25 +36,59 @@ export function quoteSupports(kind: string, text: string, quote: string): boolea
 }
 
 // Offer citation binding (#872). An offer is source-backed only by an unambiguous FIRST-PARTY POSITIVE predicate:
-// the quote carries the offer's whole name, no OTHER offer's whole name, and none of the contexts where a name on the
-// page is not the seller's own claim: a negated offering ("we don't offer X anymore"), a comparison ("Unlike X, ..."),
-// an attributed customer testimonial ("... - Harbor Dental"), or a bare label/headline with no prose predicate.
-// quoteSupports alone is NOT enough for identity: its one-distinctive-word rule admits a sibling product sharing a
-// brand word, and it cannot read polarity or attribution. Every guard here is a necessary condition and none is
-// proof on its own; anything short of all of them stays a hypothesis (fail closed).
-const NEG_OFFER = /\b(?:don'?t|do not|doesn'?t|does not|never|no longer|stopped?|dropp?ed|discontinued?|retired?)\s+(?:[\p{L}]+\s+){0,3}(?:offer|offers|offered|sell|sells|sold|provide|provides|provided|carry|carries|support|supports|make|makes|include|includes|ship|ships)\b/iu
+// the offer's WHOLE name appears as consecutive, exactly-matched tokens (no prefix bleed - "PayrollPlus" never
+// carries "Payroll"), the name is the SUBJECT of a positive predicate ("Acme Payroll runs payroll for clinics"),
+// and none of the contexts where a name on the page is not the seller's own claim appears: a negated offering
+// ("we don't/cannot offer X", "X is not sold/available"), a comparison ("Unlike X, ..."), third-party words about
+// the offer ("customers buy X from another vendor", "customers say X saved hours", an attributed testimonial), or a
+// bare label/headline with no predicate ("X information and resources"). quoteSupports alone is NOT enough for
+// identity: its one-distinctive-word rule admits a sibling product sharing a brand word and reads neither polarity
+// nor attribution. Every condition here is necessary, none is proof alone; anything short of all fails closed.
+const NEG_OFFER = /\b(?:don'?t|do not|doesn'?t|does not|cannot|can'?t|couldn'?t|could not|won'?t|will not|never|no longer|stopped?|dropp?ed|discontinued?|retired?|unable to)\s+(?:[\p{L}]+\s+){0,3}(?:offer|offers|offered|sell|sells|sold|provide|provides|provided|carry|carries|support|supports|make|makes|include|includes|ship|ships)\b|\b(?:not|never|no longer)\s+(?:available|offered|provided|supported|for|sold|included|shipped|carried|made|built)\b/iu
 const COMPARISON = /\b(?:unlike|versus|vs\.?|compared (?:to|with)|alternative to|instead of|rather than|better than|cheaper than)\b/i
 const ATTRIBUTION = /(?:^|\s)[-–—]\s*\p{Lu}[\p{L}'.-]*(?:\s+\p{Lu}[\p{L}'.-]*){0,3}\s*$/u
+// A customer or other third party as the claim's subject: their purchase or praise is not the seller's own statement.
+const THIRD_PARTY = /\b(?:customers?|clients?|users?|buyers?|patients?|companies|they|people)\s+(?:[\p{L}']+\s+){0,4}(?:buy|bought|purchase[sd]?|use[sd]?|say|said|chose|choose|prefer(?:red)?|love[sd]?|left|switch(?:ed)?|got|get|found|report(?:ed)?)\b/iu
+// Positive first-party predicates: the offer named as subject does or is something. A name with no such predicate
+// after it (a nav label, a list entry, the object of someone else's sentence) is not a claim.
+const FIRST_PARTY_PREDICATE = new Set('is are runs run lets let helps help gives give offers offer provides provide includes include costs cost starts start makes make automates automate sends send fills fill saves save supports support handles handle delivers deliver simplifies simplify built designed made priced comes comes'.split(' '))
+const tokens = (s: string) => norm(s).split(' ').filter(Boolean)
+// The name's tokens, stem-equal and CONSECUTIVE in the quote's tokens; no prefix extension ("payrollplus" != "payroll").
+// Uses a FULL stem - the shared stem() truncates to 7 letters for word-carriage, which would bleed prefixes here.
+const stemFull = (w: string) => w.replace(/(?:ies)$/, 'y').replace(/(?:es|s)$/, '')
+function nameSubject(name: string, qtoks: string[]): number {
+  const nt = tokens(name); if (!nt.length) return -1
+  for (let i = 0; i + nt.length <= qtoks.length; i++) if (nt.every((w, j) => stemFull(qtoks[i + j]) === stemFull(w))) return i
+  return -1
+}
+// Shared ownership core: this offer's whole name is present, no OTHER offer's whole name is - exactly one owner,
+// or the claim cannot be attributed (a sentence naming two offers sources neither).
+function offerOwnership(name: string, quote: string, otherNames: string[]): boolean {
+  const qtoks = tokens(quote)
+  if (nameSubject(name, qtoks) < 0) return false
+  return !otherNames.some(o => norm(o) !== norm(name) && nameSubject(o, qtoks) >= 0)
+}
 export function quoteBacksOffer(name: string, quote: string, otherNames: string[] = []): boolean {
   if (!name || !quote) return false
-  const qs = [...new Set(words(quote).map(stem))]
-  const allIn = (n: string): boolean => {
-    const tw = words(n); if (!tw.length) return false
-    return tw.every(w => { const s = stem(w); return qs.some(q => q === s || (Math.min(q.length, s.length) >= 5 && (q.startsWith(s) || s.startsWith(q)))) })
-  }
-  // Exactly one current offer's whole name is carried: a sentence naming two offers cannot attribute its claim to one.
-  if (!allIn(name) || otherNames.some(o => norm(o) !== norm(name) && allIn(o))) return false
-  if (NEG_OFFER.test(quote) || COMPARISON.test(quote) || ATTRIBUTION.test(quote)) return false
-  // A claim has prose around the name; a navigation label or bare headline is title-case only and is not a predicate.
+  const qtoks = tokens(quote)
+  const at = nameSubject(name, qtoks)
+  if (at < 0 || otherNames.some(o => norm(o) !== norm(name) && nameSubject(o, qtoks) >= 0)) return false
+  // Subject/predicate: a first-party positive predicate follows the name within three tokens.
+  const after = qtoks.slice(at + tokens(name).length, at + tokens(name).length + 3)
+  if (!after.some(t => FIRST_PARTY_PREDICATE.has(t))) return false
+  if (NEG_OFFER.test(quote) || COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote)) return false
+  // A claim has prose around the name; a title-case-only label is not a predicate.
   return quote.split(/\s+/).filter(w => /^\p{Ll}[\p{Ll}'-]+$/u.test(w) && !STOP.has(norm(w))).length >= 2
+}
+
+// Disqualifier citation binding (#872): the OPPOSITE polarity of an offer citation. A disqualifier is source-backed
+// only by an EXPLICIT exclusion claim bound to the SAME offer: the quote names that offer (exact token identity,
+// exactly one owner), carries the claim's own words/numbers, and states the exclusion outright ("Acme Booking is not
+// available for clinics with over 50 staff"). A pricing boundary, an "only" mention, a positive inclusion of the
+// same segment, or the OTHER offer's exclusion never sources it. Comparison and third-party words are still refused.
+const EXCLUSION = /\b(?:not (?:available|for|intended|designed|suitable|offered|built|made|provided|supported)|doesn'?t (?:serve|support|fit|work for)|do not (?:serve|support)|cannot (?:serve|support)|no (?:support|availability) for|excludes?|not serve)\b/iu
+export function quoteBacksDisqualifier(offerName: string, text: string, quote: string, otherNames: string[] = []): boolean {
+  if (!offerOwnership(offerName, quote, otherNames)) return false
+  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote)) return false
+  return EXCLUSION.test(quote) && quoteSupports('disqualifier', text, quote)
 }

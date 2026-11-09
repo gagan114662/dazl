@@ -5,7 +5,7 @@
 // leak into another's targeting. Pure core: the fetcher and the model call are injected (tests stub both); no database, no network of its own.
 import { extractSiteText } from './icp-from-site.ts'
 import { norm } from './evidence.ts'
-import { quoteSupports, quoteBacksOffer } from './claim-quote.ts'
+import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier } from './claim-quote.ts'
 
 export type HypKind = 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'
 export type HypStatus = 'sourced' | 'hypothesis' | 'unknown' | 'reviewed' | 'rejected'
@@ -104,7 +104,11 @@ export function buildResearch(out: unknown, pages: FetchedPage[], site: string, 
     const quote = typeof it.quote === 'string' ? it.quote.replace(/\s+/g, ' ').trim().slice(0, 300) : ''
     // Sourced = the quote is verbatim on the cited page AND carries the claim itself (claim-quote.ts: a real quote next
     // to an invented headcount proves nothing), and the model did not itself mark the item as inferred.
-    const quoted = !!pg && it.inferred !== true && quote.length >= 12 && norm(pg.text).includes(norm(quote)) && quoteSupports(kind, text, quote)
+    // #872: a disqualifier needs an EXPLICIT exclusion claim bound to its own offer (claim-quote.ts); every other kind
+    // keeps the existing claim-carrying quote check.
+    const offerName = offers.find(x => x.id === offer)?.name ?? ''
+    const backed = kind === 'disqualifier' ? quoteBacksDisqualifier(offerName, text, quote, names) : quoteSupports(kind, text, quote)
+    const quoted = !!pg && it.inferred !== true && quote.length >= 12 && norm(pg.text).includes(norm(quote)) && backed
     // A size or place without that is unknown, never carried as fact; a persona without it is a hypothesis.
     const status: HypStatus = quoted ? 'sourced' : kind === 'size' || kind === 'location' ? 'unknown' : 'hypothesis'
     const h: Hypothesis = { id: hypId(offer, kind, text), offer, kind, text: status === 'unknown' ? 'unknown' : text, status, url: quoted ? pg!.url : null, quote: quoted ? quote : null, fetched_at: quoted ? pg!.fetched_at : null }

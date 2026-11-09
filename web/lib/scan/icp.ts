@@ -1,7 +1,7 @@
 import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
-import { quoteSupports } from './claim-quote.ts'
+import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier } from './claim-quote.ts'
 
 // An ideal customer profile (ICP) inferred from a free-text "what are you looking for".
 // Everything is plain strings with hard caps, so it is safe to store, show, edit and
@@ -67,7 +67,11 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
     // A block arriving from a client or the store is re-checked: 'sourced' needs its URL, fetch time and a quote that
     // carries the claim (claim-quote.ts). Otherwise a persona/industry/pain falls back to an unreviewed hypothesis with
     // no evidence, and a headcount or place is dropped (unknown is never persisted as a statement).
-    if (st === 'sourced' && !(u && at && q && quoteSupports(k, t, q))) {
+    // #872: the ingress re-check uses the same strict binding as buildResearch - a stored or client-sent 'sourced'
+    // offer or disqualifier must pass the same ownership/polarity/exclusion guards, or it honestly downgrades.
+    const offerName = offers.find(x => x.i === o)?.n ?? ''
+    const backed = k === 'offer' ? quoteBacksOffer(t, q ?? '', offers.map(x => x.n)) : k === 'disqualifier' ? (offerName ? quoteBacksDisqualifier(offerName, t, q ?? '', offers.map(x => x.n)) : false) : quoteSupports(k, t, q ?? '')
+    if (st === 'sourced' && !(u && at && q && backed)) {
       if (k === 'size' || k === 'location') continue
       hyps.push({ i, o, k: k as ResearchedHyp['k'], t, s: 'hypothesis', u: null, q: null, at: null }); continue
     }
