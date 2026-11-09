@@ -67,3 +67,23 @@ test('POST /api/scan refuses each lossy profile with zero jobs and zero provider
   assert.equal(result.error, undefined); assert.equal(result.status, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /# pass 9/); assert.match(result.stdout, /# fail 0/)
 })
+
+// xhawk findings on #965: the estimate preflight must refuse what admission refuses, and the form must say what to fix.
+import { estimateForBody } from '../lib/scan/estimate-request.ts'
+import { lossyProfileCopy } from '../lib/error-copy.ts'
+const CTX = { db: {} as never, tenantId: 't', hasOwnKey: true, enrichmentVendors: [] as string[] }
+
+test('estimate preflight refuses a lossy profile with the same payload as POST /api/scan (before any pool read)', async () => {
+  const icp = { ...BASE, exclude: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] }
+  const r = await estimateForBody({ query: 'independent cafes', icp }, CTX)   // db is a stub: reaching the pool read would throw
+  assert.equal(r.ok, false)
+  if (!r.ok) { assert.equal(r.status, 400); assert.equal(r.error, 'profile_lossy'); assert.deepEqual(r.loss, icpLoss(icp)) }
+})
+
+test('lossyProfileCopy names the field, item position and what to do; never the raw code', () => {
+  const t = lossyProfileCopy({ message: 'Part of this profile would be cut.', loss: [
+    { field: 'exclude', kind: 'too_many_items', limit: 6, actual: 7 }, { field: 'who', kind: 'item_too_long', index: 1, limit: 160, actual: 170 }, { field: 'sizes', kind: 'wrong_type', actual: 'string' }] })
+  assert.match(t, /exclude: 7 entries, the limit is 6\. Remove 1\./); assert.match(t, /who item 2: 170 characters, the limit is 160/); assert.match(t, /sizes: must be a list, got string/)
+  assert.doesNotMatch(t, /profile_lossy/)
+  assert.match(lossyProfileCopy({}), /cut or ignored/)
+})
