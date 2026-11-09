@@ -4,7 +4,7 @@
 // and 'fail' is returned only for a fact that rules the condition out (a named company that is not this lead, a competitor list it is not on).
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
 import { planConditions, eventMatches, eventMatchIndex } from './targeting.ts'
-import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, type Stage } from './sales-hiring-gate.ts'
+import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, type Stage } from './sales-hiring-gate.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
@@ -36,10 +36,6 @@ const sameCompany = (a: string, b: string, domain: string | null) => {
 }
 const excludesOf = (icp: string | null | undefined): string[] => { try { const j = JSON.parse(icp ?? '{}') as { exclude?: unknown }; return Array.isArray(j.exclude) ? j.exclude.filter((x): x is string => typeof x === 'string') : [] } catch { return [] } }
 const stageOf = (s: string | undefined): Stage => !s ? null : s === 'pre-seed' || s === 'seed' ? 'seed' : s as Stage
-// #876: a source reporting "made its first sales hire" (or a headline's "makes first sales hire") states the completed hire in other words.
-// "making" / "to make" do not: NOT_DONE still rules out planned, hoped-for and open-role wording in the same clause.
-const HIRE_DONE = /\b(?:hired|appointed|named|joined|joins|welcomed|brought\s+on|onboarded)\b|\b(?:made|makes)\s+(?:(?:a|an|its|their|the)\s+)?(?:(?:first|founding|inaugural|new)\s+)?[a-z][a-z-]*\s+hires?\b/i
-const NOT_DONE = /\b(?:not|no|never|yet\s+to|plans?\s+to|planning|will|would|could|may|might|seeking|looking\s+for|hiring|search(?:ing)?\s+for|reportedly|rumou?r\w*)\b/i
 const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
 // Event families the sales-hiring gate's event reader does not cover (it reads open / launch / expand). For these a CLAUSE of the lead's own
 // quote must state the event plainly: done, by this company (no other company in front of the verb), not denied, planned, conditional or hearsay.
@@ -171,7 +167,8 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
     }
     case 'hire_made': {
       const want = roleWords(c.role ?? '')
-      const shows = clauses(quote).some(k => HIRE_DONE.test(k) && !NOT_DONE.test(k) && want.every(w => new RegExp(`\\b${w}`, 'i').test(k)) && (!c.first || /\b(?:first|founding|inaugural)\b/i.test(k)))
+      // Shared with the OR gate (sales-hiring-gate.ts) so both read a completed hire the same way: this company's own, affirmative, not conditional.
+      const shows = quoteShowsCompletedHire(quote, lead.company, want, !!c.first)
       return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company ${c.first ? 'made its first' : 'made a'} ${c.role || 'role'} hire`)
     }
   }

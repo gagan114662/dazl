@@ -40,6 +40,7 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- #1018 b/876-first-hire-made review fixes (branch claude/festive-keller-928651, on top of ad65d64c + main): one shared `quoteShowsCompletedHire` (dated, affirmative, this company's own, not conditional/planned/negated) now backs both the clause proof and the Test B OR gate, so an open vacancy, a job board, "If X makes..." or another company's hire no longer passes "made their first sales hire"; retrieval prompt asks for a completed hire. Competitive: precision of the funding-OR-first-hire play (no false "first hire" leads from job ads). Fixtures only; no live scan.
 - #943 b/914-timing-proof-revalidate review fixes: resolution, completion and the scoreboard now read the same `currentSiteContact` rule as actionability (a populated but unconfirmed domain, or a contact from another site, no longer counts as identity/contact/qualified), and contact selection is order-independent. Competitive: benchmark and completion numbers can no longer be inflated by leads the live gate rejects. Fixtures only; no live scan.
 - b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
   policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked

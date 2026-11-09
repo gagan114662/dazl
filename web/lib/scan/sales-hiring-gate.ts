@@ -147,6 +147,22 @@ function eventQuoteUsable(q: QuoteEvidence, date: string | null, company: string
   const t = date ? Date.parse(date) : NaN
   return Number.isFinite(t) && t <= (nowS + 86_400) * 1000 && nowS * 1000 - t <= windowDays * 86_400_000
 }
+// #876: a completed hire ("made its first sales hire", "hired", "appointed") is proof only when the clause is affirmative, about THIS company and
+// not conditional. An open posting or "is hiring" never counts (NOT_DONE). Fail closed on anything ambiguous.
+const HIRE_DONE = /\b(?:hired|appointed|named|joined|joins|welcomed|brought\s+on|onboarded)\b|\b(?:made|makes)\s+(?:(?:a|an|its|their|the)\s+)?(?:(?:first|founding|inaugural|new)\s+)?[a-z][a-z-]*\s+hires?\b/i
+const NOT_DONE = /\b(?:not|no|never|yet\s+to|plans?\s+to|planning|will|would|could|may|might|seeking|looking\s+for|hiring|search(?:ing)?\s+for|reportedly|rumou?r\w*|if|whether|when|once|unless|should|after|until|assuming)\b/i
+export function quoteShowsCompletedHire(quote: string | null | undefined, company: string | null | undefined, roleWords: string[], first: boolean): boolean {
+  return (quote ?? '').split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean).some(k => {
+    const m = HIRE_DONE.exec(k)
+    if (!m || NOT_DONE.test(k)) return false
+    if (!roleWords.every(w => new RegExp(`\\b${w}`, 'i').test(k))) return false
+    if (first && !/\b(?:first|founding|inaugural)\b/i.test(k)) return false
+    // Subject binding: another company in front of the verb is not this lead's hire, unless this company is named after it ("Jane joined Pastco as head of sales").
+    const own = (company ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2 && !['inc', 'ltd', 'llc', 'the', 'corp', 'group', 'limited'].includes(w))
+    const after = k.slice(m.index + m[0].length).toLowerCase()
+    return !subjectIsOther(k.slice(0, m.index), company) || own.some(w => after.includes(w))
+  })
+}
 export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]>; careersGet?: Get } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
   const none = { required: false, checked: 0, passed: 0, demoted: 0, demotions: [] as { company: string; url: string; reason: string }[] }
   if (!salesHiringRequired(job.query, job.icp)) return none
@@ -202,6 +218,14 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       const neither = or ? `Neither branch proven (the request accepts either): no source quote dated in the last ${eventDays} days affirms this company ${stage && fundingAsked ? `raised a ${stage} round` : 'had the event the request names'} (a different stage, a negated or planned raise, or another company's raise does not count), and no sales-hiring evidence. ` : ''
       if (!or && eventRequired && !eventShown) {
         demoteFor(NO_EVENT, stage && fundingAsked ? `No event evidence: no source quote affirms this company raised a ${stage} round (a different stage, a negated or planned raise, or another company's raise does not count). ` : `No event evidence: the source quote shows hiring but not the funding or event the request asks for. `)
+        continue
+      }
+      // #876: the OR's hiring branch is a COMPLETED hire: only a dated quote saying the hire was made proves it. An open vacancy or job board never does,
+      // so no board lookup is made for it.
+      if (or?.hiring.kind === 'hire_made') {
+        const rw = (or.hiring.role ?? '').toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w))
+        if (hireQuotes.some(q => quoteShowsCompletedHire(q.excerpt, l.company, rw, !!or.hiring.first))) { passed++; passedIds.push(l.id); continue }
+        demoteFor(NO_SALES_HIRING, `${neither}No completed-hire evidence: no dated source quote says this company made the hire (an open vacancy does not count). `)
         continue
       }
       if (!roles.length && hireQuotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {

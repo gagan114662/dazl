@@ -145,13 +145,13 @@ const boardLead = { company: 'Boardco', excerpt: Q.boardco, signal: 'is hiring a
 const others = [{ company: 'Pastco', excerpt: Q.pastco, signal: 'made its first sales hire' }, { company: 'Fundco', excerpt: Q.fundco, signal: 'raised a seed round' }, { company: 'Seedly', excerpt: 'Seedly, a London startup, is closing in on a seed', signal: 'raising a seed round' }, { company: 'Vague', excerpt: 'Vague is a London B2B SaaS startup', signal: 'London SaaS' }]
 
 test('halves: OR gets the either-fact block; AND, and/or and Test A keep the two-fact block byte for byte', () => {
-  assert.deepEqual(compoundHalves(OR_B, ICP_B), { event: 'a COMPLETED seed funding round (not plans, talks or a raise by another company)', or: true })
+  assert.deepEqual(compoundHalves(OR_B, ICP_B), { event: 'a COMPLETED seed funding round (not plans, talks or a raise by another company)', or: true, done: true })
   for (const q of [AND_B, ANDOR_B]) assert.deepEqual(compoundHalves(q, ICP_B), { event: 'a COMPLETED seed funding round (not plans, talks or a raise by another company)' })
   assert.equal(halvesBlock({ event: 'E' }), `
 This request needs TWO facts about the SAME company: (1) E, and (2) the company is hiring sales / go-to-market staff. One item almost never shows both (a funding article does not list job openings; a job posting does not mention funding).
 Return a company when an item shows EITHER fact for it. In "signal" say plainly which fact THIS item shows (for example "raised a seed round" or "is hiring a sales account executive") and never claim the other fact. The "excerpt" must show the fact you name.
 The other fact is checked separately, from other sources: do not guess it and do not copy it from anywhere else.`)
-  const or = buildSourcePrompt(OR_B, ICP_B, items); assert.match(or, /accepts EITHER of two facts about a company: \(1\) a COMPLETED seed funding round .*, or \(2\) the company is hiring sales/); assert.match(or, /One fact on its own qualifies the company/); assert.doesNotMatch(or, /TWO facts/)
+  const or = buildSourcePrompt(OR_B, ICP_B, items); assert.match(or, /accepts EITHER of two facts about a company: \(1\) a COMPLETED seed funding round .*, or \(2\) the company MADE a sales/); assert.match(or, /One fact on its own qualifies the company/); assert.doesNotMatch(or, /TWO facts/)
   assert.match(buildSourcePrompt(AND_B, ICP_B, items), /needs TWO facts/); assert.match(buildSourcePrompt(ANDOR_B, ICP_B, items), /needs TWO facts/)
 })
 test('fetch rank: OR ranks a job page with the event pages; AND keeps job pages behind them', () => {
