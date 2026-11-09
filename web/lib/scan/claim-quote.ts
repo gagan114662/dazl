@@ -58,8 +58,10 @@ const ATTRIBUTION = /(?:^|\s)[-–—]\s*\p{Lu}[\p{L}'.-]*(?:\s+\p{Lu}[\p{L}'.-]
 export const MAX_RESEARCH_QUOTE = 300
 // A customer or other third party as the claim's subject: their purchase or praise is not the seller's own statement.
 const THIRD_PARTY = /\b(?:customers?|clients?|users?|buyers?|patients?|companies|they|people)\s+(?:[\p{L}']+\s+){0,4}(?:buy|bought|purchase[sd]?|use[sd]?|say|said|chose|choose|prefer(?:red)?|love[sd]?|left|switch(?:ed)?|got|get|found|report(?:ed)?)\b/iu
-// Punctuation-safe tokens: norm() keeps '.', so a sentence-final name ("...Acme Payroll.") must still match.
-const tokens = (s: string) => norm(s).replace(/[.@+]/g, ' ').split(' ').filter(Boolean)
+// Punctuation-safe at the BOUNDARY only: a token's TRAILING period is a sentence boundary ("...Acme Payroll."
+// still matches "Payroll"), never a name change; INTERNAL punctuation stays real identity ("acme.ai" is not
+// "acme ai") - no blind token laundering.
+const tokens = (s: string) => norm(s).split(' ').map(w => w.replace(/\.+$/, '')).filter(Boolean)
 // The name's tokens, stem-equal and CONSECUTIVE in the quote's tokens; no prefix extension ("payrollplus" != "payroll").
 // Uses a FULL stem - the shared stem() truncates to 7 letters for word-carriage, which would bleed prefixes here.
 const stemFull = (w: string) => w.replace(/(?:ies)$/, 'y').replace(/(?:es|s)$/, '')
@@ -79,42 +81,24 @@ function offerOwnership(name: string, quote: string, otherNames: string[]): bool
 // within ONE sentence, and only a DECLARATIVE sentence ('.' or, at quote level, no terminal) can source a claim -
 // never a question or an exclamation.
 const sentences = (s: string): { body: string; term: string }[] => (s.replace(/\n+/g, ' ').match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t.slice(-1) } }).filter(x => x.body)
-// Positive first-party predicates. A verb not in this list is not a claim; a claim not recognized is a hypothesis.
-const POS_VERB = new Set('runs lets helps gives offers provides includes costs starts makes automates sends fills saves supports handles delivers simplifies serves'.split(' '))
-// After a copula, only an explicit FIRST-PARTY possessive counts ("X is our payroll product"). A bare
-// "available"/"designed" is NOT ownership ("available exclusively from another vendor", "designed and sold by
-// our competitor", "available if we ever build it") and stays a hypothesis.
-// Typed OFFER GRAMMAR (#872, round 6): an offer sentence is accepted only when it FULLY parses as one of the
-// productions in offerSentence below. Full consumption is the contract - anything unrecognized after the core
-// assertion fails closed with NO deny list:
-//   - temporal deferrals ("we offer X in 2028", "...after launch", "...next year") are not frames;
-//   - alternations ("X or another system") and contrast clauses ("runs payroll but was discontinued in 2024")
-//     hit a CONNECTOR that no production continues past;
-//   - an extra noun phrase ("we offer X consulting services") means X MODIFIES a different offering object;
-//   - hypothetical/conditional/future phrasing ("would run", "available if we ever build it") matches no opener.
-// FRAME_HEAD: the only typed continuations after an accepted core assertion - beneficiary ("for clinics"),
-// recipient ("to customers"), inclusion ("with reminders"), price ("at $49", "starting at $49"), unit
-// ("per location"), base price ("from $49").
-const FRAME_HEAD = new Set(['for', 'to', 'with', 'at', 'per', 'from'])
-// Coordinators and subordinators close the accepted region: a clause or alternative after the core assertion
-// never sources. Closed grammatical class, not per-product words.
-const CONNECTOR = new Set('and or but however although though except if when after until once while whereas yet so because since'.split(' '))
-// "starting at" / "priced at" are price frames; a bare "starting"/"priced" elsewhere fails the parse.
-const PRICE_LEAD = new Set(['starting', 'priced'])
-// Typed offering-object identity for "X is our <head>": the complement's HEAD NOUN must denote the offering
-// itself. Relationship nouns ("our preferred integration", "our main reference") describe someone ELSE'S
-// product and fail closed.
-const PRODUCT_TYPE = new Set('product products platform platforms solution solutions tool tools app apps application applications software service services offering offerings suite suites system systems'.split(' '))
+// Minimal ATOMIC own-offer contract (#872, round 8): an offer sources ONLY when the whole quote is exactly ONE
+// complete declarative ownership sentence, fully consumed by one of two exact forms - zero adjectives, zero
+// tails, no other unconsumed sentences (enforced in quoteBacksOffer):
+//   A. OFFER_OPEN NAME                              "We offer Acme Payroll." / "Our product is Acme Payroll."
+//   B. NAME (is|are) ('our'|'our flagship') PRODUCT_HEAD   "Acme Payroll is our product."
+// OFFER_OPEN is PRESENT-tense first-party offering only: "we built X" is history, not a current offering;
+// provide/ship/make/build stay outside this minimal contract. Anything richer - beneficiaries ("for clinics"),
+// prices ("at $49"), capability statements ("our X runs payroll"), adjectives ("our payroll product") - stays
+// a hypothesis: a visible, unreviewed fact, never a false promotion. No deny lists: the exact positive form is
+// the whole acceptance basis; the negation guard below is retained on top.
+const OFFER_OPEN = new Set(['we offer', 'we sell', 'our product is', 'our offer is'])
+// PRODUCT_HEAD: the finite offering-type vocabulary, EXACT full-token match - no stemming.
+const PRODUCT_HEAD = new Set('product products platform platforms solution solutions tool tools app apps application applications software service services offering offerings suite suites system systems'.split(' '))
 // Reported speech: the citation is itself quoted material or carries a reporting clause ("..." says Harbor
 // Dental / according to G2) - someone else's words about the offer, never the seller's authored page copy.
 export const REPORTED = /["“”]|\b(?:says|said|writes|wrote|according to)\s+\p{Lu}/u
 // A testimonial/review announcement: what follows is a customer's story, not the seller's own claim.
 export const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|(?:customer|client|user)s?\s+reviews?|reviews?\s+from\s+\p{Lu}|end of (?:customer|client|user)\s+review|what\s+(?:our\s+)?(?:customers?|clients?|users?)\s+say)\b/iu
-// Sentence-openers that keep the name first-party. Anything else before the name embeds it in another clause.
-// OFFERING is an explicit first-party OWN-offering construction with the name as its OBJECT ("we offer X",
-// "our offer is X") - exact and complete, so "we cannot offer X" and "our customers buy X" never match.
-// Capability verbs are NOT ownership ("we support X" / "we integrate X" describes someone else's product).
-const OFFERING = new Set(['we offer', 'we sell', 'we make', 'we build', 'we built', 'we provide', 'we ship', 'our offer is', 'our product is'])
 // External ownership: the sentence hands the offer to someone else ("our competitor's payroll product", "sold by
 // another vendor"). Offer citations only - a disqualifier may legitimately exclude third parties.
 const EXTERNAL = /\b(?:competitors?|another (?:vendor|provider|company|seller)|third[- ]party|other (?:vendors?|providers?|companies|compan(?:y|ies)|sellers?)|someone else)\b/i
@@ -124,51 +108,19 @@ const NEGATOR = new Set(['not', 'no', 'never', 'nor', 'neither', 'cannot', 'hard
 const CONTRACTION = /^(?:don|doesn|didn|won|can|couldn|isn|aren|wasn|weren|hasn|haven|hadn|mustn|shouldn|wouldn)$/
 const isNeg = (toks: string[], i: number) => NEGATOR.has(toks[i]) || (CONTRACTION.test(toks[i]) && toks[i + 1] === 't')
 type OfferVerdict = 'positive' | 'negative' | 'none'
-// An NP is 0+ tokens up to the next frame head, price lead or connector; a TAIL is a COMPLETE sequence of
-// FRAME NP modifiers. Leftover tokens mean unrecognized - never scanned for deny words, never sliced away.
-const npEnd = (toks: string[], i: number) => {
-  while (i < toks.length && !FRAME_HEAD.has(toks[i]) && !PRICE_LEAD.has(toks[i]) && !CONNECTOR.has(toks[i])) i++
-  return i
-}
-const parseTail = (toks: string[], i: number): boolean => {
-  while (i < toks.length) {
-    if (PRICE_LEAD.has(toks[i])) {
-      if (toks[i + 1] !== 'at') return false
-      i += 2
-    } else if (FRAME_HEAD.has(toks[i])) i++
-    else return false
-    const s = npEnd(toks, i)
-    if (s === i) return false   // a frame needs its modifier
-    i = s
-  }
-  return true
-}
 function offerSentence(name: string, stoks: string[]): OfferVerdict {
   const at = nameSubject(name, stoks)
   if (at < 0) return 'none'
   const before = stoks.slice(0, at).join(' ')
   const rest = stoks.slice(at + tokens(name).length)
-  // Polarity holds across the whole sentence after the name: any negator voids the claim.
-  for (let i = 0; i < rest.length; i++) if (isNeg(rest, i)) return 'negative'
-  // A. Explicit first-party OFFERING opener with the name as its OBJECT: "we offer X [TAIL]",
-  //    "our product is X [TAIL]". The token after the name must start a typed frame or end the sentence -
-  //    "we offer X consulting services" offers consulting services, not X.
-  if (OFFERING.has(before)) return parseTail(rest, 0) ? 'positive' : 'none'
-  // The name as SUBJECT is accepted only with an EXPLICIT OWN predicate: "our X does Y" (possessive subject) or
-  // "X is our <product-type>" (possessive complement). A bare "X runs payroll" is a capability statement, NOT
-  // ownership - a seller's integrations page lists third-party tools with the same sentence shape.
-  const possessive = before === 'our' || before === 'our flagship'
-  if (!possessive && before !== '') return 'none'   // embedded in another clause: not the seller's own claim
-  if (!rest.length) return 'none'
-  // B. Possessive subject: "our [flagship] X <capability-verb> [OBJECT] [TAIL]".
-  if (possessive && POS_VERB.has(rest[0])) return parseTail(rest, npEnd(rest, 1)) ? 'positive' : 'none'
-  // C. Possessive complement with a typed product head: "X is our [flagship] ... product [TAIL]".
-  if (!possessive && (rest[0] === 'is' || rest[0] === 'are') && rest[1] === 'our') {
-    let i = 2
-    if (rest[i] === 'flagship') i++
-    const np = npEnd(rest, i)
-    if (np === i || !PRODUCT_TYPE.has(stemFull(rest[np - 1]))) return 'none'
-    return parseTail(rest, np) ? 'positive' : 'none'
+  // Polarity: any negator anywhere in the sentence voids the claim.
+  for (let i = 0; i < stoks.length; i++) if (isNeg(stoks, i)) return 'negative'
+  // A. Exact first-party offering opener, the name its object, NOTHING else in the sentence.
+  if (OFFER_OPEN.has(before) && rest.length === 0) return 'positive'
+  // B. The name as subject of an exact possessive product-identity copula: zero adjectives, no tail.
+  if (before === '' && (rest[0] === 'is' || rest[0] === 'are')) {
+    const poss = rest[1] === 'our' ? (rest[2] === 'flagship' ? 3 : 2) : -1
+    if (poss > 0 && rest.length === poss + 1 && PRODUCT_HEAD.has(rest[poss])) return 'positive'
   }
   return 'none'
 }
@@ -176,13 +128,12 @@ export function quoteBacksOffer(name: string, quote: string, otherNames: string[
   if (!name || !quote) return false
   if (!offerOwnership(name, quote, otherNames)) return false
   if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote) || EXTERNAL.test(quote)) return false
-  let positive = false
-  for (const s of sentences(quote)) {
-    const v = offerSentence(name, tokens(s.body))
-    if (v === 'negative') return false
-    if (v === 'positive' && (s.term === '.' || s.term === '')) positive = true
-  }
-  return positive
+  // The whole quote must be exactly ONE complete declarative ownership sentence - no other unconsumed sentences.
+  const ss = sentences(quote)
+  if (ss.length !== 1) return false
+  const s = ss[0]
+  if (s.term !== '.' && s.term !== '') return false
+  return offerSentence(name, tokens(s.body)) === 'positive'
 }
 
 // Disqualifier citation binding (#872): an EXPLICIT exclusion clause bound to the SAME offer and to the CLAIMED

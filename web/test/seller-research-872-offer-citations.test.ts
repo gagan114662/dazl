@@ -22,18 +22,21 @@ const page = (url: string, text: string, at: number): FetchedPage => ({ url, kin
 // lives on the product and pricing pages, each with its OWN fetch time.
 const PAGES: FetchedPage[] = [
   page(HOME, 'Multi builds tools for modern teams and supports every customer.', T0),
-  page(BOOKING, 'Acme Booking is our scheduling product for practice managers. Acme Booking is not available for clinics with over 50 staff. Acme Booking serves clinics with over 50 staff through partners.', T0 + 1),
-  page(PAYROLL, 'Acme Payroll is our payroll product for clinic owners without a finance team.', T0 + 2),
+  page(BOOKING, 'We offer Acme Booking. Acme Booking is our scheduling product for practice managers. Acme Booking is not available for clinics with over 50 staff. Acme Booking serves clinics with over 50 staff through partners.', T0 + 1),
+  page(PAYROLL, 'We offer Acme Payroll. Acme Payroll is our payroll product for clinic owners without a finance team.', T0 + 2),
   page(PRICING, 'Acme Booking starts at $49 per location per month. Payroll is priced per employee for clinics with 10 to 50 staff.', T0 + 3),
 ]
-// Positive fixtures use explicit OWN-offering sentences: a bare capability sentence ("X runs payroll") is NOT
-// ownership evidence (round-5 contract) - an integrations directory lists third-party tools with the same shape.
+// Round 8 (minimal atomic contract): ONLY an exact ONE-SENTENCE own-offer form sources - "We offer X.",
+// "We sell X.", "Our product/offer is X.", "X is our [flagship] <product-type>." The ORIGINAL richer fixtures
+// below are KEPT and now assert hypothesis: real coverage honestly lost (round-7 verdict), never rewritten away.
+const ATOMIC_BOOKING = 'We offer Acme Booking.'
+const ATOMIC_PAYROLL = 'We offer Acme Payroll.'
 const BOOKING_QUOTE = 'Acme Booking is our scheduling product for practice managers.'
 const PAYROLL_QUOTE = 'Acme Payroll is our payroll product for clinic owners without a finance team.'
 const EXCLUSION_QUOTE = 'Acme Booking is not available for clinics with over 50 staff.'
 const OFFERS = [
-  { id: 'o1', name: 'Acme Booking', url: BOOKING, quote: BOOKING_QUOTE, inferred: false },
-  { id: 'o2', name: 'Acme Payroll', url: PAYROLL, quote: PAYROLL_QUOTE, inferred: false },
+  { id: 'o1', name: 'Acme Booking', url: BOOKING, quote: ATOMIC_BOOKING, inferred: false },
+  { id: 'o2', name: 'Acme Payroll', url: PAYROLL, quote: ATOMIC_PAYROLL, inferred: false },
 ]
 const run = (offers: unknown[], items: unknown[] = [], pages = PAGES): SellerResearch => {
   const r = buildResearch({ offers, items }, pages, 'multi.example')
@@ -55,9 +58,9 @@ const unsourced = (h: { status: string; url: string | null; quote: string | null
 test('each distinct own offer cites its own product/pricing page with the exact URL and that page\'s fetch time', () => {
   const r = run(OFFERS)
   const booking = offerHyp(r, 'Acme Booking')
-  assert.deepEqual([booking.status, booking.url, booking.quote, booking.fetched_at], ['sourced', BOOKING, BOOKING_QUOTE, T0 + 1])
+  assert.deepEqual([booking.status, booking.url, booking.quote, booking.fetched_at], ['sourced', BOOKING, ATOMIC_BOOKING, T0 + 1])
   const payroll = offerHyp(r, 'Acme Payroll')
-  assert.deepEqual([payroll.status, payroll.url, payroll.quote, payroll.fetched_at], ['sourced', PAYROLL, PAYROLL_QUOTE, T0 + 2])
+  assert.deepEqual([payroll.status, payroll.url, payroll.quote, payroll.fetched_at], ['sourced', PAYROLL, ATOMIC_PAYROLL, T0 + 2])
 })
 
 test('a disqualifier with an explicit exclusion claim bound to its own offer is sourced with URL and fetch time', () => {
@@ -221,41 +224,56 @@ test('a quote must equal the complete authored page sentence, not a fragment of 
 })
 
 // Round 4: the model cannot select the context away - the RAW authored span and its neighbors decide.
+// (These use the ATOMIC quote so context binding, not the round-8 grammar, is the deciding mechanism.)
 test('a claim preceded by a testimonial announcement never sources (context laundering)', () => {
-  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `A customer testimonial follows. ${PAYROLL_QUOTE}`), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, `A customer testimonial follows. ${ATOMIC_PAYROLL}`), 'Acme Payroll'))
 })
 
 test('a claim preceded by an explicit denial frame never sources', () => {
-  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `The following claim is false and we do not offer this product. ${PAYROLL_QUOTE}`), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, `The following claim is false and we do not offer this product. ${ATOMIC_PAYROLL}`), 'Acme Payroll'))
 })
 
 test('a claim followed by a third-party disclaimer never sources', () => {
-  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `${PAYROLL_QUOTE} This is a third-party assertion, not our offer.`), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, `${ATOMIC_PAYROLL} This is a third-party assertion, not our offer.`), 'Acme Payroll'))
 })
 
 test('a claim the model unquoted from a testimonial never sources (raw span keeps the quotation marks)', () => {
-  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `"${PAYROLL_QUOTE}" says Harbor Dental.`), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, `"${ATOMIC_PAYROLL}" says Harbor Dental.`), 'Acme Payroll'))
 })
 
 test('the same sentence repeated with one framed occurrence never sources (the model cannot pick the clean twin)', () => {
-  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, `"${PAYROLL_QUOTE}" says Harbor Dental. ${PAYROLL_QUOTE}`), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer(ATOMIC_PAYROLL, `"${ATOMIC_PAYROLL}" says Harbor Dental. ${ATOMIC_PAYROLL}`), 'Acme Payroll'))
 })
 
 test('the same sentence repeated in two clean contexts still sources (control)', () => {
-  const h = offerHyp(oneOffer(PAYROLL_QUOTE, `${PAYROLL_QUOTE} ${PAYROLL_QUOTE}`), 'Acme Payroll')
+  const h = offerHyp(oneOffer(ATOMIC_PAYROLL, `${ATOMIC_PAYROLL} ${ATOMIC_PAYROLL}`), 'Acme Payroll')
   assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
 })
 
-test("an explicit first-party offering construction sources ('we offer X')", () => {
-  const q = 'We offer Acme Payroll to clinics of every size.'
-  const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
-  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2])
+// Round 8: the original richer positives are KEPT as unsupported cases - adjectives, beneficiaries, prices and
+// extra sentences all fall outside the minimal atomic contract and stay visible hypotheses.
+test("the original 'we offer X to clinics of every size' fixture is no longer an accepted form (round 8)", () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll to clinics of every size.', 'We offer Acme Payroll to clinics of every size.'), 'Acme Payroll'))
 })
 
-// Round 5 positive controls: the canonical own-offering sentences - including sentence-final names, where
-// punctuation-safe tokens matter ("Payroll." must still match "Payroll").
-test('the canonical own-offering sentences source (positive controls)', () => {
-  for (const q of ['We offer Acme Payroll.', 'Our product is Acme Payroll.', 'Acme Payroll is our payroll product.']) {
+test("the original 'X is our payroll product' adjective form is no longer accepted (round 8)", () => {
+  unsourced(offerHyp(oneOffer('Acme Payroll is our payroll product.', 'Acme Payroll is our payroll product.'), 'Acme Payroll'))
+})
+
+test('the original beneficiary and price forms are no longer accepted (round 8 honest losses)', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll for clinics.', 'We offer Acme Payroll for clinics.'), 'Acme Payroll'))
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll at $49 per location.', 'We offer Acme Payroll at $49 per location.'), 'Acme Payroll'))
+})
+
+test('the original PAYROLL_QUOTE and BOOKING_QUOTE strings stay hypotheses (round 8: coverage preserved as unsupported)', () => {
+  unsourced(offerHyp(oneOffer(PAYROLL_QUOTE, PAYROLL_QUOTE), 'Acme Payroll'))
+  unsourced(offerHyp(run([{ id: 'o1', name: 'Acme Booking', url: BOOKING, quote: BOOKING_QUOTE }], [], [page(BOOKING, BOOKING_QUOTE, T0 + 1)]), 'Acme Booking'))
+})
+
+// Round 8 positive controls: the canonical ATOMIC own-offering sentences - one complete declarative sentence,
+// zero adjectives, zero tails, sentence-final name punctuation stripped at the boundary only.
+test('the canonical atomic own-offering sentences source (positive controls)', () => {
+  for (const q of ['We offer Acme Payroll.', 'We sell Acme Payroll.', 'Our product is Acme Payroll.', 'Our offer is Acme Payroll.', 'Acme Payroll is our product.', 'Acme Payroll is our flagship platform.']) {
     const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
     assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2], q)
   }
@@ -313,25 +331,39 @@ test('the offering object must BE the name, not a noun it modifies ("we offer X 
   unsourced(offerHyp(oneOffer('We offer Acme Payroll migration training.', 'We offer Acme Payroll migration training.'), 'Acme Payroll'))
 })
 
-test('a typed price and recipient tail still sources (accepted complete tail structures)', () => {
-  const q = 'We offer Acme Payroll to clinics starting at $49 per location.'
-  const h = offerHyp(oneOffer(q, q), 'Acme Payroll')
-  assert.deepEqual([h.status, h.url, h.fetched_at], ['sourced', PAYROLL, T0 + 2], q)
+test('the original composed price/recipient sentence is no longer accepted (round 8)', () => {
+  unsourced(offerHyp(oneOffer('We offer Acme Payroll to clinics starting at $49 per location.', 'We offer Acme Payroll to clinics starting at $49 per location.'), 'Acme Payroll'))
+})
+
+test('the original 174-char OWN-offering string stays a hypothesis at build AND ingress (round 8: not disguised as covered)', () => {
+  const q = 'Acme Payroll is our payroll product for busy clinics with multiple locations across several states that process monthly payroll for their staff through one integrated scheduling system.'
+  assert.ok(q.length > 140 && q.length <= 300, 'fixture sits between the old and shared caps')
+  unsourced(offerHyp(oneOffer(q, q), 'Acme Payroll'))
+  const r = stored(q)
+  assert.ok(r, 'research kept')
+  assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].q, r.hyps[0].at], ['hypothesis', null, null, null])
 })
 
 test('a valid 174-char quote survives the whole construction -> storage -> ingress round trip (ONE quote contract)', () => {
-  // NOTE: no 'and' - a coordinator closes the accepted region under the full-parse tail contract (round 6).
-  const q = 'Acme Payroll is our payroll product for busy clinics with multiple locations across several states that process monthly payroll for their staff through one integrated scheduling system.'
+  // Round 8: the round-trip positive uses a NON-OFFER claim kind (quoteSupports path, unaffected by the atomic
+  // offer grammar) - it does NOT pretend the original 174-char offer coverage is preserved.
+  const q = 'We serve dental practices across the whole region with dedicated onboarding, weekly review calls and a named success manager for every single location from small clinics to the largest multi-site groups.'
   assert.ok(q.length > 140 && q.length <= 300, 'fixture sits between the old and shared caps')
-  const r = oneOffer(q, q)
-  assert.equal(offerHyp(r, 'Acme Payroll').status, 'sourced')
+  const r = run(
+    [{ id: 'o1', name: 'Acme Payroll', url: PAYROLL, quote: ATOMIC_PAYROLL, inferred: false }],
+    [{ offer: 'o1', kind: 'industry', text: 'dental practices', url: PAYROLL, quote: q, inferred: false }],
+    [page(PAYROLL, `${ATOMIC_PAYROLL} ${q}`, T0 + 2)],
+  )
+  const ind = r.hypotheses.find(h => h.kind === 'industry')!
+  assert.deepEqual([ind.status, ind.url, ind.fetched_at], ['sourced', PAYROLL, T0 + 2])
   const n = normalizeResearch(toStored(r))
   assert.ok(n, 'research kept')
-  assert.deepEqual([n.hyps[0].s, n.hyps[0].q], ['sourced', q])
+  const ni = n.hyps.find(h => h.k === 'industry')!
+  assert.deepEqual([ni.s, ni.q], ['sourced', q])
 })
 
 test('an offer citing a URL that was never fetched stays a hypothesis', () => {
-  const r = run([{ id: 'o1', name: 'Acme Payroll', url: 'https://multi.example/never-fetched', quote: PAYROLL_QUOTE }])
+  const r = run([{ id: 'o1', name: 'Acme Payroll', url: 'https://multi.example/never-fetched', quote: ATOMIC_PAYROLL }])
   unsourced(offerHyp(r, 'Acme Payroll'))
 })
 
@@ -341,15 +373,15 @@ test('an offer with no quote stays a hypothesis', () => {
 })
 
 test('an offer the model itself marked inferred stays a hypothesis', () => {
-  const r = run([{ id: 'o1', name: 'Acme Payroll', url: PAYROLL, quote: PAYROLL_QUOTE, inferred: true }])
+  const r = run([{ id: 'o1', name: 'Acme Payroll', url: PAYROLL, quote: ATOMIC_PAYROLL, inferred: true }])
   unsourced(offerHyp(r, 'Acme Payroll'))
 })
 
 test('a quote naming only a different offer never sources this one', () => {
   // o2 cites the BOOKING page quote, which names Acme Booking and never names Acme Payroll.
   const r = run([
-    { id: 'o1', name: 'Acme Booking', url: BOOKING, quote: BOOKING_QUOTE },
-    { id: 'o2', name: 'Acme Payroll', url: BOOKING, quote: BOOKING_QUOTE },
+    { id: 'o1', name: 'Acme Booking', url: BOOKING, quote: ATOMIC_BOOKING },
+    { id: 'o2', name: 'Acme Payroll', url: BOOKING, quote: ATOMIC_BOOKING },
   ])
   assert.equal(offerHyp(r, 'Acme Booking').status, 'sourced')
   unsourced(offerHyp(r, 'Acme Payroll'))
@@ -369,9 +401,15 @@ test('a quote naming two offers sources neither (ownership is ambiguous)', () =>
 const stored = (q: string) => normalizeResearch({ v: 1, site: 'multi.example', offers: [{ i: 'acme-payroll', n: 'Acme Payroll' }], hyps: [{ i: 'acme-payroll:offer', o: 'acme-payroll', k: 'offer', t: 'Acme Payroll', s: 'sourced', u: PAYROLL, q, at: T0 + 2 }], q: null, ans: null })
 
 test('ingress: a genuinely source-backed offer survives the re-check unchanged', () => {
-  const r = stored(PAYROLL_QUOTE)
+  const r = stored(ATOMIC_PAYROLL)
   assert.ok(r, 'research kept')
   assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].at], ['sourced', PAYROLL, T0 + 2])
+})
+
+test('ingress: the original own-offering sentence honestly downgrades (round 8)', () => {
+  const r = stored(PAYROLL_QUOTE)
+  assert.ok(r, 'research kept')
+  assert.deepEqual([r.hyps[0].s, r.hyps[0].u, r.hyps[0].q, r.hyps[0].at], ['hypothesis', null, null, null])
 })
 
 test('ingress: a forged sourced offer with a cannot-offer quote honestly downgrades', () => {
