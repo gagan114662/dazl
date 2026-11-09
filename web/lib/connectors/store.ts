@@ -42,6 +42,19 @@ export function migrateConnectors(db: Database.Database): void {
       memo        TEXT,
       PRIMARY KEY (tenant_id, connector, scan_job_id, lookup)
     );
+    -- Every page the site crawler actually fetched, with where and when (#871): the durable per-page
+    -- record the bounded crawl leaves behind; later source-cited extraction (#872/#873) reads it.
+    CREATE TABLE IF NOT EXISTS crawl_pages (
+      id          TEXT PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      scan_job_id TEXT NOT NULL,
+      site        TEXT NOT NULL,
+      url         TEXT NOT NULL CHECK (length(url) <= 500 AND url LIKE 'http%'),
+      status      INTEGER NOT NULL,
+      fetched_at  INTEGER NOT NULL,
+      UNIQUE (tenant_id, scan_job_id, site, url)
+    );
+    CREATE INDEX IF NOT EXISTS crawl_pages_job ON crawl_pages (scan_job_id);
     -- Enriched fields live beside the lead, never over it. A row needs a source URL and a source date.
     CREATE TABLE IF NOT EXISTS lead_enrichments (
       id          TEXT PRIMARY KEY,
@@ -337,6 +350,26 @@ const addEnrichmentParams = (tenantId: string, leadId: string, e: Enrichment): P
   [randomBytes(12).toString('hex'), leadId, tenantId, e.connector, e.kind, e.value, e.label, e.confidence, e.source_url, e.source_date, e.retrieved_at]
 export function addEnrichment(db: Database.Database, tenantId: string, leadId: string, e: Enrichment): void {
   db.prepare(ADD_ENRICHMENT_SQL).run(...addEnrichmentParams(tenantId, leadId, e))
+}
+
+const ADD_CRAWL_PAGE_SQL = `INSERT INTO crawl_pages (id, tenant_id, scan_job_id, site, url, status, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, scan_job_id, site, url) DO NOTHING`
+const crawlPageParams = (tenantId: string, jobId: string, site: string, url: string, status: number, fetchedAt: number): Param[] =>
+  [randomBytes(12).toString('hex'), tenantId, jobId, site, url, status, fetchedAt]
+const crawlPageStorable = (url: string) => url.length <= 500 && url.startsWith('http')
+// One row per page the crawler fetched, with the EXACT url and that page's own fetch time (#871). A page address
+// outside the 500-char bound is REFUSED (false), never truncated: a sliced prefix would silently alias distinct
+// pages into one row. Idempotent per tenant/job/site/url: a re-run never duplicates; the first fetch's time stands.
+export function recordCrawlPage(db: Database.Database, tenantId: string, jobId: string, site: string, url: string, status: number, fetchedAt: number): boolean {
+  if (!crawlPageStorable(url)) return false
+  db.prepare(ADD_CRAWL_PAGE_SQL).run(...crawlPageParams(tenantId, jobId, site, url, status, fetchedAt))
+  return true
+}
+// The same write on the Db layer (Postgres in production): one statement, same conflict rule, same refusal (#871).
+export async function recordCrawlPageDb(db: Db, tenantId: string, jobId: string, site: string, url: string, status: number, fetchedAt: number): Promise<boolean> {
+  if (!crawlPageStorable(url)) return false
+  await db.run(ADD_CRAWL_PAGE_SQL, crawlPageParams(tenantId, jobId, site, url, status, fetchedAt))
+  return true
 }
 // addEnrichment inside a Db-layer transaction (SQLite or Postgres), the same statement: for setDomainReviewDb (#354).
 export function* addEnrichmentTx(t: Tx, tenantId: string, leadId: string, e: Enrichment): TxBody<void> {

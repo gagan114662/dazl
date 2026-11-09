@@ -34,3 +34,144 @@ export function quoteSupports(kind: string, text: string, quote: string): boolea
   if (kind === 'size' && specific.length === 0 && numbers(text).length > 0) return true
   return need.some(has)
 }
+
+// Offer citation binding (#872): the MINIMAL ATOMIC own-offer contract. Anything that is not one of two exact
+// one-sentence forms fails closed to a hypothesis - this is an acceptlist, not a growing denylist:
+// - the whole quote is exactly ONE declarative sentence whose RAW tokens (case/whitespace normalization ONLY -
+//   no stemming, no punctuation laundering) are FULLY consumed by:
+//     A. ('we offer'|'we sell'|'our product is'|'our offer is') + the offer's EXACT whole name, or
+//     B. the offer's EXACT whole name + ('is'|'are') + ('our'|'our flagship') + one PRODUCT_HEAD word;
+// - any negator anywhere in the sentence voids it; any '?', '!', extra sentence, adjective, tail, or second
+//   terminal period rejects it; the quote names exactly ONE offer, with no comparison, third-party subject,
+//   or testimonial attribution anywhere in it.
+// Richer real claims ("X is our payroll product for clinics") stay visible unreviewed hypotheses - never false
+// promotions. quoteSupports alone is NOT enough for identity: its one-distinctive-word rule admits a sibling
+// product sharing a brand word and reads neither polarity nor attribution.
+const COMPARISON = /\b(?:unlike|versus|vs\.?|compared (?:to|with)|alternative to|instead of|rather than|better than|cheaper than)\b/i
+const ATTRIBUTION = /(?:^|\s)[-–—]\s*\p{Lu}[\p{L}'.-]*(?:\s+\p{Lu}[\p{L}'.-]*){0,3}\s*$/u
+// ONE quote contract (#872): the same cap at construction (seller-research.ts), storage and ingress (icp.ts).
+// An over-cap quote is REJECTED, never sliced - a slice can cut off the negation or attribution that changes the claim.
+export const MAX_RESEARCH_QUOTE = 300
+// A customer or other third party as the claim's subject: their purchase or praise is not the seller's own statement.
+const THIRD_PARTY = /\b(?:customers?|clients?|users?|buyers?|patients?|companies|they|people)\s+(?:[\p{L}']+\s+){0,4}(?:buy|bought|purchase[sd]?|use[sd]?|say|said|chose|choose|prefer(?:red)?|love[sd]?|left|switch(?:ed)?|got|get|found|report(?:ed)?)\b/iu
+// Punctuation-safe at the BOUNDARY only: a token's TRAILING period is a sentence boundary ("...Acme Payroll."
+// still matches "Payroll"), never a name change; INTERNAL punctuation stays real identity ("acme.ai" is not
+// "acme ai") - no blind token laundering.
+const tokens = (s: string) => norm(s).split(' ').map(w => w.replace(/\.+$/, '')).filter(Boolean)
+// The name's tokens, stem-equal and CONSECUTIVE in the quote's tokens; no prefix extension ("payrollplus" != "payroll").
+// Uses a FULL stem - the shared stem() truncates to 7 letters for word-carriage, which would bleed prefixes here.
+const stemFull = (w: string) => w.replace(/(?:ies)$/, 'y').replace(/(?:es|s)$/, '')
+// A quote's sentences WITH their terminal punctuation run: the grammar binds name, predicate, polarity and
+// segment within ONE sentence, and only a DECLARATIVE sentence can source a claim - the terminal must be exactly
+// '.' (or, at quote level, no terminal), never '?', '!', '?.' or '...'. A boundary is terminal punctuation
+// FOLLOWED BY whitespace or end-of-text, so an internal period ("Acme.Payroll") is real identity, not a split.
+const sentences = (s: string): { body: string; term: string }[] => (s.replace(/\n+/g, ' ').match(/.+?[.!?]+(?=\s|$)|[^.!?]+$/g) ?? []).map(x => { const m = x.trim(); const t = m.match(/[.!?]+$/)?.[0] ?? ''; return { body: t ? m.slice(0, -t.length) : m, term: t } }).filter(x => x.body)
+// Minimal ATOMIC own-offer contract (#872, round 8): an offer sources ONLY when the whole quote is exactly ONE
+// complete declarative ownership sentence, fully consumed by one of two exact forms - zero adjectives, zero
+// tails, no other unconsumed sentences (enforced in quoteBacksOffer):
+//   A. OFFER_OPEN NAME                              "We offer Acme Payroll." / "Our product is Acme Payroll."
+//   B. NAME (is|are) ('our'|'our flagship') PRODUCT_HEAD   "Acme Payroll is our product."
+// OFFER_OPEN is PRESENT-tense first-party offering only: "we built X" is history, not a current offering;
+// provide/ship/make/build stay outside this minimal contract. Anything richer - beneficiaries ("for clinics"),
+// prices ("at $49"), capability statements ("our X runs payroll"), adjectives ("our payroll product") - stays
+// a hypothesis: a visible, unreviewed fact, never a false promotion. No deny lists: the exact positive form is
+// the whole acceptance basis; the negation guard below is retained on top.
+const OFFER_OPEN = new Set(['we offer', 'we sell', 'our product is', 'our offer is'])
+// PRODUCT_HEAD: the finite offering-type vocabulary, EXACT full-token match - no stemming.
+const PRODUCT_HEAD = new Set('product products platform platforms solution solutions tool tools app apps application applications software service services offering offerings suite suites system systems'.split(' '))
+// Reported speech: the citation is itself quoted material or carries a reporting clause ("..." says Harbor
+// Dental / according to G2) - someone else's words about the offer, never the seller's authored page copy.
+export const REPORTED = /["“”]|\b(?:says|said|writes|wrote|according to)\s+\p{Lu}/u
+// A testimonial/review announcement: what follows is a customer's story, not the seller's own claim.
+export const ANNOUNCE = /\b(?:testimonials?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|(?:customer|client|user)s?\s+reviews?|reviews?\s+from\s+\p{Lu}|end of (?:customer|client|user)\s+review|what\s+(?:our\s+)?(?:customers?|clients?|users?)\s+say)\b/iu
+// External ownership: the sentence hands the offer to someone else ("our competitor's payroll product", "sold by
+// another vendor"). Offer citations only - a disqualifier may legitimately exclude third parties.
+const EXTERNAL = /\b(?:competitors?|another (?:vendor|provider|company|seller)|third[- ]party|other (?:vendors?|providers?|companies|compan(?:y|ies)|sellers?)|someone else)\b/i
+// Negation: a bare negator token, or an n't-contraction (checked at the raw-token call site). 'without' is
+// deliberately NOT here ("runs payroll for clinic owners without a finance team" is a true positive).
+const NEGATOR = new Set(['not', 'no', 'never', 'nor', 'neither', 'cannot', 'hardly', 'barely'])
+// OFFER-ONLY raw identity (#872, round 9): the offer's name matches as RAW whitespace-delimited tokens, exact
+// after case/whitespace normalization ONLY - NO stemming, NO hyphen/period laundering. Internal name punctuation
+// is real identity ('Acme.Payroll' is ONE token, 'Acme-Payroll' != 'Acme Payroll', 'Payrolls' != 'Payroll').
+const rawTokens = (s: string) => s.trim().toLowerCase().split(/\s+/).filter(Boolean)
+const rawNameAt = (nt: string[], qtoks: string[]): number => {
+  if (!nt.length) return -1
+  for (let i = 0; i + nt.length <= qtoks.length; i++) if (nt.every((w, j) => qtoks[i + j] === w)) return i
+  return -1
+}
+export function quoteBacksOffer(name: string, quote: string, otherNames: string[] = []): boolean {
+  if (!name || !quote) return false
+  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote) || EXTERNAL.test(quote)) return false
+  const q = quote.replace(/\s+/g, ' ').trim()
+  // Exactly ONE declarative sentence: no '?'/'!' ANYWHERE (a trailing '. ' never erases sentence intent), no
+  // internal sentence boundary, at most ONE terminal period; a second period is unconsumed punctuation.
+  if (/[?!]/.test(q)) return false
+  const body = q.endsWith('.') ? q.slice(0, -1) : q
+  if (/\.\s/.test(body) || body.endsWith('.')) return false
+  const qtoks = rawTokens(body)
+  const nt = rawTokens(name)
+  const at = rawNameAt(nt, qtoks)
+  if (at < 0) return false
+  // Exactly one owner: no OTHER offer's whole RAW name appears.
+  if (otherNames.some(o => o.trim().toLowerCase() !== name.trim().toLowerCase() && rawNameAt(rawTokens(o), qtoks) >= 0)) return false
+  // Polarity: any negator (bare or n't-contraction) anywhere in the sentence voids the claim.
+  for (const t of qtoks) if (NEGATOR.has(t) || t.endsWith("n't")) return false
+  const before = qtoks.slice(0, at).join(' ')
+  const rest = qtoks.slice(at + nt.length)
+  // A. Exact first-party offering opener, the name its object, NOTHING else in the sentence.
+  if (OFFER_OPEN.has(before) && rest.length === 0) return true
+  // B. The name as subject of an exact possessive product-identity copula: zero adjectives, no tail.
+  if (before === '' && (rest[0] === 'is' || rest[0] === 'are')) {
+    const poss = rest[1] === 'our' ? (rest[2] === 'flagship' ? 3 : 2) : -1
+    if (poss > 0 && rest.length === poss + 1 && PRODUCT_HEAD.has(rest[poss])) return true
+  }
+  return false
+}
+
+// Disqualifier citation binding (#872): an EXPLICIT exclusion clause bound to the SAME offer and to the CLAIMED
+// segment, token-for-token. The quote must name the offer (exact identity, exactly one owner) and state a negative
+// availability predicate with the offer as subject ("Acme Booking is not available for clinics with over 50
+// staff"), where the predicate's OBJECT equals the claim text - full-stem token equality, so the comparator and
+// the number are part of the binding ("under 50" never backs an "over 50" claim, "dental clinics" never backs
+// "Texas clinics"). A positive availability for the same segment anywhere in the sentence vetoes the exclusion
+// ("not available for dental clinics, but available for Texas clinics"). A pricing boundary, an "only" mention, a
+// positive inclusion of the segment, or the OTHER offer's exclusion never sources it.
+const NEG_AVAIL = 'is not available for|is unavailable for|are not available for|are unavailable for|is not for|is not intended for|is not designed for|is not suitable for|is not built for|is not made for|is not offered to|are not offered to|does not serve|do not serve|does not support|do not support|does not fit|cannot serve|cannot support|excludes'.split('|')
+const POS_AVAIL = 'is available for|are available for|is designed for|is built for|is made for|is suitable for|is intended for|is offered to|is for|serves|supports'.split('|')
+const CLAUSE_END = new Set(['but', 'however', 'though', 'although', 'yet', 'while'])
+const segEq = (a: string[], b: string[]) => a.length === b.length && a.every((w, i) => stemFull(w) === stemFull(b[i]))
+export function quoteBacksDisqualifier(offerName: string, text: string, quote: string, otherNames: string[] = []): boolean {
+  if (!offerName || !text || !quote) return false
+  // RAW exact offer identity (#872, round 10 - reviewed scope): the offer's name matches as RAW
+  // whitespace-delimited tokens, case/whitespace normalization ONLY - no stemming ("Payrolls" != "Payroll"),
+  // no hyphen laundering ("Acme-Payroll" != "Acme Payroll"), internal punctuation is real identity.
+  const qtoks = rawTokens(quote)
+  const nt = rawTokens(offerName)
+  if (rawNameAt(nt, qtoks) < 0) return false
+  if (otherNames.some(o => o.trim().toLowerCase() !== offerName.trim().toLowerCase() && rawNameAt(rawTokens(o), qtoks) >= 0)) return false
+  if (COMPARISON.test(quote) || ATTRIBUTION.test(quote) || THIRD_PARTY.test(quote) || REPORTED.test(quote) || ANNOUNCE.test(quote)) return false
+  const claim = tokens(text)
+  if (!claim.length) return false
+  let excluded = false, included = false
+  for (const s of sentences(quote)) {
+    const stoks = rawTokens(s.body)
+    const at = rawNameAt(nt, stoks)
+    if (at < 0 || !['', 'our', 'our flagship'].includes(stoks.slice(0, at).join(' '))) continue   // the offer must be this sentence's subject
+    const rest = stoks.slice(at + nt.length)
+    const objectAfter = (pt: string[], from: number) => {
+      const obj = rest.slice(from + pt.length)
+      const cut = obj.findIndex(w => CLAUSE_END.has(w))
+      return cut < 0 ? obj : obj.slice(0, cut)
+    }
+    for (const p of NEG_AVAIL) {
+      const pt = p.split(' ')
+      if (pt.every((w, i) => rest[i] === w) && segEq(objectAfter(pt, 0), claim) && (s.term === '.' || s.term === '')) excluded = true
+    }
+    // A positive availability for the claimed segment - even in a later elided-subject clause - vetoes the exclusion.
+    for (const p of POS_AVAIL) {
+      const pt = p.split(' ')
+      for (let i = 0; i + pt.length <= rest.length; i++) if (pt.every((w, j) => rest[i + j] === w) && segEq(objectAfter(pt, i), claim)) included = true
+    }
+  }
+  return excluded && !included
+}

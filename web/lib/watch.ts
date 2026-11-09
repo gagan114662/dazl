@@ -43,13 +43,32 @@ export interface Watch { run_budget?: string | null; id: string; user_id: string
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
-export async function createWatch(db: Db, userId: string, query: string, icp: string, runBudget: string | null = null, now = nowS()): Promise<{ watch?: Watch; error?: string }> {
-  const active = Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM watches WHERE user_id = ? AND active = 1', [userId]))!.n)
-  if (active >= MAX_WATCHES) return { error: `You already have ${MAX_WATCHES} weekly watches. Pause or delete one first.` }
-  const dupe = await db.get('SELECT id FROM watches WHERE user_id = ? AND active = 1 AND query = ?', [userId, query])
-  if (dupe) return { error: 'You are already watching that search.' }
+export type WatchRefusal = { error: string; code: 'watch_limit' | 'watch_duplicate' }
+const LIMIT_MSG = `You already have ${MAX_WATCHES} active weekly watches. Pause or delete one first.`
+const DUPE_MSG = 'You are already watching that search.'
+
+// The one activation check (#905), used by create and resume: run inside the transaction that activates the watch.
+// On Postgres a per-tenant advisory lock orders concurrent creates/resumes (and runs across instances); SQLite's tx is
+// synchronous from BEGIN to COMMIT, so the check and the write cannot interleave with another request.
+function* activationCheck(t: Tx, userId: string, query: string, exceptId: string | null): TxBody<WatchRefusal | null> {
+  if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('watch_activate:' || ?, 0)) AS x", [userId])
+  const others = yield* t.all<{ id: string; query: string }>('SELECT id, query FROM watches WHERE user_id = ? AND active = 1', [userId])
+  const live = others.filter(w => w.id !== exceptId)
+  if (live.length >= MAX_WATCHES) return { error: LIMIT_MSG, code: 'watch_limit' }
+  if (live.some(w => w.query === query)) return { error: DUPE_MSG, code: 'watch_duplicate' }
+  return null
+}
+
+export async function createWatch(db: Db, userId: string, query: string, icp: string, runBudget: string | null = null, now = nowS()): Promise<{ watch?: Watch; error?: string; code?: WatchRefusal['code'] }> {
+  const stored = query.slice(0, 600)
   const id = randomBytes(12).toString('hex')
-  await db.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, run_budget) VALUES (?, ?, ?, ?, ?, ?)', [id, userId, query.slice(0, 600), icp, now + WEEK_S, runBudget])
+  const refused = await db.tx(function* (t) {
+    const no = yield* activationCheck(t, userId, stored, null)
+    if (no) return no
+    yield* t.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, run_budget) VALUES (?, ?, ?, ?, ?, ?)', [id, userId, stored, icp, now + WEEK_S, runBudget])
+    return null
+  })
+  if (refused) return refused
   return { watch: await db.get<Watch>('SELECT * FROM watches WHERE id = ? AND user_id = ?', [id, userId]) }
 }
 
@@ -64,10 +83,22 @@ export async function listWatches(db: Db, userId: string) {
   }))
 }
 
-export async function watchAction(db: Db, userId: string, id: string, action: 'pause' | 'resume' | 'delete', now = nowS()): Promise<boolean> {
+// true when done, false when the watch is not this tenant's, or a refusal when resuming would break the active cap or
+// duplicate an active query. A refused resume leaves the watch paused with its reason and schedule untouched; resuming
+// an already-active watch is a no-op that keeps its next_run_at.
+export async function watchAction(db: Db, userId: string, id: string, action: 'pause' | 'resume' | 'delete', now = nowS()): Promise<boolean | WatchRefusal> {
   if (action === 'delete') return (await db.run('DELETE FROM watches WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
   if (action === 'pause') return (await db.run('UPDATE watches SET active = 0 WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
-  return (await db.run('UPDATE watches SET active = 1, paused_reason = NULL, next_run_at = ? WHERE id = ? AND user_id = ?', [now + WEEK_S, id, userId])).changes === 1
+  return db.tx(function* (t): TxBody<boolean | WatchRefusal> {
+    // lock first, then read the watch, so a concurrent resume of the same or a sibling watch is seen
+    if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('watch_activate:' || ?, 0)) AS x", [userId])
+    const w = yield* t.get<{ query: string; active: number }>('SELECT query, active FROM watches WHERE id = ? AND user_id = ?', [id, userId])
+    if (!w) return false
+    if (w.active === 1) return true
+    const no = yield* activationCheck(t, userId, w.query, id)
+    if (no) return no
+    return (yield* t.run('UPDATE watches SET active = 1, paused_reason = NULL, next_run_at = ? WHERE id = ? AND user_id = ? AND active = 0', [now + WEEK_S, id, userId])).changes === 1
+  })
 }
 
 // The domain (or normalized company name) is the identity a watch remembers.

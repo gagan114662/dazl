@@ -75,7 +75,17 @@ test('history and status: begin/end are conditional on this attempt owning a don
 
 test('status route, jobs route and the leads page use the effective status', async () => {
   const fs = await import('node:fs'); const rd = (p: string) => fs.readFileSync(new URL(p, import.meta.url), 'utf8')
-  assert.match(rd('../app/api/scan/status/route.ts'), /status: effectiveStatus\(job\)/); assert.match(rd('../app/api/scan/status/route.ts'), /enrichment: \{ state: enrichState\(job\)/)
+  // The route delegates its whole payload on the SAME raw scan handle, not a separately selected store.
+  const route = rd('../app/api/scan/status/route.ts')
+  assert.match(route, /import \{ readScanStatus \} from '@\/lib\/scan\/status-read-service'/)
+  assert.match(route, /const raw = getScanDb\(\)/)
+  assert.match(route, /getJob\(raw, user\.tenantId, jobId\)/)
+  assert.match(route, /const payload = await readScanStatus\(sqliteDb\(raw\), user\.tenantId, jobId\)/)
+  assert.match(route, /payload \? NextResponse\.json\(payload\)/)
+  const service = rd('../lib/scan/status-read-service.ts')
+  assert.match(service, /getJob\(db, tenantId, jobId\)/)
+  assert.doesNotMatch(service, /\b(?:getDb|getScanDb)\s*\(/)
+  assert.match(service, /status: effectiveStatus\(job\), enrichment: \{ state: enrichState\(job\)/)
   // The jobs route serves historyJobs (lib/scan/history-jobs.ts), which maps the effective status (behaviour: test/history-jobs.test.ts).
   assert.match(rd('../app/api/scan/jobs/route.ts'), /historyJobs\(/); assert.match(rd('../lib/scan/history-jobs.ts'), /status: effectiveStatus\(j\)/)
   const ui = rd('../app/app/leads/leads-client.tsx')
