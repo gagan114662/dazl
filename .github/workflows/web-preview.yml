@@ -41,6 +41,13 @@ jobs:
           SHOTS=preview/budget node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out
           ! grep -q '^SKIP' /tmp/budget-ui.out
       # The #379 research review block in both clients (stubbed: no network, model or key; screenshots into preview/research-review). It must run, not skip.
+      # #902 request-lifecycle failures (stubbed: no Gmail, posting, sends or provider calls; phone + desktop). It must run, not skip.
+      - name: Rendered request-failure states (send readiness, social, SEO, inbox, lead monitors)
+        run: |
+          set -o pipefail
+          SHOTS=preview/request-failures node test/ui/request-failures.ui.mjs | tee /tmp/rf.out
+          ! grep -q '^NOT RUN' /tmp/rf.out
+          grep -q '^request-failures UI check passed' /tmp/rf.out
       - name: Rendered research-review checks (first-run + leads draft editor)
         run: |
           set -o pipefail
@@ -75,6 +82,14 @@ jobs:
           mkdir -p preview/infotip-clipping
           SHOTS=preview/infotip-clipping node test/ui/infotip-clipping.ui.mjs | tee /tmp/ic.out
           ! grep -q '^NOT RUN' /tmp/ic.out
+      # #1016: the Leads "Profile used" summary keeps the profile text and its origin/approval note readable beside a long
+      # profile at 390 and 1280 (no one-word-wide note column), full wording, details still toggles. It must run, not skip.
+      - name: Leads profile provenance layout (long profile, every label, desktop + mobile)
+        run: |
+          set -o pipefail
+          mkdir -p preview/profile-provenance
+          SHOTS=preview/profile-provenance node test/ui/profile-provenance-layout.ui.mjs | tee /tmp/pp.out
+          ! grep -q '^NOT RUN' /tmp/pp.out
       # The #420 manual-profile ready card and readiness panel: a saved-by-hand profile completes both surfaces without a website and the panel must not contradict the card. They must run, not skip.
       - name: Ready card and readiness panel (manual profile without a website)
         run: |

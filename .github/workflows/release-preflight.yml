@@ -17,4 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest discover -s ops -p 'test_*launch*.py'
+      # #901: the discovery guard runs on its own, BEFORE discovery and independent of any discovery pattern, so changing a
+      # pattern below can never switch the guard off. It fails if any ops/**/test*.py file is outside the discovery steps.
+      - name: Ops test discovery guard
+        run: python3 ops/test_ci_discovery.py
+      - name: Ops tests (ops/test_*.py)
+        run: python3 -m unittest discover -s ops -p 'test_*.py'
+      # ops/staging has no __init__.py, so discovery over ops never reaches it (#907/#908 tests): its own step.
+      - name: Ops staging tests (ops/staging/test_*.py)
+        run: python3 -m unittest discover -s ops/staging -p 'test_*.py'
