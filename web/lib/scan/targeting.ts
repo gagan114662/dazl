@@ -101,8 +101,16 @@ const EVENTS: { event: string; re: RegExp; object?: number }[] = [
   { event: 'partner', re: /\b(?:partnered|partnership)\b/gi },
   { event: 'rebrand', re: /\brebrand(?:ed|ing)?\b/gi },
 ]
-const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|account\s+executives?)\b/i
+const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|salesperson|account\s+executives?)\b/i
 const STOP = /\s+(?:within|in\s+the|in|over|during|this|last|recently|and|or|but|while|who|that|which|excluding|except|other\s+than|with|at|from|to)\b|[,.;:!?()]/i
+// #876: "made their first sales hire" / "has made a founding engineering hire": a completed hire, in the request's own words.
+const MADE_HIRE = /\bmade\s+(?:(?:a|an|its|their|the|our)\s+)?((?:first|founding|inaugural|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi
+const HIRE_QUALIFIER = /^(?:first|founding|inaugural|new)$/i
+const FIRST_WORD = /^(?:first|founding|inaugural)$/i
+// #876: a modal in front of the completed verb ("may have made", "will have hired", "might have just made") says the hire may not have happened.
+// That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
+const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
+const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
 const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for)\s+)+/i, '').trim()
 
 function findAtoms(q: string): Atom[] {
@@ -112,13 +120,22 @@ function findAtoms(q: string): Atom[] {
   techAtoms(q, add)
   // 1. A completed hire ("hired their first VP of Sales", "first VP hired"): a fact in the past, never an open role.
   for (const m of q.matchAll(/\b(?:hired|appointed|named|brought\s+on|onboarded|welcomed)\s+((?:(?:a|an|its|their|the)\s+)?((?:first|founding|inaugural|new)\s+)?[a-z][a-z&\s-]{1,60})/gi)) {
-    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role)) continue
+    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role) || MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
     const end = (m.index ?? 0) + m[0].indexOf(m[1]) + m[1].indexOf(role) + role.length
     add({ kind: 'hire_made', start: m.index ?? 0, end, role, first: /\b(?:first|founding|inaugural)\b/i.test(m[1].slice(0, m[1].indexOf(role) + 1)) })
   }
   for (const m of q.matchAll(/\b(first|founding|new)\s+([a-z][a-z&\s-]{1,40}?)\s+(?:(?:was|were|has\s+been|have\s+been|recently|just)\s+)?(?:hired|appointed|joined|named|brought\s+on)\b/gi)) {
-    if (!ROLE_WORD.test(m[2])) continue
+    if (!ROLE_WORD.test(m[2]) || MODAL_WORD.test(m[0])) continue
     add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[2].trim(), first: /first|founding/i.test(m[1]) })
+  }
+  // #876: "made their first sales hire" states the same completed fact in other words - a hire in the past, never an open role. Only the past
+  // tense "made" reads so: "making / make / makes their first sales hire" states no completed hire and stays an open-role condition (step 3).
+  // A qualifier the role slot catches by itself ("made a new hire") is no role: any role, with `first` only when the request says first.
+  for (const m of q.matchAll(MADE_HIRE)) {
+    if (MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
+    const q1 = (m[1] ?? '').trim(), word = m[2]
+    const role = HIRE_QUALIFIER.test(word) ? '' : word
+    add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role, first: FIRST_WORD.test(q1) || (!role && FIRST_WORD.test(word)) })
   }
   // 2. Funding. A bare "seed" is a stage only in a funding context ("seed oil producers" is not).
   const fundingContext = FUNDING_CUE.test(q) || /\bseries\s+[a-e]\b|\bpre-?seed\b/i.test(q)
@@ -141,9 +158,10 @@ function findAtoms(q: string): Atom[] {
     const role = m[1] ? cleanRole(m[1]) : ''
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
   }
-  // "made their first sales hire": the hire the request asks about, read as the hiring condition its role names (proven like any open role: a dated posting or a source naming it).
-  for (const m of q.matchAll(/\b(?:made|making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
-    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[1] })
+  // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
+  // like any open role: a dated posting or a source naming it). The past tense ("made their first sales hire") is a completed hire: step 1 (#876).
+  for (const m of q.matchAll(/\b(?:making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
+    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
   // 4. Other events.
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
@@ -160,6 +178,9 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const q = (query ?? '').replace(/\s+/g, ' ').trim()
   const ambiguities: Ambiguity[] = []
   const atoms = findAtoms(q)
+  // #876: a modal completed hire ("may have made their first sales hire") compiles to no condition (findAtoms); the plan says why.
+  for (const m of q.matchAll(/\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*(?:made\s+(?:(?:a|an|its|their|the|our)\s+)?(?:[a-z][a-z-]*\s+){0,2}hires?|hired|appointed|named|brought\s+on|onboarded|welcomed)\b/gi))
+    ambiguities.push({ text: m[0], readings: ['a completed hire', 'a hire that may not have happened'], chosen: 'no completed-hire condition: the request does not say the hire happened, so nothing is proven by it' })
   // Windows, each bound to the condition it follows in the text (or to every condition when it comes first).
   const windows: { at: number; end: number; days: number; text: string; anchorWord?: string }[] = []
   for (const m of q.matchAll(WINDOW_RE)) {

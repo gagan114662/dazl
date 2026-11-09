@@ -927,8 +927,9 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   const hitByUrl = new Map(hits.map(h => [h.url, h]))
   // A request that needs an event beyond hiring (seed funding, an opening) is not answered by job postings alone: within each window class
   // the pages that can carry the event come before job-board / careers pages, which only corroborate the hiring half. Nothing is excluded.
-  // #380 / #204 Test B: under an OR plan ("seed funding OR first sales hire") a job page can prove a branch on its own, so it is not ranked behind the event pages.
-  const eventBeyondHiring = needsEventBeyondHiring(icp.signals, job.query ?? '') && !salesGateOr(job.query, JSON.stringify(icp))
+  // #380 / #204 Test B: under an OR plan ("seed funding OR are hiring sales") a job page can prove a branch on its own, so it is not ranked behind the event pages.
+  // #876: not when the OR's hiring branch is a COMPLETED hire ("made their first sales hire"): a job page is an open vacancy, which never proves it.
+  const eventBeyondHiring = jobPagesBehindEvents(icp.signals, job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
   const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
@@ -952,6 +953,13 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
+// Fetch ranking for a compound request: job-board / careers pages go behind the pages that can carry the event, unless the compiled plan is an OR
+// whose hiring branch a job page can prove on its own (an open role). A completed-hire branch (#876, hire_made) is never proven by a job page.
+export function jobPagesBehindEvents(signals: string[] | null | undefined, query: string | null | undefined, icpJson: string): boolean {
+  if (!needsEventBeyondHiring(signals ?? [], query ?? '')) return false
+  const or = salesGateOr(query, icpJson)
+  return !or || or.hiring.kind === 'hire_made'
+}
 // Which result URLs get the scarce fetch slots, as a rank (lower first): dated inside the window, then undated, then dated outside it (can never pass), login-walled last; for a compound request
 // (an event beyond hiring) the job-board / careers pages sit behind the pages that can carry the event. Among equal ranks the caller keeps search order, breadth first by host: there is NO relevance signal.
 export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, windowDays: number, eventBeyondHiring: boolean, now = new Date()): (u: string) => number {
