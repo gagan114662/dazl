@@ -91,7 +91,11 @@ test('without proof, a model or publication date changes nothing: equal-fit twin
 test('the durable timing-proof record never reaches the Leads payload: only the human timing state does', async () => {
   const db = seed(); const j = job(db)
   const id = ins(db, j, 'Proven Dental', 70, 'Fits: multi-location dental group.', daysAgoISO(5), 'page_bound', null)
-  addEnrichment(db, 'A', id, { connector: 'scan:actionable', kind: 'actionability', value: 'Actionable: domain, person and published contact confirmed', label: 'Pat, Owner - email: pat@x.test', confidence: null, source_url: 'https://invalid.example/', source_date: daysAgoISO(0), retrieved_at: Math.floor(Date.now() / 1000) })
+  // the current evidence the proof is bound to (#914): an own-domain company site, a named owner and a mailbox published on it
+  const site = (kind: string, value: string, url: string, label: string | null = null) => addEnrichment(db, 'A', id, { connector: 'sitecrawl', kind, value, label, confidence: null, source_url: url, source_date: daysAgoISO(0), retrieved_at: Math.floor(Date.now() / 1000) })
+  site('domain', 'provendental.test|evidence_own_domain', 'https://provendental.test/news', 'domain-basis-v1:evidence_own_domain')
+  site('person', 'Pat, Owner', 'https://provendental.test/team'); site('email', 'pat@provendental.test', 'https://provendental.test/contact')
+  addEnrichment(db, 'A', id, { connector: 'scan:actionable', kind: 'actionability', value: 'Actionable: domain, person and published contact confirmed', label: 'Pat, Owner - email: pat@provendental.test', confidence: null, source_url: 'https://invalid.example/', source_date: daysAgoISO(0), retrieved_at: Math.floor(Date.now() / 1000) })
   assert.deepEqual(recordTimingProof(db, { id: j, user_id: 'A' }), { proven: 1, held: 0 })
   const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${j}`))
   const body = await res.text()

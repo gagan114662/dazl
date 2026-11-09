@@ -33,6 +33,41 @@ test('the reviewed buyer profile is saved, survives a fresh read (reload) and st
   assert.equal((await get()).buyer, null, "another tenant never sees A's profile")
 })
 
+// The WHOLE canonical buyer survives save -> fresh read: research (with its rejections), country, language,
+// window_days and the lookalike block. A reopen of the brain editor rebuilds from this; anything dropped here would
+// silently erase review state (#1002 carry-through).
+const WHOLE_BUYER = {
+  ...BUYER, country: 'US', language: 'en', window_days: 180,
+  lookalike: { v: 1, p: 6, q: 6, f: [{ d: 'i', t: 'dental', n: 3, x: 2.5 }], h: { p: 0.8, b: 0.4, n: 6 }, k: { c: 'abcde12345', x: 'zzzzz', n: 'yyyyy' } },
+  research: {
+    v: 1, site: 'clinicdesk.example', q: 'Who buys this?', ans: { q: 'Who buys this?', o: 'o1', t: 'Clinic administrators' },
+    offers: [{ i: 'o1', n: 'ClinicDesk' }],
+    hyps: [
+      { i: 'h1', o: 'o1', k: 'persona', t: 'Clinic administrators', s: 'sourced', u: 'https://clinicdesk.example/', q: 'for clinic administrators', at: 1800000000 },
+      { i: 'h2', o: 'o1', k: 'persona', t: 'Real estate coaches', s: 'rejected', u: 'https://clinicdesk.example/', q: null, at: null },
+    ],
+    decisions: [{ offer: 'o1', hypothesis: 'h2', action: 'reject' }],
+  },
+}
+
+test('the whole canonical buyer - research with rejections, country, language, window, lookalike - survives save and a fresh read', async () => {
+  as('A')
+  const r = await post({ buyer: WHOLE_BUYER })
+  assert.equal(r.status, 200)
+  assert.deepEqual((await r.json()).buyer.research.hyps.map((h: { t: string; s: string }) => [h.t, h.s]), [['Clinic administrators', 'sourced'], ['Real estate coaches', 'rejected']], 'the rejection is stored, not dropped')
+  const fresh = await get()
+  // normalizeResearch keeps the field record (offers/hyps/q/ans); the raw decisions list is replayed state, not stored
+  const expectedResearch = { ...WHOLE_BUYER.research } as Record<string, unknown>
+  delete expectedResearch.decisions
+  assert.deepEqual(fresh.buyer.research, expectedResearch, 'research block whole on a fresh read (minus the replayed decisions list)')
+  assert.equal(fresh.buyer.window_days, 180)
+  assert.equal(fresh.buyer.country, 'US')
+  assert.equal(fresh.buyer.language, 'en')
+  assert.deepEqual(fresh.buyer.lookalike, WHOLE_BUYER.lookalike)
+  assert.deepEqual(JSON.parse((db.prepare('SELECT buyer_profile FROM users WHERE id = ?').get('A') as { buyer_profile: string }).buyer_profile).research, expectedResearch, 'the stored row itself carries it')
+  await post({ buyer: BUYER }) // restore the shared fixture for later tests
+})
+
 test('omitting buyer keeps it, null clears it, an invalid one is refused and changes nothing', async () => {
   as('A')
   assert.equal((await post({ business_name: 'ClinicDesk Inc' })).status, 200)

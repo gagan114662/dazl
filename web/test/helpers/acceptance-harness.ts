@@ -7,6 +7,8 @@ import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migrateScan, createJob, createQueryJob } from '../../lib/scan/store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
+import { migrateNeedEvidence } from '../../lib/scan/need-evidence.ts'
+import { migrateCompetitors } from '../../lib/signals/competitor-reddit.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateAuth } from '../../lib/auth-db.ts'
 import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
@@ -42,7 +44,8 @@ export interface Fixture {
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
   beforeRun?: (db: Database.Database) => void | Promise<void>   // called once with the job claimed, before the scan starts (state an earlier play left)
 
-  reviewedIcp?: object                     // a profile the USER reviewed: stored with the job exactly as POST /api/scan stores it (normalizeIcp, icp_inferred = 0); no inference is run
+  reviewedIcp?: object                     // a profile submitted with the job: stored as POST /api/scan stores it (normalizeIcp); no inference is run
+  icpReviewed?: boolean                    // the submit was the review editor's explicit event (reviewed: true -> icp_inferred = 0); omitted/false stores a raw carry (3)
   deps?: Record<string, unknown>           // extra runJob deps (e.g. memory exclusions)
   runBudget?: string                       // the job's stored run_budget JSON (as POST /api/scan stores it)
   csvDomain?: string                       // a CSV company job for this domain (the business path: three fixed queries, no LLM planning call)
@@ -55,7 +58,7 @@ export interface Fixture {
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
-  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
+  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateCompetitors(db); migrateNeedEvidence(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
   migrateAuth(db) // the actual current users schema; a hand-rolled shape drifts (email_verified_at broke the #417 drain here)
   db.prepare("INSERT INTO users (id, email, business_name, password_hash, salt) VALUES ('A', 'acme@example.test', 'Acme', 'h', 's')").run()
@@ -66,7 +69,7 @@ export async function runFixture(f: Fixture) {
     const id = createJob(db, 'A', { business_name: 'Brightloop', industry: 'B2B SaaS', location: 'London, UK' }, f.runBudget ?? null)
     db.prepare('UPDATE scan_jobs SET csv_domain = ? WHERE id = ?').run(f.csvDomain, id)
   } else {
-    createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
+    createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), icpReviewed: f.icpReviewed === true, ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
   }
   if (f.fundedBy) { migrateTrialBudget(db); db.prepare('UPDATE scan_jobs SET funded_by = ?').run(f.fundedBy) }   // the trial tables, so settleTrialReservation finds its table (no reservation row: admission is the route's job)
   const job = claimKeyedJob(db)!
