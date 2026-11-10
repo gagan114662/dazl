@@ -31,13 +31,14 @@ The benchmark runner persists the frozen contract hash in every judgement's reco
 ## Dates
 Whole UTC calendar days: the `as_of` day passes, the next day is the future (fails), the window is inclusive, and a date that is not a real day fails.
 
-## Not done here
-The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. Contracts are frozen per process; a durable contract store is not built.
-
 ## Person and contact-route verification (#781)
 `lib/evals/person-verify.ts` decides from pages somebody else fetched whether the named contact is CURRENT at the company, and hands the contract `contact.person` (`current | former | unknown`).
-- A page speaks about the person only when one sentence names both the person and the company. A same-name person at another company supports nothing.
-- **Former beats current:** any fresh page saying they left (former, ex-, left, resigned, stepped down, alumni, until <year>...) makes them former.
-- **Current needs a fresh, dated page** (within `max_age_days` of `as_of`, not after it) with a present-tense sentence. No page, an undated or stale page is `unknown`, never current.
-- In `contact.usable`: a former employee fails; a generic role inbox (info@, sales@, support@, no-reply@...) fails as well as a hiring inbox; the right domain with an unconfirmed person is unknown; a contact with no person check at all is judged by the route alone, as before.
-Not done: fetching the pages, matching a person by anything but name and company, title verification beyond a stated-title match, and the semantic judge (#782).
+- **Clause-level binding:** a sentence counts only when the person is the subject of an employment predicate whose object is the company (at/with/for/from). A lawsuit, a negation ("not employed by"), "replaced X, who left", or a former role at a DIFFERENT company is not evidence either way: unknown.
+- **Former beats current:** any fresh page with a bound departure (former, left, resigned from, stepped down from, no longer works at, alumni, until <year>) makes them former.
+- **Current needs a bound, fresh date:** the day must be stated in that very sentence or be the page's own labelled posted/published/updated/dated date, within `max_age_days` of `as_of` (not after it). An unrelated date elsewhere on the page does not count. Missing, undated or stale is `unknown`, never current.
+- In `contact.usable`: a former employee fails (with or without an email on file); a generic role inbox (info@, sales@, webmaster@, reception@, and the same with a team or region qualifier, e.g. sales-emea@, info2@) fails like a hiring inbox; the right domain with an unconfirmed person is unknown; a contact with no person check is judged by the route alone.
+- The scorer version is now 2: these verdicts differ from version 1 for the same frozen contract and evidence, so persisted judgements can tell the algorithms apart.
+Not done: fetching the pages, matching a person by anything but name and company, and a title check beyond a stated title. The employment patterns are a deterministic list, not exhaustive: an unlisted phrasing is unknown, never current.
+
+## Not done here
+The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. Contracts are frozen per process; a durable contract store is not built.

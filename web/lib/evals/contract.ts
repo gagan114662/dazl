@@ -14,7 +14,8 @@ import { createHash } from 'node:crypto'
 import { getDomain } from 'tldts'
 
 export const CONTRACT_VERSION = 'dazl.evaluation-contract/1'
-export const SCORER = { id: 'dazl.lead-contract', version: 1 } as const
+// v2 (#781): a former employee and a generic role inbox now fail contact.usable, and an unconfirmed person stays unknown; v1 judged the route alone.
+export const SCORER = { id: 'dazl.lead-contract', version: 2 } as const
 export type Status = 'pass' | 'fail' | 'unknown' | 'contradicted'
 export const STATUSES: Status[] = ['pass', 'fail', 'unknown', 'contradicted']
 
@@ -119,9 +120,18 @@ export const registrable = (h: string) => { const host = h.toLowerCase().replace
 // are recruiting too, not only the bare names.
 const RECRUITING = /^(careers?|jobs?|hr|recruit(ing|ment|ers?)?|talent(\s?acquisition)?|hiring|people|apply|((job|career)s? )?applications?|work(\s?with\s?us)?|join(\s?us)?|employment|vacancies)(\s(team|dept|department))?$/
 const isRecruitingMailbox = (local: string) => RECRUITING.test(local.split('+')[0].replace(/[._-]+/g, ' ').trim())
-// A generic role inbox routes to a team, not to a named buyer: info@, sales@, support@, no-reply@ and the like are not a contact route for a person (#781).
-const GENERIC = /^(info|contact|hello|hi|sales|support|help|admin|office|team|enquir(y|ies)|inquir(y|ies)|mail|general|press|media|marketing|billing|accounts?|service|customer(\s(service|care|support))?|no\s?reply|do\s?not\s?reply)(\s(team|dept|department))?$/
-const isGenericMailbox = (local: string) => GENERIC.test(local.split('+')[0].replace(/[._-]+/g, ' ').trim())
+// A generic role inbox reaches a team or a function, not a named buyer (#781): info@, sales@, support@, no-reply@, webmaster@, reception@, and the same role with a team,
+// department or region qualifier (sales-emea@, support.us@, customer.service.team@). The local part is split on . _ - and + tags; it is generic when its first token is a role
+// stem and every other token is a qualifier (team, dept, a region word, or a two-letter country code). A name that merely contains a role word (jane.info@) is a person.
+const ROLE = new Set(['info', 'information', 'contact', 'contacts', 'hello', 'hi', 'sales', 'support', 'help', 'helpdesk', 'admin', 'administrator', 'office', 'team', 'enquiry', 'enquiries', 'inquiry', 'inquiries', 'mail', 'general', 'press', 'media', 'pr', 'marketing', 'billing', 'accounts', 'account', 'accounting', 'finance', 'service', 'services', 'customer', 'customers', 'noreply', 'donotreply', 'reception', 'webmaster', 'postmaster', 'hostmaster', 'abuse', 'security', 'legal', 'privacy', 'compliance', 'orders', 'order', 'feedback', 'partnerships', 'partners', 'partner', 'newsletter', 'subscribe', 'unsubscribe', 'bounce', 'mailer', 'notifications', 'alerts', 'receptionist', 'frontdesk', 'operations', 'ops', 'it', 'care', 'concierge', 'bookings', 'booking', 'reservations', 'events', 'careers'])
+const QUALIFIER = new Set(['team', 'dept', 'department', 'desk', 'global', 'emea', 'apac', 'latam', 'amer', 'americas', 'europe', 'asia', 'africa', 'na', 'eu', 'us', 'uk', 'ca', 'au', 'nz', 'de', 'fr', 'es', 'it', 'nl', 'in', 'sg', 'jp', 'br', 'mx', 'online', 'general', 'service', 'services', 'support', 'care', 'inbox'])
+const isGenericMailbox = (local: string) => {
+  const parts = local.split('+')[0].toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean).map(x => x.replace(/\d+$/, '') || x)   // info2@, sales1@: a numbered role alias is still the role
+  if (parts.length === 0) return false
+  const joined = parts.join('')
+  if (['noreply', 'donotreply', 'dontreply'].includes(joined)) return true
+  return ROLE.has(parts[0]) && parts.slice(1).every(p => QUALIFIER.has(p) || ROLE.has(p) || /^\d+$/.test(p))
+}
 // One whole address: a single @, a non-empty local part, a dotted domain, no spaces. "@northwind.io" and "jane@northwind.io@other.org" are not usable routes.
 const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/
 const emailDomain = (em: string) => em.slice(em.indexOf('@') + 1)
@@ -182,13 +192,13 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
   // consent.status: a lead is not validated unless the consent/policy status says it may be contacted, when the contract requires it.
   if (k.require_consent) add('consent.status', e.consent === 'allowed' ? 'pass' : e.consent === 'blocked' ? 'fail' : 'unknown', e.consent === 'allowed' ? 'contacting is allowed' : e.consent === 'blocked' ? 'contacting is blocked' : 'the consent status is not known')
 
-  // contact.usable: a reachable route at the company, not a hiring inbox.
+  // contact.usable: a reachable route at the company, not a hiring or generic inbox, to a person who is still there.
   const em = e.contact?.email?.trim().toLowerCase()
-  if (!em) add('contact.usable', 'unknown', e.contact?.phone ? 'only a phone number: not checked' : 'no contact route')
+  if (e.contact?.person === 'former') add('contact.usable', 'fail', 'the named contact is a former employee of the company, whatever route is on file')
+  else if (!em) add('contact.usable', 'unknown', e.contact?.phone ? 'only a phone number: not checked' : 'no contact route')
   else if (!EMAIL.test(em)) add('contact.usable', 'fail', 'the email is not a well-formed address')
   else if (isRecruitingMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a hiring inbox, which routes to recruiting and not to a buyer')
   else if (isGenericMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a generic role inbox, which reaches a team and not a named person')
-  else if (e.contact?.person === 'former') add('contact.usable', 'fail', 'the named contact is a former employee of the company')
   else if (!claimed) add('contact.usable', 'unknown', 'the company domain is not known, so the email domain cannot be matched')
   else if (registrable(emailDomain(em)) !== claimed) add('contact.usable', 'fail', 'the email is not at the company\'s domain')
   else if (e.contact?.person === 'unknown') add('contact.usable', 'unknown', 'the email is at the company\'s domain, but the contact\'s current employment could not be confirmed')

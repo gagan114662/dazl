@@ -2,7 +2,7 @@
 // Acceptance: former employees and generic recruiting inboxes never pass. Unknown is never pass.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { freezeContract, evaluateLead, type Contract, type LeadEvidence } from '../lib/evals/contract.ts'
+import { freezeContract, evaluateLead, SCORER, type Contract, type LeadEvidence } from '../lib/evals/contract.ts'
 import { verifyPerson, contactEvidence, statedDays, type PersonPage } from '../lib/evals/person-verify.ts'
 
 const contract: Contract = {
@@ -85,4 +85,60 @@ test('stated days: three forms, whole tokens, impossible days dropped', () => {
 
 test('reproducible: the same pages give the same result', () => {
   assert.equal(JSON.stringify(verifyPerson(P, [CUR], O)), JSON.stringify(verifyPerson(P, [CUR], O)))
+})
+
+// ---- review findings on #1030 (Greptile P1 x2, xhawk) ----
+
+test('P1: a sentence that merely mentions the person and the company is not an employment statement', () => {
+  for (const text of [
+    'Posted 2026-10-20. Jane Doe is suing Northwind Labs.',
+    'Posted 2026-10-20. Jane Doe is not employed by Northwind Labs.',
+    'Posted 2026-10-20. Jane Doe is not at Northwind Labs.',
+    'Posted 2026-10-20. Jane Doe has never worked for Northwind Labs.',
+    'Posted 2026-10-20. Jane Doe is a critic of Northwind Labs.',
+    'Posted 2026-10-20. Jane Doe is a customer of Northwind Labs.',
+  ]) { const r = verifyPerson(P, [page(text)], O); assert.equal(r.person, 'unknown', text); assert.equal(contactStatus('jane@northwind.io', r).status, 'unknown', text) }
+})
+
+test('P1: "replaced X, who left the company" says nothing about the person; a former role at ANOTHER company is not a departure from this one', () => {
+  assert.equal(verifyPerson(P, [page('Posted 2026-10-20. Jane Doe replaced John Smith, who left Northwind Labs.')], O).person, 'unknown')
+  const r = verifyPerson(P, [page('Posted 2026-10-20. Jane Doe, former VP at Contoso, is VP of Sales at Northwind Labs.')], O)
+  assert.equal(r.person, 'current', 'the former role is at Contoso; the present role is at Northwind Labs')
+  assert.equal(verifyPerson(P, [page('Posted 2026-10-20. Jane Doe, former VP at Contoso, now advises Fabrikam.')], O).person, 'unknown')
+})
+
+test('P1: a negated departure is not a departure: "no longer" with the company is former, "never left" is unknown', () => {
+  assert.equal(verifyPerson(P, [page('Posted 2026-10-20. Jane Doe no longer works at Northwind Labs.')], O).person, 'former')
+  assert.equal(verifyPerson(P, [page('Posted 2026-10-20. Jane Doe never left Northwind Labs.')], O).person, 'unknown')
+})
+
+test('P1: an unrelated date on the page does not make an old employment statement fresh', () => {
+  const stale = page('Published 2020-01-01. Jane Doe is VP of Sales at Northwind Labs. Related news: Webinar, November 1, 2026.')
+  assert.equal(verifyPerson(P, [stale], O).person, 'unknown')
+  const undated = page('Jane Doe is VP of Sales at Northwind Labs. Webinar: 2026-11-01.')
+  assert.equal(verifyPerson(P, [undated], O).person, 'unknown')
+  assert.equal(verifyPerson(P, [page('Jane Doe is VP of Sales at Northwind Labs as of October 20, 2026.')], O).person, 'current', 'a date in the sentence itself is bound to it')
+  assert.equal(verifyPerson(P, [page('Last updated 2026-10-20. Jane Doe is VP of Sales at Northwind Labs.')], O).person, 'current', 'the page\'s own labelled date is bound to it')
+  assert.equal(verifyPerson(P, [page('Published 2020-01-01. Jane Doe left Northwind Labs. Updated 2026-10-20.')], O).person, 'former', 'a labelled update date counts')
+})
+
+test('xhawk: a former contact fails whether or not an email is on file', () => {
+  const former = verifyPerson(P, [page('Posted 2026-10-02. Jane Doe left Northwind Labs.')], O)
+  assert.equal(contactStatus(null, former).status, 'fail')
+  const e: LeadEvidence = { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: { phone: '+1 416 555 0100', person: 'former' } }
+  assert.equal(evaluateLead(freezeContract(contract), e).verdicts.find(x => x.field === 'contact.usable')!.status, 'fail')
+})
+
+test('xhawk: common and qualified generic role inboxes never pass, and a name that contains a role word does', () => {
+  const cur = verifyPerson(P, [CUR], O)
+  for (const m of ['reception@northwind.io', 'webmaster@northwind.io', 'sales-emea@northwind.io', 'support.us@northwind.io', 'customer.service.team@northwind.io', 'info2@northwind.io', 'postmaster@northwind.io', 'billing@northwind.io', 'legal@northwind.io', 'press+tips@northwind.io', 'donotreply@northwind.io', 'marketing.apac@northwind.io'])
+    assert.equal(contactStatus(m, cur).status, 'fail', m)
+  for (const m of ['jane@northwind.io', 'jane.info@northwind.io', 'info.smith@northwind.io', 'sales.jane@northwind.io', 'marketing-jane@northwind.io'])
+    assert.equal(contactStatus(m, cur).status, 'pass', m)
+})
+
+test('xhawk: the changed contact verdicts carry a new scorer version, so persisted judgements can tell the algorithms apart', () => {
+  assert.deepEqual(SCORER, { id: 'dazl.lead-contract', version: 2 })
+  const e: LeadEvidence = { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: { email: 'jane@northwind.io' } }
+  assert.deepEqual(evaluateLead(freezeContract(contract), e).scorer, { id: 'dazl.lead-contract', version: 2 })
 })
