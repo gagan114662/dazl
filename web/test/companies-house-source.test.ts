@@ -82,7 +82,9 @@ test('envelope: only the documented shape counts as an answer; anything else is 
   assert.deepEqual(chList(SOFTWARE), { rows: SOFTWARE.items, invalid: 0, hits: 1 })
   assert.deepEqual(chList({ hits: 0, items: [] }), { rows: [], invalid: 0, hits: 0 })
   assert.deepEqual(chList({ hits: 0 }), { rows: [], invalid: 0, hits: 0 })
-  for (const v of [{}, [], null, 'ok', 42, { errors: [{ error: 'x' }], hits: 0 }, { hits: 3 }, { hits: '0' }, { hits: -1, items: [] }, { hits: 0, items: {} }, { hits: 1, items: [] }, { hits: 1, items: [software, software] }, { items: [software] }])
+  assert.deepEqual(chList({ ...SOFTWARE, hits: '1' }), { rows: SOFTWARE.items, invalid: 0, hits: 1 }, 'the spec types hits as a string')
+  assert.equal(chList({ ...SOFTWARE, hits: '1.5' }), null); assert.equal(chList({ ...SOFTWARE, hits: 'many' }), null)
+  for (const v of [{}, [], null, 'ok', 42, { errors: [{ error: 'x' }], hits: 0 }, { hits: 3 }, { hits: -1, items: [] }, { hits: 0, items: {} }, { hits: 1, items: [] }, { hits: 1, items: [software, software] }, { items: [software] }])
     assert.equal(chList(v), null, JSON.stringify(v))
   assert.deepEqual(chList({ hits: 2, items: [software, { company_name: 'X' }] })?.invalid, 1, 'a malformed row is dropped and counted')
   assert.equal(isChCompany({ ...software, sic_codes: [62012] }), false)
@@ -133,10 +135,12 @@ test('failures are reported, never an empty market: no key, out of coverage, aut
   const savedKey = chLimits.key; chLimits.key = () => '  '
   try { r = await run('new software companies in London', recorded(asked)) } finally { chLimits.key = savedKey }
   assert.deepEqual([r.items, r.notes, asked.length], [[], ['credential_missing'], 0], 'no key: nothing requested, reported as missing credential')
-  for (const [status, note] of [[401, 'auth_or_blocked'], [403, 'auth_or_blocked'], [429, 'throttled'], [404, 'unreachable'], [500, 'unreachable']] as const) {
+  for (const [status, note] of [[401, 'auth_or_blocked'], [403, 'auth_or_blocked'], [429, 'throttled'], [400, 'unreachable'], [500, 'unreachable']] as const) {
     r = await run('new software companies in London', recorded([], () => ({ status, body: '' })))
     assert.deepEqual([r.items, r.notes], [[], [note]], String(status))
   }
+  // the spec's documented "404 No companies found" is a genuine empty market: healthy empty, no note
+  r = await run('new software companies in London', recorded([], () => ({ status: 404, body: '' }))); assert.deepEqual([r.items, r.notes], [[], []])
   r = await run('new software companies in London', recorded([], () => null)); assert.deepEqual(r.notes, ['unreachable'])
   r = await run('new software companies in London', recorded([], () => ({ status: 200, body: '<html>' }))); assert.deepEqual(r.notes, ['unparseable'])
   r = await run('new software companies in London', recorded([], () => ({ status: 200, body: '{}', truncated: true }))); assert.deepEqual(r.notes, ['oversize'])
@@ -171,6 +175,9 @@ test('wired into source selection: accepted by the validator, reported per run (
   resetChState()
   out = await collectEvidenceReport({ adapters: ['companies-house'], feeds: [] }, 'new software companies in London', recorded([]), 5_000, [], pageOf)
   assert.deepEqual([out.runs[0].status, out.items.length], ['ok', 1])
+  resetChState()
+  out = await collectEvidenceReport({ adapters: ['companies-house'], feeds: [] }, 'new software companies in London', recorded([], () => ({ status: 404, body: '' })), 5_000, [], pageOf)
+  assert.deepEqual(out.runs, [{ collector: 'adapter:companies-house', status: 'empty', evidence: 0 }], 'documented 404 No companies found')
 })
 
 test('capability matrix: shipped, GB, official registry with registry date, key-dependent (unavailable without it), not advertisable until live evidence exists', () => {
@@ -182,12 +189,14 @@ test('capability matrix: shipped, GB, official registry with registry date, key-
   assert.ok(MATRIX.find(m => m.id === 'local-openings-permits')!.markets.every(m => m !== 'GB'), 'GB is no longer claimed as a gap')
 })
 
-test('source to lead through the unchanged verifier: identity and quote pass on the cited page; the incorporation date is on the page but the verifier decides what it accepts', async () => {
+test('source to lead through the unchanged verifier: identity and quote pass on the cited page; the registry date is NOT tied to the company by the page, so the lead is undated', async () => {
   const { items } = await run('new software companies in London', recorded([]))
   const it = items[0]
   const lead: LeadDraft = { name: '', company: 'HOME ED COMPANION LTD', contact: null, signal: it.title, source_url: it.url, excerpt: it.quote, event_date: it.date, score: 80 } as LeadDraft
   const o = await verifyLeads([lead], async u => ({ text: PAGES[u], title: 'HOME ED COMPANION LTD overview - Find and update company information - GOV.UK', retrievedAt: 1, published: null }), new Date(NOW))
   assert.equal(o.leads.length, 1, 'the cited page is re-read and the quote is found on it')
+  assert.equal(o.leads[0].event_date, null, 'no gate is loosened: the verifier does not tie the registry date to the company on the page, so the lead is undated (as brreg)')
+  assert.match(String((o.leads[0] as LeadDraft & { timing_note?: string }).timing_note), /not tied to this company and event by the fetched page.*treated as undated/)
   // a lead whose company is not the one on the page is refused by the same verifier
   const other = await verifyLeads([{ ...lead, company: 'SOME OTHER LTD' } as LeadDraft], async u => ({ text: PAGES[u], title: 'x', retrievedAt: 1, published: null }), new Date(NOW))
   assert.equal(other.leads.length, 0)

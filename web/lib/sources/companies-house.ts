@@ -1,7 +1,8 @@
 // UK Companies House: new company incorporation as the "local opening" signal for UK local and small businesses (#764, part of #388; the owner chose this
 // market and source on the issue). One dated official signal:
 //  - new_company: an ACTIVE company incorporated in the window, filtered by SIC 2007 code and, when the request names one, the registered-office town/city.
-// Authorized access only: the official Companies House API (advanced company search) with the deployment's own free API key (COMPANIES_HOUSE_API_KEY, HTTP
+// Spec (developer-specs.company-information.service.gov.uk, advanced-company-search): GET /advanced-search/companies; sic_codes comma-delimited; `hits` is typed string;
+// 404 = "No companies found". Authorized access only: the official Companies House API (advanced company search) with the deployment's own free API key (COMPANIES_HOUSE_API_KEY, HTTP
 // Basic with the key as the user name). No key = the source is UNAVAILABLE and reports credential_missing (a partial run), never an empty market, and nothing
 // is requested. The key is only ever sent to api.company-information.service.gov.uk as a header: it is not placed in a URL, an Evidence item or a note.
 // Each item cites the company's public page on find-and-update.company-information.service.gov.uk (robots.txt: none, page answers 200), read through the scan's
@@ -98,7 +99,8 @@ export function isChCompany(v: unknown): v is ChCompany {
 }
 export function chList(v: unknown): { rows: ChCompany[]; invalid: number; hits: number } | null {
   if (!isObj(v) || 'errors' in v || 'error' in v) return null
-  const hits = v.hits
+  // the spec types `hits` as a string ("The number of matches found"): a numeric string is the documented form, a number is tolerated, anything else is not an answer
+  const hits = typeof v.hits === 'string' && /^\d{1,9}$/.test(v.hits) ? Number(v.hits) : v.hits
   if (typeof hits !== 'number' || !Number.isInteger(hits) || hits < 0) return null
   if (v.items === undefined) return hits === 0 ? { rows: [], invalid: 0, hits } : null
   if (!Array.isArray(v.items) || v.items.length > hits || (v.items.length === 0 && hits !== 0)) return null
@@ -148,6 +150,7 @@ export const companiesHouseAdapter: SourceAdapter = {
     if (!r) { note?.('unreachable'); return [] }
     if (r.status === 401 || r.status === 403) { note?.('auth_or_blocked'); return [] }
     if (r.status === 429) { note?.('throttled'); return [] }
+    if (r.status === 404) return [] // documented answer of this endpoint: "404 No companies found" is a genuine empty market (any other non-200 is a failure to read)
     if (r.status !== 200) { note?.('unreachable'); return [] }
     if (r.truncated) { note?.('oversize'); return [] }
     let body: unknown
