@@ -26,6 +26,7 @@
 //    to evaluate thresholds for synthetic data.
 import { createHash } from 'node:crypto'
 import { FIELDS, problemSummary, scorecard, validated, type BenchmarkRun, type Field, type Scorecard, type Task, type TaskRun, type TaskSet, type Verdict } from './scorecard.ts'
+import { parseSnapshots, verifierEvaluator } from './verified-evaluator.ts'
 
 export type AdapterOrigin = 'live' | 'recorded' | 'synthetic'
 export interface Brief {
@@ -35,7 +36,16 @@ export interface Brief {
 export interface Limits { usd: number; seconds: number }
 export interface Budget { usd_per_task: number; seconds_per_task: number; batch_usd: number }
 export interface AdapterConfig { product: string; product_version: string | null; model: string | null; sources: string[]; paid: boolean; notes?: string }
-export interface RawItem { company: string; domain?: string | null; contact?: string | null; event_date?: string | null; evidence_urls?: string[]; text?: string | null }
+// One lead as a system output it. The optional provenance fields (where the event, the quotes, the person and the contact
+// route were printed) are what the independent verifier (verified-evaluator.ts) re-reads on its own snapshots; a system
+// that does not give them simply gets those checks as unknown, never pass.
+export interface RawItem {
+  company: string; domain?: string | null; contact?: string | null; event_date?: string | null; evidence_urls?: string[]; text?: string | null
+  event_source_url?: string | null                        // the page that states the event (default: the first evidence url)
+  quotes?: { text: string; source_url: string }[]
+  person?: { name: string; title: string; source_url: string } | null
+  contact_source_url?: string | null                      // the page the contact address is printed on
+}
 export type Stop = 'budget' | 'timeout' | 'rate_limited' | 'login_required' | 'paywall' | 'feature_unavailable'
 export interface AdapterResult { items: RawItem[]; cost_usd: number | null; seconds: number | null; interventions: number; stopped?: Stop; detail?: string }
 export interface Adapter {
@@ -45,14 +55,22 @@ export interface Adapter {
   run(brief: Brief, limits: Limits): Promise<AdapterResult>
 }
 // What the evaluator sees: no system, product, model or config.
-export interface BlindItem { blind_id: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; text: string | null }
+export interface BlindItem {
+  blind_id: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; text: string | null
+  event_source_url: string | null; quotes: { text: string; source_url: string }[]; person: { name: string; title: string; source_url: string } | null; contact_source_url: string | null
+}
 // One judgement per blind id: the four scorecard fields, plus an optional record (rationale, tier, evidence) kept for audit.
 export type Judgement = Partial<Record<Field, Verdict>> & { record?: unknown }
-export interface BlindEvaluator { name: string; version: string; independent: boolean; judge(items: BlindItem[], brief: Brief): Promise<Record<string, Judgement>> }
+export interface BlindEvaluator { name: string; version: string; independent: boolean; config?: Record<string, unknown>; judge(items: BlindItem[], brief: Brief): Promise<Record<string, Judgement>> }
 export interface Evaluation { blind_id: string; system: string; task_id: string; entity_key: string; verdicts: Record<Field, Verdict>; record: unknown }
 
-export interface CanonicalItem { rank: number; entity_key: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; raw: RawItem }
-export interface StoredRun { run_id: string; system: string; task_id: string; task: Omit<TaskRun, 'results'>; items: CanonicalItem[]; interventions: number }
+export interface CanonicalItem {
+  rank: number; entity_key: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; raw: RawItem
+  event_source_url?: string | null; quotes?: { text: string; source_url: string }[]; person?: { name: string; title: string; source_url: string } | null; contact_source_url?: string | null
+}
+// dropped_items: output rows the runner could not canonicalise (not an object, no company name, past MAX_ITEMS_PER_TASK);
+// they are counted here and in the task reason, never silently lost and never scored.
+export interface StoredRun { run_id: string; system: string; task_id: string; task: Omit<TaskRun, 'results'>; items: CanonicalItem[]; interventions: number; dropped_items?: number }
 export interface RunStore { get(runId: string): StoredRun | undefined; put(r: StoredRun): void }
 export const memoryStore = (): RunStore & { runs: Map<string, StoredRun> } => { const runs = new Map<string, StoredRun>(); return { runs, get: id => runs.get(id), put: r => { runs.set(r.run_id, r) } } }
 
@@ -99,34 +117,72 @@ export function identityTokens(adapters: Pick<Adapter, 'system' | 'config'>[]): 
   return [...t].sort((a, b) => b.length - a.length)
 }
 // Strip identity tokens from what the evaluator reads. Company and domain are the lead itself and stay as they are.
+// Free text and the contact are scrubbed to [system]; anything the verifier must match verbatim on a page (an evidence
+// or source url, a quote, a person's name or title) is withheld instead when it names a system, so a scrubbed copy can
+// never fail or pass a check it would not have on the real text: the check that needed it becomes unknown.
 export function blindItem(it: Omit<BlindItem, 'blind_id'>, blind_id: string, tokens: string[]): { item: BlindItem; redactions: number } {
   let redactions = 0
   const re = tokens.length ? new RegExp(tokens.map(escapeRe).join('|'), 'gi') : null
+  const names = (s: string | null | undefined) => !!s && !!re && new RegExp(re.source, 'i').test(s)
   const scrub = (s: string | null) => { if (s === null || !re) return s; return s.replace(re, () => { redactions++; return '[system]' }) }
-  const evidence_urls = it.evidence_urls.map(u => { if (re && new RegExp(re.source, 'i').test(u)) { redactions++; return '[evidence url withheld: names a system]' } return u })
-  return { item: { blind_id, company: it.company, domain: it.domain, contact: scrub(it.contact), event_date: it.event_date, evidence_urls, text: scrub(it.text) }, redactions }
+  const evidence_urls = it.evidence_urls.map(u => { if (names(u)) { redactions++; return '[evidence url withheld: names a system]' } return u })
+  const withheld = <T,>(v: T | null, ...parts: (string | null | undefined)[]): T | null => { if (v === null) return null; if (parts.some(names)) { redactions++; return null } return v }
+  const quotes = (it.quotes ?? []).filter(q => { if (names(q.text) || names(q.source_url)) { redactions++; return false } return true })
+  return {
+    item: {
+      blind_id, company: it.company, domain: it.domain, contact: scrub(it.contact), event_date: it.event_date, evidence_urls, text: scrub(it.text),
+      event_source_url: withheld(it.event_source_url ?? null, it.event_source_url), quotes,
+      person: withheld(it.person ?? null, it.person?.name, it.person?.title, it.person?.source_url),
+      contact_source_url: withheld(it.contact_source_url ?? null, it.contact_source_url),
+    },
+    redactions,
+  }
 }
 
 // --- canonicalisation ---------------------------------------------------------------------------------------------
 
 const hostOf = (d: string | null | undefined): string | null => {
-  if (!d) return null
+  if (typeof d !== 'string' || !d) return null
   const h = d.trim().toLowerCase().replace(/^[a-z]+:\/\//, '').split(/[/?#]/)[0].replace(/^www\./, '')
   return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(h) ? h : null
 }
 const nameKey = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/\b(inc|ltd|llc|limited|gmbh|plc|corp|co)\b\.?/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+// One output can hold at most this many leads; the rest are dropped and counted (a precision@10 needs ten, and an
+// unbounded output must not exhaust the evaluator).
+export const MAX_ITEMS_PER_TASK = 50
+const text = (v: unknown, max: number): string | null => typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, max) : null
+const url = (v: unknown): string | null => { const s = text(v, 2000); if (!s) return null; try { const u = new URL(s); return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null } catch { return null } }
+const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 // One canonical row per entity, in the system's own order; the raw item is kept beside it. A duplicate entity in the same
-// output counts once, at its first rank.
-export function canonicalize(items: RawItem[]): CanonicalItem[] {
-  const out: CanonicalItem[] = []; const seen = new Set<string>()
-  for (const raw of items) {
-    const domain = hostOf(raw.domain)
-    const key = domain ? `domain:${domain}` : `name:${nameKey(raw.company ?? '')}`
-    if (key === 'name:' || seen.has(key)) continue
+// output counts once, at its first rank. The input is untrusted (a recorded file): a row that is not an object or has no
+// company name is dropped and counted, a malformed optional field is null, and nothing here throws.
+export const canonicalize = (items: unknown): CanonicalItem[] => canonicalizeCounted(items).items
+export function canonicalizeCounted(items: unknown): { items: CanonicalItem[]; dropped: number } {
+  const out: CanonicalItem[] = []; let dropped = 0
+  const seen = new Set<string>()
+  for (const raw of Array.isArray(items) ? items : []) {
+    const company = isRec(raw) ? text(raw.company, 200) : null
+    if (!isRec(raw) || !company) { dropped++; continue }
+    const domain = hostOf(raw.domain as string | null)
+    const key = domain ? `domain:${domain}` : `name:${nameKey(company)}`
+    if (key === 'name:') { dropped++; continue }
+    if (seen.has(key)) continue
+    if (out.length >= MAX_ITEMS_PER_TASK) { dropped++; continue }
     seen.add(key)
-    out.push({ rank: out.length + 1, entity_key: key, company: String(raw.company ?? '').trim(), domain, contact: raw.contact?.trim() || null, event_date: raw.event_date && /^\d{4}-\d{2}-\d{2}$/.test(raw.event_date) ? raw.event_date : null, evidence_urls: [...(raw.evidence_urls ?? [])], raw: structuredClone(raw) })
+    const quotes = (Array.isArray(raw.quotes) ? raw.quotes : []).slice(0, 5).flatMap(q => { const t = isRec(q) ? text(q.text, 500) : null, u = isRec(q) ? url(q.source_url) : null; return t && u ? [{ text: t, source_url: u }] : [] })
+    const p = isRec(raw.person) ? raw.person : null
+    const person = p && text(p.name, 150) && text(p.title, 150) && url(p.source_url) ? { name: text(p.name, 150)!, title: text(p.title, 150)!, source_url: url(p.source_url)! } : null
+    let clone: RawItem
+    try { clone = structuredClone(raw) as unknown as RawItem } catch { clone = { company } }   // a non-cloneable value (function, symbol) is not kept
+    out.push({
+      rank: out.length + 1, entity_key: key, company, domain, contact: text(raw.contact, 254),
+      event_date: typeof raw.event_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.event_date) ? raw.event_date : null,
+      evidence_urls: (Array.isArray(raw.evidence_urls) ? raw.evidence_urls : []).filter((u): u is string => typeof u === 'string').slice(0, 10),
+      event_source_url: url(raw.event_source_url), quotes, person, contact_source_url: url(raw.contact_source_url),
+      raw: clone,
+    })
   }
-  return out
+  return { items: out, dropped }
 }
 
 // --- the batch ----------------------------------------------------------------------------------------------------
@@ -138,14 +194,17 @@ export interface BatchOptions {
   committedSet?: TaskSet | null // the committed frozen task set for set.version; required unless the batch is synthetic
 }
 export interface SystemReport {
-  system: string; origin: AdapterOrigin; status: 'ran' | 'unavailable'; reason: string | null
-  tasks: number; complete: number; coverage: number | null
+  // ran: at least one task was attempted (complete, incomplete or failed). not_started: the adapter was available but
+  // no task started (every task unsupported by it, or not_run on the batch budget): its reason says why, and it has no
+  // precision, yield or rank to show. unavailable: no authorized adapter.
+  system: string; origin: AdapterOrigin; status: 'ran' | 'not_started' | 'unavailable'; reason: string | null
+  tasks: number; attempted: number; complete: number; coverage: number | null
   precision_at_5: number | null; precision_at_10: number | null
   validated: number; unique_actionable_yield: number      // validated entities no other system in the batch validated
   seconds: number | null; spend_usd: number | null; interventions: number
 }
 export interface BatchResult {
-  manifest: { batch_id: string; task_set_version: string; as_of: string; briefs_hash: string; seed: number; budget: Budget; origin: AdapterOrigin; label: string; order: Record<string, string[]>; systems: { system: string; origin: AdapterOrigin; config: AdapterConfig; available: Adapter['available'] }[]; evaluator: { name: string; version: string; independent: boolean }; blinding: { identity_tokens: number; redactions: number } }
+  manifest: { batch_id: string; task_set_version: string; as_of: string; briefs_hash: string; seed: number; budget: Budget; origin: AdapterOrigin; label: string; order: Record<string, string[]>; systems: { system: string; origin: AdapterOrigin; config: AdapterConfig; available: Adapter['available'] }[]; evaluator: { name: string; version: string; independent: boolean; config: Record<string, unknown> | null }; blinding: { identity_tokens: number; redactions: number } }
   runs: BenchmarkRun[]; scorecards: Scorecard[]; report: SystemReport[]; spent_usd: number
   evaluations: Evaluation[]     // every blind judgement mapped back to its system after judging, with its record
   interventions: Record<string, Record<string, number>>   // system -> task -> operator interventions
@@ -158,6 +217,20 @@ const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> => {
 }
 const VERDICTS: Verdict[] = ['pass', 'fail', 'unknown', 'contradicted']
 const STOP_STATUS: Record<Stop, TaskRun['status']> = { budget: 'incomplete', timeout: 'incomplete', rate_limited: 'incomplete', login_required: 'unsupported', paywall: 'unsupported', feature_unavailable: 'unsupported' }
+const ATTEMPTED: TaskRun['status'][] = ['complete', 'incomplete', 'failed']
+const nonNegOrNull = (x: unknown) => x === null || (typeof x === 'number' && Number.isFinite(x) && x >= 0)
+// Why an adapter's result cannot be taken as it is (null when it can). Adapters replay untrusted recorded files, so a
+// wrong type here must fail that task, recorded, instead of corrupting the budget sum or the run.
+export function adapterResultProblem(res: unknown): string | null {
+  if (!isRec(res)) return 'the result is not an object'
+  if (!Array.isArray(res.items)) return 'items is not a list'
+  if (!nonNegOrNull(res.cost_usd)) return `cost_usd ${JSON.stringify(res.cost_usd) ?? 'missing'} is not a non-negative number or null`
+  if (!nonNegOrNull(res.seconds)) return `seconds ${JSON.stringify(res.seconds) ?? 'missing'} is not a non-negative number or null`
+  if (!(typeof res.interventions === 'number' && Number.isSafeInteger(res.interventions) && res.interventions >= 0)) return `interventions ${JSON.stringify(res.interventions) ?? 'missing'} is not a non-negative integer`
+  if (res.stopped !== undefined && !Object.hasOwn(STOP_STATUS, res.stopped as string)) return `stopped ${JSON.stringify(res.stopped)} is not one of ${Object.keys(STOP_STATUS).join(', ')}`
+  if (res.detail !== undefined && typeof res.detail !== 'string') return 'detail is not a string'
+  return null
+}
 
 export async function runBatch(o: BatchOptions): Promise<BatchResult> {
   const { set, budget } = o
@@ -189,7 +262,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     for (const a of systems) {
       const run_id = sha(`${batch_id}|${a.system}|${brief.task_id}`).slice(0, 24)
       const prev = store.get(run_id)
-      if (prev) { stored.set(`${a.system}|${brief.task_id}`, prev); spent += prev.task.cost_usd ?? (['complete', 'incomplete', 'failed'].includes(prev.task.status) ? budget.usd_per_task : 0); continue } // resumed: reserved exactly as the first time
+      if (prev) { stored.set(`${a.system}|${brief.task_id}`, prev); spent += prev.task.cost_usd ?? (ATTEMPTED.includes(prev.task.status) ? budget.usd_per_task : 0); continue } // resumed: reserved exactly as the first time
       const av = avail.get(a.system)!
       if (!av.ok) { const r: StoredRun = { run_id, system: a.system, task_id: brief.task_id, task: { task_id: brief.task_id, status: 'unsupported', reason: `adapter unavailable: ${av.reason}`, seconds: null, cost_usd: null }, items: [], interventions: 0 }; store.put(r); stored.set(`${a.system}|${brief.task_id}`, r) }
     }
@@ -197,7 +270,10 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       const key = `${a.system}|${brief.task_id}`
       if (stored.has(key)) continue
       const run_id = sha(`${batch_id}|${a.system}|${brief.task_id}`).slice(0, 24)
-      const put = (task: Omit<TaskRun, 'results'>, items: CanonicalItem[] = [], interventions = 0) => { const r: StoredRun = { run_id, system: a.system, task_id: brief.task_id, task, items, interventions }; store.put(r); stored.set(key, r) }
+      const put = (task: Omit<TaskRun, 'results'>, items: CanonicalItem[] = [], interventions = 0, dropped = 0) => {
+        const t = dropped ? { ...task, reason: [task.reason, `${dropped} malformed or excess output row(s) dropped, not scored`].filter(Boolean).join('; ') } : task
+        const r: StoredRun = { run_id, system: a.system, task_id: brief.task_id, task: t, items, interventions, ...(dropped ? { dropped_items: dropped } : {}) }; store.put(r); stored.set(key, r)
+      }
       const sup = a.supports ? a.supports(brief) : true
       if (sup !== true) { put({ task_id: brief.task_id, status: 'unsupported', reason: `the system cannot express this task: ${sup}`, seconds: null, cost_usd: null }); continue }
       if (spent + budget.usd_per_task > budget.batch_usd) { put({ task_id: brief.task_id, status: 'not_run', reason: `batch budget reached ($${spent.toFixed(2)} of $${budget.batch_usd} spent)`, seconds: null, cost_usd: null }); continue }
@@ -207,12 +283,14 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
         put({ task_id: brief.task_id, status: 'failed', reason: `adapter error: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`, seconds: null, cost_usd: null }); continue
       }
       if (res === 'timeout') { spent += budget.usd_per_task; put({ task_id: brief.task_id, status: 'incomplete', reason: `timeout after ${budget.seconds_per_task}s`, seconds: budget.seconds_per_task, cost_usd: null }); continue }
+      const bad = adapterResultProblem(res)
+      if (bad) { spent += budget.usd_per_task; put({ task_id: brief.task_id, status: 'failed', reason: `malformed adapter result: ${bad}`.slice(0, 300), seconds: null, cost_usd: null }); continue } // unknown cost: the whole limit stays reserved
       spent += res.cost_usd ?? budget.usd_per_task
-      const items = canonicalize(res.items)
-      if (res.stopped) { put({ task_id: brief.task_id, status: STOP_STATUS[res.stopped], reason: `${res.stopped}${STOP_STATUS[res.stopped] === 'unsupported' ? ' (never bypassed)' : ''}${res.detail ? `: ${res.detail}` : ''}`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions); continue }
-      if (res.seconds !== null && res.seconds > budget.seconds_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task time limit (${res.seconds}s > ${budget.seconds_per_task}s)`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions); continue }
-      if (res.cost_usd !== null && res.cost_usd > budget.usd_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task budget ($${res.cost_usd} > $${budget.usd_per_task})`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions); continue }
-      put({ task_id: brief.task_id, status: 'complete', reason: null, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions)
+      const { items, dropped } = canonicalizeCounted(res.items)
+      if (res.stopped) { put({ task_id: brief.task_id, status: STOP_STATUS[res.stopped], reason: `${res.stopped}${STOP_STATUS[res.stopped] === 'unsupported' ? ' (never bypassed)' : ''}${res.detail ? `: ${res.detail.slice(0, 200)}` : ''}`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
+      if (res.seconds !== null && res.seconds > budget.seconds_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task time limit (${res.seconds}s > ${budget.seconds_per_task}s)`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
+      if (res.cost_usd !== null && res.cost_usd > budget.usd_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task budget (${res.cost_usd} > ${budget.usd_per_task})`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
+      put({ task_id: brief.task_id, status: 'complete', reason: null, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped)
     }
   }
 
@@ -228,7 +306,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       const r = stored.get(`${a.system}|${brief.task_id}`)
       if (!r || r.task.status !== 'complete') continue
       for (const it of r.items) {
-        const b = blindItem({ company: it.company, domain: it.domain, contact: it.contact, event_date: it.event_date, evidence_urls: it.evidence_urls, text: it.raw.text ?? null }, sha(`${batch_id}|${a.system}|${brief.task_id}|${it.entity_key}`).slice(0, 16), tokens)
+        const b = blindItem({ company: it.company, domain: it.domain, contact: it.contact, event_date: it.event_date, evidence_urls: it.evidence_urls, text: typeof it.raw.text === 'string' ? it.raw.text.slice(0, 2000) : null, event_source_url: it.event_source_url ?? null, quotes: it.quotes ?? [], person: it.person ?? null, contact_source_url: it.contact_source_url ?? null }, sha(`${batch_id}|${a.system}|${brief.task_id}|${it.entity_key}`).slice(0, 16), tokens)
         redactions += b.redactions
         pool.push({ ref: `${a.system}|${brief.task_id}|${it.entity_key}`, blind: b.item, system: a.system, entity_key: it.entity_key })
       }
@@ -261,9 +339,11 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     const done = c.tasks.filter(t => t.status === 'complete' && t.precision_at_5 !== null)
     const p5 = done.length ? Math.round((done.reduce((s, t) => s + t.precision_at_5!, 0) / done.length) * 1000) / 1000 : null
     const secs = runs[i].tasks.map(t => t.seconds).filter((s): s is number => s !== null)
+    const attempted = runs[i].tasks.filter(t => ATTEMPTED.includes(t.status)).length
+    const why = () => { const n = new Map<string, number>(); for (const t of runs[i].tasks) { const k = `${t.status}${t.reason ? ` (${t.reason})` : ''}`; n.set(k, (n.get(k) ?? 0) + 1) } return `no task started: ${[...n].map(([k, x]) => `${x} ${k}`).join('; ')}`.slice(0, 400) }
     return {
-      system: a.system, origin, status: av.ok ? 'ran' : 'unavailable', reason: av.ok ? null : av.reason,
-      tasks: c.totals.tasks, complete: c.totals.complete, coverage: av.ok ? Math.round((c.totals.complete / c.totals.tasks) * 1000) / 1000 : null,
+      system: a.system, origin, status: !av.ok ? 'unavailable' : attempted ? 'ran' : 'not_started', reason: !av.ok ? av.reason : attempted ? null : why(),
+      tasks: c.totals.tasks, attempted, complete: c.totals.complete, coverage: av.ok ? Math.round((c.totals.complete / c.totals.tasks) * 1000) / 1000 : null,
       precision_at_5: p5, precision_at_10: c.totals.precision_at_10,
       validated: c.totals.validated, unique_actionable_yield: [...mine].filter(e => validatedBy.get(e)!.size === 1).length,
       seconds: secs.length ? secs.reduce((s, x) => s + x, 0) : null, spend_usd: c.totals.cost_usd,
@@ -271,7 +351,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     }
   })
   return {
-    manifest: { batch_id, task_set_version: set.version, as_of: o.asOf, briefs_hash: hash, seed: o.seed, budget, origin, label: origin === 'synthetic' ? 'SYNTHETIC fixtures: not live results of any product' : origin === 'recorded' ? 'recorded outputs' : 'live runs', order, systems: systems.map(a => ({ system: a.system, origin: a.origin, config: a.config, available: avail.get(a.system)! })), evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent }, blinding: { identity_tokens: tokens.length, redactions } },
+    manifest: { batch_id, task_set_version: set.version, as_of: o.asOf, briefs_hash: hash, seed: o.seed, budget, origin, label: origin === 'synthetic' ? 'SYNTHETIC fixtures: not live results of any product' : origin === 'recorded' ? 'recorded outputs' : 'live runs', order, systems: systems.map(a => ({ system: a.system, origin: a.origin, config: a.config, available: avail.get(a.system)! })), evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent, config: o.evaluator.config ? structuredClone(o.evaluator.config) : null }, blinding: { identity_tokens: tokens.length, redactions } },
     runs, scorecards: cards, report, spent_usd: Math.round(spent * 1e6) / 1e6, evaluations: evaluations.sort((a, b) => a.task_id.localeCompare(b.task_id) || a.system.localeCompare(b.system) || a.entity_key.localeCompare(b.entity_key)),
     interventions: Object.fromEntries(systems.map(a => [a.system, Object.fromEntries(briefs.map(b => [b.task_id, stored.get(`${a.system}|${b.task_id}`)!.interventions]))])),
   }
@@ -357,19 +437,28 @@ export function contractEvaluator<C, E>(h: ContractHook<C, E>): BlindEvaluator {
 }
 
 // A batch described in one JSON file (test/fixtures/benchmark/synthetic-batch.json): its task set, budget, seed, recorded
-// or synthetic outputs per system, the systems with no adapter, and (for synthetic batches only) the ground-truth labels.
+// or synthetic outputs per system, the systems with no adapter, and how it is judged: the ground-truth labels, or the
+// independent verifier over the verifier's own page snapshots (verified-evaluator.ts; synthetic-verified-batch.json).
+// Recorded batches have their own file format and adapters (recorded.ts).
 export interface BatchFile {
   as_of: string; seed: number; budget: Budget; task_set: TaskSet
   systems: FixtureOutputs[]; unavailable?: { system: string; reason: string }[]
-  labels: Record<string, Record<string, Partial<Record<Field, Verdict>>>>
+  labels?: Record<string, Record<string, Partial<Record<Field, Verdict>>>>
+  evaluator?: { kind: 'verifier'; snapshots: unknown; min_independent_origins?: number }
 }
 export function batchFromFile(f: BatchFile): Omit<BatchOptions, 'store' | 'commit'> {
   const origins = new Set(f.systems.map(s => s.origin))
   if (origins.size !== 1) throw new BenchmarkRunError('a batch file holds one origin')
   const origin = [...origins][0]
   if (origin !== 'synthetic') throw new BenchmarkRunError('labels are ground truth only for synthetic batches; a recorded batch needs an independent evaluator')
+  const ev = f.evaluator
+  if (ev !== undefined && !(ev && typeof ev === 'object' && ev.kind === 'verifier')) throw new BenchmarkRunError('evaluator must be { kind: "verifier", snapshots, min_independent_origins? } or absent (labels)')
+  if (ev && f.labels !== undefined) throw new BenchmarkRunError('a batch is judged by labels or by the verifier, never both')
+  if (!ev && !(f.labels && typeof f.labels === 'object')) throw new BenchmarkRunError('a synthetic batch needs labels or a verifier evaluator')
+  const min = ev?.min_independent_origins
+  if (min !== undefined && !(Number.isSafeInteger(min) && min >= 1 && min <= 5)) throw new BenchmarkRunError(`min_independent_origins ${JSON.stringify(min)} must be an integer 1..5`)
   return {
-    set: f.task_set, asOf: f.as_of, seed: f.seed, budget: f.budget, evaluator: labelEvaluator(f.labels),
+    set: f.task_set, asOf: f.as_of, seed: f.seed, budget: f.budget, evaluator: ev ? verifierEvaluator({ snapshots: parseSnapshots(ev.snapshots), min_independent_origins: min }) : labelEvaluator(f.labels!),
     adapters: [...f.systems.map(fixtureAdapter), ...(f.unavailable ?? []).map(u => unavailableAdapter(u.system, u.reason, origin))],
   }
 }
@@ -382,7 +471,7 @@ export function batchMarkdown(r: BatchResult): string {
     `Equal budget per task: $${r.manifest.budget.usd_per_task} and ${r.manifest.budget.seconds_per_task}s; batch total $${r.manifest.budget.batch_usd} (spent $${r.spent_usd}). Evaluator: ${r.manifest.evaluator.name} v${r.manifest.evaluator.version} (blind to system).`, '',
     '| system | status | complete / tasks | P@5 | P@10 | validated | unique actionable | seconds | spend | interventions |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    ...r.report.map(s => `| ${s.system} | ${s.status === 'ran' ? 'ran' : `unavailable: ${s.reason}`} | ${s.complete} / ${s.tasks} | ${n(s.precision_at_5)} | ${n(s.precision_at_10)} | ${s.validated} | ${s.unique_actionable_yield} | ${s.seconds ?? 'n/a'} | ${s.status === 'unavailable' ? 'n/a' : s.spend_usd === null ? 'unknown' : `$${s.spend_usd}`} | ${s.interventions} |`),
-    '', 'An unavailable system has no result: it is not ranked. Incomplete, failed and unsupported tasks are not empty markets.',
+    ...r.report.map(s => `| ${s.system} | ${s.status === 'ran' ? 'ran' : `${s.status === 'unavailable' ? 'unavailable' : 'not started'}: ${s.reason}`} | ${s.complete} / ${s.tasks} | ${n(s.precision_at_5)} | ${n(s.precision_at_10)} | ${s.validated} | ${s.unique_actionable_yield} | ${s.seconds ?? 'n/a'} | ${s.status !== 'ran' ? 'n/a' : s.spend_usd === null ? 'unknown' : `$${s.spend_usd}`} | ${s.interventions} |`),
+    '', 'An unavailable or not-started system has no result: it is not ranked. Incomplete, failed and unsupported tasks are not empty markets.',
   ].join('\n')
 }
