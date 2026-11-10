@@ -155,3 +155,19 @@ test('review 6c: a blank or dot-only entity domain is junk, not "another entity"
     const r = judge(claim(), [A, { ...B, entity_domains: [junk] }]); assert.equal(r.status, 'pass', JSON.stringify(junk) + ' ' + JSON.stringify(r.verdicts.filter(v => v.status !== 'pass')))
   }
 })
+
+// ---- Hermes-PC re-review of #1028 (head 0b872a79): consent is the string 'allowed' | 'blocked' ----
+
+test('review 7: consent is kept only as the string allowed or blocked, and a contract that requires it reads it', () => {
+  const need: Contract = { ...contract, id: 'consent-required-review7', constraints: { ...contract.constraints, require_consent: true } }
+  const at = (consent: unknown) => { const e = collectEvidence({ ...claim(), consent } as unknown as ReturnType<typeof claim>, [A, B], OPT); return { e, r: evaluateLead(freezeContract(need), e) } }
+  const field = (r: ReturnType<typeof judge>) => r.verdicts.find(v => v.field === 'consent.status')!.status
+  const ok = at('allowed'); assert.equal(ok.e.consent, 'allowed'); assert.equal(field(ok.r), 'pass'); assert.equal(ok.r.status, 'pass', JSON.stringify(ok.r.verdicts.filter(v => v.status !== 'pass')))
+  const no = at('blocked'); assert.equal(no.e.consent, 'blocked'); assert.equal(field(no.r), 'fail'); assert.notEqual(no.r.status, 'pass')
+  for (const junk of ['yes', 'ALLOWED', {}, { status: 'allowed' }, 1, true, [], null, undefined]) { const x = at(junk); assert.equal(x.e.consent, null, JSON.stringify(junk)); assert.equal(field(x.r), 'unknown', JSON.stringify(junk)); assert.notEqual(x.r.status, 'pass') }
+})
+
+test('review 7b: a combining mark glued to a date is not a stated date', () => {
+  assert.deepEqual(statedDays('2026-11-01\u0301 and November 2, 2026\u0301 and 3 November 2026\u0308'), [])
+  assert.deepEqual(statedDays('posted 2026-11-01. Then November 2, 2026.').sort(), ['2026-11-01', '2026-11-02'])
+})

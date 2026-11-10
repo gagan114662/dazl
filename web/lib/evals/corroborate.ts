@@ -23,11 +23,11 @@ const pad = (n: number) => String(n).padStart(2, '0')
 // Every calendar day the text STATES, as YYYY-MM-DD. Forms: 2026-10-08, October 8, 2026 / Oct 8, 2026, 8 October 2026. A form counts only as a whole token.
 export function statedDays(text: string): string[] {
   const out = new Set<string>(), t = text.toLowerCase()
-  for (const m of t.matchAll(/(?<![\p{L}\p{N}_-])(\d{4})-(\d{2})-(\d{2})(?![\p{L}\p{N}_-])/gu)) out.add(`${m[1]}-${m[2]}-${m[3]}`)
+  for (const m of t.matchAll(/(?<![\p{L}\p{M}\p{N}_-])(\d{4})-(\d{2})-(\d{2})(?![\p{L}\p{M}\p{N}_-])/gu)) out.add(`${m[1]}-${m[2]}-${m[3]}`)
   const mon = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?'
   const idx = (s: string) => MONTHS.findIndex(x => x.startsWith(s.slice(0, 3)))
-  for (const m of t.matchAll(new RegExp(`(?<![\\p{L}\\p{N}_])${mon}\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})(?![\\p{L}\\p{N}_])`, 'gu'))) out.add(`${m[3]}-${pad(idx(m[1]) + 1)}-${pad(Number(m[2]))}`)
-  for (const m of t.matchAll(new RegExp(`(?<![\\p{L}\\p{N}_])(\\d{1,2})(?:st|nd|rd|th)?\\s+${mon},?\\s+(\\d{4})(?![\\p{L}\\p{N}_])`, 'gu'))) out.add(`${m[3]}-${pad(idx(m[2]) + 1)}-${pad(Number(m[1]))}`)
+  for (const m of t.matchAll(new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])${mon}\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})(?![\\p{L}\\p{M}\\p{N}_])`, 'gu'))) out.add(`${m[3]}-${pad(idx(m[1]) + 1)}-${pad(Number(m[2]))}`)
+  for (const m of t.matchAll(new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])(\\d{1,2})(?:st|nd|rd|th)?\\s+${mon},?\\s+(\\d{4})(?![\\p{L}\\p{M}\\p{N}_])`, 'gu'))) out.add(`${m[3]}-${pad(idx(m[2]) + 1)}-${pad(Number(m[1]))}`)
   return [...out].filter(isDay)
 }
 
@@ -62,7 +62,7 @@ const str = (x: unknown): string | null => typeof x === 'string' ? x : null
 function cleanClaim(raw: unknown): Claim {
   const c: Record<string, unknown> = isObj(raw) ? raw : {}
   const cons = c.consent
-  return { company: str(c.company) ?? '', domain: str(c.domain), source_url: str(c.source_url), quote: str(c.quote), event_kind: str(c.event_kind) ?? '', event_date: str(c.event_date), contact_email: str(c.contact_email), consent: (isObj(cons) ? cons : null) as Claim['consent'] }
+  return { company: str(c.company) ?? '', domain: str(c.domain), source_url: str(c.source_url), quote: str(c.quote), event_kind: str(c.event_kind) ?? '', event_date: str(c.event_date), contact_email: str(c.contact_email), consent: cons === 'allowed' || cons === 'blocked' ? cons : null }
 }
 
 export function collectEvidence(rawClaim: Claim, rawPages: SourcePage[], rawOptions: CollectOptions): LeadEvidence {
