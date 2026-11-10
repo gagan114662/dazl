@@ -220,7 +220,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       else if (!html) return { fail: 'error' }
       else if (/^application\/json\b/i.test(r.type)) {
         // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
-        const ref = brregRecordRef(url.toString()); let rec: ReturnType<typeof renderBrregRecord> = null
+        const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date
         try { rec = ref ? renderBrregRecord(JSON.parse(html), ref.id) : null } catch { rec = null }
         return rec ? { text: rec.text, title: rec.title, retrievedAt: Math.floor(Date.now() / 1000), published: null, structured: [] } : { fail: 'error' }
       } else {

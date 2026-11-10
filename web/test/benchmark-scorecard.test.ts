@@ -19,6 +19,7 @@ const run = (over: Partial<BenchmarkRun> = {}, tasks: BenchmarkRun['tasks'] = []
 
 test('the v1 task set: frozen, varied, and it reuses every scoreboard search unchanged', () => {
   const sb = JSON.parse(readFileSync(path.join(root, 'scoreboard/searches.json'), 'utf8')) as { id: string; query: string; post_freeze?: string }[]
+  assert.deepEqual(sb.filter(s => s.post_freeze).map(s => s.id), ['norway-dental-registry'], 'the only search outside frozen v1')
   // v1 is frozen (never edited in place): a search added after the freeze says so and is not in v1; every other search is reused unchanged
   for (const s of sb) if (s.post_freeze) assert.equal(set.tasks.find(t => t.id === s.id), undefined, `${s.id} is post-freeze, not in v1`); else assert.equal(set.tasks.find(t => t.id === s.id)?.query, s.query, `${s.id} reused unchanged`)
   assert.equal(new Set(set.tasks.map(t => t.id)).size, set.tasks.length)

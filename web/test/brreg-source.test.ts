@@ -102,8 +102,10 @@ test('record text: one sentence naming the entity, its organisation number and t
   assert.ok(r.text.startsWith('PUNJABI MASALA AS (organisasjonsnummer 838791352)') && r.text.endsWith(`was registered in Enhetsregisteret on ${r.registered}.`))
   assert.equal(brregRecordQuote(r.text), r.text)
   assert.equal(renderBrregRecord(rec, '938786658'), null, 'wrong organisation number')
-  for (const bad of [null, [], 'x', {}, { ...rec, navn: ' ' }, { ...rec, registreringsdatoEnhetsregisteret: undefined }, { ...rec, registreringsdatoEnhetsregisteret: '2026-13-45' }, { ...rec, registreringsdatoEnhetsregisteret: '31.10.2026' }])
+  for (const bad of [null, [], 'x', {}, { ...rec, navn: ' ' }, { ...rec, registreringsdatoEnhetsregisteret: undefined }, { ...rec, registreringsdatoEnhetsregisteret: '2026-13-45' }, { ...rec, registreringsdatoEnhetsregisteret: '2026-02-30' }, { ...rec, registreringsdatoEnhetsregisteret: '31.10.2026' }])
     assert.equal(renderBrregRecord(bad, '838791352'), null, JSON.stringify(bad)?.slice(0, 60))
+  const long = renderBrregRecord({ ...rec, navn: 'N'.repeat(180), naeringskode1: { beskrivelse: 'A'.repeat(150) } }, '838791352')!
+  assert.ok(long.text.length <= 300 && long.text.includes(`organisasjonsnummer 838791352`) && long.text.endsWith(`on ${long.registered}.`) && !long.text.includes('AAAA'), 'a long activity is dropped, not the whole record')
   assert.equal(brregRecordQuote('too short'), null)
   assert.equal(brregRecordQuote('x'.repeat(301)), null)
   assert.deepEqual(brregRecordRef(recUrl('enheter/838791352')), { kind: 'enheter', id: '838791352' })
@@ -251,6 +253,19 @@ test('#763 the fetcher reads no JSON except the register\'s own record of an ent
   try {
     for (const u of urls) { const r = await fetchPageDetailed(u, async () => null); assert.ok(isFail(r), u) }
     assert.ok(asked.length === urls.length && asked.every(a => a.accept === 'text/html,text/plain;q=0.9'), 'every other URL is still asked for HTML only')
+    // redirects: a record URL that bounces to a foreign host gets no JSON read there, and a foreign URL that bounces to the real record does not borrow its date
+    for (const [from, to] of [[recUrl('enheter/838791352'), 'https://example.com/enhetsregisteret/api/enheter/838791352'], ['https://example.com/x', recUrl('enheter/838791352')]]) {
+      const r2 = fakeHttps(u => u === from ? { status: 301, type: 'text/html', body: '' } : { status: 200, type: 'application/json', body }, [])
+      const real = https.request
+      ;(https as { request: unknown }).request = ((url: URL, o: unknown, cb: (res: EventEmitter) => void) => {
+        if (String(url) !== from) return (real as never as (...a: unknown[]) => unknown)(url, o, cb)
+        const req = new EventEmitter() as EventEmitter & { end(): void; destroy(): void }; req.destroy = () => {}
+        req.end = () => { const res = Object.assign(new EventEmitter(), { statusCode: 301, headers: { 'content-type': 'text/html', location: to }, resume() {}, destroy() {} }); cb(res); res.emit('end') }
+        return req
+      }) as never
+      const r = await fetchPageDetailed(from, async () => null); assert.ok(isFail(r), `${from} -> ${to}`)
+      r2()
+    }
     const ok = await fetchPageDetailed(recUrl('enheter/838791352'), async () => null)
     assert.ok(!isFail(ok) && /^PUNJABI MASALA AS \(organisasjonsnummer 838791352\)/.test(ok.text) && ok.published == null)
   } finally { restore() }

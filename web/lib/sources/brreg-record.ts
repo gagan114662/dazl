@@ -19,12 +19,13 @@ const at = (v: unknown, k: string) => (isObj(v) ? str(v[k]) : '')
 export function renderBrregRecord(body: unknown, expectedId: string): { text: string; title: string; registered: string } | null {
   if (!isObj(body) || str(body.organisasjonsnummer) !== expectedId) return null
   const navn = str(body.navn), registered = str(body.registreringsdatoEnhetsregisteret)
-  if (!navn || !ISO.test(registered) || Number.isNaN(Date.parse(registered))) return null
+  if (!navn || !ISO.test(registered) || Number.isNaN(Date.parse(registered)) || new Date(registered).toISOString().slice(0, 10) !== registered) return null
   const form = at(body.organisasjonsform, 'beskrivelse'), activity = at(body.naeringskode1, 'beskrivelse')
   const addr = isObj(body.forretningsadresse) ? body.forretningsadresse : isObj(body.beliggenhetsadresse) ? body.beliggenhetsadresse : null
   const place = at(addr, 'kommune')
-  const facts = [form, activity, place].filter(Boolean).join(', ')
-  const text = `${navn} (organisasjonsnummer ${expectedId})${facts ? `, ${facts},` : ''} was registered in Enhetsregisteret on ${registered}.`
+  // the evidence quote is limited to 300 characters: a long name or activity drops the descriptive facts (activity first), never the name, number or date
+  const sentence = (facts: string[]) => `${navn} (organisasjonsnummer ${expectedId})${facts.length ? `, ${facts.join(', ')},` : ''} was registered in Enhetsregisteret on ${registered}.`
+  const text = [[form, activity, place], [form, place], [place], []].map(f => sentence(f.filter(Boolean))).find(t => t.length <= 300) ?? sentence([])
   return { text, title: `Enhetsregisteret: ${navn}`, registered }
 }
 // The quote cut from that text: the whole sentence, within the 20-300 character evidence limit.

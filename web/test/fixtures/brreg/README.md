@@ -1,4 +1,4 @@
-Recorded 2026-11-03T10:00:19.495Z from the public Enhetsregisteret API (data.brreg.no, NLOD 2.0, no key) and virksomhet.brreg.no (robots: Allow /).
+Recorded 2026-11-03T10:00:19.495Z from the public Enhetsregisteret API (data.brreg.no, NLOD 2.0, no key); records.json was recorded the same way on 2026-11-10. Public-register data as published, including the register's sole-trader (ENK) names already present in the list fixtures.
 Requests:
 - enheter-restaurant-oslo.json: https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=56&kommunenummer=0301&fraRegistreringsdatoEnhetsregisteret=2026-09-04&size=20&sort=registreringsdatoEnhetsregisteret,desc
 - enheter-dental-no.json: https://data.brreg.no/enhetsregisteret/api/enheter?naeringskode=86.23&fraRegistreringsdatoEnhetsregisteret=2026-09-04&size=20&sort=registreringsdatoEnhetsregisteret,desc
