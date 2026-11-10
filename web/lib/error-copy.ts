@@ -41,3 +41,22 @@ export function knownErrorCopy(code: unknown): string | null {
       return null
   }
 }
+
+// #917: a scan or estimate refused a profile because part of it would be cut or ignored (`profile_lossy`). Names each field
+// and what to do, so the person can fix the open draft and retry; never shows the raw code. Structural type: this file stays
+// client-safe (no server imports), and the server's IcpLoss shape satisfies it.
+type LossItem = { field: string; kind: string; limit?: number; actual: number | string; index?: number }
+export function lossyProfileCopy(j: { message?: unknown; loss?: unknown }): string {
+  const loss = Array.isArray(j.loss) ? (j.loss as LossItem[]) : []
+  const lines = loss.slice(0, 8).map(l => {
+    const where = typeof l.index === 'number' ? `${l.field} item ${l.index + 1}` : l.field
+    if (l.kind === 'too_many_items') return `${where}: ${l.actual} entries, the limit is ${l.limit}. Remove ${Number(l.actual) - Number(l.limit)}.`
+    if (l.kind === 'too_long' || l.kind === 'item_too_long') return `${where}: ${l.actual} characters, the limit is ${l.limit}. Shorten it.`
+    if (l.kind === 'wrong_type') return `${where}: must be a list, got ${l.actual}.`
+    if (l.kind === 'item_not_text') return `${where}: must be text, got ${l.actual}.`
+    if (l.kind === 'invalid_value') return l.field === 'window_days' ? `window_days: must be a whole number of days from 1 to 365, got ${l.actual}.` : l.field === 'country' ? `country: must be a two-letter country code such as US or GB, got ${l.actual}.` : `${where}: must be a two-letter language code such as en, got ${l.actual}.`
+    return `${where}: not accepted.`
+  })
+  const head = typeof j.message === 'string' && j.message ? j.message : 'Part of this profile would be cut or ignored.'
+  return lines.length ? `${head} ${lines.join(' ')}` : head
+}
