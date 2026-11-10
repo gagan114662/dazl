@@ -72,6 +72,8 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'api.gdeltproject.org': { name: 'GDELT news index', role: 'public_source' },
   'data.brreg.no': { name: 'Brønnøysundregistrene (Norway business register API)', role: 'public_source' },
   'virksomhet.brreg.no': { name: 'Brønnøysundregistrene (Norway business register entity pages)', role: 'public_source' },
+  'api.company-information.service.gov.uk': { name: 'Companies House (UK company register API)', role: 'public_source' },
+  'find-and-update.company-information.service.gov.uk': { name: 'Companies House (UK company register pages)', role: 'public_source' },
   'www.sov2ex.com': { name: 'sov2ex (V2EX topic search)', role: 'public_source' },
   'www.v2ex.com': { name: 'V2EX', role: 'public_source' },
   'hn.algolia.com': { name: 'Hacker News search', role: 'public_source' },
@@ -171,6 +173,7 @@ export const PUBLIC_SOURCES: Record<string, string> = {
   jobboards: 'job boards (Greenhouse, Lever, Ashby)',
   'sec-form-d': 'SEC EDGAR',
   brreg: 'Brønnøysundregistrene',
+  'companies-house': 'Companies House (UK)',
   'adv:social': 'X, Reddit, Instagram, Facebook, Xiaohongshu, Bilibili',
 }
 
@@ -210,7 +213,7 @@ export const PRIVACY: Section[] = [
   { heading: 'Service providers', paragraphs: [
     `Google (sign-in and Gmail), Stripe (payments; card details are entered at Stripe, not on dazl), Anthropic (AI models, and the free trial when it is enabled), TinyFish (web search and page fetching), and Jina AI Reader (reading public pages). Hosting: ${FACTS.hostingProvider} at the current deployment [NEEDS OWNER: re-check at launch]. Account emails such as password resets: ${P.systemMailProvider}. Unless a system email provider is configured (none is by default), account emails are not sent and are held on the host. The ${FACTS.systemMailOutboxRetainHours}-hour deletion under Retention applies only once ${FACTS.accountHistoryFlag} is turned on (off by default). [NEEDS OWNER: choose the provider before account emails are enabled, turn retention on with it, and confirm both at launch.]`,
     `Providers you choose and connect with your own account or key: ${ai} (AI models), ${enrich} (contact enrichment), and ${crm} (lead export to your CRM). Their use of the data is governed by your agreement with them.`,
-    'Public sources dazl queries receive the search terms it sends - a company or industry name, and for the Norwegian business register a place and industry filter (a term can be personal data when it names a person) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, the Norwegian business register (Brønnøysundregistrene), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), and public job feeds such as We Work Remotely.',
+    'Public sources dazl queries receive the search terms it sends - a company or industry name, and for the Norwegian business register and UK Companies House a place and industry filter (a term can be personal data when it names a person) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, the Norwegian business register (Brønnøysundregistrene), Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), and public job feeds such as We Work Remotely.',
     'Error reports, if an error-monitoring service is configured, carry only the error type, code locations and a request id: never messages, account identifiers, request bodies or personal data. The server\'s own error log keeps the fuller scrubbed record, including the scrubbed message.',
     '[NEEDS COUNSEL: the sale/share statement privacy laws such as CCPA/CPRA require; no assertion is made until then.]',
   ] },
