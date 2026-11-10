@@ -161,7 +161,9 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['AdmissionRefused
   // lib/tenant/lifecycle.ts (#359/#455): a refused ledger re-application during tenant deletion
   'TombstoneReapplyError',
   // lib/evals/judge-validation-run.ts (#396): the real-model judge validation run stopped (cap, failure, refusal limit)
-  'RunStopped'])
+  'RunStopped',
+  // lib/evals/semantic-judge.ts (#782): the private marker for a judge call that outlived its own timer. Offline judge orchestration only.
+  'JudgeTimeout'])
 export const outboundType = (name: string): string => BUILTIN_ERRORS.has(name) || APP_ERROR_CLASSES.has(name) ? name : 'Error'
 export interface OutboundFrame { filename: string; lineno: number; colno: number }
 // A frame's file only when it is this build's own code (lib/ops/emitted.ts): a server file that exists under the app
