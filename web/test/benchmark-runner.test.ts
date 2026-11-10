@@ -98,7 +98,7 @@ test('blind scoring: the evaluator never sees a system, product, model or config
   await runBatch({ ...base(), evaluator: spyEval })
   const blob = JSON.stringify(seen)
   for (const s of ['dazl', 'chatgpt', 'baseline', 'pancake', 'synthetic-1', 'web browsing', 'SYNTHETIC fixture']) assert.ok(!blob.includes(s), s)
-  for (const items of seen) for (const i of items) assert.deepEqual(Object.keys(i).sort(), ['blind_id', 'company', 'contact', 'contact_source_url', 'domain', 'event_date', 'event_source_url', 'evidence_urls', 'person', 'quotes', 'text'])
+  for (const items of seen) for (const i of items) assert.deepEqual(Object.keys(i).sort(), ['blind_id', 'company', 'contact', 'contact_source_url', 'domain', 'event_date', 'event_source_url', 'evidence_urls', 'person', 'quotes', 'text', 'unchecked'])
   assert.equal(seen[0].length, 4) // Toronto: two from each system in one pool
   // an evaluator that throws or omits an item yields unknown, never pass
   const broken: BlindEvaluator = { ...allPass, judge: async () => { throw new Error('judge down') } }

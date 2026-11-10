@@ -97,7 +97,7 @@ output files, never overwriting the first report.
 | --- | --- |
 | no authorized adapter (e.g. no Pancake or Gojiberry account) | `unsupported`, with the reason; the system is **not ranked**, never a zero-result loser |
 | budget, timeout or rate-limit stop | `incomplete` |
-| login wall, paywall or missing feature | `unsupported`; it is never bypassed |
+| login wall, paywall or missing feature | `unsupported`; it is never bypassed. Its time, cost and interventions are kept; partial output from it is counted in the reason, never scored |
 | adapter error | `failed` |
 
 None of these is an empty market.
@@ -110,7 +110,9 @@ preset finite budget, or it does not run.
 kept beside it). They are then pooled per task across systems, given opaque ids, shuffled, and judged without the system,
 product, model or configuration. Any system id, product or model name in an item's text or contact is replaced with
 `[system]`, and an evidence URL that names one is withheld, so an output cannot sign itself (the count is in the
-manifest's `blinding`). An evaluator failure, or an item it leaves out, is `unknown`. Every judgement is recorded in the
+manifest's `blinding`). Evidence the producer supplied that cannot be checked (a malformed quote, person or source
+URL, or one withheld for naming a system) is named, never its value, in the item's `unchecked`, and the verifier keeps
+the field that needed it `unknown`, so dropping evidence can never help a lead pass. An evaluator failure, or an item it leaves out, is `unknown`. Every judgement is recorded in the
 batch's `evaluations` (blind id, system after unblinding, task, entity, verdicts and the evaluator's own record).
 
 **Equal limits are enforced:** a run over the task's time limit (by the clock, or by its own report) or its cost limit is

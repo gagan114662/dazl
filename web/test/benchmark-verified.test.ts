@@ -25,7 +25,7 @@ const snaps = (list: Snap[], over: Record<string, unknown> = {}) => parseSnapsho
 const brief = (constraints: unknown, window_days: number | null = 90): Brief => ({ task_id: 't1', query: 'q', seller: null, language: 'en', constraints, as_of: '2026-10-20', window_days })
 const TORONTO = { all_of: [{ geo: 'Toronto, CA' }, { event: 'office_opening', within_days: 90 }] }
 const item = (over: Partial<BlindItem> = {}): BlindItem => ({
-  blind_id: 'b1', company: 'Maple Leaf Marketing', domain: 'mapleleaf.example', contact: 'hello@mapleleaf.example', event_date: '2026-10-08', text: null,
+  unchecked: [], blind_id: 'b1', company: 'Maple Leaf Marketing', domain: 'mapleleaf.example', contact: 'hello@mapleleaf.example', event_date: '2026-10-08', text: null,
   evidence_urls: ['https://news.example/maple', 'https://mapleleaf.example/news'], event_source_url: 'https://news.example/maple', quotes: [], person: null,
   contact_source_url: 'https://mapleleaf.example/contact', ...over,
 })
@@ -129,6 +129,10 @@ test('#397: malformed snapshots fail closed and are recorded: wrong format, wron
   assert.equal((await judge(item(), brief(TORONTO), [{ url: 'https://news.example/maple', outcome: 'error' }, PAGES[1], PAGES[2]])).identity, 'unknown')
   const big = parseSnapshots({ format: 'dazl-verifier-snapshots', version: 1, captured_by: 'v', captured_at: '2026-10-20T00:00:00Z', snapshots: [{ url: 'https://big.example/', outcome: 'ok', text: 'a '.repeat(SNAPSHOT_LIMITS.text) }] })
   const b = big.byUrl.get('https://big.example/')!; assert.equal(b.text.length, SNAPSHOT_LIMITS.text); assert.equal(b.truncated, true)
+  // two captures of one url that differ only in their declared canonical (same domain, so the linked domains match) conflict: both dropped, so input order cannot decide
+  const html = (c: string) => `<html><head><link rel="canonical" href="${c}"></head><body><p>Same text.</p></body></html>`
+  const two = parseSnapshots({ format: 'dazl-verifier-snapshots', version: 1, captured_by: 'v', captured_at: '2026-10-20T00:00:00Z', snapshots: [{ url: 'https://n.example/a', outcome: 'ok', html: html('https://n.example/a') }, { url: 'https://n.example/a', outcome: 'ok', html: html('https://n.example/b') }] })
+  assert.equal(two.byUrl.size, 0); assert.ok(two.problems.some(p => /captured twice with different content/.test(p)))
   assert.throws(() => verifierEvaluator({ snapshots: snaps([]), min_independent_origins: 0 }), /1\.\.5/)
   // non-UTF8 bytes (replacement characters, lone surrogates, NULs) and absurd nesting never crash the evaluator
   const garbled = await judge(item({ company: 'Maple\uFFFD Leaf\u0000 Marketing\uD800' }), brief(TORONTO), [{ url: 'https://news.example/maple', text: '\uD800\uFFFD\u0000 Maple Leaf Marketing \uDFFF opened' }])
@@ -154,6 +158,10 @@ test('#397: the evaluator is deterministic and blind: the same input gives the s
   const j = (await e.judge([boom, item({ blind_id: 'b4' })], brief(TORONTO)))
   assert.deepEqual(fields(j.b3), [undefined, undefined, undefined, undefined]); assert.match(String((j.b3.record as { error: string }).error), /verifier failed on this item: unreadable item/)
   assert.deepEqual(fields(j.b4), ['pass', 'pass', 'pass', 'pass'])   // one broken item does not take the others down
+  // evidence the producer supplied but that could not be checked keeps its field unknown, never silently dropped
+  const un = (u: BlindItem['unchecked']) => e.judge([item({ blind_id: 'u', unchecked: u })], brief(TORONTO)).then(x => fields(x.u))
+  assert.deepEqual(await un(['quote']), ['pass', 'pass', 'unknown', 'pass']); assert.deepEqual(await un(['event_source_url']), ['pass', 'pass', 'unknown', 'pass'])
+  assert.deepEqual(await un(['person']), ['pass', 'pass', 'pass', 'unknown']); assert.deepEqual(await un(['contact_source_url']), ['pass', 'pass', 'pass', 'unknown'])
   // the verdicts are stated in the #394 contract's field vocabulary and folded by the contract's own mapping
   const rec = a.b1.record as { contract: string; contract_verdicts: { field: string; status: string }[] }
   assert.equal(rec.contract, CONTRACT_VERSION)

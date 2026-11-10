@@ -48,6 +48,7 @@ test('#397 #786: untrusted output rows: not an object, no company or a wrong-typ
   assert.match(task.reason!, /^16 malformed or excess output row\(s\) dropped, not scored$/)   // 5 malformed + 11 past the cap of 50 (61 good rows)
   const acme = seen.find(i => i.company === 'Acme')!
   assert.deepEqual([acme.domain, acme.contact, acme.event_date, acme.evidence_urls, acme.quotes, acme.person], [null, null, null, [], [], null])
+  assert.deepEqual(acme.unchecked, ['person', 'quote'])   // supplied but uncheckable evidence is named, so the verifier keeps its field unknown
 })
 
 test('#397: an available system that started no task is not_started with the reason, never a ran system with zero results', async () => {
@@ -64,6 +65,10 @@ test('#397: an available system that started no task is not_started with the rea
   assert.deepEqual([w1.report[0].status, w1.report[0].attempted, w1.report[0].interventions, w1.spent_usd], ['ran', 4, 4, 8])
   const w2 = await runBatch({ ...base(), adapters: [walled], evaluator: allPass, store })
   assert.equal(w2.spent_usd, 8)
+  // partial output from a login wall is never scored (an unsupported task has no results) and never crashes the batch
+  const partial = await runBatch({ ...base(), adapters: [stub('alpha', async () => ({ items: [{ company: 'Acme', domain: 'acme.example' }], cost_usd: 0.2, seconds: 2, interventions: 0, stopped: 'paywall' }))], evaluator: allPass })
+  assert.deepEqual([partial.scorecards[0].tasks[0].status, partial.scorecards[0].tasks[0].returned, partial.report[0].validated], ['unsupported', 0, 0])
+  assert.match(partial.scorecards[0].tasks[0].reason!, /^paywall \(never bypassed\); 1 partial result\(s\) not scored$/)
   // a failed attempt still ran: its spend is shown, it is not hidden as not started
   const failed = await runBatch({ ...base(), adapters: [stub('alpha', async () => { throw new Error('500') })], evaluator: allPass })
   assert.deepEqual([failed.report[0].status, failed.report[0].attempted, failed.report[0].reason], ['ran', 4, null])
@@ -79,4 +84,5 @@ test('#397: the evaluator receives the provenance the verifier re-reads, and a q
   const q = seen.find(i => i.company === 'Querix')!, isar = seen.find(i => i.company === 'Isar')!
   assert.deepEqual([q.event_source_url, q.quotes, q.person, q.contact_source_url], ['https://news.example/q', [item.quotes[0]], item.person, 'https://querix.example/team'])
   assert.deepEqual([isar.person, isar.contact_source_url], [null, null])
+  assert.deepEqual([q.unchecked, isar.unchecked], [['quote'], ['contact_source_url', 'person', 'quote']])
 })

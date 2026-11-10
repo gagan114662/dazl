@@ -60,6 +60,9 @@ export interface Adapter {
 export interface BlindItem {
   blind_id: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; text: string | null
   event_source_url: string | null; quotes: { text: string; source_url: string }[]; person: { name: string; title: string; source_url: string } | null; contact_source_url: string | null
+  // Names (never values) of evidence the producer supplied that cannot be checked: malformed, or withheld because it
+  // names a system. The verifier keeps the field that needed it unknown, so dropping evidence can never help a lead pass.
+  unchecked: ('quote' | 'person' | 'event_source_url' | 'contact_source_url')[]
 }
 // One judgement per blind id: the four scorecard fields, plus an optional record (rationale, tier, evidence) kept for audit.
 export type Judgement = Partial<Record<Field, Verdict>> & { record?: unknown }
@@ -69,6 +72,7 @@ export interface Evaluation { blind_id: string; system: string; task_id: string;
 export interface CanonicalItem {
   rank: number; entity_key: string; company: string; domain: string | null; contact: string | null; event_date: string | null; evidence_urls: string[]; raw: RawItem
   event_source_url?: string | null; quotes?: { text: string; source_url: string }[]; person?: { name: string; title: string; source_url: string } | null; contact_source_url?: string | null
+  unchecked?: BlindItem['unchecked']
 }
 // dropped_items: output rows the runner could not canonicalise (not an object, no company name, past MAX_ITEMS_PER_TASK);
 // they are counted here and in the task reason, never silently lost and never scored.
@@ -124,20 +128,25 @@ export function identityTokens(adapters: Pick<Adapter, 'system' | 'config'>[]): 
 // Free text and the contact are scrubbed to [system]; anything the verifier must match verbatim on a page (an evidence
 // or source url, a quote, a person's name or title) is withheld instead when it names a system, so a scrubbed copy can
 // never fail or pass a check it would not have on the real text: the check that needed it becomes unknown.
-export function blindItem(it: Omit<BlindItem, 'blind_id'>, blind_id: string, tokens: string[]): { item: BlindItem; redactions: number } {
+export function blindItem(it: Omit<BlindItem, 'blind_id' | 'unchecked'> & { unchecked?: BlindItem['unchecked'] }, blind_id: string, tokens: string[]): { item: BlindItem; redactions: number } {
   let redactions = 0
   const re = tokens.length ? new RegExp(tokens.map(escapeRe).join('|'), 'gi') : null
   const names = (s: string | null | undefined) => !!s && !!re && new RegExp(re.source, 'i').test(s)
   const scrub = (s: string | null) => { if (s === null || !re) return s; return s.replace(re, () => { redactions++; return '[system]' }) }
   const evidence_urls = it.evidence_urls.map(u => { if (names(u)) { redactions++; return '[evidence url withheld: names a system]' } return u })
   const withheld = <T,>(v: T | null, ...parts: (string | null | undefined)[]): T | null => { if (v === null) return null; if (parts.some(names)) { redactions++; return null } return v }
-  const quotes = (it.quotes ?? []).filter(q => { if (names(q.text) || names(q.source_url)) { redactions++; return false } return true })
+  const unchecked = new Set<BlindItem['unchecked'][number]>(it.unchecked ?? [])
+  const quotes = (it.quotes ?? []).filter(q => { if (names(q.text) || names(q.source_url)) { redactions++; unchecked.add('quote'); return false } return true })
+  const person = withheld(it.person ?? null, it.person?.name, it.person?.title, it.person?.source_url)
+  if (it.person && !person) unchecked.add('person')
+  const event_source_url = withheld(it.event_source_url ?? null, it.event_source_url)
+  if (it.event_source_url && !event_source_url) unchecked.add('event_source_url')
+  const contact_source_url = withheld(it.contact_source_url ?? null, it.contact_source_url)
+  if (it.contact_source_url && !contact_source_url) unchecked.add('contact_source_url')
   return {
     item: {
       blind_id, company: it.company, domain: it.domain, contact: scrub(it.contact), event_date: it.event_date, evidence_urls, text: scrub(it.text),
-      event_source_url: withheld(it.event_source_url ?? null, it.event_source_url), quotes,
-      person: withheld(it.person ?? null, it.person?.name, it.person?.title, it.person?.source_url),
-      contact_source_url: withheld(it.contact_source_url ?? null, it.contact_source_url),
+      event_source_url, quotes, person, contact_source_url, unchecked: [...unchecked].sort(),
     },
     redactions,
   }
@@ -176,13 +185,19 @@ export function canonicalizeCounted(items: unknown): { items: CanonicalItem[]; d
     const quotes = (Array.isArray(raw.quotes) ? raw.quotes : []).slice(0, 5).flatMap(q => { const t = isRec(q) ? text(q.text, 500) : null, u = isRec(q) ? url(q.source_url) : null; return t && u ? [{ text: t, source_url: u }] : [] })
     const p = isRec(raw.person) ? raw.person : null
     const person = p && text(p.name, 150) && text(p.title, 150) && url(p.source_url) ? { name: text(p.name, 150)!, title: text(p.title, 150)!, source_url: url(p.source_url)! } : null
+    const given = (v: unknown) => v !== undefined && v !== null && v !== ''
+    const unchecked: BlindItem['unchecked'] = []
+    if (given(raw.quotes) && !(Array.isArray(raw.quotes) && raw.quotes.length <= 5 && quotes.length === raw.quotes.length)) unchecked.push('quote')
+    if (given(raw.person) && !person) unchecked.push('person')
+    if (given(raw.event_source_url) && !url(raw.event_source_url)) unchecked.push('event_source_url')
+    if (given(raw.contact_source_url) && !url(raw.contact_source_url)) unchecked.push('contact_source_url')
     let clone: RawItem
     try { clone = structuredClone(raw) as unknown as RawItem } catch { clone = { company } }   // a non-cloneable value (function, symbol) is not kept
     out.push({
       rank: out.length + 1, entity_key: key, company, domain, contact: text(raw.contact, 254),
       event_date: typeof raw.event_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.event_date) ? raw.event_date : null,
       evidence_urls: (Array.isArray(raw.evidence_urls) ? raw.evidence_urls : []).filter((u): u is string => typeof u === 'string').slice(0, 10),
-      event_source_url: url(raw.event_source_url), quotes, person, contact_source_url: url(raw.contact_source_url),
+      event_source_url: url(raw.event_source_url), quotes, person, contact_source_url: url(raw.contact_source_url), unchecked,
       raw: clone,
     })
   }
@@ -296,7 +311,13 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       if (bad) { spent += budget.usd_per_task; put({ task_id: brief.task_id, status: 'failed', reason: `malformed adapter result: ${bad}`.slice(0, 300), seconds: null, cost_usd: null }); continue } // unknown cost: the whole limit stays reserved
       spent += res.cost_usd ?? budget.usd_per_task
       const { items, dropped } = canonicalizeCounted(res.items)
-      if (res.stopped) { put({ task_id: brief.task_id, status: STOP_STATUS[res.stopped], reason: `${res.stopped}${STOP_STATUS[res.stopped] === 'unsupported' ? ' (never bypassed)' : ''}${res.detail ? `: ${res.detail.slice(0, 200)}` : ''}`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
+      if (res.stopped) {
+        // A login wall, paywall or missing feature is unsupported: its time, cost and interventions are kept, but partial
+        // output from it is never scored (an unsupported task has no results), only counted in the reason.
+        const unsupported = STOP_STATUS[res.stopped] === 'unsupported'
+        const partial = unsupported && items.length ? `; ${items.length} partial result(s) not scored` : ''
+        put({ task_id: brief.task_id, status: STOP_STATUS[res.stopped], reason: `${res.stopped}${unsupported ? ' (never bypassed)' : ''}${res.detail ? `: ${res.detail.slice(0, 200)}` : ''}${partial}`, seconds: res.seconds, cost_usd: res.cost_usd }, unsupported ? [] : items, res.interventions, dropped); continue
+      }
       if (res.seconds !== null && res.seconds > budget.seconds_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task time limit (${res.seconds}s > ${budget.seconds_per_task}s)`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
       if (res.cost_usd !== null && res.cost_usd > budget.usd_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task budget ($${res.cost_usd} > $${budget.usd_per_task})`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
       put({ task_id: brief.task_id, status: 'complete', reason: null, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped)
@@ -315,7 +336,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       const r = stored.get(`${a.system}|${brief.task_id}`)
       if (!r || r.task.status !== 'complete') continue
       for (const it of r.items) {
-        const b = blindItem({ company: it.company, domain: it.domain, contact: it.contact, event_date: it.event_date, evidence_urls: it.evidence_urls, text: typeof it.raw.text === 'string' ? it.raw.text.slice(0, 2000) : null, event_source_url: it.event_source_url ?? null, quotes: it.quotes ?? [], person: it.person ?? null, contact_source_url: it.contact_source_url ?? null }, sha(`${batch_id}|${a.system}|${brief.task_id}|${it.entity_key}`).slice(0, 16), tokens)
+        const b = blindItem({ company: it.company, domain: it.domain, contact: it.contact, event_date: it.event_date, evidence_urls: it.evidence_urls, text: typeof it.raw.text === 'string' ? it.raw.text.slice(0, 2000) : null, event_source_url: it.event_source_url ?? null, quotes: it.quotes ?? [], person: it.person ?? null, contact_source_url: it.contact_source_url ?? null, unchecked: it.unchecked ?? [] }, sha(`${batch_id}|${a.system}|${brief.task_id}|${it.entity_key}`).slice(0, 16), tokens)
         redactions += b.redactions
         pool.push({ ref: `${a.system}|${brief.task_id}|${it.entity_key}`, blind: b.item, system: a.system, entity_key: it.entity_key })
       }

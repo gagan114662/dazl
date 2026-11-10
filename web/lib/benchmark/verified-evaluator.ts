@@ -97,7 +97,7 @@ function parseSnapshotsUnhashed(raw: unknown): SnapshotSet {
     }
     const final_url = typeof e.final_url === 'string' ? httpUrl(e.final_url) : null
     const snap: Snapshot = { url, outcome: e.outcome, final_url, text, truncated, meta_days: meta, linked_domains: linked }
-    const key = JSON.stringify(snap)
+    const key = JSON.stringify([snap, canonical])   // a different declared canonical is a different capture
     if (seen.has(url) && seen.get(url) !== key) { conflicted.add(url); return }
     seen.set(url, key); out.byUrl.set(url, snap)
     if (canonical) out.canonical.set(url, canonical)
@@ -297,14 +297,19 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
     const placePart: Part | null = place ? (place.problem ? { verdict: 'unknown', why: place.problem } : placeCheck ? { verdict: placeCheck.status, why: `place_on_source: ${placeCheck.reason}` } : { verdict: 'unknown', why: `${place.geo} could not be checked (no readable event source)` }) : null
     const constraints = field(constraintVerdict(brief.constraints, placePart, { claimCompany: claim.company || item.company, origins: [...groups].map(([root, sentences]) => ({ root, sentences })), min }), 'no constraint')
 
-    const datePart = [...asParts(by(['event_date_on_source', 'sources_agree', 'quote_on_source'])), ...fromProblems(['event', 'quotes'])]
+    const unchecked = (k: BlindItem['unchecked'][number], why: string): Part[] => (item.unchecked ?? []).includes(k) ? [{ verdict: 'unknown', why }] : []
+    const datePart = [...asParts(by(['event_date_on_source', 'sources_agree', 'quote_on_source'])), ...fromProblems(['event', 'quotes']),
+      ...unchecked('quote', 'a quote the producer supplied could not be checked (malformed, or withheld for naming a system)'),
+      ...unchecked('event_source_url', 'the event page the producer named could not be checked (malformed, or withheld for naming a system)')]
     if (wf?.status === 'fail') datePart.push({ verdict: 'fail', why: `claim_well_formed: ${wf.reason}` })
     const dateBase = field(datePart, 'no dated event was claimed: a list of companies that fit is not an intent signal')
     const event_date = dateBase.verdict === 'pass' && origins < min
       ? { verdict: 'unknown' as V, why: [`the event is stated on ${origins} independent origin(s); ${min} are required for an independently corroborated signal (pages on one domain, and syndicated copies, are one origin)`] }
       : dateBase
 
-    const contactParts = [...asParts(by(['person_current', 'contact_not_recruiting', 'contact_domain', 'contact_on_source'])), ...fromProblems(['person', 'contact'])]
+    const contactParts = [...asParts(by(['person_current', 'contact_not_recruiting', 'contact_domain', 'contact_on_source'])), ...fromProblems(['person', 'contact']),
+      ...unchecked('person', 'a person the producer supplied could not be checked (malformed, or withheld for naming a system)'),
+      ...unchecked('contact_source_url', 'the contact page the producer named could not be checked (malformed, or withheld for naming a system)')]
     const contact = claim.contact ? field(contactParts, '') : { verdict: 'unknown' as V, why: ['no published email route with the page it is printed on was given', ...contactParts.filter(p => p.verdict !== 'pass').map(p => p.why)] }
 
     const fields: Record<Field, { verdict: V; why: string[] }> = { identity, constraints, event_date, contact }
