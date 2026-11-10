@@ -254,8 +254,8 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
   // 0043 guards the three onboarding tables (#417; renumbered from 0042 after #513 landed first), 0044 guards lead_feedback (#385), 0045 guards worker_grants and worker_runs (runtime workers, #355; renumbered from 0051 to close the gap against main),
   // 0046 guards the three monitor event-detection tables (#387; renumbered from 0045 after #623 landed first), 0048 guards scan_spend_calls (#377; 0047 is ALTER-only), 0049 guards first_party_withdrawals (#618; placeholder number, reassigned to main's highest + 1 at merge time),
   // 0052 guards lead_need_evidence (#401/#379; 0050 and 0051 predate it and carry no guards, 0053/0054 are ALTER-only),
-  // 0055 guards crawl_pages (#871), 0059 guards adv_budget_lock and adv_requests (#192 shared request budget).
-  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0044_lead_feedback.sql', '0045_runtime_workers.sql', '0046_monitor_events.sql', '0048_scan_spend_cap.sql', '0049_first_party_withdrawals.sql', '0052_lead_need_evidence.sql', '0055_crawl_pages.sql', '0059_adv_request_budget.sql']
+  // 0055 guards crawl_pages (#871), 0059 guards adv_budget_lock and adv_requests (#192 shared request budget), 0060 adds the words_rev trigger (#929; no tomb_ guards).
+  const pgNames = ['0039_tenant_lifecycle.sql', '0040_scan_traces.sql', '0041_audit_events.sql', '0042_bounce_scan.sql', '0043_onboarding_policy.sql', '0044_lead_feedback.sql', '0045_runtime_workers.sql', '0046_monitor_events.sql', '0048_scan_spend_cap.sql', '0049_first_party_withdrawals.sql', '0052_lead_need_evidence.sql', '0055_crawl_pages.sql', '0059_adv_request_budget.sql', '0060_words_rev.sql']
     .flatMap(f => [...readFileSync(new URL(`../lib/db/migrations/pg/${f}`, import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1])).sort()
   assert.deepEqual(pgNames, want, 'the static PG migrations drifted from the generated guard set')
   const live = c.kind === 'sqlite'

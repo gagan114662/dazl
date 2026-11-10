@@ -31,5 +31,14 @@ The benchmark runner persists the frozen contract hash in every judgement's reco
 ## Dates
 Whole UTC calendar days: the `as_of` day passes, the next day is the future (fails), the window is inclusive, and a date that is not a real day fails.
 
+## The separate semantic judge (#782)
+`lib/evals/semantic-judge.ts` is orchestration around INJECTED judges (a real model judge is one `Judge` function plugged in later; this file calls no model or network).
+- **Blinded:** the judge reads the claim through the runner's `blindItem`: no system, product, model or config, identity tokens scrubbed; a judge cannot change the claim the next judge sees.
+- **Unknown on timeout or disagreement:** a call that times out or throws is retried up to `max_attempts` in all, then held as unknown (the abort signal is raised on timeout). At least 2 separately configured judges must give the same pass/fail; a difference, or any judge that is unknown, makes the claim unknown. One judge alone is unknown.
+- **Separate budget and log:** the judge spends its own call budget (never the producer's); when it is spent the claim is unknown. Every call is logged on the judge's own log with attempt, outcome and elapsed time.
+- **Provenance dependency:** sources that copy one another are one source: a declared `syndicated_from`, or overlapping text (at least 80% of the shorter text's word 5-grams appear in the other, shorter text of 4+ words, so a dateline, byline or footer does not hide a reprint), joins the group of the original. `independentSources` counts groups on distinct registrable domains. Malformed sources are dropped, not thrown on. **Not wired yet:** `independentSources` is not called from the contract's `event.predicate`, so the contract still counts raw domains and this rule changes no verdict today (disclosed by Hermes-PC's review).
+- **Spend gate fails closed:** a judge budget (`max_calls`, `used`), `max_attempts`, `timeout_ms` or `log` that is missing, not a finite whole number in range, or NaN makes `judgeClaim` return unknown with NO judge called. Two names for the same judge function are one judge (unknown). `now` must be a function and `timeout_ms` at most 2147483647 (the timer clamps larger values to about 1 ms and would burn the budget); a missing claim or non-string identity tokens return unknown before any call. A judge that rejects with a non-Error (undefined, null, a string) is logged as an error and held unknown. Limit: duplicate detection is by function reference; a real model judge must carry a provider+model descriptor and duplicates of it must be rejected.
+Not done: a real model judge, the calibration gate against adversarial fixtures (#783-785), and feeding `independentSources` into `event.predicate`.
+
 ## Not done here
 The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. Contracts are frozen per process; a durable contract store is not built.

@@ -172,7 +172,11 @@ export const PUBLIC_SOURCES: Record<string, string> = {
   'sec-form-d': 'SEC EDGAR',
   brreg: 'Brønnøysundregistrene',
   careers: 'careers pages on company websites',
-  'adv:social': 'X, Reddit, Instagram, Facebook, Xiaohongshu, Bilibili',
+  'adv:x': 'X',
+  'adv:reddit': 'Reddit',
+  'adv:instagram': 'Instagram',
+  'adv:bilibili': 'Bilibili',
+  'adv:linkedin': 'LinkedIn',
 }
 
 export interface Section { heading: string; paragraphs: string[] }

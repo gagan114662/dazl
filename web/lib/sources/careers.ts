@@ -13,7 +13,8 @@ import type { AdapterInput, Evidence, SafeGet, SourceAdapter } from './types.ts'
 
 // Per scan: at most maxSites sites, no request STARTS after budgetMs (each is hard-bounded at 10 s by the guarded getter, so 12 + 10 < the 25 s adapter deadline).
 export const careersLimits = { budgetMs: 12_000, maxSites: 4, now: () => Date.now() }
-export const SALES_ASK = /\b(?:sales|account executives?|sdrs?|bdrs?|business development|revenue|go-to-market|gtm)\b/i
+// A bare "revenue" ("companies with revenue growth") is not a sales-role ask: only revenue ROLE phrasing counts.
+export const SALES_ASK = /\b(?:sales|account executives?|sdrs?|bdrs?|business development|go-to-market|gtm|chief revenue officers?|(?:head|vp|vice president|director)s? of revenue|revenue (?:roles?|team|teams|hires?|hiring|leaders?|leadership|officers?|ops|operations|positions?|jobs?))\b/i
 
 const HOST = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/
 // A bare domain or an https URL -> its host, or null. Never an IP, a userinfo URL, a port or a non-https scheme.

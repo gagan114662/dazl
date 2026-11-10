@@ -1,7 +1,7 @@
 // #767 (part of #388): first-party careers source adapter. Synthetic, inline fixtures (invented company "Brightloop", no network): stubbed SafeGet answers only.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { careersAdapter, careersLimits, siteOf } from '../lib/sources/careers.ts'
+import { careersAdapter, careersLimits, siteOf, SALES_ASK } from '../lib/sources/careers.ts'
 import { collectEvidenceReport, normalizeSources, ADAPTERS } from '../lib/sources/index.ts'
 import { byId, availability, advertisable, sourceStatusLine } from '../lib/sources/capability-matrix.ts'
 import type { HttpResult, SafeGet } from '../lib/sources/types.ts'
@@ -115,4 +115,14 @@ test('registered end to end: selectable, reported as an adapter run, and the mat
   assert.equal(c.status, 'shipped'); assert.equal(availability(c, { workers: new Set() }), 'available'); assert.equal(advertisable(c), false, 'no live source-to-lead evidence yet: not advertised')
   assert.equal(byId('first-party-careers'), undefined)
   assert.match(sourceStatusLine(c, 'available', { status: 'skipped_out_of_coverage', evidence: null }), /./)
+})
+
+test('a bare "revenue" is not a sales-role ask (Ziggy #1034 note 2); revenue ROLE phrasing still is', async () => {
+  for (const q of ['companies with revenue growth', 'SaaS firms over $10m revenue', 'revenue-based financing startups', 'revenues up 20%']) {
+    const asked: string[] = []
+    assert.equal(SALES_ASK.test(q), false, q)
+    assert.deepEqual((await run(site(OPEN, asked), { query: q })).notes, { out_of_coverage: 1 }, q); assert.deepEqual(asked, [], `${q}: nothing read`)
+  }
+  for (const q of ['startups hiring a Chief Revenue Officer', 'companies hiring a head of revenue', 'building a revenue team', 'VP of Revenue openings', 'revenue operations hires', 'hiring sales staff', 'SDR roles', 'go-to-market hires']) assert.equal(SALES_ASK.test(q), true, q)
+  assert.equal(SALES_ASK.test('x'.repeat(200_000) + ' revenue'), false, 'huge input: linear, no match')
 })
