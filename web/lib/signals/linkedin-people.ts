@@ -22,7 +22,7 @@ import type { Evidence } from '../sources/types.ts'
 import { writeAudit } from '../connectors/store.ts'
 import { connectorId } from '../advanced/config.ts'
 import { readConsent } from '../advanced/index.ts'
-import { reserveRequest } from '../advanced/request-budget.ts'
+import { reserveRequest, coolingDown as connectorCoolingDown, COOLDOWN_S } from '../advanced/request-budget.ts'
 import { readCompetitors } from './competitor-reddit.ts'
 
 const ID = connectorId('linkedin')
@@ -30,7 +30,7 @@ export const PEOPLE_CONNECTOR = 'adv:linkedin-people'
 export const MAX_REQUESTS_PER_RUN = 2
 export const MAX_REQUESTS_PER_HOUR = 3
 export const MAX_ITEMS = 25
-export const COOLDOWN_S = 24 * 3600
+export { COOLDOWN_S }
 export const DEADLINE_MS = 20_000
 export type LinkedInItem = Evidence & { login_walled: boolean }
 
@@ -56,10 +56,7 @@ export function linkedinQueries(icp: { who: string[]; where: string[]; industrie
 
 const PROFILE = /^https:\/\/www\.linkedin\.com\/in\/[A-Za-z0-9%_-]{2,100}\/?$/
 export const profileKey = (u: string) => u.toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '')
-async function coolingDown(db: Db, tenantId: string, now: number): Promise<boolean> {
-  const r = await db.get<{ at: number }>("SELECT MAX(created_at) AS at FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status LIKE 'stopped_%'", [tenantId, ID])
-  return r?.at != null && now - Number(r.at) < COOLDOWN_S
-}
+const coolingDown = (db: Db, tenantId: string, now: number) => connectorCoolingDown(db, tenantId, ID, now)
 // The tenant's own switch for this connector: a row that is disabled stops it. (No session or credential is read or needed.)
 async function connectorDisabled(db: Db, tenantId: string): Promise<boolean> {
   const r = await db.get<{ enabled: number }>('SELECT enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, ID])
@@ -83,6 +80,8 @@ export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: str
   for (const q of queries) {
     // Every gate again, immediately before THIS request: a switch flipped mid-run stops the run.
     const g = await gateStatus(db, tenantId, envNow()); if (g) { await skip(g); break }
+    // The cooldown again, immediately before THIS request: another run may have been throttled since this one started, and its stop applies to every in-flight run of the tenant.
+    if (await coolingDown(db, tenantId, now)) { await skip('cooldown'); break }
     // The scan still owns this run (not cancelled, reaped or timed out): checked before the reservation, so a stopped scan neither spends budget nor calls LinkedIn.
     if (deps.beforeRequest) { try { await deps.beforeRequest() } catch (e) { try { await skip('scan_stopped') } catch { /* the audit write failed: the runner still sees the stop */ } throw e } }
     if (!(await reserveRequest(db, tenantId, ID, MAX_REQUESTS_PER_HOUR, 'people', now))) { if (made === 0) await skip('rate_limited'); else await skip('rate_limited_mid_run'); break }

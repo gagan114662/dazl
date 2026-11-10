@@ -33,6 +33,7 @@ Updated by the builder on every branch. Newest first.
 - #189 b/design-email-finder: DESIGN note, needs owner answers (verification server, US rule details).
 - #190 b/email-pattern: email format inference, unverified candidates in own tables, off by default.
 - #191 b/dm-icp-rank (on #190): buyer roles first per site; buyer titles derived from the scan ICP (no fixed list).
+- #192 review fixes (greptile P1/P2): the LinkedIn stop cooldown is now checked before EVERY reservation in both the people reader and `collectAdvanced` (shared `coolingDown` in lib/advanced/request-budget.ts), so a run in flight when another run is throttled sends no further request and spends none of the shared hourly budget; `checkTransportContract` now also aborts a call mid-flight and fails a transport that keeps running or starts a request after the abort. Fixtures only.
 - #192 b/linkedin-people: LinkedIn engagers + people search via the tenant session (owner decision), not live-tested.
 - #193 b/people-search (on #191): right people from public profile search results; Right people UI shows them.
 - #194 b/extraction-yield: markdown-free evidence, one verbatim passage per company.

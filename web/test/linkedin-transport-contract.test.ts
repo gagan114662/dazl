@@ -24,6 +24,20 @@ test('each violation is caught: pagination inside a call, over-long answers, ext
   assert.match((await checkTransportContract(ignoresAbort)).failures.join('|'), /after the abort signal/)
 })
 
+// In-flight abort (#192 review): both stubs check `signal.aborted` on entry, so the already-aborted check passes them. Only the mid-call abort tells them apart.
+test('in-flight abort: a transport that checks the signal only on entry and then ignores a later abort is caught; one that stops on abort passes', async () => {
+  const slowGood = (up: { requests: number }): LinkedInTransport => ({ fetch: r => new Promise((res, rej) => {
+    if (r.signal.aborted) return rej(new Error('aborted')); up.requests++
+    const t = setTimeout(() => res({ status: 'ok', items: [item('jane-doe-1')], upstream_requests: 1 }), 400)
+    r.signal.addEventListener('abort', () => { clearTimeout(t); rej(new Error('aborted')) })
+  }) })
+  assert.deepEqual(await checkTransportContract(slowGood), { ok: true, failures: [] }, 'stops on abort, no later request')
+  const entryOnly = (up: { requests: number }): LinkedInTransport => ({ fetch: async r => { if (r.signal.aborted) throw new Error('aborted'); up.requests++; await new Promise(res => setTimeout(res, 400)); return { status: 'ok', items: [item('jane-doe-1')], upstream_requests: 1 } } })
+  assert.match((await checkTransportContract(entryOnly)).failures.join('|'), /still running \d+ ms after the abort signal was raised mid-call/)
+  const startsLater = (up: { requests: number }): LinkedInTransport => ({ fetch: async r => { if (r.signal.aborted) throw new Error('aborted'); up.requests++; await new Promise(res => setTimeout(res, 30)); up.requests++; return { status: 'ok', items: [item('jane-doe-1')], upstream_requests: 2 } } })
+  assert.match((await checkTransportContract(startsLater)).failures.join('|'), /upstream request after the abort signal was raised mid-call/)
+})
+
 test('upstream status mapping: success only for 2xx; 429/503 throttle; 401/403 stop; 999/451 challenge; anything else is an error, never ok or empty', () => {
   assert.deepEqual([200, 204, 429, 503, 401, 403, 999, 451, 500, 404, 302].map(mapUpstreamStatus), ['ok', 'ok', 'throttled', 'throttled', 'unauthorized', 'unauthorized', 'challenge', 'challenge', 'error', 'error', 'error'])
 })
