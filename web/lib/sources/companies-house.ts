@@ -40,9 +40,68 @@ export const CH_SECTORS: { id: string; words: RegExp; codes: string[] }[] = [
   { id: 'real_estate', words: w('estate agents?|letting agents?|real estate|property management'), codes: ['68310', '68320', '68209'] },
   { id: 'software', words: w('software|saas|it consultanc(?:y|ies)|it services'), codes: ['62012', '62020', '62090'] },
 ]
-export const CH_PLACES: { name: string; words: RegExp }[] = [
-  'London', 'Manchester', 'Birmingham', 'Leeds', 'Glasgow', 'Edinburgh', 'Bristol', 'Liverpool', 'Sheffield', 'Cardiff', 'Belfast', 'Newcastle', 'Nottingham', 'Leicester',
-].map(name => ({ name, words: w(name.toLowerCase()) }))
+// Place matching (#1035 review): a town matches only as its WHOLE name, never as part of a longer one. "London" is not "Londonderry" or "London-on-Sea";
+// "Newcastle" is "Newcastle upon Tyne" but not "Newcastle-under-Lyme". `names` are the exact normalised register spellings accepted for the
+// town (locality OR region); `pairs` accept a bare name only together with its region. Anything else is a different place and is rejected (fail closed).
+export const CH_PLACES: { name: string; words: RegExp; names: string[]; pairs: [string, string][] }[] = ([
+  ['London', ['london', 'city of london', 'greater london']],
+  ['Manchester', ['manchester', 'city of manchester']],
+  ['Birmingham', ['birmingham', 'city of birmingham']],
+  ['Leeds', ['leeds', 'city of leeds']],
+  ['Glasgow', ['glasgow', 'city of glasgow', 'glasgow city']],
+  ['Edinburgh', ['edinburgh', 'city of edinburgh']],
+  ['Bristol', ['bristol', 'city of bristol']],
+  ['Liverpool', ['liverpool', 'city of liverpool']],
+  ['Sheffield', ['sheffield', 'city of sheffield']],
+  ['Cardiff', ['cardiff', 'city of cardiff']],
+  ['Belfast', ['belfast', 'city of belfast']],
+  // A bare "Newcastle" is also Newcastle-under-Lyme (Staffordshire) and Newcastle (County Down): only with the Tyne and Wear region is it this town.
+  ['Newcastle', ['newcastle upon tyne', 'newcastle on tyne'], [['newcastle', 'tyne and wear'], ['newcastle', 'tyne wear']]],
+  ['Nottingham', ['nottingham', 'city of nottingham']],
+  ['Leicester', ['leicester', 'city of leicester']],
+] as [string, string[], [string, string][]?][]).map(([name, names, pairs]) => ({ name, words: w(name.toLowerCase()), names, pairs: pairs ?? [] }))
+
+// Case, accents, punctuation and spacing do not change a place name: "NEWCASTLE-UPON-TYNE", "Newcastle upon  Tyne" and "Newcastle upon Tyne." are one name.
+// Not a string, or longer than any real town name = no name (fail closed). Linear: no nested quantifiers.
+export const normPlace = (v: unknown): string => {
+  if (typeof v !== 'string' || v.length > 120 || /\p{Cs}/u.test(v)) return '' // a lone surrogate is malformed text, not a name
+  return v.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+}
+// Does the company's registered office sit in the named gazetteer town? Exact whole-name match on locality or region, after normPlace.
+export function chPlaceMatch(address: unknown, place: string): boolean {
+  const p = CH_PLACES.find(x => x.name === place)
+  if (!p || !isObj(address)) return false
+  const loc = normPlace(address.locality), reg = normPlace(address.region)
+  return (!!loc && p.names.includes(loc)) || (!!reg && p.names.includes(reg)) || p.pairs.some(([l, r]) => loc === l && reg === r)
+}
+// The gazetteer town a request names, 'other' when a gazetteer word only appears inside a different town's name (it named a town this source cannot filter on),
+// or null. A name is that town only when it stands alone: not hyphen-joined to a letter ("Newcastle-under-Lyme", "Stoke-London"; "London-based" is
+// the town itself), and not followed by "upon / under" or "on <Capitalised word>" unless the whole form is one of the town's own names ("Newcastle upon
+// Tyne"). A request that names only such a different town is out of coverage (fail closed, never a wrong-town or UK-wide search). The register-side
+// check (chPlaceMatch) is exact anyway, so a looser reading here can only narrow results, never admit another town's companies.
+// Every look-around reads a bounded 40-character window, so a huge request cannot cause backtracking.
+const DASH = '-‐‑‒–—'
+const JOINED_BEFORE = new RegExp(`[\\p{L}\\p{N}][${DASH}]$`, 'u')
+const COMPOUND_AFTER = new RegExp(`^(?:[${DASH}]\\p{L}+(?:[${DASH}]\\p{L}+){0,3}|\\s+(?:upon|under)\\s+\\p{L}+|\\s+on\\s+(?!(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December|LinkedIn)\\b)\\p{Lu}\\p{L}*)`, 'u')
+const UPON_UNDER = /^\s+(?:upon|under)\s/i
+const ADJECTIVE_AFTER = new RegExp(`^[${DASH}](?:based|area|wide|headquartered|registered|founded|born|centric|focused)(?![${DASH}\\p{L}\\p{N}])`, 'iu')
+function placeIn(query: string): (typeof CH_PLACES)[number] | 'other' | null {
+  let other = false
+  for (const p of CH_PLACES) {
+    const re = new RegExp(p.words.source, 'giu')
+    for (const m of query.matchAll(re)) {
+      const at = m.index ?? 0, end = at + m[0].length
+      if (JOINED_BEFORE.test(query.slice(Math.max(0, at - 40), at))) { other = true; continue }
+      const after = query.slice(end, end + 40)
+      if (ADJECTIVE_AFTER.test(after)) return p // "London-based", "Leeds-area": the town itself, used as an adjective
+      const tail = COMPOUND_AFTER.exec(after) ?? (UPON_UNDER.test(after) ? [after] : null)
+      if (!tail) return p
+      if (p.names.includes(normPlace(m[0] + tail[0]))) return p
+      other = true
+    }
+  }
+  return other ? 'other' : null
+}
 const UK = w('uk|u\\.k\\.|united kingdom|britain|british|england|english|scotland|scottish|wales|welsh|northern ireland')
 // Several UK city names are also US / Canadian towns ("Birmingham, AL", "London, ON"): a request that places the name there is not a UK request.
 const ELSEWHERE_WORDS = /\b(?:usa|u\.s\.a?\.?|united states|canada|australia)\b|,\s*(?:alabama|alaska|arizona|california|colorado|connecticut|florida|georgia|illinois|kentucky|michigan|new hampshire|new york|ohio|ontario|oregon|pennsylvania|texas|virginia|washington)\b/i
@@ -57,8 +116,13 @@ export const unknownTown = (query: string): boolean =>
 export interface ChScope { sector: string; codes: string[]; place: string | null; where: string }
 // What this source can answer for a request, or null when it is outside coverage (no UK place / no mapped industry).
 export function chScope(query: string): ChScope | null {
+  if (typeof query !== 'string' || !query.trim()) return null
   if (ELSEWHERE_WORDS.test(query) || ELSEWHERE_CODES.test(query)) return null
-  const place = CH_PLACES.find(p => p.words.test(query))
+  const found = placeIn(query)
+  // a gazetteer word that is only part of another town's name ("Newcastle-under-Lyme", "Londonderry"-style compounds) names a town this source cannot
+  // filter on: out of coverage, never a UK-wide search and never the wrong town (#1035 review)
+  if (found === 'other') return null
+  const place = found
   if (!place && !UK.test(query)) return null
   // A named town the gazetteer does not hold ("in Oxford UK") must not silently widen to the whole UK: the request would be answered with companies from
   // everywhere while that town goes unsearched. Report it as out of coverage instead (#1035 review).
@@ -85,10 +149,7 @@ export function chReject(c: ChCompany, scope: ChScope, from: string, today: stri
   if (c.company_status !== 'active') return 'status'
   if (!OPERATING_TYPES.has(c.company_type ?? '')) return 'type'
   if (!(c.sic_codes ?? []).some(s => scope.codes.includes(s))) return 'sector'
-  if (scope.place) {
-    const a = c.registered_office_address, p = scope.place.toLowerCase()
-    if (![a?.locality, a?.region].some(v => (v ?? '').toLowerCase().includes(p))) return 'place'
-  }
+  if (scope.place && !chPlaceMatch(c.registered_office_address, scope.place)) return 'place'
   const d = c.date_of_creation ?? ''
   if (!ISO.test(d) || d < from || d > today) return 'date'
   return null
@@ -124,6 +185,7 @@ const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 
 // What the company's own public page shows, or null when it does not show this company (fail closed): the name directly before "Company number N", status
 // Active, and the incorporation date. `quote` is the passage naming the company next to its number; `date` is the page's own incorporation date.
 export function chPageFacts(pageText: string, name: string, number: string): { quote: string; date: string } | null {
+  if (typeof pageText !== 'string' || typeof name !== 'string' || typeof number !== 'string') return null // fail closed like the other helpers (#1035 review b)
   const text = pageText.replace(/\s+/g, ' ')
   const nm = name.replace(/\s+/g, ' ').trim()
   const anchor = `${nm} Company number ${number}`

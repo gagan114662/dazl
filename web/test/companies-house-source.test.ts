@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { companiesHouseAdapter, chCandidates, chLimits, chList, chPageFacts, chReject, chScope, isChCompany, resetChState, type ChCompany } from '../lib/sources/companies-house.ts'
+import { companiesHouseAdapter, chCandidates, chLimits, chList, chPageFacts, chPlaceMatch, chReject, chScope, isChCompany, normPlace, resetChState, type ChCompany } from '../lib/sources/companies-house.ts'
 import { collectEvidenceReport, normalizeSources } from '../lib/sources/index.ts'
 import { MATRIX, advertisable, availability, byId } from '../lib/sources/capability-matrix.ts'
 import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
@@ -219,4 +219,54 @@ test('#764 review: candidates beyond the page cap are reported as truncated, not
   const r = await run('new software companies in London', recorded(asked, u => (u === URL_SOFTWARE ? { status: 200, body } : undefined)), async () => null)
   assert.equal(r.notes.filter(n => n === 'truncated').length, 1, 'hits === items, yet 7 > maxPages candidates: says so once')
   assert.equal(r.notes.filter(n => n === 'unreadable').length, chLimits.maxPages, 'only maxPages pages were read')
+})
+
+test('#1035 Ziggy review: the registered-office town must be the WHOLE place name, never a substring (Londonderry is not London)', () => {
+  const at = (q: string, address: unknown) => chReject({ ...software, registered_office_address: address as ChCompany['registered_office_address'] }, chScope(q)!, FROM, TODAY)
+  const london = (address: unknown) => at('software companies in London', address)
+  const newcastle = (address: unknown) => at('software companies in Newcastle', address)
+  // Ziggy's probes
+  assert.equal(london({ locality: 'London' }), null)
+  assert.equal(london({ locality: 'Londonderry' }), 'place', 'Londonderry is not London (place name inside a longer word)')
+  assert.equal(newcastle({ locality: 'Newcastle-under-Lyme' }), 'place', 'Newcastle-under-Lyme is not Newcastle upon Tyne')
+  assert.equal(newcastle({ locality: 'Newcastle upon Tyne' }), null)
+  // normalisation: case, whitespace, punctuation, hyphens and diacritics do not change the name
+  for (const l of ['LONDON', '  london ', 'London.', 'Lóndon', 'London\t']) assert.equal(london({ locality: l }), null, JSON.stringify(l))
+  for (const l of ['NEWCASTLE-UPON-TYNE', 'Newcastle  upon  Tyne', 'Newcastle-upon-Tyne.', 'Newcastle On Tyne']) assert.equal(newcastle({ locality: l }), null, l)
+  assert.equal(london({ locality: 'Croydon', region: 'Greater London' }), null, 'region Greater London is London')
+  // the whole class: prefixes, suffixes, hyphenated compounds, upon/under/on forms, inside a longer word
+  for (const l of ['North London Road', 'New London', 'Londonderry', 'Derry~Londonderry', 'London Colney', 'London-on-Sea', 'Londoner', 'Greater Londonshire', 'Stoke-London']) assert.equal(london({ locality: l }), 'place', l)
+  for (const l of ['Newcastle-under-Lyme', 'Newcastle under Lyme', 'Newcastle Emlyn', 'Newcastleton', 'Newcastle-on-Clun', 'Newcastle upon Tyne Road', 'Newcastle']) assert.equal(newcastle({ locality: l }), 'place', l)
+  assert.equal(newcastle({ locality: 'Newcastle', region: 'County Down' }), 'place', 'bare Newcastle in County Down is another town')
+  assert.equal(newcastle({ locality: 'Newcastle', region: 'Tyne and Wear' }), null, 'bare Newcastle with its own region is the town')
+  assert.equal(newcastle({ locality: 'Newcastle', region: 'Tyne & Wear' }), null)
+  assert.equal(at('software companies in Manchester', { locality: 'Salford', region: 'Greater Manchester' }), 'place', 'a county is not the city')
+  assert.equal(at('software companies in Birmingham', { locality: 'Birmingham', region: 'West Midlands' }), null)
+})
+
+test('#1035 Ziggy review: the request side reads the same whole names (Newcastle-under-Lyme is not a Newcastle request; nothing widens to the UK)', () => {
+  assert.equal(chScope('software companies in Newcastle upon Tyne')?.place, 'Newcastle')
+  assert.equal(chScope('software companies in Newcastle-upon-Tyne')?.place, 'Newcastle')
+  assert.equal(chScope('software companies in Newcastle')?.place, 'Newcastle')
+  assert.equal(chScope('London-based software companies')?.place, 'London', '"London-based" is London')
+  assert.equal(chScope('new London software companies')?.place, 'London')
+  assert.equal(chScope('dentists in London on Monday')?.place, 'London', 'a weekday after "on" is not part of the name')
+  for (const q of ['software companies in Newcastle-under-Lyme', 'software companies in Newcastle under Lyme', 'Newcastle-under-Lyme software companies UK',
+    'software companies in Newcastle on Clun, England', 'plumbers in Stoke-London UK', 'software companies in Londonderry UK']) assert.equal(chScope(q), null, q)
+})
+
+test('#1035 adversarial: place helpers fail closed on null, empty, non-string, huge and odd unicode input, and stay linear on pathological strings', () => {
+  for (const v of [null, undefined, 42, true, {}, [], ['London'], { locality: 'London' }, '', '   ', 'x'.repeat(121)]) assert.equal(normPlace(v), '', JSON.stringify(v)?.slice(0, 20))
+  assert.equal(normPlace('Ｌｏｎｄｏｎ'), 'london', 'full-width letters fold')
+  for (const a of [null, undefined, 'London', 42, ['London'], {}, { locality: null }, { locality: 42 }, { locality: ['London'] }, { locality: { name: 'London' } }, { locality: '' },
+    { locality: 'London'.repeat(30) }, { locality: 'Lon\u0000don' }, { locality: '\uD800London' }]) assert.equal(chPlaceMatch(a, 'London'), false, JSON.stringify(a))
+  assert.equal(chPlaceMatch({ locality: 'London' }, 'Atlantis'), false, 'a place outside the gazetteer never matches')
+  assert.equal(chPlaceMatch({ locality: 'London' }, null as unknown as string), false)
+  for (const q of [null, undefined, 42, {}, [], '', '   ']) assert.equal(chScope(q as unknown as string), null, String(q))
+  for (const v of [null, 42, {}, undefined]) assert.equal(chPageFacts(v as unknown as string, 'HOME ED COMPANION LTD', '16990000'), null, 'non-string page text fails closed (review note b)')
+  assert.equal(chPageFacts('x', null as unknown as string, '16990000'), null)
+  const t0 = Date.now()
+  chScope(`software ${'London-'.repeat(20_000)}x UK`); chScope(`software ${'Newcastle under '.repeat(10_000)} UK`); chScope(`software in ${'a-'.repeat(50_000)}London`)
+  normPlace(`${'- '.repeat(60)}`); chPlaceMatch({ locality: '-'.repeat(100_000), region: 'é'.repeat(100_000) }, 'London')
+  assert.ok(Date.now() - t0 < 2000, `pathological inputs took ${Date.now() - t0} ms`)
 })
