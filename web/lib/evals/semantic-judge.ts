@@ -19,6 +19,9 @@ export interface JudgeBudget { max_calls: number; used: number }
 export interface JudgeOptions { timeout_ms: number; max_attempts: number; budget: JudgeBudget; log: JudgeLogEntry[]; now?: () => number }
 export interface JudgeResult { verdict: JudgeVerdict; reason: string; votes: Record<string, JudgeVerdict> }
 
+// Private marker for our own timer: a judge that throws undefined, null, a string or an Error that merely says "timeout" is an error, never a timeout, and never crashes the catch.
+class JudgeTimeout extends Error {}
+
 // One judge, bounded: retried within max_attempts on timeout or error, then held as unknown. Every call spends the judge's own budget and is logged.
 async function callJudge(name: string, judge: Judge, claim: BlindItem, question: string, o: JudgeOptions): Promise<JudgeVerdict> {
   const now = o.now ?? Date.now
@@ -30,13 +33,13 @@ async function callJudge(name: string, judge: Judge, claim: BlindItem, question:
     try {
       const v = await Promise.race([
         judge(structuredClone(claim), question, ctl.signal),
-        new Promise<never>((_, rej) => { timer = setTimeout(() => { ctl.abort(); rej(new Error('timeout')) }, o.timeout_ms) }),
+        new Promise<never>((_, rej) => { timer = setTimeout(() => { ctl.abort(); rej(new JudgeTimeout()) }, o.timeout_ms) }),
       ])
       const verdict: JudgeVerdict = v === 'pass' || v === 'fail' ? v : 'unknown'   // anything else a judge says is unknown
       o.log.push({ judge: name, attempt, outcome: verdict, ms: now() - t0 })
       return verdict
     } catch (e) {
-      o.log.push({ judge: name, attempt, outcome: (e as Error).message === 'timeout' ? 'timeout' : 'error', ms: now() - t0 })
+      o.log.push({ judge: name, attempt, outcome: e instanceof JudgeTimeout ? 'timeout' : 'error', ms: now() - t0 })
     } finally { clearTimeout(timer) }
   }
   return 'unknown'
@@ -44,6 +47,7 @@ async function callJudge(name: string, judge: Judge, claim: BlindItem, question:
 
 // Blind the claim, ask every judge, and agree only when all of them give the same pass or fail.
 const isCount = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0
+const MAX_TIMER_MS = 2147483647
 const isPos = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x) && x > 0
 // The spend gate fails CLOSED: a budget or bound that is missing, not a number, NaN, infinite, negative or fractional is not a cap, so nothing is called.
 function optionsProblem(o: unknown): string | null {
@@ -51,7 +55,8 @@ function optionsProblem(o: unknown): string | null {
   if (typeof o !== 'object' || o === null || typeof b !== 'object' || b === null) return 'the judge options or budget are missing'
   if (!isCount(b.max_calls) || !isCount(b.used)) return 'the judge budget (max_calls, used) must be finite whole numbers of at least 0: no cap means no calls'
   if (!isCount((o as JudgeOptions).max_attempts) || (o as JudgeOptions).max_attempts < 1) return 'max_attempts must be a whole number of at least 1'
-  if (!isPos((o as JudgeOptions).timeout_ms)) return 'timeout_ms must be a positive finite number'
+  if (!isPos((o as JudgeOptions).timeout_ms) || (o as JudgeOptions).timeout_ms > MAX_TIMER_MS) return `timeout_ms must be a positive finite number of at most ${MAX_TIMER_MS} (a larger value is clamped by the timer to about 1 ms and would burn the budget)`
+  if ((o as JudgeOptions).now !== undefined && typeof (o as JudgeOptions).now !== 'function') return 'now must be a function when given'
   if (!Array.isArray((o as JudgeOptions).log)) return 'the judge needs its own log'
   return null
 }
@@ -64,7 +69,10 @@ export async function judgeClaim(item: Omit<BlindItem, 'blind_id'>, identityToke
   const names = Object.keys(judges).filter(n => typeof judges[n] === 'function')
   if (names.length < 2) return { verdict: 'unknown', reason: 'a single judge cannot be checked against another: at least 2 separately configured judges are required', votes: {} }
   if (new Set(names.map(n => judges[n])).size < names.length) return { verdict: 'unknown', reason: 'two names for the same judge are one judge: every judge must be a distinct function', votes: {} }
-  const { item: claim } = blindItem(item, 'claim', identityTokens)
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return { verdict: 'unknown', reason: 'no judge was called: the claim to judge is missing or not an object', votes: {} }
+  if (!Array.isArray(identityTokens) || identityTokens.some(t => typeof t !== 'string')) return { verdict: 'unknown', reason: 'no judge was called: identityTokens must be an array of strings (a bad token is refused, not dropped, so blinding is never weakened)', votes: {} }
+  let claim: BlindItem
+  try { claim = blindItem(item, 'claim', identityTokens).item } catch { return { verdict: 'unknown', reason: 'no judge was called: the claim could not be blinded', votes: {} } }
   const votes: Record<string, JudgeVerdict> = {}
   for (const n of names) votes[n] = await callJudge(n, judges[n], claim, question, o)
   const set = new Set(Object.values(votes))

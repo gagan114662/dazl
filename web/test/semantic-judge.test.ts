@@ -125,3 +125,34 @@ test('review 4: malformed sources are dropped, never thrown on', () => {
   const mixed = [null, 7, { url: 5 }, { text: 'no url' }, S('https://a.example.com/1', 5 as never, 7 as never), S('https://b.example.org/2', WIRE)] as never
   assert.doesNotThrow(() => independentSources(mixed)); assert.equal(independentSources(mixed).count, 2)
 })
+
+// ---- Hermes-PC review of #1031 (head bbb5b07b), last round ----
+
+test('review 5: a judge that rejects with no Error is logged as an error and held unknown, never a crash', async () => {
+  for (const [name, mk] of [['reject undefined', () => Promise.reject()], ['reject null', () => Promise.reject(null)], ['reject a string', () => Promise.reject('boom')], ['throw undefined', () => { throw undefined }], ['throw null', () => { throw null }], ['throw an object', () => { throw { message: 'timeout' } }], ['an Error that says timeout', () => Promise.reject(new Error('timeout'))]] as [string, () => Promise<never>][]) {
+    const o = opts({ max_attempts: 1 }); const bad: Judge = async () => mk(), fine: Judge = async () => 'pass'
+    let r: Awaited<ReturnType<typeof run>> | undefined; await assert.doesNotReject(async () => { r = await run({ a: fine, b: bad }, o) }, name)
+    assert.equal(r!.verdict, 'unknown', name); const entry = o.log.find(l => l.judge === 'b'); assert.ok(entry, `${name}: the call is logged`); assert.equal(entry!.outcome, 'error', name); assert.equal(o.budget.used, 2, name)
+  }
+  const o = opts({ max_attempts: 1, timeout_ms: 20 }); const hang: Judge = () => new Promise(() => {}); await run({ a: says('pass'), b: hang }, o)
+  assert.equal(o.log.find(l => l.judge === 'b')!.outcome, 'timeout', 'a real timeout is still a timeout')
+})
+
+test('review 6: now and timeout_ms are validated before any call is spent', async () => {
+  let calls = 0; const a: Judge = async () => { calls++; return 'pass' }, b: Judge = async () => { calls++; return 'pass' }
+  for (const [name, over] of [['now a number', { now: 5 }], ['now a string', { now: 'x' }], ['now null', { now: null }], ['timeout_ms 1e12', { timeout_ms: 1e12 }], ['timeout_ms 2147483648', { timeout_ms: 2147483648 }]] as [string, Partial<JudgeOptions>][]) {
+    const o = opts(over as never); const r = await run({ a, b }, o); assert.equal(r.verdict, 'unknown', name); assert.match(r.reason, /no judge was called/, name); assert.equal(o.budget.used, 0, name); assert.equal(o.log.length, 0, name)
+  }
+  assert.equal(calls, 0)
+  assert.equal((await run({ a, b }, opts({ timeout_ms: 2147483647, now: () => 0 }))).verdict, 'pass', 'the largest timer value is allowed')
+})
+
+test('review 7: a missing claim or bad identity tokens return unknown and spend nothing', async () => {
+  let calls = 0; const a: Judge = async () => { calls++; return 'pass' }, b: Judge = async () => { calls++; return 'pass' }
+  const go = (item: unknown, tokens: unknown, o = opts()) => judgeClaim(item as never, tokens as never, Q, { a, b }, o)
+  for (const [name, item, tokens] of [['item null', null, []], ['item undefined', undefined, []], ['item a string', 'x', []], ['item an array', [], []], ['tokens null', ITEM, null], ['tokens undefined', ITEM, undefined], ['tokens a string', ITEM, 'dazl'], ['tokens [5, null]', ITEM, [5, null]], ['one bad token among good', ITEM, ['dazl', 7]]] as [string, unknown, unknown][]) {
+    const o = opts(); let r: Awaited<ReturnType<typeof go>> | undefined; await assert.doesNotReject(async () => { r = await go(item, tokens, o) }, name)
+    assert.equal(r!.verdict, 'unknown', name); assert.match(r!.reason, /no judge was called/, name); assert.equal(o.budget.used, 0, name)
+  }
+  assert.equal(calls, 0); assert.equal((await go(ITEM, ['dazl'])).verdict, 'pass')
+})
