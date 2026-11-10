@@ -1,3 +1,7 @@
+CREATE TABLE adv_budget_lock (tenant_id TEXT NOT NULL, connector TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, since INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant_id, connector));
+
+CREATE TABLE adv_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, connector TEXT NOT NULL, at INTEGER NOT NULL, consumer TEXT NOT NULL);
+
 CREATE TABLE advanced_consent (
     tenant_id TEXT NOT NULL, scope TEXT NOT NULL, version TEXT NOT NULL,
     accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
@@ -1187,6 +1191,8 @@ CREATE TABLE worker_runs (
     finished_at INTEGER
   );
 
+CREATE INDEX adv_requests_window ON adv_requests (tenant_id, connector, at);
+
 CREATE INDEX audit_events_at ON audit_events (at);
 
 CREATE INDEX audit_events_seq ON audit_events (seq);
@@ -1404,6 +1410,10 @@ CREATE TRIGGER sequence_sent_final
     WHEN OLD.status = 'sent' AND (NEW.status <> 'sent' OR NEW.subject <> OLD.subject OR NEW.body <> OLD.body)
     BEGIN SELECT RAISE(ABORT, 'sent sequence step is final'); END;
 
+CREATE TRIGGER tomb_adv_budget_lock BEFORE INSERT ON adv_budget_lock BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_adv_requests BEFORE INSERT ON adv_requests BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_advanced_consent BEFORE INSERT ON advanced_consent BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_audit_events BEFORE INSERT ON audit_events BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) AND NOT EXISTS (SELECT 1 FROM audit_closing_gate WHERE tenant = NEW.tenant_id); END;
@@ -1599,6 +1609,10 @@ CREATE TRIGGER tomb_tinyfish_usage BEFORE INSERT ON tinyfish_usage BEGIN SELECT 
 CREATE TRIGGER tomb_trial_reservations BEFORE INSERT ON trial_reservations BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_trial_scans BEFORE INSERT ON trial_scans BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_upd_adv_budget_lock BEFORE UPDATE OF tenant_id ON adv_budget_lock BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_adv_requests BEFORE UPDATE OF tenant_id ON adv_requests BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_advanced_consent BEFORE UPDATE OF tenant_id ON advanced_consent BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
