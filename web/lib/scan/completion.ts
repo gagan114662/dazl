@@ -33,7 +33,7 @@ function kept(db: Database.Database, tenantId: string, jobId: string): (LeadRow 
 // actionability and the timing proof): completion must never award contact points for evidence those gates reject (#943 review).
 function factsOf(db: Database.Database, tenantId: string, l: LeadRow & { who: string }): Facts {
   const c = currentSiteContact(db, tenantId, l, l.who)
-  return { date: realDay(l.event_date), domain: c.confirmed, person: !!c.person, route: !!c.route }
+  return { date: realDay(l.event_date), domain: c.confirmed && c.domain !== null, person: !!c.person, route: !!c.route }
 }
 export function snapshotLeads(db: Database.Database, tenantId: string, jobId: string): Snapshot[] {
   try { return kept(db, tenantId, jobId).map(l => ({ id: l.id, company: l.company, score: l.score, ...factsOf(db, tenantId, l) })) } catch { return [] }
