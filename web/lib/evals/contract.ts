@@ -36,7 +36,13 @@ export interface Contract {
 export interface ContractProblem { path: string; reason: string }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/
-export const isDay = (s: unknown): s is string => typeof s === 'string' && DAY.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s
+// An impossible day ("2026-13-01", "2026-00-10") must be a plain `false`, never a throw: toISOString() throws RangeError on an Invalid Date, which would
+// abort validateContract/evaluateLead instead of listing the problem.
+export const isDay = (s: unknown): s is string => {
+  if (typeof s !== 'string' || !DAY.test(s)) return false
+  const t = Date.parse(`${s}T00:00:00Z`)
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s
+}
 const strList = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string' && x.trim() !== '')
 
 export function validateContract(raw: unknown): ContractProblem[] {
@@ -108,7 +114,13 @@ const host = (u: string) => { try { return new URL(u).hostname.toLowerCase().rep
 // The registrable domain by the Public Suffix List INCLUDING its private section (tldts, already a dependency), so shared hosts are not one company:
 // acme.github.io and other.github.io are different domains, as are foo.vercel.app and bar.vercel.app. A host with no listed suffix (an IP, localhost) is itself.
 export const registrable = (h: string) => { const host = h.toLowerCase().replace(/^www\./, ''); return getDomain(host, { allowPrivateDomains: true }) ?? host }
-const RECRUITING = /^(careers?|jobs?|hr|recruit(ing|ment|er)?|talent|hiring|people|apply|work)@/i
+// A hiring inbox is judged on the local part with any +tag stripped and separators folded, so careers+sales@, talent.acquisition@ and job-applications@
+// are recruiting too, not only the bare names.
+const RECRUITING = /^(careers?|jobs?|hr|recruit(ing|ment|ers?)?|talent(\s?acquisition)?|hiring|people|apply|((job|career)s? )?applications?|work(\s?with\s?us)?|join(\s?us)?|employment|vacancies)(\s(team|dept|department))?$/
+const isRecruitingMailbox = (local: string) => RECRUITING.test(local.split('+')[0].replace(/[._-]+/g, ' ').trim())
+// One whole address: a single @, a non-empty local part, a dotted domain, no spaces. "@northwind.io" and "jane@northwind.io@other.org" are not usable routes.
+const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/
+const emailDomain = (em: string) => em.slice(em.indexOf('@') + 1)
 const dayNum = (s: string) => Date.parse(`${s}T00:00:00Z`) / 86_400_000
 
 export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvaluation {
@@ -147,9 +159,10 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
   else {
     const own = claimed
     const doms2 = new Set(ev.sources.map(s => host(s.url)).filter((h): h is string => !!h).map(registrable))
-    const n = doms2.size, ownOnly = own !== null && n === 1 && doms2.has(own)
-    if (n >= k.min_independent_sources) add('event.predicate', 'pass', `${n} independent source domain(s) evidence the event (needed ${k.min_independent_sources})`, ev.sources.map(s => s.url))
-    else add('event.predicate', 'unknown', `${n} independent source domain(s) evidence the event, ${k.min_independent_sources} needed${ownOnly ? ' (the only source is the company\'s own site)' : ''}: not corroborated`, ev.sources.map(s => s.url))
+    // One source is never corroboration, whatever min_independent_sources says: the floor is two domains (a contract with 1 is valid but cannot lower it).
+    const n = doms2.size, ownOnly = own !== null && n === 1 && doms2.has(own), need = Math.max(2, k.min_independent_sources)
+    if (n >= need) add('event.predicate', 'pass', `${n} independent source domain(s) evidence the event (needed ${need})`, ev.sources.map(s => s.url))
+    else add('event.predicate', 'unknown', `${n} independent source domain(s) evidence the event, ${need} needed${ownOnly ? ' (the only source is the company\'s own site)' : ''}: not corroborated`, ev.sources.map(s => s.url))
   }
 
   // event.date_real / event.date_in_window: whole UTC calendar days, the as_of day passes, tomorrow is the future, the window is inclusive.
@@ -168,9 +181,10 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
   // contact.usable: a reachable route at the company, not a hiring inbox.
   const em = e.contact?.email?.trim().toLowerCase()
   if (!em) add('contact.usable', 'unknown', e.contact?.phone ? 'only a phone number: not checked' : 'no contact route')
-  else if (RECRUITING.test(em)) add('contact.usable', 'fail', 'the email is a hiring inbox, which routes to recruiting and not to a buyer')
+  else if (!EMAIL.test(em)) add('contact.usable', 'fail', 'the email is not a well-formed address')
+  else if (isRecruitingMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a hiring inbox, which routes to recruiting and not to a buyer')
   else if (!claimed) add('contact.usable', 'unknown', 'the company domain is not known, so the email domain cannot be matched')
-  else add('contact.usable', registrable(em.split('@')[1] ?? '') === claimed ? 'pass' : 'fail', registrable(em.split('@')[1] ?? '') === claimed ? 'the email is at the company\'s domain' : 'the email is not at the company\'s domain')
+  else add('contact.usable', registrable(emailDomain(em)) === claimed ? 'pass' : 'fail', registrable(emailDomain(em)) === claimed ? 'the email is at the company\'s domain' : 'the email is not at the company\'s domain')
 
   const status = v.some(x => x.status === 'fail' || x.status === 'contradicted') ? 'fail' : v.some(x => x.status === 'unknown') ? 'unknown' : 'pass'
   return { contract: frozen.contract.id, contract_hash: frozen.hash, tier: status === 'pass' ? 'validated' : null, status, scorer: { ...SCORER }, verdicts: v }

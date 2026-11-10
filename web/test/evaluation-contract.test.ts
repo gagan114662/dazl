@@ -212,3 +212,38 @@ test('F4: the runner persists the frozen contract hash with every judgement; a s
   const bad = await noHash.judge(items, brief)
   assert.match((bad.b1.record as { error: string }).error, /no contract hash/); assert.equal(bad.b1.identity, undefined)
 })
+
+// ---- review of #1027 (greptile): invalid dates, one-source floor, malformed and hiring emails ----
+
+test('G1: an impossible day is a failed field, never a throw (month 13, day 00, month 00)', () => {
+  for (const bad of ['2026-13-01', '2026-11-00', '2026-00-10', '2026-02-30']) {
+    const e = good(); e.event!.date = bad
+    const r = run(e)
+    assert.equal(status(r, 'event.date_real'), 'fail', bad)
+    assert.equal(status(r, 'event.date_in_window'), 'fail', bad)
+    assert.ok(validateContract({ ...base(), as_of: bad }).some(p => p.path === 'as_of'), bad)
+  }
+})
+
+test('G2: min_independent_sources 1 is valid but one source (even the company site) stays unknown', () => {
+  const one = base(); one.version = 99; one.constraints.min_independent_sources = 1
+  assert.deepEqual(validateContract(one), [])
+  const e = good(); e.event!.sources = [{ url: 'https://northwind.io/careers' }]
+  assert.equal(status(run(e, one), 'event.predicate'), 'unknown')
+  const e2 = good(); e2.event!.sources = [{ url: 'https://northwind.io/careers' }, { url: 'https://northwind.io/jobs/1' }]
+  assert.equal(status(run(e2, one), 'event.predicate'), 'unknown')   // same domain twice is still one
+  assert.equal(status(run(good(), one), 'event.predicate'), 'pass')  // two domains pass
+})
+
+test('G3: malformed addresses are not usable contacts', () => {
+  for (const email of ['@northwind.io', 'jane@northwind.io@other.org', 'jane@', 'jane northwind.io', 'jane@northwind']) {
+    const c = good(); c.contact = { email }; assert.equal(status(run(c), 'contact.usable'), 'fail', email)
+  }
+})
+
+test('G4: hiring inboxes with plus tags or compound names fail as recruiting', () => {
+  for (const email of ['careers+sales@northwind.io', 'talent.acquisition@northwind.io', 'job-applications@northwind.io', 'Recruiting+EMEA@northwind.io']) {
+    const c = good(); c.contact = { email }; assert.equal(status(run(c), 'contact.usable'), 'fail', email)
+  }
+  const ok = good(); ok.contact = { email: 'sam.talent-lee@northwind.io' }; assert.equal(status(run(ok), 'contact.usable'), 'pass')
+})
