@@ -2,16 +2,17 @@
 // small businesses in a non-English market:
 //  - new_company: a business registered in the window, filtered by industry code (NACE / SN2025 prefix) and, when the request names one, the municipality;
 //  - new_location: a new establishment (underenhet) of a business that was already registered at least parentMinAgeDays before it - an opening, not a formation.
-// Free, keyless open data (NLOD 2.0) from data.brreg.no. Each item cites the entity's public page on virksomhet.brreg.no (robots: Allow /), read through the
-// scan's own page reader; the quote is cut from that page around the organisation number, so the cited page itself shows the registry identity and the normal
-// verifier re-reads the same page. The registry date is the source's own date for the registration (never a crawl time).
+// Free, keyless open data (NLOD 2.0) from data.brreg.no. Each item cites the entity's own official API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}):
+// it states the registration date (registreringsdatoEnhetsregisteret) that the public virksomhet.brreg.no page does not show, and the scan's verifier re-reads the same record.
+// The adapter reads that record itself, renders it with the same function the verifier's fetcher uses (brreg-record.ts) and quotes the sentence naming the entity, its
+// organisation number and its registration day; a record that is not this entity's, or whose date differs from the list row, is dropped. The date is the register's own (never a crawl time).
 // A request outside this source's coverage (no Norwegian place, or no mapped industry) is reported as out of coverage, never as an empty market. Bankruptcy and
 // liquidation estates (KONKURSBO, TVANGSAVVIKLINGSBO, DØDSBO), dissolving or deleted entities, other industries and other municipalities are dropped.
+import { brregRecordQuote, brregRecordUrl, renderBrregRecord } from './brreg-record.ts'
 import type { AdapterInput, Evidence, SourceAdapter } from './types.ts'
 
 const API = 'https://data.brreg.no/enhetsregisteret/api'
-const PAGE = 'https://virksomhet.brreg.no/nb/oppslag'
-// Per-scan budget: 2 list requests + at most maxParents parent lookups + at most maxPages page reads; no request STARTS after budgetMs (each is hard-bounded
+// Per-scan budget: 2 list requests + at most maxParents parent lookups + at most maxPages record reads; no request STARTS after budgetMs (each is hard-bounded
 // at 10 s by the guarded getter, so 12 + 10 < the 25 s adapter deadline). Process-wide hourly cap like the other adapters.
 export const brregLimits = { budgetMs: 12_000, windowDays: 60, parentMinAgeDays: 180, maxParents: 4, maxPages: 6, size: 20, now: () => Date.now() }
 const HOUR_MS = 60 * 60 * 1000
@@ -134,27 +135,12 @@ export function brregCandidates(scope: BrregScope, companies: BrregEntity[], uni
   return [...openings, ...fresh]
 }
 
-// The passage of the entity's own public page that names it next to its organisation number; null when the page does not show this entity (fail closed).
-export function brregQuote(pageText: string, navn: string, orgnr: string): string | null {
-  const text = pageText.replace(/\s+/g, ' ')
-  const anchor = text.indexOf(`Organisasjonsnummer ${orgnr.slice(0, 3)} ${orgnr.slice(3, 6)} ${orgnr.slice(6)}`)
-  if (anchor < 0) return null
-  const start = text.lastIndexOf(navn.replace(/\s+/g, ' ').trim(), anchor)
-  if (start < 0 || anchor - start > 200) return null
-  let q = text.slice(start, start + 300)
-  const stop = q.indexOf(' Søk i Virksomhetsopplysninger'); if (stop > 0) q = q.slice(0, stop)
-  if (q.length === 300) q = q.slice(0, q.lastIndexOf(' '))
-  q = q.trim()
-  return q.length >= 20 ? q : null
-}
-
 export const brregAdapter: SourceAdapter = {
   id: 'brreg',
   label: 'Norway business register',
-  async collect({ query, http, page, note }: AdapterInput): Promise<Evidence[]> {
+  async collect({ query, http, note }: AdapterInput): Promise<Evidence[]> {
     const scope = brregScope(query)
     if (!scope) { note?.('out_of_coverage'); return [] }
-    if (!page) { note?.('no_page_reader'); return [] }
     const t0 = Date.now(); let cut = false
     const now = brregLimits.now(), today = day(now), from = day(now - brregLimits.windowDays * 86_400_000)
     const FAILED = Symbol('failed') // the read itself failed and was already reported (unreachable / oversize / unparseable / budget)
@@ -194,11 +180,12 @@ export const brregAdapter: SourceAdapter = {
     for (const c of brregCandidates(scope, companies, units, parents, from, today).slice(0, brregLimits.maxPages)) {
       if (Date.now() - t0 > brregLimits.budgetMs) { cut = true; break }
       const id = c.e.organisasjonsnummer!, date = c.e.registreringsdatoEnhetsregisteret!
-      const url = `${PAGE}/${c.kind === 'new_location' ? 'underenheter' : 'enheter'}/${id}`
-      const text = await page(url).catch(() => null)
-      if (!text) { note?.('unreadable'); continue }
-      const quote = brregQuote(text, c.e.navn!, id)
-      if (!quote) { note?.('page_mismatch'); continue }
+      const kind = c.kind === 'new_location' ? 'underenheter' : 'enheter', url = brregRecordUrl(kind, id)
+      const body = await json(url)
+      if (body === FAILED) continue // the read failed and was already reported
+      const rec = renderBrregRecord(body, id)
+      const quote = rec && rec.registered === date ? brregRecordQuote(rec.text) : null
+      if (!quote) { note?.('record_mismatch'); continue }
       const where = (c.e.forretningsadresse ?? c.e.beliggenhetsadresse)?.kommune ?? scope.place
       const title = c.kind === 'new_location'
         ? `${c.parent.navn} registered a new establishment in ${where}: ${c.e.navn} (Enhetsregisteret, ${date}); the business itself has been registered since ${c.parent.registreringsdatoEnhetsregisteret}`
