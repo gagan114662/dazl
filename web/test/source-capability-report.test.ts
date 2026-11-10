@@ -4,11 +4,18 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { MATRIX, byId, workerEntries } from '../lib/sources/capability-matrix.ts'
-import { capabilityReport, type WorkerState } from '../lib/sources/capability-report.ts'
+import { capabilityReport, tenantCapabilities, type WorkerState } from '../lib/sources/capability-report.ts'
+import Database from 'better-sqlite3'
+import { randomBytes } from 'node:crypto'
+import { sqliteDb } from '../lib/db/client.ts'
+import { migrateConnectors, saveCredential, recentAudit } from '../lib/connectors/store.ts'
+import { migrateAdvanced, acceptConsent, collectAdvanced, xViaOperatorIndex, type WorkerFetch } from '../lib/advanced/index.ts'
+import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { ADV_PLATFORMS, PLATFORM_SUPPORT, connectorId, type AdvPlatform } from '../lib/advanced/config.ts'
 
 const ON = { enabled: true, linkedin: true }
 const none: WorkerState = { connectors: [], consented: new Set(), flags: ON, xViaOperatorIndex: false }
+const master = randomBytes(32)
 const row = (rows: ReturnType<typeof capabilityReport>, id: string) => rows.find(r => r.id === id)!
 
 test('every worker platform has exactly one entry and its built-ness equals PLATFORM_SUPPORT (Facebook / Xiaohongshu are not shipped)', () => {
@@ -61,6 +68,85 @@ test('the published row carries the whole policy and nothing is advertised witho
 
 test('the matrix is consumed by a real route, not just tests', () => {
   const src = readFileSync(new URL('../app/api/sources/capabilities/route.ts', import.meta.url), 'utf8')
-  assert.match(src, /capabilityReport/); assert.match(src, /requireUser/); assert.match(src, /readConsent/); assert.match(src, /connectorStatus/)
+  assert.match(src, /tenantCapabilities/); assert.match(src, /requireUser/)
+  const rep = readFileSync(new URL('../lib/sources/capability-report.ts', import.meta.url), 'utf8')
+  assert.match(rep, /readConsent/); assert.match(rep, /connectorStatus/); assert.match(rep, /xViaOperatorIndex\(env\)/)
   for (const r of capabilityReport(none)) assert.equal(Object.keys(r).some(k => /last4|credential|cookie|token/.test(k)), false, 'no credential field is ever published')
+})
+
+// ---- #1032 review (Ziggy / Greptile P1): X availability and the scan must use ONE rule for the operator-index path ----
+const ADV_ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://worker.internal:9000', ADVANCED_WORKER_TOKEN: 't' }
+// [name, env extras, X reachable with consent and NO session]
+const X_CASES: [string, Record<string, string>, boolean][] = [
+  ['key set, X_VIA_SEARCH unset', { TINYFISH_API_KEY: 'tf-key' }, true],
+  ['key set, X_VIA_SEARCH=1', { TINYFISH_API_KEY: 'tf-key', X_VIA_SEARCH: '1' }, true],
+  ['key set, X_VIA_SEARCH=0', { TINYFISH_API_KEY: 'tf-key', X_VIA_SEARCH: '0' }, false],
+  ['no key, X_VIA_SEARCH unset', {}, false],
+  ['no key, X_VIA_SEARCH=0', { X_VIA_SEARCH: '0' }, false],
+  ['key set but TinyFish switched off', { TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '0' }, false],
+]
+async function xStore() {
+  const raw = new Database(':memory:'); migrateConnectors(raw); migrateAdvanced(raw); migrateTinyfish(raw); resetTinyfishState()
+  acceptConsent(raw, 'A', 'advanced')
+  return { raw, db: sqliteDb(raw) }
+}
+
+test('xViaOperatorIndex: the operator index is used only with the TinyFish key AND X_VIA_SEARCH not 0', () => {
+  for (const [name, extra, want] of X_CASES) assert.equal(xViaOperatorIndex(extra), want, name)
+})
+
+test('capabilities report (the route\'s function): consented X with no session is available only when the scan would use the operator index', async () => {
+  for (const [name, extra, want] of X_CASES) {
+    const { raw, db } = await xStore()
+    try {
+      const rows = await tenantCapabilities(db, 'A', { ...ADV_ON, ...extra })
+      assert.equal(row(rows, 'adv:x').availability, want ? 'available' : 'unavailable', name)
+      assert.equal(row(rows, 'adv:reddit').availability, 'unavailable', `${name}: reddit has no session`)
+    } finally { raw.close() }
+  }
+  // a stored enabled X session makes X available whatever X_VIA_SEARCH says (the scan then uses the worker with that session)
+  const { raw, db } = await xStore()
+  try {
+    saveCredential(raw, 'A', 'adv:x', 'x-session-of-A', master)
+    for (const v of ['0', '1']) assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON, TINYFISH_API_KEY: 'tf-key', X_VIA_SEARCH: v }), 'adv:x').availability, 'available', `session, X_VIA_SEARCH=${v}`)
+    // and another tenant's consent or session never counts for this one
+    assert.equal(row(await tenantCapabilities(db, 'B', { ...ADV_ON, TINYFISH_API_KEY: 'tf-key' }), 'adv:x').availability, 'unavailable', 'tenant B has no consent')
+  } finally { raw.close() }
+})
+
+test('no drift: for every X_VIA_SEARCH / key setting, "available" with no session == a real collectAdvanced run reads X without a worker session', async () => {
+  for (const [name, extra, want] of X_CASES) {
+    const { raw, db } = await xStore()
+    try {
+      const env = { ...ADV_ON, ...extra }
+      let workerCalls = 0
+      const worker: WorkerFetch = async () => { workerCalls++; return null }   // no session anywhere: the worker answers no_session = worker_error
+      const fetchImpl = (async () => new Response(JSON.stringify({ results: [{ url: 'https://x.com/acme/status/12345', title: 't', snippet: 'we are dumping our current sales tool, it never works', date: '2026-10-20' }] }), { status: 200 })) as unknown as typeof fetch
+      const out = await collectAdvanced(raw, 'A', 'j1', ['x'], 'sales software alternatives', { worker, master, env, fetchImpl })
+      const status = (recentAudit(raw, 'A', 10) as { connector: string; status: string }[]).find(r => r.connector === 'adv:x')?.status
+      const scanReadX = status === 'ok' && out.length > 0
+      assert.equal(scanReadX, want, `${name}: scan audit ${status}`)
+      assert.equal(workerCalls, want ? 0 : 1, `${name}: worker path iff not the operator index`)
+      assert.equal(row(await tenantCapabilities(db, 'A', env), 'adv:x').availability === 'available', scanReadX, `${name}: report and scan disagree`)
+    } finally { raw.close() }
+  }
+})
+
+test('worker rows claim only the proof their evidence carries (xhawk): no author identity, dates only where the worker returns one, Bilibili is Latin-script', () => {
+  const rows = capabilityReport(none)
+  for (const p of ADV_PLATFORMS) assert.equal(row(rows, `adv:${p}`).identityProof, 'none', `${p}: collectAdvanced drops the worker author object`)
+  for (const p of ['instagram', 'linkedin']) assert.equal(row(rows, `adv:${p}`).dateProof, 'none', `${p}: worker date is always null`)
+  for (const p of ['x', 'reddit', 'bilibili']) assert.equal(row(rows, `adv:${p}`).dateProof, 'published_date', p)
+  assert.deepEqual(row(rows, 'adv:bilibili').languages, ['en'], 'the worker discards CJK text, so zh coverage is not claimed')
+  for (const p of ['x', 'reddit']) assert.match(row(rows, `adv:${p}`).failureReporting, /connector_audit only - the scan run report does not list it yet/)
+})
+
+test('collectAdvanced really drops the worker author (the reason worker rows say identityProof none)', async () => {
+  const { raw } = await xStore()
+  try {
+    saveCredential(raw, 'A', 'adv:reddit', 'reddit-of-A', master)
+    const worker: WorkerFetch = async () => ({ items: [{ url: 'https://www.reddit.com/r/x/comments/1', title: 't', quote: 'a quote that is long enough to keep', date: '2026-10-01', login_walled: false, author: { name: 'someone', headline: null, company: 'Acme', url: null } }], unsupported: null }) as never
+    const out = await collectAdvanced(raw, 'A', 'j1', ['reddit'], 'q', { worker, master, env: ADV_ON })
+    assert.equal(out.length, 1); assert.equal('author' in out[0], false)
+  } finally { raw.close() }
 })

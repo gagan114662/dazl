@@ -42,16 +42,23 @@ const BLOCKERS: Record<string, string> = {
 
 // One entry per worker platform. Built-ness comes from PLATFORM_SUPPORT, never from a label: unsupported = planned (not built) with the reason as its blocker.
 const PLATFORM_LABEL: Record<AdvPlatform, string> = { x: 'X (Twitter)', reddit: 'Reddit', instagram: 'Instagram', facebook: 'Facebook', xiaohongshu: 'Xiaohongshu', bilibili: 'Bilibili', linkedin: 'LinkedIn' }
-const PLATFORM_LANGS: Partial<Record<AdvPlatform, string[]>> = { xiaohongshu: ['zh'], bilibili: ['zh'] }
+// Bilibili's worker keeps only Latin-script excerpts (session-worker latinUsable; the verifier strips CJK), so a Chinese-only result never enters
+// evidence: it covers Latin-script text on a CN platform, not Chinese. Xiaohongshu is not built.
+const PLATFORM_LANGS: Partial<Record<AdvPlatform, string[]>> = { xiaohongshu: ['zh'], bilibili: ['en'] }
+// What the evidence a worker row produces actually carries. collectAdvanced keeps url/title/quote/date and drops the worker's author object, so no
+// worker row proves identity by author handle. Instagram (profile results) and LinkedIn (feed posts) always return date null; X, Reddit and Bilibili
+// return the post's own date (the X operator-index path keeps the search hit's date).
+const PLATFORM_DATED: Partial<Record<AdvPlatform, boolean>> = { x: true, reddit: true, bilibili: true }
 const PLATFORM_MARKETS: Partial<Record<AdvPlatform, string[]>> = { xiaohongshu: ['CN'], bilibili: ['CN'] }
 export function workerEntries(support: Record<AdvPlatform, { supported: boolean; reason: string | null }> = PLATFORM_SUPPORT): Capability[] {
   return ADV_PLATFORMS.map((p): Capability => {
     const built = support[p]?.supported === true
     return {
       id: `adv:${p}`, label: `${PLATFORM_LABEL[p]} (authorized worker session)`, status: built ? 'shipped' : 'planned', signals: ['engagement', 'discussion'],
-      markets: PLATFORM_MARKETS[p] ?? ['*'], languages: PLATFORM_LANGS[p] ?? ['*'], refresh: built ? 'per scan' : 'not built', identityProof: built ? 'author_handle' : 'none', dateProof: 'published_date',
+      markets: PLATFORM_MARKETS[p] ?? ['*'], languages: PLATFORM_LANGS[p] ?? ['*'], refresh: built ? 'per scan' : 'not built', identityProof: 'none', dateProof: built && PLATFORM_DATED[p] ? 'published_date' : 'none',
       access: 'authorized_worker', worker: p, license: built ? 'user consent + worker terms' : 'to be decided with the source owner',
-      failureReporting: built ? 'worker disconnected = unavailable, never a zero; audit status disabled|no_consent|rate_limited|worker_error|unsupported' : 'not built',
+      // Honest about where a failure shows today: connector_audit, not the scan run report (the runner lists only adv: sources that returned evidence).
+      failureReporting: built ? 'worker disconnected = unavailable here, never a zero; per-scan outcome (ok|empty|disabled|no_consent|rate_limited|worker_error|unsupported) is recorded in connector_audit only - the scan run report does not list it yet' : 'not built',
       evidence: { liveSourceToLead: false, negativeFixtures: false, incrementalYield: null },
       ...(built ? {} : { blocker: support[p]?.reason?.trim() || 'adapter not built' }),
     }

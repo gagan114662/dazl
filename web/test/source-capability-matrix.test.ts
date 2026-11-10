@@ -18,7 +18,8 @@ test('entries are complete: markets, languages, refresh, proofs, access, license
     for (const k of ['label', 'refresh', 'license', 'failureReporting'] as const) assert.ok(c[k].length > 0, `${c.id}.${k}`)
     assert.ok(c.signals.length && c.markets.length && c.languages.length, c.id)
     assert.ok(['open_api', 'public_pages', 'official_registry', 'authorized_worker'].includes(c.access), c.id)
-    if (c.status === 'shipped') assert.notEqual(c.identityProof, 'none', `${c.id} is shipped and must say how identity is proven`)
+    // worker rows say 'none' on purpose: collectAdvanced drops the worker's author object, so their evidence proves no identity (pinned in source-capability-report)
+    if (c.status === 'shipped' && !c.worker) assert.notEqual(c.identityProof, 'none', `${c.id} is shipped and must say how identity is proven`)
   }
 })
 
