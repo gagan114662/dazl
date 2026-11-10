@@ -17,7 +17,7 @@ const good: PageFetcher = async () => page(`October 2026. ${QUOTE}. Spokesperson
 
 test('semantic check: a page that contains the quote but contradicts the claim is rejected', async () => {
   const seen: string[] = []
-  const judge: Judge = async (c, passage) => { seen.push(passage); return /no layoffs|denied/.test(passage) ? 'contradicts' : 'supports' }
+  const judge: Judge = async (_claim, passage) => { seen.push(passage); return /no layoffs|denied/.test(passage) ? 'contradicts' : 'supports' }
   const contradicting: PageFetcher = async () => page(`October 2026. The company denied reports. ${QUOTE}, a claim the CEO called false: there are no layoffs planned.`)
   const r1 = await verifyLeads([cand()], contradicting, NOW, judge)
   assert.equal(r1.leads.length, 0)

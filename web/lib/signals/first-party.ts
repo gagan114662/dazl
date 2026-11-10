@@ -348,10 +348,19 @@ function* purgeTx(t: Tx, tenantId: string, retentionDays: number, now: number): 
   return gone
 }
 
-export interface IngestResult { status: 'ok' | 'off' | 'not_configured' | 'bad_body'; results: { index: number; outcome: Outcome }[]; counts: Record<string, number> }
+export interface IngestResult { status: 'ok' | 'off' | 'not_configured' | 'bad_body' | 'unauthenticated'; results: { index: number; outcome: Outcome }[]; counts: Record<string, number> }
 
-// Ingest one verified request body for the tenant. The caller has already checked the signature with this config's secret.
-export async function ingest(db: Db, tenantId: string, rawBody: string, receipt: string, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<IngestResult> {
+// The signed request's own headers, so ingest can re-authenticate it against the config it actually ingests under (#921).
+export interface FpAuth { timestamp: string | null; signature: string | null }
+
+// Ingest one request body for the tenant. With `auth` (the hook route), the request is re-verified INSIDE the transaction,
+// behind the config lock, against the exact config that classifies and retains it: the timestamp, the raw bytes and the
+// secret are bound together, so a request authenticated under a secret that a re-record/erase replaced between the
+// route's check and this lock is refused ('unauthenticated'), never stored under the replacement config (#921). A bare
+// string receipt is the legacy caller-asserted form (the caller already verified with this config's secret).
+export async function ingest(db: Db, tenantId: string, rawBody: string, receipt: string | FpAuth, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<IngestResult> {
+  const auth = typeof receipt === 'string' ? null : receipt
+  receipt = typeof receipt === 'string' ? receipt : (receipt.signature ?? '')
   const empty = (status: IngestResult['status']): IngestResult => ({ status, results: [], counts: {} })
   let body: { events?: unknown }
   try { body = JSON.parse(rawBody) } catch { return empty('bad_body') }
@@ -366,6 +375,8 @@ export async function ingest(db: Db, tenantId: string, rawBody: string, receipt:
     yield* lockConfig(t, tenantId, false)
     const c = yield* readConfigTx(t, tenantId, master)
     if (!c) return empty('not_configured')
+    // Checked before 'off' so a stale secret learns nothing about the replacement config's state.
+    if (auth && verifyRequest(c.config.secret, auth.timestamp, auth.signature, rawBody, now) !== 'ok') return empty('unauthenticated')
     if (!c.enabled) return empty('off')
     const cfg = c.config
     const classified = events.map(e => classifyEvent(e, cfg, tenantId, now))

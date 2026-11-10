@@ -41,10 +41,24 @@ old-listener timeout. Mocked lifecycle tests are not real host proof.
 ## Revision safety gates
 
 Requires nonempty DB_PATH, DAZL_MASTER_KEY, PUBLIC_BASE_URL; DB_PATH must name an
-existing nonempty absolute database. Caller must supply exact verified backup
-path, backup-db identity matching DB_PATH and backup-verified attestation; helper
-also independently checks read-only SQLite backup integrity. Backup recency and
-correspondence to live DB still need separately grounded main coordination.
+existing nonempty absolute database. Backup evidence (#911), all checked before
+any signal: `--backup` (made by `web/scripts/backup/create-backup.ts`, the online
+backup API), `--backup-db` equal to resolved DB_PATH, its create-backup sidecar
+manifest (`--backup-manifest`, default `<backup>.json`) whose sourcePath is DB_PATH,
+whose backupPath names this file and whose bytes/sha256 match the file now, a
+`--drill-report` from `restore-drill.ts --report` with ok=true for this backup name
+and sha256 (started at/after the manifest), and an explicit recovery policy
+`--backup-max-age-s` (1s..7d, required, no default; both manifest
+and drill must be within it). Clock skew is a bounded tolerance, not "any future
+timestamp fails closed": `CLOCK_SKEW_S` = 120. A manifest created up to 120s in the
+future is accepted; further out is refused `backup_stale`. A drill may start up to 120s
+before its manifest's creation and up to 120s in the future. Age is never extended by
+the tolerance (older than the policy age is always `backup_stale`). Every check here is
+source logic over files; a real host launch is not proved by this gate. Integrity
+is checked read-only too. The verified file's inode/bytes are re-hashed right before
+SIGTERM; any swap stops with `backup_changed`. `--backup-verified` no longer exists:
+a bare attestation is not evidence. A raw `cp` of a WAL database has no manifest and
+is refused (`backup_manifest_required`).
 Requires env regular-file ownership by executing uid, private mode and no symlink
 in file/parent path. Rejects backslashes rather than silently unescaping values.
 Rejects env PATH/NODE_OPTIONS/NODE_PATH/LD preload/library and npm shell/prefix
@@ -75,6 +89,27 @@ user permission. Backup/rehearsal outputs must be outside the source directory
 and descendants; backup_preflight enforces this before creating files. No
 production DB restore, directory hygiene edits, rotation or8795 action follows
 from snapshot permission. Historical backup mode644 remains unchanged.
+
+
+## Backup preflight (manual operator tool)
+
+ops/backup_preflight.py is kept as a manual operator preflight. No timer,
+service or script calls it; the scheduled backups are ops/backup/*. Its tests
+(ops/test_backup_preflight.py) run in release-preflight CI with every other
+ops/test_*.py file.
+
+Default invocation only validates the env file and the fixed DB identity. It
+prints one JSON status line and never writes anything:
+
+    python3 ops/backup_preflight.py --env-file /path/to/env \
+      --source "$DB_PATH" --backup /outside/dir/b.db \
+      --restore-rehearsal /outside/dir/r.db
+
+--create-backup is a separate host action that needs explicit original user
+approval before it is run. With it, the tool takes a readonly snapshot, creates
+new 0600 backup and restore-rehearsal files (never overwriting), refuses outputs
+inside the source DB directory, and verifies integrity plus a logical digest.
+It never writes to the source database.
 
 
 ## Literal unquoted value compatibility

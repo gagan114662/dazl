@@ -9,7 +9,8 @@
 //     (both readings and the one chosen) so the person can see it and rephrase.
 //   - Exclusions the request states (excluding competitors, except Acme, other than franchises) are HARD NOT conditions.
 //   - Each condition keeps its own window ("seed within 90 days AND first VP hired within 30 days" are two clocks), or a window
-//     relative to another condition's event ("within 30 days of the raise").
+//     relative to another condition's event ("within 30 days of the raise"). Every window the request binds to a condition counts
+//     (#878): a second, narrower one ("within 90 days, specifically within 30 days") is never dropped, whichever comes first.
 // Place, industry, size and buyer role stay with the gates that already enforce them (the verifier's place check, the ICP grade);
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
@@ -32,6 +33,8 @@ export interface Condition {
   within_days: number | null         // this condition's own clock; null = no window stated
   window_source: 'clause' | 'request' | 'narrowest' | 'default' | null
   relative_to?: string               // the window counts from this condition's event date (event relationship), not from now
+  since_days?: number                // relative_to only: the clock counted back from NOW (default within_days); a stated "in the last N days" can only narrow it
+  clock_conflict?: string            // the request states clocks for this condition that one condition cannot hold (two different anchor events): never provable
 }
 export type PlanNode = { op: 'cond'; cond: Condition } | { op: 'and' | 'or'; of: PlanNode[] } | { op: 'not'; of: PlanNode }
 export interface Ambiguity { text: string; readings: string[]; chosen: string }
@@ -98,8 +101,16 @@ const EVENTS: { event: string; re: RegExp; object?: number }[] = [
   { event: 'partner', re: /\b(?:partnered|partnership)\b/gi },
   { event: 'rebrand', re: /\brebrand(?:ed|ing)?\b/gi },
 ]
-const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|account\s+executives?)\b/i
+const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|salesperson|account\s+executives?)\b/i
 const STOP = /\s+(?:within|in\s+the|in|over|during|this|last|recently|and|or|but|while|who|that|which|excluding|except|other\s+than|with|at|from|to)\b|[,.;:!?()]/i
+// #876: "made their first sales hire" / "has made a founding engineering hire": a completed hire, in the request's own words.
+const MADE_HIRE = /\bmade\s+(?:(?:a|an|its|their|the|our)\s+)?((?:first|founding|inaugural|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi
+const HIRE_QUALIFIER = /^(?:first|founding|inaugural|new)$/i
+const FIRST_WORD = /^(?:first|founding|inaugural)$/i
+// #876: a modal in front of the completed verb ("may have made", "will have hired", "might have just made") says the hire may not have happened.
+// That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
+const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
+const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
 const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for)\s+)+/i, '').trim()
 
 function findAtoms(q: string): Atom[] {
@@ -109,13 +120,22 @@ function findAtoms(q: string): Atom[] {
   techAtoms(q, add)
   // 1. A completed hire ("hired their first VP of Sales", "first VP hired"): a fact in the past, never an open role.
   for (const m of q.matchAll(/\b(?:hired|appointed|named|brought\s+on|onboarded|welcomed)\s+((?:(?:a|an|its|their|the)\s+)?((?:first|founding|inaugural|new)\s+)?[a-z][a-z&\s-]{1,60})/gi)) {
-    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role)) continue
+    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role) || MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
     const end = (m.index ?? 0) + m[0].indexOf(m[1]) + m[1].indexOf(role) + role.length
     add({ kind: 'hire_made', start: m.index ?? 0, end, role, first: /\b(?:first|founding|inaugural)\b/i.test(m[1].slice(0, m[1].indexOf(role) + 1)) })
   }
   for (const m of q.matchAll(/\b(first|founding|new)\s+([a-z][a-z&\s-]{1,40}?)\s+(?:(?:was|were|has\s+been|have\s+been|recently|just)\s+)?(?:hired|appointed|joined|named|brought\s+on)\b/gi)) {
-    if (!ROLE_WORD.test(m[2])) continue
+    if (!ROLE_WORD.test(m[2]) || MODAL_WORD.test(m[0])) continue
     add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[2].trim(), first: /first|founding/i.test(m[1]) })
+  }
+  // #876: "made their first sales hire" states the same completed fact in other words - a hire in the past, never an open role. Only the past
+  // tense "made" reads so: "making / make / makes their first sales hire" states no completed hire and stays an open-role condition (step 3).
+  // A qualifier the role slot catches by itself ("made a new hire") is no role: any role, with `first` only when the request says first.
+  for (const m of q.matchAll(MADE_HIRE)) {
+    if (MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
+    const q1 = (m[1] ?? '').trim(), word = m[2]
+    const role = HIRE_QUALIFIER.test(word) ? '' : word
+    add({ kind: 'hire_made', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role, first: FIRST_WORD.test(q1) || (!role && FIRST_WORD.test(word)) })
   }
   // 2. Funding. A bare "seed" is a stage only in a funding context ("seed oil producers" is not).
   const fundingContext = FUNDING_CUE.test(q) || /\bseries\s+[a-e]\b|\bpre-?seed\b/i.test(q)
@@ -138,9 +158,10 @@ function findAtoms(q: string): Atom[] {
     const role = m[1] ? cleanRole(m[1]) : ''
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
   }
-  // "made their first sales hire": the hire the request asks about, read as the hiring condition its role names (proven like any open role: a dated posting or a source naming it).
-  for (const m of q.matchAll(/\b(?:made|making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
-    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[1] })
+  // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
+  // like any open role: a dated posting or a source naming it). The past tense ("made their first sales hire") is a completed hire: step 1 (#876).
+  for (const m of q.matchAll(/\b(?:making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
+    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
   // 4. Other events.
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
@@ -157,6 +178,9 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const q = (query ?? '').replace(/\s+/g, ' ').trim()
   const ambiguities: Ambiguity[] = []
   const atoms = findAtoms(q)
+  // #876: a modal completed hire ("may have made their first sales hire") compiles to no condition (findAtoms); the plan says why.
+  for (const m of q.matchAll(/\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*(?:made\s+(?:(?:a|an|its|their|the|our)\s+)?(?:[a-z][a-z-]*\s+){0,2}hires?|hired|appointed|named|brought\s+on|onboarded|welcomed)\b/gi))
+    ambiguities.push({ text: m[0], readings: ['a completed hire', 'a hire that may not have happened'], chosen: 'no completed-hire condition: the request does not say the hire happened, so nothing is proven by it' })
   // Windows, each bound to the condition it follows in the text (or to every condition when it comes first).
   const windows: { at: number; end: number; days: number; text: string; anchorWord?: string }[] = []
   for (const m of q.matchAll(WINDOW_RE)) {
@@ -167,19 +191,50 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const conds: Condition[] = atoms.map((a, i) => ({ id: `C${i + 1}`, kind: a.kind, text: q.slice(a.start, a.end), within_days: null, window_source: null,
     ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
   const requestLevel: number[] = []
+  // #878: EVERY window bound to a condition counts, not only the first. A clock counted from now and one counted from another condition's
+  // event are different clocks and both hold; two different windows of the same kind take the NARROWEST and the ambiguity is recorded.
+  const bound = conds.map(() => ({ now: [] as number[], rel: [] as { days: number; anchor: string }[], end: -1 }))
   for (const w of windows) {
     const k = owner(w)
     if (k < 0) { requestLevel.push(w.days); continue }
-    const c = conds[k]
-    if (c.within_days !== null) continue   // the nearest window binds; a second one for the same condition is ignored only if wider
-    c.within_days = w.days; c.window_source = 'clause'; c.text = q.slice(atoms[k].start, Math.max(atoms[k].end, w.end))
+    const b = bound[k]
+    b.end = Math.max(b.end, w.end)
+    let anchor: Condition | undefined
     if (w.anchorWord) {
-      const anchor = conds.find((x, j) => j !== k && (x.kind === 'funding' && /^(?:raise|round|funding|seed|financing|investment)$/.test(w.anchorWord!) || x.kind === 'event' && x.event && w.anchorWord!.startsWith(x.event.slice(0, 4))))
-      if (anchor) c.relative_to = anchor.id
-      else ambiguities.push({ text: w.text, readings: [`${w.days} days after an event the request does not name as a condition`, `within the last ${w.days} days`], chosen: `within the last ${w.days} days` })
+      anchor = conds.find((x, j) => j !== k && (x.kind === 'funding' && /^(?:raise|round|funding|seed|financing|investment)$/.test(w.anchorWord!) || x.kind === 'event' && x.event && w.anchorWord!.startsWith(x.event.slice(0, 4))))
+      if (!anchor) ambiguities.push({ text: w.text, readings: [`${w.days} days after an event the request does not name as a condition`, `within the last ${w.days} days`], chosen: `within the last ${w.days} days` })
     }
+    if (anchor) b.rel.push({ days: w.days, anchor: anchor.id }); else b.now.push(w.days)
   }
-  const distinct = [...new Set([...requestLevel, ...conds.filter(c => c.window_source === 'clause' && !c.relative_to).map(c => c.within_days!)])]
+  const narrowest = (c: Condition, days: number[], what: string): number => {
+    const d = [...new Set(days)]
+    if (d.length > 1) {
+      c.window_source = 'narrowest'
+      ambiguities.push({ text: c.text, readings: d.map(x => `within ${x} days${what}`), chosen: `within ${Math.min(...d)} days${what} (the narrowest window the request states for this condition)` })
+    }
+    return Math.min(...d)
+  }
+  for (const [k, c] of conds.entries()) {
+    const b = bound[k]
+    if (b.end < 0) continue
+    c.text = q.slice(atoms[k].start, Math.max(atoms[k].end, b.end)); c.window_source = 'clause'
+    // A request-level window ("In the last 30 days, ...") also bounds a condition that states its own: the narrower one holds.
+    const now = b.now.length ? [...b.now, ...requestLevel] : []
+    const anchors = [...new Set(b.rel.map(r => r.anchor))]
+    if (anchors.length > 1) {
+      c.within_days = Math.min(...b.rel.map(r => r.days)); c.window_source = 'narrowest'
+      c.clock_conflict = `the request counts this condition's clock from ${anchors.join(' and from ')}; one condition cannot be checked against two anchor events`
+      ambiguities.push({ text: c.text, readings: anchors.map(a => `within ${Math.min(...b.rel.filter(r => r.anchor === a).map(r => r.days))} days of ${a}`), chosen: 'neither: the condition stays unproven until the request names one anchor' })
+    } else if (anchors.length === 1) {
+      c.relative_to = anchors[0]
+      c.within_days = narrowest(c, b.rel.map(r => r.days), ` of ${anchors[0]}`)
+      // Counted back from now, a relative condition keeps its own window as before (never wider); a stated now-window can only narrow it.
+      // A request-level window bounds it too, as it bounds every other condition.
+      const back = b.now.length ? narrowest(c, now, '') : requestLevel.length ? narrowest(c, requestLevel, '') : null
+      if (back !== null && back < c.within_days) c.since_days = back
+    } else c.within_days = narrowest(c, now, '')
+  }
+  const distinct = [...new Set([...requestLevel, ...conds.filter((c, i) => bound[i].now.length > 0 && !c.relative_to && !c.clock_conflict).map(c => c.within_days!)])]
   for (const c of conds) {
     if (c.within_days !== null) continue
     if (distinct.length === 1) { c.within_days = distinct[0]; c.window_source = 'request' }
@@ -246,7 +301,9 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const parts = [...(trigger ? [trigger] : []), ...exclusions]
   const root: PlanNode | null = parts.length === 0 ? null : parts.length === 1 ? parts[0] : trigger?.op === 'and' ? { op: 'and', of: [...trigger.of, ...exclusions] } : { op: 'and', of: parts }
   // A technology condition (#389) is always an explicit filter: no other gate checks it.
-  const explicit = conds.length >= 2 || exclusions.length > 0 || negated.some(Boolean) || conds.some(c => c.kind === 'hire_made' || c.kind === 'tech' || !!c.relative_to)
+  // #878: a condition whose clock the request states more than once ("within 90 days, specifically within 30 days") is a separate clock the
+  // plan must hold: other gates read only the first window of the request.
+  const explicit = conds.length >= 2 || exclusions.length > 0 || negated.some(Boolean) || conds.some(c => c.kind === 'hire_made' || c.kind === 'tech' || !!c.relative_to || c.window_source === 'narrowest' || c.since_days !== undefined || !!c.clock_conflict)
   return { v: 1, root, filters: filtersOf(icp), ambiguities, explicit }
 }
 
@@ -276,10 +333,18 @@ export function planConditions(root: PlanNode | null): { cond: Condition; negate
   return out
 }
 
+// The clock a condition is checked on, when its own words do not already say it exactly (#878: a narrowed, relative or conflicting clock).
+function clockText(c: Condition): string {
+  if (c.clock_conflict) return ' (clock unresolved: two anchor events)'
+  if (!c.within_days) return ''
+  const since = c.since_days !== undefined ? `, and within the last ${c.since_days} days` : ''
+  if (c.window_source === 'clause' && !since) return ''
+  return c.relative_to ? ` (within ${c.within_days} days of ${c.relative_to}${since})` : ` (within ${c.within_days} days)`
+}
 // One line per condition for a card or a log: "C1 seed funding (within 90 days) AND C2 ...".
 export function describePlan(n: PlanNode | null): string {
   if (!n) return '(no targeting conditions)'
-  if (n.op === 'cond') return `${n.cond.id} ${n.cond.text}${n.cond.within_days && n.cond.window_source !== 'clause' ? ` (within ${n.cond.within_days} days)` : ''}`
+  if (n.op === 'cond') return `${n.cond.id} ${n.cond.text}${clockText(n.cond)}`
   if (n.op === 'not') return `NOT ${describePlan(n.of)}`
   return `(${n.of.map(describePlan).join(n.op === 'and' ? ' AND ' : ' OR ')})`
 }
@@ -323,4 +388,40 @@ export function eventMatchIndex(event: string | undefined, object: string | unde
     if ((m[e.object] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return m.index ?? 0
   }
   return -1
+}
+
+// ---- The plan as the person sees it, BEFORE the search (#876 / #752) ----
+// A serialisable, human-worded view of the compiled plan: the same tree the gates evaluate, with each condition said in plain words (a completed hire is
+// never worded as an open role), its own clock, how the conditions combine, what is filtered elsewhere and every ambiguity with the reading chosen.
+// Pure: no database, no provider, no model call.
+export type PlanViewNode =
+  | { op: 'cond'; id: string; text: string; means: string; window: string | null; kind: CondKind }
+  | { op: 'and' | 'or'; of: PlanViewNode[] }
+  | { op: 'not'; of: PlanViewNode }
+export interface PlanView { explicit: boolean; empty: boolean; summary: string; root: PlanViewNode | null; filters: { kind: PlanFilter['kind']; values: string[]; semantics: string }[]; ambiguities: Ambiguity[] }
+function meansOf(c: Condition): string {
+  switch (c.kind) {
+    case 'funding': return `a completed ${c.stage ? `${c.stage} ` : ''}funding round`
+    case 'hiring': return `an open role${c.role ? ` (${c.role})` : ''}: a job posting or a statement that it is hiring`
+    case 'hire_made': return `a completed ${c.first ? 'first ' : ''}hire${c.role ? ` (${c.role})` : ''}: a source saying the hire was made, not a vacancy`
+    case 'event': return `${c.event ?? 'an'} event${c.object ? ` (${c.object})` : ''}`
+    case 'competitor': return 'a company on your saved competitor list'
+    case 'company_named': return `the named ${(c.names ?? []).length === 1 ? 'company' : 'companies'}: ${(c.names ?? []).join(', ')}`
+    case 'category': return `a ${(c.names ?? [])[0] ?? 'category'} business`
+    case 'tech': return `${c.change === 'adopted' ? 'adopted' : c.change === 'removed' ? 'removed' : 'uses'} ${c.tech ?? 'a technology'}`
+  }
+}
+const windowOf = (c: Condition): string | null => c.relative_to ? `within ${c.within_days ?? '?'} days after ${c.relative_to}` : c.within_days ? `within ${c.within_days} days${c.window_source === 'narrowest' || c.window_source === 'default' ? ' (assumed)' : ''}` : null
+function viewNode(n: PlanNode): PlanViewNode {
+  if (n.op === 'cond') return { op: 'cond', id: n.cond.id, text: n.cond.text, means: meansOf(n.cond), window: windowOf(n.cond), kind: n.cond.kind }
+  if (n.op === 'not') return { op: 'not', of: viewNode(n.of) }
+  return { op: n.op, of: n.of.map(viewNode) }
+}
+export function planView(plan: QueryPlan): PlanView {
+  return {
+    explicit: plan.explicit, empty: plan.root === null && plan.filters.length === 0,
+    summary: describePlan(plan.root), root: plan.root ? viewNode(plan.root) : null,
+    filters: plan.filters.map(f => ({ kind: f.kind, values: f.values, semantics: f.semantics })),
+    ambiguities: plan.ambiguities,
+  }
 }

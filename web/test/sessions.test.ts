@@ -5,12 +5,13 @@ import Database from 'better-sqlite3'
 import { createPasswordUser, createSession, deleteSession, getSessionUser, hasLiveSession, hashToken, migrateAuth, SESSION_TTL_S } from '../lib/auth-db.ts'
 import { SEEN_EVERY_S, SESSION_RETAIN_S, deviceLabel, listSessions, reapSessions, revokeAllSessions, revokeSession } from '../lib/sessions.ts'
 import { bothEngines } from './helpers/engines.ts'
+import { confirmEmail } from './helpers/confirmed.ts'
 
 const user = (id: string) => ({ id, email: `${id.toLowerCase()}@example.test`, name: id, business_name: id, password_hash: 'h', salt: 's' })
 const NOW = Math.floor(Date.now() / 1000)
 
 bothEngines('a revoked or signed-out session fails at once and keeps who revoked it and when', async ({ db }) => {
-  await createPasswordUser(user('A'), db)
+  await createPasswordUser(user('A'), db); await confirmEmail(db, 'A')
   const t1 = await createSession('A', db, { device: 'Chrome on macOS' }), t2 = await createSession('A', db)
   const [row] = (await listSessions(db, 'A', hashToken(t1))).filter(s => s.current)
   assert.equal(row.device, 'Chrome on macOS')
@@ -28,7 +29,7 @@ bothEngines('a revoked or signed-out session fails at once and keeps who revoked
 })
 
 bothEngines('revoke all: every working session of that account, the kept one excepted; other accounts untouched', async ({ db }) => {
-  await createPasswordUser(user('A'), db); await createPasswordUser(user('B'), db)
+  await createPasswordUser(user('A'), db); await confirmEmail(db, 'A'); await createPasswordUser(user('B'), db); await confirmEmail(db, 'B')
   const [a1, a2, a3, b1] = [await createSession('A', db), await createSession('A', db), await createSession('A', db), await createSession('B', db)]
   assert.equal(await revokeAllSessions(db, 'A', { by: 'A', reason: 'revoked_all', keepHash: hashToken(a1) }), 2)
   assert.ok(await getSessionUser(a1, db)); assert.equal(await getSessionUser(a2, db), null); assert.equal(await getSessionUser(a3, db), null)
@@ -38,7 +39,7 @@ bothEngines('revoke all: every working session of that account, the kept one exc
 })
 
 bothEngines('the reaper is bounded, keeps recent history, and never deletes a working session', async ({ db }) => {
-  await createPasswordUser(user('A'), db)
+  await createPasswordUser(user('A'), db); await confirmEmail(db, 'A')
   const old = NOW - SESSION_RETAIN_S - 10
   const add = (id: string, expires: number, revoked: number | null) => db.run('INSERT INTO sessions (id, user_id, expires_at, revoked_at, public_id) VALUES (?, ?, ?, ?, ?)', [id, 'A', expires, revoked, id.padEnd(24, '0')])
   for (let i = 0; i < 7; i++) await add(`exp${i}`, old, null)            // expired long ago
@@ -59,7 +60,7 @@ bothEngines('the reaper is bounded, keeps recent history, and never deletes a wo
 })
 
 bothEngines('last activity is written at most once per window', async ({ db }) => {
-  await createPasswordUser(user('A'), db)
+  await createPasswordUser(user('A'), db); await confirmEmail(db, 'A')
   const t = await createSession('A', db)
   const seen = async () => Number((await db.get<{ s: number }>('SELECT last_seen_at AS s FROM sessions WHERE id = ?', [hashToken(t)]))!.s)
   await db.run('UPDATE sessions SET last_seen_at = ? WHERE id = ?', [NOW - 10, hashToken(t)])

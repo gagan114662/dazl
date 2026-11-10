@@ -6,9 +6,10 @@ import { useEffect, useRef, useState } from 'react'
 //   done         what the CRM confirmed
 //   failed       nothing was created: the error and "Try again"
 //   unknown      the CRM may or may not have the record: "It is in my CRM" / "It is not there" (resolve), never a retry
+//   webhook_unknown  check the original endpoint; no native claim exists to resolve and no retry is offered
 //   in_progress  another push of this lead is on its way: rechecked a few times (read-only status, nothing is sent),
 //                then "Check again"
-type View = { kind: 'idle' | 'pushing' | 'done' | 'failed' | 'unknown' | 'in_progress' | 'checking'; text?: string }
+type View = { kind: 'idle' | 'pushing' | 'done' | 'failed' | 'unknown' | 'webhook_unknown' | 'in_progress' | 'checking'; text?: string }
 const RECHECKS = 5, RECHECK_MS = 3000
 const post = async (body: unknown) => {
   const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null)
@@ -30,7 +31,7 @@ export function CrmPush({ leadId }: { leadId: string }) {
       const { r, j } = await post({ action: 'push', lead_id: leadId })
       if (r?.ok) return show({ kind: 'done', text: String(j.message || 'Pushed to CRM') })
       const text = typeof j.error === 'string' ? j.error : r ? 'Push failed' : 'Could not reach the server'
-      if (j.outcome === 'unknown') return show({ kind: 'unknown', text })
+      if (j.outcome === 'unknown') return show({ kind: j.resolution === 'webhook_endpoint' ? 'webhook_unknown' : 'unknown', text })
       if (j.outcome === 'in_progress') { rechecks.current = 0; show({ kind: 'in_progress', text }); return }
       show({ kind: 'failed', text })
     } finally { busy.current = false }
@@ -71,6 +72,7 @@ export function CrmPush({ leadId }: { leadId: string }) {
     case 'pushing': return <span data-testid="crm-push"><button disabled aria-busy="true" className={btn}>Pushing…</button></span>
     case 'done': return <span data-testid="crm-push">{note(view.text)}</span>
     case 'failed': return <span data-testid="crm-push">{note(view.text)}<button onClick={() => void push()} className={btn}>Try again</button></span>
+    case 'webhook_unknown': return <span data-testid="crm-push">{note(view.text)}<br /><span className="text-gray-500 text-xs ml-2">Check whether the original webhook endpoint received this lead before sending it again. If it redirected, update the webhook URL in Settings to its final address. Dazl cannot confirm delivery for this webhook.</span></span>
     case 'unknown': return <span data-testid="crm-push">{note(view.text)} <button onClick={() => void resolve(true)} className="underline text-xs ml-1">It is in my CRM</button> <button onClick={() => void resolve(false)} className="underline text-xs ml-1">It is not there</button></span>
     case 'in_progress': return <span data-testid="crm-push">{note(view.text)}<button onClick={() => { rechecks.current = RECHECKS; void check() }} className={btn}>Check again</button></span>
     case 'checking': return <span data-testid="crm-push">{note(view.text)}<button disabled aria-busy="true" className={btn}>Checking…</button></span>

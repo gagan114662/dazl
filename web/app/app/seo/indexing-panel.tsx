@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 type State = {
   config: { domain: string; next_run_at: number | null } | null
   keywords: string[]
-  results: { keyword: string; indexed: boolean; top_url: string | null }[]
+  results: { keyword: string; indexed: boolean; top_url: string | null; domain: string; checked_at: number }[]
   allowance: { used: number; limit: number }
 }
 
@@ -14,18 +14,34 @@ export default function IndexingPanel() {
   const [kw, setKw] = useState('')
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
-  async function load() { const r = await fetch('/api/seo/indexing'); if (r.ok) { const j = await r.json(); setSt(j); if (j.config?.domain) setDomain(j.config.domain) } }
-  useEffect(() => { void load() }, [])
+  // #902: the panel no longer disappears when its read fails; it says so with a retry. Actions always clear busy,
+  // keep the typed keyword unless the server confirmed it, and distinguish HTTP errors from network failure.
+  const [loadErr, setLoadErr] = useState('')
+  async function load() {
+    try {
+      const r = await fetch('/api/seo/indexing')
+      if (!r.ok) { setLoadErr(`Could not load indexing checks (error ${r.status}).`); return }
+      const j = await r.json().catch(() => null)
+      if (!j || !Array.isArray(j.keywords) || !Array.isArray(j.results) || !j.allowance) { setLoadErr('Could not load indexing checks (unexpected response).'); return }
+      setSt(j); setLoadErr('')
+      if (j.config?.domain) setDomain(d => d || j.config.domain)
+    } catch { setLoadErr('Could not load indexing checks. Check your connection.') }
+  }
+  useEffect(() => { void Promise.resolve().then(load) }, [])
   async function act(body: Record<string, unknown>) {
-    setBusy(true)
-    const r = await fetch('/api/seo/indexing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    const j = await r.json().catch(() => ({}))
-    setMsg(r.ok ? '' : j.error || 'Something went wrong')
-    setKw('')
-    setBusy(false)
+    setBusy(true); setMsg('')
+    try {
+      const r = await fetch('/api/seo/indexing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setMsg(j.error || `Not saved (error ${r.status}). Try again.`); return }
+      if (body.action === 'add') setKw('')
+    } catch {
+      setMsg('Could not reach dazl, so this may not have saved. The list shows the confirmed state.')
+    } finally { setBusy(false) }
     void load()
   }
-  if (!st) return null
+  const errLine = loadErr ? <p role="alert" className="text-sm text-red-700 mt-2" data-testid="indexing-load-error">{loadErr} <button className="underline" onClick={() => void load()}>Try again</button></p> : null
+  if (!st) return loadErr ? <div className="card p-6 mb-8"><h2 className="font-semibold mb-1">Weekly indexing checks</h2>{errLine}</div> : null
   const resultFor = (k: string) => st.results.find(r => r.keyword === k)
   return (
     <div className="card p-6 mb-8">
@@ -49,7 +65,7 @@ export default function IndexingPanel() {
                   <li key={k} className="flex items-center justify-between gap-3">
                     <span>{k}</span>
                     <span className="flex items-center gap-3">
-                      {r ? (r.indexed ? <span className="text-green-700 text-xs">listed</span> : <span className="text-red-700 text-xs">not found</span>) : <span className="text-[#999] text-xs">not checked yet</span>}
+                      {r ? <span className="text-xs" title={`checked ${r.domain} on ${new Date(r.checked_at * 1000).toLocaleString()}`}>{r.indexed ? <span className="text-green-700">listed</span> : <span className="text-red-700">not found</span>} <span className="text-[#999]">· {new Date(r.checked_at * 1000).toLocaleDateString()}</span> <span className="sr-only">(checked {r.domain} on {new Date(r.checked_at * 1000).toLocaleString()})</span></span> : <span className="text-[#999] text-xs">not checked yet</span>}
                       <button className="text-xs underline text-[#888]" onClick={() => act({ action: 'remove', keyword: k })}>remove</button>
                     </span>
                   </li>
@@ -64,7 +80,8 @@ export default function IndexingPanel() {
           </div>
         </>
       )}
-      {msg && <p className="text-sm text-red-700 mt-2">{msg}</p>}
+      {msg && <p role="alert" className="text-sm text-red-700 mt-2" data-testid="indexing-error">{msg}</p>}
+      {errLine}
     </div>
   )
 }

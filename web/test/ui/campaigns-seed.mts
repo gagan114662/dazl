@@ -7,7 +7,7 @@ import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 const [dbPath, token] = process.argv.slice(2)
 const db = new Database(dbPath)
 migrateAllSqlite(db)
-for (const u of ['A', 'B']) db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, 'x', 'y')").run(u, `${u}@example.test`)
+for (const u of ['A', 'B']) db.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, ?, 'x', 'y', 1)").run(u, `${u}@example.test`)
 db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), 'A', Math.floor(Date.now() / 1000) + 3600)
 let t = Math.floor(Date.now() / 1000) - 10_000
 // Jobs start running (the schema only accepts leads then), then finish.

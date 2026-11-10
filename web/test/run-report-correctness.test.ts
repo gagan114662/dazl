@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { verifyLeads, type VerifiedLead } from '../lib/scan/runner.ts'
+import { verifyLeads } from '../lib/scan/runner.ts'
 import { dedupKey } from '../lib/scan/evidence.ts'
 import { buildRunReport, writeRunReport, runReportFor, RUN_REPORT_RETENTION_DAYS, type CandidateAudit } from '../lib/scan/run-report.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'

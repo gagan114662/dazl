@@ -4,6 +4,8 @@ import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
+import { sessionCookieReserved } from '../signals/linkedin-session-transport.ts'
+import { migrateAdvBudget, reserveRequest, coolingDown } from './request-budget.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS advanced_consent (
@@ -11,6 +13,7 @@ export function migrateAdvanced(db: Database.Database): void {
     accepted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
     PRIMARY KEY (tenant_id, scope)
   );`)
+  migrateAdvBudget(db)
 }
 
 // Each consent read and write exists sync (the raw handle: the scan pipeline and its fixtures) and async on Db (the
@@ -40,7 +43,10 @@ export async function readConsent(db: Db, tenantId: string, scope: ConsentScope)
   return (await db.get<{ version: string }>(CONSENT_SQL, [tenantId, scope]))?.version === CONSENT_VERSION
 }
 
-export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean }
+// The post's OWN author exactly as the source page reports it; a field the source does not carry is null, never
+// inferred. No author on the source = no author field at all.
+export interface WorkerAuthor { name: string | null; headline: string | null; company: string | null; url: string | null }
+export interface WorkerItem { url: string; title: string; quote: string; date: string | null; login_walled: boolean; author?: WorkerAuthor }
 // The worker's structured outcome: the item list plus an explicit refusal. `unsupported` means the
 // worker build cannot fetch this platform at all (its reason says why); it is not an error and
 // never counts as a zero-result search. When it is null the list is the whole outcome: non-empty is
@@ -53,7 +59,7 @@ export const WORKER_FAILURES = ['auth_failed', 'throttled', 'schema_error', 'ups
 export type WorkerFailure = { failed: (typeof WORKER_FAILURES)[number] }
 export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerOutcome | WorkerFailure | null>
 
-// Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled}]}.
+// Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled,author?}]}.
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
 export function httpWorker(env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): WorkerFetch {
   return async req => {
@@ -105,14 +111,20 @@ export function parseWorkerItems(raw: unknown): WorkerItem[] {
     if (typeof o?.url !== 'string' || !/^https:\/\/[^\s]{4,480}$/.test(o.url)) continue
     if (typeof o.title !== 'string' || typeof o.quote !== 'string' || o.quote.length < 20) continue
     const date = typeof o.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.date) ? o.date : null
-    out.push({ url: o.url, title: o.title.slice(0, 200), quote: o.quote.slice(0, 300), date, login_walled: o.login_walled === true })
+    const ra = o.author
+    const ao = ra !== null && typeof ra === 'object' && !Array.isArray(ra) ? ra as Record<string, unknown> : null
+    const author: WorkerAuthor | undefined = ao ? {
+      name: typeof ao.name === 'string' && ao.name.trim() ? ao.name.slice(0, 200) : null,
+      headline: typeof ao.headline === 'string' && ao.headline.trim() ? ao.headline.slice(0, 300) : null,
+      company: typeof ao.company === 'string' && ao.company.trim() ? ao.company.slice(0, 200) : null,
+      // The author's profile website exactly as the platform reports it; an http(s) URL only, never fabricated.
+      url: typeof ao.url === 'string' && /^https?:\/\/.{4,480}$/.test(ao.url) ? ao.url.slice(0, 500) : null,
+    } : undefined
+    out.push({ url: o.url, title: o.title.slice(0, 200), quote: o.quote.slice(0, 300), date, login_walled: o.login_walled === true, ...(author && (author.name || author.headline || author.company || author.url) ? { author } : {}) })
   }
   return out
 }
 
-async function callsLastHour(db: Db, tenantId: string, platform: AdvPlatform, now: number): Promise<number> {
-  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','auth_failed','throttled','schema_error','upstream_error') AND created_at >= ?", [tenantId, connectorId(platform), now - 3600]))!.n)
-}
 
 // X search AND-matches every token, so a full natural-language scan sentence returns
 // nothing. Build a short keyword query from the scan's ICP instead: intent words first
@@ -128,6 +140,11 @@ export function xSearchQuery(icp: { who: string[]; signals: string[] }): string 
   }
   return pick.slice(0, 5).join(' ').slice(0, 100)
 }
+
+// The ONE rule for whether X is read through the operator's public-index search (TinyFish key set and X_VIA_SEARCH not '0') instead of a
+// session. collectAdvanced, the settings route and the capability report all call this, so "X available without a session" cannot drift
+// from what a scan actually does (#1032 review).
+export const xViaOperatorIndex = (env: Record<string, string | undefined> = process.env): boolean => env.X_VIA_SEARCH !== '0' && tinyfishEnabled(env)
 
 // Runs the platforms this tenant chose for one scan. Every gate is re-checked here, so a stale
 // request cannot get around a flag, a kill switch, a missing consent or the rate limit. On the Db layer; today's runner
@@ -147,13 +164,18 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // search. It never reaches consent, the rate limiter or the worker, and it burns no call budget.
     if (!PLATFORM_SUPPORT[p].supported) { await skip('unsupported'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
-    if (await callsLastHour(db, tenantId, p, deps.now ?? Math.floor(Date.now() / 1000)) >= maxCallsPerHour(p, env)) { await skip('rate_limited'); continue }
+    // The designated throwaway LinkedIn session has one reader with a human pace, a daily cap and a challenge stop (linkedin-people.ts); this un-paced one must not also spend it.
+    if (p === 'linkedin' && sessionCookieReserved(tenantId, env)) { await skip('session_transport_owns_cookie'); continue }
+    // A LinkedIn stop (throttled/challenge/unauthorised) by any consumer is a 24 h tenant cooldown: this post search must not spend the shared budget inside it.
+    if (p === 'linkedin' && (await coolingDown(db, tenantId, id, deps.now ?? Math.floor(Date.now() / 1000)))) { await skip('cooldown'); continue }
+    // Atomic: the reservation and the limit check are one step, shared with every other consumer of this connector (the LinkedIn people reader included), so concurrent scans cannot exceed the cap (#192).
+    if (!(await reserveRequest(db, tenantId, connectorId(p), maxCallsPerHour(p, env), 'advanced', deps.now ?? Math.floor(Date.now() / 1000)))) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped
     // per scan / tenant / day). No account session is used, so nothing here can get a
     // tenant's account banned. A search snippet is not the verbatim post text, so every
     // hit is login_walled: the quote-verification gate keeps them in the review lane and
     // they are never auto-verified. Set X_VIA_SEARCH=0 to force the worker path.
-    if (p === 'x' && env.X_VIA_SEARCH !== '0' && tinyfishEnabled(env)) {
+    if (p === 'x' && xViaOperatorIndex(env)) {
       const r = await tfSearch(db, tenantId, `site:x.com ${q}`.slice(0, 300), {}, { searches: 0 }, { env, fetchImpl: deps.fetchImpl })
       if (!r.ok) { await skip(r.reason); continue }
       const items: (Evidence & { login_walled: boolean })[] = []

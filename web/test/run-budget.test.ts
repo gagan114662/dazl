@@ -73,8 +73,8 @@ test('normalizeRunBudget: absent means current behavior; an explicitly supplied 
 
 test('queuePendingRows stores the per-run budget on the job row and claim returns it', () => {
   const db = setup()
-  const b = createBatch(db, 'A', ['acme.com', 'beta.io'])
-  queuePendingRows(db, 'A', b, JSON.stringify({ paid_fallback: false }))
+  const b = createBatch(db, 'A', ['acme.com', 'beta.io'], JSON.stringify({ paid_fallback: false }))
+  queuePendingRows(db, 'A', b)
   const rows = db.prepare('SELECT csv_domain, run_budget FROM scan_jobs ORDER BY csv_domain').all() as { csv_domain: string; run_budget: string | null }[]
   assert.equal(rows.length, 2)
   assert.ok(rows.every(r => r.run_budget === '{"paid_fallback":false}'))
@@ -89,13 +89,13 @@ test('queuePendingRows stores the per-run budget on the job row and claim return
 
 test('paid_fallback=false stops the run before the paid research call; no budget keeps current behavior', async () => {
   const db = setup()
-  const b = createBatch(db, 'A', ['acme.com'])
-  queuePendingRows(db, 'A', b, JSON.stringify({ paid_fallback: false }))
+  const b = createBatch(db, 'A', ['acme.com'], JSON.stringify({ paid_fallback: false }))
+  queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   const calls = { n: 0 }
   assert.equal(await runJob(db, job, { providers: researchProvider(calls), master, fetchPage: page }), 'failed')
   assert.equal(calls.n, 0) // the paid fallback was never attempted
-  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'unbounded_fallback_hold', 'with no source able to conclude, the held fallback is named - not mislabelled a budget stop')
 
   const db2 = setup()
   const b2 = createBatch(db2, 'A', ['acme.com'])
@@ -110,8 +110,8 @@ test('judge=false forces the judge off even when the caller provides one', async
   let judged = 0
   const judge: Judge = async () => { judged++; return 'supports' }
   const db = setup()
-  const b = createBatch(db, 'A', ['acme.com'])
-  queuePendingRows(db, 'A', b, JSON.stringify({ judge: false }))
+  const b = createBatch(db, 'A', ['acme.com'], JSON.stringify({ judge: false }))
+  queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   const calls = { n: 0 }
   assert.equal(await runJob(db, job, { providers: researchProvider(calls), master, fetchPage: page, judge }), 'done')
@@ -139,8 +139,8 @@ test('credit_enrichment=false skips the BYOK Apollo pass; default still runs it'
   const urls: string[] = []
   const db = setup()
   saveCredential(db, 'A', ENRICH_APOLLO, 'test-apollo-key', master)
-  const b = createBatch(db, 'A', ['acme.com'])
-  queuePendingRows(db, 'A', b, JSON.stringify({ credit_enrichment: false }))
+  const b = createBatch(db, 'A', ['acme.com'], JSON.stringify({ credit_enrichment: false }))
+  queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   const calls = { n: 0 }
   assert.equal(await runJob(db, job, { providers: researchProvider(calls), master, fetchPage: page, fetchImpl: recordingFetch(urls) }), 'done')
@@ -182,8 +182,8 @@ function withTinyfishEnv(fn: () => Promise<void>) {
 
 test('TinyFish-primary path makes exactly ONE paid extraction call (complete, maxTokens 3000); fallback and judge stay off under budget', withTinyfishEnv(async () => {
   const db = setup()
-  const b = createBatch(db, 'A', ['acme.com'])
-  queuePendingRows(db, 'A', b, JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
+  const b = createBatch(db, 'A', ['acme.com'], JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
+  queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   const tfUrls: string[] = []
   let researchCalls = 0
@@ -209,10 +209,10 @@ test('TinyFish-primary path makes exactly ONE paid extraction call (complete, ma
   assert.equal(leads.length, 1)
 }))
 
-test('RESTRICTED flags: a failed extraction stops the run as budget_stopped - zero research calls, one paid attempt, no retry', withTinyfishEnv(async () => {
+test('RESTRICTED flags: a failed extraction stops the run as source_error - zero research calls, one paid attempt, no retry', withTinyfishEnv(async () => {
   const db = setup()
-  const b = createBatch(db, 'A', ['acme.com'])
-  queuePendingRows(db, 'A', b, JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
+  const b = createBatch(db, 'A', ['acme.com'], JSON.stringify({ paid_fallback: false, credit_enrichment: false, judge: false }))
+  queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   const tfUrls: string[] = []
   let completeCalls = 0
@@ -225,7 +225,7 @@ test('RESTRICTED flags: a failed extraction stops the run as budget_stopped - ze
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   assert.equal(await runJob(db, job, { providers, master, fetchPage: page, fetchImpl: tinyfishStubFetch(tfUrls) }), 'failed')
-  assert.equal(getJob(db, 'A', job.id)?.error, 'budget_stopped')
+  assert.equal(getJob(db, 'A', job.id)?.error, 'source_error', 'the failed extraction is a source error, never a budget stop')
   assert.equal(completeCalls, 1, 'the failed extraction was the only paid call')
   assert.equal(researchCalls, 0, 'paid_fallback=false: the failed extraction never widened into the paid research fallback')
   assert.equal(claimKeyedJob(db), null, 'budget stop is terminal - no re-pend, no second attempt')
@@ -237,8 +237,8 @@ test('DEFAULT budget state: a retry re-runs the whole attempt including both pai
   // the run. The RESTRICTED profile used for a bounded run is tested next.
   const db = setup()
   const budget = JSON.stringify({ judge: false, credit_enrichment: false })
-  const b = createBatch(db, 'A', ['acme.com'])
-  queuePendingRows(db, 'A', b, budget)
+  const b = createBatch(db, 'A', ['acme.com'], budget)
+  queuePendingRows(db, 'A', b)
   const tfUrls: string[] = []
   let completeCalls = 0
   let researchCalls = 0
@@ -312,8 +312,8 @@ test('supported-signal extraction: gloss-free paraphrase attaches a supporting v
   const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
   resetTinyfishState() // process-wide rate stamps are shared across tests in this file
   const db = setup()
-  const b = createBatch(db, 'A', ['ohm.ai'])
-  queuePendingRows(db, 'A', b, RESTRICTED)
+  const b = createBatch(db, 'A', ['ohm.ai'], RESTRICTED)
+  queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   const calls = { complete: 0, research: 0 }
   const signal = 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff.'
@@ -331,8 +331,8 @@ test('supported-signal extraction: analyst gloss in the claim routes to review w
   const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
   resetTinyfishState()
   const db = setup()
-  const b = createBatch(db, 'A', ['ohm.ai'])
-  queuePendingRows(db, 'A', b, RESTRICTED)
+  const b = createBatch(db, 'A', ['ohm.ai'], RESTRICTED)
+  queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!
   const calls = { complete: 0, research: 0 }
   const signal = 'Ohm is actively hiring for multiple senior go-to-market roles including two Founding Account Executive positions and a Chief of Staff, indicating significant expansion and investment in sales capacity.'
@@ -363,7 +363,7 @@ const OHM_CLAIM_SIGNAL = 'Ohm is actively hiring for multiple senior go-to-marke
 async function negativeRun(domain: string, host: string, text: string, signal = OHM_CLAIM_SIGNAL, excerpt?: string) {
   const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
   resetTinyfishState()
-  const db = setup(); const b = createBatch(db, 'A', [domain]); queuePendingRows(db, 'A', b, RESTRICTED)
+  const db = setup(); const b = createBatch(db, 'A', [domain], RESTRICTED); queuePendingRows(db, 'A', b)
   const job = claimKeyedJob(db)!; const calls = { complete: 0, research: 0 }
   const live = async () => ({ text, title: 'Careers | Ohm', retrievedAt: 1_700_000_000 })
   assert.equal(await runJob(db, job, { providers: providersFor(calls, signal, host, excerpt), master, fetchPage: live, fetchImpl: stubFor(host, text) }), 'done')

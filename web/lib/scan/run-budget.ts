@@ -84,7 +84,6 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
   const capped = typeof b?.max_usd === 'number'
   const llm = (note: string): { status: SurfaceStatus; note: string } => capped ? { status: 'allowed', note: `${note}; each call is reserved against max_usd and refused when it would pass it` } : { status: 'allowed', note: `${note}; no dollar limit` }
   const row = (surface: string, r: { status: SurfaceStatus; note: string }) => ({ surface, ...r })
-  const fallbackOff = b?.paid_fallback === false
   return {
     scope: 'partial',
     excluded_paths: BUDGET_EXCLUDED_PATHS,

@@ -7,7 +7,7 @@ import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
@@ -130,7 +130,7 @@ export function testAddresses(db: Database.Database, tenantId: string): string[]
 export const isTestRecipient = (db: Database.Database, tenantId: string, email: string) => testAddresses(db, tenantId).includes(norm(email))
 
 // ---------- templates and LLM drafting for steps 2/3 (no-reply nudges) ----------
-export function sequenceStepText(step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, businessName: string, bookingUrl?: string | null): string {
+export function sequenceStepText(step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, _businessName: string, bookingUrl?: string | null): string {
   const who = lead.name ? lead.name.split(' ')[0] : 'there'
   const fact = `${lead.signal} (${lead.source_url})`
   const book = bookingUrl ? `\n\nYou can grab a time here: ${bookingUrl}` : ''
@@ -470,8 +470,10 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     const master = d.master ?? getMasterKey()
     const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(s.message_id, master)}`
     let token: string
-    try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch {
+    let tokenGen: string
+    try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) {
       db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId, s.id, stepRow.step)
+      if (isConnectionReplaced(e, db, tenantId)) return stop('connection_replaced') // released, not sent; the newer connection is healthy
       pause(db, tenantId, 'gmail_reconnect_needed')
       return stop('gmail_unavailable')
     }
@@ -545,7 +547,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       }))
       // Shared authority recheck (send-authority.ts): the sending identity and the ledger consent as they are NOW, immediately
       // before the handoff and after every await on this path. Suppression and pause were re-read above; this adds the rest.
-      const why = recheckSendAuthority(db, tenantId, { to: s.to_email, sender: acct.email, now: d.now ?? Math.floor(Date.now() / 1000), consentScope: 'sequence', consentEvidenceRef: `sequence:${s.id}` })
+      const why = recheckSendAuthority(db, tenantId, { to: s.to_email, sender: acct.email, now: d.now ?? Math.floor(Date.now() / 1000), consentScope: 'sequence', consentEvidenceRef: `sequence:${s.id}`, expectRefreshCt: tokenGen })
       if (why) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId,s.id,stepRow.step)
         skip(why); continue

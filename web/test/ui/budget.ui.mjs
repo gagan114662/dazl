@@ -13,10 +13,15 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const bundle = await esbuild.build({
   stdin: { contents: `import React from 'react'; import { createRoot } from 'react-dom/client'; import LeadsClient from '@/app/app/leads/leads-client'; createRoot(document.getElementById('root')).render(<LeadsClient />)`, resolveDir: root, loader: 'tsx' },
   bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'error', alias: { '@': root }, define: { 'process.env.NODE_ENV': '"development"' },
-  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } })', loader: 'js' })) } }],
+  plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = () => { throw new Error("crypto-shim: randomBytes must never execute in a browser fixture - bundling only") }', loader: 'js' })) } }],
 })
 const js = bundle.outputFiles[0].text
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+// Pixel evidence after the assertions (SHOTS=<dir>): the disclosure container, the estimate panel at both widths,
+// the blocked panel, and the server-rejection message. Container shots capture the whole element, scroll-proof.
+// HONEST SCOPE: this harness bundles the component with esbuild WITHOUT the app stylesheet - these pixels are
+// UNSTYLED component-mount evidence (content and behavior), never production-CSS or responsive-rendering proof.
+const shot = async (page, name, target) => { if (!process.env.SHOTS) return; if (target) await target.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }); else await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`) }) }
 const ICP = { summary: 'Toronto dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Toronto'], signals: [], exclude: [] }
 const browser = await chromium.launch()
 
@@ -80,6 +85,7 @@ async function open(scanReply, estimateReply = route => json(route, EST())) {
   assert.match(text, /worst case at the highest listed price/); assert.match(text, /an unlisted model is not covered/); assert.match(text, /bounded by COUNT, not dollars/); assert.match(text, /does NOT start autopilot/); assert.match(text, /NOT BOUNDED AT ALL: retries below dazl/)
   assert.match(text, /fallback research: refused/); assert.match(text, /judge: off/)
   assert.equal(posts.length, 0, 'the disclosure was on the page before anything was sent')
+  await shot(page, 'budget-disclosure', disc)
   for (const b of await run.all()) assert.equal(await b.isDisabled(), false)
   await run.last().click(); await page.getByTestId('estimate-confirm').waitFor()
   assert.equal(posts.length, 0); await page.getByTestId('estimate-confirm-run').click(); await page.waitForTimeout(400)
@@ -94,6 +100,7 @@ async function open(scanReply, estimateReply = route => json(route, EST())) {
   await page.getByTestId('budget-max-usd').fill('5')
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   await page.getByText(/The spend limit was not accepted: budget\.max_usd must be a number/).waitFor({ timeout: 5000 })
+  await shot(page, 'budget-rejection')
   await page.close()
 }
 // 4. the menu and the total are on the page before anything runs, at desktop and 390px; Cancel starts nothing
@@ -108,6 +115,7 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   assert.equal(await page.getByTestId('estimate-total').innerText(), '$0.05 - $0.40')
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${tag}: no horizontal page scroll`)
   assert.equal(await panel.getAttribute('data-verdict'), 'ok')
+  await shot(page, `budget-estimate-${tag}`, panel)
   await page.getByTestId('estimate-cancel').click(); await page.waitForTimeout(200)
   assert.equal(await page.getByTestId('estimate-confirm').count(), 0); assert.equal(posts.length, 0, `${tag}: cancel starts nothing`)
   await page.close()
@@ -124,6 +132,7 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   assert.match(await page.getByTestId('estimate-verdict').innerText(), /^Blocked:/); assert.match(await page.getByTestId('estimate-change').innerText(), /Raise the dollar limit to at least \$0\.05/)
   assert.match(await page.getByTestId('estimate-cap').innerText(), /Daily limit: \$0\.02.*\$0\.02 left \(daily limit binds\)/)
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${tag}: no horizontal page scroll`)
+  await shot(page, `budget-blocked-${tag}`, panel)
   assert.equal(posts.length, 0); await page.close()
 }
 // 6. the limit changed after the estimate was confirmed: the server answers 409 estimate_changed and the NEW estimate is shown for a fresh confirmation
@@ -135,5 +144,42 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   assert.equal(posts.length, 1, 'the changed estimate was not run'); await page.getByTestId('estimate-confirm-run').click(); await page.waitForTimeout(300)
   assert.equal(posts.length, 2); assert.equal(posts[1].estimate_ack, 'ack2'); await page.close()
 }
+// 7. #851: the panel shows the model the run will really call. These estimates are the REAL estimateRun output with the
+// server's scan price table (what /api/scan/estimate answers for an OpenAI key), not hand-written fixtures: gpt-4.1's own
+// price is on the page and claude-sonnet-4-5 is not; under a limit the same key is blocked before launch with what to change.
+{
+  const { estimateRun } = await import('../../lib/scan/price-estimate.ts')
+  const { scanModelPrice } = await import('../../lib/scan/spend-cap.ts')
+  const real = o => ({ estimate: estimateRun({ payer: 'you', priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5', env: {}, ...o }) })
+  for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
+    {
+      const { page, posts } = await open(route => json(route, { job_id: 'c'.repeat(24) }, 202), route => json(route, real({ budget: null, model: 'gpt-4.1' })))
+      await page.setViewportSize({ width: w, height: h })
+      await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
+      const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
+      const t = await panel.innerText()
+      assert.ok(t.includes('$3.50 in / $14.00 out per 1M tokens (gpt-4.1)'), `${tag}: gpt-4.1's own unit price is shown`)
+      assert.ok(!t.includes('claude-sonnet-4-5'), `${tag}: the default model is not shown for an OpenAI key`)
+      assert.equal(await panel.getAttribute('data-verdict'), 'ok'); assert.equal(posts.length, 0)
+      // No page-scroll assertion here: the real menu has every row, and this harness has no app stylesheet (the table's
+      // overflow-x-auto wrapper is unstyled), so width is the reviewer's pixel check on the built app, not this harness's.
+      await shot(page, `budget-estimate-gpt41-${tag}`, panel)
+      await page.close()
+    }
+    {
+      const { page, posts } = await open(route => json(route, {}, 500), route => json(route, real({ budget: { max_usd: 2 }, model: 'gpt-4.1' })))
+      await page.setViewportSize({ width: w, height: h })
+      await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
+      const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
+      assert.equal(await panel.getAttribute('data-verdict'), 'blocked'); assert.equal(await page.getByTestId('estimate-confirm-run').count(), 0, `${tag}: no Run button while blocked`)
+      assert.match(await page.getByTestId('estimate-verdict').innerText(), /^Your key's model \(gpt-4\.1\) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call\. The model rows above use its list price for this estimate only\./)
+      const change = await page.getByTestId('estimate-change').innerText()
+      assert.match(change, /Run without a spending limit/); assert.match(change, /Or use an Anthropic key \(claude-sonnet-4-5 is priced\)/)
+      assert.equal(posts.length, 0, `${tag}: a blocked estimate starts nothing`)
+      await shot(page, `budget-estimate-model-unpriced-${tag}`, panel)
+      await page.close()
+    }
+  }
+}
 await browser.close()
-console.log('OK (price estimate: menu + total before any run at desktop and 390px, cancel starts nothing, blocked state with what to change, changed estimate re-confirmed): spend limit off by default and not sent; disclosure (partial + not covered) shown before Run; invalid limit disables Run; Run sends the exact API budget; server rejection shown (all calls stubbed)')
+console.log('OK (price estimate: menu + total before any run at desktop and 390px, the real estimate for an OpenAI key shows gpt-4.1 and blocks it under a limit (#851), cancel starts nothing, blocked state with what to change, changed estimate re-confirmed): spend limit off by default and not sent; disclosure (partial + not covered) shown before Run; invalid limit disables Run; Run sends the exact API budget; server rejection shown (all calls stubbed)')

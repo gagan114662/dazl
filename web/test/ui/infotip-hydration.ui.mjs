@@ -13,8 +13,8 @@
 //   2. the exact SSR HTML the browser consumed and the hydrated DOM carry the SAME tooltip ids - catches the
 //      mismatch even where React recovers silently (a Suspense/PPR subtree can skip the console error);
 //   3. ZERO hydration errors (React #418/#419/#423 or pageerror hydration text) in console/pageerror;
-//   4. every tooltip button's aria-describedby resolves to its own tooltip text element, and click/Escape still
-//      toggle aria-expanded (aria behavior unchanged).
+//   4. every tooltip button's aria-describedby resolves to its own tooltip text element, and hover/focus open and
+//      Escape closes (aria behavior unchanged). SHOTS=<dir> saves an open-tooltip shot per wired page.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -32,8 +32,8 @@ try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.spli
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 const Database = require('better-sqlite3'); const { createHash, randomBytes } = require('crypto')
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-infotip-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
-db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch())); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
-db.prepare("INSERT INTO users (id,email,password_hash,salt) VALUES ('u1','s@example.test','x','y')").run()
+db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), email_verified_at INTEGER); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
+db.prepare("INSERT INTO users (id,email,password_hash,salt,email_verified_at) VALUES ('u1','s@example.test','x','y',1)").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
 const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
@@ -113,8 +113,21 @@ for (const p of PAGES) {
   for (const w of wiring) assert.ok(w.has && w.paired, `${p}: every tooltip button's aria-describedby must point at its own tooltip text`)
   if (wiring.length > 0) {
     const first = page.locator('[data-testid="infotip"] button').first()
-    await first.click(); assert.equal(await first.getAttribute('aria-expanded'), 'true', `${p}: click still opens the tooltip`)
+    // A pointer click hovers first: mouseenter opens the tip, then the click toggles it shut - the component's true
+    // toggle behavior under a mouse, so the old single 'click opens' assertion could never pass. Assert the two
+    // documented open paths that are deterministic in this harness. Touch tap is NOT claimed: a real tap fires
+    // compatibility mouseenter/focus before click, whose interplay with the toggle needs device grounding.
+    await first.scrollIntoViewIfNeeded()
+    await first.hover(); assert.equal(await first.getAttribute('aria-expanded'), 'true', `${p}: hover opens the tooltip`)
+    // Whole-tooltip capture: the button is scrolled into view first so the tooltip is vertically inside the
+    // viewport. A tooltip near main's LEFT edge can still be clipped by main's overflow-auto (it centers under
+    // the (i) and the edge-shift only considers the viewport, not the scrolling container) - that is real UI
+    // behavior and the shot must show it, never crop it away.
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${p.replace(/[^a-z0-9]+/gi, '-')}-tooltip-open.png`) })
     await first.press('Escape'); assert.equal(await first.getAttribute('aria-expanded'), 'false', `${p}: Escape still closes the tooltip`)
+    await first.evaluate(b => b.blur()); await page.mouse.move(0, 0)
+    await first.focus(); assert.equal(await first.getAttribute('aria-expanded'), 'true', `${p}: keyboard focus opens the tooltip`)
+    await first.press('Escape'); assert.equal(await first.getAttribute('aria-expanded'), 'false', `${p}: Escape closes it again`)
   }
   await page.close()
 }

@@ -128,7 +128,7 @@ test('runner: the scan hands the adapter its page fetcher; an off-page body neve
   requested.length = 0
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const icp = JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] })
-  const id = createQueryJob(db, 'A', { query: 'ohio companies hiring payroll', icp, sources: JSON.stringify(S) } as never)
+  createQueryJob(db, 'A', { query: 'ohio companies hiring payroll', icp, sources: JSON.stringify(S) } as never)
   const prov = { anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string) => { prompts.push(p); return '[]' } }, openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' } }
   const res = await runJob(db, claimKeyedJob(db)!, { providers: prov as never, master, fetchPage: (async () => ({ text: 'Unrelated page text only.', title: 'x', retrievedAt: 1 })) as never, sourceHttp: boardHttp(esc(P1) + esc(T5)), score: false, now: new Date() })
   assert.equal(res, 'failed') // no candidates at all

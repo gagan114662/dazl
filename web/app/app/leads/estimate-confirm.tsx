@@ -12,20 +12,22 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel }: { es
     <section className="card p-4 sm:p-5 my-4 text-sm" data-testid="estimate-confirm" data-verdict={v.ok ? 'ok' : 'blocked'} aria-label="Price estimate">
       <h2 className="font-semibold text-base">What this run will use</h2>
       <p className="text-[var(--ink-2)] text-xs mt-1">{est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'} An estimate, not a quote or a bill.</p>
+      {/* Below sm (phones, 390px) every row stacks as a labelled block, so the projected cost is on screen without scrolling the
+          table sideways (#851 reviewer pixels); from sm up it is the 4-column table. */}
       <div className="mt-3 overflow-x-auto">
-        <table className="w-full text-left text-xs sm:text-sm" data-testid="estimate-rows">
-          <thead><tr className="text-[var(--ink-3)]"><th className="pr-3 py-1 font-medium">Provider / source</th><th className="pr-3 font-medium">Unit price</th><th className="pr-3 font-medium">Expected use</th><th className="text-right font-medium">Projected</th></tr></thead>
-          <tbody>
+        <table className="block sm:table w-full text-left text-xs sm:text-sm" data-testid="estimate-rows">
+          <thead className="hidden sm:table-header-group"><tr className="text-[var(--ink-3)]"><th className="pr-3 py-1 font-medium">Provider / source</th><th className="pr-3 font-medium">Unit price</th><th className="pr-3 font-medium">Expected use</th><th className="text-right font-medium">Projected</th></tr></thead>
+          <tbody className="block sm:table-row-group">
             {est.rows.map(r => (
-              <tr key={r.id} className="border-t border-[var(--line)] align-top" data-testid="estimate-row" data-row={r.id}>
-                <td className="pr-3 py-2"><span className="font-medium">{r.label}</span><br /><span className="text-[var(--ink-3)]">{r.provider}</span></td>
-                <td className="pr-3 py-2">{r.unit_usd}</td>
-                <td className="pr-3 py-2">{r.note}</td>
-                <td className="py-2 text-right whitespace-nowrap">{r.usd ? range(r.usd) : 'not priced'}{r.capped && <><br /><span className="text-[var(--ink-3)]">counts against your limit</span></>}</td>
+              <tr key={r.id} className="block sm:table-row border-t border-[var(--line)] align-top py-2 sm:py-0" data-testid="estimate-row" data-row={r.id}>
+                <td className="block sm:table-cell sm:pr-3 sm:py-2"><span className="font-medium">{r.label}</span><br /><span className="text-[var(--ink-3)]">{r.provider}</span></td>
+                <td className="block sm:table-cell sm:pr-3 sm:py-2 mt-1 sm:mt-0"><span className="sm:hidden text-[var(--ink-3)]">Unit price: </span>{r.unit_usd}</td>
+                <td className="block sm:table-cell sm:pr-3 sm:py-2 mt-1 sm:mt-0"><span className="sm:hidden text-[var(--ink-3)]">Expected use: </span>{r.note}</td>
+                <td className="block sm:table-cell sm:py-2 mt-1 sm:mt-0 sm:text-right sm:whitespace-nowrap" data-testid="estimate-row-usd"><span className="sm:hidden text-[var(--ink-3)]">Projected: </span><span className="font-medium sm:font-normal">{r.usd ? range(r.usd) : 'not priced'}</span>{r.capped && <><br className="hidden sm:inline" /><span className="text-[var(--ink-3)]"><span className="sm:hidden"> - </span>counts against your limit</span></>}</td>
               </tr>
             ))}
           </tbody>
-          <tfoot><tr className="border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Projected total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(est.total)}</td></tr></tfoot>
+          <tfoot className="block sm:table-footer-group"><tr className="flex justify-between gap-3 sm:table-row border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Projected total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(est.total)}</td></tr></tfoot>
         </table>
       </div>
       {capLine(est.cap, est.cap.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, est.cap.capped_total)}</p>}

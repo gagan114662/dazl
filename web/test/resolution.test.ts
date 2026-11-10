@@ -20,9 +20,12 @@ function seed() {
   const lead = (o: { company: string; domain?: string | null; date?: string | null; reason?: string | null; signal?: string; excerpt?: string }) => {
     const id = `L${++n}`
     db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, event_date, review_reason) VALUES (?, ?, '', ?, ?, ?, 'https://news.example/x', ?, ?, 70, ?, ?)").run(id, jobId, o.company, o.domain ?? null, o.signal ?? 'opened a new office', o.excerpt ?? `${o.company} opened a new office in Shoreditch, London`, o.reason ? null : 80, o.date ?? null, o.reason ?? null)
+    // A populated company_domain alone is a guess (#943): confirm it the way the crawl does, with own-domain evidence on that site.
+    if (o.domain) addEnrichment(db, 'u1', id, { connector: 'sitecrawl', kind: 'domain', value: `${o.domain}|evidence_own_domain`, label: 'domain-basis-v1:evidence_own_domain', confidence: null, source_url: `https://${o.domain}/news`, source_date: today, retrieved_at: 10 })
     return id
   }
-  const enr = (id: string, kind: string, value: string, label: string | null = null, connector = 'sitecrawl') => addEnrichment(db, 'u1', id, { connector, kind, value, label, confidence: null, source_url: 'https://acme.example/contact', source_date: today, retrieved_at: 10 })
+  // Contacts sit on the lead's own site (the shared rule counts a contact only from the confirmed domain); default acme.example kept for the older cases.
+  const enr = (id: string, kind: string, value: string, label: string | null = null, connector = 'sitecrawl') => addEnrichment(db, 'u1', id, { connector, kind, value, label, confidence: null, source_url: `https://${(db.prepare('SELECT company_domain d FROM leads WHERE id = ?').get(id) as { d: string | null }).d ?? 'acme.example'}/contact`, source_date: today, retrieved_at: 10 })
   return { db, job: { id: jobId, user_id: 'u1', query: REQ, icp: ICP }, lead, enr }
 }
 const EVENT = (name: string, startDate: string, organizer = 'Embedd') => JSON.stringify({ '@type': 'Event', name: `${name} office opening`, startDate, organizer: { name: organizer }, location: { '@type': 'Place', name: `${name} office`, address: { addressLocality: 'London', addressCountry: 'GB', addressRegion: 'England' } } })
@@ -50,7 +53,7 @@ test('site-crawl attempts are reported in tried: a held lead never reads "nothin
 test('wrong company / contact / stale each carry their own specific reason', () => {
   const { db, job, lead, enr } = seed()
   const a = lead({ company: 'Querio', reason: 'no_sales_hiring_evidence', date: daysAgo(10) }); enr(a, 'contact_rejected', 'contact rejected: location mismatch', 'contact_location_mismatch')
-  const b = lead({ company: 'Old Co', domain: 'old.example', date: daysAgo(200), reason: 'outside_window' })
+  lead({ company: 'Old Co', domain: 'old.example', date: daysAgo(200), reason: 'outside_window' })
   const c = lead({ company: 'Half Co', domain: 'half.example', date: daysAgo(5) }); enr(c, 'person', 'Sam, CEO')
   const d = lead({ company: 'Refused Co', domain: 'ref.example', date: daysAgo(5) }); enr(d, 'contact_rejected', 'x', 'contact_domain_mismatch')
   const m = new Map(resolveFacts(db, job).map(r => [r.company, r]))

@@ -73,10 +73,14 @@ test('ack changes when the limit or the mode changes, and is stable for the same
 
 test('actual vs estimate: priced from the tokens the provider reported; unknown stays unknown', () => {
   const e = estimateRun({ budget: null, payer: 'you' })
+  // Cache token usage is not stored per scan: without it the priced amount is the recorded-token component only - an
+  // at-least amount, never complete, and never placed against the estimate range. Explicit cache zeros complete it.
   const lo = compareActual(e, { inputTokens: 1000, outputTokens: 500, tokensComplete: true, model: 'claude-sonnet-4-5', searches: 6, reservedUsd: null })
-  assert.equal(lo.within, 'under'); assert.ok(Math.abs(lo.model_usd! - (1000 * 3 + 500 * 15) / 1e6) < 1e-12); assert.match(lo.summary, /Not an invoice/)
+  assert.equal(lo.within, 'unknown'); assert.equal(lo.model_usd_complete, false); assert.ok(Math.abs(lo.model_usd! - (1000 * 3 + 500 * 15) / 1e6) < 1e-12); assert.match(lo.summary, /at least/); assert.match(lo.summary, /cache token usage was not recorded/); assert.match(lo.summary, /Not an invoice/)
+  const loCached = compareActual(e, { inputTokens: 1000, outputTokens: 500, tokensComplete: true, model: 'claude-sonnet-4-5', searches: 6, reservedUsd: null, cacheWriteTokens: 0, cacheReadTokens: 0 })
+  assert.equal(loCached.within, 'under'); assert.equal(loCached.model_usd_complete, true, 'explicit cache zeros are a real record')
   const mid = compareActual(e, { inputTokens: 40_000, outputTokens: 7_000, tokensComplete: false, model: 'claude-sonnet-4-5', searches: null, reservedUsd: 0.4 })
-  assert.equal(mid.within, 'within'); assert.equal(mid.model_usd_complete, false); assert.match(mid.summary, /at least/)
+  assert.equal(mid.within, 'unknown'); assert.equal(mid.model_usd_complete, false); assert.match(mid.summary, /at least/)
   const none = compareActual(e, { inputTokens: null, outputTokens: null, tokensComplete: false, model: null, searches: null, reservedUsd: null })
   assert.equal(none.model_usd, null); assert.equal(none.within, 'unknown'); assert.match(none.summary, /not recorded/)
 })
@@ -124,4 +128,133 @@ test('monthly constraint: daily and monthly limits are labelled with their own r
   const d = estimateRun({ budget: { max_usd: 2 }, payer: 'you', reservedUsd: 1.9, ownerMonthCapUsd: 30, reservedMonthUsd: 1 })
   assert.equal(d.cap.binding, 'daily'); assert.match(capLine(d.cap, d.cap.capped_total)!, /\$0\.10 left \(daily limit binds\)/)
   assert.equal(capLine(estimateRun({ budget: null, payer: 'you' }).cap, { min: 0, max: 0 }), null)
+})
+
+// ---- #851: the estimate prices the model the run will really call, not always the default model ----
+import { scanModelPrice, modelCostUsd } from '../lib/scan/spend-cap.ts'
+import { UNKNOWN_MODEL, DEFAULT_MODEL } from '../lib/scan/price-estimate.ts'
+const modelRows = (e: ReturnType<typeof estimateRun>) => e.rows.filter(r => r.kind === 'model')
+const at = (p: { in: number; out: number }, calls: number, inK: number, outK: number) => calls * ((inK * 1000 + INPUT_MARGIN_TOKENS) * p.in + outK * 1000 * p.out) / 1e6
+
+test('#851 known alternate model: gpt-4.1 rows, total and unit price use its own listed price (3.50/14.00), not claude-sonnet-4-5', () => {
+  const e = estimateRun({ budget: null, payer: 'you', model: 'gpt-4.1', priceModel: scanModelPrice })
+  const ex = row(e, 'extraction')
+  assert.match(ex.unit_usd, /^\$3\.50 in \/ \$14\.00 out per 1M tokens \(gpt-4\.1\)$/)
+  assert.ok(modelRows(e).every(r => !/claude-sonnet-4-5/.test(r.unit_usd)), 'no model row names the default model')
+  assert.ok(Math.abs(ex.usd!.min - at({ in: 3.5, out: 14 }, 1, 8, 1.5)) < 1e-12 && Math.abs(ex.usd!.max - at({ in: 3.5, out: 14 }, 3, 30, 4)) < 1e-12)
+  const sonnet = estimateRun({ budget: null, payer: 'you', priceModel: scanModelPrice })
+  assert.notDeepEqual(e.total, sonnet.total, 'a different model is a different total')
+  assert.deepEqual(e.unpriced, []); assert.match(e.assumptions[0], /^Model: gpt-4\.1\./)
+  assert.equal(e.verdict.ok, true, 'no limit: nothing needs reserving, so the run is not blocked')
+})
+
+test('#851 an unpriced model: every model row is unpriced (null, never zero), named, listed in unpriced; with no limit it is STILL refused (the per-scan cap cannot price it)', () => {
+  const e = estimateRun({ budget: null, payer: 'you', model: 'o3-mystery', priceModel: scanModelPrice })
+  assert.ok(modelRows(e).every(r => r.usd === null && r.unit_usd === 'o3-mystery: no listed price'))
+  assert.ok(e.unpriced.includes('Candidate extraction')); assert.equal(e.total.max, 0)
+  assert.deepEqual([e.verdict.ok, e.verdict.reason], [false, 'model_unpriced'])
+})
+
+test('#851 no limit, a model the per-scan spend cap cannot price (gpt-4o, claude-opus-4-1): refused BEFORE launch, exactly as the cap refuses its first call; no "remove the limit" advice', () => {
+  for (const model of ['gpt-4o', 'claude-opus-4-1', 'o3-mystery']) {
+    // The cap every run has (runner.ts runWithScanSpend -> spend-cap.ts modelCostUsd) refuses this model at its first call.
+    assert.throws(() => modelCostUsd(model, 'p', 100), (err: unknown) => err instanceof SpendRefused && err.reason === 'model_unpriced', model)
+    for (const limited of [false, true]) {
+      const e = estimateRun({ budget: limited ? { max_usd: 5 } : null, payer: 'you', model, limited, priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5' })
+      assert.deepEqual([e.verdict.ok, e.verdict.reason, e.verdict.warning], [false, 'model_unpriced', null], `${model} limited=${limited}`)
+      assert.match(e.verdict.message, new RegExp(`^Your key's model \\(${model.replace(/[.]/g, '\\.')}\\) has no listed price, so the per-scan spend cap`))
+      assert.match(e.verdict.message, /with or without a spending limit/); assert.match(e.verdict.message, /Nothing was started or charged/)
+      assert.ok(!e.verdict.change.some(c => /without a spending limit/i.test(c)), 'removing the limit cannot help: never advised')
+      assert.deepEqual(e.verdict.change, ['Use an Anthropic key (claude-sonnet-4-5 is priced)', 'This is a dazl model configuration problem, not your request: try again later.'])
+    }
+    // The trial pays with the operator's model: the same refusal, the trial's own advice.
+    const t = estimateRun({ budget: null, payer: 'trial', model, limited: true, priceModel: scanModelPrice })
+    assert.equal(t.verdict.reason, 'model_unpriced'); assert.ok(!t.verdict.change.some(c => /without a spending limit/i.test(c)))
+  }
+  // Controls: models the cap prices are not refused without a limit (gpt-4.1, a dated alias), and an unreadable model stays
+  // unrefused without a limit (the run's real model may be priced) and keeps "Try again".
+  for (const model of ['gpt-4.1', 'claude-sonnet-4-5', 'claude-sonnet-4-5-20250929', 'gpt-4.1-2025-04-14']) {
+    assert.doesNotThrow(() => modelCostUsd(model, 'p', 100))
+    assert.equal(estimateRun({ budget: null, payer: 'you', model, limited: false, priceModel: scanModelPrice }).verdict.ok, true, model)
+  }
+  const unk = estimateRun({ budget: null, payer: 'you', modelUnknown: true, limited: false, priceModel: scanModelPrice })
+  assert.deepEqual([unk.verdict.ok, unk.verdict.reason], [true, null])
+  const unkLim = estimateRun({ budget: { max_usd: 5 }, payer: 'you', modelUnknown: true, priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5' })
+  assert.equal(unkLim.verdict.reason, 'model_unpriced'); assert.equal(unkLim.verdict.change[0], 'Try again in a moment.')
+  // Without the scan table (the client-side default), only the limit rule applies, as before.
+  assert.equal(estimateRun({ budget: null, payer: 'you', model: 'gpt-4o', limited: false }).verdict.ok, true)
+  // An alternative the scan cap cannot price is never offered.
+  const badAlt = estimateRun({ budget: null, payer: 'you', model: 'gpt-4o', limited: false, priceModel: scanModelPrice, pricedAlternative: 'claude-opus-4-1' })
+  assert.ok(!badAlt.verdict.change.some(c => /Anthropic key/.test(c)))
+})
+
+test('#851 under a limit, a model the limit guard cannot price is refused BEFORE launch (model_unpriced), with the verdict inside the confirmation', () => {
+  for (const model of ['gpt-4.1', 'o3-mystery', 'claude-sonnet-4-5-20250929']) {
+    const e = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model, priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5' })
+    assert.deepEqual([e.verdict.ok, e.verdict.reason, e.verdict.warning], [false, 'model_unpriced', null], model)
+    assert.match(e.verdict.message, new RegExp(`Your key's model \\(${model.replace(/[.]/g, '\\.')}\\) has no listed price`)); assert.match(e.verdict.message, /Nothing was started or charged/)
+    // Removing the limit is advised only when it can help: the per-scan cap prices this model (o3-mystery: it cannot).
+    assert.deepEqual(e.verdict.change, scanModelPrice(model)
+      ? ['Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)', 'Or use an Anthropic key (claude-sonnet-4-5 is priced)']
+      : ['Use an Anthropic key (claude-sonnet-4-5 is priced)', 'This is a dazl model configuration problem, not your request: try again later.'], model)
+    // The guard really refuses it: the estimate says what the run would do.
+    assert.throws(() => new SpendGuard(5).check(model, 1000, 1000), (err: unknown) => err instanceof SpendRefused && err.reason === 'model_unpriced')
+    const unlimited = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model, priceModel: scanModelPrice, limited: false })
+    assert.notEqual(unlimited.ack, e.ack, 'the refusal is part of what the person is shown, so it is part of the confirmation')
+  }
+  // The listed model under the same limit is not refused, and the alternative is never offered as itself.
+  assert.equal(estimateRun({ budget: { max_usd: 5 }, payer: 'you', model: 'claude-sonnet-4-5', priceModel: scanModelPrice }).verdict.ok, true)
+  const sameAlt = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model: 'claude-sonnet-4-5-20250929', priceModel: scanModelPrice, pricedAlternative: 'claude-sonnet-4-5-20250929' })
+  assert.ok(!sameAlt.verdict.change.some(c => /Anthropic key/.test(c)), 'an alternative the guard cannot price either is not offered')
+  // An owner pool limit (no max_usd) is a limit too; a month-only pool is one as well.
+  assert.equal(estimateRun({ budget: null, payer: 'you', model: 'gpt-4.1', ownerCapUsd: 3 }).verdict.reason, 'model_unpriced')
+  assert.equal(estimateRun({ budget: null, payer: 'you', model: 'gpt-4.1', ownerMonthCapUsd: 3 }).verdict.reason, 'model_unpriced')
+})
+
+test('#851 the dated id of a listed model: rows priced as its alias (the scan cap prices it so), but a limited run is refused (the limit guard does not)', () => {
+  const dated = estimateRun({ budget: null, payer: 'you', model: 'claude-sonnet-4-5-20250929', priceModel: scanModelPrice })
+  const alias = estimateRun({ budget: null, payer: 'you', model: 'claude-sonnet-4-5', priceModel: scanModelPrice })
+  assert.deepEqual(dated.total, alias.total); assert.notEqual(dated.ack, alias.ack, 'the model is in the confirmation')
+})
+
+test('#851 the confirmation is model- and payer-sensitive: a different model, or the trial instead of an own key, needs a fresh confirmation', () => {
+  const base = { budget: { max_usd: 2 }, payer: 'you' as const, priceModel: scanModelPrice }
+  const a = estimateRun({ ...base, model: 'claude-sonnet-4-5' })
+  assert.equal(estimateRun({ ...base }).ack, a.ack, 'omitted model = the default model (unchanged confirmation for default config)')
+  assert.notEqual(estimateRun({ ...base, model: 'gpt-4.1', limited: false }).ack, a.ack)
+  assert.notEqual(estimateRun({ ...base, payer: 'trial', model: 'claude-sonnet-4-5' }).ack, a.ack)
+  assert.equal(estimateRun({ ...base, model: 'claude-sonnet-4-5' }).ack, a.ack, 'deterministic')
+})
+
+test('#851 malformed model ids fail closed: blank, whitespace, non-string and modelUnknown are UNKNOWN (unpriced, refused under a limit), never the default', () => {
+  for (const bad of ['', '   ', 42 as unknown as string, null as unknown as string, {} as unknown as string, ['claude-sonnet-4-5'] as unknown as string]) {
+    const free = estimateRun({ budget: null, payer: 'you', model: bad, priceModel: scanModelPrice })
+    assert.ok(modelRows(free).every(r => r.usd === null && r.unit_usd === `${UNKNOWN_MODEL}: no listed price`), JSON.stringify(bad))
+    assert.match(free.assumptions[0], /^Model: unknown model/)
+    const lim = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model: bad, priceModel: scanModelPrice, pricedAlternative: DEFAULT_MODEL })
+    assert.deepEqual([lim.verdict.ok, lim.verdict.reason], [false, 'model_unpriced'], JSON.stringify(bad))
+    assert.match(lim.verdict.message, /could not be read/); assert.ok(lim.verdict.change.includes('Try again in a moment.'))
+    assert.ok(lim.verdict.change.includes('Or use an Anthropic key (claude-sonnet-4-5 is priced)'))
+  }
+  const unk = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model: 'claude-sonnet-4-5', modelUnknown: true, priceModel: scanModelPrice })
+  assert.equal(unk.verdict.reason, 'model_unpriced', 'modelUnknown wins over a model id')
+  assert.ok(modelRows(unk).every(r => r.usd === null))
+  // A price function that throws for a weird id is not called for UNKNOWN; prototype keys are not prices.
+  for (const proto of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    const e = estimateRun({ budget: { max_usd: 5 }, payer: 'you', model: proto, priceModel: scanModelPrice })
+    assert.ok(modelRows(e).every(r => r.usd === null), proto); assert.equal(e.verdict.reason, 'model_unpriced', proto)
+    assert.ok(modelRows(estimateRun({ budget: null, payer: 'you', model: proto })).every(r => r.usd === null), `${proto} (default price table)`)
+  }
+  // Huge model id: still a string, still unpriced, the estimate still returns.
+  const huge = 'x'.repeat(100_000)
+  assert.equal(estimateRun({ budget: { max_usd: 5 }, payer: 'you', model: huge, priceModel: scanModelPrice }).verdict.reason, 'model_unpriced')
+})
+
+test('#851 trial payer: the trial always runs under its reserve guard, so an unpriceable trial model is refused with a configuration message (no own-key advice)', () => {
+  const e = estimateRun({ budget: null, payer: 'trial', model: 'claude-opus-unlisted', priceModel: scanModelPrice, limited: true, pricedAlternative: 'claude-opus-unlisted' })
+  assert.doesNotMatch(e.verdict.message, /list price for this estimate/, 'unpriced rows: no claim that the rows are priced')
+  assert.deepEqual([e.verdict.ok, e.verdict.reason], [false, 'model_unpriced'])
+  assert.match(e.verdict.message, /^The free trial's model \(claude-opus-unlisted\) has no listed price/)
+  assert.deepEqual(e.verdict.change, ['This is a dazl configuration problem, not your request: try again later, or add your own AI key in Settings.'])
+  assert.equal(estimateRun({ budget: null, payer: 'trial', model: 'claude-sonnet-4-5', priceModel: scanModelPrice, limited: true }).verdict.ok, true, 'the default trial model is unaffected')
 })

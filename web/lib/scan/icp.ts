@@ -1,6 +1,7 @@
+import { capHolds, foldHolds, holdName, isRejDigest, MAX_REJ, storedOfferName } from './offer-identity.ts'
 import type { Provider } from '../llm/provider.ts'
 import { normalizeLookalike, type LookalikeBlock } from './lookalike-block.ts'
-import { quoteSupports } from './claim-quote.ts'
+import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier, MAX_RESEARCH_QUOTE } from './claim-quote.ts'
 
 // An ideal customer profile (ICP) inferred from a free-text "what are you looking for".
 // Everything is plain strings with hard caps, so it is safe to store, show, edit and
@@ -31,14 +32,17 @@ export interface Icp {
 
 // Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
 export interface ResearchedHyp { i: string; o: string; k: 'offer' | 'persona' | 'industry' | 'size' | 'location' | 'disqualifier' | 'pain'; t: string; s: 'sourced' | 'hypothesis' | 'reviewed' | 'rejected'; u: string | null; q: string | null; at: number | null }
-export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null }
+// u: saved decisions whose offer could not be told (kept by the name(s) they may belong to, never moved onto a guess): n names (stored form), k kind, t text, s reviewed|rejected
+export interface IcpResearch { v: 1; site: string; offers: { i: string; n: string }[]; hyps: ResearchedHyp[]; q: string | null; ans: { q: string; o: string; t?: string } | null; u?: { n: string[]; k: ResearchedHyp['k']; t: string; s: 'reviewed' | 'rejected'; w?: true; r?: string[]; v?: string[]; o?: true }[] }
 
 // scan_jobs.icp is TEXT CHECK (char_length <= 4000); PG counts characters, JS .length counts UTF-16 units, so the
 // budget stays under the column limit with margin. The budget covers the TOTAL document: flat user constraints are
 // NEVER truncated to fit - a profile that cannot fit whole is a typed overflow the caller must surface. Only the
 // system-generated research block is fitted to the remaining room (deterministic priority, whole hypotheses only).
 export const ICP_JSON_BUDGET = 3900
-const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: 140, question: 120, answer: 100 }
+// quote shares the ONE quote contract (claim-quote.ts MAX_RESEARCH_QUOTE): construction, storage and ingress all
+// use the same cap, so a citation that sourced at research time survives the store/reload round trip unchanged.
+const RCAPS = { site: 80, offers: 6, offerId: 40, offerName: 60, hyps: 24, text: 100, url: 160, quote: MAX_RESEARCH_QUOTE, question: 120, answer: 100 }
 const RKINDS = new Set(['offer', 'persona', 'industry', 'size', 'location', 'disqualifier', 'pain'])
 const RSTATUS = new Set(['sourced', 'hypothesis', 'reviewed', 'rejected'])
 
@@ -49,7 +53,7 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   const site = clean(r.site, RCAPS.site)
   const offers = (Array.isArray(r.offers) ? r.offers : []).map(x => {
     const o = x as Record<string, unknown>
-    const i = clean(o?.i, RCAPS.offerId), n = clean(o?.n, RCAPS.offerName)
+    const i = clean(o?.i, RCAPS.offerId), n = storedOfferName(o?.n)
     return i && n && /^[a-z0-9][a-z0-9-]*$/.test(i) ? { i, n } : null
   }).filter((x): x is { i: string; n: string } => !!x).slice(0, RCAPS.offers)
   if (!site || offers.length === 0) return undefined
@@ -60,12 +64,21 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
     const t = clean(h?.t, RCAPS.text)
     if (!i || !ids.has(o) || !RKINDS.has(k) || !RSTATUS.has(st) || !t) continue
     const u = typeof h.u === 'string' && /^https:\/\//.test(h.u) ? h.u.slice(0, RCAPS.url) : null
-    const q = typeof h.q === 'string' ? clean(h.q, RCAPS.quote) : null
+    // #872: an over-cap stored quote is REJECTED, never sliced - a slice can cut off the negation or attribution
+    // that changes the claim. The strict validators below run on the full stored quote, before any truncation.
+    const q = typeof h.q === 'string' ? (x => x.length <= RCAPS.quote ? x : null)(h.q.replace(/\s+/g, ' ').trim()) : null
     const at = typeof h.at === 'number' && Number.isInteger(h.at) && h.at > 0 ? h.at : null
     // A block arriving from a client or the store is re-checked: 'sourced' needs its URL, fetch time and a quote that
     // carries the claim (claim-quote.ts). Otherwise a persona/industry/pain falls back to an unreviewed hypothesis with
     // no evidence, and a headcount or place is dropped (unknown is never persisted as a statement).
-    if (st === 'sourced' && !(u && at && q && quoteSupports(k, t, q))) {
+    // #872: the ingress re-check uses the same strict binding as buildResearch - a stored or client-sent 'sourced'
+    // offer or disqualifier must pass the same ownership/polarity/exclusion guards, or it honestly downgrades.
+    // An offer row must also be ABOUT the canonical offer it references: the stored text is validated against the
+    // offer's current canonical name, so a row claiming one offer under another's id cannot stay sourced.
+    const offerName = offers.find(x => x.i === o)?.n ?? ''
+    const canonical = !!offerName && t.trim().toLowerCase() === offerName.trim().toLowerCase()
+    const backed = k === 'offer' ? (canonical && quoteBacksOffer(offerName, q ?? '', offers.map(x => x.n))) : k === 'disqualifier' ? (offerName ? quoteBacksDisqualifier(offerName, t, q ?? '', offers.map(x => x.n)) : false) : quoteSupports(k, t, q ?? '')
+    if (st === 'sourced' && !(u && at && q && backed)) {
       if (k === 'size' || k === 'location') continue
       hyps.push({ i, o, k: k as ResearchedHyp['k'], t, s: 'hypothesis', u: null, q: null, at: null }); continue
     }
@@ -76,7 +89,24 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
   const ansT = typeof ansRaw?.t === 'string' ? clean(ansRaw.t, RCAPS.answer) : ''
   const ans = ansRaw && typeof ansRaw.q === 'string' && typeof ansRaw.o === 'string' && ids.has(clean(ansRaw.o, RCAPS.offerId))
     ? { q: clean(ansRaw.q, RCAPS.question), o: clean(ansRaw.o, RCAPS.offerId), ...(ansT ? { t: ansT } : {}) } : null
-  return { v: 1, site, offers, hyps, q: question, ans }
+  const u: NonNullable<IcpResearch['u']> = []
+  for (const x of (Array.isArray(r.u) ? r.u : []).slice(0, 64) as Record<string, unknown>[]) {   // generous read bound; the STORED bound is capStoredHolds (never drops a hold)
+    const names = [...new Set((Array.isArray(x?.n) ? x.n : []).map(holdName).filter(Boolean))].slice(0, 6), k = String(x?.k ?? ''), st = String(x?.s ?? ''), tx = clean(x?.t, RCAPS.text)
+    if (x?.w === true && names.length) { const r = [...new Set((Array.isArray(x.r) ? x.r : []).filter(isRejDigest))].slice(0, MAX_REJ), v = [...new Set((Array.isArray(x.v) ? x.v : []).filter(isRejDigest))].filter(d => !r.includes(d)).slice(0, Math.max(0, MAX_REJ - r.length)); const cut = (Array.isArray(x.r) && x.r.length > r.length) || (Array.isArray(x.v) && x.v.length > v.length); u.push({ n: names, k: 'persona', t: '', s: 'reviewed', w: true, ...(r.length ? { r } : {}), ...(v.length ? { v } : {}), ...((x.o === true || cut) ? { o: true as const } : {}) }); continue }
+    if (names.length && tx && RKINDS.has(k) && k !== 'offer' && (st === 'reviewed' || st === 'rejected')) u.push({ n: names, k: k as ResearchedHyp['k'], t: tx, s: st })
+  }
+  const capped = capStoredHolds(u)
+  return { v: 1, site, offers, hyps, q: question, ans, ...(capped.length ? { u: capped } : {}) }
+}
+
+// "Review profile first" with an existing profile: the preview's fresh model output supplies the draft's FLAT
+// fields only. The research block is the prior profile's, whole: fresh model research is not new provenance (it is
+// not a site recrawl), and the prior block holds the person's decisions - reviewed statements, rejections, held
+// groups, the typed answer - with their EXACT offer bindings. Merging model research into it could only move,
+// collapse or truncate those bindings, so there is no merge: the prior block replaces any fresh research outright.
+// Presence is not a review: no status changes here; only the review editor's explicit submit does that.
+export function guardedPreviewResearch(_fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
+  return prior
 }
 
 // Deterministic research fit: whole hypotheses only, best first - reviewed (a person's decision), sourced (page-verified),
@@ -84,7 +114,10 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
 // the site/offers skeleton cannot fit, the research block is omitted whole. Flat user constraints are never touched.
 function fitResearch(r: IcpResearch, room: number): IcpResearch | undefined {
   if (JSON.stringify(r).length <= room) return r   // the common case: the whole block fits, kept verbatim
-  const skeleton = { v: 1 as const, site: r.site, offers: r.offers, hyps: [] as ResearchedHyp[], q: r.q, ans: r.ans }
+  let skeleton = { v: 1 as const, site: r.site, offers: r.offers, hyps: [] as ResearchedHyp[], q: r.q, ans: r.ans, ...(r.u ? { u: r.u } : {}) }
+  // Holds are never traded for room: if the specific decisions do not fit, they collapse into ONE whole-group entry over the same names (the hold stays, the detail goes).
+  if (r.u && JSON.stringify(skeleton).length > room) skeleton = { ...skeleton, u: foldAll(r.u, true) }     // stage 2: one whole entry; names AND rejection digests kept
+  if (r.u && JSON.stringify(skeleton).length > room) skeleton = { ...skeleton, u: foldAll(r.u, false) }    // stage 3: names only, `open`: the rejected set is unknown and can never be released
   if (JSON.stringify(skeleton).length > room) return undefined
   const rank = (s: ResearchedHyp['s']) => s === 'reviewed' ? 0 : s === 'sourced' ? 1 : s === 'rejected' ? 2 : 3
   const byOffer = new Map<string, ResearchedHyp[]>()
@@ -113,7 +146,7 @@ export const flatProfile = (icp: unknown): unknown => {
   return flat
 }
 
-export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' }
+export type IcpBudget = { ok: true; icp: Icp; json: string } | { ok: false; reason: 'profile_too_large' | 'holds_too_large' }
 // Total-budget enforcement for every icp write. Research that cannot fit whole is omitted explicitly (never partially
 // parsed back); flat user constraints overflowing on their own are a typed refusal, never silent truncation.
 export function budgetedIcp(icp: Icp): IcpBudget {
@@ -122,6 +155,9 @@ export function budgetedIcp(icp: Icp): IcpBudget {
   if (!research) return { ok: true, icp, json: JSON.stringify(icp) }
   const room = ICP_JSON_BUDGET - JSON.stringify(flat).length - 16   // the ,"research":... wrapper
   const fitted = fitResearch(research, room)
+  // Unresolved decisions (holds, rejection identities) are the review requirement itself: if even the smallest record of them does not fit next to the profile, the save is REFUSED. A profile-only
+  // write that quietly lost every hold would let unreviewed statements target again. (Research with no holds may still be omitted, as before.)
+  if (!fitted && research.u?.length) return { ok: false, reason: 'holds_too_large' }
   const out = fitted ? { ...icp, research: fitted } : flat
   return { ok: true, icp: out, json: JSON.stringify(out) }
 }
@@ -135,6 +171,52 @@ function clean(v: unknown, max: number): string {
 function list(v: unknown, n: number): string[] {
   if (!Array.isArray(v)) return []
   return v.map(x => clean(x, caps.item)).filter(Boolean).slice(0, n)
+}
+
+// #917: explicit, client-supplied criteria (a reviewed/edited profile posted to a scan) are a person's constraints, not
+// model output. normalizeIcp still bounds them (store/prompt safety), but silently slicing a 7th exclusion or the tail of
+// a long item would widen the scan behind the person's back. icpLoss names every place normalizeIcp WOULD drop or cut
+// explicit input, so admission can refuse it with field/item detail before anything is reserved, queued or counted.
+// Model output keeps the old bounded sanitation (parseIcp/normalizeIcp), unchanged.
+export type IcpLoss =
+  | { field: 'summary'; kind: 'too_long'; limit: number; actual: number }
+  | { field: IcpListField; kind: 'too_many_items'; limit: number; actual: number }
+  | { field: IcpListField; kind: 'item_too_long'; index: number; limit: number; actual: number }
+  | { field: IcpListField; kind: 'wrong_type'; expected: 'array'; actual: string }
+  | { field: IcpListField; kind: 'item_not_text'; index: number; actual: string }
+  | { field: 'window_days' | 'country' | 'language'; kind: 'invalid_value'; actual: string }   // a stated window or market that normalizeIcp would silently drop
+export type IcpListField = 'who' | 'industries' | 'sizes' | 'where' | 'signals' | 'exclude'
+const squash = (v: unknown): string => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim() : ''
+export function icpLoss(raw: unknown): IcpLoss[] {
+  if (!raw || typeof raw !== 'object') return []
+  const r = raw as Record<string, unknown>, out: IcpLoss[] = []
+  const summary = squash(r.summary)
+  if (summary.length > caps.summary) out.push({ field: 'summary', kind: 'too_long', limit: caps.summary, actual: summary.length })
+  const typeOf = (x: unknown) => x === null ? 'null' : Array.isArray(x) ? 'array' : typeof x
+  for (const field of ['who', 'industries', 'sizes', 'where', 'signals', 'exclude'] as const) {
+    const v = r[field]
+    if (v === undefined || v === null) continue   // absent: the criterion was never given
+    // A list field of the wrong shape (a string, an object...) is normalized to [] - an explicit criterion silently erased. Refuse it by name.
+    if (!Array.isArray(v)) { out.push({ field, kind: 'wrong_type', expected: 'array', actual: typeOf(v) }); continue }
+    let kept = 0
+    v.forEach((raw, index) => {   // index is the position in the array the caller sent
+      if (raw === undefined || raw === null) return   // an empty slot is not a criterion
+      if (typeof raw !== 'string') { out.push({ field, kind: 'item_not_text', index, actual: typeOf(raw) }); return }
+      const t = squash(raw)
+      if (!t) return   // blanks are not criteria: dropping them loses nothing
+      kept++
+      if (t.length > caps.item) out.push({ field, kind: 'item_too_long', index, limit: caps.item, actual: t.length })
+    })
+    if (kept > caps[field]) out.push({ field, kind: 'too_many_items', limit: caps[field], actual: kept })
+  }
+  // A stated recency window or market that normalizeIcp would drop (out of range, fractional, a string, not an ISO country, not a 2-letter
+  // language) widens the scan behind the person's back, so it is refused by name. Absent, null and "" still mean "not given".
+  const given = (x: unknown) => x !== undefined && x !== null && !(typeof x === 'string' && x.trim() === '')
+  const shown = (x: unknown) => typeof x === 'string' ? JSON.stringify(x.slice(0, 20)) : typeof x === 'number' ? String(x) : typeOf(x)
+  if (given(r.window_days) && !(typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365)) out.push({ field: 'window_days', kind: 'invalid_value', actual: shown(r.window_days) })
+  if (given(r.country) && isoCountry(r.country) === null) out.push({ field: 'country', kind: 'invalid_value', actual: shown(r.country) })
+  if (given(r.language) && !(typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()))) out.push({ field: 'language', kind: 'invalid_value', actual: shown(r.language) })
+  return out
 }
 
 // The country code goes to the search provider as its market. Models often write "UK" for the United Kingdom, which is
@@ -300,6 +382,15 @@ export function fallbackIcp(query: string): Icp {
   return { summary: clean(query, caps.summary), who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
 }
 
+// #917: the fallback profile's summary holds at most caps.summary characters of a request MAX_QUERY allows, so a long
+// request's tail is NOT in the profile. Say so (the preview shows it) instead of implying every constraint survived.
+export type FallbackCoverage = { complete: true } | { complete: false; kept_chars: number; request_chars: number; dropped: string }
+export function fallbackCoverage(query: string): FallbackCoverage {
+  const full = squash(query)
+  if (full.length <= caps.summary) return { complete: true }
+  return { complete: false, kept_chars: caps.summary, request_chars: full.length, dropped: full.slice(caps.summary) }
+}
+
 // Uses the tenant's own provider and key. Returns the ICP and whether the model made it.
 export async function inferIcp(provider: Provider, apiKey: string, query: string, fetchImpl?: typeof fetch, seller?: string): Promise<{ icp: Icp; inferred: boolean }> {
   const complete = provider.complete
@@ -311,4 +402,20 @@ export async function inferIcp(provider: Provider, apiKey: string, query: string
     if (err && typeof err === 'object' && 'kind' in err && (err as { kind: string }).kind === 'auth') throw err
   }
   return { icp: fallbackIcp(query), inferred: false }
+}
+
+// The stored bound on unresolved decisions (IcpResearch.u). Overflow folds into one whole-group entry that keeps every name held AND the identity of every rejection (digests); when even those
+// cannot be represented the entry is `open` (never released). A hold or a rejection is never dropped (offer-identity.ts capHolds/foldHolds).
+type StoredHold = NonNullable<IcpResearch['u']>[number]
+type HoldE = { names: string[]; kind: string; text: string; status: 'reviewed' | 'rejected'; whole?: boolean; rej?: string[]; rev?: string[]; open?: boolean; src: StoredHold }
+const toE = (x: StoredHold): HoldE => ({ names: x.n, kind: x.k, text: x.t, status: x.s, ...(x.w ? { whole: true } : {}), ...(x.r ? { rej: x.r } : {}), ...(x.v ? { rev: x.v } : {}), ...(x.o ? { open: true } : {}), src: x })
+const wholeStored = (names: string[], rej: string[], rev: string[], open: boolean): HoldE => toE({ n: names, k: 'persona', t: '', s: 'reviewed', w: true, ...(rej.length ? { r: rej } : {}), ...(rev.length ? { v: rev } : {}), ...(open ? { o: true as const } : {}) })
+const fromE = (e: HoldE): StoredHold => ({ n: e.names, k: e.src.k, t: e.text, s: e.status, ...(e.whole ? { w: true as const } : {}), ...(e.rej?.length ? { r: e.rej } : {}), ...(e.rev?.length ? { v: e.rev } : {}), ...(e.open ? { o: true as const } : {}) })
+export function capStoredHolds(u: NonNullable<IcpResearch['u']>): NonNullable<IcpResearch['u']> {
+  return capHolds<HoldE>(u.map(toE), wholeStored).map(fromE)
+}
+// Every hold folded into ONE whole entry (used when the column has no room for the specific ones): names and rejection digests kept; digests dropped to `open` only if they cannot fit either.
+const foldAll = (u: NonNullable<IcpResearch['u']>, keepDigests: boolean): NonNullable<IcpResearch['u']> => {
+  const f = foldHolds<HoldE>(u.map(toE), {}, wholeStored)
+  return [fromE(keepDigests ? f : { ...f, rej: undefined, rev: undefined, open: true })]
 }

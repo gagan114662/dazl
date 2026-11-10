@@ -4,7 +4,9 @@
 //   - a sender identity;
 //   - a stub Gmail connection (lib/staging.ts: nothing can be sent).
 // Refuses to run unless DAZL_ENV=staging. Writes only to DB_PATH (SQLite), the staging store. Idempotent: an existing
-// demo account is left as it is, so a re-run after a deploy changes nothing.
+// demo account is left as it is, so a re-run after a deploy changes nothing, except that it is marked confirmed once.
+// The demo address is on the reserved .test domain and receives no mail, and the app opens only to accounts whose
+// email is confirmed (#357), so the operator-made demo account counts as confirmed.
 //   DAZL_ENV=staging DB_PATH=/var/lib/dazl-staging/app.db DAZL_MASTER_KEY=... STAGING_DEMO_PASSWORD=... \
 //     node --experimental-strip-types scripts/staging-seed.mts
 // The password comes from the environment only, never from this file.
@@ -24,11 +26,14 @@ export async function seedStaging(raw: Database.Database, password: string, now 
   if (password.length < 12) throw new Error('staging-seed: STAGING_DEMO_PASSWORD must be at least 12 characters')
   migrateAllSqlite(raw)
   const existing = raw.prepare('SELECT id FROM users WHERE email = ?').get(DEMO_EMAIL) as { id: string } | undefined
-  if (existing) return { created: false, tenant: existing.id }
+  if (existing) {
+    raw.prepare('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ?').run(now, existing.id)
+    return { created: false, tenant: existing.id }
+  }
 
   const id = randomBytes(16).toString('hex'), salt = randomBytes(16).toString('hex')
-  raw.prepare('INSERT INTO users (id, email, name, business_name, sells, website, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, DEMO_EMAIL, 'Demo Owner', 'Harbour Dental Supply (demo)', 'Dental chairs, sterilisers and practice equipment', 'https://harbour-dental.example.test', scryptSync(password, salt, 64).toString('hex'), salt)
+  raw.prepare('INSERT INTO users (id, email, name, business_name, sells, website, password_hash, salt, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, DEMO_EMAIL, 'Demo Owner', 'Harbour Dental Supply (demo)', 'Dental chairs, sterilisers and practice equipment', 'https://harbour-dental.example.test', scryptSync(password, salt, 64).toString('hex'), salt, now)
   const icp = {
     summary: 'Independent dental practices in Ohio and Texas that are opening a location or expanding their team',
     who: ['Practice owner', 'Practice manager'], industries: ['Dental practices'], sizes: ['1-50 employees'], where: ['Ohio', 'Texas'],

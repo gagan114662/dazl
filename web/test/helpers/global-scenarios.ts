@@ -17,7 +17,7 @@ export const SCENARIOS: Scenario[] = [
   sc({ id: 'tokyo-clinic', country: 'JP', category: 'dental clinic (Japanese)', lang: 'ja', request: '過去90日以内に新しい医院を開業した東京の歯科クリニックを探す。', where: ['東京、日本'], language: 'ja', company: 'さくら歯科クリニック', signal: '新しい医院を開業', quote: 'さくら歯科クリニックは今月、東京の渋谷に新しい医院を開業しました', title: 'さくら歯科クリニックが渋谷に新院を開業', filler: '地域の患者さまに予防歯科を提供しています。' }),
 ]
 
-export function fixtureFor(s: Scenario, over: { pageLocation?: string } = {}): Fixture {
+export function fixtureFor(s: Scenario): Fixture {
   const published = daysAgo(10)
   const body = `${published}: ${s.quote}. ${s.filler.repeat(20)}`
   const page = { title: s.title, text: body }

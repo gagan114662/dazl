@@ -2,16 +2,24 @@
 // no network, no provider call. The idea (a menu of what a run will use, each with a unit price and a projected total the
 // user confirms) follows other lead agents' pre-run cost gates; the numbers here are dazl's own.
 //
-// What it is: a RANGE built from named assumptions (shown with the estimate), the listed model price (PRICES_USD_PER_M) and the
+// What it is: a RANGE built from named assumptions (shown with the estimate), the listed price of the model the run will really
+// call (EstimateInput.priceModel: the server passes spend-cap.ts scanModelPrice, the table the hard scan cap reserves at), and the
 // per-scan caps the runner really enforces (DEFAULT_TINYFISH counts, PEOPLE_SEARCHES_MAX). What it is not: a bill, a quote or a
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
-import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../llm/spend-guard.ts'
+import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
 import { DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-5'
+// Shown (and confirmed) when a payer's own key exists but which model it runs could not be read: priced as unknown, never as
+// the default model (#851).
+export const UNKNOWN_MODEL = 'unknown model (could not be read)'
+// A spending limit's guards (the run's max_usd, the owner's day/month pool and the trial's reserve: SpendGuard and PooledGuard)
+// price a call with spend-guard.ts callCostUsd, an EXACT lookup in PRICES_USD_PER_M. Any other model id, including a dated id
+// of a listed model, is refused at the first call, so a limited run cannot reserve for it.
+export const limitReservable = (model: string): boolean => Object.prototype.hasOwnProperty.call(PRICES_USD_PER_M, model)
 export interface Range { min: number; max: number }
 export interface EstimateRow {
   id: string; label: string; provider: string
@@ -32,7 +40,16 @@ export interface RunEstimate {
 export interface EstimateInput {
   budget: RunBudget | null
   payer: 'you' | 'trial'
-  model?: string                     // exact model id the run will use
+  model?: string                     // exact model id the run will use (the payer's key's configured model); omitted: DEFAULT_MODEL
+  modelUnknown?: boolean             // the payer's key exists but its model could not be read: every model row is unpriced (#851)
+  // A spending-limit guard will price every model call (the run's max_usd, the owner's day/month pool, or a trial's reserve).
+  // Default: the limits this estimate itself knows about (max_usd, ownerCapUsd, ownerMonthCapUsd).
+  limited?: boolean
+  pricedAlternative?: string | null  // a model a limited run CAN reserve for (the Anthropic key's model), offered when this one cannot
+  // The listed price of a model id. The server passes spend-cap.ts scanModelPrice (the scan path's table, incl. gpt-4.1 and dated
+  // ids); it is injected because this module is also imported by a client component, which must not bundle the spend-cap store.
+  // Default: the shared table, exact id only.
+  priceModel?: (model: string) => { in: number; out: number } | null
   enrichmentVendors?: string[]       // bring-your-own enrichment keys the account saved ('apollo', 'pdl')
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
@@ -56,25 +73,28 @@ const CALLS: { id: string; label: string; calls: Range; inK: Range; outK: Range;
 ]
 const money = (n: number) => `$${n < 0.01 && n > 0 ? n.toFixed(4) : n.toFixed(2)}`
 const num = (v: string | undefined): number | null => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : null }
-const modelCost = (model: string, calls: number, inK: number, outK: number): number | null => {
-  const p = PRICES_USD_PER_M[model]
+const listedPrice = (model: string) => (Object.prototype.hasOwnProperty.call(PRICES_USD_PER_M, model) ? PRICES_USD_PER_M[model] : null)
+const modelCost = (p: { in: number; out: number } | null, calls: number, inK: number, outK: number): number | null => {
   // Same formula the spend guard reserves: (input tokens + fixed margin) x input price + output tokens x output price.
   return p ? calls * ((inK * 1000 + INPUT_MARGIN_TOKENS) * p.in + outK * 1000 * p.out) / 1e6 : null
 }
 
 export function estimateRun(i: EstimateInput): RunEstimate {
-  const env = i.env ?? process.env, b = i.budget, model = i.model ?? DEFAULT_MODEL
+  // The model the run will really call (#851): never silently the default when the caller named one. A blank or non-string
+  // id is unknown, and unknown prices nothing.
+  const named = i.model === undefined ? DEFAULT_MODEL : typeof i.model === 'string' && i.model.trim() ? i.model : null
+  const env = i.env ?? process.env, b = i.budget, model = i.modelUnknown === true || named === null ? UNKNOWN_MODEL : named
   const limit = Math.min(typeof b?.max_usd === 'number' ? b.max_usd : Infinity, i.ownerCapUsd ?? Infinity)
   const monthCap = typeof i.ownerMonthCapUsd === 'number' && i.ownerMonthCapUsd > 0 ? i.ownerMonthCapUsd : null
   const capped = Number.isFinite(limit) || monthCap !== null
   const unknown = i.poolUnknown === true
   const rows: EstimateRow[] = []
-  const p = PRICES_USD_PER_M[model]
+  const p = model === UNKNOWN_MODEL ? null : (i.priceModel ?? listedPrice)(model)
   const modelUnit = p ? `$${p.in.toFixed(2)} in / $${p.out.toFixed(2)} out per 1M tokens (${model})` : `${model}: no listed price`
   for (const c of CALLS) {
     const off = (c.optional === 'judge' && b?.judge === false) || (c.optional === 'hiring' && !i.hiringRequest)
     const calls = off ? { min: 0, max: 0 } : c.calls
-    const lo = modelCost(model, calls.min, c.inK.min, c.outK.min), hi = modelCost(model, calls.max, c.inK.max, c.outK.max)
+    const lo = modelCost(p, calls.min, c.inK.min, c.outK.min), hi = modelCost(p, calls.max, c.inK.max, c.outK.max)
     rows.push({ id: c.id, label: c.label, provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: modelUnit, units: calls, usd: lo === null || hi === null ? null : { min: lo, max: hi }, capped, note: off ? (c.optional === 'judge' ? 'Off: you skipped the judge' : 'Not a hiring request') : `${calls.min === calls.max ? calls.max : `${calls.min}-${calls.max}`} call(s), ${c.inK.min}-${c.inK.max}k tokens in, ${c.outK.min}-${c.outK.max}k out each` })
   }
   // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,
@@ -128,6 +148,32 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     } else if (cappedTotal.max > remaining) warning = `The worst case (${money(cappedTotal.max)}) is above the ${money(remaining)} left, so the run may stop early as a budget stop. That is a stop, not zero results.`
     else message = `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the ${money(remaining)} left.`
   } else message = 'No dollar limit is set, so nothing here is a ceiling. Set one to make the run stop at an amount.'
+  // A run under a spending limit only reserves for a model the limit's guard can price (limitReservable); any other model is
+  // refused at its first call (model_unpriced). Say so BEFORE launch, and put that verdict inside the confirmation (ack) below.
+  // EVERY run, limited or not, also runs inside the per-scan spend cap (runner.ts runWithScanSpend), which reserves each model
+  // call at i.priceModel's price (spend-cap.ts modelCostUsd -> scanModelPrice) and refuses an id it cannot price. So when the
+  // caller supplied that table and it has no price for a named model, the run would stop at its first model call with or
+  // without a limit: refuse that too, and never advise removing the limit (it cannot help). An unreadable model
+  // (UNKNOWN_MODEL) is not refused without a limit: the model the run really calls may be priced.
+  const scanUnpriced = i.priceModel !== undefined && p === null && model !== UNKNOWN_MODEL
+  if (scanUnpriced || ((i.limited ?? capped) && !limitReservable(model))) {
+    ok = false; reason = 'model_unpriced'; warning = null; change.length = 0
+    const whose = i.payer === 'trial' ? "The free trial's model" : "Your key's model"
+    message = model === UNKNOWN_MODEL
+      ? `${i.payer === 'trial' ? "The free trial's model" : 'The model your key runs'} could not be read right now, so a run under a spending limit cannot be priced and would not reserve. Nothing was started or charged.`
+      : scanUnpriced
+        ? `${whose} (${model}) has no listed price, so the per-scan spend cap every run has would stop it at its first model call, with or without a spending limit. Nothing was started or charged.`
+        : `${whose} (${model}) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call.${p ? ' The model rows above use its list price for this estimate only.' : ''} Nothing was started or charged.`
+    if (i.payer === 'trial') change.push('This is a dazl configuration problem, not your request: try again later, or add your own AI key in Settings.')
+    else {
+      if (model === UNKNOWN_MODEL) change.push('Try again in a moment.')
+      if (!scanUnpriced) change.push('Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)')
+      // The alternative must be priceable by every guard the run would still meet: the limit's table and the scan cap's.
+      const alt = i.pricedAlternative
+      if (alt && alt !== model && limitReservable(alt) && (i.priceModel ?? listedPrice)(alt) !== null) change.push(`${scanUnpriced ? 'Use' : 'Or use'} an Anthropic key (${alt} is priced)`)
+      if (scanUnpriced) change.push('This is a dazl model configuration problem, not your request: try again later.')
+    }
+  }
   const assumptions = [
     `Model: ${model}. Tokens per call are ranges chosen by dazl (typical to worst case), priced exactly as the spend guard prices a reservation.`,
     'Search and fetch counts are the per-scan caps the runner enforces; units used are usually lower.',
@@ -154,16 +200,43 @@ export function estimateRun(i: EstimateInput): RunEstimate {
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
-export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null }
-export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
+export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; capReservedUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
+export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
 export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput): ActualVsEstimate {
-  const p = a.model ? PRICES_USD_PER_M[a.model] : undefined
-  const usd = p && a.inputTokens !== null && a.outputTokens !== null ? (a.inputTokens * p.in + a.outputTokens * p.out) / 1e6 : null
+  // The canonical pricing truth is the settlement path's own (spend-guard.ts): priceOf normalizes dated served ids
+  // (claude-sonnet-4-5-20250929 -> claude-sonnet-4-5) and completionCost prices cache tokens at the shared factors. A
+  // bare PRICES_USD_PER_M lookup here called a dated, KNOWN model "unlisted" and reported real spend as unknown.
+  const served = a.servedModels && a.servedModels.length ? a.servedModels : a.model ? [a.model] : []
+  const priceKeys = new Set(served.map(m => { const p = priceOf(m); return p ? `${p.in}/${p.out}` : null }))
+  const mixed = priceKeys.size > 1
+  const cost = !mixed && a.inputTokens !== null && a.outputTokens !== null
+    ? completionCost(a.model ?? served[0] ?? null, { input_tokens: a.inputTokens, output_tokens: a.outputTokens, cache_creation_input_tokens: a.cacheWriteTokens ?? 0, cache_read_input_tokens: a.cacheReadTokens ?? 0 })
+    : null
+  const usd = cost && 'usd' in cost ? cost.usd : null
+  // Cache token usage is NOT stored per scan (model-usage.ts): absent cache fields are UNKNOWN, not zero. Without them
+  // the computed USD is the recorded-token component only - an at-least amount, never "complete" and never placed
+  // inside/against the estimate range. Explicit zeros are a real record; provided values price at the shared factors.
+  const cacheRecorded = a.cacheWriteTokens != null && a.cacheReadTokens != null
+  const complete = usd !== null && a.tokensComplete && cacheRecorded
   const modelEst = est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 })
-  const within = usd === null ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
-  const summary = usd === null ? `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
-    : `Actual model cost ${a.tokensComplete ? '' : 'at least '}${money(usd)} from the tokens the provider reported, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)} (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'}). Not an invoice.`
-  return { model_usd: usd, model_usd_complete: usd !== null && a.tokensComplete, searches: a.searches, reserved_usd: a.reservedUsd, estimate: est.total, within, summary }
+  const within = !complete ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
+  const reqs = a.requests ?? null, reqsWithTokens = a.requestsWithTokens ?? null
+  // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
+  // what IS known (call count, reported tokens, why no USD) and that the actual cost is unknown - never $0 or free.
+  let summary: string
+  if (usd !== null) {
+    const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
+    const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
+    summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
+  }
+  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else summary = `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
+  // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
+  const capRes = a.capReservedUsd ?? null
+  if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
+  return { model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: est.total, within, summary }
 }
 
 // The one line under the menu that states the limits and what is left. Unreadable budget is "remaining unknown" (never $0.00); the daily and monthly limits are labelled,

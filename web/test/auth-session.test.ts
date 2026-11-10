@@ -1,23 +1,28 @@
 import assert from 'node:assert/strict'
 import { createPasswordUser, createSession, deleteSession, findPasswordUser, getSessionUser, hashToken } from '../lib/auth-db.ts'
 import { bothEngines } from './helpers/engines.ts'
+import { confirmEmail } from './helpers/confirmed.ts'
 
 const user = { id: 'u1', email: 'a@x.com', name: 'A', business_name: 'Biz', password_hash: 'h'.repeat(128), salt: 's'.repeat(32) }
 
 bothEngines('password user: created once, the same email again reports exists, lookup by email', async ({ db }) => {
   assert.equal(await createPasswordUser(user, db), 'created')
   assert.equal(await createPasswordUser({ ...user, id: 'u2' }, db), 'exists')
-  assert.deepEqual(await findPasswordUser('a@x.com', db), { id: 'u1', password_hash: user.password_hash, salt: user.salt, email_verified_at: null })
+  const found = await findPasswordUser('a@x.com', db)
+  assert.deepEqual({ ...found, email_confirmation_required: Number(found?.email_confirmation_required) }, { id: 'u1', password_hash: user.password_hash, salt: user.salt, email_verified_at: null, email_confirmation_required: 0 })
   assert.equal(await findPasswordUser('nobody@x.com', db), undefined)
 })
 
 bothEngines('sessions: a new token signs in, a deleted or expired one does not, only the hash is stored', async ({ db }) => {
-  await createPasswordUser(user, db)
+  await createPasswordUser({ ...user, requireConfirmation: true }, db)
+  const unconfirmed = await createSession('u1', db)
+  assert.equal(await getSessionUser(unconfirmed, db), null, '#357: an account made under the requirement has no app access before the email is confirmed')
+  await confirmEmail(db, 'u1')
   const token = await createSession('u1', db)
   assert.match(token, /^[a-f0-9]{64}$/)
   const u = await getSessionUser(token, db)
   assert.ok(u && Math.abs(u.authedAt - Math.floor(Date.now() / 1000)) <= 5, 'a new session counts as freshly signed in')
-  assert.deepEqual({ ...u, authedAt: 0 }, { email: 'a@x.com', business_name: 'Biz', actorId: 'u1', tenantId: 'u1', role: 'owner', authedAt: 0 })
+  assert.deepEqual({ ...u, authedAt: 0 }, { email: 'a@x.com', business_name: 'Biz', actorId: 'u1', tenantId: 'u1', role: 'owner', authedAt: 0, emailVerified: true })
 
   assert.ok(await db.get('SELECT 1 AS x FROM sessions WHERE id = ?', [hashToken(token)]))
   assert.equal(await db.get('SELECT 1 AS x FROM sessions WHERE id = ?', [token]), undefined)

@@ -79,7 +79,7 @@ test('polishDraft rewrites a template draft with the tenant model + memory, keep
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000,human_confirmed_from='test_review' WHERE confidence IS NOT NULL").run()
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   const id = createDraft(db, 'A', 'l1', 'Dazl')
-  const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (k, prompt) => { assert.match(prompt, /Seller's writing tone: direct/); assert.match(prompt, /not instructions/); assert.match(prompt, /NOT a verified fact/); assert.match(prompt, /the source's claim/); return 'Subject: Saw the AE hiring\n\nHi Pat,\n\nNoticed Acme is hiring AEs. We help teams ramp them faster. Worth a short call?\n\nThanks,' } } }
+  const prov: Record<string, Provider> = { anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_key, prompt) => { assert.match(prompt, /Seller's writing tone: direct/); assert.match(prompt, /not instructions/); assert.match(prompt, /NOT a verified fact/); assert.match(prompt, /the source's claim/); return 'Subject: Saw the AE hiring\n\nHi Pat,\n\nNoticed Acme is hiring AEs. We help teams ramp them faster. Worth a short call?\n\nThanks,' } } }
   assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, providers: prov as never }), { rewritten: true, vendor: 'anthropic' })
   const row = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ?').get(id) as { subject: string; body: string }
   assert.equal(row.subject, 'Saw the AE hiring')
