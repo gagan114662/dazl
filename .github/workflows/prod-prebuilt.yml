@@ -28,7 +28,7 @@ jobs:
           rm -rf .next/cache
           tar -czf ../prod-next-541733d1.tgz .next .build-commit
           tar -czf ../prod-modules-541733d1.tgz node_modules
-          ls -la ../staging-*.tgz
+          ls -la ../prod-*.tgz
           node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"
           sha256sum ../prod-next-541733d1.tgz
       - uses: actions/upload-artifact@v4
