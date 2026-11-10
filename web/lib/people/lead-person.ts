@@ -8,8 +8,10 @@
 //   - a plausible human name (letters, spaces, . ' - only; no address, URL or digits) and a non-empty title;
 //   - not historical (an SEC Form D names officers as of the filing) and a title that does not contradict the role
 //     (former, retired, assistant-to: rank.ts roleContradicted);
-//   - when the scan has buyer roles, a title sharing at least one of their words (rank.ts tier weak/strong);
 //   - provenance a user can open: a public LinkedIn profile URL, or an http(s) source page.
+// Collection already keeps only buyer-role titles (the crawl and the profile search filter on rank.ts titleMatches; a
+// provider is searched by role), so no extra role match is required here (a 'Co-founder' for a 'Founder' search is kept):
+// the best title match is simply ranked first, as the opportunity card's recommendedPerson does.
 // Order: verified current first (lib/people/currency.ts: dated first-party page / provider record), then search-result
 // only, each in rank order. `current` says which, so the row never presents a search result as a verified employee.
 import { contactsFromEnrichments, peopleSourceText, roleContradicted, type ContactEnrichment } from './rank.ts'
@@ -46,7 +48,6 @@ const tidy = (s: string) => s.replace(/\s+/g, ' ').trim()
 export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date.now(), site: SiteIdentity | null = null): LeadPerson | null {
   try {
     const icp = typeof icpText === 'string' ? icpText.slice(0, 2000) : ''
-    const roles = icp.trim().length > 0
     const people = contactsFromEnrichments(clean(rows), icp, Number.isFinite(nowMs) ? nowMs : Date.now(), site)
     const ordered = [...people.filter(p => p.currency === 'verified_current'), ...people.filter(p => p.currency !== 'verified_current')]
     for (const p of ordered) {
@@ -54,7 +55,6 @@ export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date
       const name = tidy(p.name), title = tidy(p.title ?? '')
       if (!NAME.test(name) || name.split(' ').filter(Boolean).length < 2) continue // a full name, never a bare first name or a handle
       if (!title || title.length > 120 || roleContradicted(title, icp)) continue
-      if (roles && p.tier === 'none') continue // a titled person who is not one of the scan's buyer roles is not "the buyer"
       const linkedin = p.linkedin && PROFILE.test(p.linkedin) ? p.linkedin : null
       const src = p.source ?? (p.linkedin && !linkedin ? p.linkedin : null)
       const source = src && SOURCE.test(src) ? src : null

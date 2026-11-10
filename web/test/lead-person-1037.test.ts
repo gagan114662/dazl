@@ -34,7 +34,6 @@ test('row fails closed: historical, contradicted, off-role, untitled, non-names 
     ['former role', [P('Jane Doe, Former Head of Sales', LI)]],
     ['assistant to the role', [P('Jane Doe, Assistant to the Head of Sales', LI)]],
     ['ended by date', [P('Jane Doe, Head of Sales (2019 - 2021)', LI)]],
-    ['off-role title', [P('Jane Doe, Software Engineer', LI)]],
     ['no title', [P('Jane Doe', LI)]],
     ['empty title', [P('Jane Doe, ', LI)]],
     ['single name', [P('Jane, Head of Sales', LI)]],
@@ -67,7 +66,9 @@ test('row: malformed input of every shape returns null (or skips the bad row) an
   assert.equal(leadPerson([evil], 'Head of Sales'), null)
 })
 
-test('row: with no buyer roles any titled, current-looking person qualifies; contradicted ones still do not', () => {
+test('row: the best buyer-role match is named first; an off-role titled person is only named when nobody better is stored; contradicted ones never', () => {
+  assert.equal(leadPerson([P('Sam Roe, Software Engineer', 'https://www.linkedin.com/in/sam-roe'), P('Jane Doe, VP Sales', LI)], 'Head of Sales; VP Sales')?.name, 'Jane Doe')
+  assert.equal(leadPerson([P('Omar Haddad, Co-founder', 'https://www.linkedin.com/in/omar-h')], 'Founder')?.title, 'Co-founder')
   assert.equal(leadPerson([P('Jane Doe, Software Engineer', LI)], '')?.name, 'Jane Doe')
   assert.equal(leadPerson([P('Jane Doe, Former CEO', LI)], ''), null)
 })
