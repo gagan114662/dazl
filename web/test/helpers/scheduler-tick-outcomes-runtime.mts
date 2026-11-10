@@ -152,12 +152,12 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
   for (const leak of [R, F, P, S, U, N, 'reading_not_enabled', 'not_available', 'paused', 'daily_cap', 'uncertain_send', 'business', 'acme']) assert.ok(!body.includes(leak), `operator view leaks ${leak}`)
   // each tenant's own view: its rows only
   setUser({ id: P, business_name: '' })
-  const seqP = await (await sequencesRoute(new NextRequest('http://localhost/api/outreach/sequences'))).text()
+  const seqP = await (await sequencesRoute()).text()
   const fp = JSON.parse(seqP).freshness
   assert.equal(fp.state, 'held'); assert.deepEqual(fp.holds, ['sequences:paused'])
   for (const other of [R, F, S, U, 'reading_not_enabled', 'not_available']) assert.ok(!seqP.includes(other), `tenant view leaks ${other}`) // (uncertain_send is also the name of a gate every tenant sees)
   setUser({ id: F, business_name: '' })
-  assert.equal(JSON.parse(await (await sequencesRoute(new NextRequest('http://localhost/api/outreach/sequences'))).text()).freshness.state, 'blocked')
+  assert.equal(JSON.parse(await (await sequencesRoute()).text()).freshness.state, 'blocked')
 
   // --- tick 4: operator switch on; F's consent is no longer current (a hold while still blocked); R gets a mailbox; P resumes; S's cap is raised;
   // W arrives with follow-ups on, two interested threads due and a cap of 1

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateSequences } from '../lib/outreach/sequences.ts'
-import { sourceMetrics, REPLY_WINDOW_S } from '../lib/scan/source-metrics.ts'
+import { sourceMetrics } from '../lib/scan/source-metrics.ts'
 
 const NOW = 1_800_000_000
 const OLD = NOW - 30 * 86400

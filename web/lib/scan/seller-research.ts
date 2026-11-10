@@ -3,7 +3,6 @@
 // Rules: a statement is `sourced` only when its quote appears verbatim on the cited fetched page; a persona the pages do not support is kept as a `hypothesis`
 // (never presented as fact); a size or place with no supporting quote is `unknown`. Reviewed corrections are keyed by offer, so one offer's answers never
 // leak into another's targeting. Pure core: the fetcher and the model call are injected (tests stub both); no database, no network of its own.
-import { extractSiteText } from './icp-from-site.ts'
 import { norm } from './evidence.ts'
 import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier, MAX_RESEARCH_QUOTE, REPORTED, ANNOUNCE } from './claim-quote.ts'
 
@@ -19,7 +18,6 @@ export interface SellerResearch { site: string; pages: ResearchedPage[]; offers:
 export type PageKind = 'home' | 'product' | 'pricing' | 'customers' | 'industries'
 
 export const MAX_PAGES = 5            // besides the homepage
-const PAGE_TEXT = 3500                // characters of visible text per page given to the model
 const KINDS: [PageKind, RegExp][] = [
   ['pricing', /\b(?:pricing|plans|price)\b/i], ['customers', /\b(?:customers?|case[-\s]?stud(?:y|ies)|success[-\s]?stor(?:y|ies)|testimonials?|clients?)\b/i],
   ['industries', /\b(?:industries|industry|use[-\s]?cases?|who we serve|solutions?\s+for)\b/i], ['product', /\b(?:products?|platform|features?|solutions?|services?|how it works)\b/i],

@@ -10,7 +10,7 @@ import {migrateScan} from '../lib/scan/store.ts'
 import {migrateOutreach} from '../lib/outreach/store.ts'
 import {createSourceReview,migrateSourceReview} from '../lib/scan/source-review.ts'
 import {confirmLeadReview} from '../lib/scan/review-confirm.ts'
-import {createDraft,approve,sendMessage} from '../lib/outreach/service.ts'
+import {createDraft,sendMessage} from '../lib/outreach/service.ts'
 import {contactPurposeRestricted} from '../lib/outreach/contact-purpose-db.ts'
 
 test('real public recruitment context rejects sales-localpart; publication is not buyer relevance',()=>{

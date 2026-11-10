@@ -218,6 +218,11 @@ export default function LeadsClient() {
     } catch { setMonLoadError('Could not load your monitors. Check your connection.') }
   }
   useEffect(() => { void Promise.resolve().then(loadMonitors) }, [])
+  const [monBusy, setMonBusy] = useState(false)
+  const [monCreated, setMonCreated] = useState('')
+  const addMonitor = async (): Promise<boolean> => { if (query.trim().length < 3) return false; setMonError(''); let r: Response; try { r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) }) } catch { setMonError('Connection lost. We could not tell whether the monitor was created. Check the monitor list below before trying again.'); return false } const j = await r.json().catch(() => ({})); if (!r.ok) { setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || 'Could not create the monitor'); return false } if (j.id === undefined || j.id === null || j.id === '') { setMonError('The server answered but did not confirm the monitor. Check the monitor list below before trying again.'); void loadMonitors(); return false } void loadMonitors(); return true }
+  // "Monitor this search": saves the current search as a continuous monitor (POST /api/monitors), shown with the list below.
+  const createMonitorFromSearch = async () => { if (monBusy) return; setMonBusy(true); setMonCreated(''); try { const ok = await addMonitor(); if (ok) setMonCreated(query.trim()) } finally { setMonBusy(false) } }
   const mutateMonitor = async (id: string, init: RequestInit, what: string) => {
     setMonError('')
     try {
@@ -1335,10 +1340,15 @@ export default function LeadsClient() {
         </>
       )}
 
-      {monitors.length > 0 && (
-        <div className="mt-6">
+      {(monitors.length > 0 || query.trim().length >= 3) && (
+        <div className="mt-6" data-testid="monitors">
           <h2 className="text-sm font-semibold mb-2 text-gray-300">Continuous Monitors</h2>
           <p className="text-gray-500 text-xs mb-2">Re-runs your search on a schedule. New companies show up here automatically.</p>
+          {query.trim().length >= 3 && (
+            <button type="button" data-testid="create-monitor" onClick={() => void createMonitorFromSearch()} disabled={monBusy}
+              className="btn-ghost text-xs px-3 min-h-11 min-w-11 mb-2 disabled:opacity-50">{monBusy ? 'Creating monitor…' : 'Monitor this search'}</button>
+          )}
+          {monCreated && !monError && <p className="text-green-400 text-xs mb-2" role="status" data-testid="monitor-created">Monitoring &ldquo;{monCreated}&rdquo;. New companies will appear here.</p>}
           <div className="space-y-1">
             {monitors.map(m => (
               <div key={m.id} data-testid="monitor-row" className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">

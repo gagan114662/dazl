@@ -105,7 +105,7 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
 // groups, the typed answer - with their EXACT offer bindings. Merging model research into it could only move,
 // collapse or truncate those bindings, so there is no merge: the prior block replaces any fresh research outright.
 // Presence is not a review: no status changes here; only the review editor's explicit submit does that.
-export function guardedPreviewResearch(fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
+export function guardedPreviewResearch(_fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
   return prior
 }
 
