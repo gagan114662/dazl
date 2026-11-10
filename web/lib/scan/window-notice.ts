@@ -21,7 +21,7 @@ export function windowNotice(leads: NoticeLead[], windowDays: number | null | un
   if (older + noDate === 0) return null
   const parts: string[] = []
   if (older) parts.push(`${older} ${older === 1 ? 'result is' : 'results are'} older than your ${windowDays}-day window`)
-  if (noDate) parts.push(`${noDate} ${noDate === 1 ? 'has' : 'have'} no usable date (missing, invalid or in the future)`)
+  if (noDate) parts.push(`${noDate} ${noDate === 1 ? 'lead has' : 'leads have'} no usable date (missing, invalid or in the future)`)
   const text = `${parts.join(' and ')}. ${older + noDate === 1 ? 'It is' : 'They are'} kept as research only: not drafted or sent, even after you review the source.`
   // Only an older-than-window result can come back by widening; an undated one never will.
   const wider = Math.min(MAX_WINDOW_DAYS, windowDays * 2)
