@@ -24,6 +24,7 @@ const MORE: Item[] = [
   { href: '/app/follow-ups', label: 'Follow-ups', icon: 'followups', match: p => p.startsWith('/app/follow-ups') },
   { href: '/app/social', label: 'Social opportunities', icon: 'social', match: p => p.startsWith('/app/social') },
   { href: '/app/seo', label: 'SEO', icon: 'seo', match: p => p.startsWith('/app/seo') },
+  { href: '/app/scorecard', label: 'Scorecard', icon: 'check', match: p => p.startsWith('/app/scorecard') },
 ]
 const SETTINGS: Item = { href: '/app/settings', label: 'Settings', icon: 'settings', match: p => p.startsWith('/app/settings') }
 
