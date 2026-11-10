@@ -5,7 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { leadPerson, leadPersonLine, NO_BUYER } from '../lib/people/lead-person.ts'
-import { findPeople, firstPlayPeopleCap, FIRST_PLAY_MAX, MAX_COMPANIES } from '../lib/people/people-search.ts'
+import { findPeople, firstPlayPeopleCap, peopleTraceStatus, FIRST_PLAY_MAX, MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
@@ -249,4 +249,69 @@ test('FREE TRIAL: a search that would eat into the last quarter of the reserve i
   const t = await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.9' }, () => runFixture(fx({ fundedBy: 'trial', model: 'claude-sonnet-4-5' }, people)))
   assert.equal(people.length, 0)
   const st = stage(t); assert.equal(st?.status, 'attempted_no_result', JSON.stringify(st)); assert.match(String(st?.reason), /kept its remaining budget/)
+})
+
+// ---- review round 1 (xhawk / Greptile findings on #1046) ----
+
+test('review: full names written without spaces (Han, Hangul, Kana) are names; a bare Latin given name is still not', () => {
+  assert.equal(leadPerson([P('王伟, 销售总监', 'https://www.linkedin.com/in/wang-wei-1')], '')?.name, '王伟')
+  assert.equal(leadPerson([P('김민준, 영업 이사', 'https://www.linkedin.com/in/kim-mj')], '')?.name, '김민준')
+  assert.equal(leadPerson([P('山田タロウ, 営業部長', 'https://www.linkedin.com/in/yamada-t')], '')?.name, '山田タロウ')
+  assert.equal(leadPerson([P('王, 销售总监', 'https://www.linkedin.com/in/wang')], ''), null, 'one character is not a full name')
+  assert.equal(leadPerson([P('Jane, Head of Sales', LI)], ''), null)
+  assert.equal(leadPerson([P('王伟Jane, Head of Sales', LI)], ''), null, 'mixed script with no space is not accepted as a no-space name')
+})
+
+test('review: the first-play pass searches only leads the first play lists (fit 0-1 and gate-held leads get no search)', async () => {
+  const { db, job } = setup(4); const s = stub()
+  db.prepare("UPDATE leads SET fit = 1 WHERE id = 'L0'").run()
+  db.prepare("UPDATE leads SET fit = 0 WHERE id = 'L1'").run()
+  addEnrichment(db, 'A', 'L2', { connector: 'scan:gate', kind: 'gate_failed', value: 'held', label: null, confidence: null, source_url: 'https://news.example.test/2', source_date: daysAgo(0), retrieved_at: Math.floor(Date.now() / 1000) })
+  await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true })
+  assert.equal(s.queries.length, 1); assert.match(s.queries[0], /CompanyDD/)
+  // the ordinary (non-first-play) pass is unchanged: it still looks at its top leads by fit
+  { const o = setup(4); const s2 = stub(); await findPeople(o.db, 'A', o.job, { env, fetchImpl: s2.f }); assert.equal(s2.queries.length, 4) }
+})
+
+test('review: an operator-set TINYFISH_SEARCHES_PER_SCAN still binds (it can only lower the people cap)', async () => {
+  for (const [opts, want] of [[{}, MAX_COMPANIES], [{ maxCompanies: 10, skipNamed: true }, 2]] as const) {
+    const { db, job } = setup(12); const s = stub()
+    await findPeople(db, 'A', job, { env: { ...env, TINYFISH_SEARCHES_PER_SCAN: '2' }, fetchImpl: s.f, ...opts })
+    assert.equal(s.queries.length, Math.min(want, 2), JSON.stringify(opts))
+  }
+  { const { db, job } = setup(12); const s = stub(); await findPeople(db, 'A', job, { env: { ...env, TINYFISH_SEARCHES_PER_SCAN: '50' }, fetchImpl: s.f, maxCompanies: 10, skipNamed: true }); assert.equal(s.queries.length, 10, 'a higher operator value never raises the people cap') }
+})
+
+test('review: a lost job (cancelled or re-claimed) stops the pass before the next search and writes nothing from an in-flight one', async () => {
+  { const { db, job } = setup(3); const s = stub(); const why: string[] = []
+    assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true, alive: () => false, onStop: w => why.push(w) }), 0)
+    assert.equal(s.queries.length, 0); assert.deepEqual(why, ['ownership_lost']) }
+  { const { db, job } = setup(3); const s = stub(); const why: string[] = []; let calls = 0
+    // alive for the first search and its write; lost while the second search is in flight
+    const alive = () => { calls++; return calls <= 3 }
+    const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true, alive, onStop: w => why.push(w) })
+    assert.equal(n, 1); assert.equal(s.queries.length, 2); assert.deepEqual(why, ['ownership_lost'])
+    assert.equal((db.prepare("SELECT count(*) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c, 1, 'the result of the search in flight when the job was lost is not written') }
+})
+
+test('review: on the pass deadline the in-flight search is awaited (no paid call outlives the pass) and its result is dropped', async () => {
+  const { db, job } = setup(2); let settled = false
+  const f = (async (u: string) => { await new Promise(r => setTimeout(r, 250)); settled = true
+    const company = /"([^"]+)"/.exec(new URL(u).searchParams.get('query') ?? '')?.[1] ?? 'x'
+    return new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/late-lee', title: `Late Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Head of Sales' }] })) }) as unknown as typeof fetch
+  const why: string[] = []
+  const n = await findPeople(db, 'A', job, { env, fetchImpl: f, maxCompanies: 10, skipNamed: true, deadlineMs: 30, onStop: w => why.push(w) })
+  assert.equal(settled, true, 'findPeople returned only after the search it started had ended')
+  assert.equal(n, 0); assert.deepEqual(why, ['deadline'])
+  assert.equal((db.prepare("SELECT count(*) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c, 0)
+})
+
+test('review: the trace status never reports a pass cut short by an error or a lost job as a clean success', () => {
+  assert.equal(peopleTraceStatus(3, null), 'ok')
+  assert.equal(peopleTraceStatus(0, null), 'attempted_no_result')
+  assert.equal(peopleTraceStatus(0, 'budget_kept'), 'attempted_no_result')
+  assert.equal(peopleTraceStatus(2, 'deadline'), 'ok')
+  assert.equal(peopleTraceStatus(1, 'error'), 'failed', 'one stored, then an error: failed (people_stored stays in the detail)')
+  assert.equal(peopleTraceStatus(0, 'error'), 'failed')
+  assert.equal(peopleTraceStatus(1, 'ownership_lost'), 'failed')
 })

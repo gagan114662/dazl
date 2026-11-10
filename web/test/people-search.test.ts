@@ -124,7 +124,9 @@ test('deadline: a hung search is abandoned and the pass returns', async () => {
   const { db, job } = setup(ICP)
   const hang = (() => new Promise(() => {})) as unknown as typeof fetch
   const t0 = Date.now()
-  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: hang, deadlineMs: 50 }), 0)
+  // #1037: after the deadline the pass waits for the search in flight, bounded by drainMs (default: the transport timeout + 1 s,
+  // when the real transport has given up); this stub ignores its abort signal, so it is abandoned after drainMs.
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: hang, deadlineMs: 50, drainMs: 50 }), 0)
   assert.ok(Date.now() - t0 < 2000)
 })
 

@@ -276,12 +276,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const fullRow = (id: string) => (first?.leads as PreviewLead[] | null)?.find(x => x.id === id) ?? null
     const person = (l: PreviewLead) => {
       const c = leadCardSummary(l)
-      // #1037: the person to contact (lib/people/lead-person.ts, the same rule as the Leads row) comes first.
+      // #1037: the person comes ONLY from lib/people/lead-person.ts (the same rule as the Leads row): nobody it accepts
+      // means the row names nobody, never a person parsed back out of the contact line.
       const lp = buyerOf(l)
-      if (lp) return { name: lp.name, line: [lp.title, c.company].join(' · '), company: c.company, named: true }
-      // "Name, Title - email": the title may itself contain a hyphen ("Co-founder"); only " - " separates the address.
-      const m = /^([^,]+), (.+?)(?: - .*)?$/.exec(c.contact ?? '')
-      return { name: m ? m[1].trim() : c.company, line: [m ? m[2].trim() : null, m ? c.company : null].filter(Boolean).join(' · ') || `${NO_BUYER} · ${c.sourceHost}`, company: c.company, named: !!m }
+      return lp ? { name: lp.name, line: [lp.title, c.company].join(' · '), company: c.company } : { name: c.company, line: `${NO_BUYER} · ${c.sourceHost}`, company: c.company }
     }
     return (
       <div className="fixed inset-0 z-50 overflow-y-auto bg-[var(--canvas)] app-ui" data-testid="onboarding-screen" data-step={step}>

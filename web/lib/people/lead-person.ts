@@ -23,6 +23,8 @@ export interface LeadPerson { name: string; title: string; linkedin: string | nu
 const PROFILE = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\/[A-Za-z0-9\-_%]{3,100}\/?$/
 const SOURCE = /^https?:\/\/[^\s<>"'`]{3,500}$/i
 const NAME = /^[\p{L}][\p{L}\p{M} .'\u2019-]{1,79}$/u
+// Scripts that write a full name without spaces (王伟, 김민준, 山田太郎): two or more of their characters is a full name.
+const NO_SPACE_NAME = /^[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}\u30FC\u30FB]{2,20}$/u
 const MAX_ROWS = 500
 
 const str = (v: unknown, max: number): string | null => typeof v === 'string' && v.length <= max ? v : null
@@ -53,7 +55,7 @@ export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date
     for (const p of ordered) {
       if (p.historical) continue
       const name = tidy(p.name), title = tidy(p.title ?? '')
-      if (!NAME.test(name) || name.split(' ').filter(Boolean).length < 2) continue // a full name, never a bare first name or a handle
+      if (!NAME.test(name) || (name.split(' ').filter(Boolean).length < 2 && !NO_SPACE_NAME.test(name))) continue // a full name, never a bare first name or a handle
       if (!title || title.length > 120 || roleContradicted(title, icp)) continue
       const linkedin = p.linkedin && PROFILE.test(p.linkedin) ? p.linkedin : null
       const src = p.source ?? (p.linkedin && !linkedin ? p.linkedin : null)
