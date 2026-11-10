@@ -25,6 +25,7 @@
 // (fromScoreboardResult) are a self-report; no release threshold can be met by a self-report, by synthetic data, or by
 // a historical aggregate (counts with no per-result verdicts). Thresholds are proposals for the owner: this module
 // reports whether a run meets them, it never accepts anything.
+import { anyUnknown } from '../evals/contract.ts'
 import { isReachable, RECENT_DAYS, FIT_MIN, isEventDateProof, isHiringTrigger, isCalendarDay, type RouteInput } from '../scan/scoreboard.ts'
 
 export type Verdict = 'pass' | 'fail' | 'unknown' | 'contradicted'
@@ -53,7 +54,8 @@ export interface BenchmarkRun {
 
 const ratio = (n: number, d: number) => d > 0 ? Math.round((n / d) * 1000) / 1000 : null
 export const validated = (r: ResultRow) => FIELDS.every(f => r.verdicts[f] === 'pass')
-const hasUnknown = (r: ResultRow) => FIELDS.some(f => r.verdicts[f] === 'unknown')
+// The shared definition of an unknown result (lib/evals/contract.ts): any scorecard field is unknown.
+const hasUnknown = (r: ResultRow) => anyUnknown(FIELDS.map(f => r.verdicts[f]))
 
 export interface TaskScore {
   task_id: string; region: string; sector: string; kind: Task['kind']; status: TaskStatus; reason: string | null

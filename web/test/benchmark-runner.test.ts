@@ -206,13 +206,14 @@ test('scoring hook: a #394 contract scorer judges blind items; the worst contrac
     evaluate: (c, e) => {
       evaluated.push(c.id)
       const s = statuses[e.domain ?? ''] ?? {}
-      return { contract: c.id, tier: e.domain === 'mapleleaf.example' ? 'actionable_opportunity' : null, status: 'unknown', scorer: { id: 'contract-scorer', version: 1 }, verdicts: Object.entries(s).map(([field, status]) => ({ field, status, rationale: 'stub' })) }
+      return { contract: c.id, contract_hash: `hash-${c.id}`, tier: e.domain === 'mapleleaf.example' ? 'actionable_opportunity' : null, status: 'unknown', scorer: { id: 'contract-scorer', version: 1 }, verdicts: Object.entries(s).map(([field, status]) => ({ field, status, rationale: 'stub' })) }
     },
   })
   const r = await runBatch({ ...base(), evaluator: hook })
   const ev = (sys: string, key: string) => r.evaluations.find(e => e.system === sys && e.entity_key === key)!
   assert.deepEqual(ev('dazl', 'domain:mapleleaf.example').verdicts, { identity: 'pass', constraints: 'pass', event_date: 'pass', contact: 'pass' })
   assert.equal((ev('dazl', 'domain:mapleleaf.example').record as { tier: string }).tier, 'actionable_opportunity')
+  assert.equal((ev('dazl', 'domain:mapleleaf.example').record as { contract_hash: string }).contract_hash, 'hash-contract-' + ev('dazl', 'domain:mapleleaf.example').task_id, 'the frozen contract hash is persisted with the judgement (#394 review)')
   // contradicted beats pass, fail beats pass, an unknown status string is unknown
   assert.deepEqual(ev('dazl', 'domain:lakeshore.example').verdicts, { identity: 'contradicted', constraints: 'pass', event_date: 'fail', contact: 'unknown' })
   // a lead the contract scored nothing for is unknown on every field, never pass
