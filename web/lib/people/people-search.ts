@@ -12,6 +12,7 @@ import { tfSearch, tinyfishEnabled, type SearchHit } from '../search/tinyfish.ts
 import { addEnrichment } from '../connectors/store.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
+import { leadPerson } from './lead-person.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
 import { firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
@@ -78,9 +79,9 @@ type Lead = { id: string; company: string }
 // charge: the free-trial scan's per-search charge (runner trialCharges); canSearch: checked before every search, false
 // stops the pass (a trial scan keeps budget for the checks that run after it). onStop records why the pass stopped early.
 export interface PeopleOpts { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; deadlineMs?: number; maxCompanies?: number; skipNamed?: boolean; charge?: (kind: 'search' | 'fetch', units: number) => Promise<void>; canSearch?: () => boolean; onStop?: (why: string) => void }
-// A person already stored for the lead that a first-play search would only duplicate: a titled person or contact row
-// from any connector except historical filings (SEC Form D names officers as of the filing, not a current buyer).
-const NAMED_SQL = "SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND kind IN ('person','contact') AND connector <> 'signals:sec-form-d' AND (instr(value, ', ') > 0 OR instr(value, ' - ') > 0) LIMIT 1"
+// A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play
+// search: a titled, role-matching, non-historical person with a checkable link is already stored (e.g. its own site).
+const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind IN ('person','contact') ORDER BY insert_seq LIMIT 500"
 // Runs after a scan finishes. Never throws; returns how many people were stored (also when it stopped on an error).
 export async function findPeople(db: Database.Database, tenantId: string, jobId: string, deps: PeopleOpts = {}): Promise<number> {
   let stored = 0
@@ -106,12 +107,12 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     // This pass's own TinyFish count: the per-scan search count starts at 0 here and allows exactly `cap` searches
     // (the tenant / global daily caps and the per-minute rate inside tfSearch still apply on top).
     const tfEnv = { ...env, TINYFISH_SEARCHES_PER_SCAN: String(cap) }
-    const named = deps.skipNamed ? db.prepare(NAMED_SQL) : null
+    const rowsOf = deps.skipNamed ? db.prepare(ROWS_SQL) : null
     let searched = 0
     for (const l of leads) {
       if (Date.now() >= deadline) { deps.onStop?.('deadline'); break }
       if (searched >= cap) break
-      if (named && named.get(l.id)) continue // already names a titled person: no search spent on it
+      if (rowsOf && leadPerson(rowsOf.all(l.id, tenantId), roleText, now * 1000)) continue // already names its person: no search spent on it
       const ck = companyKey(l.company); if (seenCompany.has(ck)) continue; seenCompany.add(ck)
       const q = peopleQuery(l.company, roles); if (!q) continue
       if (deps.canSearch && !deps.canSearch()) { deps.onStop?.('budget_kept'); break }

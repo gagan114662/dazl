@@ -11,6 +11,7 @@ import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
 import { identityOf } from '@/lib/scan/opportunity'
+import { leadPerson, NO_BUYER } from '@/lib/people/lead-person'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
@@ -1102,6 +1103,13 @@ export default function LeadsClient() {
                   <Avatar name={c.company} size={40} />
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
+                    {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
+                    {(() => {
+                      const p = leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', Date.now(), identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
+                      return p
+                        ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
+                        : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{NO_BUYER}{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</div>
+                    })()}
                     <div className="text-[var(--ink-2)] text-xs mt-0.5">{c.contact ?? 'No contact found yet'}</div>
                     {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
                         doubt - unconfirmed, role not verified, no current buyer - stays on screen in full. */}
