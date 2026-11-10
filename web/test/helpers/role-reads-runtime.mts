@@ -32,6 +32,7 @@ const id = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 
 test('no read returns a secret, a ciphertext or a capability URL; the Cal.com signing secret only to admins and owners', async () => {
   for (const u of ['A', 'D', 'O', 'V']) await createPasswordUser(user(u))
+  raw.prepare('UPDATE users SET email_verified_at = 1 WHERE id IN (?, ?, ?, ?)').run('A', 'D', 'O', 'V') // #357: confirmed accounts only have sessions
   const role: Record<string, Role> = { A: 'owner', D: 'admin', O: 'operator', V: 'viewer' }
   for (const u of ['D', 'O', 'V']) raw.prepare('INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, ?, 1)').run('A', u, role[u])
   const tokens: Record<string, string> = {}

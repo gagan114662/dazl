@@ -89,6 +89,7 @@ const all: Want[] = []
 
 test('every audited route in the Covered table records its event, with the redacted summary, and records nothing when nothing changed', async () => {
   for (const id of ['A', 'D', 'O']) await createPasswordUser(user(id))
+  raw.prepare('UPDATE users SET email_verified_at = 1').run() // #357: only confirmed accounts have sessions
   // workspace A: owner A, admin D, operator O
   raw.prepare("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES ('A', 'D', 'admin', 1), ('A', 'O', 'operator', 1)").run()
   const t: Record<string, string> = {}

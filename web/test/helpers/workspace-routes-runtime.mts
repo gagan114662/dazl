@@ -31,6 +31,7 @@ const user = (id: string) => ({ id, email: `${id.toLowerCase()}@example.test`, n
 
 test('a member acts in the workspace they chose, within their role, until removed', async () => {
   for (const id of ['A', 'B', 'C']) await createPasswordUser(user(id))
+  raw.prepare('UPDATE users SET email_verified_at = 1 WHERE id IN (?, ?, ?)').run('A', 'B', 'C') // #357: confirmed accounts only have sessions
   const now = Math.floor(Date.now() / 1000)
   for (const [job, t] of [['aaaaaaaaaaaaaaaaaaaaaaaa', 'A'], ['cccccccccccccccccccccccc', 'C']] as const) {
     raw.prepare("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at) VALUES (?, ?, 'done', 'x', 'y', 'z', ?)").run(job, t, now)

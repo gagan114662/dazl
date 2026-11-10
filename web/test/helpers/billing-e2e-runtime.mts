@@ -65,6 +65,16 @@ async function scenario(engine: 'sqlite' | 'pg') {
   // 0. Free to start: 50 scans a month
   assert.deepEqual(await plan(), { ...(await plan()), plan: 'free', scan_limit: 50 })
 
+  // 0b. #357 (narrowed per review on #608): checkout is exactly main's for every signed-in account. A legacy account whose
+  // email is unconfirmed reaches Stripe as on main; an account made under the confirmation requirement has no session
+  // until it confirms, so it never gets here. One Stripe call, then the counter resets for the scenario below.
+  setUser({ id: T, business_name: 'Acme', emailVerified: false } as never)
+  const unverified = await checkout.POST(json('/api/billing/checkout'))
+  assert.equal(unverified.status, 200, 'as on main')
+  assert.equal(stripeCalls.length, 1)
+  stripeCalls.length = 0
+  setUser({ id: T, business_name: 'Acme' } as never)
+
   // 1. Checkout: one Stripe call, test key, the Pro price, the tenant as client_reference_id and subscription metadata
   const co = await checkout.POST(json('/api/billing/checkout'))
   assert.equal(co.status, 200)

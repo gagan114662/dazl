@@ -16,8 +16,8 @@ export default function Verify() {
       <div className="card p-8 sm:p-10 w-full max-w-sm text-center">
         <h1 className="text-2xl font-medium mb-3">Confirm your email</h1>
         {state === 'working' && <p className="text-[#555] text-sm">Confirming...</p>}
-        {state === 'done' && <p className="text-[#555] text-sm">Your email is confirmed. <a className="underline underline-offset-2" href="/app">Open dazl</a></p>}
-        {state === 'invalid' && <p className="text-[#555] text-sm">This link has expired or was already used. Send a new one from Settings in dazl.</p>}
+        {state === 'done' && <p className="text-[#555] text-sm">Your email is confirmed. <a className="underline underline-offset-2" href="/sign-in">Sign in to dazl</a></p>}
+        {state === 'invalid' && <p className="text-[#555] text-sm">This link has expired or was already used. <a className="underline underline-offset-2" href="/sign-in">Sign in</a>: if your email is not confirmed yet, we email you a new link.</p>}
         {state === 'none' && <p className="text-[#555] text-sm">Open the link from the email we sent you.</p>}
       </div>
     </main>

@@ -1070,7 +1070,7 @@ CREATE TABLE users (
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch())
-    , buyer_profile TEXT, email_verified_at INTEGER);
+    , buyer_profile TEXT, email_verified_at INTEGER, email_confirmation_required INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE warm_user_paths (
       id           TEXT PRIMARY KEY,
