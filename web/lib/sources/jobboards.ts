@@ -122,7 +122,6 @@ const day = (v: unknown): string | null => {
   const t = Date.parse(v)
   return Number.isNaN(t) ? null : new Date(t).toISOString().slice(0, 10)
 }
-const fresh = (d: string | null) => !!d && Date.now() - Date.parse(d) <= WINDOW_DAYS * 86_400_000 && Date.parse(d) <= Date.now() + 86_400_000
 type Note = (code: string) => void
 // `seen` reports how a BOARD LIST request went, for the per-board progress rows: 'answered' (200, or a plain 404 / 403 = no such board), 'failed' (no answer, 5xx / 429, cut, oversize, malformed).
 type Seen = (r: 'answered' | 'failed') => void

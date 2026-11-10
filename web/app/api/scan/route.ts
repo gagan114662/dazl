@@ -6,7 +6,7 @@ import { cleanText } from '@/lib/validate'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
-import { MAX_QUERY, budgetedIcp, normalizeIcp } from '@/lib/scan/icp'
+import { MAX_QUERY, budgetedIcp, icpLoss, normalizeIcp } from '@/lib/scan/icp'
 import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { countActiveJobs, createJob, createQueryJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
@@ -41,6 +41,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   // Preferred input: free text, plus an optional profile the user already reviewed or edited.
   const query = cleanText(body?.query, MAX_QUERY)
+  // #917: a supplied profile is the person's explicit criteria. Anything normalizeIcp would drop or cut (a 7th exclusion,
+  // a 161-char item, a 301-char summary) is refused here, with field/item detail, before any offer read, reservation,
+  // trial admission or queue insert - never silently narrowed into a wider scan.
+  const lost = body?.icp && typeof body.icp === 'object' ? icpLoss(body.icp) : []
+  if (lost.length) return NextResponse.json({ error: 'profile_lossy', message: 'Part of this profile would be cut or ignored. Fix the listed fields - nothing was dropped silently.', loss: lost }, { status: 400 })
   const icp = body?.icp === undefined || body?.icp === null ? null : normalizeIcp(body.icp)
   if (body?.icp !== undefined && body?.icp !== null && !icp) return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
   // Legacy input, still accepted for older clients.
@@ -132,7 +137,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 })
   }
   // the plan from the shared store (the Stripe webhook writes it there); the count from where this route writes scans
-  const q = planQuota(await readPlan(await getDb(), user.tenantId), scansThisMonth(db, user.tenantId))
+  const plan = await readPlan(await getDb(), user.tenantId)
+  const q = planQuota(plan, scansThisMonth(db, user.tenantId))
   if (!q.allowed) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
@@ -153,6 +159,7 @@ export async function POST(req: NextRequest) {
   // (lib/billing/trial-budget.ts). Checked last, so a refused request above never holds a reservation.
   let reservation: string | null = null
   let job_id: string | null = null
+  let refused = null as Response | null
   if (funded === 'trial') {
     const a = principal ? await admitTrialScan(await getDb(), principal) : { ok: false as const, reason: 'not_configured' as const }
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
@@ -167,7 +174,15 @@ export async function POST(req: NextRequest) {
     job_id = randomBytes(12).toString('hex')
     if (reservation) await linkTrialReservation(await getDb(), user.tenantId, reservation, job_id)
     const jid = job_id
+    // The checks above are a fast, early answer; THIS is the admission fence (#913). Several awaits separate them from the insert,
+    // so two requests could both pass. The active-scan and monthly-quota checks are repeated inside the same write transaction
+    // that creates the job, taken IMMEDIATE so it holds the database write lock from its first statement: concurrent requests in
+    // this process or in another process sharing the store serialize here, and exactly one sees the slot free. A refusal throws
+    // before any write, so no job, no trial count, and (below) the linked reservation is released.
     db.transaction(() => {
+      if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
+      const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
+      if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
       if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget: nb.value, icpReviewed: body?.reviewed === true })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, nb.value)
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
@@ -178,13 +193,16 @@ export async function POST(req: NextRequest) {
         db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(jid)
         recordTrialScan(db, user.tenantId, jid, ip)
       }
-    })()
+    }).immediate()
     after(() => kickRunner(db))
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
     return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget) } : { job_id }, { status: 202 })
   } catch (e) {
     if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation, job_id ?? undefined).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
+    if (e instanceof AdmissionRefused && refused) return refused
     throw e
 
   }
 }
+
+class AdmissionRefused extends Error {}

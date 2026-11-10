@@ -32,7 +32,7 @@ const { migrateAllSqlite } = await import(path.join(dir, 'lib/db/sqlite-migratio
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-crmpush-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 migrateAllSqlite(db)
 const JOB = 'a'.repeat(24)
-db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES ('u1', 's@example.test', 'x', 'y')").run()
+db.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES ('u1', 's@example.test', 'x', 'y', 1)").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600)
 db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query) VALUES (?, 'u1', 'Synthetic Co', 'i', 'l', 'running', 'Synthetic buyers hiring')").run(JOB)
 db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, evidence_excerpt, confidence, fit, intent, why) VALUES ('lead-synth-1', ?, 'Synthetic Buyer International Holdings', 'Pat Example', 'pat@buyer.example', 'Hiring a sales lead', 'https://news.example/a', 'Synthetic Buyer is hiring a sales lead.', 80, 4, 4, 'synthetic')").run(JOB)

@@ -28,7 +28,7 @@ export function resolveServedCommit(
   // walk up so the probe does not silently return 'unknown' in production.
   dir = root
   for (let i = 0; i < 4; i++) {
-    const found = probeGitDir(env, dir)
+    const found = probeGitDir(dir)
     if (found) return found
     const parent = path.dirname(dir)
     if (parent === dir) break
@@ -40,7 +40,6 @@ export function resolveServedCommit(
 }
 
 function probeGitDir(
-  env: Record<string, string | undefined>,
   root: string,
 ): string | null {
   try {

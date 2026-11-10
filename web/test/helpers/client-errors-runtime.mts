@@ -14,7 +14,7 @@ const T = 'd'.repeat(32)
 test('client error endpoint', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw)
   const db = sqliteDb(raw); setDb(db)
-  raw.prepare("INSERT INTO users (id, email, business_name, password_hash, salt) VALUES (?, 'owner@example.test', 'Acme', 'h', 's')").run(T)
+  raw.prepare("INSERT INTO users (id, email, business_name, password_hash, salt, email_verified_at) VALUES (?, 'owner@example.test', 'Acme', 'h', 's', 1)").run(T)
   const token = await createSession(T, db)
   const got: ErrorRecord[] = []
   const restore = setErrorSinks([r => got.push(r)])

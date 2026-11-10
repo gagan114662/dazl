@@ -24,6 +24,7 @@ const lookup = async () => [{ address: '93.184.216.34', family: 4 as const }]
 
 if (process.env.ISO_MODE === 'write') {
   await createPasswordUser({ id: T, email: `${tag}@example.test`, name: tag, business_name: `Biz ${tag}`, password_hash: `hash-${tag}`, salt: `salt-${tag}` }, db)
+  await db.run('UPDATE users SET email_verified_at = ? WHERE id = ?', [now, T]) // #357: confirmed accounts only have sessions
   const session = await createSession(T, db)
   await applyStripeEvent(db, { id: `evt_${tag}`, type: 'checkout.session.completed', created: now, data: { object: { mode: 'subscription', client_reference_id: T, customer: `cus_${tag}`, subscription: `sub_${tag}` } } })
   const job = await S.createJob(db, T, { business_name: `Biz ${tag}`, industry: 'software', location: 'Toronto' }, null, now)

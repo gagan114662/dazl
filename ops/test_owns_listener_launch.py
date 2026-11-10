@@ -145,7 +145,7 @@ class CauseRecordTests(unittest.TestCase):
             status = Path(d) / 'status.json'
             argv = ['safe_launch.py', '--stage', '/new', '--commit', 'a' * 40, '--rollback-stage', '/old',
                     '--rollback-commit', 'b' * 40, '--env-file', '/env', '--pid', '4321', '--backup', '/b',
-                    '--backup-db', '/db', '--backup-verified', '--execute', '--status-file', str(status)]
+                    '--backup-db', '/db', '--drill-report', '/drill', '--backup-max-age-s', '3600', '--execute', '--status-file', str(status)]
             out = io.StringIO()
             with patch('sys.argv', argv), patch.object(m, 'run', side_effect=m.LaunchError('listener_identity_unverifiable', cause)), \
                     patch.object(m.os, 'kill') as kill, contextlib.redirect_stdout(out):

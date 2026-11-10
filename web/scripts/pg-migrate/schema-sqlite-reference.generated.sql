@@ -205,7 +205,7 @@ CREATE TABLE csv_batches (
       total      INTEGER NOT NULL,
       note       TEXT,
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
-    );
+    , run_budget TEXT CHECK (run_budget IS NULL OR length(run_budget) <= 200), budget_recorded INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE csv_rows (
       id       TEXT PRIMARY KEY,
@@ -1074,7 +1074,7 @@ CREATE TABLE users (
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch())
-    , buyer_profile TEXT, email_verified_at INTEGER);
+    , buyer_profile TEXT, email_verified_at INTEGER, email_confirmation_required INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE warm_user_paths (
       id           TEXT PRIMARY KEY,

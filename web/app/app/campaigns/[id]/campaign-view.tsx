@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { isJobId } from '@/lib/outreach/scan-drafts'
-import { leadStatus, scanMessages, type ViewLead, type ViewMsg } from '@/lib/outreach/campaign-view'
+import { leadStatus, scanMessages } from '@/lib/outreach/campaign-view'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
 import { currentQual, currentRun, runStatus } from '@/lib/run-status'
 

@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
         auditPush(db, user.tenantId, cfg.provider, lead, unknown ? 'uncertain' : 'worker_error')
         await audit(user, req, { action: 'crm.pushed', resource: 'lead', id: lead.id, summary: { provider: cfg.provider, outcome: unknown ? 'unknown' : 'failed' } })
         captureError(e, { source: 'route', where: '/api/crm', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
-        return NextResponse.json({ error: e instanceof Error ? e.message : 'Push failed', outcome: unknown ? 'unknown' : 'failed' }, { status: 502 })
+        return NextResponse.json({ error: e instanceof Error ? e.message : 'Push failed', outcome: unknown ? 'unknown' : 'failed', ...(unknown && cfg.provider === 'webhook' ? { resolution: 'webhook_endpoint' } : {}) }, { status: 502 })
       }
       if (!finish('ok', r.externalId)) return unknownReply()
       auditPush(db, user.tenantId, cfg.provider, lead, 'ok')

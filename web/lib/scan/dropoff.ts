@@ -9,14 +9,12 @@ export function dropoffOf(report: R | null | undefined): Dropoff {
   const rep: R = report ?? {}
   const urls: R[] = Array.isArray(rep.urls) ? rep.urls : []
   const search: R = rep.search ?? {}
-  const fates: R[] = Array.isArray(rep.candidates) ? rep.candidates : Array.isArray(rep.fates) ? rep.fates : []
   const stages: Stage[] = []
   const add = (stage: string, inn: number | null, out: number | null, reasons: Record<string, number> = {}) => stages.push({ stage, in: inn, out, lost: inn !== null && out !== null ? Math.max(0, inn - out) : null, reasons })
   const hits = num(search.hits_unique_urls)
   add('search -> urls selected for reading', hits, urls.length ? urls.filter(u => u.selected).length : null)
   const selected = urls.filter(u => u.selected)
   const fetchReasons: Record<string, number> = {}
-  const walled = urls.filter(u => u.walled).length
   for (const u of selected) if (u.own_fetch && u.own_fetch !== 'ok') fetchReasons[`own fetch ${u.own_fetch}`] = (fetchReasons[`own fetch ${u.own_fetch}`] ?? 0) + 1
   add('urls read -> own page fetched', urls.length ? selected.length : null, urls.length ? selected.filter(u => !u.own_fetch || u.own_fetch === 'ok').length : null, fetchReasons)
   const extracted = num(rep.extracted_candidates)

@@ -1,0 +1,23 @@
+{
+ "query": "Companies that raised seed funding in the last 90 days or hired their first VP of Sales within 30 days, excluding competitors",
+ "edited_query": "Dentists in Ohio",
+ "profile_signals_edit": "raised a Series A",
+ "expect": {
+  "groups": [
+   "and",
+   "or",
+   "not"
+  ],
+  "kinds": [
+   "funding",
+   "hire_made",
+   "competitor"
+  ],
+  "windows": [
+   "within 90 days",
+   "within 30 days",
+   null
+  ]
+ },
+ "note": "Shared by test/targeting-plan-view.test.ts (proves the REAL compiler produces this) and test/ui/plan-view.ui.mjs (the built page compiles it itself; nothing is stubbed)."
+}

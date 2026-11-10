@@ -5,14 +5,14 @@ import { useEffect, useState } from 'react'
 // (needs the Reddit channel's consent, same as the other session channels) and shows
 // matching posts as scan candidates with a "complained about <name>" badge.
 export default function CompetitorsPanel() {
-  const [list, setList] = useState<string[]>([])
+  
   const [text, setText] = useState('')
   const [msg, setMsg] = useState('')
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     void fetch('/api/settings/competitors').then(r => (r.ok ? r.json() : null)).then(j => {
-      if (j) { setList(j.competitors); setText(j.competitors.join('\n')) }
+      if (j) { setText(j.competitors.join('\n')) }
       setLoaded(true)
     })
   }, [])
@@ -23,7 +23,7 @@ export default function CompetitorsPanel() {
     const competitors = text.split('\n').map(s => s.trim()).filter(Boolean)
     const r = await fetch('/api/settings/competitors', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ competitors }) })
     const j = await r.json().catch(() => null)
-    if (r.ok) { setList(j.competitors); setMsg(j.competitors.length ? 'Saved. Complaint search runs on your next scan.' : 'Saved. Competitor complaint search is off.') }
+    if (r.ok) { setMsg(j.competitors.length ? 'Saved. Complaint search runs on your next scan.' : 'Saved. Competitor complaint search is off.') }
     else setMsg(j?.error || 'Could not save')
   }
 

@@ -10,6 +10,11 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const claim = useClaimContext()
+  // #357: while dazl can mail a link, sign-up does not sign in: the same check_email answer comes back for a new and a
+  // taken address, and the app opens after the emailed link is confirmed and the account signs in (the sign-in route
+  // then resumes an invitation or preview claim this browser carries). Without mail delivery the route answers as on
+  // main and this form continues into the app as before.
+  const [sent, setSent] = useState('')
 
   useEffect(() => { keepInvite() }, [])
 
@@ -29,7 +34,24 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
     })
     const data = await res.json()
     if (!res.ok) { setError(data.error || 'Signup failed'); setLoading(false); return }
+    if (data.check_email === true) { setSent(String(fd.get('email') ?? '')); return }
     router.push(afterSignIn(data.resume))
+  }
+
+  // Non-assertive on purpose: the same answer covers a sent link, a taken address (which gets a notice instead), a
+  // capped address and a failed send, so the page never claims delivery it cannot know happened.
+  if (sent) {
+    return (
+      <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+        <div className="card p-8 sm:p-10 w-full max-w-sm text-center" role="status">
+          <Link href="/" className="text-xl font-medium tracking-tight block mb-6">dazl<span className="text-[#111]">.</span></Link>
+          <h1 className="text-2xl font-medium mb-3">Check your email</h1>
+          <p className="text-[#555] text-sm mb-4">If <span className="text-[#111]">{sent}</span> can receive mail from us, a link to confirm it is on its way. Open it, then sign in. The link works once, for 24 hours.</p>
+          <p className="text-[#555] text-sm mb-4">Nothing arrived? Sign in with your password and we&apos;ll try to send a new link.</p>
+          <a href="/sign-in" className="btn-primary inline-block !py-3 px-6">Sign in</a>
+        </div>
+      </main>
+    )
   }
 
   return (

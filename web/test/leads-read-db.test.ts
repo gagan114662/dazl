@@ -65,7 +65,6 @@ test('adapter is async-shaped (returns promises) so the route compiles against e
 test('pg-mem implementation matches sqlite adapter on identical synthetic rows', async () => {
   const { newDb, DataType } = await import('pg-mem')
   const { readFileSync } = await import('node:fs')
-  const { fileURLToPath } = await import('node:url')
   const mem = newDb()
   mem.public.registerFunction({ name: 'char_length', args: [DataType.text], returns: DataType.integer, implementation: (x: string) => x.length, impure: false })
   mem.public.registerFunction({ name: 'btrim', args: [DataType.text], returns: DataType.text, implementation: (x: string) => x.trim(), impure: false })
