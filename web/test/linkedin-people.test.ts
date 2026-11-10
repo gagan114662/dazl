@@ -216,6 +216,39 @@ bothEngines('OWNER: an async hook that rejects before the first request stops th
   assert.equal(seen.length, MAX_REQUESTS_PER_RUN); assert.equal(checks, MAX_REQUESTS_PER_RUN, 'checked once before each request'); assert.equal(r.length, 2)
 })
 
+// ---- #949 greptile review (P1/P2) ----
+bothEngines('review: the session plan stamps each reservation with the CURRENT time, so slots paced across an hour boundary are not counted as one instant', async ({ db }) => {
+  await ready(db)
+  let clockS = NOW; const slept: number[] = []
+  const t: LinkedInTransport = { session: true, fetch: async r => (r.kind === 'posts' ? { status: 'ok', items: [{ url: 'https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000001/', title: 'p', quote: 'a competitor post', date: null }] } : ok(`p${slept.length}-x`)) }
+  const sleep = async (ms: number) => { slept.push(ms); clockS += 1800 }   // each pace wait is, here, half an hour
+  // deps.now is a getter-like fixed number in older tests; the collector must read the clock again after each wait when none is injected.
+  const realNow = Date.now; Date.now = () => clockS * 1000
+  try { await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: { ...ADV_ENV, LINKEDIN_SESSION_PER_RUN: '3' }, sleep }) } finally { Date.now = realNow }
+  // Reservations live in adv_requests.at (the earlier query named a table/column that does not exist, and a .catch hid that, so the assertion never ran).
+  const rows = await db.all<{ at: number }>("SELECT at FROM adv_requests WHERE tenant_id = 'A' AND connector = 'adv:linkedin' ORDER BY at", [])
+  assert.ok(rows.length >= 2, `expected at least the posts + one engagers reservation, got ${rows.length}`)
+  assert.equal(new Set(rows.map(r => r.at)).size, rows.length, 'every reservation carries its own current timestamp, not the run-start instant')
+  assert.ok(rows[rows.length - 1].at - rows[0].at >= 1800, 'timestamps advance with the pace waits')
+})
+
+bothEngines('review: a transport error is reported as an incomplete read (onIncomplete), without being a stop', async ({ db }) => {
+  await ready(db); let incomplete = 0, stopped = 0
+  const t: LinkedInTransport = { fetch: async () => ({ status: 'error' }) }
+  await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: NOW, onIncomplete: () => { incomplete++ }, onStop: () => { stopped++ } })
+  assert.ok(incomplete >= 1, 'error -> incomplete'); assert.equal(stopped, 0, 'an error is not a stop')
+})
+
+bothEngines('review: while the designated session is reserved for the transport, the older un-paced /fetch LinkedIn reader does not use the same cookie', async ({ db }) => {
+  await ready(db); const seen: string[] = []
+  const reserved = { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'A' }
+  assert.deepEqual(await collectAdvanced(db, 'A', 'j', ['linkedin'], 'payroll help', { worker: advWorker(seen), env: reserved, now: NOW }), [])
+  assert.deepEqual(seen, [], 'no worker call with the designated cookie')
+  assert.ok((await audits(db)).includes('linkedin:session_transport_owns_cookie'))
+  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'payroll help', { worker: advWorker(seen), env: { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'B' }, now: NOW })
+  assert.equal(seen.length, 1, 'another tenant is not affected')
+})
+
 // ---- #192 review: the cooldown is checked before EVERY reservation, in both consumers ----
 bothEngines('COOLDOWN MID-RUN: a run in flight when another run is throttled sends no second request; the shared hourly budget is not spent', async ({ db }) => {
   await ready(db); const seen: string[] = []
