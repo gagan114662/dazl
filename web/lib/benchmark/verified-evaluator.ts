@@ -122,14 +122,23 @@ export const CITY_NAMES: Record<string, string[]> = {
 }
 // Wording of each event kind a brief can ask for (folded, whole words). A kind not listed is unknown, never pass.
 const W = (s: string) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${s})(?![\\p{L}\\p{N}])`, 'u')
-const OPENING = 'opened|opens|opening|open(?:ed)? (?:a|its|their) new|new (?:office|offices|location|locations|clinic|branch|site|facility|plant|hall|headquarters|hq|store|studio|campus)|moved into|eröffnet\\w*|neue[nrs]? (?:standort|niederlassung|halle|produktionshalle|werk|büro)|inaugur\\w*|abriu|nova (?:loja|sede|clínica)'
+// An opening counts only for the kind of place the brief asks for: the opening verb (or "new") and a noun of that kind
+// within a few words of each other, in either order ("opened its new Toronto studio", "its Berlin office opened"). A shop
+// opening is not an office, and "opened applications" or "opened a round" is no opening at all.
+const OPEN_VERB = 'opened|opens|opening|open|moved into|moves into|relocated to|relocates to|new|neue[nrs]?|eröffnet\\w*|eröffnung|inaugur\\w*|abriu|abre|nova|novo'
+const OFFICE_NOUN = 'office|offices|head office|headquarters|hq|hub|studio|studios|campus|workspace|büro\\w*|niederlassung\\w*|sede|escritório\\w*'
+const LOCATION_NOUN = `${OFFICE_NOUN}|location|locations|branch|branches|clinic|clinics|store|stores|shop|shops|showroom|restaurant|outlet|site|standort\\w*|filiale\\w*|praxis|loja|clínica`
+const FACILITY_NOUN = 'facility|facilities|plant|plants|factory|factories|warehouse|warehouses|hall|production hall|distribution cent(?:er|re)|fulfil(?:l)?ment cent(?:er|re)|lab|laboratory|site|campus|werk|werke|halle|produktionshalle\\w*|lager\\w*|fábrica|armazém'
+const GAP = (n: number) => `(?:[\\s,]+[^\\s.!?;:]+){0,${n}}[\\s,]+`
+const opening = (noun: string) => `(?:${OPEN_VERB})${GAP(4)}(?:${noun})|(?:${noun})${GAP(2)}(?:${OPEN_VERB})`
 export const EVENT_WORDING: Record<string, RegExp> = {
   job_posting: W('hiring|hires|is hiring|are hiring|job|jobs|job opening|vacanc\\w*|position|recruiting|looking for|seeking|apply|stellen\\w*|wir suchen|vaga\\w*|contrata\\w*'),
   hire: W('hired|hires|appointed|appoints|named|joins|joined|welcomes|has hired'),
   funding: W('raised|raises|raising|funding|financing|investment|round|seed|series [a-f]|investors?|backed|finanzierung\\w*|investimento|ronda'),
-  new_location: W(OPENING), new_office: W(OPENING), office_opening: W(OPENING), new_facility: W(OPENING), facility_opening: W(OPENING),
+  new_office: W(opening(OFFICE_NOUN)), office_opening: W(opening(OFFICE_NOUN)), new_location: W(opening(LOCATION_NOUN)),
+  new_facility: W(opening(FACILITY_NOUN)), facility_opening: W(opening(FACILITY_NOUN)),
   regional_hq: W('regional (?:headquarters|hq|head office|hub)|(?:middle east|mena|gcc|emea|apac|asia-pacific|latin america|latam) (?:headquarters|hq|head office|hub)|headquarters for the (?:region|middle east|gcc|emea|apac)'),
-  expansion: W(`expan\\w+|${OPENING}`),
+  expansion: W(`expan\\w+|${opening(`${LOCATION_NOUN}|${FACILITY_NOUN}`)}`),
   product_launch: W('launch\\w*|released|releases|unveil\\w*|introduc\\w*|rolled out|rolls out'),
   headcount_growth: W('grew|grown|growing|doubled|tripled|headcount|employees|staff of|team (?:of|to)'),
   technology_change: W('migrat\\w*|switched|switches|adopt\\w*|implemented|implements|moved to|replac\\w*|rolled out|deployed'),
@@ -265,7 +274,9 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
     const norm = (s: string) => s.replace(/[\s.!?;:,"'”’)\]]+$/u, '').replace(/^[\s"'“‘(\[]+/u, '').replace(/\s+/g, ' ').trim()
     for (const u of claim.event.source_url ? [claim.event.source_url, ...claim.event.corroborating_urls] : []) {
       const sub = decide({ claim: { ...claim, event: { date: claim.event.date, source_url: u, corroborating_urls: [] }, quotes: [], person: null, contact: null }, problems: [], sources, asOf, windowDays })
-      const ok = sub.some(c => c.check === 'company_on_source' && c.status === 'pass') && sub.some(c => c.check === 'event_date_on_source' && c.status === 'pass')
+      // the page must also establish WHICH company it is about (on its domain, or naming the domain next to the name):
+      // a namesake's page describing the same kind of event that day is never a second origin
+      const ok = ['company_on_source', 'domain_bound', 'event_date_on_source'].every(k => sub.some(c => c.check === k && c.status === 'pass'))
       if (!ok) continue
       const s = readable(u)!, f = fold(s.text)
       const sentences = [...new Set(datesIn(f).filter(d => d.iso === claim.event.date && !isStamp(f, d)).map(d => sentenceAt(f, d.index, d.end)).filter(x => tokenPositions(x, claim.company).length > 0).map(norm))]

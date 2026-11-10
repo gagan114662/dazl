@@ -190,6 +190,18 @@ test('#397: review findings: every counted origin must itself state the requeste
   const dubai = (what: string) => [{ url: 'https://news.example/maple', text: `Maple Leaf Marketing (mapleleaf.example) ${what} in Dubai, United Arab Emirates on October 8, 2026.` }, { url: 'https://mapleleaf.example/news', text: `On October 8, 2026 Maple Leaf Marketing ${what} in Dubai.` }, PAGES[2]]
   assert.equal((await judge(item(), brief(HQ), dubai('opened a new store'))).constraints, 'unknown')
   assert.equal((await judge(item(), brief(HQ), dubai('opened its regional headquarters'))).constraints, 'pass')
+  // an opening counts only for the kind of place asked for: a shop, applications or a round is not an office
+  const OFFICE = { all_of: [{ geo: 'Dubai, AE' }, { event: 'new_office' }] }
+  for (const what of ['opened a new store', 'opened applications for its accelerator', 'opened a funding round']) assert.equal((await judge(item(), brief(OFFICE), dubai(what))).constraints, 'unknown', what)
+  for (const what of ['opened a new office', 'opened its new Dubai studio']) assert.equal((await judge(item(), brief(OFFICE), dubai(what))).constraints, 'pass', what)
+  assert.equal((await judge(item(), brief({ all_of: [{ geo: 'Dubai, AE' }, { event: 'new_location' }] }), dubai('opened a new store'))).constraints, 'pass')
+  assert.equal((await judge(item(), brief({ all_of: [{ geo: 'Dubai, AE' }, { event: 'new_facility' }] }), dubai('opened a new office'))).constraints, 'unknown')
+  // a namesake's page (neither on the company's domain nor naming it) describing the same event that day is no second origin
+  const namesake = [PAGES[0], { url: 'https://other-news.example/maple', text: 'On October 8, 2026 Maple Leaf Marketing, a family bakery, opened a new office in Toronto.' }, PAGES[2]]
+  const ns = await judge(item({ evidence_urls: ['https://news.example/maple', 'https://other-news.example/maple'] }), brief(TORONTO), namesake)
+  assert.equal(ns.record.independent_origins, 1); assert.equal(ns.event_date, 'unknown'); assert.equal(ns.constraints, 'unknown')
+  const bound = [PAGES[0], { url: 'https://other-news.example/maple', text: 'On October 8, 2026 Maple Leaf Marketing (mapleleaf.example) opened a new office in Toronto.' }, PAGES[2]]
+  assert.equal((await judge(item({ evidence_urls: ['https://news.example/maple', 'https://other-news.example/maple'] }), brief(TORONTO), bound)).record.independent_origins, 2)   // naming the domain binds it
   // a copied sentence that ends the page on one site and is followed by a footer on another is still one origin
   const copies = [PAGES[0], { url: 'https://wire.example/maple', text: `${PAGES[0].text!.split('. ')[0]}. Read more on our wire. Subscribe.` }, PAGES[2]]
   const c = await judge(item({ evidence_urls: ['https://news.example/maple', 'https://wire.example/maple'] }), brief(TORONTO), copies)
